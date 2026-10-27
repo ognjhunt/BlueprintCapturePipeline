@@ -46,4 +46,3 @@ TASK_PROFILES: tuple[TaskProfile, ...] = (
 def task_profile_for(task_family: str | None) -> TaskProfile | None:
     value = (task_family or "").strip().lower()
     return next((row for row in TASK_PROFILES if value in row.aliases), None)
-

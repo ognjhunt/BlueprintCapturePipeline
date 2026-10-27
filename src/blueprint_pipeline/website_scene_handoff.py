@@ -63,6 +63,14 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         base = dict(atlas["base_scene"])
         write_json(root / "base_scene.json", base)
         result.update(base_scene_path=str(root / "base_scene.json"), visual_reconstruction_ready=True)
+        removal_path = Path(clean_plate["removal_manifest_path"])
+        if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
+            raise ValueError("website_scene_removal_manifest_outside_capture")
+        removal = json.loads(removal_path.read_text())
+        # Capture truth applies to held families too. Reading this retained
+        # manifest performs no mask, authoring or provider work.
+        if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
+            raise ValueError("website_subject_origin_conflict")
         gap = native_task_preparation_gap(context)
         if gap is not None:
             # Retain the completed reconstruction and original task. Missing
@@ -89,14 +97,19 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
         write_json(root / "task_masks.geometry.json", masks)
         clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
-        removal_path = Path(clean_plate["removal_manifest_path"])
-        if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
-            raise ValueError("website_scene_removal_manifest_outside_capture")
-        removal = json.loads(removal_path.read_text())
         targets = {row["target_id"]: row for row in masks.get("targets", [])}
         subjects = [row for row in removal.get("entries", []) if row.get("task_effect") == "manipulated"]
-        if len(subjects) == 1 and subjects[0].get("target_id") in targets:
+        synthetic = removal.get("synthetic_subject")
+        inferred = None
+        if synthetic is not None:
+            if (not isinstance(synthetic, Mapping) or subjects
+                    or synthetic.get("start_support_target_id") not in targets):
+                raise ValueError("website_synthetic_subject_binding_invalid")
+            _, inferred = native_task_subject_profile({}, targets[synthetic["start_support_target_id"]],
+                                                      synthetic_subject=synthetic)
+        elif len(subjects) == 1 and subjects[0].get("target_id") in targets:
             _, inferred = native_task_subject_profile(subjects[0], targets[subjects[0]["target_id"]])
+        if inferred is not None:
             gap = native_task_preparation_gap(context, inferred_profile_id=inferred)
             if gap is not None:
                 # Catch a contradictory profile before coverage/spec callbacks.
@@ -179,7 +192,17 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
                 write_json(native_root / "construction_inputs.json", construction)
                 result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
-                if preparation["status"] == "intake_ready":
+                if (preparation["status"] == "intake_ready"
+                        and preparation["intake_request"]["task"]["strategy"] == "pick_and_place"):
+                    # Abstain before the owner is asked to pay when the arm cannot carry the task.
+                    from .website_rigid_feasibility import rigid_task_verdict
+                    verdict = rigid_task_verdict(preparation=preparation, collision_path=Path(runtime_inputs["collision"]["path"]))
+                    write_json(native_root / "capability_verdict.json", verdict)
+                    result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
+                        "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
+                    if verdict["status"] != "clear":
+                        result.update(status="needs_input", blockers=list(verdict["blockers"]))
+                if preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained":
                     from .website_scene_dispatch import binding_root, register_website_preparation
                     context_path = root / "task_context.json"
                     write_json(context_path, context)

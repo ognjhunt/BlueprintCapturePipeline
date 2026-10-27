@@ -913,3 +913,74 @@ def test_an_alignment_that_is_not_a_proper_rigid_motion_is_refused(tmp_path, tra
     with pytest.raises(ValueError, match="website_registration_anchor_frame_invalid"):
         preparation.register_source_to_runtime(source_geometry=geometry,
             collision_mesh_path=Path(base["collision_mesh_path"]), anchor=anchor)
+
+
+SYNTHETIC_BALL = {"semantic_label": "ball", "shape": "sphere", "dimensions_m": [0.065, 0.065, 0.065], "mass_kg": 0.06,
+                  "task_basis_quote": "a synthetic ball", "start_support_target_id": "table-1",
+                  "decision_reason": "The task adds a ball the video does not show.",
+                  "design_basis": "synthetic_design_choice", "physical_measurement": False}
+
+
+def synthetic_arguments(args):
+    """The fixture task, with its cup replaced by a designed ball starting on the observed table."""
+    masks = args["task_masks"]
+    masks["targets"][0] = {**masks["targets"][0], "target_id": "table-1", "semantic_label": "table",
+                           "task_effect": "static_contact", "disposition": "keep", "target_role": "support",
+                           "estimated_visible_bounds": _bounds([-0.25, 0.48, 1.3], [0.25, 0.5, 1.7])}
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    args["removal_manifest"] = {"schema_version": REMOVAL["schema_version"], "entries": [],
+                                "synthetic_subject": dict(SYNTHETIC_BALL)}
+    context = {**args["task_context"], "description": "Place a synthetic ball onto the tray."}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    args["task_context"] = context
+    return args
+
+
+@pytest.mark.parametrize("family,support_mechanism", [(None, ""), ("rigid_pick_and_place", "prismatic")])
+def test_a_designed_ball_starts_on_the_named_support_and_is_authored_as_supplied_geometry(
+        tmp_path, family, support_mechanism):
+    from blueprint_pipeline.website_synthetic_subject import AUTHORING_METHOD
+
+    arguments = synthetic_arguments(_arguments(tmp_path))
+    arguments["task_masks"]["targets"][0]["articulation_kind"] = support_mechanism
+    arguments["task_masks"]["digest"] = canonical_digest(arguments["task_masks"], digest_field="digest")
+    if family:
+        arguments["task_context"]["task_family"] = family
+        arguments["task_context"]["context_digest"] = canonical_digest(arguments["task_context"], digest_field="context_digest")
+    result = preparation.compile_website_scene_preparation(**arguments)
+    assert result["status"] == "intake_ready", result["blockers"]
+    subject = result["subject"]
+    assert subject["geometry_origin"] == "synthetic_design" and subject["complete_object_dimensions"] is True
+    dims = [b - a for a, b in zip(subject["aabb_min_xyz"], subject["aabb_max_xyz"])]
+    assert dims == pytest.approx([0.065] * 3, abs=1e-6)
+    authoring = result["authoring_inputs"]
+    assert authoring["adapter"] == "provided_mesh_rigid_authoring" and authoring["source_frames"] == []
+    assert authoring["configuration"]["authoring_method"] == AUTHORING_METHOD
+    assert "authoring_backend" not in authoring["configuration"]
+    assert authoring["configuration"]["required_output"]["mass_kg_bounds"] == pytest.approx([0.054, 0.066])
+    assert result["recipe_plan"]["rigid_replacement_authoring"] == "provided_mesh_rigid_authoring"
+    start = result["synthetic_subject"]["start"]
+    assert start["rule"] == "closest_clear_spot_on_named_support_to_destination" and start["support_lookups"] >= 1
+    # The ball rests on the table it was given, not wherever its region box ends.
+    assert result["support"]["face_indices"]
+
+
+def test_a_designed_rigid_subject_cannot_be_compiled_as_an_articulated_task(tmp_path, monkeypatch):
+    arguments = synthetic_arguments(_arguments(tmp_path))
+    arguments["task_context"]["task_family"] = "articulated_open_close"
+    arguments["task_context"]["context_digest"] = canonical_digest(arguments["task_context"], digest_field="context_digest")
+    # A mechanism on the support does not articulate the designed ball.
+    arguments["task_masks"]["targets"][0]["articulation_kind"] = "prismatic"
+    arguments["task_masks"]["digest"] = canonical_digest(arguments["task_masks"], digest_field="digest")
+    monkeypatch.setattr(preparation, "register_source_to_runtime", lambda **_: pytest.fail("Hold before registration"))
+    result = preparation.compile_website_scene_preparation(**arguments)
+    assert result["blockers"] == ["website_task_profile_mechanism_mismatch"]
+    assert result["native_task_preparation_gap"]["inferred_profile_id"] == "rigid_pick_place"
+    assert result["intake_request"] is None
+
+
+def test_a_designed_subject_cannot_stand_beside_a_removed_captured_one(tmp_path):
+    args = synthetic_arguments(_arguments(tmp_path))
+    args["removal_manifest"]["entries"] = list(REMOVAL["entries"])
+    with pytest.raises(ValueError, match="website_synthetic_subject_binding_invalid"):
+        preparation.compile_website_scene_preparation(**args)

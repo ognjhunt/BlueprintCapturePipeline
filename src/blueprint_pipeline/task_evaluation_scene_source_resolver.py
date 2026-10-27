@@ -66,7 +66,8 @@ def resolve_scene_source(*, intent, config, release):
     source = intent["request"]["source"]
     if ((source["kind"] == "gaussian_splat" or (source["kind"] == "mesh"
              and source["binding_id"].startswith("website-development-")))
-            and intent["request"]["task"].get("subject", {}).get("geometry_origin") == "removed_before_reconstruction"):
+            and intent["request"]["task"].get("subject", {}).get("geometry_origin")
+            in {"removed_before_reconstruction", "synthetic_design"}):
         from .website_scene_dispatch import resolve_website_source
         return resolve_website_source(intent=intent, config=config)
     if source["binding_id"].startswith("native-"):

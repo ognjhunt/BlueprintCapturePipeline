@@ -83,6 +83,58 @@ def test_novel_family_retains_the_scene_without_masks_authoring_or_a_substitute_
     assert json.loads((tmp_path / "pipeline/website_scene_preparation/handoff.json").read_text()) == result
 
 
+@pytest.mark.parametrize("atlas_origin,has_synthetic", [("synthetic_design", False), ("captured", True)])
+def test_unknown_family_cannot_hide_a_subject_origin_conflict(tmp_path, monkeypatch, ready_atlas,
+                                                             atlas_origin, has_synthetic):
+    from tests.test_website_task_preparation import SYNTHETIC_BALL
+    kwargs = inputs(tmp_path)
+    kwargs["descriptor"]["metadata"]["site_task_context"].update(task_family="laundry_folding", description="Original job")
+    ready_atlas["subject_origin"] = atlas_origin
+    write_json(tmp_path / "pipeline/removal.json", {"entries": [],
+        **({"synthetic_subject": dict(SYNTHETIC_BALL)} if has_synthetic else {})})
+
+    def unexpected(**_):
+        pytest.fail("Source-origin conflict precedes mask and provider callbacks")
+
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", unexpected)
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", unexpected)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == ["website_subject_origin_conflict"]
+    assert "native_task_preparation_gap" not in result and "runtime_inputs" not in result
+    assert result["provider_mutation_performed"] is False
+
+
+@pytest.mark.parametrize("family", ["rigid_pick_and_place", "articulated_open_close"])
+def test_synthetic_subject_profile_ignores_its_supports_mechanism(tmp_path, monkeypatch, ready_atlas, family):
+    from blueprint_pipeline.website_task_context_contracts import holds_native_task_preparation
+    from tests.test_website_task_preparation import SYNTHETIC_BALL
+    kwargs = inputs(tmp_path)
+    context = kwargs["descriptor"]["metadata"]["site_task_context"]
+    context.update(schema_version="website_site_task_context.v1", task_family=family, description="Original job")
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    ready_atlas["subject_origin"] = "synthetic_design"
+    kwargs["clean_plate"]["task_masks"] = {"targets": [{"target_id": "table-1", "target_role": "support",
+        "task_effect": "static_contact", "disposition": "keep", "articulation_kind": "prismatic"}]}
+    write_json(tmp_path / "pipeline/removal.json", {"entries": [], "synthetic_subject": dict(SYNTHETIC_BALL)})
+    calls = []
+
+    def coverage(**_):
+        calls.append("coverage")
+        raise ValueError("coverage_pending")
+
+    monkeypatch.setattr("blueprint_pipeline.website_assembly_coverage.attach_assembly_coverage", coverage)
+    monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", lambda **_: pytest.fail("No native intake was prepared"))
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    if family == "articulated_open_close":
+        assert result["blockers"] == ["website_task_profile_mechanism_mismatch"] and not calls
+        assert result["native_task_preparation_gap"]["inferred_profile_id"] == "rigid_pick_place"
+        assert holds_native_task_preparation(result, context)
+    else:
+        assert result["blockers"] == ["coverage_pending"] and calls == ["coverage"]
+        assert "native_task_preparation_gap" not in result
+    assert "runtime_inputs" not in result
+
+
 @pytest.mark.parametrize("family,mechanism", [("articulated_open_close", ""), ("rigid_pick_and_place", "prismatic")])
 def test_mechanism_mismatch_is_held_before_coverage_and_native_preparation(tmp_path, monkeypatch, ready_atlas,
                                                                         family, mechanism):

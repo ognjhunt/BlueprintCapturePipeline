@@ -90,19 +90,22 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
         runtime=runtime, preparation=preparation, observation_manifest_path=observed_path),
         "object_configuration_transition_invalid")
     observed = json.loads(observed_path.read_text())
+    # A designed subject is authored from its supplied mesh: whole, with no observed frames.
+    designed = (observed.get("subject_origin") == "synthetic_design"
+                and third.get("source_observation_kind") == "synthetic_design")
     _require(observed.get("schema_version") == OBSERVATIONS_SCHEMA
              and observed.get("digest") == canonical_digest(observed, digest_field="digest")
              and observed.get("preparation_digest") == preparation["digest"]
              and observed.get("source_geometry_digest") == preparation["binding"]["source_geometry_digest"]
              and observed.get("target_id") == third["source_object_identity"]
-             and observed.get("complete_object_geometry") is False
+             and observed.get("complete_object_geometry") is designed
              and observed.get("physical_measurement_proven") is False, "observations_binding_invalid")
     reference(PREFIX + ".candidate", observed["candidate"])
     _require(all(observed["candidate"][k] == authoring["source_candidate"][k] for k in ("digest", "size_bytes")),
              "candidate_binding_invalid")
     frame_rows = observed.get("frames", [])
     supplied = request["scene"]["website_native_inputs"]["frames"]
-    _require(frame_rows and len(frame_rows) == len(supplied)
+    _require(bool(frame_rows) != designed and len(frame_rows) == len(supplied)
              and len({row["frame_id"] for row in frame_rows}) == len(frame_rows), "frames_invalid")
     for index, row in enumerate(frame_rows):
         reference(PREFIX + f".frames.{index}", row["image"])
@@ -126,7 +129,9 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
              "capture_derivative_disclosure_not_admitted")
     binding = {"runtime_inputs_digest": runtime_row["digest"], "source_manifest_digest": manifest_row["digest"],
                "observation_manifest_digest": observed_row["digest"], "rights_admission_digest": rights_row["digest"],
-               "captured_frame_count": len(frame_rows)}
+               "captured_frame_count": len(frame_rows),
+               # Only a designed subject names its origin: captured bindings stay byte-identical.
+               **({"subject_origin": "synthetic_design"} if designed else {})}
     if require_render_inputs:
         render = envelope.get("render_inputs_result", {})
         _require(render.get("status") == INPUT_STATUS and render.get("website_binding") == binding
@@ -177,6 +182,14 @@ def preflight_website_authoring_request(*, envelope, configurations):
     from .task_evaluation_scene_configuration_source_preflight import _reference
     stage = envelope["recipe"]["stage_sequence"][2]
     configuration = configurations[stage["stage_id"]]
+    from .website_synthetic_subject import AUTHORING_ADAPTER, AUTHORING_METHOD, ORIGIN
+    if configuration.get("authoring_method") == AUTHORING_METHOD:
+        # A designed subject's supplied mesh calls no provider: there is no request to translate.
+        _require(stage.get("adapter", {}).get("id") == AUTHORING_ADAPTER and stage.get("execution_class") == "no_spend"
+                 and configuration.get("source_observation_kind") == ORIGIN and "authoring_backend" not in configuration,
+                 "designed_subject_authoring_invalid")
+        _reference(envelope, PREFIX + ".candidate")
+        return None
     if configuration.get("authoring_backend") == "artisan_v1":
         from .task_object_authoring_contracts import build_construction_request, file_record
         candidate, candidate_path = _reference(envelope, PREFIX + ".candidate")
@@ -226,7 +239,9 @@ def materialize_website_inputs(*, envelope, stage_one_configuration, output_root
               "run_id": envelope["request"]["run_id"], "input_kind": "website_capture_derivatives", "website_binding": binding,
               "source_appearance_digest": runtime["appearance"]["digest"],
               "raw_interiorgs_bytes_in_provider_packet": False, "raw_capture_video_in_provider_packet": False,
-              "captured_frame_derivatives_in_provider_packet": True, "prepared_background_in_provider_packet": True,
+              # A designed subject was never captured: no frame of it reaches a provider.
+              "captured_frame_derivatives_in_provider_packet": binding["captured_frame_count"] > 0,
+              "prepared_background_in_provider_packet": True,
               "derived_frames": [], "derived_frame_count": 0, "renderer_qualified": False,
               "physical_truth_claimed": False, "provider_render_required": False,
               "provider_mutation_performed": False, "paid_execution_requested": False}

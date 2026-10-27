@@ -111,8 +111,8 @@ def _strikes(points: Any, *, base: Any, yaw: float, root: float, footprint: list
 def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[float],
                   subject_center: list[float], subject_minimum: list[float], subject_maximum: list[float],
                   footprint_half_extent_m: list[float], root_height_m: float | None = None,
-                  root_world_z_m: float | None = None, task_motion: Mapping[str, Any] | None = None
-                  ) -> dict[str, Any]:
+                  root_world_z_m: float | None = None, task_motion: Mapping[str, Any] | None = None,
+                  ranked: int = 0) -> Any:
     """The closest clear floor stance facing the subject, or raise by name (no GPU).
 
     The root stands ``root_height_m`` above the floor, or at ``root_world_z_m``.
@@ -120,6 +120,7 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
     fixed volumes on the station: ``path_points`` (reset to the success
     threshold) and ``fall_points`` (where gravity carries it) block a stance, and
     a stance ``limit_points`` (its whole range) reaches ranks after the rest.
+    With ``ranked``, the ``ranked`` best clear stances are returned in order instead.
     """
 
     from .external_scene_robot_placement import (
@@ -161,6 +162,7 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
         clearance = {key: np.asarray(motion.get(key, np.zeros((0, 3))), dtype=float).reshape(-1, 3)
                      for key in ("path_points", "fall_points", "limit_points")}
     steps, best, clear, struck = math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9), None, 0, 0
+    candidates: list[Any] = []
     for ix in range(-steps, steps + 1):
         for iy in range(-steps, steps + 1):
             x, y = start[0] + ix * GRID_STEP_M, start[1] + iy * GRID_STEP_M
@@ -182,12 +184,24 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
                     continue
                 reached = _strikes(clearance["limit_points"], margin_m=0.0, **place)
             clear += 1
+            candidates.append(((reached, distance, ix, iy), x, y, yaw))
             if best is None or (reached, distance, ix, iy) < best[0]:
                 best = ((reached, distance, ix, iy), x, y, yaw)
     if best is None:
         raise TeamEmbodimentError(["team_embodiment_task_motion_no_clear_stance" if struck
                                    else "team_embodiment_free_base_no_clear_stance"])
-    (reached, *_), x, y, yaw = best
+    if ranked:
+        return [_stance(row, floor_z=floor_z, root=root, footprint_half_extent_m=footprint_half_extent_m, clear=clear,
+                        struck=struck, motion=motion, robot_id=robot_id if motion else None,
+                        collision_sha256=collision_sha256) for row in sorted(candidates)[:ranked]]
+    return _stance(best, floor_z=floor_z, root=root, footprint_half_extent_m=footprint_half_extent_m, clear=clear,
+                   struck=struck, motion=motion, robot_id=robot_id if motion else None,
+                   collision_sha256=collision_sha256)
+
+
+def _stance(row: Any, *, floor_z: float, root: float, footprint_half_extent_m: list[float], clear: int, struck: int,
+            motion: Mapping[str, Any], robot_id: str | None, collision_sha256: str) -> dict[str, Any]:
+    (reached, *_), x, y, yaw = row
     stance = {"schema_version": SCHEMA, "floor_z_m": float(floor_z),
               "position_world_m": [x, y, float(floor_z) + root],
               "orientation_xyzw": [0.0, 0.0, math.sin(yaw / 2.0), math.cos(yaw / 2.0)], "yaw_rad": yaw,
