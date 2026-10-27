@@ -96,11 +96,17 @@ def test_selection_budget_preserves_generated_coverage_before_buying_pose(tmp_pa
         planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=.11)
 
 
+@pytest.mark.parametrize("dense", [False, True])
 @pytest.mark.parametrize("mode", ["scene", "completion", "export_coverage", "scale", "recovery", "recorded_sources"])
-def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_path, monkeypatch, mode):
+def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_path, monkeypatch, mode, dense):
     completion_mode = mode in {"completion", "export_coverage"}
-    path, _, proposal, policy = fixture(tmp_path)
-    if mode in {"recovery", "recorded_sources"}:
+    path, survey, proposal, policy = fixture(tmp_path)
+    if dense:
+        survey["frames"] = [{**survey["frames"][0], "frame_id": str(i), "timestamp_seconds": i / 10}
+                            for i in range(173)]
+        survey["digest"] = canonical_digest(survey, digest_field="digest")
+        path.write_text(json.dumps(survey))
+    if mode in {"recovery", "recorded_sources"} and not dense:
         policy["maximum_review_cost_usd"] = 2
     from blueprint_pipeline import website_task_context as control
     from blueprint_pipeline import paid_resource_admission as admission
@@ -133,7 +139,14 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
         def configure_reservation_audit(self, **_):
             pass
         def invoke(self, spec, input_value):
-            assert spec.model == policy["model"] and len(input_value[0]["content"]) == (7 if mode == "scene" else 8)
+            content = input_value[0]["content"]
+            assert spec.model == policy["model"] and len(content) == 1 + 2 * len(survey["frames"]) + (mode != "scene")
+            labels = [json.loads(part["text"]) for part in content if part["type"] == "input_text"]
+            assert [row["frame_id"] for row in labels if "frame_id" in row] == [row["frame_id"] for row in survey["frames"]]
+            if dense:
+                from blueprint_pipeline.openai_prompt_cache import worst_case_reservation_usd
+                assert worst_case_reservation_usd(model=spec.model, input_token_ceiling=spec.max_input_tokens,
+                    max_output_tokens=spec.max_output_tokens, cache_policy=None) + spec.max_hosted_tool_calls_per_turn * .01 <= policy["maximum_review_cost_usd"]
             no_search = completion_mode or mode in {"recovery", "recorded_sources"}
             assert len(spec.hosted_tools) == (0 if no_search else 1)
             assert spec.max_hosted_tool_calls_per_turn == (0 if no_search else 2) and spec.hosted_tool_call_usd == .01
@@ -732,3 +745,34 @@ def test_budget_fitted_export_review_is_admitted_by_a_budgeted_invoker(tmp_path,
         output_root=tmp_path / "plans", invoker=BudgetedInvoker(), release_blockers=lambda: ("c" * 40, []),
         completion={"previews": [], "candidate_camera_ids": ["a-wide", "b-lower"], "post_export_coverage": {}})
     assert result["status"] == "completed" and quotes[0] != quotes[-1]
+
+@pytest.mark.parametrize("rotation", [0, 90, 45])
+def test_dense_input_preflight_prices_actual_rotated_previews_without_resizing_further(tmp_path, rotation):
+    image=tmp_path / "recorded.png"
+    Image.new("RGB", (1080,1920), "white").save(image)
+    survey={"display_rotation_degrees":rotation,"frames":[{"frame_id":"source-0","source_image_path":str(image),
+        "source_image_digest":_sha256_file(image)}]}
+    payload,tokens,quote=planner.preflight_review_input(survey,{"description":"Review the entire captured room"},None,
+        model="gpt-6.1-sol",maximum=1.,output_tokens=4000,instructions=planner.INSTRUCTIONS,schema=planner.CurrentSceneProposal,
+        hosted_tool_cost_usd=.02)
+    import base64
+    from io import BytesIO
+    part=next(p for p in payload[0]["content"] if p["type"]=="input_image")
+    with Image.open(BytesIO(base64.b64decode(part["image_url"].partition(",")[2]))) as preview:
+        assert max(preview.size)==512
+        assert min(preview.size)==(512 if rotation==45 else 288)
+    assert tokens>24_000 and quote+.02<=1
+    assert _sha256_file(image)==survey["frames"][0]["source_image_digest"]
+
+
+def test_dense_review_source_change_refuses_before_any_paid_reservation(tmp_path, monkeypatch):
+    path,survey,_,policy=fixture(tmp_path)
+    survey["frames"]=[{**survey["frames"][0],"frame_id":str(i)} for i in range(173)]
+    survey["digest"]=canonical_digest(survey,digest_field="digest")
+    path.write_text(json.dumps(survey))
+    Image.new("RGB",(20,30),"blue").save(survey["frames"][0]["source_image_path"])
+    from blueprint_pipeline import website_task_context as control
+    monkeypatch.setattr(control,"reserve_website_preparation_spend",lambda **_:pytest.fail("changed input reserved spend"))
+    with pytest.raises(ValueError,match="source_changed"):
+        planner.review_survey(survey_path=path,task_context={"description":"Read the room"},configuration={"policy":policy},
+            output_root=tmp_path/"plans")

@@ -577,3 +577,26 @@ def test_a_job_keeps_the_edit_scope_it_started_with(tmp_path):
     assert pipeline._job_edit_scope(trial, None) == "all_selected_views"
     with pytest.raises(ValueError, match="edit_scope_invalid"):
         pipeline._job_edit_scope(tmp_path / "bad", "everything")
+
+
+def test_resume_checks_current_remaining_allowance_before_any_more_planning(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, paid_resource_allocator as allocator
+    from blueprint_pipeline import website_atlas_pose as pose_api
+    video=tmp_path / "source.mov"
+    video.write_bytes(b"retained-source")
+    root=tmp_path / "job"
+    (root / "survey").mkdir(parents=True)
+    (root / "scene_planner").mkdir()
+    (root / "survey/atlas_video_survey.json").write_text(json.dumps({
+        "source_video_digest":pipeline._sha256_file(video),"frames":[]}))
+    saved={"authority":{"provider_retention":"project_library_retention_approved"},
+        "policy":{"maximum_review_cost_usd":.5,"pose_input_cost_usd":.01,"rgbd_view_cost_usd":.05},
+        "remaining_cost_usd":10.}
+    (root / "configuration.json").write_text(json.dumps(saved))
+    live={**saved,"remaining_cost_usd":.05}
+    monkeypatch.setattr(pipeline,"load_configuration",lambda *_:deepcopy(live))
+    monkeypatch.setattr(pose_api,"atlas_api_config",lambda:("url","test-non-secret"))
+    monkeypatch.setattr(allocator,"run_sponsored_website_atlas_plan",lambda **_:pytest.fail("stale balance authorized a review"))
+    with pytest.raises(ValueError,match="atlas_runtime_budget_insufficient"):
+        pipeline.run_atlas_pipeline(source_video=video,output_root=root,task_context={"capture_id":"c","context_digest":"ctx"})
+    assert json.loads((root / "configuration.json").read_text())==saved
