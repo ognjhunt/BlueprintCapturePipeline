@@ -980,7 +980,13 @@ def build_release_retention_plan(
         now=moment.timestamp(),
     )
     _merge_reasons(protected, evidence_protected)
-    live_required_commits.update(evidence_protected)
+    # A typed binding's tree must still exist. An older-shape binding keeps the
+    # releases it names that exist; one long gone leaves nothing here to keep.
+    live_required_commits.update(
+        commit for commit, reasons in evidence_protected.items()
+        if commit in release_artifacts
+        or any(not reason.startswith("unrecognized_binding_kept:") for reason in reasons)
+    )
     documents.extend(evidence_documents)
 
     unreachable_scene_references: list[dict[str, Any]] = []

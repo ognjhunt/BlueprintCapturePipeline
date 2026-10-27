@@ -1520,6 +1520,30 @@ def test_two_step_tool_keeps_the_release_an_older_shape_binding_names(tmp_path: 
     assert json.loads((evidence_root / "r22-spend-guard-client.json").read_text()) == legacy
 
 
+def test_an_older_shape_binding_whose_release_is_gone_does_not_block_the_plan(tmp_path: Path) -> None:
+    active, gone, idle = "a" * 40, "c" * 40, "e" * 40
+    state = _base_state(tmp_path, commits=[active, idle], active_commit=active)
+    evidence_root = state["evidence_binding_root"]
+    assert isinstance(evidence_root, Path)
+    # Production's legacy spend-guard binding names a release no managed root still holds.
+    _write_json(evidence_root / "r22-spend-guard-client.json", {
+        "status": "required", "source_commit": gone,
+        "runtime_root": f"/var/lib/blueprint/task-evaluation-inputs/system-runtimes/gpu-spend-guard/{gone}"})
+
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active  # type: ignore[arg-type]
+    )
+
+    assert [row["source_commit"] for row in plan["eligible_commits"]] == [idle]
+    assert plan["protected_commits"][gone] == ["unrecognized_binding_kept:r22-spend-guard-client.json"]
+    # A typed required-evidence binding whose tree is gone still blocks.
+    _write_json(evidence_root / "typed.json", {"schema_version": EVIDENCE_BINDING_SCHEMA_VERSION,
+                                              "status": "required", "source_commit": gone,
+                                              "reason": "open replay needs its tree"})
+    with pytest.raises(ReleaseRetentionError, match=f"release_retention_live_reference_release_missing:{gone}"):
+        build_release_retention_plan(**state, current_deploy_commit=active)  # type: ignore[arg-type]
+
+
 def test_two_step_tool_still_refuses_a_binding_that_names_no_release(tmp_path: Path) -> None:
     active = "a" * 40
     state = _base_state(tmp_path, commits=[active], active_commit=active)
