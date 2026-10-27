@@ -640,6 +640,14 @@
       "expires_on": "2027-08-14",
       "source": "installed distribution metadata License-Expression"
     },
+    "msgpack==1.2.3": {
+      "license_expression": "Apache-2.0",
+      "approved": true,
+      "owner": "@ognjhunt",
+      "reviewed_on": "2026-08-14",
+      "expires_on": "2027-08-14",
+      "source": "PyPI msgpack 1.2.3 License-Expression Apache-2.0 and msgpack-1.2.3/COPYING SHA256 492dedba85da5872f78e6091bcd1fea474d660d35acb4dee964b8aab3f007427; sdist SHA256 32edb81a2b5eb7cd7c9d941b2bfbbb082fd2cd09e0e725930316af6b708db186 verified 2026-10-27; license continuity from approved 1.2.1, original approval dates retained."
+    },
     "mypy-extensions==1.1.0": {
       "license_expression": "MIT",
       "approved": true,
