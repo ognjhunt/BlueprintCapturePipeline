@@ -169,3 +169,30 @@ def test_a_scene_hiding_arenas_external_mount_moves_the_camera_to_the_task_frami
     # A clear view keeps Arena's mount, exactly as without the check.
     assert (camera.materialize_camera_start_from_plan(**plan_inputs(), external_view_problems=lambda row: [])
             == camera.materialize_camera_start_from_plan(**plan_inputs()))
+
+
+def test_a_reset_no_turn_can_frame_falls_back_to_droids_own_reset(monkeypatch):
+    from blueprint_pipeline.droid_policy_canary_embodiment import DROID_NATIVE_RESET_JOINTS_RAD
+
+    target = {f'panda_joint{i}': float(DROID_NATIVE_RESET_JOINTS_RAD[f'panda_joint{i}']) for i in range(1, 8)}
+    target['panda_joint4'] += 0.2
+    real = camera.camera_framing_report
+
+    def framing(plan, chain, joints):
+        frames = all(abs(joints[name] - angle) < 1e-9 for name, angle in target.items())
+        return {**real(plan, chain, joints), 'status': 'passed' if frames else 'blocked'}
+
+    # Only an elbow turn of DROID's reset frames the task: every turn of the planned reset fails first.
+    monkeypatch.setattr(camera, 'camera_framing_report', framing)
+    value = plan_inputs()
+    binding = camera.materialize_camera_start_from_plan(**value)
+    assert binding['joint_reset_positions_rad'] == target
+    assert binding['reset_adjustment'] == {
+        'from': 'droid_native_reset', 'joints': {'panda_joint4': 0.2, 'panda_joint5': 0.0, 'panda_joint6': 0.0},
+        'reason': 'planned_reset_cannot_frame_task', 'native_validated': False}
+    assert camera.validate_camera_start_configuration(value['plan'], binding) == binding
+    # When nothing frames the task, the start is still refused.
+    monkeypatch.setattr(camera, 'camera_framing_report',
+                        lambda plan, chain, joints: {**real(plan, chain, joints), 'status': 'blocked'})
+    with pytest.raises(ValueError, match='final_reset_does_not_frame_task'):
+        camera.materialize_camera_start_from_plan(**plan_inputs())

@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 import hashlib
+import itertools
 import math
 from pathlib import Path
 from typing import Any
@@ -597,6 +598,32 @@ def materialize_camera_start_from_plan(*, plan, source_binding, native_reference
                     choices.append((score, fourth, fifth, sixth, candidate))
         if choices:
             return min(choices, key=lambda item: item[:4])[4]
+    # No turn of the planned reset frames the task from this base. DROID's own reset is the start its
+    # policies learned from; take the smallest elbow or wrist turn of it that frames the task. On the
+    # 2026-10-26 dishwasher with the base raised 0.54 m, the planned reset held the handle 11 cm from
+    # the wrist camera and +0.2 rad at the elbow of DROID's reset framed it.
+    from .droid_policy_canary_embodiment import DROID_NATIVE_RESET_JOINTS_RAD
+
+    native = {f'panda_joint{i}': float(DROID_NATIVE_RESET_JOINTS_RAD[f'panda_joint{i}']) for i in range(1, 8)}
+    turns = sorted(itertools.product((0.0, 0.2, -0.2, 0.4, -0.4), (0.0, 0.25, -0.25, 0.5, -0.5),
+                                     (0.0, 0.2, -0.2, 0.4, 0.6)),
+                   key=lambda turn: (sum(abs(delta) for delta in turn), turn))
+    for fourth, fifth, sixth in turns:
+        candidate = deepcopy(value)
+        candidate['joint_reset_positions_rad'] = dict(native)
+        for joint, delta in (('panda_joint4', fourth), ('panda_joint5', fifth), ('panda_joint6', sixth)):
+            candidate['joint_reset_positions_rad'][joint] += delta
+        candidate['reset_adjustment'] = {
+            'from': 'droid_native_reset',
+            'joints': {'panda_joint4': fourth, 'panda_joint5': fifth, 'panda_joint6': sixth},
+            'reason': 'planned_reset_cannot_frame_task', 'native_validated': False}
+        try:
+            return checked(candidate)
+        except ValueError as exc:
+            if str(exc) not in {'policy_camera_final_reset_does_not_frame_task',
+                                'policy_camera_start_joint_margin_invalid',
+                                'policy_camera_fixture_reset_intersects_obstacle'}:
+                raise
     raise ValueError('policy_camera_final_reset_does_not_frame_task')
 
 
