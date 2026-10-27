@@ -685,6 +685,23 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
     or ambiguous retained observation is a preparation refusal, never a reason
     to purchase another clip implicitly.
     """
+    complete = select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
+        task_masks=task_masks, output_root=output_root, view_plan_root=view_plan_root)
+    completed_path = output_root.resolve() / canonical_digest(task_masks["binding"])[7:23] / "task_masks.json"
+    if completed_path.is_file() and json.loads(completed_path.read_text()) != complete:
+        raise ValueError("website_retained_static_masks_manifest_changed")
+    write_json(completed_path, complete)
+    return complete
+
+
+def select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
+                                      task_masks: Mapping[str, Any], output_root: Path,
+                                      view_plan_root: Path) -> dict[str, Any]:
+    """``complete_retained_static_task_masks`` without writing: every check, nothing kept.
+
+    Reads only the retained clean-plate evidence under ``output_root`` and
+    ``view_plan_root``; raises the same refusals.
+    """
     deferred = task_masks.get("deferred_target_ids")
     targets = tracked_task_targets(plan)
     if (task_masks.get("status") != "object_removal_ready" or not isinstance(deferred, list) or not deferred
@@ -826,11 +843,54 @@ def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
                                    "retained_video_receipt_digest": input_digest}}
     complete.pop("deferred_target_ids")
     complete["digest"] = canonical_digest(complete, digest_field="digest")
-    completed_path = root / "task_masks.json"
-    if completed_path.is_file() and json.loads(completed_path.read_text()) != complete:
-        raise ValueError("website_retained_static_masks_manifest_changed")
-    write_json(completed_path, complete)
     return complete
+
+
+#: The task targets a surface-height prior may measure.
+SURFACE_TARGET_ROLES = ("support", "destination")
+
+
+def retained_task_surfaces(*, pipeline_root: Path, source_video_digest: str | None) -> dict[str, Any]:
+    """The task's support and destination tracks from the capture's retained clean plate, read only.
+
+    The clean plate's first, paid SAM response already tracked the kept static
+    targets; ``select_retained_static_task_masks`` selects them with every check
+    and no provider call or write. ``selected`` carries each target's upright
+    ``source_track`` and the decoded-frame registry. Anything missing, changed,
+    ambiguous or from another video is ``unavailable`` with the reason, never an
+    error: such a capture casts no surface vote.
+    """
+    from .clean_plate_stage import CLEAN_PLATE_DIRNAME, REMOVAL_PLAN_FILENAME, STAGE_MANIFEST_FILENAME
+
+    root = pipeline_root / CLEAN_PLATE_DIRNAME
+    try:
+        stage = json.loads((root / STAGE_MANIFEST_FILENAME).read_text())
+        plan = json.loads((root / REMOVAL_PLAN_FILENAME).read_text())
+    except (OSError, ValueError):
+        return {"status": "unavailable", "reason": "clean_plate_task_masks_unavailable"}
+    task_masks, source_geometry = stage.get("task_masks"), stage.get("source_frames")
+    if not isinstance(task_masks, Mapping) or not isinstance(source_geometry, Mapping):
+        return {"status": "unavailable", "reason": "clean_plate_task_masks_unavailable"}
+    if not source_video_digest or task_masks.get("source_video_digest") != source_video_digest:
+        return {"status": "unavailable", "reason": "clean_plate_source_video_differs"}
+    try:
+        if task_masks.get("deferred_target_ids"):
+            task_masks = select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
+                task_masks=task_masks, output_root=root / "task_masks", view_plan_root=root / "mask_view_plan")
+        elif (task_masks.get("status") != "completed"
+              or task_masks.get("digest") != canonical_digest(task_masks, digest_field="digest")):
+            raise ValueError("website_retained_static_masks_binding_invalid")
+    except OSError:
+        # A retained clip, binding or response that is gone or unreadable casts no vote; it never
+        # stops a source pose that can still scale from its references or the camera height.
+        return {"status": "unavailable", "reason": "clean_plate_retained_static_evidence_unreadable"}
+    except (KeyError, TypeError, ValueError) as exc:
+        return {"status": "unavailable", "reason": str(exc)}
+    targets = [row for row in task_masks.get("targets", [])
+               if row.get("target_role") in SURFACE_TARGET_ROLES and isinstance(row.get("source_track"), Mapping)]
+    return {"status": "selected", "task_masks_digest": task_masks["digest"],
+            "source_video_digest": source_video_digest, "targets": targets,
+            "source_frame_registry": task_masks.get("source_frame_registry") or []}
 
 
 def _same_frame_sample(task_masks: Mapping[str, Any], source_geometry: Mapping[str, Any]) -> bool:

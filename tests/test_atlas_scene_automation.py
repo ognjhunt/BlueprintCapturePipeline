@@ -492,7 +492,10 @@ def test_a_desk_alone_scales_the_scene_from_its_standard_height(tmp_path):
     assert desk["label"] == DESK and desk["target_role"] == "support" and desk["source"]
     assert desk["span_provider_units"] == pytest.approx(0.8, abs=1e-3)
     assert desk["observed_frame_ids"] == ["floor0"] and desk["agrees_with_consensus"] is True
-    assert "surfaces_digest" in result["binding"] and "camera" not in result["height_priors"]
+    assert "camera" not in result["height_priors"]
+    # Surfaces are no part of the binding: the result is read back without them.
+    assert "surfaces_digest" not in result["binding"]
+    assert walked(tmp_path, frames, camera_height=False) == result
 
 
 def test_the_camera_height_and_a_desk_agree_or_disagree(tmp_path):

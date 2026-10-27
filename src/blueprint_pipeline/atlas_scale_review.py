@@ -45,7 +45,8 @@ def revised_plan(*, automation: dict, proposal: dict, frame_ids: set[str], refer
 
 
 def measure_review(*, frames: list[dict], pose_digest: str, automation: dict, proposal: dict,
-                   reference_sources: list, reference_masks: list, output_root: Path) -> tuple[dict, Path]:
+                   reference_sources: list, reference_masks: list, output_root: Path,
+                   surfaces=(), surface_source: dict | None = None) -> tuple[dict, Path]:
     """CPU replay shared by the production planner and a retained Codex review.
 
 The caller supplies real mask observations, never an assumed full-image mask.
@@ -61,13 +62,14 @@ This function neither invokes a model nor fabricates a provider receipt.
     path = output_root / (identity[7:] + ".json")
     output_root.mkdir(parents=True, exist_ok=True)
     result = estimate_sizes(frames=frames, automation=plan, pose_digest=pose_digest,
-                            output=path, reference_masks=reference_masks, camera_height=True)
+                            output=path, reference_masks=reference_masks, camera_height=True,
+                            surfaces=surfaces, surface_source=surface_source)
     return result, path
 
 
 def repair_source_scale(*, pose_root: Path, pose: dict, inputs: dict, automation: dict,
                         previous: dict, task_context: dict, configuration: dict, check,
-                        planner_runner) -> tuple[dict, Path]:
+                        planner_runner, surfaces=(), surface_source: dict | None = None) -> tuple[dict, Path]:
     from .atlas_context_fov import full_view_sources
     from .atlas_reference_masks import segment_scale_references
     from .atlas_scene_measurements import load_views
@@ -103,4 +105,4 @@ def repair_source_scale(*, pose_root: Path, pose: dict, inputs: dict, automation
         source_digest=source_digest, checkpoint=check)
     return measure_review(frames=frames, pose_digest=pose["digest"], automation=automation,
         proposal=proposal, reference_sources=receipt.get("reference_sources", []),
-        reference_masks=masks, output_root=root / "measurements")
+        reference_masks=masks, output_root=root / "measurements", surfaces=surfaces, surface_source=surface_source)
