@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from copy import deepcopy
 from pathlib import Path
 
@@ -262,6 +263,50 @@ def test_canary_delivery_seals_downloads_and_terminal_closure(tmp_path: Path) ->
     )
     assert path.name == "policy_canary_full_report.json"
     assert record["sha256"] == report["digest"]
+
+
+def test_external_closure_custody_preserves_public_delivery_identity(tmp_path: Path) -> None:
+    first = tmp_path / 'first'
+    evidence = first / 'evidence'
+    evidence.mkdir(parents=True)
+    result = _result(evidence)
+    closure = {
+        'billing': _closure(first / 'billing.json', flag='official_billing_sealed'),
+        'teardown': _closure(first / 'teardown.json', flag='teardown_completed'),
+        'provider_zero': _closure(first / 'provider-zero.json', flag='provider_zero_verified'),
+    }
+    originals = {str(p): p.read_bytes() for p in first.rglob('*') if p.is_file()}
+    expected = materialize_policy_canary_result_delivery(
+        run_root=first, run_id='scene-839873-canary-1', result_status='completed_unqualified',
+        session_result=result, evidence_root=evidence, closure_records=closure)
+    second = tmp_path / 'second'
+    shutil.copytree(evidence, second / 'evidence')
+    actual = materialize_policy_canary_result_delivery(
+        run_root=second, run_id='scene-839873-canary-1', result_status='completed_unqualified',
+        session_result=result, evidence_root=second / 'evidence', closure_records=closure)
+    assert actual == expected  # Custody must not change scores, public IDs or digests.
+    registry = json.loads((second / 'artifacts/result_delivery/artifact_registry.json').read_text())
+    for artifact in registry['artifacts']:
+        path, record = resolve_task_evaluation_result_artifact(
+            run_root=second, run_id=actual['run_id'], artifact_id=artifact['artifact_id'])
+        assert path.is_relative_to(second)
+        assert _sha(path) == record['sha256']
+    assert all(Path(path).read_bytes() == body for path, body in originals.items())
+    assert materialize_policy_canary_result_delivery(
+        run_root=second, run_id=actual['run_id'], result_status='completed_unqualified',
+        session_result=result, evidence_root=second / 'evidence', closure_records=closure) == actual
+
+
+def test_delivery_refuses_uncontained_evidence_before_sealing_registry(tmp_path: Path) -> None:
+    evidence = tmp_path / 'external'
+    evidence.mkdir()
+    result = _result(evidence)
+    root = tmp_path / 'run'
+    with pytest.raises(TaskEvaluationResultDeliveryError, match='policy_canary_artifact_outside_run:'):
+        materialize_policy_canary_result_delivery(
+            run_root=root, run_id='scene-839873-canary-1', result_status='completed_unqualified',
+            session_result=result, evidence_root=evidence, closure_records={})
+    assert not (root / 'artifacts/result_delivery/artifact_registry.json').exists()
 
 
 def test_canary_delivery_projects_non_authoritative_episode_interpretation(
@@ -633,7 +678,18 @@ def _streamed_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, video_byt
     return result, (download_root, source), (stream_root, streamed)
 
 
+def _delivery_evidence(run_root: Path, evidence: Path) -> Path:
+    # Compare the same fixture bytes within each delivery's custody boundary.
+    if evidence.is_relative_to(run_root):
+        return evidence
+    retained = run_root / 'fixture_evidence'
+    if not retained.exists():
+        shutil.copytree(evidence, retained)
+    return retained
+
+
 def _deliver(run_root: Path, evidence: Path, result: dict) -> dict:
+    evidence = _delivery_evidence(run_root, evidence)
     return materialize_policy_canary_result_delivery(
         run_root=run_root, run_id="scene-839873-canary-1", result_status="completed_unqualified",
         session_result=result, evidence_root=evidence, closure_records=_closures(run_root))
@@ -813,6 +869,7 @@ def _mixed_result(evidence: Path) -> dict:
 
 
 def _deliver_blocked(run_root: Path, evidence: Path, result: dict) -> dict:
+    evidence = _delivery_evidence(run_root, evidence)
     return materialize_policy_canary_result_delivery(
         run_root=run_root, run_id="scene-839873-canary-1", result_status="blocked",
         session_result=result, evidence_root=evidence, closure_records=_closures(run_root))

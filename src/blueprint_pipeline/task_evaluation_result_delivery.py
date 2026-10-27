@@ -918,6 +918,8 @@ def materialize_policy_canary_result_delivery(
 
     def add_artifact(*, role: str, path: Path, artifact_root: Path) -> dict[str, Any]:
         resolved = path.resolve()
+        if not artifact_root.resolve().is_relative_to(root):
+            raise TaskEvaluationResultDeliveryError(f"policy_canary_artifact_outside_run:{role}")
         try:
             relative = resolved.relative_to(artifact_root.resolve()).as_posix()
         except ValueError as exc:
@@ -1031,7 +1033,11 @@ def materialize_policy_canary_result_delivery(
             or path.stat().st_size != record.get("size_bytes")
         ):
             raise TaskEvaluationResultDeliveryError(f"policy_canary_{role}_receipt_invalid")
-        descriptor = add_artifact(role=f"closure_{role}", path=path, artifact_root=path.parent)
+        retained = delivery_root / "closure_receipts" / role / path.name
+        _write_immutable(retained, path.read_bytes())
+        if _sha256(retained) != record.get("sha256") or retained.stat().st_size != record.get("size_bytes"):
+            raise TaskEvaluationResultDeliveryError(f"policy_canary_{role}_receipt_invalid")
+        descriptor = add_artifact(role=f"closure_{role}", path=retained, artifact_root=retained.parent)
         if role == "provider_zero":
             descriptor["provider_zero_verified"] = True
         closure[role] = descriptor
