@@ -16,7 +16,8 @@ as ``atlas_depth_splat`` reads it.
 Atlas depth is in unscaled world units, and every consumer of source geometry
 reads metres. A result built without a scale is kept for comparison only and
 ``load_atlas_source_geometry`` refuses it; a scale names its basis and the
-evidence it came from, and never proves a metric measurement. Nothing here
+evidence it came from (with that evidence's range and agreement basis, when it
+gave them), and never proves a metric measurement. Nothing here
 calls a provider, qualifies a scene, or routes a capture to Atlas.
 """
 
@@ -52,18 +53,35 @@ _FRAME_FILES = (("source_image_path", "source_image_digest"), ("image_path", "im
 _AXES = {"rub": np.diag([1.0, -1.0, -1.0]), "rdf": np.eye(3)}
 
 
+_SCALE_FIELDS = frozenset({"meters_per_unit", "basis", "evidence_digest", "evidence_reference"})
+#: How the evidence judged the scale, copied from it: the geometry depends only on metres per unit.
+_SCALE_PROVENANCE = frozenset({"meters_per_unit_range", "agreement_basis"})
+
+
+def _within_range(span: Any, value: float) -> bool:
+    return (isinstance(span, (list, tuple)) and len(span) == 2
+            and all(not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v) for v in span)
+            and 0 < span[0] <= value <= span[1])
+
+
 def _scale_record(scale: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if scale is None:
         return None
     value = scale.get("meters_per_unit") if isinstance(scale, Mapping) else None
-    if (not isinstance(scale, Mapping) or set(scale) != {"meters_per_unit", "basis", "evidence_digest",
-                                                          "evidence_reference"}
+    if (not isinstance(scale, Mapping) or not _SCALE_FIELDS <= set(scale)
+            or not set(scale) <= _SCALE_FIELDS | _SCALE_PROVENANCE
             or isinstance(value, bool) or not isinstance(value, (int, float))
             or not math.isfinite(value) or value <= 0 or scale["basis"] not in SCALE_BASES
             or not isinstance(scale["evidence_digest"], str) or not _SHA.fullmatch(scale["evidence_digest"])
-            or not isinstance(scale["evidence_reference"], str) or not scale["evidence_reference"].strip()):
+            or not isinstance(scale["evidence_reference"], str) or not scale["evidence_reference"].strip()
+            or ("meters_per_unit_range" in scale and not _within_range(scale["meters_per_unit_range"], value))
+            or ("agreement_basis" in scale and not (isinstance(scale["agreement_basis"], str)
+                                                    and scale["agreement_basis"].strip()))):
         raise ValueError("atlas_source_geometry_scale_invalid")
-    return {**scale, "meters_per_unit": float(value)}
+    record = {**scale, "meters_per_unit": float(value)}
+    if "meters_per_unit_range" in record:
+        record["meters_per_unit_range"] = [float(v) for v in record["meters_per_unit_range"]]
+    return record
 
 
 def crop_map(width: int, height: int, grid: tuple[int, int]) -> dict[str, Any]:
@@ -327,7 +345,10 @@ def atlas_posed_view_geometry(*, pose_root: Path, rotation: float, scale: Mappin
     manifest_path = output_root / "source_geometry.json"
     if manifest_path.is_file():
         previous = json.loads(manifest_path.read_text())
-        if previous.get("binding") == binding:
+        # A geometry made before its scale record carried the range and agreement
+        # basis is the same geometry; keeping it keeps every receipt bound to its digest.
+        if previous.get("binding") in (binding, {**binding, "scale": {
+                key: value for key, value in record.items() if key not in _SCALE_PROVENANCE}}):
             return _rebound(previous, manifest_path)
     bound = _bound_frames(geometry_inputs, worker, geometry=False)
     frames = _geometry_frames(views=bound, pose=pose, pose_root=pose_root, output_root=output_root,
