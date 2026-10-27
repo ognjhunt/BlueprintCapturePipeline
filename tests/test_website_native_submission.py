@@ -131,7 +131,10 @@ def test_captured_container_preserves_inside_bounds_through_the_native_submissio
     template = json.loads((root / "configuration/task.json").read_text())
     target = template["surface_target"]
     assert target["placement_relation"] == "inside"
-    assert target == request["task"]["surface_target"]
+    from blueprint_pipeline.task_evaluation_surface_target import surface_target_for_web
+    assert surface_target_for_web(target) == request["task"]["surface_target"]
+    assert target["target_digest"] == canonical_digest(target, digest_field="target_digest")
+    assert json.loads((root / "configuration/success.json").read_text())["surface_target"] == target
     assert template["destination_support_plane"]["source_face_indices"]
     schemas = Path(__file__).parents[1] / "docs/schemas"
     for name in ("task_evaluation_launch_preparation_request.v1", "task_evaluation_configured_scene_revision.v1",

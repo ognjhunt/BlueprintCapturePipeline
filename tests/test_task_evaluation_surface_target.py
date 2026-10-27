@@ -286,7 +286,11 @@ def test_production_submission_supports_different_object_geometry_without_destin
     template = json.loads((root / "configuration/task_template.v1.json").read_text())
     recipe = json.loads((root / "configuration/scene_construction_recipe.v1.json").read_text())
     assert "destination" not in request["task"] and "supplemental_destination" not in recipe
-    assert request["task"]["surface_target"] == template["surface_target"]
+    assert request["task"]["surface_target"] == surface_target_for_web(template["surface_target"])
+    native_target = template["surface_target"]
+    assert native_target["target_digest"] == canonical_digest(native_target, digest_field="target_digest")
+    success = json.loads((root / "configuration/task_success_criteria.v1.json").read_text())
+    assert success["surface_target"] == native_target
     assert template["interaction_affordance"]["approach_unit_scoring_frame"] == [0, 0, 1]
     assert template["interaction_affordance"]["jaw_unit_scoring_frame"][2] == 0
     assert not (root / "destination").exists()

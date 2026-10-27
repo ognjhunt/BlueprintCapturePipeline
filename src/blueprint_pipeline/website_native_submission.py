@@ -168,7 +168,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         bounds_min=support["aabb_min_xyz"], bounds_max=support["aabb_max_xyz"])
     support_record.update(authority="authored_development_surface" if development else "registered_estimated_capture_and_reconstruction",
                           physical_scale_measured=False, source_face_indices=preparation["support"]["face_indices"])
-    from .task_evaluation_surface_target import derive_surface_target, surface_execution_limits
+    from .task_evaluation_surface_target import derive_surface_target, surface_execution_limits, surface_target_for_web
     strategy = owner_task["strategy"]
     articulated = strategy == "articulated_open_close"
     target_support, start_support = support_record, None
@@ -318,7 +318,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         "construction": {"mode": "production_recipe", "recipe": recipe_ref, "output_identity": output_identity},
         "task": {"identity": task_identity, "binding_mode": "define_configuration_template",
             "kind": "articulated_manipulation" if articulated else "rigid_relocation", "strategy": strategy,
-            **({} if articulated else {"surface_target": target}),
+            **({} if articulated else {"surface_target": surface_target_for_web(target)}),
             "subject": {"mode": "construct_from_scene_object", "identity": construction["subject_identity"],
                 "representation_kind": "simready_usd", "source_object": selection_ref,
                 "rights_admission": rights_ref, "provider_disclosure_allowed": True},

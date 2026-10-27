@@ -118,9 +118,13 @@ def test_legacy_geometry_stays_legacy_and_new_preparations_choose_cad(tmp_path, 
 
 
 def test_cad_zip_is_published_and_reopened_by_real_native_input_validator(tmp_path, monkeypatch, fake_cad_kernel):
+    from copy import deepcopy
     from tests.test_website_native_submission import setup
     from blueprint_pipeline.website_native_submission import materialize_website_submission
     from blueprint_pipeline.task_evaluation_scene_configuration_submission_publication import _validated_inventory
+    from blueprint_pipeline.task_evaluation_launch_preparation_contract import validate_launch_preparation_request
+    from blueprint_pipeline.task_evaluation_surface_target import surface_target_for_web
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
     from tests.test_task_evaluation_scene_configuration_submission import SHA
     (tmp_path / "publication").mkdir()
     kwargs, _ = setup(tmp_path / "publication", monkeypatch, synthetic=True, synthetic_cad=True)
@@ -128,6 +132,17 @@ def test_cad_zip_is_published_and_reopened_by_real_native_input_validator(tmp_pa
     request = json.loads((kwargs["staging_root"] / "scene_configuration_preparation_request.v1.json").read_text())
     assert request["scene"]["website_native_inputs"]["frames"] == []
     assert request["scene"]["website_native_inputs"]["cad_evidence"]["size_bytes"] > 0
+    native = json.loads((kwargs["staging_root"] / "configuration/task.json").read_text())["surface_target"]
+    success = json.loads((kwargs["staging_root"] / "configuration/success.json").read_text())
+    assert native["target_digest"] == canonical_digest(native, digest_field="target_digest")
+    assert success["surface_target"] == native
+    assert request["task"]["surface_target"] == surface_target_for_web(native)
+    assert request["task"]["surface_target"]["target_digest"] != native["target_digest"]
+    assert validate_launch_preparation_request(request) == request
+    changed = deepcopy(request)
+    changed["task"]["surface_target"]["surface_position_world_m"][0] += .01
+    with pytest.raises(ValueError, match="surface_target_digest_invalid"):
+        validate_launch_preparation_request(changed)
     _validated_inventory(kwargs["staging_root"], SHA)
 
 
