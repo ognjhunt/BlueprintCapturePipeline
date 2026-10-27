@@ -147,6 +147,73 @@ def test_thresholds_are_task_inputs_and_marker_is_bound():
         validate_surface_target(changed)
 
 
+def test_explicit_full_tilt_domain_accepts_rotated_sphere_without_relaxing_settling():
+    # The same conservative 80 mm collider envelope at ninety degrees is fully
+    # contained and resting. Absolute orientation can be irrelevant to a task,
+    # but geometry/labels alone must never override its sealed fifteen degrees.
+    bounds = {"minimum": [-.04] * 3, "maximum": [.04] * 3}
+    rows = episode()
+    for row in rows:
+        row["task_object_pose_world"][2] = .86 if row["task_contact_active"] else .79
+    for row in rows[3:]:
+        row["task_object_pose_world"][3:] = [math.sqrt(.5), 0, 0, math.sqrt(.5)]
+
+    def result(target, samples):
+        return score_surface_target(target=target, bounds=bounds, samples=samples,
+                                    frequency_hz=15, minimum_lift_m=.05)
+
+    default = target_fixture(visible_label="sphere destination")
+    rejected = result(default, rows)
+    assert default["maximum_tilt_rad"] == math.radians(15)
+    assert not rejected["upright"] and not rejected["satisfied"]
+    assert all(value for key, value in rejected.items() if key not in {"upright", "satisfied"})
+    unrestricted = target_fixture(visible_label="sphere destination", success={"maximum_tilt_rad": math.pi})
+    assert unrestricted["target_digest"] != default["target_digest"]
+    assert result(unrestricted, rows)["satisfied"]
+    # An explicit tighter owner criterion remains tighter, even for a sphere.
+    assert not result(target_fixture(success={"maximum_tilt_rad": .1}), rows)["satisfied"]
+    unsupported = deepcopy(rows)
+    unsupported[-1]["support_contact_active"] = False
+    assert not result(unrestricted, unsupported)["satisfied"]
+    rolling = deepcopy(rows)
+    rolling[-1]["task_object_pose_world"][3:] = [math.sin(.8), 0, 0, math.cos(.8)]
+    assert not result(unrestricted, rolling)["stable_velocity"]
+
+
+@pytest.mark.parametrize("tilt", [0, -.1, math.pi + .000001, math.nan, math.inf])
+def test_surface_tilt_requires_a_finite_physical_angle(tilt):
+    with pytest.raises(ValueError, match="surface_target_"):
+        target_fixture(success={"maximum_tilt_rad": tilt})
+
+
+def test_surface_target_never_accepts_unverified_shape_symmetry_as_a_criterion():
+    with pytest.raises(ValueError, match="success_fields_invalid"):
+        target_fixture(success={"rotational_symmetry": "sphere"})
+    target = target_fixture()
+    target["rotational_symmetry"] = "sphere"
+    target["target_digest"] = canonical_digest(target, digest_field="target_digest")
+    with pytest.raises(ValueError, match="surface_target_invalid"):
+        validate_surface_target(target)
+
+
+def test_published_surface_schemas_preserve_the_full_tilt_domain():
+    from pathlib import Path
+    import jsonschema
+
+    root = Path(__file__).parents[1]
+    paths = [root / "src/blueprint_pipeline/_catalog_schemas/rigid_task_success_contract.v1.schema.json"]
+    paths.extend(root / "docs/schemas" / (name + ".schema.json") for name in (
+        "rigid_task_success_contract.v1", "task_evaluation_configured_scene_revision.v1",
+        "task_evaluation_launch_preparation_request.v1", "task_evaluation_retained_source_scene_preparation.v1",
+        "task_evaluation_retained_source_astra_scene_preparation.v1"))
+    target = target_fixture(success={"maximum_tilt_rad": math.pi})
+    for path in paths:
+        schema = json.loads(path.read_text())
+        validator = jsonschema.Draft202012Validator({"$ref": "#/$defs/surface_target", "$defs": schema["$defs"]})
+        assert not list(validator.iter_errors(target)), str(path)
+        assert list(validator.iter_errors({**target, "maximum_tilt_rad": math.pi + .000001})), str(path)
+
+
 def test_canonical_scorer_cannot_ignore_or_rebind_the_surface_criterion():
     from blueprint_pipeline.adp_task_scoring import (
         _compatibility_rigid_success_criteria, score_task_episode_from_spec,

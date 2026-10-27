@@ -1912,7 +1912,7 @@
         "maximum_tilt_rad": {
           "type": "number",
           "exclusiveMinimum": 0,
-          "exclusiveMaximum": 1.5707963267948966
+          "maximum": 3.141592653589793
         },
         "stable_seconds": {
           "type": "number",

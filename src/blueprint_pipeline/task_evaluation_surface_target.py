@@ -64,7 +64,7 @@ def validate_surface_target(value):
                 "maximum_linear_speed_m_s", "maximum_angular_speed_rad_s"):
         require(type(value[key]) in (int, float) and math.isfinite(value[key])
                 and value[key] > 0, "surface_target_threshold_invalid")
-    require(value["radius_m"] <= 0.5 and value["maximum_tilt_rad"] < math.pi / 2
+    require(value["radius_m"] <= 0.5 and value["maximum_tilt_rad"] <= math.pi
             and _target_digest_matches(value),
             "surface_target_digest_invalid")
     if "placement_relation" in value:
@@ -149,6 +149,9 @@ def derive_surface_target(*, destination, support, source_min, source_max, suppo
              "maximum_linear_speed_m_s": 0.02, "maximum_angular_speed_rad_s": 0.1}
     if destination["relation"] == "inside":
         value.update(placement_relation="inside", interior_bounds_world_m=destination.get("interior_bounds_world_m"))
+    # A task may admit the full tilt domain (pi) when absolute orientation is
+    # irrelevant. This remains an explicit, sealed criterion; shape alone never
+    # changes it, and the legacy fifteen-degree default stays unchanged.
     overrides = destination.get("success", {})
     require(isinstance(overrides, Mapping) and set(overrides) <= {
         "maximum_tilt_rad", "stable_seconds", "maximum_linear_speed_m_s", "maximum_angular_speed_rad_s"},
