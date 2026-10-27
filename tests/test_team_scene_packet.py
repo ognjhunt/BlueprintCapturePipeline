@@ -14,6 +14,7 @@ import pytest
 from blueprint_pipeline import task_evaluation_scene_rigid_robot_free_readiness as rigid
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.droid_exterior_cameras import ARENA_EXTERIOR_INTRINSICS
+from blueprint_pipeline.native_task_arena_runtime import camera_runtime_parameters
 from blueprint_pipeline.native_task_runtime_contract import DROID_FRANKA_RESET_JOINT_NAMES
 from blueprint_pipeline.team_candidate_quick10_registry import scene_facts
 from blueprint_pipeline.team_scene_packet import (
@@ -336,8 +337,11 @@ def test_a_right_exterior_is_compiled_in_only_where_the_scene_leaves_it_a_clear_
     cameras = {camera["role"]: camera for camera in plan["cameras"]}
     assert set(cameras) == {"external", "wrist", "overview", "exterior_right"}
     assert cameras["exterior_right"]["policy_input"] is True and cameras["overview"]["policy_input"] is False
-    # Arena's own exterior optics, the size the left exterior keeps in a DROID canary.
+    # Arena's own exterior optics, the size the left exterior keeps in a DROID canary, and every
+    # compiled camera converts to a runtime camera (a refused one would block the two-view pair too).
     assert cameras["exterior_right"]["intrinsics"] == ARENA_EXTERIOR_INTRINSICS
+    for camera in plan["cameras"]:
+        assert camera_runtime_parameters(camera, robot_id="franka_panda")["role"] == camera["role"]
     # The station and the scene's own task are the same either way; the team registry reads it the same.
     assert three["robot_station"] == compiled["robot_station"]
     assert read_team_scene_inputs(three["path"])["base_native_packet"] == record["base_native_packet"]

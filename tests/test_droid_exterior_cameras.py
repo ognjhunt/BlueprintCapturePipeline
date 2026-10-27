@@ -65,6 +65,20 @@ def test_the_first_clear_pose_is_placed_and_every_attempt_is_receipted():
     assert receipt["receipt_digest"] == canonical_digest(receipt, digest_field="receipt_digest")
 
 
+def test_the_placed_row_converts_to_the_runtime_camera_with_arenas_optics():
+    from blueprint_pipeline.native_task_arena_runtime import camera_runtime_parameters
+
+    row, _ = dec.place_exterior_right(base_pose_world=IDENTITY, aim_world=[0.6, 0.0, 0.2],
+                                      intrinsics=dec.ARENA_EXTERIOR_INTRINSICS, evaluate=lambda row: [])
+    # The runtime contract seals review_only beside policy_input; the compiled plan is covered in
+    # test_team_scene_packet.
+    parameters = camera_runtime_parameters({**row, "review_only": False}, robot_id="franka_panda")
+    assert parameters["runtime_name"] == "exterior_right_camera" and parameters["policy_input"] is True
+    assert (parameters["width"], parameters["height"]) == (1280, 720)
+    across = 2 * math.degrees(math.atan(parameters["horizontal_aperture_mm"] / 2 / parameters["focal_length_mm"]))
+    assert across == pytest.approx(2 * math.degrees(math.atan(5.376 / 2 / 2.1)), abs=0.01)  # Arena's 104 degrees
+
+
 def test_no_clear_pose_leaves_the_scene_without_a_right_exterior_and_says_why():
     row, receipt = dec.place_exterior_right(base_pose_world=IDENTITY, aim_world=[0.6, 0.0, 0.2],
                                             intrinsics=INTRINSICS,

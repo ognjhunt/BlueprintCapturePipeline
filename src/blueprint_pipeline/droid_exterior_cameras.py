@@ -31,8 +31,9 @@ ROLE = "exterior_right"
 ARENA_MOUNT_POSITION_M = (0.05, -0.57, 0.66)
 ARENA_MOUNT_ROTATION_XYZW = (0.399, -0.195, -0.393, 0.805)
 # Its optics (1280 x 720, 2.1 mm over a 5.376 x 3.024 mm aperture: 104 degrees across), the
-# same as the left exterior a DROID canary keeps, so the two exterior views share one size.
-ARENA_EXTERIOR_INTRINSICS = {"fx": 500.0, "fy": 500.0, "cx": 640.0, "cy": 360.0, "width": 1280, "height": 720}
+# same as the left exterior a DROID canary keeps, so the two exterior views share one size. The
+# principal point is the pixel-centre one the runtime's pinhole conversion accepts, (size - 1) / 2.
+ARENA_EXTERIOR_INTRINSICS = {"fx": 500.0, "fy": 500.0, "cx": 639.5, "cy": 359.5, "width": 1280, "height": 720}
 # Alternatives stay in DROID's own exterior range: beside the shoulder, a little ahead or
 # behind, at a tripod's height. Base-frame steps from Arena's mount, nearest first.
 ALTERNATIVE_STEPS_M = ((0.0, -0.10, 0.15), (0.0, 0.15, -0.15), (0.0, 0.25, -0.15))
