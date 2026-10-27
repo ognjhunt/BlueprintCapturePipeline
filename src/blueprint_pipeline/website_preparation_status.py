@@ -34,12 +34,14 @@ DELIVERY_FILE = "website_preparation_status_delivery.json"
 _UNAVAILABLE = "website_preparation_status_unavailable"
 STATUS_V1 = "website_preparation_status.v1"
 STATUS_V2 = "website_preparation_status.v2"
+STATUS_V3 = "website_preparation_status.v3"
 # The WebApp opts in per read; an absent or unknown value is answered with v1.
 VERSION_HEADER = "x-blueprint-preparation-status-version"
 _STATES_V1 = frozenset({"preparing", "awaiting_inputs", "failed_retryable", "authority_ended", "handed_off"})
 _STATES_V2 = _STATES_V1 | {"capacity_delayed", "failed_terminal"}
 _ACCEPTANCE = {"website_preparation_status_acceptance.v1": (STATUS_V1, _STATES_V1),
-               "website_preparation_status_acceptance.v2": (STATUS_V2, _STATES_V2)}
+               "website_preparation_status_acceptance.v2": (STATUS_V2, _STATES_V2),
+               "website_preparation_status_acceptance.v3": (STATUS_V3, _STATES_V2)}
 _CODES = {"preparing": "preparation_in_progress", "awaiting_inputs": "preparation_inputs_pending",
           "capacity_delayed": "preparation_capacity_delayed", "failed_retryable": "preparation_retryable_failure",
           "failed_terminal": "preparation_failed_terminal", "authority_ended": "preparation_authority_ended",
@@ -54,7 +56,9 @@ _SUPPLEMENT_CAPTURE = re.compile(r"supplement-[0-9a-f]{40}")
 def requested_status_version(value: Any) -> str:
     """The newest receipt schema this Pipeline has at or below what the reader asked for."""
     text = value.strip() if type(value) is str else ""
-    return STATUS_V2 if re.fullmatch(r"[1-9][0-9]{0,2}", text) and int(text) >= 2 else STATUS_V1
+    if re.fullmatch(r"[1-9][0-9]{0,2}", text):
+        return STATUS_V3 if int(text) >= 3 else STATUS_V2 if int(text) == 2 else STATUS_V1
+    return STATUS_V1
 
 
 class PreparationStatusUnavailable(ValueError):
@@ -135,7 +139,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
     from .website_task_context import load_current_website_task_context, validate_website_task_context
 
     try:
-        _require(schema_version in {STATUS_V1, STATUS_V2})
+        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3})
         selected = validate_selectors(dict(selectors))
         root = _root(capture_root)
         _require(root.name == selected["capture_id"] and root.parent.name == "captures"
@@ -193,18 +197,24 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                      and handoff.get("website_intake_outbox", {}).get("state") == "forward_pending")
             _require(bool(_output_commit(root, scene_id=selected["scene_id"], capture_id=selected["capture_id"])))
             state = "handed_off"
-        elif schema_version == STATUS_V2:
+        elif schema_version in {STATUS_V2, STATUS_V3}:
             state, terminal_reason = _v2_state(before)
         else:
             _require(before.get("status") in _LEDGER_STATES)
             state = _LEDGER_STATES[before["status"]]
+        outcome = None
+        if schema_version == STATUS_V3:
+            from .website_preparation_outcome import read_preparation_outcome
+            outcome = read_preparation_outcome(capture_root=root,
+                task_context_digest=selected["task_context_digest"], state=state)
         after = _read_job_ledger(root)
         _require(before == after)
         _require(read_consent_state(root)["state"] != "revoked")
         result = {"schema_version": schema_version, **selected,
                   "attempt_count": before["attempt_count"], "revision": before["revision"],
                   "state": state, "code": _CODES[state],
-                  **({"terminal_reason": terminal_reason} if schema_version == STATUS_V2 else {}),
+                  **({"terminal_reason": terminal_reason} if schema_version in {STATUS_V2, STATUS_V3} else {}),
+                  **({"outcome": outcome} if schema_version == STATUS_V3 else {}),
                   "correlation_id": cross_runtime_canonical_digest({**selected,
                       "attempt_count": before["attempt_count"], "revision": before["revision"]})}
         result["status_digest"] = cross_runtime_canonical_digest(result)
