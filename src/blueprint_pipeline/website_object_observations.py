@@ -98,7 +98,7 @@ def validate_observation_handoff(path: Path, *, configuration: Mapping[str, Any]
         raise ValueError("website_synthetic_cad_binding_invalid")
     if cad:
         verify_evidence(_checked(cad["evidence"], root=path.parent), design=configuration["synthetic_design"],
-                        expected_manifest_digest=cad["manifest_digest"])
+                        expected_manifest_digest=cad["manifest_digest"], authoring=authoring)
     return value, frames
 
 

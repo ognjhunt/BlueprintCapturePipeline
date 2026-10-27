@@ -111,7 +111,8 @@ def test_legacy_geometry_stays_legacy_and_new_preparations_choose_cad(tmp_path, 
     (tmp_path / "prepare").mkdir()
     args = synthetic_arguments(_arguments(tmp_path / "prepare"))
     preparation = compile_website_scene_preparation(**args)
-    assert preparation["authoring_inputs"]["configuration"]["synthetic_authoring"] == cad.SyntheticAuthoring().model_dump()
+    assert preparation["authoring_inputs"]["configuration"]["synthetic_authoring"] == cad.resolved_selection(
+        cad.SyntheticAuthoring().model_dump(), SYNTHETIC_BALL)
     with pytest.raises(ValueError):
         compile_website_scene_preparation(**args, synthetic_authoring_backend="arbitrary_executable")
 
@@ -173,3 +174,41 @@ def test_completed_identical_cad_is_adopted_without_compiling_again(tmp_path, fa
     with pytest.raises(ValueError, match="evidence_invalid"):
         write_candidate({**SYNTHETIC_BALL, "mass_kg": .1}, center_xyz_m=[0, 0, .0325],
                         path=tmp_path / "wrong-design.usda", authoring=selected)
+
+
+def test_new_production_physics_bounds_reach_existing_independent_review_and_stage_three(tmp_path):
+    from blueprint_pipeline.website_synthetic_subject import design_physics
+    from blueprint_pipeline.website_task_preparation import compile_website_scene_preparation
+    from tests.test_website_task_preparation import synthetic_arguments, _arguments
+    args = synthetic_arguments(_arguments(tmp_path))
+    preparation = compile_website_scene_preparation(**args)
+    config = preparation["authoring_inputs"]["configuration"]
+    design, chosen = config["synthetic_design"], config["synthetic_authoring"]
+    exact = design_physics(design, authoring=chosen)["bounds"]
+    assert exact == chosen["physics_bounds"]
+    for name, bounds in exact.items():
+        assert config["required_output"][name + "_bounds"] == bounds
+    data, proposal, result = cad.physical_review(design, chosen, "sha256:" + "a"*64)
+    assert result["accepted"] is not None and result["blockers"] == []
+    assert result["claim_ceiling"] == "development_only" and all(v is None for v in data["measured"].values())
+    for name, (lo, hi) in exact.items():
+        assert proposal["properties"][name]["interval"] == {"lower": lo, "upper": hi}
+    assert "confirmed" not in chosen
+
+
+def test_legacy_physics_remains_byte_compatible():
+    from blueprint_pipeline.website_synthetic_subject import design_physics
+    old = design_physics(SYNTHETIC_BALL)
+    explicit = design_physics(SYNTHETIC_BALL, authoring=cad.SyntheticAuthoring(backend=cad.LEGACY_BACKEND).model_dump())
+    assert json.dumps(old, sort_keys=True) == json.dumps(explicit, sort_keys=True)
+    assert old["bounds"]["static_friction"] == [.5, .8]
+    assert old["bounds"]["dynamic_friction"] == [.4, .7]
+    assert old["priors"] == {"design_basis": "synthetic_design_choice", "physical_measurement": False}
+
+
+def test_inconsistent_friction_intervals_are_refused_before_cad(tmp_path, fake_cad_kernel):
+    chosen = cad.resolved_selection(cad.SyntheticAuthoring().model_dump(), SYNTHETIC_BALL)
+    chosen["physics_bounds"]["dynamic_friction"] = [.4, .7]
+    with pytest.raises(ValueError, match="website_synthetic_cad_physics_invalid"):
+        write_candidate(SYNTHETIC_BALL, center_xyz_m=[0, 0, .0325], path=tmp_path / "invalid.usda", authoring=chosen)
+    assert not any(call[0] == "compile" for call in fake_cad_kernel)

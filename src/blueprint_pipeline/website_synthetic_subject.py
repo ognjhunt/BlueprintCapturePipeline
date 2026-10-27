@@ -37,16 +37,23 @@ SPHERE_SUBDIVISIONS = 4
 CYLINDER_SECTIONS = 48
 
 
-def design_physics(design: Mapping[str, Any]) -> dict[str, Any]:
+def design_physics(design: Mapping[str, Any], *, authoring: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The bounded simulation priors of the design, in ``screen_physics``'s shape."""
     dimensions = [float(v) for v in design["dimensions_m"]]
     mass = float(design["mass_kg"])
-    return {"basis": ORIGIN, "dimensions_m": dimensions, "envelope_volume_m3": float(np.prod(dimensions)),
+    result = {"basis": ORIGIN, "dimensions_m": dimensions, "envelope_volume_m3": float(np.prod(dimensions)),
             "bounds": {"mass_kg": [mass * (1 - MASS_RELATIVE_RANGE), mass * (1 + MASS_RELATIVE_RANGE)],
                        "static_friction": list(STATIC_FRICTION), "dynamic_friction": list(DYNAMIC_FRICTION),
                        "restitution": list(RESTITUTION)},
             "priors": {"design_basis": "synthetic_design_choice", "physical_measurement": False},
             "sensitivity": "awaiting_robot_team_selection", "measurement_escalation": None}
+    if authoring is not None:
+        from .website_synthetic_cad import CAD_BACKEND, resolved_selection
+        chosen = resolved_selection(authoring, design)
+        if chosen["backend"] == CAD_BACKEND:
+            result["bounds"] = chosen["physics_bounds"]
+            result["priors"]["physics_profile"] = chosen["physics_profile"]
+    return result
 
 
 def primitive_mesh(design: Mapping[str, Any]) -> Any:
@@ -69,9 +76,10 @@ def write_candidate(design: Mapping[str, Any], *, center_xyz_m: Sequence[float],
 
     cad = None
     if authoring is not None:
-        from .website_synthetic_cad import CAD_BACKEND, author_candidate, selection
-        if selection(authoring)["backend"] == CAD_BACKEND:
-            mesh, cad = author_candidate(design, path=path)
+        from .website_synthetic_cad import CAD_BACKEND, author_candidate, resolved_selection
+        chosen = resolved_selection(authoring, design)
+        if chosen["backend"] == CAD_BACKEND:
+            mesh, cad = author_candidate(design, path=path, authoring=chosen)
         else:
             mesh = primitive_mesh(design)
     else:

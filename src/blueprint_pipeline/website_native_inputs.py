@@ -110,7 +110,7 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
     _require(bool(cad) == expects_cad, "synthetic_cad_binding_invalid")
     if cad:
         _, cad_path = reference(PREFIX + ".cad_evidence", cad["evidence"])
-        verify_evidence(cad_path, design=third["synthetic_design"], expected_manifest_digest=cad["manifest_digest"])
+        verify_evidence(cad_path, design=third["synthetic_design"], expected_manifest_digest=cad["manifest_digest"], authoring=selected)
     else:
         _require("cad_evidence" not in request["scene"]["website_native_inputs"], "unexpected_cad_evidence")
     frame_rows = observed.get("frames", [])

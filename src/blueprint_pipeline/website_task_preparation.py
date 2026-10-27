@@ -1112,7 +1112,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     else:
         if synthetic is not None:
             from .website_synthetic_subject import design_physics
-            physics = design_physics(synthetic)
+            from .website_synthetic_cad import SyntheticAuthoring, resolved_selection
+            synthetic_authoring = resolved_selection(SyntheticAuthoring(backend=synthetic_authoring_backend).model_dump(), synthetic)
+            physics = design_physics(synthetic, authoring=synthetic_authoring)
         else:
             physics = screen_physics(dimensions_m)
         authoring_configuration = stage_three_configuration(
@@ -1154,7 +1156,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     )
     if synthetic is not None:
         from .website_synthetic_subject import AUTHORING_METHOD, ORIGIN
-        from .website_synthetic_cad import SyntheticAuthoring
         # The designed mesh is authored as supplied geometry: no generative
         # backend, so no Astra or ARTISAN spend or runtime contract.
         authoring_configuration.pop("authoring_backend", None)
@@ -1162,7 +1163,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                        source_observation_kind=ORIGIN, appearance_inputs="synthetic_primitive_design",
                                        geometry_support="synthetic_primitive_design",
                                        synthetic_design=dict(synthetic),
-                                       synthetic_authoring=SyntheticAuthoring(backend=synthetic_authoring_backend).model_dump())
+                                       synthetic_authoring=synthetic_authoring)
     if contract is not None and authoring_configuration.get("authoring_backend") == "astra_cad_blender_v1":
         # Hold what the legacy builder would refuse before anything is bought.
         from .task_object_articulated_packaging import plan_articulated_assembly
