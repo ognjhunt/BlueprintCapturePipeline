@@ -552,6 +552,40 @@ def _export_image_token_ceiling(survey, previews, layout=None):
     return ceiling
 
 
+def preflight_review_input(survey, context, extra, *, model, maximum, output_tokens,
+                           instructions, schema, preview_size=512, hosted_tool_cost_usd=0.):
+    """Price the actual unchanged previews before admission; never omit a frame.
+
+    Use the existing conservative 32px patch bound on each encoded PNG canvas,
+    including rotation and every derived preview. Keep the original 24k reserve
+    and additionally count all UTF-8 instruction/schema/label/feedback bytes.
+    """
+    from .openai_prompt_cache import worst_case_reservation_usd
+
+    minimum = worst_case_reservation_usd(model=model, input_token_ceiling=0,
+                                         max_output_tokens=output_tokens, cache_policy=None)
+    if not model.startswith('gpt-6') or minimum is None or minimum + hosted_tool_cost_usd > maximum:
+        raise ValueError('atlas_scene_planner_token_budget_exceeded')
+    payload = _input(survey, context, extra, preview_size=preview_size)
+    tokens = 24_000 + len(instructions.encode()) + len(json.dumps(schema.model_json_schema()).encode())
+    for message in payload:
+        for part in message['content']:
+            if part['type'] == 'input_text':
+                tokens += len(part['text'].encode())
+            elif part['type'] == 'input_image':
+                png = base64.b64decode(part['image_url'].partition(',')[2], validate=True)
+                with Image.open(BytesIO(png)) as image:
+                    width, height = image.size
+                tokens += 3 * math.ceil(width / 32) * math.ceil(height / 32) + 256
+    if tokens > 1_000_000:
+        raise ValueError('atlas_scene_planner_context_budget_exceeded')
+    quote = worst_case_reservation_usd(model=model, input_token_ceiling=tokens,
+                                      max_output_tokens=output_tokens, cache_policy=None)
+    if quote is None or quote + hosted_tool_cost_usd > maximum:
+        raise ValueError('atlas_scene_planner_token_budget_exceeded')
+    return payload, tokens, quote
+
+
 MAX_TRUNCATION_RETRIES = 2
 #: A proposal the SDK cannot validate, or a call whose outcome was never recorded, is settled
 #: at its known charge (or its reserved maximum) and repaired this many times, then refused.
@@ -749,7 +783,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
         # their short labels are already covered above. Do not count them twice.
         tokens += len(json.dumps({k: v for k, v in extra.items() if k != 'previews'}, sort_keys=True).encode())
     post_export = completion is not None and 'post_export_coverage' in completion
-    if tokens > 1_000_000 and not post_export:
+    if tokens > 1_000_000 and not post_export and not policy['model'].startswith('gpt-6'):
         raise ValueError("atlas_scene_planner_context_budget_exceeded")
     from .openai_prompt_cache import worst_case_reservation_usd
     # Every native view needs a complete typed decision. A fixed 8k allowance
@@ -769,8 +803,6 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
     search_calls = 0 if completion is not None or recovery is not None else 2
     search_fee = .01  # Official hosted web search: $10 / 1k calls, checked 2026-10-22.
     fit_needed = tokens > 1_000_000 or ceiling is None or ceiling + search_calls * search_fee > maximum
-    if fit_needed and not post_export:
-        raise ValueError("atlas_scene_planner_token_budget_exceeded")
     instructions = (SCALE_INSTRUCTIONS if scaling is not None else COMPLETION_INSTRUCTIONS if completion is not None else
                     INSTRUCTIONS + AUTOMATION_INSTRUCTIONS + SUBJECT_ORIGIN_INSTRUCTIONS
                     + (REFINEMENT_INSTRUCTIONS if feedback is not None else ""))
@@ -805,7 +837,18 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
     from agents import AgentOutputSchema
     AgentOutputSchema(schema)
     input_value = None
-    if fit_needed:
+    if fit_needed and not post_export:
+        price_instructions = instructions
+        if validation_repair is not None:
+            price_instructions += ("\nThe previous answer to this exact request was refused ("
+                f"{validation_repair['error_type']}: {validation_repair['error_message']}). "
+                "Return one answer that satisfies the output schema exactly.\n")
+        input_value, tokens, ceiling = preflight_review_input(survey, task_context, extra,
+            model=policy['model'], maximum=maximum, output_tokens=output_tokens,
+            instructions=price_instructions, schema=schema,
+            preview_size=1280 if scaling is not None else 768 if recovery is not None else 512,
+            hosted_tool_cost_usd=search_calls * search_fee)
+    elif fit_needed:
         extra, input_value, tokens, output_tokens, instructions = _fit_export_review(
             survey, task_context, extra, model=policy['model'], maximum=maximum,
             output_tokens=output_tokens, instructions=instructions, schema=schema,

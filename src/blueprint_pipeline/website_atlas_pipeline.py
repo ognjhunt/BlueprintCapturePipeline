@@ -392,7 +392,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         raise ValueError("atlas_runtime_source_changed")
     # Reserve room for a second review, depth views and the mesh export. These are
     # dollar allowances, not arbitrary limits on the number of source images.
-    budget = (config["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
+    # The saved configuration preserves the original authority and prices;
+    # completed purchases and held unknown calls consume today's allowance.
+    budget = (current["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
               - policy.get("mesh_export_cost_usd", 0))
     if budget < 2 * policy["pose_input_cost_usd"] + 2 * policy["rgbd_view_cost_usd"]:
         raise ValueError("atlas_runtime_budget_insufficient")
