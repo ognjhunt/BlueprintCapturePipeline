@@ -228,6 +228,29 @@ def _stale_servo_limit_restatements(root: Path) -> list[str]:
     return sorted(set(stale))
 
 
+def _rendered_external_rows(packet_root: Path, bound_runtime_inputs: Mapping[str, str | Path] | None) -> list[dict]:
+    """The distinct external cameras a bound policy session renders over its cells; empty without one."""
+    source = (bound_runtime_inputs or {}).get("policy_canary_runtime_inputs.json")
+    if source is None:
+        return []
+    from .native_task_camera_start_configuration import runtime_external_camera_row
+    from .policy_canary_scene_resolution import resolved_scene_plan
+
+    inputs = _read_mapping(Path(source), error="native_task_arena_bundle_runtime_inputs_invalid")
+    plan = _read_mapping(packet_root / "native_task_arena_scene_plan.v1.json",
+                         error="native_task_arena_bundle_packet_plan_invalid")
+    rows: dict[str, dict[str, Any]] = {}
+    for cell in inputs.get("cells") or []:
+        try:
+            row = runtime_external_camera_row(resolved_scene_plan(
+                plan, cell, task_success_contract=inputs.get("task_success_contract")))
+        except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_bundle_policy_cell_unresolved:" + str(exc)]) from exc
+        rows.setdefault(json.dumps([row["frame_from_camera_matrix"], row["intrinsics"]], sort_keys=True), row)
+    return list(rows.values())
+
+
 def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list[dict[str, Any]]]:
     raw_root = Path(packet_dir).expanduser()
     if raw_root.is_symlink():
@@ -566,8 +589,11 @@ def build_native_task_arena_bundle(
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_scene_physics_blocked:" + item for item in exc.blockers]
         ) from exc
+    # A DROID policy runtime renders Arena's external camera, not the plan's world row: measure that one.
+    rendered = _rendered_external_rows(packet_root, bound_runtime_inputs)
     try:
-        camera_report = require_scene_camera_admission(packet_root)
+        camera_report = require_scene_camera_admission(
+            packet_root, **({"rendered_external_rows": rendered} if rendered else {}))
     except SceneCameraVisibilityBlocked as exc:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_scene_camera_blocked:" + item for item in exc.blockers]
