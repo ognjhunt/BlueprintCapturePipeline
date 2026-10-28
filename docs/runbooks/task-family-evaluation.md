@@ -63,6 +63,23 @@ the preparation output does not claim that a simulator ran or authorize paid
 execution. The existing package/status readers retain this route across
 restarts.
 
+Preparation also retains a source-bound authoring requirement generation under
+`family_authoring/<request-digest>/requirements.json`. It separates owner task
+facts, missing source measurements and runtime integration requirements, and
+provides one plain-language next fact request. Source-bound operation order,
+frame identities, target identities and already supplied contracts survive
+restart. Changed inputs create a new immutable generation. Prose success
+definitions remain prose; this precursor does not invent numeric pass marks or
+renew authority.
+
+This is an authoring precursor, not a native-input producer. Its
+`precursor_only=true` and `native_inputs_authored=false` fields are explicit;
+the accepted job remains `needs_input` until the existing materializer validates
+real inputs. A supplied internal contract is retained without asserting a new
+owner confirmation. A bounded family producer, actual engine driver, matching
+policy and observed native execution are still required to close AUT-12/AUT-13.
+No new engine or candidate configuration is enabled by this artifact.
+
 `execute_prepared_task_family` consumes the retained preparation and transfers
 runtime ownership to execution: every preflight refusal closes the runtime,
 and the episode executor closes it once after execution.

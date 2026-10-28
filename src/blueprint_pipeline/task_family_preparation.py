@@ -126,6 +126,10 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         if stages else {family: {"criteria": list(FAMILY_CRITERIA.get(family, ())),
             "native_observables": list(FAMILY_OBSERVABLES.get(family, ())),
             **({"ordered_stages_required": True} if family == "multi_step" else {})}})
+    from .task_family_authoring import retain_family_authoring_requirements
+    authoring = retain_family_authoring_requirements(family=family, task_context=task_context,
+        task_masks=task_masks, source_geometry=source_geometry, source_bindings=source_bindings,
+        output_root=output_root, task_semantics=task_semantics, contract=contract, native=native)
     value = {
         "schema_version": "website_scene_preparation.v1",
         "status": "needs_input" if blockers else "intake_ready" if request else "task_evaluation_ready",
@@ -144,6 +148,7 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
             "asset_sources": inputs.get("asset_sources", {}),
             "runtime_source": inputs.get("runtime_source"),
             "requirements": requirements,
+            "authoring": authoring,
             "source_targets": [dict(row) for row in task_masks.get("targets", ())],
             "source_scene": {key: base_scene.get(key) for key in ("splat_path", "splat_digest", "collision_mesh_path",
                 "collision_mesh_digest", "up_axis", "meters_per_unit")},
