@@ -17,6 +17,7 @@ from .decision_evidence_contracts import canonical_digest
 from .task_family_scoring import canonical_task_family, validate_task_family_contract
 
 RUNTIME_SCHEMA = "task_family_native_runtime_contract.v1"
+POLYGON_VALIDATION_VERSION = "simple_convex_polygon.v2"
 
 
 _SHA = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -183,24 +184,60 @@ def _validate_measurement_geometry(kind: str, value: Any) -> None:
 
 
 def _polygon(value: Any) -> np.ndarray:
+    """Normalize a simple convex ring, retaining forward collinear vertices.
+
+    All predicates use a translated unit-extent frame and a 1e-12 relative
+    distance tolerance. This avoids absolute metre cutoffs and cancellation
+    from a scene's world-frame offset. Backtracking and nonadjacent touches
+    are non-simple even when every local turn has the same sign.
+    """
     polygon = _array(value, columns=2)
     _require(len(polygon) >= 3, "polygon_invalid")
-    signed = sum(np.cross(polygon[(i + 1) % len(polygon)] - polygon[i],
-                          polygon[(i + 2) % len(polygon)] - polygon[(i + 1) % len(polygon)])
-                 for i in range(len(polygon)))
+    extent = float(np.ptp(polygon, axis=0).max())
+    _require(math.isfinite(extent) and extent > 0, "polygon_degenerate")
+    points = (polygon - polygon[0]) / extent
+    epsilon = 1e-12
+
+    def cross(a: np.ndarray, b: np.ndarray) -> float:
+        return float(a[0] * b[1] - a[1] * b[0])
+
+    count = len(points)
+    for i, point in enumerate(points):
+        _require(all(np.linalg.norm(point - other) > epsilon for other in points[i + 1:]),
+                 "polygon_degenerate")
+    edges = np.roll(points, -1, axis=0) - points
+    for i, (a, b) in enumerate(zip(points, np.roll(points, -1, axis=0))):
+        previous = edges[(i - 1) % count]
+        _require(abs(cross(previous, edges[i])) > epsilon or float(previous @ edges[i]) >= 0,
+                 "polygon_not_simple")
+        for j in range(i + 1, count):
+            if j == i + 1 or (i == 0 and j == count - 1):
+                continue
+            c, d = points[j], points[(j + 1) % count]
+            if (np.any(np.maximum(a, b) + epsilon < np.minimum(c, d))
+                    or np.any(np.maximum(c, d) + epsilon < np.minimum(a, b))):
+                continue
+            sides = (cross(b - a, c - a), cross(b - a, d - a),
+                     cross(d - c, a - c), cross(d - c, b - c))
+            separated = any((x > epsilon and y > epsilon) or (x < -epsilon and y < -epsilon)
+                            for x, y in (sides[:2], sides[2:]))
+            _require(separated, "polygon_not_simple")
+    signed = sum(cross(a, b) for a, b in zip(points, np.roll(points, -1, axis=0)))
+    _require(abs(signed) > epsilon, "polygon_degenerate")
     if signed < 0:
-        polygon = polygon[::-1]
-    edges = np.roll(polygon, -1, axis=0) - polygon
-    _require(np.all(np.linalg.norm(edges, axis=1) > 0), "polygon_degenerate")
-    _require(all(float(np.cross(edges[i], edges[(i + 1) % len(edges)])) >= -1e-12
-                 for i in range(len(edges))), "polygon_not_convex")
-    _require(_area(polygon) > 0, "polygon_degenerate")
+        polygon, points = polygon[::-1], points[::-1]
+    for a, b in zip(points, np.roll(points, -1, axis=0)):
+        edge = b - a
+        tolerance = epsilon * float(np.linalg.norm(edge))
+        _require(all(cross(edge, vertex - a) >= -tolerance for vertex in points),
+                 "polygon_not_convex")
     return polygon
 
 
 def _area(polygon: np.ndarray) -> float:
     if len(polygon) < 3:
         return 0.0
+    polygon = polygon - polygon[0]
     return float(abs(np.dot(polygon[:, 0], np.roll(polygon[:, 1], -1))
                      - np.dot(polygon[:, 1], np.roll(polygon[:, 0], -1))) / 2)
 
