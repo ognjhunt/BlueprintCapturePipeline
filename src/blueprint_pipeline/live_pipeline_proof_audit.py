@@ -17,7 +17,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
-from .arena_package_audit import ARENA_PACKAGE_AUDIT_SCHEMA_VERSION
+from .arena_package_audit import (
+    ARENA_PACKAGE_AUDIT_SCHEMA_VERSION, JOB_ARTIFACTS, REQUIRED_ARTIFACTS,
+    _proof_field_violations,
+)
 from .live_pipeline_control_plane import (
     LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
     LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION,
@@ -263,6 +266,34 @@ def _local_package_requirements(packet: Mapping[str, Any], setup_manifest: Mappi
             reason = "package_audit_artifact_unreadable_or_invalid"
     results: Dict[str, Dict[str, Any]] = {}
     assertions = _mapping(document.get("artifact_assertions"))
+    # Capability manifests have cross-file invariants (for example clips must
+    # match the normalized attempt count). Keep the complete canonical audit's
+    # dependency snapshot valid before projecting any individual capability.
+    if reason is None:
+        try:
+            if not set(REQUIRED_ARTIFACTS).issubset(assertions) or not set(assertions).issubset({*REQUIRED_ARTIFACTS, *JOB_ARTIFACTS}):
+                reason = "package_audit_dependency_closure_incomplete"
+            else:
+                for name, value in assertions.items():
+                    dependency = package_path / name  # type: ignore[operator]
+                    expected = _mapping(value)
+                    if (expected.get("exists") is not True or expected.get("path") != name
+                            or dependency.is_symlink() or not dependency.is_file()):
+                        reason = "package_audit_dependency_missing"
+                        break
+                    if expected.get("sha256") != _file_digest(dependency) or expected.get("size_bytes") != dependency.stat().st_size:
+                        reason = "package_audit_dependency_digest_mismatch"
+                        break
+                # Optional job files are inspected by the canonical auditor even
+                # when require_job_artifacts=False. Recompute those read-only
+                # checks so a changed/removed closure cannot leave a stale pass.
+                if reason is None:
+                    if any((package_path / name).is_symlink() for name in JOB_ARTIFACTS):
+                        reason = "package_audit_dependency_unsafe"
+                    elif _proof_field_violations(package_path, [*REQUIRED_ARTIFACTS, *JOB_ARTIFACTS]):
+                        reason = "package_audit_dependency_proof_boundary_changed"
+        except (OSError, ValueError, TypeError):
+            reason = "package_audit_dependency_unreadable_or_invalid"
     for goal, names in _LOCAL_PACKAGE_REQUIREMENTS.items():
         goal_reason = reason
         checked: List[str] = []
