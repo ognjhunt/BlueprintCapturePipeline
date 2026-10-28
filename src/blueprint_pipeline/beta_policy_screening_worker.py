@@ -232,7 +232,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_launches=args.max_launches)
         after = deliver_publications(queue_root=root, include_failure_details=True)
     finally:
-        status = _worker_status(root, publication_before=before, publication_after=after, execution=execution)
+        # The preceding snapshot already observed these delivery events. Keep
+        # its timestamps instead of re-counting old ACKs/failures as fresh.
+        observed_before = {**before, "acknowledged": 0, "last_failure_category": None}
+        status = _worker_status(root, publication_before=observed_before, publication_after=after, execution=execution)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
                       "publication_after": after, "worker_status": status}, sort_keys=True))
     return 0
