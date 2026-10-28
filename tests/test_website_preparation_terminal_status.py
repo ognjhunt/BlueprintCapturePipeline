@@ -161,7 +161,7 @@ def test_status_version_is_opt_in_and_capped_at_newest_known(header, expected):
     assert status_reader.requested_status_version(header) == expected
 
 
-# ------------------------------------------- endings proven by silence
+# ------------------------------------------- silence proves delay, never exhaustion
 
 LONG_AGO = datetime(2026, 1, 1, tzinfo=timezone.utc)  # The listener has been pulling since.
 WINDOW = timedelta(seconds=terminal.DEFAULT_SILENCE_SECONDS)
@@ -183,13 +183,13 @@ def _listening_since(source, since, *, last_tick):
                "continuous_since": since.isoformat(), "last_tick_at": last_tick.isoformat()})
 
 
-@pytest.mark.parametrize("update, reason", [
-    ({"status": "failed_retryable", "last_error": f"{BUDGET}"}, "budget_exhausted"),
-    ({"status": "retryable_blocked", "retry_blockers": [CAPACITY], "last_error": CAPACITY}, "capacity_blocked"),
-    ({"status": "failed_retryable", "last_error": "website_scene_assembly_coverage_key_missing"}, "retry_exhausted"),
-    ({"status": "retryable_blocked", "retry_blockers": ["website_reconstruction_pending"]}, "retry_exhausted"),
+@pytest.mark.parametrize("update, cause", [
+    ({"status": "failed_retryable", "last_error": f"{BUDGET}"}, "capture_budget"),
+    ({"status": "retryable_blocked", "retry_blockers": [CAPACITY], "last_error": CAPACITY}, "control_plane_capacity"),
+    ({"status": "failed_retryable", "last_error": "website_scene_assembly_coverage_key_missing"}, "queue_or_dependency_delay"),
+    ({"status": "retryable_blocked", "retry_blockers": ["website_reconstruction_pending"]}, "queue_or_dependency_delay"),
 ])
-def test_unretried_outcome_ends_through_the_sweep_with_its_reason(website_capture, monkeypatch, update, reason):
+def test_live_listener_and_backlog_emit_overdue_without_terminal_claim(website_capture, monkeypatch, update, cause):
     now = datetime.now(timezone.utc)
     _stop(website_capture, at=now - WINDOW - timedelta(minutes=5), **update)
     _listening_since(website_capture, now - WINDOW - timedelta(minutes=10), last_tick=now - timedelta(minutes=1))
@@ -197,16 +197,19 @@ def test_unretried_outcome_ends_through_the_sweep_with_its_reason(website_captur
                         lambda **_: _acceptance(website_capture, status_reader.STATUS_V2))
     assert status_reader.reconcile_preparation_wakeups(website_capture.storage_root)["delivered"] == 1
     ledger = listener._read_job_ledger(website_capture.root)
-    record = ledger[terminal.TERMINAL_FIELD]
-    assert record["reason"] == reason and record["basis"] == "no_claim_within_silence_window"
+    record = ledger[terminal.OVERDUE_FIELD]
+    assert record["reason"] == "recovery_needed" and record["basis"] == "no_claim_within_silence_window"
+    assert record["known_cause"] == cause and record["retry_exhaustion_proven"] is False
+    assert record["age_seconds"] > terminal.DEFAULT_SILENCE_SECONDS
+    assert terminal.TERMINAL_FIELD not in ledger
     assert ledger["status"] == update["status"]  # The job status itself is unchanged.
     v2 = _read(website_capture, status_reader.STATUS_V2)
-    assert v2["state"] == "failed_terminal" and v2["terminal_reason"] == reason
-    assert v2["code"] == "preparation_failed_terminal"
+    expected = "capacity_delayed" if cause == "control_plane_capacity" else status_reader._LEDGER_STATES[update["status"]]
+    assert v2["state"] == expected and v2["terminal_reason"] is None
     # A WebApp that predates v2 still reads the exact v1 meaning of the ledger.
     assert _read(website_capture)["state"] == status_reader._LEDGER_STATES[update["status"]]
     delivered = json.loads((website_capture.root / status_reader.DELIVERY_FILE).read_text())
-    assert delivered["state"] == "delivered" and delivered["acceptance"]["state"] == "failed_terminal"
+    assert delivered["state"] == "delivered" and delivered["acceptance"]["state"] == expected
 
 
 def test_a_redelivery_inside_the_window_is_not_an_ending(website_capture):
@@ -229,7 +232,7 @@ def test_a_listener_gap_restarts_the_silence_clock(website_capture):
     assert terminal.record_unretried_preparation(website_capture.root, alive_since=alive, now=now) is None
     later = now + WINDOW + timedelta(seconds=1)
     assert terminal.record_unretried_preparation(website_capture.root, alive_since=alive, now=later)
-    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_terminal"
+    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_retryable"
 
 
 def test_liveness_is_continuous_only_across_short_gaps(tmp_path):
@@ -259,9 +262,9 @@ def test_a_dead_worker_lease_ends_only_after_it_expires_and_the_window_passes(we
                                                  now=expires + WINDOW - timedelta(seconds=1)) is None
     committed = terminal.record_unretried_preparation(website_capture.root, alive_since=LONG_AGO,
                                                       now=expires + WINDOW + timedelta(seconds=1))
-    assert committed[terminal.TERMINAL_FIELD]["basis"] == "lease_expired_without_reclaim"
-    assert committed[terminal.TERMINAL_FIELD]["lease_token"] == ledger["lease_token"]
-    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_terminal"
+    assert committed[terminal.OVERDUE_FIELD]["basis"] == "lease_expired_without_reclaim"
+    assert committed[terminal.OVERDUE_FIELD]["lease_token"] == ledger["lease_token"]
+    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_retryable"
     # An expired worker cannot replace the later observation of its attempt.
     before = listener._read_job_ledger(website_capture.root)
     with pytest.raises(listener.HandoffLeaseError) as lost:
@@ -277,14 +280,16 @@ def test_final_states_are_never_ended_by_silence(website_capture, update):
     assert _end_silently(website_capture, stopped=stopped) is None
 
 
-def test_terminal_record_is_dropped_by_the_next_claim(website_capture):
+def test_overdue_record_is_superseded_by_next_claim_and_preserved_in_history(website_capture):
     stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
     _stop(website_capture, at=stopped, status="failed_retryable", last_error=BUDGET)
     assert _end_silently(website_capture, stopped=stopped)
     assert _end_silently(website_capture, stopped=stopped) is None
-    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_terminal"
+    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_retryable"
     redrive = _claim(website_capture)  # An operator re-drive starts a fresh attempt.
     assert terminal.TERMINAL_FIELD not in redrive
+    assert terminal.OVERDUE_FIELD not in redrive
+    assert any(item.get("status") == "preparation_overdue_observed" for item in redrive["attempt_history"])
     assert _read(website_capture, status_reader.STATUS_V2)["state"] == "preparing"
 
 
@@ -304,11 +309,12 @@ def test_stale_or_forged_terminal_record_is_ignored(website_capture, mutation):
     stopped = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
     _stop(website_capture, at=stopped, status="failed_retryable", last_error="x")
     committed = _end_silently(website_capture, stopped=stopped)
-    record = dict(committed[terminal.TERMINAL_FIELD])
+    record = dict(committed[terminal.OVERDUE_FIELD])
     record[mutation] = {"observed_status": "processing", "attempt_count": 99, "source_payload_sha256": "f" * 64,
                         "lease_token": "other", "reason": "provider_failed", "schema_version": "v0"}[mutation]
     write_json(website_capture.root / listener.JOB_LEDGER_FILENAME,
-               {**committed, terminal.TERMINAL_FIELD: record, "revision": committed["revision"] + 1})
+               {**committed, terminal.OVERDUE_FIELD: record, "revision": committed["revision"] + 1})
+    assert terminal.current_terminal(committed) is None
     assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_retryable"
 
 
@@ -368,7 +374,7 @@ def test_old_and_new_webapp_acceptances_both_consume_delivery(website_capture, m
     monkeypatch.setattr(context_reader, "website_webapp_request", lambda **_: _acceptance(website_capture, version))
     assert status_reader.reconcile_preparation_wakeups(website_capture.storage_root)["delivered"] == 1
     accepted = json.loads((website_capture.root / status_reader.DELIVERY_FILE).read_text())["acceptance"]
-    assert accepted["state"] == ("failed_terminal" if version == status_reader.STATUS_V2 else "failed_retryable")
+    assert accepted["state"] == "failed_retryable"
 
 
 @pytest.mark.parametrize("fault", ["v2_state_in_v1", "v1_digest_as_v2", "unknown_version"])
@@ -380,6 +386,7 @@ def test_mismatched_acceptance_version_cannot_consume_delivery(website_capture, 
     ack = _acceptance(website_capture, status_reader.STATUS_V2)
     if fault == "v2_state_in_v1":
         ack["schema_version"] = "website_preparation_status_acceptance.v1"
+        ack["state"] = "failed_terminal"
     elif fault == "v1_digest_as_v2":
         old = _acceptance(website_capture, status_reader.STATUS_V1)
         ack.update(status_digest=old["status_digest"], correlation_id=old["correlation_id"])

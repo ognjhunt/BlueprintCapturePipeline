@@ -237,18 +237,19 @@ def _job_edit_scope(output_root: Path, requested: str | None) -> str:
 
 
 def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
-                     source_digest, configuration, check, experimental, max_polls, model):
+                     source_digest, configuration, check, experimental, max_polls, model,
+                     source_survey_path=None):
     """Reconstruct an environment-preserving task from full-view observations.
 
     Selection and scale still use the production agents and validators. Missing
-    surfaces remain gaps: novel views require a later source-first gap review,
-    rather than being bought unconditionally at the photographed camera poses.
+    surfaces enter the existing source-first bounded completion/recovery seams.
+    Original observations and the first incomplete export remain retained.
     """
     from .atlas_source_pose_inputs import prepare_source_pose
     from .atlas_depth_splat import write_depth_splat, load_posed_rgbd, splats2mesh_attempt
     from .atlas_mesh_registration import register_atlas_mesh
     from .atlas_result_bundle import export_pose_bundle
-    from .paid_resource_allocator import run_sponsored_website_atlas_task
+    from .paid_resource_allocator import run_sponsored_website_atlas_task, run_sponsored_website_atlas_automation
 
     if (review.get("subject_origin") not in PRESERVED_SCENE_ORIGINS
             or not review.get("automation")
@@ -275,14 +276,45 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
              else write_depth_splat(frames=frames, result=pose, output_root=splat_root))
     blockers = ["metric_scene_registration_unproven"]
     mesh_root = None
+    completion = None
+    generated_roots, completion_paths = [], []
+    completion_stopped = False
+    admitted_completion = False
     # A scale/authority refusal may still leave useful retained observations.
     # Export those locally, but never continue purchasing after that refusal.
     if source_pose["status"] != "completed":
         blockers.append(source_pose.get("reason", "atlas_source_pose_unavailable"))
     elif "mesh_export_cost_usd" not in policy:
         blockers.append("atlas_mesh_export_price_unreviewed")
-    else:
-        spec, mesh_root = splats2mesh_attempt(splat_root, output_root / "mesh")
+    elif 'rgbd_view_cost_usd' in policy:
+        if source_survey_path is None:
+            completion_stopped = True
+            blockers.append('atlas_original_capture_survey_required')
+        else:
+            def completion_checkpoint(stage, **_details):
+                check(stage)
+            completion = run_sponsored_website_atlas_automation(preserved_capture=True,
+                pose_root=source_root, pose=pose, frames=frames, review=review,
+                root=output_root / 'preserved_completion', job_root=output_root, context=task_context,
+                configuration=load_configuration(task_context, source_digest), splat_root=splat_root,
+                source_survey_path=source_survey_path, checkpoint=completion_checkpoint,
+                experimental=experimental, max_polls=max_polls)
+            write_json(output_root / 'preserved_completion/controller_state.json', completion)
+            if completion['status'] == 'processing':
+                return completion
+            completion_stopped = completion['status'] != 'completed'
+            if completion_stopped:
+                blockers.append(completion.get('reason', 'atlas_preserved_completion_not_admitted'))
+            elif completion.get('generated_geometry_admitted'):
+                admitted_completion = True
+                splat_root, splat = Path(completion['splat_root']), completion['splat_manifest']
+                generated_roots = [Path(p) for p in completion['generated_roots']]
+                completion_paths = [Path(p) for p in completion['analysis_paths']]
+    if (source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
+            and not completion_stopped):
+        mesh_destination = (output_root / 'preserved_completion/mesh' / splat['digest'][7:23]
+                            if admitted_completion else output_root / 'mesh')
+        spec, mesh_root = splats2mesh_attempt(splat_root, mesh_destination)
         quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "splats2Mesh",
             "request_digest": canonical_digest(spec["request"]), "maximum_cost_usd": policy["mesh_export_cost_usd"],
             **{key: policy[key] for key in _REVIEW_RECORD}}
@@ -303,21 +335,36 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         raise ValueError("atlas_preserved_scene_measurement_path_invalid")
     if measurement_path.is_file():
         analysis.append(measurement_path)
+    analysis.extend(completion_paths)
+    if completion is not None:
+        analysis.append(output_root / 'preserved_completion/controller_state.json')
     bundle = export_pose_bundle(pose_root=source_root, output_root=output_root / "downloads",
-        splat_root=splat_root, mesh_root=mesh_root, analysis_paths=analysis)
+        splat_root=splat_root, mesh_root=mesh_root, analysis_paths=analysis,
+        **({'generated_roots': generated_roots} if generated_roots else {}))
+    native_completion = ((completion or {}).get('completion') or completion or {})
     result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
         "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
         "subject_origin": review["subject_origin"], "captured_scene_preserved": True,
         "object_removal_performed": False, "image_inpainting_performed": False,
-        "generated_completion_performed": False, "uncaptured_regions": review["uncaptured_regions"],
-        "geometry_authority": "captured_rgb_derived_depth_and_reconstructed_mesh_estimates",
+        "generated_completion_performed": bool(native_completion.get('generated_roots')),
+        "generated_geometry_admitted": admitted_completion, "uncaptured_regions": review["uncaptured_regions"],
+        "geometry_authority": ('captured_rgb_depth_with_bounded_generated_completion_estimates'
+                               if admitted_completion else 'captured_rgb_derived_depth_and_reconstructed_mesh_estimates'),
         "source_pose": source_pose, "download": bundle, "model": model,
-        "task_and_surrounding_scene_covered": True, "blockers": blockers,
+        "task_and_surrounding_scene_covered": not completion_stopped, "blockers": blockers,
         "splat_available": True, "splat_kind": splat["splat_kind"], "splat_manifest_digest": splat["digest"],
         "mesh_available": mesh_root is not None, "simulation_qualified": False,
         "claim_ceiling": "development_only", "physical_evidence": False,
         "scale_status": source_pose.get("scale_status", "unscaled_provider_world_units"),
         "billing_status": "provider_usage_unreported"}
+    if completion is not None:
+        result['scene_completion'] = {'status': completion['status'], 'reason': completion.get('reason'),
+            'failure_class': completion.get('failure_class'),
+            'generated_geometry_admitted': admitted_completion,
+            'remaining_unknowns': native_completion.get('remaining_unknowns', []),
+            **({'admission_digest': completion['admission']['digest'],
+                'admission_relative_path': str(Path(completion['admission_path']).relative_to(output_root))}
+               if admitted_completion else {})}
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result
@@ -457,10 +504,16 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
                           source_video_digest=source_digest)
     write_json(output_root / "atlas_scene_review.json", review)
     if review.get("subject_origin") in PRESERVED_SCENE_ORIGINS:
+        from .atlas_source_gap_evidence import combine_source_surveys
+        source_survey = combine_source_surveys(survey_paths=[
+            (Path(feedback['parent_root']) / 'survey/atlas_video_survey.json'
+             if feedback is not None else base_root / 'atlas_video_survey.json'), survey_path],
+            output=output_root / 'capture_source_survey.json')
         return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,
             policy=policy, task_context=task_context, source_digest=source_digest,
             configuration=load_configuration(task_context, source_digest), check=check,
-            experimental=experimental, max_polls=max_polls, model=receipt["model"])
+            experimental=experimental, max_polls=max_polls, model=receipt["model"],
+            source_survey_path=source_survey)
     if takes_reviewed_background(review):
         # The editor/reviewer works from source pixels. Atlas receives no RGB
         # until the complete cleaned set passes; do not buy a raw-scene pose or
