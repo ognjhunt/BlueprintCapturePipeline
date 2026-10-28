@@ -357,3 +357,31 @@ def test_repair_keeps_unprocessed_original_as_history_without_inventing_completi
     with pytest.raises(ValueError):
         validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
             capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"])
+
+
+def test_supplement_chain_cannot_stitch_different_intermediate_source_revisions():
+    from copy import deepcopy
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+    value = supplemental_observation()
+    first = value["capture_binding"]["lineage"][0]
+    original_parent = deepcopy(first["parent"])
+    intermediate_id = "supplement-" + "1" * 40
+    intermediate = deepcopy(original_parent)
+    intermediate.update(capture_id=intermediate_id,
+        raw_manifest_uri=f"gs://capture-bucket/scenes/site-req-1/captures/{intermediate_id}/raw/manifest.json")
+    first["parent"] = intermediate
+    first["supplement"].update(parent_capture_id=intermediate_id,
+        parent_manifest_uri=intermediate["raw_manifest_uri"])
+    second = {"child": deepcopy(intermediate), "parent": original_parent,
+              "supplement": {"parent_capture_id": original_parent["capture_id"],
+                "parent_bundle_digest": original_parent["raw_bundle_digest"],
+                "parent_manifest_uri": original_parent["raw_manifest_uri"], "coverage_digest": "2" * 64}}
+    value["capture_binding"]["lineage"].append(second)
+    seal_supplemental_observation(value)
+    assert validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+        capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"]) == value
+    second["child"]["manifest_generation"] = "999"
+    seal_supplemental_observation(value)
+    with pytest.raises(ValueError):
+        validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+            capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"])

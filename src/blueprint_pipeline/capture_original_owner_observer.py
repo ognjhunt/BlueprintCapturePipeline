@@ -148,6 +148,8 @@ def _validate_continuation(value: Any, *, request_id: str, scene_id: str, captur
         _refuse("capture_owner_capture_identity_invalid")
     expected, seen, previous_parent = capture_id, set(), None
     for index, row in enumerate(binding["lineage"]):
+        if expected == original:
+            _refuse("capture_owner_capture_identity_invalid")
         row = _object(row, {"child", "parent", "supplement"})
         child, parent = row["child"], row["parent"]
         link = _object(row["supplement"], {"parent_capture_id", "parent_bundle_digest", "parent_manifest_uri", "coverage_digest"})
