@@ -31,10 +31,24 @@ provider identity and bounded-backoff next action remain visible.
 
 The robot-free probe uses the same invocation/fence. Its funded counters are
 retained; a funding hold with no create proof still requires funding settlement
-or adoption before another grant. No provider-zero snapshot is used to establish
+or adoption before another grant. The exact preparation-spend request is fsynced
+before the RPC, as is its returned funding admission. A missing funding response
+retains its attempt slot and never becomes an unfunded ingest. Historical
+`create:false` readback validates the exact capture, command and allocation;
+both a reserved readback and a not-reserved snapshot remain reconciliation-only.
+A not-reserved snapshot cannot fence a delayed original RPC. Reads use bounded
+60–600-second backoff and expose the exact accounting next action. Known explicit
+WebApp transaction refusals retain exact no-reservation evidence; old invocation
+records without the durable funding-request protocol remain held if they ran.
+No provider-zero snapshot is used to establish
 a no-create proof. Recovery of genuine lost provider responses, output transfer
 and teardown still needs provider-specific evidence and acceptance observation;
 these local tests do not establish those outcomes.
+
+The default robot-free preflight preserves its dry argv even beside a retained
+paid manifest. Paid wrapper invocation requires byte-for-byte argument identity.
+Regression tests exercise the real staging/preflight/default-wrapper path and
+the real allocator with an injected WebApp commit/response-loss boundary.
 
 ## AUT-10
 
@@ -46,6 +60,12 @@ retained PID/start ticks and manifest identity, and lets canonical finally and
 watchdogs perform teardown. Observed deadlines can only shorten a session and
 are forwarded to the existing provider hard-deadline cap. Partial revoked results
 remain historical and cannot become a successful current screening result.
+Control observations use a dedicated local lock, reread absorbing stop intent
+after remote reads, and retain the minimum deadline. Durable observation
+generations keep stale successes from clearing newer service outages. The same
+lock protects bounded local create-intent admission/fsync; remote calls and
+teardown do not hold it. Deterministic two-observer races cover revoked consent,
+shortened deadlines, newer unavailability and the final intent admission gap.
 
 **Still incomplete:** the current beta task-context transport does not supply the
 team route's run-specific cancellation record or a scoped GPU per-cell control
@@ -60,7 +80,7 @@ provider's stop/teardown propagation interval.
 
 AUT-02 retained DLQ recovery and AUT-09 site-local unspent plan refresh are not
 implemented by these checkpoints. They must not be marked complete from these
-changes. Production access remains blocked by the earlier CONNECT 403 to
-paperclip.tryblueprint.io:443 until an authorized network correction is verified.
-This lane made no production calls, paid/model/GPU calls, deployment, hold release,
+changes. Root owns verification of the subsequently authorized existing Mac
+production route and coordinates all production changes; no production operation
+has been assigned to this lane. This lane made no production calls, paid/model/GPU calls, deployment, hold release,
 credential change or deletion.

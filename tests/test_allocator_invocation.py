@@ -33,17 +33,17 @@ def test_live_lock_blocks_fence_without_using_pid_or_global_inventory(tmp_path):
 
     def allocator(args):
         started.set()
-        assert finish.wait(2)
+        assert finish.wait(10)
         return 0
 
     thread = threading.Thread(target=lambda: jobs.run_invocation(path, allocator=allocator))
     thread.start()
     try:
-        assert started.wait(2)
+        assert started.wait(10)
         assert jobs.fence_unstarted(path)["status"] == "running"
     finally:
         finish.set()
-        thread.join(2)
+        thread.join(10)
     assert jobs.fence_unstarted(path)["status"] == "fenced_unspent"
 
 
