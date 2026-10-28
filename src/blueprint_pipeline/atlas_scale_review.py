@@ -33,15 +33,48 @@ def needs_scale_review(measurements: dict) -> bool:
 def revised_plan(*, automation: dict, proposal: dict, frame_ids: set[str], reference_sources: list) -> dict:
     from .atlas_scene_planner import ScaleProposal
 
-    value = ScaleProposal.model_validate(proposal).model_dump(mode="json", exclude_none=True)
+    # Operation coverage is an independent source-bound reading, never a scale
+    # reference or evidence that the preparation requirements have been met.
+    value = ScaleProposal.model_validate({key: item for key, item in proposal.items()
+        if key != "operation_coverage"}).model_dump(mode="json", exclude_none=True)
     references = value["scale_references"]
     if value["status"] != "proposed" or not references:
         raise ValueError("atlas_scale_review_abstained")
     if any(row["frame_id"] not in frame_ids or not row.get("segmentation_prompt", "").strip()
            for row in references):
         raise ValueError("atlas_scale_review_reference_invalid")
+    retained = {**value, **({"operation_coverage": proposal["operation_coverage"]}
+                           if "operation_coverage" in proposal else {})}
     return {**automation, "scale_references": references, "reference_sources": reference_sources,
-            "scale_review": {"proposal_digest": canonical_digest(value), "summary": value["summary"]}}
+            "scale_review": {"proposal_digest": canonical_digest(retained), "summary": value["summary"]}}
+
+
+def _operation_coverage_feedback(root: Path, *, request: dict | None, needed: bool) -> dict:
+    """Augment only a fresh scale call; preserve its exact input on every resume.
+
+    Any retained legacy planner record, including an uncertain submission,
+    keeps the original scale request. A separate semantic clarification may
+    later resolve routing without buying that scale review again.
+    """
+    from .decision_evidence_contracts import canonical_json
+    from .launch_immutable_input_writer import write_exclusive_private_bytes
+
+    path = root / "operation-coverage-request.json"
+    retained = path.exists() or path.is_symlink()
+    if not retained and (request is None or not needed or any((root / "planner").glob("*.json"))):
+        return {}
+    if not isinstance(request, dict):
+        raise ValueError("atlas_scale_operation_coverage_request_changed")
+    payload = (canonical_json(request) + "\n").encode()
+    if len(payload) > 65_536:
+        raise ValueError("atlas_scale_operation_coverage_request_too_large")
+    if retained:
+        if (path.is_symlink() or not path.is_file() or path.stat().st_size > 65_536
+                or path.read_bytes() != payload):
+            raise ValueError("atlas_scale_operation_coverage_request_changed")
+    else:
+        write_exclusive_private_bytes(path, payload)
+    return {"operation_coverage_request": request}
 
 
 def measure_review(*, frames: list[dict], pose_digest: str, automation: dict, proposal: dict,
@@ -69,7 +102,10 @@ This function neither invokes a model nor fabricates a provider receipt.
 
 def repair_source_scale(*, pose_root: Path, pose: dict, inputs: dict, automation: dict,
                         previous: dict, task_context: dict, configuration: dict, check,
-                        planner_runner, surfaces=(), surface_source: dict | None = None) -> tuple[dict, Path]:
+                        planner_runner, surfaces=(), surface_source: dict | None = None,
+                        operation_coverage_request: dict | None = None,
+                        operation_coverage_needed: bool = False,
+                        operation_coverage_consumer=None) -> tuple[dict, Path]:
     from .atlas_context_fov import full_view_sources
     from .atlas_reference_masks import segment_scale_references
     from .atlas_scene_measurements import load_views
@@ -94,10 +130,16 @@ def repair_source_scale(*, pose_root: Path, pose: dict, inputs: dict, automation
                 "reference_agreement": previous.get("reference_agreement"),
                 "reference_gaps": previous.get("reference_gaps", []),
                 "named_object_masks_checked": bool((previous.get("binding") or {}).get("reference_masks_digest"))}
+    feedback.update(_operation_coverage_feedback(root, request=operation_coverage_request,
+                                                 needed=operation_coverage_needed))
     check("scale_review")
     receipt = planner_runner(survey_path=survey_path, task_context=task_context,
                              configuration=configuration, output_root=root / "planner", scaling=feedback)
     proposal = receipt["proposal"]
+    if "operation_coverage" in proposal and operation_coverage_consumer is not None:
+        # A scale abstention must not discard an independently valid reading
+        # of the requested operations. The consumer retains and validates it.
+        operation_coverage_consumer(receipt)
     plan = revised_plan(automation=automation, proposal=proposal, frame_ids={f["frame_id"] for f in frames},
                         reference_sources=receipt.get("reference_sources", []))
     masks = segment_scale_references(frames=frames, references=plan["scale_references"],

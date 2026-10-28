@@ -5292,7 +5292,7 @@ def run_qualification_pipeline(
             from .website_scene_handoff import prepare_website_scene_handoff
             website_scene_preparation = prepare_website_scene_handoff(
                 descriptor=descriptor.to_dict(), clean_plate=clean_plate,
-                capture_root=capture_root, now=time.time(),
+                capture_root=capture_root, now=time.time(), allow_operation_coverage_review=True,
             )
             write_json(pipeline_dir / "provider_run_manifest.json", {
                 "schema_version": "v1", "provider_name": None, "status": "not_requested",
