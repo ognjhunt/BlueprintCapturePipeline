@@ -74,13 +74,17 @@ def test_tampered_result_or_binding_cannot_be_reused(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-def test_changed_source_requires_new_admission(tmp_path, monkeypatch):
+@pytest.mark.parametrize("changed", ["source", "prompt"])
+def test_changed_analysis_input_requires_new_admission_and_preserves_prior_receipt(tmp_path, monkeypatch, changed):
     args, calls = setup_call(tmp_path, monkeypatch)
     module.retained_gemini_call(**args)
-    args["binding"] = {"source": "video-two", "prompt": "task"}
+    prior = next(tmp_path.glob("*.json"))
+    original = prior.read_bytes()
+    args["binding"] = {**args["binding"], changed: "changed " + args["binding"][changed]}
     module.retained_gemini_call(**args)
     assert [row[0] for row in calls] == ["reserve", "invoke", "reserve", "invoke"]
     assert calls[0][1]["binding_digest"] != calls[2][1]["binding_digest"]
+    assert prior.read_bytes() == original and len(list(tmp_path.glob("*.json"))) == 2
 
 
 def test_concurrent_worker_cannot_enter_locked_request(tmp_path, monkeypatch):
