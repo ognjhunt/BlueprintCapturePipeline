@@ -116,6 +116,22 @@ def _retained_context_or_none(root: Path) -> dict[str, Any] | None:
     return None
 
 
+def _current_context(*, request_id: str, scene_id: str, capture_id: str,
+                     purpose: str | None, allow_unconfirmed_preparation: bool = False) -> dict[str, Any]:
+    from .website_task_context import load_current_website_task_context
+    arguments = {"request_id": request_id, "scene_id": scene_id, "capture_id": capture_id}
+    try:
+        return load_current_website_task_context(**arguments, **({"purpose": purpose} if purpose else {}))
+    except ValueError as exc:
+        # Before a task snapshot exists, an ordinary capture may already have
+        # an unconfirmed preparation proposal. Read that explicit scope only;
+        # transport, identity and changed-context refusals remain refusals.
+        if (not allow_unconfirmed_preparation or purpose is not None
+                or str(exc) != "website_task_context_not_confirmed"):
+            raise
+        return load_current_website_task_context(**arguments, purpose="scene_preparation")
+
+
 def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
     """Typed v2 meaning of a ledger that is not handed off."""
     from .website_preparation_terminal import capacity_only, current_terminal
@@ -136,7 +152,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
     from .consent_takedown import read_consent_state
     from .handoff_job_state import _read_job_ledger, _output_commit
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
-    from .website_task_context import load_current_website_task_context, validate_website_task_context
+    from .website_task_context import validate_website_task_context
 
     try:
         _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3})
@@ -172,12 +188,15 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         # authority; historical birth alone grants no current consent.
         _require(read_consent_state(root)["state"] != "revoked")
         raw_retained = _retained_context_or_none(root)
+        # Birth scope authenticates the original owner. Task preparation has
+        # its own scope and may remain unconfirmed under that same capture.
+        context_purpose = raw_retained.get("purpose", purpose) if raw_retained is not None else purpose
         retained = None if raw_retained is None else validate_website_task_context(raw_retained,
                          request_id=selected["request_id"], scene_id=selected["scene_id"],
-                         capture_id=selected["capture_id"], purpose=purpose)
-        current = load_current_website_task_context(request_id=selected["request_id"],
+                         capture_id=selected["capture_id"], purpose=context_purpose)
+        current = _current_context(request_id=selected["request_id"],
                         scene_id=selected["scene_id"], capture_id=selected["capture_id"],
-                        **({"purpose": purpose} if purpose else {}))
+                        purpose=context_purpose, allow_unconfirmed_preparation=raw_retained is None)
         _require(current["context_digest"] == selected["task_context_digest"]
                  and (retained is None or retained["context_digest"] == current["context_digest"]))
         # A completed job always retained its context; never hand off without it.
@@ -248,11 +267,10 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
             return  # Nothing claimed yet; the lock below re-checks before any write.
         # An attempt that failed before retaining a context is still reported,
         # bound to the site's current context (one signed read, before the lock).
-        from .website_task_context import load_current_website_task_context
         purpose = birth.get("capture_observation_purpose")
         _require(purpose in {None, "scene_preparation"})
-        context = load_current_website_task_context(request_id=birth["request_id"], scene_id=birth["scene_id"],
-            capture_id=birth["capture_id"], **({"purpose": purpose} if purpose else {}))
+        context = _current_context(request_id=birth["request_id"], scene_id=birth["scene_id"],
+            capture_id=birth["capture_id"], purpose=purpose, allow_unconfirmed_preparation=True)
     with _existing_job_ledger_lock(root) as lock_state:
         if lock_state != "ledger_present":
             return

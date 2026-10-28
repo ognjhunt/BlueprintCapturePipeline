@@ -377,7 +377,8 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                    admission_grant: PaidResourceAdmissionGrant | None = None,
                    task_context: Mapping[str, Any] | None = None,
                    video_artifact: Mapping[str, Any] | None = None,
-                   opener: Any = _open_no_redirect, source_video_digest: str | None = None) -> dict[str, Any]:
+                   opener: Any = _open_no_redirect, source_video_digest: str | None = None,
+                   require_retained_video: bool = False) -> dict[str, Any]:
     binding = request_binding(frame_registry=frame_registry, frame_artifacts=frame_artifacts, prompts=prompts,
                               video_artifact=video_artifact)
     if source_video_digest is not None:
@@ -386,6 +387,14 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
     root = output_root / digest[7:]
     pending = [i for i in range(len(prompts)) if not (root / f"response-{i}.json").is_file()]
     retained = bool(prompts) and not pending
+    if require_retained_video:
+        required = [root / name for name in ("binding.json", "tracks.json")]
+        required.extend(root / f"{prefix}-{index}.json" for prefix in ("response", "parsed-response")
+                        for index in range(len(prompts)))
+        if (video_artifact is None or not retained or root.is_symlink()
+                or any(path.is_symlink() or not path.is_file() for path in required)
+                or json.loads((root / "binding.json").read_text()) != binding):
+            raise ValueError("meta_sam_retained_video_required")
     # The original grant authorizes one dispatch of the whole prompt set. A
     # stopped worker may have retained only a prefix of its provider responses;
     # continuing that prefix needs a distinct, bounded grant for the missing
@@ -401,8 +410,9 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
         if not str(prompt.get("text", "")).strip() or len(prompt["text"]) > 200:
             raise ValueError("meta_sam_prompt_invalid")
     token = meta_api_key() if not retained else ""
-    root.mkdir(parents=True, exist_ok=True)
-    write_json(root / "binding.json", binding)
+    if not require_retained_video:
+        root.mkdir(parents=True, exist_ok=True)
+        write_json(root / "binding.json", binding)
     if video_artifact is None:
         clip = encode_clip(registry=frame_registry, artifacts=frame_artifacts, root=root)
     else:
@@ -498,6 +508,8 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 raise ValueError("meta_sam_retained_tracks_changed")
             decoded = parsed["tracks"]
         else:
+            if require_retained_video:
+                raise ValueError("meta_sam_retained_tracks_changed")
             backend: list[str] = []
             decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend)
             parsed = {"binding": parsed_binding, "tracks": decoded, "parser_runtime": backend[0]}
@@ -509,7 +521,11 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
         receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
     result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
               "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
-    write_json(root / "tracks.json", result)
+    if require_retained_video:
+        if json.loads((root / "tracks.json").read_text()) != result:
+            raise ValueError("meta_sam_retained_tracks_changed")
+    else:
+        write_json(root / "tracks.json", result)
     if video_artifact and not retained:
         try:
             request = Request("https://api.meta.ai/v1/files/" + media["file_id"], method="DELETE",

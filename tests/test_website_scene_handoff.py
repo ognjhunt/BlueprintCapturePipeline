@@ -333,6 +333,45 @@ def test_full_masks_are_required_before_they_lift_onto_atlas_geometry(tmp_path, 
     assert calls == (["masks", "bind"] if support_ready else ["masks"])
 
 
+@pytest.mark.parametrize("mode", ["default", "enabled", "missing", "outside", "symlink"])
+def test_retained_static_recovery_requires_explicit_execution_and_capture_source(tmp_path, monkeypatch, mode):
+    kwargs = inputs(tmp_path)
+    plan = tmp_path / "pipeline/plan.json"
+    write_json(plan, {"targets": [{"target_id": "support"}]})
+    video = tmp_path / "walkthrough.mov"
+    video.write_bytes(b"original source")
+    if mode == "outside":
+        video = tmp_path.parent / "outside-capture.mov"
+    elif mode == "symlink":
+        link = tmp_path / "linked.mov"
+        link.symlink_to(video)
+        video = link
+    kwargs["clean_plate"].update(source_frames={"digest": "source"}, removal_plan_path=str(plan),
+                                task_masks={"deferred_target_ids": ["support"]})
+    if mode != "missing":
+        kwargs["clean_plate"]["input_video_path"] = str(video)
+    if mode != "default":
+        kwargs["allow_static_target_recovery"] = True
+    ready = atlas_ready(tmp_path)
+    monkeypatch.setattr(ATLAS, lambda **_: ready)
+    calls = []
+
+    def resolve(**options):
+        calls.append(options)
+        if mode == "enabled":
+            assert options["task_context"] == kwargs["descriptor"]["metadata"]["site_task_context"]
+            assert options["source_video"] == video
+            assert options["recovery_geometry"] == ready["source_geometry"]
+        else:
+            assert not {"task_context", "source_video", "recovery_geometry"} & options.keys()
+        raise ValueError("checked_static_recovery_boundary")
+
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.complete_retained_static_task_masks", resolve)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert result["blockers"] == ["checked_static_recovery_boundary"]
+    assert len(calls) == 1
+
+
 def test_articulated_targets_gain_coverage_from_the_retained_video_before_compile(tmp_path, monkeypatch,
                                                                                    ready_atlas):
     kwargs = inputs(tmp_path)
