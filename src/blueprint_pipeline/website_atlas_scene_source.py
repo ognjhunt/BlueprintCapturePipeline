@@ -211,12 +211,24 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         # controller state, original observations, scale evidence or publication.
         result = retained
     preserved = result.get("subject_origin") in PRESERVED_SCENE_ORIGINS
+    completion_admission = None
     if preserved:
         if (result.get("captured_scene_preserved") is not True
                 or result.get("object_removal_performed") is not False
                 or result.get("image_inpainting_performed") is not False
-                or result.get("generated_completion_performed") is not False):
+                or type(result.get("generated_completion_performed")) is not bool):
             raise ValueError("website_atlas_preserved_scene_contract_invalid")
+        if result['generated_completion_performed']:
+            completion = result.get('scene_completion') or {}
+            if (result.get('generated_geometry_admitted') is not True
+                    or completion.get('generated_geometry_admitted') is not True):
+                return {'status': 'needs_input', 'reason': 'atlas_preserved_completion_not_admitted'}
+            admission_path = _inside(job_dir / completion.get('admission_relative_path', ''), job_dir)
+            completion_admission = _read(admission_path)
+            if completion_admission.get('digest') != completion.get('admission_digest'):
+                raise ValueError('atlas_preserved_completion_not_bound')
+        elif result.get('generated_geometry_admitted') is True:
+            raise ValueError('atlas_preserved_completion_not_bound')
         # This is the captured environment itself. Do not fabricate a removal
         # manifest or call it an object-absent background to reuse the handoff.
         background = result
@@ -295,6 +307,13 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     source = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
     if preserved and splat_manifest["pose_result_digest"] != source["digest"]:
         raise ValueError("website_atlas_preserved_scene_pose_mismatch")
+    if completion_admission is not None:
+        from .atlas_preserved_completion import validate_preserved_completion
+        validate_preserved_completion(report=completion_admission, job_root=job_dir,
+            source_pose_digest=source['digest'], source_video_digest=result['source_video_digest'],
+            task_context_digest=result['task_context_digest'], splat=splat_manifest)
+    elif preserved and splat_manifest.get('generated_content'):
+        raise ValueError('atlas_preserved_completion_not_bound')
     background_root = pose_root
     if splat_manifest["pose_result_digest"] == source["digest"]:
         background_pose = source
@@ -358,7 +377,12 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                       "provider_to_levelled": level["provider_to_levelled"], **provider},
         "operation_id": background_pose["operation"]["id"], "atlas_result_digest": result["digest"],
     }
+    if completion_admission is not None:
+        base['content_provenance'] = {'basis': 'captured_scene_with_bounded_generated_estimates',
+            'completion_admission_digest': completion_admission['digest'], 'generated_geometry_is_estimate': True}
     return {"status": "ready", "base_scene": base, "source_geometry": geometry,
             "source_pose_digest": source["digest"], "background_pose_digest": background_pose["digest"],
-            **({"subject_origin": result["subject_origin"], "scene_content": "captured_scene_preserved"} if preserved else {}),
+            **({"subject_origin": result["subject_origin"],
+                "scene_content": ('captured_scene_with_bounded_completion' if completion_admission is not None
+                                  else 'captured_scene_preserved')} if preserved else {}),
             "alignment": "anchored" if anchor else "registration_search"}

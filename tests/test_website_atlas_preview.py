@@ -212,6 +212,16 @@ def test_source_reconstruction_refusal_keeps_its_own_stage_and_reason(monkeypatc
     assert world.published == []
 
 
+def test_a_partial_source_download_does_not_hide_a_completion_geometry_stop(monkeypatch, site):
+    _enqueue(site)
+    reason = 'atlas_preserved_completion_no_exportable_geometry'
+    world = World(monkeypatch, site, [{'status': 'needs_input', 'download': {'zip_path': 'partial.zip'},
+        'scene_completion': {'status': 'needs_input', 'reason': reason}, 'digest': 'sha256:' + 'f' * 64}])
+    assert world.advance() == 'needs_input'
+    assert _job(site)['reason'] == reason and _job(site)['stage'] == 'preserved_scene_completion'
+    assert world.published == [] and world.pushed[-1]['bundle'] is None
+
+
 def test_a_withdrawal_stops_the_job_before_the_next_paid_stage_and_cleans_world_labs(monkeypatch, site):
     _enqueue(site)
 

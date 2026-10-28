@@ -54,7 +54,7 @@ _AWAITING_AUTHORITY = frozenset({
     "website_atlas_runtime_policy_required", "website_atlas_authorization_invalid", "task_brief_missing",
     "website_atlas_api_key_missing", "website_atlas_api_base_url_missing",
     "website_atlas_provider_retention_decision_required", "atlas_runtime_price_review_expired"})
-# The recording cannot give a safe, consistent scene: only a new one can.
+# Coverage concerns in the current plan do not prove that a new recording is required.
 _NEEDS_NEW_CAPTURE = frozenset({"atlas_scene_planner_abstained", "atlas_task_and_scene_coverage_gap",
                                 "atlas_insufficient_overlapping_distinct_views",
                                 "atlas_coverage_anchor_quality_insufficient"})
@@ -233,6 +233,13 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
         if result["status"] == "processing":
             return _transition(job, current, "processing", None, stage=result["stage"], transient_failures=0,
                                next_attempt_at_epoch=current)
+        completion = result.get('scene_completion') or {}
+        if completion.get('status') not in (None, 'completed'):
+            # A downloadable source reconstruction is retained evidence, not a
+            # successfully repaired scene. Do not publish it as a ready preview.
+            reason = _reason(ValueError(completion.get('reason') or 'atlas_preserved_completion_not_admitted'))
+            return _transition(job, current, 'needs_input', reason,
+                               stage='preserved_scene_completion', result_digest=result.get('digest'))
         if not result.get("download"):
             reason = (_reason(ValueError(result["reason"]))
                       if result.get("stage") == "source_pose" and result.get("reason")
