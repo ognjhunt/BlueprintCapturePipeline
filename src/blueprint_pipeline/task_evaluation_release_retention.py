@@ -55,7 +55,10 @@ from blueprint_pipeline.task_evaluation_release_reference_lock import (
 )
 from blueprint_pipeline.control_plane_release_leases import (
     DEFAULT_LEASE_ROOT,
+    DEFAULT_PROTECTION_CONFIG_FILES,
     RunStateResolver,
+    _Collection,
+    _collect_configuration,
     _unrecognized_binding_commits,
     evaluate_binding_leases,
 )
@@ -783,12 +786,15 @@ def build_release_retention_plan(
     lease_root: str | Path | None = None,
     intent_root: str | Path | None = None,
     launch_run_root: str | Path | None = None,
+    protection_config_files: Sequence[str | Path] = (),
 ) -> dict[str, Any]:
     """Return the canonical, non-mutating retention decision.
 
     ``lease_root``, ``intent_root`` and ``launch_run_root`` let a binding's
     lease lapse exactly as it does at deploy; without a lease root every
     binding is evaluated as the lease its migration would write.
+    ``protection_config_files`` are the configurations deploy-time retirement
+    reads; every managed tree they name is kept, exactly as it is at deploy.
     """
 
     if (
@@ -988,6 +994,19 @@ def build_release_retention_plan(
         or any(not reason.startswith("unrecognized_binding_kept:") for reason in reasons)
     )
     documents.extend(evidence_documents)
+    # Scene preparation can still use an older renderer after the launch queues
+    # empty. Deploy-time retirement keeps every tree its configuration names; the
+    # two-step tool keeps the same ones and, like it, refuses one it cannot read.
+    configured_files = tuple(
+        _absolute_path(path, field="protection_config_file")
+        for path in protection_config_files
+    )
+    configured = _Collection()
+    _collect_configuration(configured_files, configured)
+    if configured.blockers:
+        raise ReleaseRetentionError(sorted(configured.blockers)[0])
+    for lease in configured.leases:
+        protected.setdefault(lease["commit"], set()).add(str(lease["reason"]))
 
     unreachable_scene_references: list[dict[str, Any]] = []
     for commit in sorted(live_required_commits):
@@ -1119,6 +1138,7 @@ def build_release_retention_plan(
         "standing_authorization_dir": str(standing_root),
         "live_reference_roots": sorted(str(path) for path in live_roots),
         "evidence_binding_root": str(evidence_root),
+        "protection_config_files": [str(path) for path in configured_files],
         **{
             field: None if value is None else str(value)
             for field, value in lease_roots.items()
@@ -1616,6 +1636,7 @@ def _apply_release_retention_plan_locked(
         lease_root=plan.get("lease_root"),
         intent_root=plan.get("intent_root"),
         launch_run_root=plan.get("launch_run_root"),
+        protection_config_files=tuple(plan.get("protection_config_files") or ()),
     )
     if current.get("plan_digest") != plan.get("plan_digest"):
         raise ReleaseRetentionError("release_retention_plan_changed_since_dry_run")
@@ -1740,6 +1761,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--lease-root", default=str(DEFAULT_LEASE_ROOT))
     parser.add_argument("--intent-root", default=str(DEFAULT_INTENT_ROOT))
     parser.add_argument("--launch-run-root", default=str(DEFAULT_LAUNCH_RUN_ROOT))
+    parser.add_argument("--protection-config-file", action="append")
     parser.add_argument("--reconcile-misplaced-plan")
     parser.add_argument("--keep-commit", action="append", default=[])
     parser.add_argument(
@@ -1816,6 +1838,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 lease_root=args.lease_root,
                 intent_root=args.intent_root,
                 launch_run_root=args.launch_run_root,
+                protection_config_files=tuple(
+                    args.protection_config_file or DEFAULT_PROTECTION_CONFIG_FILES
+                ),
             )
             _assert_receipt_outside_managed_roots(
                 output_path, dict(result["managed_roots"])
