@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Mapping, Sequence
 
 from .common import read_json_any, utc_now_iso, write_json
+from .handoff_lease import handoff_effect
 
 
 OUTPUT_RUN_LEASE_SCHEMA_VERSION = "blueprint_output_run_lease.v1"
@@ -102,34 +103,35 @@ class OutputRunTransaction:
         self._lock_file = self.lock_path.open("r+b")
         fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            if self.output_dir.is_symlink():
-                raise RuntimeError("output_run_directory_symlink_forbidden")
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            if self.reset_output:
-                for child in self.output_dir.iterdir():
-                    if child.name in self.preserve_top_level:
-                        continue
-                    if child.is_dir() and not child.is_symlink():
-                        shutil.rmtree(child)
-                    else:
-                        child.unlink(missing_ok=True)
-            else:
-                self.commit_path.unlink(missing_ok=True)
-            write_json(
-                self.lease_path,
-                {
-                    "schema_version": OUTPUT_RUN_LEASE_SCHEMA_VERSION,
-                    "status": "active",
-                    "run_id": self.run_id,
-                    "lane": self.lane,
-                    "request_fingerprint": self.request_fingerprint,
-                    "acquired_at": utc_now_iso(),
-                    "output_dir_name": self.output_dir.name,
-                    "final_commit_required": True,
-                    "output_reset_before_run": self.reset_output,
-                    "preserved_top_level_names": sorted(self.preserve_top_level),
-                },
-            )
+            with handoff_effect("output_run_initialization"):
+                if self.output_dir.is_symlink():
+                    raise RuntimeError("output_run_directory_symlink_forbidden")
+                self.output_dir.mkdir(parents=True, exist_ok=True)
+                if self.reset_output:
+                    for child in self.output_dir.iterdir():
+                        if child.name in self.preserve_top_level:
+                            continue
+                        if child.is_dir() and not child.is_symlink():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink(missing_ok=True)
+                else:
+                    self.commit_path.unlink(missing_ok=True)
+                write_json(
+                    self.lease_path,
+                    {
+                        "schema_version": OUTPUT_RUN_LEASE_SCHEMA_VERSION,
+                        "status": "active",
+                        "run_id": self.run_id,
+                        "lane": self.lane,
+                        "request_fingerprint": self.request_fingerprint,
+                        "acquired_at": utc_now_iso(),
+                        "output_dir_name": self.output_dir.name,
+                        "final_commit_required": True,
+                        "output_reset_before_run": self.reset_output,
+                        "preserved_top_level_names": sorted(self.preserve_top_level),
+                    },
+                )
         except BaseException:
             fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
             self._lock_file.close()
@@ -168,16 +170,17 @@ class OutputRunTransaction:
             "atomic_file_writes_required": True,
             "exclusive_run_lease_held_through_commit": True,
         }
-        write_json(self.commit_path, commit)
-        write_json(
-            self.lease_path,
-            {
-                **self.descriptor(),
-                "status": "committed",
-                "committed_at": commit["committed_at"],
-                "inventory_sha256": inventory_sha256,
-            },
-        )
+        with handoff_effect("output_run_final_promotion"):
+            write_json(self.commit_path, commit)
+            write_json(
+                self.lease_path,
+                {
+                    **self.descriptor(),
+                    "status": "committed",
+                    "committed_at": commit["committed_at"],
+                    "inventory_sha256": inventory_sha256,
+                },
+            )
         self._committed = True
         return commit
 

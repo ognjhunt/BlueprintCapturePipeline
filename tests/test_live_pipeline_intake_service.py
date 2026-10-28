@@ -703,8 +703,12 @@ def test_live_pipeline_intake_service_error_edges(
     assert client.get("/api/live-pipeline/intake-audit", headers=headers).status_code == 500
 
 
+@pytest.mark.parametrize('constraints, expected_live', [
+    ({}, True), ({'automatic_model_inference_allowed': False}, False),
+    ({'external_processing_allowed': False}, False),
+])
 def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, constraints, expected_live
 ) -> None:
     monkeypatch.setenv(INTAKE_TOKEN_ENV, "token")
     monkeypatch.setenv(
@@ -787,6 +791,7 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     submission = {
         "schema_version": "capture_upload_transfer_submission.v1",
         "capture_session_id": "capture-upload-session-1",
+        "request": {"governance": {"provider_constraints": constraints}},
         "transfer": {
             "url": "https://download.example.test/file/capture.mp4",
             "authorization": "ephemeral-secret",
@@ -794,6 +799,7 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     }
     client = TestClient(create_app())
     supervisor_health = client.get("/health").json()["task_evaluation_supervisor"]
+    assert client.get('/api/live-pipeline/health').json()['task_evaluation_supervisor'] == supervisor_health
     assert supervisor_health["configuration_status"] == "valid"
     assert supervisor_health["live_inference_configured"] is True
     assert supervisor_health["live_operator_gate_enabled"] is True
@@ -821,8 +827,8 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     assert seen["store_root"] == (tmp_path / "capture-intakes").resolve()
     assert seen["supervisor_options"] == {
         "agent_model": "gpt-5-mini",
-        "allow_live_agents_sdk": True,
-        "agent_inference_budget_usd": 0.5,
+        "allow_live_agents_sdk": expected_live,
+        "agent_inference_budget_usd": 0.5 if expected_live else 0.0,
     }
 
 
@@ -1154,6 +1160,18 @@ def test_live_pipeline_intake_service_accepts_signed_request_and_rejects_replay(
     assert first.status_code == 503
     assert replay.status_code == 401
     assert "replayed intake signature nonce" in replay.text
+
+
+def test_capture_upload_health_accepts_host_authenticated_storage_without_b2_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(service.CAPTURE_UPLOAD_STORE_ROOT_ENV, str(tmp_path / "capture-store"))
+    monkeypatch.setenv(service.CAPTURE_MALWARE_SCANNER_ARGV_ENV, '["/usr/bin/clamdscan"]')
+    monkeypatch.delenv(service.CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV, raising=False)
+    response = TestClient(create_app()).get("/api/live-pipeline/health")
+    assert response.status_code == 200
+    assert response.json()["capture_upload_transfer_configured"] is True
+    assert response.json()["capture_upload_backblaze_hosts_configured"] is False
 
 
 def test_configured_scene_thumbnail_readback_returns_exact_private_bytes(

@@ -855,3 +855,65 @@ def test_website_preflight_uses_website_bundle_without_device_intake(tmp_path: P
     _write_json(raw / "manifest.json", manifest)
     report = build_capture_preflight_report(raw.parent)
     assert set(report["missing_required_inputs"]) == {"capture_context", "intake_packet"}
+
+
+def test_discover_raw_sidecars_measures_video_the_manifest_could_not_describe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A browser upload whose browser could not play the file records null.
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "walkthrough.mov").write_bytes(b"video")
+    calls: list[list[str]] = []
+
+    class _Probe:
+        returncode = 0
+        stdout = json.dumps({
+            "streams": [{"codec_type": "video", "width": 1920, "height": 1080, "avg_frame_rate": "30000/1001",
+                         "side_data_list": [{"rotation": -90}]}],
+            "format": {"duration": "62.5"},
+        })
+
+    def _run(command, **_kwargs):
+        calls.append(command)
+        return _Probe()
+
+    monkeypatch.setattr("blueprint_pipeline.materialization.subprocess.run", _run)
+    sidecars = m._discover_raw_sidecars(
+        raw_root=raw,
+        raw_prefix_uri="gs://bucket/scenes/sc/captures/cap/raw",
+        manifest={"capture_source": "browser_self_capture", "width": None, "height": None,
+                  "fps_source": None, "capture_start_epoch_ms": 1_757_980_800_000},
+        source="browser_self_capture",
+        source_device="browser_self_capture",
+    )
+
+    video = sidecars["media_metadata"]["video_metadata"]
+    assert video["fps_source"] == pytest.approx(29.97, abs=0.01)
+    assert (video["width"], video["height"]) == (1080.0, 1920.0)
+    assert video["value_sources"] == {"width": "ffprobe_video_file", "height": "ffprobe_video_file",
+                                      "fps_source": "ffprobe_video_file", "capture_start_epoch_ms": "raw_manifest"}
+    assert any(command[0] == "ffprobe" and "-show_format" in command for command in calls)
+
+
+def test_discover_raw_sidecars_keeps_unknown_video_values_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "walkthrough.mp4").write_bytes(b"video")
+
+    class _Rejected:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr("blueprint_pipeline.materialization.subprocess.run", lambda *a, **k: _Rejected())
+    video = m._discover_raw_sidecars(
+        raw_root=raw, raw_prefix_uri="gs://bucket/scenes/sc/captures/cap/raw",
+        manifest={"capture_source": "browser_self_capture", "width": 1280, "height": 720, "fps_source": None},
+        source="browser_self_capture", source_device="browser_self_capture",
+    )["media_metadata"]["video_metadata"]
+
+    assert video["fps_source"] == 0.0
+    assert video["value_sources"]["fps_source"] is None
+    assert video["value_sources"]["width"] == "raw_manifest"

@@ -1,0 +1,48 @@
+{
+  "budget": {
+    "committed_upper_bound_usd": "4.25",
+    "currency": "USD",
+    "limit_usd": "15",
+    "reserved_usd": "0",
+    "spent_upper_bound_usd": "4.25"
+  },
+  "campaign_id": "campaign-1",
+  "candidates": [
+    {
+      "blockers": [],
+      "candidate_id": "candidate-000",
+      "configuration_digest": "sha256:d0fe07a1db1f5ca7135355ff8d1245491268aa2a3570ee9319ffadcc891c626d",
+      "display_name": "candidate-000",
+      "episodes_failed": 1,
+      "episodes_planned": 10,
+      "episodes_scored": 3,
+      "episodes_succeeded": 2,
+      "episodes_void": 7,
+      "session_result_digest": "sha256:08572e9c55ef820909dcc4d83156464dc4a8dfbb1b1a58487fd1064d96a9827b",
+      "status": "completed",
+      "success_rate": 0.6666666666666666
+    }
+  ],
+  "catalog_digest": "sha256:062891064b414e27ee37e454392a00981eb0d44f94a2a9baafd04edadc5971a1",
+  "claim_ceiling": "simulation_estimate",
+  "execution_operator": {
+    "kind": "blueprint"
+  },
+  "generated_at": "2026-10-26T19:52:03.166721+00:00",
+  "plan_digest": "sha256:a32b68f9104e7f333ae7757ca4cfc226d104c4938874c6eb5838b68bb70a9b03",
+  "publication_digest": "sha256:65ab6b77e1ab91a04bf7655327daa13ee3c78532fcff69e2926acd9e4c16dcea",
+  "purpose": "job_evaluation",
+  "revision": 6,
+  "scenario_plan_digest": "sha256:a0edfce03c98ac3682c566654054c26aa1b2a1364cb94c2b0386adac7d50d322",
+  "schema_version": "beta_policy_screening_publication.v2",
+  "site_id": "site-job-1",
+  "source": {
+    "capture_id": "walkthrough-job-1",
+    "scene_intent_digest": "sha256:10c7b2dbb092617a6430e882d89dfc5ecc80810111c1b5c24be97dde5a4d9849",
+    "scene_intent_id": "scene-intent-1",
+    "scene_revision_digest": "sha256:1e2ba01aec123bffa0a96874811c1d37bc94728a16c5b84a4b6ba817987a4201",
+    "task_context_digest": "sha256:2684afa515ed28e1831fe715d9765d075588f9dc1825cbf7be2623af2c7932d8",
+    "task_id": "task-1"
+  },
+  "status": "completed"
+}

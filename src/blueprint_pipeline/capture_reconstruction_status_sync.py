@@ -30,6 +30,7 @@ from urllib import request as urllib_request
 
 from .decision_evidence_contracts import canonical_digest
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
+from .task_evaluation_launch_webapp_sync import PipelineSyncTokenError, load_pipeline_sync_token
 
 STATUS_SCHEMA_VERSION = "capture_reconstruction_status.v1"
 SYNC_RECEIPT_SCHEMA_VERSION = "capture_reconstruction_status_sync_receipt.v1"
@@ -196,11 +197,16 @@ def sync_terminal_status_to_webapp(
             "capture_reconstruction_status_digest_mismatch"
         )
     base = str(endpoint_url or os.getenv(WEBAPP_URL_ENV) or "").strip()
-    secret = str(token or os.getenv("PIPELINE_SYNC_TOKEN") or "").strip()
-    if not base or not secret:
+    if not base:
         raise CaptureReconstructionStatusError(
             "capture_reconstruction_webapp_sync_not_configured"
         )
+    try:
+        secret = load_pipeline_sync_token(token=token)
+    except PipelineSyncTokenError as exc:
+        raise CaptureReconstructionStatusError(
+            "capture_reconstruction_webapp_sync_not_configured:" + str(exc)
+        ) from exc
     capture_id = str(payload.get("capture_id") or "")
     url = validated_https_sync_url(
         base.rstrip("/") + "/" + capture_id + "/reconstruction"

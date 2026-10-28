@@ -6,6 +6,12 @@ import pytest
 
 from blueprint_pipeline import website_gemini_receipts as module
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.core.handoff_lease import HandoffLeaseError, bind_handoff_lease
+from blueprint_pipeline.paid_resource_admission import (
+    PAID_LANE_ADMISSION_SCHEMA_VERSION,
+    PaidResourceAdmissionBlocked,
+    require_paid_resource_admission,
+)
 
 
 def context():
@@ -20,7 +26,11 @@ def setup_call(tmp_path, monkeypatch):
     calls = []
     def reserve(**kwargs):
         calls.append(("reserve", kwargs))
-        return {"status": "admitted"}, object()
+        admission = {"schema_version": PAID_LANE_ADMISSION_SCHEMA_VERSION,
+                     "resource_class": kwargs["resource_class"], "status": "admitted",
+                     "allocation_binding_digest": kwargs["binding_digest"], "blockers": []}
+        return admission, require_paid_resource_admission(admission,
+            resource_class=kwargs["resource_class"], expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
     monkeypatch.setattr(module, "reserve_website_preparation_spend", reserve)
     def invoke():
         calls.append(("invoke", None))
@@ -51,6 +61,73 @@ def test_timeout_retains_uncertain_call_without_second_reservation(tmp_path, mon
     assert json.loads(next(tmp_path.glob("*.json")).read_text())["status"] == "submitting"
 
 
+def test_lease_lost_after_reservation_cannot_start_provider_call(tmp_path, monkeypatch):
+    args, calls = setup_call(tmp_path, monkeypatch)
+    reserve = module.reserve_website_preparation_spend
+    lost = False
+
+    def check(boundary):
+        if lost:
+            raise HandoffLeaseError("lost", boundary)
+
+    def reserve_then_lose(**kwargs):
+        nonlocal lost
+        result = reserve(**kwargs)
+        lost = True
+        return result
+
+    monkeypatch.setattr(module, "reserve_website_preparation_spend", reserve_then_lose)
+    with bind_handoff_lease(check), pytest.raises(HandoffLeaseError):
+        module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve"]
+    # Keep the existing uncertain-intent reconciliation rule; never reserve twice.
+    with pytest.raises(ValueError, match="requires_reconciliation"):
+        module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve"]
+
+
+@pytest.mark.parametrize("bad_grant", ["missing", "different_binding"])
+def test_provider_call_requires_original_bound_opaque_grant(tmp_path, monkeypatch, bad_grant):
+    args, calls = setup_call(tmp_path, monkeypatch)
+    reserve = module.reserve_website_preparation_spend
+
+    def replace_grant(**kwargs):
+        admission, grant = reserve(**kwargs)
+        if bad_grant == "missing":
+            grant = object()
+        else:
+            grant = require_paid_resource_admission({**admission, "allocation_binding_digest": "sha256:" + "0" * 64},
+                resource_class="evaluator_api", expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+        return admission, grant
+
+    monkeypatch.setattr(module, "reserve_website_preparation_spend", replace_grant)
+    with pytest.raises(PaidResourceAdmissionBlocked):
+        module.retained_gemini_call(**args)
+    assert [row[0] for row in calls] == ["reserve"]
+
+
+def test_already_started_call_can_close_its_receipt_after_lease_loss(tmp_path, monkeypatch):
+    args, calls = setup_call(tmp_path, monkeypatch)
+    invoke = args["invoke"]
+    lost = False
+
+    def check(boundary):
+        if lost:
+            raise HandoffLeaseError("lost", boundary)
+
+    def finish_started_call():
+        nonlocal lost
+        lost = True
+        return invoke()
+
+    args["invoke"] = finish_started_call
+    with bind_handoff_lease(check):
+        result = module.retained_gemini_call(**args)
+        assert module.retained_gemini_call(**args) == result
+    assert [row[0] for row in calls] == ["reserve", "invoke"]
+    assert json.loads(next(tmp_path.glob("*.json")).read_text())["status"] == "completed"
+
+
 def test_denied_cross_worker_reservation_cannot_invoke(tmp_path, monkeypatch):
     args, calls = setup_call(tmp_path, monkeypatch)
     def refuse(**kwargs):
@@ -74,13 +151,17 @@ def test_tampered_result_or_binding_cannot_be_reused(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-def test_changed_source_requires_new_admission(tmp_path, monkeypatch):
+@pytest.mark.parametrize("changed", ["source", "prompt"])
+def test_changed_analysis_input_requires_new_admission_and_preserves_prior_receipt(tmp_path, monkeypatch, changed):
     args, calls = setup_call(tmp_path, monkeypatch)
     module.retained_gemini_call(**args)
-    args["binding"] = {"source": "video-two", "prompt": "task"}
+    prior = next(tmp_path.glob("*.json"))
+    original = prior.read_bytes()
+    args["binding"] = {**args["binding"], changed: "changed " + args["binding"][changed]}
     module.retained_gemini_call(**args)
     assert [row[0] for row in calls] == ["reserve", "invoke", "reserve", "invoke"]
     assert calls[0][1]["binding_digest"] != calls[2][1]["binding_digest"]
+    assert prior.read_bytes() == original and len(list(tmp_path.glob("*.json"))) == 2
 
 
 def test_concurrent_worker_cannot_enter_locked_request(tmp_path, monkeypatch):

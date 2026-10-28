@@ -25,7 +25,21 @@ class PreviewUnavailable(ValueError):
     """No archived preview this caller may read; never says why."""
 
 
-def bundle_filename(capture_id: str) -> str:
+def capture_name_matches_request(request_id: str | None, capture_id: str) -> bool:
+    """Recognize website source names; lineage and rights are checked by callers."""
+    return bool(isinstance(request_id, str) and _ID.fullmatch(request_id)
+                and isinstance(capture_id, str)
+                and (capture_id == f"walkthrough-{request_id}"
+                     or re.fullmatch(r"supplement-[a-f0-9]{40}", capture_id)))
+
+
+def bundle_filename(capture_id: str, request_id: str | None = None) -> str:
+    if capture_id.startswith("supplement-"):
+        if not capture_name_matches_request(request_id, capture_id):
+            raise PreviewUnavailable("website_atlas_preview_unavailable")
+        # Continuation names do not embed the job. Keep archived downloads
+        # scoped to that job even after its local workspace is retired.
+        return f"{request_id}-{capture_id}.zip"
     return f"{capture_id}.zip"
 
 
@@ -52,7 +66,7 @@ def open_bundle(*, request_id: str, capture_id: str, digest: str, storage_root: 
     and unwithdrawn; after retirement only an object named for this capture and
     digest exists to read.
     """
-    if (not _ID.fullmatch(request_id) or capture_id != f"walkthrough-{request_id}"
+    if (not capture_name_matches_request(request_id, capture_id)
             or not _DIGEST.fullmatch(digest)):
         raise PreviewUnavailable("website_atlas_preview_unavailable")
     if storage_root is not None:
@@ -64,13 +78,14 @@ def open_bundle(*, request_id: str, capture_id: str, digest: str, storage_root: 
             path = roots[0] / "pipeline" / "atlas" / JOB_FILE
             job = read_job(path) if path.is_file() else None
             if (capture_withdrawn(roots[0]) or job is None or job["state"] != "ready"
+                    or job.get("request_id") != request_id or job.get("capture_id") != capture_id
                     or (job.get("archive") or {}).get("digest") != digest):
                 raise PreviewUnavailable("website_atlas_preview_unavailable")
     from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
     from .task_evaluation_configured_scene_object_store import _artifact_object_store_client, _object_missing
     if client is None or bucket is None:
         client, bucket = _artifact_object_store_client()
-    key = f"{LARGE_ARTIFACT_KEY_PREFIX}/{ARTIFACT_KIND}/sha256/{digest[7:]}/{bundle_filename(capture_id)}"
+    key = f"{LARGE_ARTIFACT_KEY_PREFIX}/{ARTIFACT_KIND}/sha256/{digest[7:]}/{bundle_filename(capture_id, request_id)}"
     try:
         head = client.head_object(Bucket=bucket, Key=key)
     except Exception as error:  # noqa: BLE001 - provider exception shapes vary

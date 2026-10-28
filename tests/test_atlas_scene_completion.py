@@ -20,6 +20,32 @@ def frame(key="a", x=0):
                 "extrinsics": {"position": [x, 0, 0], "quaternion": [0, 0, 0, 1], "coordinateSystem": "rub"}})
 
 
+@pytest.mark.parametrize('invalid', ['remove', 'instruction', 'transient', 'origin', 'basis', 'missing-objects'])
+def test_preserved_context_refuses_edits_before_any_pixel_or_paid_stage(tmp_path, monkeypatch, invalid):
+    from blueprint_pipeline import atlas_context_fov
+    review = {'subject_origin': 'no_manipulated_subject',
+              'automation': {'objects': [], 'removal_instruction': ''}}
+    basis = 'preserved_capture'
+    if invalid == 'remove':
+        review['automation']['objects'] = [{'disposition': 'remove'}]
+    elif invalid == 'instruction':
+        review['automation']['removal_instruction'] = 'Erase the shelves'
+    elif invalid == 'transient':
+        review['transient_frame_ids'] = ['person']
+    elif invalid == 'origin':
+        review['subject_origin'] = 'captured'
+    elif invalid == 'basis':
+        basis = 'measured_scene'
+    else:
+        del review['automation']['objects']
+    monkeypatch.setattr(atlas_context_fov, 'verify_pose_context_fov',
+                        lambda **_: pytest.fail('Invalid context reached a later stage'))
+    with pytest.raises(ValueError, match='preserved_context_invalid'):
+        completion.complete_scene(pose_root=tmp_path, pose={}, frames=[], review=review,
+            root=tmp_path / 'completion', context={}, configuration={}, task_runner=None,
+            planner_runner=None, release_blockers=None, max_polls=1, context_basis=basis)
+
+
 @pytest.mark.parametrize('invalid', [None, 'capture', 'frames', 'digest', 'wrong-version'])
 def test_refreshed_context_uses_its_own_pixels_and_refuses_mixed_capture_identity(tmp_path, monkeypatch, invalid):
     from blueprint_pipeline import atlas_context_fov
@@ -120,7 +146,8 @@ def test_generated_loader_binds_every_pixel_and_keeps_generated_camera(tmp_path,
         completion.load_generated_views(tmp_path, ["novel-a"])
 
 
-def test_completion_routes_all_planned_views_through_preservation_before_review(tmp_path, monkeypatch):
+@pytest.mark.parametrize('context_basis', ['generated_background', 'preserved_capture'])
+def test_completion_routes_all_planned_views_through_preservation_before_review(tmp_path, monkeypatch, context_basis):
     from blueprint_pipeline import website_image_completion, atlas_scene_generate
     frames = [frame(), frame("b", .2)]
     for f in frames:
@@ -199,13 +226,17 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     source_path.write_text(json.dumps(source_survey))
     args = dict(pose_root=tmp_path, pose=pose, frames=frames,
         review={"automation": {"objects": [], "removal_instruction": "The dishwasher bay is empty"}},
-        root=tmp_path / "complete", context={"description": "test"},
+        root=tmp_path / "complete", context={"description": "test", "context_digest": "task"},
         configuration={"remaining_cost_usd": 5, "policy": {"rgbd_view_cost_usd": .05,
             "rate_card_reference": "rates", "reviewed_on": "2026-10-22", "reviewed_by": "test"}},
         task_runner=lambda **kw: pytest.fail('Unconstrained generation bypassed preservation'),
         planner_runner=planner,
         release_blockers=lambda: ("commit", []), max_polls=1, source_survey_path=source_path,
         coverage_feedback={})
+    if context_basis == 'preserved_capture':
+        args.update(context_basis=context_basis)
+        args['review'].update(subject_origin='no_manipulated_subject')
+        args['review']['automation']['removal_instruction'] = ''
     output, report = completion.complete_scene(**args)
     feedback_path = next((tmp_path / 'complete').glob('plan-inputs-source-*.json'))
     feedback = json.loads(feedback_path.read_text())
@@ -230,6 +261,15 @@ def test_completion_routes_all_planned_views_through_preservation_before_review(
     assert calls[0]['scene_caption'] == proposal['scene_caption']
     assert feedback['original_capture_gallery']['reviewed_source_frame_ids'] == ['a', 'b', 'unselected-angle']
     assert report['source_evidence']['source_coverage_is_not_depth_coverage'] is True
+    if context_basis == 'preserved_capture':
+        assert feedback['input_basis'] == 'preserved_capture_context_with_estimated_depth'
+        assert json.loads((tmp_path / 'complete/survey.json').read_text())['content_basis'] == 'preserved_capture_context'
+        assert report['context_basis'] == context_basis
+        assert report['source_pose_digest'] == pose['digest']
+        assert reviews[0]['plan']['context_basis'] == context_basis
+        changed_basis = {key: value for key, value in args.items() if key != 'context_basis'}
+        with pytest.raises(ValueError, match='context_basis_changed'):
+            completion.complete_scene(**changed_basis)
     proposal['view_gap_reasons'][0]['source_evidence'][0].update(
         visibility='observed_elsewhere_in_capture', source_frame_ids=['unselected-angle'])
     output, source_action = completion.complete_scene(**args)

@@ -13,8 +13,11 @@
 from __future__ import annotations
 
 import ast
+import functools
+import hashlib
 import json
 import shutil
+import types
 from pathlib import Path
 
 import pytest
@@ -688,10 +691,17 @@ def test_chain_preflight_reports_the_requested_and_effective_mode_and_why(tmp_pa
     props = {"LoadState": ["loaded"], "User": ["blueprint"],
              "ExecStart": ["{ argv[]=python -m blueprint_pipeline.task_evaluation_episode_compilation_worker }"],
              "Environment": [" ".join(f"{name}={value}" for name, value in environment.items())]}
-    monkeypatch.setattr(preflight.os, "geteuid", lambda: 0)
+    host_os = types.SimpleNamespace(**vars(os))
+    host_os.geteuid = lambda: 0
+    monkeypatch.setattr(preflight, "os", host_os)
     monkeypatch.setattr(preflight, "CHAIN_UNITS", (unit,))
     monkeypatch.setattr(preflight, "unit_properties", lambda name: props)
-    monkeypatch.setattr(preflight, "active_release", lambda: (None, "", []))
+    release_sha = "a" * 40
+    release = tmp_path / "releases" / release_sha
+    release.mkdir(parents=True)
+    monkeypatch.setattr(preflight, "active_release", lambda: (release, release_sha, []))
+    monkeypatch.setattr(preflight, "write_safe_summary", functools.partial(
+        preflight.write_safe_summary, reader_ids=(os.getuid(), os.getgid())))
     monkeypatch.setattr(preflight, "_service_ids", lambda account: mine)
     monkeypatch.setattr(preflight, "interpreter_environment", lambda: {})
     for name in ("intent_checks", "binding_checks", "handoff_checks", "project_spend_checks",
@@ -704,6 +714,9 @@ def test_chain_preflight_reports_the_requested_and_effective_mode_and_why(tmp_pa
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["episode_compilation_execution"] == resolved("cloud_run", "auto_with_config")
     assert (report["blocker_count"], report["warning_count"]) == (0, 0)
+    summary = json.loads((out.parent / "public" / "summary.json").read_text())
+    assert summary["active_sha"] == report["active_sha"] == release_sha
+    assert summary["report_sha256"] == hashlib.sha256(out.read_bytes()).hexdigest()
 
 
 def test_cloud_run_shadows_only_what_the_host_compiled_and_at_most_three_per_class(tmp_path: Path,

@@ -45,9 +45,7 @@ from .groot_oscar_runpod_persistent_carrier import (
     PERSISTENT_CARRIER_PROBE_KIND,
     PERSISTENT_WATCHDOG_MAX_TTL_SECONDS,
 )
-from .groot_oscar_runpod_persistent_carrier_campaign import (
-    run_persistent_carrier_campaign,
-)
+from .groot_oscar_runpod_persistent_carrier_campaign import run_persistent_carrier_campaign
 from .groot_oscar_runpod_serverless import (
     DEFAULT_MAX_HOURLY_RATE_USD,
     DEFAULT_RESERVATION_SECONDS,
@@ -756,6 +754,11 @@ def _remote_pull_request_head_has_commit(commit: str) -> bool:
     )
 
 
+def _website_atlas_release_blockers(experimental: bool) -> tuple[str, list[str]]:
+    commit, _, _ = _current_checkout_source_state()
+    return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
+
+
 def run_sponsored_website_atlas_pose(*, output_root: Path, capture_id: str, task_context: Mapping[str, Any],
                                      experimental: bool = False,
                                      **options: Any) -> dict[str, Any]:
@@ -765,39 +768,32 @@ def run_sponsored_website_atlas_pose(*, output_root: Path, capture_id: str, task
     """
     from .website_atlas_pose import run_admitted_atlas_pose
 
-    def release_blockers() -> tuple[str, list[str]]:
-        commit, _, _ = _current_checkout_source_state()
-        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
-
     return run_admitted_atlas_pose(output_root=output_root, capture_id=capture_id, task_context=task_context,
-                                   release_blockers=release_blockers, **options)
+        release_blockers=lambda: _website_atlas_release_blockers(experimental), **options)
 
 
 def run_sponsored_website_atlas_task(*, experimental: bool = False, **options: Any) -> dict[str, Any]:
     """Canonical allocator for Atlas view/edit/mesh tasks under the same source cap."""
     from .website_atlas_tasks import run_admitted_atlas_task
 
-    def release_blockers() -> tuple[str, list[str]]:
-        commit, _, _ = _current_checkout_source_state()
-        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
-
-    return run_admitted_atlas_task(release_blockers=release_blockers, **options)
+    return run_admitted_atlas_task(release_blockers=lambda: _website_atlas_release_blockers(experimental), **options)
 
 
 def run_sponsored_website_atlas_automation(*, experimental: bool = False, **options: Any) -> dict[str, Any]:
     """The existing source gate protects SAM, editor and Atlas automation alike."""
     from .atlas_scene_automation import run_automation
-
-    def release_blockers():
-        commit, _, _ = _current_checkout_source_state()
-        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
+    preserved_capture = options.pop('preserved_capture', False)
 
     from .paid_resource_admission import PaidResourceAdmissionBlocked
     try:
-        return run_automation(release_blockers=release_blockers,
+        arguments = dict(release_blockers=lambda: _website_atlas_release_blockers(experimental),
             task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw),
             planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw),
             pose_runner=lambda **kw: run_sponsored_website_atlas_pose(experimental=experimental, **kw), **options)
+        if preserved_capture:
+            from .atlas_preserved_completion import run_preserved_completion
+            return run_preserved_completion(**arguments)
+        return run_automation(**arguments)
     except PaidResourceAdmissionBlocked as exc:
         from .gcp_monthly_budget_admission import stale_report_wait
         waiting = (stale_report_wait() if exc.blockers == ["gcp_monthly_budget_admission_blocked"] else None)
@@ -812,11 +808,7 @@ def run_sponsored_website_atlas_plan(*, experimental: bool = False, **options: A
     """Source review uses the same allocator release gate and WebApp test cap."""
     from .atlas_scene_planner import review_survey
 
-    def release_blockers() -> tuple[str, list[str]]:
-        commit, _, _ = _current_checkout_source_state()
-        return commit, _source_checkout_blockers(commit, allow_pushed_branch_diagnostic=experimental)[0]
-
-    return review_survey(release_blockers=release_blockers, **options)
+    return review_survey(release_blockers=lambda: _website_atlas_release_blockers(experimental), **options)
 
 
 def _source_checkout_blockers(
@@ -1584,6 +1576,8 @@ def _run_reconstruction_gpu_canary(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from .core.handoff_lease import handoff_lease_checkpoint
+    handoff_lease_checkpoint("canonical_allocator_entry")
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     add_teleport_provider_arguments(commands, root=ROOT)

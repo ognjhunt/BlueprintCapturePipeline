@@ -209,6 +209,24 @@ def test_pending_grant_refuses_uncurrent_or_false_authority(change):
         validate_preparation_authority(task_context=task, authority=grant, now=NOW)
 
 
+def test_grant_without_an_assessment_proposal_prepares_from_the_received_video():
+    """Owner decision 2026-10-28: no completed assessment is needed to prepare."""
+    from blueprint_pipeline.website_preparation_authority import validate_preparation_authority
+
+    task = copy.deepcopy(VECTOR["task_context_response_preparation"])
+    grant = copy.deepcopy(VECTOR["sponsorship_response"])
+    grant.pop("assessment_preparation_proposal")
+    grant["authority_digest"] = canonical_digest(grant, digest_field="authority_digest")
+    assert validate_preparation_authority(task_context=task, authority=grant, now=NOW) == grant
+    # Rights still stop it.
+    task["capture_rights"]["consent_revoked"] = True
+    task["context_digest"] = canonical_digest(task, digest_field="context_digest")
+    grant["task_context_digest"] = task["context_digest"]
+    grant["authority_digest"] = canonical_digest(grant, digest_field="authority_digest")
+    with pytest.raises(ValueError):
+        validate_preparation_authority(task_context=task, authority=grant, now=NOW)
+
+
 def test_child_does_not_inherit_original_preparation_proposal():
     from blueprint_pipeline.website_preparation_authority import validate_preparation_authority
 

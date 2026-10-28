@@ -578,6 +578,12 @@ def _next_inputs_needed(sections: Mapping[str, Mapping[str, Any]]) -> List[str]:
     return next_inputs
 
 
+def resolved_setup_package_directory(setup_manifest: Mapping[str, Any]) -> Path | None:
+    """Carry setup's already resolved package selection into source bindings."""
+    text = str(setup_manifest.get("package_dir") or "").strip()
+    return Path(text) if text else None
+
+
 def build_live_pipeline_setup_manifest(
     *,
     capture_root: str | Path | None = None,

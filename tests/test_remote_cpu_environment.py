@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import hashlib
+import functools
 import importlib.metadata
 import io
 import json
+import os
 import platform
 import sys
 import types
@@ -177,9 +179,16 @@ def test_chain_preflight_reports_the_interpreter_environment_without_findings(tm
     cpuinfo = _cpuinfo(tmp_path / "cpuinfo", "sse2 avx2")
     measured = environment.environment_record(cpuinfo_path=cpuinfo)
     monkeypatch.setattr(environment, "CPUINFO_PATH", cpuinfo)
-    monkeypatch.setattr(preflight.os, "geteuid", lambda: 0)
+    host_os = types.SimpleNamespace(**vars(os))
+    host_os.geteuid = lambda: 0
+    monkeypatch.setattr(preflight, "os", host_os)
     monkeypatch.setattr(preflight, "CHAIN_UNITS", ())
-    monkeypatch.setattr(preflight, "active_release", lambda: (None, "", []))
+    release_sha = "a" * 40
+    release = tmp_path / "releases" / release_sha
+    release.mkdir(parents=True)
+    monkeypatch.setattr(preflight, "active_release", lambda: (release, release_sha, []))
+    monkeypatch.setattr(preflight, "write_safe_summary", functools.partial(
+        preflight.write_safe_summary, reader_ids=(os.getuid(), os.getgid())))
     monkeypatch.setattr(preflight, "_service_ids", lambda account: (1000, 1000))
     for name in (
         "intent_checks", "binding_checks", "handoff_checks", "project_spend_checks", "spend_refresh_sandbox_checks",
@@ -199,10 +208,13 @@ def test_chain_preflight_reports_the_interpreter_environment_without_findings(tm
 
     report = run("measured")
     assert report["interpreter_environment"] == measured
+    summary = json.loads((output / "public" / "summary.json").read_text())
+    assert summary["active_sha"] == report["active_sha"] == release_sha
+    assert summary["report_sha256"] == hashlib.sha256((output / "measured.json").read_bytes()).hexdigest()
     assert (report["blocker_count"], report["warning_count"], report["host_findings"]) == (0, 0, [])
     assert forbidden_record_content(report["interpreter_environment"]) == []
     assert sorted(path.name for path in tmp_path.rglob("*") if path.is_file()) == [
-        "cpuinfo", "history.jsonl", "measured.json",
+        "cpuinfo", "history.jsonl", "measured.json", "summary.json",
     ]
 
     def broken(**_kwargs):

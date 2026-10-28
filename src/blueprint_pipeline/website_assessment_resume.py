@@ -1,7 +1,11 @@
-"""ADP-010/day14: wake the existing browser producer after assessment admission.
+"""ADP-010/day14: wake a browser capture parked on the old assessment refusal.
 
-No new queue, publisher, credentials or job. Only the explicit pre-provider
-assessment refusal may arm this record in the existing handoff job ledger.
+Since 2026-10-28 the received video is enough to prepare: the WebApp grants
+scene preparation without a completed assessment, and a grant need not carry
+an assessment proposal. Nothing new should park here. This drains captures
+that parked before that change (or while a WebApp still refuses), by
+requesting their first grant through the existing ledger, lease and source
+checks. No new queue, publisher, credentials or job.
 """
 from __future__ import annotations
 
@@ -181,7 +185,8 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
     from .website_preparation_status import _read, _root, read_preparation_status
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     counts = {"resumed": 0, "pending": 0}
-    roots = sorted(path.parent for path in Path(storage_root).glob("*/scenes/site-*/captures/walkthrough-*/pipeline_job_ledger.json"))
+    roots = sorted(path.parent for path in Path(storage_root).glob("*/scenes/site-*/captures/*/pipeline_job_ledger.json")
+                   if path.parent.name.startswith(("walkthrough-", "supplement-")))
     # The preceding status reconciliation already rotates this durable cursor,
     # including empty/error states. Reuse it; no second cursor/queue framework.
     cursor_path = Path(storage_root) / ".website_preparation_delivery_cursor.json"

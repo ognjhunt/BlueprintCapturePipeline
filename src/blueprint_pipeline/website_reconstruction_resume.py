@@ -109,8 +109,9 @@ def reconcile_waiting_reconstructions(listener, *, storage_root: Path, process_a
     from .website_atlas_preview_store import JOB_FILE, read_job
     from .website_preparation_status import _read, _root, read_preparation_status
     counts = {"resumed": 0, "pending": 0}
-    # Only routed walkthroughs have an Atlas job, so this scan stays small.
-    jobs = sorted(Path(storage_root).glob(f"*/scenes/site-*/captures/walkthrough-*/pipeline/atlas/{JOB_FILE}"))
+    # Include same-job source revisions; admission below still rechecks each birth.
+    jobs = sorted(path for path in Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}")
+                  if path.parents[2].name.startswith(("walkthrough-", "supplement-")))
     for job_path in jobs:
         if counts["resumed"] >= max(0, min(limit, 50)):
             break

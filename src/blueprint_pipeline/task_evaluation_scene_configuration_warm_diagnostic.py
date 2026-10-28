@@ -1005,6 +1005,7 @@ def close_scene_configuration_warm_session(
                 scene_configuration_warm_closeout_allocation_binding(session=session)
             ),
             require_allocation_binding=True,
+            permit_reconciliation=True,
         )
         retained_provider = provider or VastRenderProvider()
         instance_id = str(session["provider_instance_id"])
