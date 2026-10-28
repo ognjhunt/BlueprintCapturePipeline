@@ -78,6 +78,17 @@ operation. Missing semantics, unknown operations or ambiguous stage identities
 keep the job in preparation. Registered families still need their actual native
 contracts, assets, reset and runtime inputs before execution.
 
+A retained reading may leave overall job coverage false because CAD, metric
+scale, numeric criteria or execution qualification is pending. A separate,
+source-bound operation clarification preserves that reading and every issue,
+while distinguishing unresolved robot operations from preparation requirements.
+It can accompany an unstarted scale review. Completed scale/scene stages remain
+adopted; the fallback is a text-only review capped at $0.25 plus at most one
+schema repair. Read-only inspection and default handoff preparation only adopt
+retained clarifications. The existing Atlas controller and authorized capture
+execution can request one under the retained site grant. This resolves routing
+only; owner confirmation and execution qualification remain independent.
+
 See [task-family evaluation](docs/runbooks/task-family-evaluation.md) for the
 native contracts, state measurements and execution boundary.
 

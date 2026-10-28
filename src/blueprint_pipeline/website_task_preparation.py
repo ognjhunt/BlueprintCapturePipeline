@@ -117,6 +117,10 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
                 and inferred_profile_id is not None and profile.profile_id != inferred_profile_id)
     if profile is not None and not mismatch:
         return None
+    if family == "general_task" and task_semantics is not None and not mismatch:
+        from .website_operation_coverage import operation_coverage_gap
+        return operation_coverage_gap(task_semantics, task_context=task_context,
+                                      source_video_digest=source_video_digest)
     return {
         "code": ("website_task_profile_mechanism_mismatch" if mismatch
                  else "website_native_task_profile_preparation_required"),

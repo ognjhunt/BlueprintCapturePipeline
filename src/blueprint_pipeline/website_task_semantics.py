@@ -109,6 +109,10 @@ def task_semantics_from_receipt(*, receipt: Mapping[str, Any], task_context: Map
 
 def validate_task_semantics(value: Mapping[str, Any], *, task_context: Mapping[str, Any],
                             source_video_digest: str) -> dict[str, Any]:
+    if "operation_coverage_clarification" in value:
+        from .website_operation_coverage import validate_clarified_semantics
+        return validate_clarified_semantics(value, task_context=task_context,
+                                           source_video_digest=source_video_digest)
     expected = task_semantics_from_receipt(receipt=value.get("planner_receipt") or {},
         task_context=task_context, source_video_digest=source_video_digest)
     if expected is None or value != expected:
@@ -124,10 +128,22 @@ def resolved_task_profile(value: Mapping[str, Any] | None, *, task_context: Mapp
     if source_video_digest is None:
         raise ValueError("website_task_semantics_source_video_missing")
     verified = validate_task_semantics(value, task_context=task_context, source_video_digest=source_video_digest)
+    clarification = verified.get("operation_coverage_clarification")
+    if clarification is not None:
+        coverage = clarification["operation_coverage"]
+        if not coverage["operation_coverage_complete"] or coverage["unresolved_operations"]:
+            return None
+        return _operation_profile(coverage["task_family"], coverage["steps"])
     semantics = verified["semantics"]
-    profile = task_profile_for(semantics["task_family"])
-    steps = semantics["steps"]
-    if not semantics["covers_entire_job"] or semantics["unresolved_aspects"] or profile is None:
+    if not semantics["covers_entire_job"] or semantics["unresolved_aspects"]:
+        return None
+    return _operation_profile(semantics["task_family"], semantics["steps"])
+
+
+def _operation_profile(task_family, steps):
+    """Routing metadata only; every requested operation must fit one native route."""
+    profile = task_profile_for(task_family)
+    if profile is None:
         return None
     operations = [task_profile_for(step["operation"]) for step in steps]
     if profile.profile_id == "multi_step":
@@ -162,7 +178,9 @@ def require_semantic_stage_order(*, task_context: Mapping[str, Any], task_semant
     if resolved_task_profile(task_semantics, task_context=task_context,
                              source_video_digest=source_video_digest) != "multi_step":
         raise ValueError("website_task_family_semantic_stages_mismatch")
-    proposed = [task_profile_for(step["operation"]).profile_id for step in task_semantics["semantics"]["steps"]]
+    reading = ((task_semantics.get("operation_coverage_clarification") or {}).get("operation_coverage")
+               or task_semantics["semantics"])
+    proposed = [task_profile_for(step["operation"]).profile_id for step in reading["steps"]]
     if proposed != [stage["task_family"] for stage in contract["stages"]]:
         raise ValueError("website_task_family_semantic_stages_mismatch")
 
@@ -197,4 +215,6 @@ def load_task_semantics(*, job_dir: Path, task_context: Mapping[str, Any],
     value = json.loads(path.read_text())
     if value != expected:
         raise ValueError("website_task_semantics_changed")
-    return expected
+    from .website_operation_coverage import load_operation_coverage
+    return load_operation_coverage(job_dir=job_dir, parent_semantics=expected,
+        task_context=task_context, source_video_digest=source_video_digest) or expected
