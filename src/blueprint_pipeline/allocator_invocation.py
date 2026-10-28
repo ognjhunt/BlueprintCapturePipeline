@@ -160,18 +160,17 @@ def before_provider_create(*, authority: Mapping[str, Any], bundle: Mapping[str,
             or binding.get("resource_name") != authority.get("resource_name")
             or binding.get("bundle_sha256") != bundle.get("bundle_sha256")):
         raise ValueError("allocator_invocation_create_binding_invalid")
-    if value.get("control") is not None:
-        from .beta_policy_screening_control import observe
-        control_state = observe(control=value["control"], root=root)
-        if control_state.get("new_processing_authorized") is False or control_state.get("status") != "current":
-            raise ValueError("beta_screening_current_source_unproven_before_create")
+    from .beta_policy_screening_control import current_control_admission
     from .beta_policy_screening_launch import _write
-    _write(root / "provider_create_intent.json", {
-        "schema_version": "blueprint.allocator_provider_create_intent.v1",
-        "invocation_id": value["invocation_id"], "manifest_digest": value["manifest_digest"],
-        "binding": binding, "provider": binding["provider"], "resource_name": binding["resource_name"],
-        "create_outcome": "unknown_until_exact_provider_receipt",
-    })
+    admission = (current_control_admission(control=value["control"], root=root)
+                 if value.get("control") is not None else nullcontext())
+    with admission:
+        _write(root / "provider_create_intent.json", {
+            "schema_version": "blueprint.allocator_provider_create_intent.v1",
+            "invocation_id": value["invocation_id"], "manifest_digest": value["manifest_digest"],
+            "binding": binding, "provider": binding["provider"], "resource_name": binding["resource_name"],
+            "create_outcome": "unknown_until_exact_provider_receipt",
+        })
 
 
 def run_invocation(path: Path, *, allocator: Callable[[Sequence[str]], int] | None = None) -> int:
