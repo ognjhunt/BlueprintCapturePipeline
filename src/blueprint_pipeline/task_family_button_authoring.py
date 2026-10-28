@@ -267,9 +267,19 @@ def _asset(catalog, asset_id):
              and _number(mechanics.get("reset_contact_force_n")) and mechanics["reset_contact_force_n"] >= 0
              and isinstance(mechanics.get("activation_sensor_id"), str) and mechanics["activation_sensor_id"]
              and isinstance(value.get("engineering_evidence"), Mapping), "button_engineering_facts_required")
-    verified_file(value["engineering_evidence"], root=path.parent)
+    evidence_path = verified_file(value["engineering_evidence"], root=path.parent)
+    criteria = value.get("button_evaluation_criteria", {})
+    _require(isinstance(criteria, Mapping) and (not criteria or set(criteria) == set(_CRITERIA[:2]))
+             and all(_number(number) and number >= 0 and (key != "minimum_button_travel_m" or number > 0)
+                     for key, number in criteria.items()), "engineering_criteria_invalid")
+    if criteria:
+        from .task_family_authoring_evidence import _read
+        evidence = _read({**value["engineering_evidence"], "path": str(evidence_path)},
+                         "engineering_criteria", as_json=True)
+        _require(isinstance(evidence, Mapping) and evidence.get("button_evaluation_criteria") == criteria,
+                 "engineering_criteria_evidence_changed")
     return {"record": value, "joint_id": joint.get("name"), "axis_local": direction,
-            "joint_limits_m": [lower, upper], "mechanics": mechanics}
+            "joint_limits_m": [lower, upper], "mechanics": mechanics, "evaluation_criteria": dict(criteria)}
 
 
 def author_button_family_inputs(*, family, task_context, task_masks, source_geometry, base_scene,
@@ -370,6 +380,10 @@ def author_button_family_inputs(*, family, task_context, task_masks, source_geom
             missing(key, "button_engineering_asset", "source_measurement",
                     "Retain the licensed button model, joint/activation/reset evidence and exact dependency bytes.")
             continue
+        for quantity, number in asset["evaluation_criteria"].items():
+            if quantity not in criteria:
+                criteria[quantity] = number
+                requirements[:] = [row for row in requirements if row["requirement_id"] != key + ":" + quantity]
         engineering_assets[asset["record"]["asset_id"]] = asset["record"]
         pose = _registered_pose(placed["pose_source"], layout["frame_registration"])
         mechanics = asset["mechanics"]

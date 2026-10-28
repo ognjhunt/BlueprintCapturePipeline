@@ -333,6 +333,84 @@ def test_missing_physical_button_threshold_is_engineering_dependency(tmp_path, m
     assert "engineering/source evidence" in next_action["question"]
 
 
+def _record_engineering_criteria(row, monkeypatch, criteria, *, evidence_criteria=None):
+    entry = row["authoring_assets"][0]
+    entry["button_evaluation_criteria"] = criteria
+    path = Path(entry["engineering_evidence"]["path"])
+    evidence = json.loads(path.read_text())
+    evidence["button_evaluation_criteria"] = criteria if evidence_criteria is None else evidence_criteria
+    path.write_text(json.dumps(evidence))
+    entry["engineering_evidence"] = file_record(path)
+    catalog = Path(producer.os.environ["BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH"])
+    _seal_catalog({"runtime_catalog_path": catalog}, row, qualification_changes={"expires_at_epoch": NOW + 3600})
+
+
+def test_ordinary_owner_facts_do_not_require_engineering_threshold_json(tmp_path, monkeypatch):
+    args, row = _fixture(tmp_path, monkeypatch)
+    answer = args["task_context"]["operator_answers"]["family_task_facts"]["operations"][0]
+    del answer["minimum_button_travel_m"], answer["maximum_contact_force_n"]
+    _reseal_facts(args)
+    expected = {"minimum_button_travel_m": .012, "maximum_contact_force_n": 17}
+    _record_engineering_criteria(row, monkeypatch, expected)
+    result = preparation.compile_website_scene_preparation(**args)
+    assert result["status"] == "intake_ready"
+    assert result["task_evaluation_inputs"]["task_success_contract"]["stages"][0]["criteria"] == expected
+    assert set(answer) == {"operation_id", "minimum_hold_seconds"}
+    assert result["task_evaluation_inputs"]["automatic_paid_execution_authorized"] is False
+
+
+def test_missing_hold_remains_one_normal_fact_after_engineering_criteria_are_bound(tmp_path, monkeypatch):
+    args, row = _fixture(tmp_path, monkeypatch)
+    answer = args["task_context"]["operator_answers"]["family_task_facts"]["operations"][0]
+    for field in ("minimum_button_travel_m", "maximum_contact_force_n", "minimum_hold_seconds"):
+        answer.pop(field)
+    _reseal_facts(args)
+    _record_engineering_criteria(row, monkeypatch, {"minimum_button_travel_m": .01, "maximum_contact_force_n": 20})
+    result = preparation.compile_website_scene_preparation(**args)
+    request = result["task_evaluation_inputs"]["authoring"]["request"]
+    assert result["status"] == "needs_input"
+    assert [item["quantity"] for item in request["requirements"]] == ["minimum_hold_seconds"]
+    assert request["next_action"]["owner"] == "task_owner"
+
+
+@pytest.mark.parametrize("criteria", [{"minimum_button_travel_m": True, "maximum_contact_force_n": 20},
+    {"minimum_button_travel_m": -.1, "maximum_contact_force_n": 20},
+    {"minimum_button_travel_m": .01}, {"minimum_button_travel_m": .01, "maximum_contact_force_n": "20"}])
+def test_malformed_engineering_criteria_refuse_without_inferred_defaults(tmp_path, monkeypatch, criteria):
+    args, row = _fixture(tmp_path, monkeypatch)
+    _record_engineering_criteria(row, monkeypatch, criteria)
+    with pytest.raises(ValueError, match="engineering_criteria_invalid"):
+        preparation.compile_website_scene_preparation(**args)
+
+
+def test_engineering_criterion_record_must_match_its_exact_evidence_bytes(tmp_path, monkeypatch):
+    args, row = _fixture(tmp_path, monkeypatch)
+    _record_engineering_criteria(row, monkeypatch,
+        {"minimum_button_travel_m": .01, "maximum_contact_force_n": 20},
+        evidence_criteria={"minimum_button_travel_m": .02, "maximum_contact_force_n": 20})
+    with pytest.raises(ValueError, match="engineering_criteria_evidence_changed"):
+        preparation.compile_website_scene_preparation(**args)
+
+
+def test_engineering_criteria_read_rechecks_pinned_bytes_after_path_verification(tmp_path, monkeypatch):
+    args, row = _fixture(tmp_path, monkeypatch)
+    _record_engineering_criteria(row, monkeypatch,
+        {"minimum_button_travel_m": .01, "maximum_contact_force_n": 20})
+    reference = row["authoring_assets"][0]["engineering_evidence"]
+    checked = producer.verified_file
+    raced = []
+    def changed_after_check(value, **kwargs):
+        path = checked(value, **kwargs)
+        if value == reference and not raced:
+            path.write_bytes(path.read_bytes() + b" ")
+            raced.append(True)
+        return path
+    monkeypatch.setattr(producer, "verified_file", changed_after_check)
+    with pytest.raises(ValueError, match="authoring_evidence_bytes_changed:engineering_criteria"):
+        preparation.compile_website_scene_preparation(**args)
+    assert raced == [True]
+
+
 @pytest.mark.parametrize("boundary", ["source-button-", "operation-1", "evidence-inputs", "native-inputs", "authoring-result"])
 def test_restart_after_each_authoring_stage_adopts_identical_bytes(tmp_path, monkeypatch, boundary):
     args, _ = _fixture(tmp_path, monkeypatch)

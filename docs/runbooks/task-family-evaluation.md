@@ -78,6 +78,12 @@ The bounded input is factual layout, not another finished native profile:
   mechanics. This producer supports two links and one prismatic joint; missing
   import support is a specific software dependency. No capture may select a
   catalog path, executable, runtime factory or arbitrary model dependency.
+  An entry may supply explicit `button_evaluation_criteria` for minimum travel
+  and maximum contact force, provided those exact values also occur in its
+  pinned engineering-evidence JSON. The producer never infers either value
+  from URDF effort/limits, appearance or a customer's prose. This supplies
+  engineering criteria for the ordinary target/hold fact path; missing evidence
+  remains an engineering requirement and creates no runtime qualification.
 - The existing `operator_answers` carrier may retain
   `family_task_facts` (`website_family_task_facts.v1`), bound to capture, video,
   task-description and success-criteria digests. Confirmed operation IDs carry
