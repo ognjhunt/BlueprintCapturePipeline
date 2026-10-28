@@ -59,7 +59,7 @@ def _receipt(record: Mapping[str, Any]) -> dict[str, Any]:
             "candidate_id": plan["candidates"][0]["candidate_id"], "episodes": 200,
             "maximum_planned_cost_usd": plan["maximum_planned_cost_usd"],
             "recommendation_eligible": False, "provider_mutation_performed": False,
-            "paid_execution_requested": False,
+            "paid_execution_requested": bool(record.get("authority")),
             **({"owner_authority_digest": record["authority"]["authority_digest"]} if record.get("authority") else {}),
             **({"publication": record["publication"]} if record.get("publication") else {})}
 
