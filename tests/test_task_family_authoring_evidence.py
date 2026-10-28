@@ -127,6 +127,65 @@ def test_source_authored_preparation_cannot_omit_immutable_receipt(tmp_path, mon
     assert not (tmp_path / "packet").exists()
 
 
+def _remove_optional_authoring_markers(native):
+    native["task_state_binding"].pop("source_authoring_evidence")
+    for asset in native["assets"]:
+        asset.pop("source_geometry_basis", None)
+        asset.pop("engineering_record_digest", None)
+    assert any("source_target_id" in asset for asset in native["assets"])
+    native["contract_digest"] = canonical_digest(native, digest_field="contract_digest")
+
+
+def test_retained_native_source_target_requires_closure_before_packet_creation(tmp_path, monkeypatch):
+    args, _row, prepared, native_path = _prepared(tmp_path, monkeypatch)
+    inputs = prepared["task_evaluation_inputs"]
+    inputs.pop("authoring")
+    native = inputs["native_runtime_contract"]
+    _remove_optional_authoring_markers(native)
+    prepared["intake_request"]["task"]["native_runtime_contract_digest"] = native["contract_digest"]
+    write_json(native_path, native)
+    with pytest.raises(ValueError, match="authoring_evidence_closure_required"):
+        _packet(tmp_path, args, prepared, native_path)
+    assert not (tmp_path / "packet").exists()
+
+
+@pytest.mark.parametrize("mutate_source", [False, True])
+def test_retained_native_source_target_requires_closure_in_resealed_packet(tmp_path, monkeypatch, mutate_source):
+    args, _row, prepared, native_path = _prepared(tmp_path, monkeypatch)
+    packet = _packet(tmp_path, args, prepared, native_path)
+    root = Path(packet["packet_root"])
+    request_name = "native_task_arena_packet_request.v1.json"
+    native_name = "native_task_runtime_contract.v1.json"
+    plan_name = "native_task_arena_scene_plan.v1.json"
+    request, native, plan = [json.loads((root / name).read_text())
+                             for name in (request_name, native_name, plan_name)]
+    assert request["producer"] == "website_task_family_packet.v1"
+    request.pop("source_authoring_requirements")
+    _remove_optional_authoring_markers(native)
+    request["native_runtime_contract_digest"] = native["contract_digest"]
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    plan["native_runtime_contract"] = native
+    plan["runtime_contract_digest"] = native["contract_digest"]
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    receipt_path = root / "native_task_arena_packet_receipt.v1.json"
+    receipt = json.loads(receipt_path.read_text())
+    for name, value in ((request_name, request), (native_name, native), (plan_name, plan)):
+        write_json(root / name, value)
+        observed = file_record(root / name)
+        for row in receipt["artifacts"]:
+            if row["relative_path"] == name:
+                row.update(sha256=observed["sha256"], size_bytes=observed["size_bytes"])
+    receipt.update(request_digest=request["request_digest"], runtime_contract_digest=native["contract_digest"],
+                   arena_scene_plan_digest=plan["plan_digest"])
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    write_json(receipt_path, receipt)
+    if mutate_source:
+        path = Path(args["task_masks"]["registered_layout"]["registration_evidence"]["path"])
+        path.write_bytes(path.read_bytes() + b"\n")
+    with pytest.raises(ValueError, match="authoring_evidence_closure_required"):
+        verify_native_task_arena_packet(root)
+
+
 def test_missing_source_frame_refuses_without_copy_or_permission_fallback(tmp_path, monkeypatch):
     args, _row, prepared, native_path = _prepared(tmp_path, monkeypatch)
     packet = _packet(tmp_path, args, prepared, native_path)

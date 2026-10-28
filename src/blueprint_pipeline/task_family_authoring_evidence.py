@@ -99,7 +99,10 @@ def _stage(reference, kind=None):
 
 def _source_claim(native):
     assets = native.get("assets")
-    return isinstance(assets, list) and any(asset.get("source_geometry_basis") == "admitted_engineering_model"
+    # A retained native-to-capture target binding still claims source authoring
+    # when optional engineering labels and closure pointers were removed.
+    return isinstance(assets, list) and any("source_target_id" in asset
+               or asset.get("source_geometry_basis") == "admitted_engineering_model"
                or asset.get("engineering_record_digest") is not None for asset in assets if isinstance(asset, Mapping))
 
 

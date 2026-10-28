@@ -112,6 +112,19 @@ bundle regression set passed 171 in 55.45 seconds. Ruff and whitespace checks
 pass. Independent replay remains pending; these author results do not declare
 the repair independently reviewed or production accepted.
 
+The follow-up packet review reproduced a narrower classification gap: removing
+the closure pointers and optional engineering labels could select manual
+compatibility while the native asset still bound a captured source target.
+That retained target binding now requires the same evidence closure before
+packet creation and during packet readback. Three new regressions failed
+before repair; the original independent probe, all source-closure regressions
+and existing supplied/manual website packet tests passed together (46 checks
+in 22.81 seconds). Standalone manual packets retain their existing path. This
+is a packet-classification repair, not a claim that self-resealed input grants
+external intake, runtime or spending authority. Fresh independent review remains
+pending. Unchanged repository source governance passed separately (one check in
+26.66 seconds); changed-file Ruff and whitespace checks passed.
+
 ## PAUSED: proposed first existing-profile journey
 
 Selection, source admission and execution are paused for feasibility
