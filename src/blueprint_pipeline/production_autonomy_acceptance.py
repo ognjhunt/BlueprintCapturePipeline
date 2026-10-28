@@ -88,7 +88,7 @@ class TrustedObservation:
     """
 
     artifact_sha256: str
-    schema_version: str
+    schema_version: str | None  # Some native HTTP readbacks have no schema label.
     producer: str
     environment: str
     origin: str
