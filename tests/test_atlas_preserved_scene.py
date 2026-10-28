@@ -65,12 +65,15 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
         "status": source_status, "operation_id": "source", "reason": "scale_unresolved",
         "scale_status": "estimated_from_named_assumptions"})
     monkeypatch.setattr(source_inputs, "prepare_source_pose", lambda root: (source_root, {}))
-    monkeypatch.setattr(splats, "load_posed_rgbd", lambda root: (pose, ["observed_depth"]))
-    def fuse(root, output):
-        assert root == source_root
+    observations, loads = ["observed_depth"], []
+    monkeypatch.setattr(splats, "load_posed_rgbd", lambda root: loads.append(root) or (pose, observations))
+    def fuse(*, frames, result, output_root):
+        assert frames is observations and result is pose
+        assert output_root == tmp_path / "splat"
         calls.append("fuse")
         return {"digest": "splat", "splat_kind": "depth_fused_draft"}
-    monkeypatch.setattr(splats, "build_depth_splat", fuse)
+    monkeypatch.setattr(splats, "write_depth_splat", fuse)
+    monkeypatch.setattr(splats, "build_depth_splat", lambda *a, **kw: pytest.fail("decoded the complete pose twice"))
     def mesh_attempt(root, output):
         output.mkdir()
         return {"request": {"splat": "bound"}, "uploads": {}}, output
@@ -90,8 +93,9 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
         task_context={"context_digest": "task"}, source_digest="source", configuration={}, check=stages.append,
         experimental=False, max_polls=1, model="test")
     if source_status == "processing":
-        assert result["status"] == "processing" and calls == ["source_pose"] and not exports
+        assert result["status"] == "processing" and calls == ["source_pose"] and not exports and not loads
         return
+    assert loads == [source_root]
     assert result["captured_scene_preserved"] is True
     assert result["image_inpainting_performed"] is False and result["object_removal_performed"] is False
     assert result["generated_completion_performed"] is False and result["simulation_qualified"] is False
