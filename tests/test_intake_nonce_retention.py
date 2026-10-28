@@ -7,6 +7,7 @@ import json
 import multiprocessing
 import os
 import time
+import types
 
 import pytest
 
@@ -149,14 +150,54 @@ def test_read_permission_failure_is_typed_and_preserves_record(tmp_path, monkeyp
     assert path.exists()
 
 
-def test_bounded_volume_soak_stabilizes_at_ttl_plus_grace_window(tmp_path):
+def _newest_first_discovery(monkeypatch):
+    """Exercise a valid directory order without relying on the host filesystem."""
+    original = store.os.scandir
+
+    class NewestFirst:
+        def __init__(self, descriptor):
+            with original(descriptor) as stream:
+                entries = list(stream)
+
+            def key(entry):
+                if not store._NAME.fullmatch(entry.name):
+                    return (float("inf"), entry.name)
+                file = os.open(entry.name, os.O_RDONLY, dir_fd=descriptor)
+                try:
+                    return (json.loads(os.read(file, 4096))["claimed_at_epoch"], entry.name)
+                finally:
+                    os.close(file)
+
+            self.entries = iter(sorted(entries, key=key, reverse=True))
+
+        def __next__(self):
+            return next(self.entries)
+
+        def close(self):
+            self.entries = iter(())
+
+    def scan(descriptor):
+        return NewestFirst(descriptor) if isinstance(descriptor, int) else original(descriptor)
+
+    monkeypatch.setattr(store.os, "scandir", scan)
+    # This regression isolates directory continuation, independently of runtime
+    # load; deadline exhaustion has its own bounded-window regression below.
+    monkeypatch.setattr(store, "time", types.SimpleNamespace(monotonic=lambda: 0))
+
+
+@pytest.mark.parametrize("directory_order", ["native", "newest_first"])
+def test_bounded_volume_soak_stabilizes_at_ttl_plus_grace_window(tmp_path, monkeypatch, directory_order):
+    if directory_order == "newest_first":
+        _newest_first_discovery(monkeypatch)
     root = _root(tmp_path)
     sizes = []
     for tick in range(30):
         now = 1000 + tick * 30
         for request in range(6):
             assert store.claim(root, client_id="client", nonce=f"tick-{tick}-{request}", now=now, max_age_seconds=1)
-        store.sweep(root, now=now, limit=32, apply=True)
+        report = store.sweep(root, now=now, limit=32, apply=True)
+        assert report["inspected"] <= 32
+        assert report["discovery_entries_examined"] <= report["discovery_entry_limit"] == 72
         sizes.append(len(list(root.glob("*.json"))))
     # Six requests/30s; 61s retention + 60s grace spans five batches,
     # plus at most one additional batch of bounded inspection lag.
@@ -269,6 +310,94 @@ def _track_scandir(monkeypatch):
 
     monkeypatch.setattr(store.os, "scandir", open_stream)
     return streams
+
+
+def test_cached_eof_reuses_only_remaining_record_budget(tmp_path, monkeypatch):
+    _newest_first_discovery(monkeypatch)
+    streams = _track_scandir(monkeypatch)
+    root = _root(tmp_path)
+    for number in range(4):
+        _legacy_record(root, number)
+    store.sweep(root, now=1, limit=3)
+    cached = store._DISCOVERY_CURSORS[os.path.abspath(root)]
+    assert store.claim(root, client_id="client", nonce="fresh-arrival", now=1000, max_age_seconds=300)
+    report = store.sweep(root, now=1000, limit=3, apply=True)
+    assert report["inspected"] == 3 and report["reclaimed"] == 2
+    assert report["discovery_entries_examined"] <= report["discovery_entry_limit"] == 14
+    assert len(streams) == 2 and streams[0].closed and not streams[1].closed
+    assert store._DISCOVERY_CURSORS[os.path.abspath(root)] is cached
+    assert os.fstat(cached.descriptor).st_ino == root.stat().st_ino
+    assert _path(root, "fresh-arrival").exists()
+
+
+def test_cached_eof_then_fresh_eof_stops_and_closes_both_streams(tmp_path, monkeypatch):
+    _newest_first_discovery(monkeypatch)
+    clock = iter(number / 1000 for number in range(1000))
+    monkeypatch.setattr(store, "time", types.SimpleNamespace(monotonic=lambda: next(clock)))
+    streams = _track_scandir(monkeypatch)
+    root = _root(tmp_path)
+    _legacy_record(root, 1)
+    store.sweep(root, now=1, limit=1)
+    cached = store._DISCOVERY_CURSORS[os.path.abspath(root)]
+    report = store.sweep(root, now=1000, limit=1000, apply=True)
+    assert report["inspected"] == report["reclaimed"] == 1
+    assert report["directory_pass_completed"] is True
+    assert len(streams) == 2 and all(stream.closed for stream in streams)
+    assert cached.descriptor == -1 and os.path.abspath(root) not in store._DISCOVERY_CURSORS
+
+
+def test_cached_eof_restart_preserves_cumulative_discovery_entry_limit(tmp_path, monkeypatch):
+    _newest_first_discovery(monkeypatch)
+    streams = _track_scandir(monkeypatch)
+    root = _root(tmp_path)
+    _legacy_record(root, 1)
+    store.sweep(root, now=1, limit=1)
+    for number in range(100):
+        (root / f"unknown-{number}").touch()
+    report = store.sweep(root, now=1000, limit=1, apply=True)
+    assert report["inspected"] == report["reclaimed"] == 0
+    assert report["discovery_entries_examined"] == report["discovery_entry_limit"] == 10
+    assert len(streams) == 2 and len(streams[1].names) == 10
+    assert all((root / f"unknown-{number}").is_file() for number in range(100))
+    assert _path(root, "legacy-1").exists()
+
+
+def test_cached_eof_does_not_restart_after_the_original_deadline(tmp_path, monkeypatch):
+    _newest_first_discovery(monkeypatch)
+    streams = _track_scandir(monkeypatch)
+    root = _root(tmp_path)
+    _legacy_record(root, 1)
+    store.sweep(root, now=1, limit=1)
+    cached = store._DISCOVERY_CURSORS[os.path.abspath(root)]
+    clock = iter((0, .01, .06, .07))
+    monkeypatch.setattr(store, "time", types.SimpleNamespace(monotonic=lambda: next(clock)))
+    report = store.sweep(root, now=1, limit=1000, apply=True)
+    assert report["inspected"] == report["reclaimed"] == 0
+    assert report["discovery_time_budget_reached"] is True
+    assert len(streams) == 1 and streams[0].closed and cached.descriptor == -1
+    assert _path(root, "legacy-1").exists()
+
+
+def test_cached_eof_restart_refuses_replaced_locked_directory(tmp_path, monkeypatch):
+    _newest_first_discovery(monkeypatch)
+    root = _root(tmp_path)
+    _legacy_record(root, 1)
+    store.sweep(root, now=1, limit=1)
+    cached = store._DISCOVERY_CURSORS[os.path.abspath(root)]
+    retained = tmp_path / "retained-old-root"
+    original = store._DirectoryCursor.restart
+
+    def replace(self, selected, *, directory_fd):
+        root.rename(retained)
+        root.mkdir(mode=0o700)
+        assert store.claim(root, client_id="client", nonce="replacement-fresh", now=1000, max_age_seconds=300)
+        return original(self, selected, directory_fd=directory_fd)
+
+    monkeypatch.setattr(store._DirectoryCursor, "restart", replace)
+    with pytest.raises(store.NonceStoreError, match="^intake_nonce_discovery_root_changed$"):
+        store.sweep(root, now=1000, limit=1000, apply=True)
+    assert _path(retained, "legacy-1").exists() and _path(root, "replacement-fresh").exists()
+    assert cached.descriptor == -1 and not store._DISCOVERY_CURSORS
 
 
 def test_large_legacy_inventory_and_new_request_never_enumerate_beyond_window(tmp_path, monkeypatch):

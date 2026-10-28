@@ -39,8 +39,14 @@ class _DirectoryCursor:
     """One bounded-memory, process-local continuation over the existing store."""
 
     def __init__(self, root: Path, *, directory_fd: int):
-        self.descriptor = os.dup(directory_fd)
+        self.descriptor = -1
         self.iterator = None
+        self.restart(root, directory_fd=directory_fd)
+
+    def restart(self, root: Path, *, directory_fd: int) -> None:
+        """Rebind an exhausted prior-tick stream to this tick's locked root."""
+        self.close()
+        self.descriptor = os.dup(directory_fd)
         try:
             metadata = os.fstat(self.descriptor)
             if not stat.S_ISDIR(metadata.st_mode):
@@ -97,6 +103,7 @@ def _directory_cursor(root: Path, *, directory_fd: int):
     key = os.path.abspath(root)
     try:
         cursor = _DISCOVERY_CURSORS.pop(key, None)
+        continued = cursor is not None
         if cursor is not None:
             try:
                 cursor.validate(root, directory_fd=directory_fd)
@@ -110,7 +117,7 @@ def _directory_cursor(root: Path, *, directory_fd: int):
             cursor = _DirectoryCursor(root, directory_fd=directory_fd)
         _DISCOVERY_CURSORS[key] = cursor
         try:
-            yield cursor
+            yield cursor, continued
         except BaseException:
             _DISCOVERY_CURSORS.pop(key, None)
             cursor.close()
@@ -352,7 +359,7 @@ def _sweep_window(root: Path, *, now: float, limit: int, apply: bool) -> dict[st
         examined = 0
         pass_completed = False
         if maximum:
-            with _directory_cursor(root, directory_fd=directory) as cursor:
+            with _directory_cursor(root, directory_fd=directory) as (cursor, continued):
                 while examined < entry_limit and counts["inspected"] < maximum:
                     if time.monotonic() >= deadline:
                         break
@@ -361,6 +368,13 @@ def _sweep_window(root: Path, *, now: float, limit: int, apply: bool) -> dict[st
                         entry = next(cursor.iterator)
                     except StopIteration:
                         cursor.close()
+                        # A cached stream can finish with most of this tick's
+                        # budget unused. Scan the current locked directory once
+                        # with the remaining budgets; a fresh EOF always stops.
+                        if continued and time.monotonic() < deadline:
+                            continued = False
+                            cursor.restart(root, directory_fd=directory)
+                            continue
                         pass_completed = True
                         break
                     examined += 1
