@@ -190,7 +190,8 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
 
     value = validate_screening_plan(plan)
     campaign_id = value["campaign_id"]
-    if not _ID.fullmatch(campaign_id) or not value.get("site_id") or _amount(value["budget_usd"]) > SITE_LIMIT:
+    if (value.get("purpose") != "screening" or not _ID.fullmatch(campaign_id)
+            or not value.get("site_id") or _amount(value["budget_usd"]) > SITE_LIMIT):
         raise ScreeningCoordinatorError("beta_screening_campaign_scope_invalid")
     root = _root(queue_root)
     with _lock(root):
@@ -568,6 +569,15 @@ def pending_publications(*, queue_root: str | Path | None = None,
             if (state["published_revision"] == publication["revision"]
                     and state["published_digest"] == publication["publication_digest"]):
                 continue
+            history = root / "publications" / "history"
+            if history.is_symlink():
+                raise ScreeningCoordinatorError("beta_screening_state_path_unsafe")
+            history.mkdir(exist_ok=True, mode=0o700)
+            snapshot = history / (publication["publication_digest"][7:] + ".json")
+            if snapshot.exists() and _read(snapshot) != publication:
+                raise ScreeningCoordinatorError("beta_screening_publication_history_conflict")
+            if not snapshot.exists():
+                _write(snapshot, publication)
             _write(root / "publications" / f"{campaign_id}.json", publication)
             values.append(publication)
         if invalidated:

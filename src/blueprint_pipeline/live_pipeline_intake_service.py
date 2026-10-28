@@ -1535,6 +1535,8 @@ def create_app() -> FastAPI:
     from .agent_execution.http_routes import register_agent_execution_routes
     from .job_evidence_routes import register_job_evidence_routes
 
+    from .beta_policy_finalist_routes import register_beta_policy_finalist_routes
+    register_beta_policy_finalist_routes(app, require_admission=_require_admission)
     register_agent_execution_routes(app, require_admission=_require_admission)
     register_job_evidence_routes(
         app, require_admission=_require_admission,

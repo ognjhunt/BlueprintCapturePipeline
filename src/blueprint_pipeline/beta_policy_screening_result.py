@@ -54,6 +54,8 @@ def candidate_result_summary(
             or binding.get("configuration_digest") != candidate["configuration_digest"]
             or binding.get("admission_digest") != candidate["admission_digest"]
             or not readiness_bound
+            or plan.get("purpose") == "finalist" and (binding.get("evaluation_purpose") != "finalist"
+                or binding.get("owner_authority_digest") != plan["finalist_binding"].get("owner_authority_digest"))
             or binding.get("scene_revision_digest") != plan["scene_revision_digest"]):
         raise ValueError("beta_screening_result_binding_mismatch")
     expected = {(cell["cell_id"], cell["seed"]) for cell in candidate["scenario_cells"]}

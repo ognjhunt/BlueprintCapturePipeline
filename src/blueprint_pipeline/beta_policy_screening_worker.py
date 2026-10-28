@@ -184,7 +184,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     before = deliver_publications(queue_root=root, refresh_startable=True)
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
         max_launches=args.max_launches)
-    print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
+    from .beta_policy_finalists import process_finalists
+    finalists = process_finalists()
+    print(json.dumps({"sources": sources, "execution": execution, "finalists": finalists, "publication_before": before,
                       "publication_after": deliver_publications(queue_root=root)}, sort_keys=True))
     return 0
 

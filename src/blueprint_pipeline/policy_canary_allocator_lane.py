@@ -127,7 +127,8 @@ def _launch_environment_blockers(args: Any, authority: Mapping[str, Any], bundle
     )
     if minutes < 30:
         blockers.append("adp_arena_cumulative_budget_below_minimum_live_window")
-    if authority.get("run_kind") == TEAM_RUN_KIND and minutes * 60 < int(args.adp_hard_ttl_seconds):
+    full_finalist = (authority.get("beta_screening_admission") or {}).get("evaluation_purpose") == "finalist"
+    if (authority.get("run_kind") == TEAM_RUN_KIND or full_finalist) and minutes * 60 < int(args.adp_hard_ttl_seconds):
         blockers.append("team_evaluation_budget_below_planned_runtime")
     credential_present = _vast_credential_file_present()
     try:
@@ -183,6 +184,12 @@ def run_policy_canary_allocator_lane(
                 blockers.append("policy_canary_session_resource_bounds_mismatch")
         except (OSError, ValueError, json.JSONDecodeError):
             blockers.append("policy_canary_session_contract_invalid")
+    if not blockers and authority is not None and (authority.get("beta_screening_admission") or {}).get("evaluation_purpose") == "finalist":
+        from .beta_policy_finalists import require_finalist_session_authority
+        try:
+            require_finalist_session_authority(authority, job_dir=args.adp_job_dir, max_hourly_rate_usd=args.adp_max_hourly_rate_usd)
+        except (OSError, ValueError, KeyError, TypeError):
+            blockers.append("beta_finalist_retained_owner_authority_or_source_invalid")
     integration_canary_digest = None
     if not blockers and authority is not None:
         canary_blockers, integration_canary_digest = _integration_canary_gate(args, authority)

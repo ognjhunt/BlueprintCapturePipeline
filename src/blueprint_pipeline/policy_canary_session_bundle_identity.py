@@ -60,6 +60,11 @@ def _episode_shape_valid(payload: Mapping[str, Any], shape: tuple[str, str, int]
 
     episodes, rollouts = payload.get("episodes_per_policy"), payload.get("learned_policy_rollout_count")
     if shape is BETA_SHAPE:
+        admission = payload.get("beta_screening_admission") or {}
+        if admission.get("evaluation_purpose") == "finalist":
+            return (type(episodes) is int and episodes == 200 and rollouts == episodes
+                    and _SHA.fullmatch(str(admission.get("owner_authority_digest") or "")) is not None
+                    and payload.get("evaluation_backend") == "robolab.v1")
         return type(episodes) is int and 1 <= episodes <= 10 and rollouts == episodes
     if shape is TEAM_SHAPE:
         return (type(episodes) is int and 1 <= episodes <= TEAM_MAX_CELLS_PER_SESSION and rollouts == episodes)

@@ -450,6 +450,7 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     """Validate retained plans without expiring their historical cost evidence."""
     plan = _json(value)
     family = plan.get("evaluation_backend") == FAMILY_BACKEND
+    finalist = plan.get("purpose") == "finalist"
     required = {"schema_version", "campaign_id", "site_id", "scene_id", "capture_id", "task_id",
                 "scene_revision_digest", "task_success_contract_digest", "source",
                 "scene_inputs", "catalog_digest", "scenario_plan_digest", "scenario_cells", "budget_usd",
@@ -457,8 +458,10 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 "candidates", "plan_digest"}
     required |= ({"evaluation_backend", "pre_policy_site_qualification_required",
                   "family_static_readiness_digest", "scenario_scope"} if family else {"robot_free_probe_digest"})
-    if (set(plan) != required or plan["schema_version"] != PLAN_SCHEMA_VERSION
-            or plan["purpose"] != "screening" or plan["claim_ceiling"] != CLAIM_CEILING
+    if finalist:
+        required |= {"finalist_binding"}
+    if (set(plan) != required or plan["schema_version"] != ("beta_policy_finalist_plan.v1" if finalist else PLAN_SCHEMA_VERSION)
+            or plan["purpose"] not in {"screening", "finalist"} or plan["claim_ceiling"] != CLAIM_CEILING
             or plan["recommendation_eligible"] is not False):
         raise BetaPolicyScreeningPlanError("beta_screening_plan_schema_invalid")
     for key in ("campaign_id", "site_id", "scene_id", "capture_id", "task_id"):
@@ -480,11 +483,16 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     if any(source[key] != plan[key] for key in ("capture_id", "task_id", "scene_revision_digest")):
         raise BetaPolicyScreeningPlanError("beta_screening_source_mismatch")
     budget = money(plan["budget_usd"])
-    if not 0 < budget <= SITE_BUDGET_USD:
+    if not 0 < budget <= (Decimal("20") if finalist else SITE_BUDGET_USD):
         raise BetaPolicyScreeningPlanError("beta_screening_site_budget_exceeded")
+    if finalist:
+        from .beta_policy_finalists import validate_finalist_binding
+        validate_finalist_binding(plan["finalist_binding"])
+        if family or len(plan["candidates"]) != 1:
+            raise BetaPolicyScreeningPlanError("beta_finalist_runtime_not_supported")
     cells = plan["scenario_cells"]
     _receipt(plan["scene_inputs"])
-    if not isinstance(cells, list) or not 1 <= len(cells) <= DEFAULT_EPISODES:
+    if not isinstance(cells, list) or (len(cells) != 200 if finalist else not 1 <= len(cells) <= DEFAULT_EPISODES):
         raise BetaPolicyScreeningPlanError("beta_screening_cells_invalid")
     ids, seeds = [], []
     cell_fields = {"cell_id", "seed", "family", "partition", "resolved_scenario", "cell_spec_digest",
@@ -492,9 +500,9 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     for ordinal, cell in enumerate(cells):
         if not isinstance(cell, dict) or not isinstance(cell.get("resolved_scenario"), dict):
             raise BetaPolicyScreeningPlanError("beta_screening_cell_binding_invalid")
-        if (not isinstance(cell, dict) or cell.get("partition") != "screening"
+        if (not isinstance(cell, dict) or cell.get("partition") != ("finalist" if finalist else "screening")
                 or set(cell) != cell_fields
-                or not isinstance(cell.get("cell_id"), str) or not cell["cell_id"].startswith("screening.")
+                or not isinstance(cell.get("cell_id"), str) or not cell["cell_id"].startswith("finalist." if finalist else "screening.")
                 or type(cell.get("seed")) is not int or not 0 <= cell["seed"] < 2**31
                 or cell.get("cell_spec_digest") != canonical_digest(cell.get("resolved_scenario", {}))
                 or cell.get("resolved_scenario_digest") != cell["cell_spec_digest"]):
@@ -505,7 +513,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 or type(scenario["ordinal"]) is not int or scenario["ordinal"] != ordinal
                 or scenario["family"] != cell["family"]
                 or cell["family"] not in {"canonical_anchor", "placement_approach", "illumination",
-                                          "camera_sensor", "bounded_physics", "pairwise_stress", "composed_stress"}
+                                          "camera_sensor", "bounded_physics", "pairwise_stress", "composed_stress",
+                                          *( {"held_out_composition"} if finalist else set())}
                 or not isinstance(scenario["parameters"], dict)
                 or set(scenario["parameters"]) - {"object_start_x_delta_m", "object_start_y_delta_m",
                     "object_yaw_delta_degrees", "task_light_intensity_scale", "external_camera_x_delta_m", "dynamic_friction"}
