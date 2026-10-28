@@ -184,6 +184,40 @@ def test_authenticated_source_must_retain_the_same_original_bytes(sources):
     assert collector.diagnostics()["failures"][0]["code"] == "authenticated_source_binding_invalid"
 
 
+def test_non_json_authenticated_response_retains_safe_original_failure_bytes(sources):
+    path = sources.retained["root"] / "retained-unavailable.html"
+    path.write_bytes(b"<html>Current authenticated source unavailable</html>")
+    rec = record(path)
+    sources.overrides["webapp_workspace"] = {"body": path.read_bytes(), "retained_record": rec,
+        "version": rec["sha256"], "http_status": 503}
+    value, collector = sources.acquire()
+    assert value is None
+    diagnostics = collector.diagnostics()
+    assert diagnostics["failures"][0]["code"] == "acquisition_json_invalid"
+    failed = diagnostics["sources"][-1]
+    assert failed["status"] == "failed"
+    assert failed["retained_record"] == rec
+    assert failed["sha256"] == rec["sha256"]
+    before = diagnostics["read_count"]
+    digest = record(sources.retained["root"] / "primary-customer_readback.json", sources.workspace)["sha256"]
+    assert collector("customer_readback", digest, sources.workspace) is None
+    assert collector.diagnostics()["read_count"] == before
+
+
+def test_failed_response_cannot_index_an_unsafe_retained_descriptor(sources):
+    root = sources.retained["root"]
+    original = root / "retained-original.html"
+    original.write_bytes(b"<html>unavailable</html>")
+    unsafe = root / "unsafe-symlink.html"
+    unsafe.symlink_to(original)
+    rec = {**record(original), "path": str(unsafe)}
+    sources.overrides["webapp_workspace"] = {"body": original.read_bytes(), "retained_record": rec,
+        "version": rec["sha256"], "http_status": 503}
+    value, collector = sources.acquire()
+    assert value is None
+    assert "retained_record" not in collector.diagnostics()["sources"][-1]
+
+
 @pytest.mark.parametrize("kind,changes", [
     ("webapp_workspace", {"service_identity": "other-service"}),
     ("webapp_result", {"authentication": "job_json_export"}),

@@ -255,13 +255,12 @@ class AuthenticatedAcceptanceCollector:
         if (response.retained_record.get("sha256") != digest
                 or response.retained_record.get("size_bytes") != len(response.body)):
             raise AcceptanceEvidenceError("authenticated_source_binding_invalid")
-        payload = _json(response.body)
-        _, retained = _record(self._root, response.retained_record)
-        if retained != payload:
-            raise AcceptanceEvidenceError("authenticated_source_retained_bytes_mismatch")
+        _record(self._root, response.retained_record, json_object=False)
         # A failed authentication check still indexes the safely retained raw
-        # bytes as unverified evidence; it never turns them into an observation.
+        # bytes as unverified evidence, including non-JSON error responses. The
+        # descriptor is indexed only after safe path/type/size/hash validation.
         identity["retained_record"] = dict(response.retained_record)
+        payload = _json(response.body)
         expected_auth = ("firestore_server_identity" if selector.kind in {"webapp_run", "webapp_result"}
             else "authenticated_https_response" if webapp else "authenticated_controller_snapshot")
         if (response.environment != "production" or response.origin != "natural_production"
