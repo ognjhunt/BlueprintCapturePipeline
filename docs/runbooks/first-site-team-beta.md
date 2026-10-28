@@ -1,20 +1,22 @@
 # First site and robot team: supervised beta acceptance
 
-This is the operator route for beta intake, preparation, team setup, evaluation,
-results and recommendation. The free beta and Arm Decision Proof v1 are both
-active. Inviting a site/team does not require completed ADP physical validation;
-a site-specific recommendation still requires its own qualified simulation
-evidence and a passing completed team run. Existing development captures and
-diagnostics cannot supply that evidence.
+This is the supervised external-team route, not a required onboarding checklist
+for every beta job. Blueprint also operates accessible licensed policies itself.
+The free beta and Arm Decision Proof v1 are both active. A site-specific
+recommendation requires its own qualified, independently scored simulation
+evidence against the site's pass mark; a technology team need not operate that
+run. Existing development captures and diagnostic screening do not establish
+that evidence or physical validation.
 
 ## Select the first task and its evidence
 
-Use the normal website configuration route for one rigid object's
-`pick_and_place` between regions of the same support surface. The downstream
-team packet also reads `planar_push`, but the website submission route currently
-admits only `pick_and_place`. A separate destination body, articulated object,
-cloth or insertion is not silently converted into this task. Broad robot-form
-applications and illustrations do not establish task/runtime compatibility.
+Select an actual admitted task, robot and policy interface. The rigid path
+supports a bounded manipulated subject and its supported destination; task-family
+paths retain their own success, runtime and source contracts. Intake accepts
+broader jobs while missing executable assets, resets, physics and scorers remain
+specific preparation requirements. A separate destination body, articulated
+object, cloth or insertion is never silently converted into rigid pick/place.
+Registry entries and illustrations do not establish executable compatibility.
 
 Retain the site's approved instruction, start/goal/reset distribution, outcome
 criteria and relevant timing requirement. Bind these to the capture, scene
@@ -177,32 +179,29 @@ preflight repair, lost allocator receipts, cancellation, partial progress and
 provider-zero. Observe a real stopped/partial outcome and its WebApp delivery
 before claiming the recovery journey is proven.
 
-For missing capture information, preserve the original capture and failure
-reason, and give the site specific views/measurements to re-record. Supplemental
-uploads are not an automatic continuation: the current owner observer admits
-walkthroughs only, and the preparation watch alerts on supplemental uploads.
-Do not relabel a supplement as the original walkthrough or edit finalized
-source membership to force admission.
+For missing capture information, ask for the specific view or measurement on
+the existing job. Its owner link can create an immutable replacement or
+additional-view child capture. A film-only link cannot declare that change.
+The signed child link, server-retained parent identities, generation-specific
+storage receipts and authenticated owner observation establish the lineage;
+an ID or filename alone does not. Do not relabel a supplement as the original
+walkthrough or edit finalized source membership.
 
-The supported supervised recovery route is a **new job/request through the
-existing site intake**, followed by its new walkthrough. Each job's capture
-token resolves its fixed `walkthrough-<requestId>` capture inside
-`site-<requestId>`; there is no same-job replacement selector or supported
-relinking operation. Preserve the original job and capture bytes. Support may
-reference both job IDs in owner notes for context, but must not rewrite source
-membership, copy old evidence joins or imply that the original job was resumed.
-
-The new job requires fresh consent/finalization, ordinary owner observation,
-and its own task packet, robot-free probe, measured qualification and execution
-admission. An old receipt or recommendation cannot qualify the new capture or
-scene revision. This route must be observed on the actual site account before
-calling capture recovery complete.
+Retain original footage, reconstruction, results and failure reasons. Selecting
+a new source ends the applicability of affected old results; it does not erase
+them or let them qualify the child. Resume reusable work only when its source
+bindings remain valid. Parent and child coordinate frames are independent:
+lineage alone does not register or fuse their geometry, or prove that a parent
+scene can be reused for a child task. Current consent, privacy, task, probe and
+execution admission still apply to the selected source. Verify the same-job
+repair on actual authorized footage before claiming live recovery success.
 
 ## Reconstruction providers
 
-Atlas is currently a pose/generation payload handoff, not a completed production
-submit/poll/download adapter. Preserve its current refusal when final assets or
-native geometry binding are missing. A new provider needs verified capability
-data and exact returned image/depth/camera/asset provenance before admission;
-do not invent an image limit or turn generated hidden surfaces into measured
-site truth. Recruiting a compatible first task/team can proceed independently.
+Use the capture's source-bound reconstruction job and retained returned assets.
+Pending provider work is a waiting dependency; a completed visual preview does
+not by itself establish simulator-ready geometry. Preserve specific missing
+asset, scale and native-binding requirements. A new provider needs verified
+capability data and exact returned image/depth/camera/asset provenance before
+admission; do not invent an image limit or turn generated hidden surfaces into
+measured site truth. Partner planning can proceed with explicit evidence limits.
