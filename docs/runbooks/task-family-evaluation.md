@@ -116,6 +116,20 @@ restart. Changed inputs create a new immutable generation. Prose success
 definitions remain prose; this precursor does not invent numeric pass marks or
 renew authority.
 
+`task_family_authoring_status.project_family_authoring_status` is the pure
+projection hook for the existing preparation-status callback. Supply the
+verified preparation and current context plus the trusted running Pipeline
+commit; never obtain that commit from capture input. It emits the exact source
+SHA/context/geometry/mask identities, description/criteria digests, at most eight
+ordered operations, 32 captured target labels, 64 allowlisted requirements and
+one next action that must be a member of those requirements. Its RFC8785 payload
+is at most 48 KiB, leaving room in the v4 callback for the existing selectors.
+It emits no local paths, reads no file, sends nothing and grants no authority.
+The status owner must wire this into the current validated callback/outbox after
+its source/context and ledger checks, retaining the final ledger recheck. A
+missing or invalid projection is a delivery evidence gap, never task readiness.
+That sender integration is pending; no parallel outbox or endpoint is added.
+
 Incomplete or unrecognized source operations remain in their original order,
 including their exact quotes and unresolved aspects. Clarifying the complete
 ordered job comes before numeric criteria when that reading is incomplete or
