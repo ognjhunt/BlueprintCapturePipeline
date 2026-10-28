@@ -228,6 +228,18 @@ def _allocator_alive(attempt: Path) -> bool:
 def run_allocator(argv: list[str], *, attempt: Path) -> int:
     """Run the canonical allocator for one attempt; its own watchdog survives this process."""
 
+    invocation = attempt / "invocation/manifest.json"
+    if invocation.exists():
+        from .allocator_invocation import start_invocation
+        try:
+            pid = start_invocation(invocation, log_path=attempt / "allocator.log")
+        except OSError:
+            _write_exclusive(attempt / SPAWN_FAILED_FILENAME, {"reason": "allocator_spawn_failed",
+                                                              "observed_at_iso": utc_now_iso()})
+            return 127
+        _write_exclusive(attempt / PROCESS_FILENAME, {"pid": pid, "start_ticks": _process_start_ticks(pid),
+                                                     "started_at_iso": utc_now_iso()})
+        return os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
     log_path = attempt / "allocator.log"
     with log_path.open("x", encoding="utf-8") as stream:
         try:
@@ -327,6 +339,17 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
             return _record_ingest(attempt, {"state": "not_launched", "funded": False, "allocated": False,
                                             "reason": "allocator_spawn_failed"})
         if (attempt / INTENT_FILENAME).is_file():
+            if (attempt / "invocation/manifest.json").exists():
+                from .allocator_invocation import fence_unstarted
+                fenced = fence_unstarted(attempt / "invocation/manifest.json")
+                if fenced["status"] == "fenced_unspent":
+                    if (attempt / "allocator" / FUNDING_FILENAME).exists():
+                        # No-create is known, but an issued remote funding hold
+                        # still needs settlement/adoption, never a fresh grant.
+                        return {"state": "unknown", "reason": "probe_funding_reconciliation_required"}
+                    return _record_ingest(attempt, {"state": "not_launched", "funded": False,
+                        "allocated": False, "reason": "allocator_fenced_before_create",
+                        "no_create_fence_path": fenced["proof_path"]})
             # A launched allocator with no result is never followed by a second allocation.
             return {"state": "running" if _allocator_alive(attempt) else "unknown"}
         return _record_ingest(attempt, {"state": "not_launched", "funded": False, "allocated": False})
@@ -422,6 +445,10 @@ def stage_attempt(job: Path, index: int, *, state: Mapping[str, Any], commit: st
                                                   "authority_digest": authority["authority_digest"],
                                                   "bundle_sha256": bundle["bundle_sha256"],
                                                   "staged_at_iso": utc_now_iso()})
+    from .allocator_invocation import retain_invocation
+    retain_invocation(attempt_dir=attempt, argv=argv, binding={
+        "attempt_id": authority["attempt_id"], "authority_digest": authority["authority_digest"],
+        "resource_name": authority["resource_name"], "bundle_sha256": bundle["bundle_sha256"], "provider": "vast"})
     return {"root": attempt, "argv": argv}
 
 

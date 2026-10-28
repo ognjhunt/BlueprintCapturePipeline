@@ -612,7 +612,11 @@ def test_a_launched_allocator_without_a_result_is_never_followed_by_another(tmp_
     world = build_world(tmp_path, monkeypatch)
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
     hooks = runner_hooks(world)
-    hooks["allocator_runner"] = lambda argv, *, attempt: world["allocator_calls"].append(argv) or 0
+    def uncertain_create(argv, *, attempt):
+        world["allocator_calls"].append(argv)
+        runner._write_exclusive(attempt / "invocation/provider_create_intent.json", {"outcome": "unknown"})
+        return 0
+    hooks["allocator_runner"] = uncertain_create
     assert runner.run_queue(world["queue"], hooks=hooks)[0]["reason"] == "unknown"
     assert runner.run_queue(world["queue"], hooks=hooks)[0]["reason"] == "unknown"
     assert len(world["allocator_calls"]) == 1 and world["transport_calls"] == []

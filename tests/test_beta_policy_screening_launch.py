@@ -67,27 +67,49 @@ def test_real_single_candidate_robolab_bundle_passes_both_pre_create_gates(tmp_p
 
 
 def test_launch_intent_crash_is_not_retried_or_released(tmp_path, monkeypatch):
-    from blueprint_pipeline import team_candidate_quick10_launch as native
-    from blueprint_pipeline import beta_policy_screening_worker as service
-
     root = tmp_path / "attempt"
     root.mkdir()
     monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
+    prepared = {"prepared_digest": "sha256:" + "a" * 64, "argv": ["gpu-canary"]}
+    # A legacy intent has no durable job fence and remains honestly ambiguous.
+    launch._write(root / "allocator_launch_intent.json", {"prepared_digest": prepared["prepared_digest"]})
+    kwargs = dict(plan={"source": {}, "site_id": "site-request1"}, candidate={}, attempt_dir=root, prepared=prepared)
+    result = launch.launch_candidate(**kwargs)
+    assert result["status"] == "reconciliation_required"
+    assert result["no_allocation_proven"] is False
+    assert "provider_allocation_performed" not in result
+
+
+def test_new_pre_spawn_crash_recovers_only_after_durable_no_create_fence(tmp_path, monkeypatch):
+    from blueprint_pipeline import allocator_invocation as jobs
+    from blueprint_pipeline import beta_policy_screening_worker as service
+
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
     monkeypatch.setattr(launch, "_check_quote", lambda *args: None)
     monkeypatch.setattr(service, "require_current_source", lambda *args, **kwargs: {})
+    authority = launch._write(tmp_path / "authority.json", {"authority_digest": "sha256:" + "c" * 64,
+                                                          "resource_name": "canonical-owned-resource"})
+    bundle = launch._write(tmp_path / "bundle.json", {"bundle_sha256": "sha256:" + "d" * 64})
+    prepared = {"prepared_digest": "sha256:" + "a" * 64, "argv": ["gpu-canary"],
+                "authority": launch._record(authority), "bundle_receipt": launch._record(bundle)}
     calls = []
-    def crash(argv, **kwargs):
-        calls.append(argv)
-        raise RuntimeError("process may have started before parent crashed")
-    monkeypatch.setattr(native, "_start_allocator", crash)
-    prepared = {"prepared_digest": "sha256:" + "a" * 64, "argv": ["gpu-canary"]}
-    kwargs = dict(plan={"source": {}, "site_id": "site-request1"}, candidate={}, attempt_dir=root, prepared=prepared)
+
+    def crash(path, **kwargs):
+        calls.append(path)
+        raise RuntimeError("crash before or after spawn acknowledgment")
+
+    monkeypatch.setattr(jobs, "start_invocation", crash)
+    kwargs = dict(plan={"source": {}, "site_id": "site-request1", "plan_digest": "sha256:" + "e" * 64},
+                  candidate={"candidate_id": "candidate", "configuration_digest": "sha256:" + "f" * 64},
+                  attempt_dir=tmp_path, prepared=prepared)
     with pytest.raises(RuntimeError):
         launch.launch_candidate(**kwargs)
     result = launch.launch_candidate(**kwargs)
-    assert result["status"] == "reconciliation_required" and len(calls) == 1
-    assert result["no_allocation_proven"] is False
-    assert "provider_allocation_performed" not in result
+    assert result["retryable_unstarted_refusal"] is True
+    assert result["no_allocation_proven"] is True
+    assert result["provider_allocation_performed"] is False
+    assert len(calls) == 1
+    assert jobs.run_invocation(calls[0], allocator=lambda args: pytest.fail("late duplicate create")) == 2
 
 
 def test_closed_allocator_refusal_is_the_only_free_release(tmp_path, monkeypatch):

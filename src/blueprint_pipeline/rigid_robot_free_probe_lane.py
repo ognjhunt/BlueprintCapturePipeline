@@ -497,6 +497,9 @@ def run_rigid_robot_free_probe_allocator_lane(args: Any, control_context: tuple[
             from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
 
             source = bundle.get("runtime_source_packet") or {}
+            if args.execute:
+                from .allocator_invocation import before_provider_create
+                before_provider_create(authority=authority, bundle=bundle)
             result = run_arena_native_control_vast(
                 approval_path=".", job_dir=args.adp_job_dir, paid_resource_admission_grant=grant,
                 execute=args.execute, prepared_bundle=bundle, machine_avoidlist_path=args.adp_machine_avoidlist,
