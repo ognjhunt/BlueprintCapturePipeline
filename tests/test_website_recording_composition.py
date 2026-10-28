@@ -39,34 +39,46 @@ def media(tmp_path):
 
 
 @pytest.mark.slow
-def test_real_composition_keeps_every_frame_native_timing_pixels_and_originals(tmp_path, media, monkeypatch):
+@pytest.mark.parametrize("rotated_first", [False, True])
+def test_real_composition_keeps_every_frame_native_timing_pixels_and_originals(tmp_path, media, monkeypatch, rotated_first):
     ffmpeg, ffprobe, rows = media
+    if rotated_first:
+        rows = [_row(rows[1]["source_video"], "walkthrough-req1"), _row(rows[0]["source_video"], "supplement-" + "a" * 40)]
     original_hashes = [_sha256_file(row["source_video"]) for row in rows]
     value = composition.compose_recordings(recordings=rows, output_root=tmp_path / "method")
     path = Path(value["source_video"])
     output = _probe_video(path, ffprobe)
     assert output["frame_count"] == 12
+    assert not output["stream"]["display_rotation_degrees"]
     assert (value["width"], value["height"]) == (96, 80)
     assert value["audio_stream_count"] == 0
     assert value["coordinate_frames_independent"] is True
     assert value["geometry_registration_performed"] is False
     assert [_sha256_file(row["source_video"]) for row in rows] == original_hashes
     first, second = value["sources"]
-    assert (first["frame_count"], second["frame_count"]) == (5, 7)
-    assert second["output_first_frame_index"] == 5
-    assert second["display_rotation_degrees"] == 90
-    assert output["presentation_times_seconds"][5] == second["output_start_seconds"]
-    # Compare decoded RGB pixels to the declared rotation/padding of each raw
-    # source, including the join. This catches re-encoding loss or dropped views.
-    layout = [{key: row[key] for key in ("display_rotation_degrees",)} for row in value["sources"]]
-    command = composition.composition_command(ffmpeg, [row["source_video"] for row in rows], layout, 96, 80, path)
-    prefix = command[:command.index("-c:v")]
-    expected = _run(prefix + ["-c:v", "rawvideo", "-pix_fmt", "rgb24", "-fps_mode", "passthrough", "-f", "framemd5", "-"]).stdout
-    actual = _run([ffmpeg, "-v", "error", "-i", str(path), "-map", "0:v:0", "-c:v", "rawvideo", "-pix_fmt", "rgb24",
-                   "-fps_mode", "passthrough", "-f", "framemd5", "-"]).stdout
-    def hashes(data):
-        return [line.split(b",")[-1].strip() for line in data.splitlines() if not line.startswith(b"#")]
-    assert hashes(expected) == hashes(actual)
+    counts = (7, 5) if rotated_first else (5, 7)
+    assert (first["frame_count"], second["frame_count"]) == counts
+    assert second["output_first_frame_index"] == counts[0]
+    assert second["display_rotation_degrees"] == (0 if rotated_first else 90)
+    assert output["presentation_times_seconds"][counts[0]] == second["output_start_seconds"]
+    # Independently rotate/pad each decoded original with Pillow. This checks
+    # the declared transform against actual pixels, not the encoder command.
+    from PIL import Image
+    expected = []
+    for row, segment in zip(rows, value["sources"], strict=True):
+        decoded = _run([ffmpeg, "-v", "error", "-noautorotate", "-i", str(row["source_video"]), "-map", "0:v:0",
+                        "-pix_fmt", "rgb24", "-fps_mode", "passthrough", "-f", "rawvideo", "-"]).stdout
+        size = (segment["source_width"], segment["source_height"])
+        stride = size[0] * size[1] * 3
+        assert len(decoded) == stride * segment["frame_count"]
+        for offset in range(0, len(decoded), stride):
+            image = Image.frombytes("RGB", size, decoded[offset:offset + stride]).rotate(segment["display_rotation_degrees"], expand=True)
+            canvas = Image.new("RGB", (96, 80), "black")
+            canvas.paste(image, (segment["padding_left"], segment["padding_top"]))
+            expected.append(canvas.tobytes())
+    actual = _run([ffmpeg, "-v", "error", "-noautorotate", "-i", str(path), "-map", "0:v:0", "-pix_fmt", "rgb24",
+                   "-fps_mode", "passthrough", "-f", "rawvideo", "-"]).stdout
+    assert actual == b"".join(expected)
     # Completed inputs reopen without encoding; their bytes and provenance stay
     # stable even if another operation is temporarily unavailable.
     monkeypatch.setattr(composition, "_probe_video", lambda *_: pytest.fail("completed composition was decoded again"))
@@ -120,3 +132,45 @@ def test_an_interrupted_receipt_write_reuses_the_same_derivative_without_overwri
     resumed = composition.compose_recordings(recordings=rows, output_root=tmp_path / "method")
     assert resumed == original
     assert (video.stat().st_ino, video.stat().st_mtime_ns) == (before.st_ino, before.st_mtime_ns)
+
+
+@pytest.mark.slow
+def test_mixed_orientation_views_are_not_rejected_for_the_carriers_black_padding(tmp_path, media, monkeypatch):
+    import cv2
+    import numpy as np
+    from PIL import Image
+    from blueprint_pipeline import atlas_video_inputs as video, atlas_video_extension as extension
+    _, _, rows = media
+    result = composition.compose_recordings(recordings=rows, output_root=tmp_path / "method")
+    source = Path(result["source_video"])
+    survey_root = tmp_path / "survey"
+    survey = video.survey_video(source_video=source, output_root=survey_root, capture_id="current", sample_count=4)
+    assert {row["recording_capture_id"] for row in survey["frames"]} == {row["capture_id"] for row in rows}
+    for frame in survey["frames"]:
+        with Image.open(frame["source_image_path"]) as image:
+            content = np.asarray(image.crop(frame["source_content_bounds"]).convert("L"))
+            expected = round(float(np.mean((content < 5) | (content > 250))), 4)
+            assert frame["clipped_fraction"] == expected
+    portrait = next(frame for frame in survey["frames"] if frame["recording_capture_id"] == rows[1]["capture_id"])
+    with Image.open(portrait["source_image_path"]) as image:
+        full = np.asarray(image.convert("L"))
+        assert float(np.mean((full < 5) | (full > 250))) > portrait["clipped_fraction"]
+
+    masks = []
+    class Features:
+        def detectAndCompute(self, _image, mask):
+            masks.append(mask.copy())
+            return None, None
+    monkeypatch.setattr(cv2, "SIFT_create", lambda **_: Features())
+    video._features(portrait, 0)
+    left, top, right, bottom = portrait["source_content_bounds"]
+    assert np.count_nonzero(masks[0]) == (right - left) * (bottom - top)
+    assert np.all(masks[0][top:bottom, left:right] == 255)
+
+    index = next((survey_root / "source").rglob("decoded_observation_index.json"))
+    review = {"schema_version": video.REVIEW_SCHEMA, "survey_digest": survey["digest"], "moving_people_excluded": True,
+              "same_scene_state": True, "static_intervals_seconds": [[0, 2]]}
+    extended = extension.extend_survey(source_video=source, base_survey=survey_root / "atlas_video_survey.json",
+        decoded_index=index, review=review, output_root=tmp_path / "extended", step_seconds=.1, gap_threshold_seconds=.15)
+    assert all(frame["quality_basis"] == "original_content_excluding_carrier_padding" for frame in extended["frames"])
+    assert extended["heldout_pixels_included"] is False

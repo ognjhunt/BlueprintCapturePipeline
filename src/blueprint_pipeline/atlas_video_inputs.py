@@ -65,6 +65,8 @@ def survey_video(*, source_video: Path, output_root: Path, capture_id: str,
     if not math.isfinite(rotation) or rotation % 90:
         raise ValueError("atlas_source_rotation_unsupported")
     import cv2
+    from .website_recording_composition import load_composition, frame_provenance
+    composition = load_composition(source_video, _sha256_file(source_video))
     frames = []
     tiles = []
     for row in sorted(candidate["frames"], key=lambda r: r["t_video_sec"]):
@@ -73,7 +75,9 @@ def survey_video(*, source_video: Path, output_root: Path, capture_id: str,
             raise ValueError("atlas_source_frame_changed")
         with Image.open(source) as original:
             upright = original.convert("RGB").rotate(rotation, expand=True)
-            small = upright.copy()
+            provenance = frame_provenance(composition, row["t_video_sec"])
+            content = upright.crop(provenance["source_content_bounds"]) if provenance else upright
+            small = content.copy()
             small.thumbnail((640, 640))
             gray = np.asarray(small.convert("L"))
             sharpness = float(cv2.Laplacian(gray, cv2.CV_64F).var())
@@ -81,10 +85,10 @@ def survey_video(*, source_video: Path, output_root: Path, capture_id: str,
             frames.append({"frame_id": row["frame_id"], "timestamp_seconds": row["t_video_sec"],
                            "source_image_path": str(source), "source_image_digest": row["frame_digest"],
                            "sharpness": round(sharpness, 4), "clipped_fraction": round(clipped, 4),
-                           "width": upright.width, "height": upright.height})
+                           "width": upright.width, "height": upright.height, **provenance})
             tile = Image.new("RGB", (256, 170), "#181818")
-            upright.thumbnail((256, 144))
-            tile.paste(upright, (0, 0))
+            content.thumbnail((256, 144))
+            tile.paste(content, (0, 0))
             ImageDraw.Draw(tile).text((4, 148), f'{row["t_video_sec"]:.2f}s  {row["frame_id"]}', fill="white")
             tiles.append(tile)
     sheet = Image.new("RGB", (5 * 256, math.ceil(len(tiles) / 5) * 170), "#181818")
@@ -109,8 +113,20 @@ def _features(row: Mapping[str, Any], rotation: float):
     import cv2
     with Image.open(row["source_image_path"]) as image:
         image = image.convert("L").rotate(rotation, expand=True)
+        original_size = image.size
         image.thumbnail((896, 896))
-        return cv2.SIFT_create(nfeatures=4000).detectAndCompute(np.asarray(image), None)
+        mask = None
+        bounds = row.get("source_content_bounds")
+        if bounds is not None:
+            if (not isinstance(bounds, list) or len(bounds) != 4 or any(type(v) is not int for v in bounds)
+                    or not 0 <= bounds[0] < bounds[2] <= original_size[0]
+                    or not 0 <= bounds[1] < bounds[3] <= original_size[1]):
+                raise ValueError("atlas_source_content_bounds_invalid")
+            sx, sy = image.width / original_size[0], image.height / original_size[1]
+            mask = np.zeros((image.height, image.width), dtype=np.uint8)
+            mask[math.ceil(bounds[1] * sy):math.floor(bounds[3] * sy),
+                 math.ceil(bounds[0] * sx):math.floor(bounds[2] * sx)] = 255
+        return cv2.SIFT_create(nfeatures=4000).detectAndCompute(np.asarray(image), mask)
 
 
 def _overlap(a, b) -> tuple[int, float]:
