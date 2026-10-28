@@ -35,7 +35,7 @@ import numpy as np
 from PIL import Image
 
 from .camera_geometry_validation import validate_se3_matrix
-from .common import write_json
+from .core.handoff_lease import guarded_handoff_write_json, handoff_effect, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -209,20 +209,21 @@ def _geometry_frames(*, views: list[Mapping[str, Any]], pose: Mapping[str, Any],
             raise ValueError("atlas_source_geometry_no_valid_depth")
         world_from_camera = opencv_world_from_camera(camera["extrinsics"], meters_per_unit)
         geometry_path = output_root / "geometry" / f"{index:06d}.npz"
-        geometry_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(geometry_path,
-                            depth_m=np.where(valid, sampled_depth * meters_per_unit, 0).astype(np.float32),
-                            confidence=np.where(valid, sampled_confidence, 0).astype(np.float32), valid_mask=valid)
-        frame = dict(row)
-        for key, _ in _FRAME_FILES:
-            source = Path(row[key])
-            if retain_inputs:
-                # Retain input bytes beside the output so the whole result can move hosts.
-                target = output_root / key / f"{index:06d}{source.suffix}"
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(source, target)
-                source = target
-            frame[key] = str(source.resolve().relative_to(output_root))
+        with handoff_effect("atlas_geometry_frame_promotion"):
+            geometry_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(geometry_path,
+                                depth_m=np.where(valid, sampled_depth * meters_per_unit, 0).astype(np.float32),
+                                confidence=np.where(valid, sampled_confidence, 0).astype(np.float32), valid_mask=valid)
+            frame = dict(row)
+            for key, _ in _FRAME_FILES:
+                source = Path(row[key])
+                if retain_inputs:
+                    # Retain input bytes beside the output so the whole result can move hosts.
+                    target = output_root / key / f"{index:06d}{source.suffix}"
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(source, target)
+                    source = target
+                frame[key] = str(source.resolve().relative_to(output_root))
         frames.append({**frame, "geometry_path": str(geometry_path.relative_to(output_root)),
                        "geometry_digest": _sha256_file(geometry_path),
                        "intrinsics": model_intrinsics(camera["intrinsics"], mapping),
@@ -245,7 +246,7 @@ def _write_result(*, binding: Mapping[str, Any], frames: list[Mapping[str, Any]]
               "metric_measurement_proven": False, "physical_evidence": False,
               "confidence_is_calibrated_probability": False, "frames": list(frames)}
     result["digest"] = canonical_digest(result, digest_field="digest")
-    write_json(manifest_path, result)
+    guarded_handoff_write_json(manifest_path, result)
     return _rebound(result, manifest_path)
 
 
@@ -254,6 +255,7 @@ def atlas_source_geometry(*, geometry_root: Path, output_root: Path | None = Non
     """Write ``source_geometry.json`` from a retained, admitted Atlas pose run over these inputs."""
     from .website_scene_geometry import INPUT_SCHEMA, _bound_frames
 
+    handoff_lease_checkpoint("atlas_source_geometry_start")
     geometry_root = geometry_root.resolve()
     output_root = (output_root or geometry_root / "atlas_source_geometry").resolve()
     input_manifest = geometry_root / "worker_inputs" / "geometry_inputs.json"
@@ -262,6 +264,7 @@ def atlas_source_geometry(*, geometry_root: Path, output_root: Path | None = Non
         raise ValueError("atlas_source_geometry_inputs_invalid")
     prepared = _bound_frames(inputs, input_manifest.parent, geometry=False)
     pose = _verified_pose(inputs=inputs, frames=prepared, pose_root=geometry_root)
+    handoff_lease_checkpoint("atlas_source_geometry_after_pose")
     record = _scale_record(scale)
     binding = {**inputs["binding"], "input_digest": inputs["digest"], "geometry_backend": BACKEND,
                "atlas_geometry_adapter_version": ADAPTER_VERSION, "atlas_pose_result_digest": pose["digest"],
@@ -291,12 +294,14 @@ def atlas_posed_view_geometry(*, pose_root: Path, rotation: float, scale: Mappin
     from .atlas_video_inputs import GEOMETRY_INPUTS_FILE
     from .website_scene_geometry import INPUT_SCHEMA, _bound_frames, source_to_view_pixels
 
+    handoff_lease_checkpoint("atlas_posed_view_geometry_start")
     pose_root, output_root = pose_root.resolve(), output_root.resolve()
     inputs = json.loads((pose_root / GEOMETRY_INPUTS_FILE).read_text())
     if inputs.get("schema_version") != INPUT_SCHEMA or inputs.get("heldout_pixels_included") is not False:
         raise ValueError("atlas_source_geometry_inputs_invalid")
     prepared = _bound_frames(inputs, pose_root, geometry=False)
     pose = _verified_pose(inputs=inputs, frames=prepared, pose_root=pose_root)
+    handoff_lease_checkpoint("atlas_posed_view_geometry_after_pose")
     from .atlas_context_fov import full_view_sources
     upright_sources = full_view_sources({**inputs, "frames": prepared}, pose_root)
     record = _scale_record(scale)
@@ -313,12 +318,15 @@ def atlas_posed_view_geometry(*, pose_root: Path, rotation: float, scale: Mappin
             cover = max(grid[0] / width, grid[1] / height)
             size = (max(2, round(width * cover)), max(2, round(height * cover)))
             view_path = worker / "views" / f"{index:06d}.png"
-            view_path.parent.mkdir(parents=True, exist_ok=True)
-            upright.convert("RGB").resize(size, Image.Resampling.LANCZOS).save(view_path)
+            view = upright.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+            with handoff_effect("atlas_worker_view_promotion"):
+                view_path.parent.mkdir(parents=True, exist_ok=True)
+                view.save(view_path)
             source_size = source.size
         observation = worker / "observations" / f"{index:06d}{Path(row['source_image_path']).suffix}"
-        observation.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(row["source_image_path"], observation)
+        with handoff_effect("atlas_worker_observation_promotion"):
+            observation.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(row["source_image_path"], observation)
         expected = (source_size[1], source_size[0]) if int(rotation) % 180 else source_size
         if (width, height) != expected:
             raise ValueError("atlas_source_geometry_rotation_mismatch")
@@ -338,7 +346,7 @@ def atlas_posed_view_geometry(*, pose_root: Path, rotation: float, scale: Mappin
                                    "adapter_version": "atlas_posed_views_v1"},
                        "frames": views, "heldout_pixels_included": False, "claim_ceiling": "development_only"}
     geometry_inputs["digest"] = canonical_digest(geometry_inputs, digest_field="digest")
-    write_json(worker / "geometry_inputs.json", geometry_inputs)
+    guarded_handoff_write_json(worker / "geometry_inputs.json", geometry_inputs)
     binding = {**geometry_inputs["binding"], "input_digest": geometry_inputs["digest"], "geometry_backend": BACKEND,
                "atlas_geometry_adapter_version": ADAPTER_VERSION, "atlas_pose_result_digest": pose["digest"],
                "atlas_operation_id": pose["operation"]["id"], "scale": record}
