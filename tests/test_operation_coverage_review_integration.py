@@ -173,6 +173,38 @@ def test_handoff_only_explicit_controller_flag_can_buy_clarification(tmp_path, m
         assert calls["configuration"] == calls["planner"] == []
 
 
+def test_family_handoff_does_not_claim_no_provider_mutation_after_a_clarification(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_scene_handoff as handoff
+    from tests.test_website_scene_handoff import inputs, atlas_ready, ATLAS
+    from tests.test_task_semantics_catalog_composition import catalog_semantics_fixture
+    kwargs = inputs(tmp_path)
+    context, source, artifact = catalog_semantics_fixture("button_press")
+    context.update(capture_id="cap-1", scene_id="scene-1")
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    receipt = artifact["planner_receipt"]
+    receipt["binding"]["task_context_digest"] = context["context_digest"]
+    receipt["binding_digest"] = canonical_digest(receipt["binding"])
+    receipt["proposal"]["task_semantics"].update(covers_entire_job=False,
+        unresolved_aspects=["The numeric thresholds still require owner confirmation."])
+    receipt["proposal_digest"] = canonical_digest(receipt["proposal"])
+    job = tmp_path / "pipeline/atlas"
+    write_json(job / "selection_binding.json", {"planner_receipt": receipt})
+    semantics.retain_task_semantics(job_dir=job, receipt=receipt, task_context=context, source_video_digest=source)
+    kwargs["descriptor"]["metadata"]["site_task_context"] = context
+    ready = atlas_ready(tmp_path)
+    ready["source_geometry"]["binding"] = {"source_video_digest": source}
+    monkeypatch.setattr(ATLAS, lambda **_: ready)
+    calls = allocator_seams(monkeypatch)
+    monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **kw: kw["task_masks"])
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", lambda **_: {
+        "status": "needs_input", "blockers": ["website_task_family_success_contract_required"],
+        "task_evaluation_inputs": {}, "digest": "sha256:" + "b" * 64})
+    result = handoff.prepare_website_scene_handoff(**kwargs, allow_operation_coverage_review=True)
+    assert result["status"] == "needs_input", result
+    assert "provider_mutation_performed" not in result
+    assert len(calls["planner"]) == 1
+
+
 @pytest.mark.parametrize("mode", ["atlas-status", "discover-selector"])
 def test_selected_read_surfaces_never_invoke_site_orchestrator_or_clarifier(tmp_path, monkeypatch, mode):
     from blueprint_pipeline import selected_handoff_recovery, selected_atlas_preview_recovery
