@@ -142,12 +142,20 @@ def test_persisted_completed_ack_uses_actual_native_result_record(sources):
     assert value.facts["publication_digest"] == sources.publication["publication_digest"]
 
 
+@pytest.mark.parametrize("retained", [{"publication_version": "v1"}, {"publication_version": "v2"}], indirect=True)
+def test_collector_reads_both_exact_existing_native_publication_versions(sources):
+    value, _ = sources.acquire()
+    assert value is not None
+    assert value.facts["publication_digest"] == sources.publication["publication_digest"]
+
+
 def queued_sources(sources):
     queued = deepcopy(sources.publication)
     queued.update(revision=1, status="queued", generated_at=stamp(24))
     for row in queued["candidates"]:
         if row["candidate_id"] == sources.plan["candidates"][0]["candidate_id"]:
-            row.update(status="pending", episodes_scored=0, session_result_digest=None)
+            row.update(status="pending", episodes_scored=0, episodes_succeeded=0,
+                episodes_failed=0, episodes_void=0, success_rate=None, session_result_digest=None)
     queued["publication_digest"] = cross_runtime_canonical_digest(queued, digest_field="publication_digest")
     sources.result["publication_storage"] = stored(queued)
     sources.run.update(state="queued", publication_digest=queued["publication_digest"], publication_revision=1)

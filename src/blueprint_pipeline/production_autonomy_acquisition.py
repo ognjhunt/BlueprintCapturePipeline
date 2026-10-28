@@ -1,6 +1,6 @@
 """Narrow authenticated acquisition of existing AUT-21 retained sources.
 
-Beta journey: join persisted screening evidence to the current job projection.
+Beta journey: join one bounded evaluation to the current job projection.
 This is preparation for an operator-owned reader, not a production reader or an
 acceptance run. There is no default reader, network client, credential loader,
 CLI import hook, writer, publication retry, or provider call here.
@@ -29,10 +29,10 @@ import re
 from typing import Any
 import zlib
 
-from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .decision_evidence_contracts import canonical_digest
 from .production_autonomy_acceptance import (
     ATTEMPT_SCHEMA, SOURCE_KEYS, AcceptanceEvidenceError, TrustedObservation,
-    _DIGEST, _COMMIT, _epoch_stamp, _object, _record, _stamp,
+    _DIGEST, _COMMIT, _epoch_stamp, _object, _publication_contract, _record, _stamp,
 )
 
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,191}\Z")
@@ -212,12 +212,14 @@ class AuthenticatedAcceptanceCollector:
 
     def _publication_binding(self, value, *, queued):
         source, plan = self._attempt["source"], self._plan
-        if (value.get("schema_version") != "beta_policy_screening_publication.v1"
-                or value.get("publication_digest") != cross_runtime_canonical_digest(value, digest_field="publication_digest")
-                or value.get("campaign_id") != plan["campaign_id"] or value.get("site_id") != source["site_id"]
+        try:
+            _publication_contract(value)
+        except AcceptanceEvidenceError:
+            raise AcceptanceEvidenceError("acquisition_publication_binding_invalid") from None
+        if (value.get("campaign_id") != plan["campaign_id"] or value.get("site_id") != source["site_id"]
                 or value.get("plan_digest") != plan["plan_digest"] or value.get("source") != plan["source"]
-                or value.get("purpose") != "screening" or value.get("claim_ceiling") != "diagnostic_policy_execution"
-                or value.get("execution_operator") != {"kind": "blueprint"} or value.get("recommendation_eligible") is not False
+                or value.get("catalog_digest") != plan["catalog_digest"]
+                or value.get("scenario_plan_digest") != plan["scenario_plan_digest"]
                 or type(value.get("revision")) is not int or value["revision"] < 1
                 or value.get("status") != ("queued" if queued else "completed")):
             raise AcceptanceEvidenceError("acquisition_publication_binding_invalid")

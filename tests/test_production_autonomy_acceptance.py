@@ -17,7 +17,7 @@ from blueprint_pipeline import beta_policy_screening_closeout as closeout
 from blueprint_pipeline import episode_visual_evidence as visual
 from blueprint_pipeline import production_autonomy_acceptance as acceptance
 from blueprint_pipeline.beta_policy_screening_result import candidate_result_summary, screening_publication
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
     BETA_RUN_KIND, PROVIDER_BUNDLE_SCHEMA_VERSION, PROVIDER_RESULT_FILENAME,
     consume_session_authority_once,
@@ -216,7 +216,18 @@ def retained(tmp_path, monkeypatch, request):
             "worker_image_digest": "sha256:" + "3" * 64}}}, "attempt_digest")
     publication = screening_publication(plan=value, state={"revision": 2, "updated_at": stamp(completed_seconds + 10),
         "candidates": {result["candidate_ids"][0]: {"status": "completed", "summary": candidate_result_summary(
-            result, plan=value, candidate=value["candidates"][0])}}}, budget={})
+            result, plan=value, candidate=value["candidates"][0])}}}, budget={"currency": "USD", "limit_usd": "15",
+                "committed_upper_bound_usd": "4", "spent_upper_bound_usd": "4", "reserved_usd": "0"})
+    version = options.get("publication_version")
+    if version is not None:
+        publication.update(schema_version="beta_policy_screening_publication." + version,
+            purpose="job_evaluation" if version == "v2" else "screening",
+            claim_ceiling="simulation_estimate" if version == "v2" else "diagnostic_policy_execution")
+        if version == "v2":
+            publication.pop("recommendation_eligible", None)
+        else:
+            publication["recommendation_eligible"] = False
+        publication["publication_digest"] = cross_runtime_canonical_digest(publication, digest_field="publication_digest")
     rows = {role: {"schema_version": "test.retained_observation.v1"} for role in acceptance.ROLES}
     site_budget = seal({"schema_version": "blueprint.beta_policy_screening_ledger.v1", "campaigns": {
         value["campaign_id"]: {"site_id": value["site_id"], "plan_digest": value["plan_digest"],
@@ -296,17 +307,89 @@ def replace_attempt(retained, attempt):
     retained["attempt"] = attempt
 
 
-def test_joined_contract_keeps_screening_finalists_physical_and_concurrency_separate(retained):
+def test_joined_contract_keeps_one_evaluation_without_physical_or_concurrency_upgrade(retained):
     result = report(retained)
     assert result["blockers"] == []
     assert result["status"] == "verified"
     assert result["milestones"]["unattended_completion_within_authorized_stages"] is True
     assert result["milestones"]["normal_retention_observed"] is False
-    assert result["owner_approved_finalist_recommendation"] is False
+    assert result["evaluation_path"] == "single_bounded_evaluation"
+    assert "owner_approved_finalist_recommendation" not in result
     assert not any(result["proof_boundary"][key] for key in
                    ("physical_validation_proven", "concurrency_proven", "performs_live_actions", "grants_spending_authority"))
     assert result["costs"] == {"status": "unknown"}
     assert result["storage"] == {"status": "not_observed"}
+
+
+@pytest.mark.parametrize("retained", [{"publication_version": "v1"}, {"publication_version": "v2"}], indirect=True)
+def test_exact_existing_publication_versions_preserve_native_session_contract(retained):
+    result = report(retained)
+    assert result["status"] == "verified", result["blockers"]
+    assert result["milestones"]["unattended_completion_within_authorized_stages"] is True
+    assert retained["result"]["claim_ceiling"] == "diagnostic_policy_execution"
+    publication = json.loads(Path(retained["manifest"]["receipts"]["publication"]["path"]).read_text())
+    assert result["publication_contract"] == {key: publication[key] for key in ("schema_version", "purpose", "claim_ceiling")}
+
+
+def replace_publication(retained, change):
+    previous = retained["manifest"]["receipts"]["publication"]
+    value = json.loads(Path(previous["path"]).read_text())
+    change(value)
+    value["publication_digest"] = cross_runtime_canonical_digest(value, digest_field="publication_digest")
+    rec = record(Path(previous["path"]), value)
+    retained["manifest"]["receipts"]["publication"] = rec
+    observed = retained["acquisitions"].rows.pop(("publication", previous["sha256"]))
+    retained["acquisitions"].rows["publication", rec["sha256"]] = replace(observed,
+        artifact_sha256=rec["sha256"], schema_version=value["schema_version"])
+    for role in ("publication_ack", "customer_readback"):
+        change_acquisition(retained, role, facts={"publication_digest": value["publication_digest"]})
+
+
+@pytest.mark.parametrize("retained", [{"publication_version": "v1"}, {"publication_version": "v2"}], indirect=True)
+def test_single_evaluation_requires_no_new_customer_or_finalist_approval(retained):
+    attempt = deepcopy(retained["attempt"])
+    attempt["declared_human_boundaries"] = []
+    replace_attempt(retained, attempt)
+    assert report(retained)["status"] == "verified"
+    attempt["declared_human_boundaries"] = ["site_finalist_approval"]
+    replace_attempt(retained, attempt)
+    assert "declared_boundaries_invalid" in report(retained)["blockers"]
+
+
+@pytest.mark.parametrize("retained,change", [
+    ({"publication_version": "v1"}, lambda value: value.pop("recommendation_eligible")),
+    ({"publication_version": "v1"}, lambda value: value.update(purpose="job_evaluation")),
+    ({"publication_version": "v1"}, lambda value: value.update(claim_ceiling="simulation_estimate")),
+    ({"publication_version": "v2"}, lambda value: value.update(recommendation_eligible=False)),
+    ({"publication_version": "v2"}, lambda value: value.update(purpose="screening")),
+    ({"publication_version": "v2"}, lambda value: value.update(claim_ceiling="diagnostic_policy_execution")),
+    ({"publication_version": "v2"}, lambda value: value.update(claim_ceiling="physical_validation")),
+    ({"publication_version": "v2"}, lambda value: value.update(schema_version="beta_policy_screening_publication.v3")),
+    ({"publication_version": "v2"}, lambda value: value["candidates"][0].update(episodes_failed=11)),
+    ({"publication_version": "v2"}, lambda value: value["budget"].update(limit_usd="16")),
+], indirect=["retained"])
+def test_resealed_publication_may_not_mix_versions_or_weaken_counts_and_caps(retained, change):
+    replace_publication(retained, change)
+    assert "publication_contract_invalid" in report(retained)["blockers"]
+
+
+@pytest.mark.parametrize("field", ["campaign_id", "catalog_digest", "scenario_plan_digest"])
+def test_publication_exact_native_plan_identity_is_preserved(retained, field):
+    replace_publication(retained, lambda value: value.update({field: "other-campaign" if field == "campaign_id" else "sha256:" + "0" * 64}))
+    assert "publication_binding_invalid" in report(retained)["blockers"]
+
+
+def test_valid_publication_counts_must_still_join_actual_independent_native_outcomes(retained):
+    def changed(value):
+        row = value["candidates"][0]
+        row.update(episodes_succeeded=0, episodes_failed=10, success_rate=0)
+    replace_publication(retained, changed)
+    assert "publication_result_mismatch" in report(retained)["blockers"]
+
+
+def test_publication_candidate_configuration_cannot_rebind_native_result(retained):
+    replace_publication(retained, lambda value: value["candidates"][0].update(configuration_digest="sha256:" + "0" * 64))
+    assert "publication_candidate_binding_mismatch" in report(retained)["blockers"]
 
 
 def test_complete_job_json_without_authenticated_acquisition_cannot_attest_itself(retained):

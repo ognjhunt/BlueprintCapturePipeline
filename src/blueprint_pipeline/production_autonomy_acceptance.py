@@ -12,9 +12,11 @@ surface.  Adapters must interpret their known producer schemas, never copy
 job-controlled projection descriptors.  With no such adapter, evidence stays
 ``not_proven``.  The default release-report integration deliberately has none.
 
-The first executable envelope is the existing rigid/DROID screening route.
+The first executable envelope is the existing rigid/DROID bounded evaluation.
 Native plan, probe, session, independent scoring, media and scoped closeout
-contracts are rechecked; screening cannot prove a finalist recommendation.
+contracts are rechecked. Current v2 job estimates and retained v1 publications
+keep their exact wire contracts; there is no separate finalist stage. Native
+session diagnostic ceilings continue to exclude physical and ADP validation.
 Service images and candidate worker images are distinct frozen identities.
 The native episode's ``container_identity_digest`` currently identifies the
 policy runtime; it is not an OCI image readback.  Only an authenticated
@@ -45,6 +47,21 @@ ATTEMPT_SCHEMA = "blueprint.production_autonomy_attempt.v1"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _JSON_LIMIT = 16 * 1024 * 1024
+_PUBLICATION_FIELDS = frozenset({
+    "schema_version", "campaign_id", "site_id", "plan_digest", "catalog_digest", "scenario_plan_digest",
+    "source", "revision", "status", "purpose", "execution_operator", "claim_ceiling", "candidates", "budget",
+    "generated_at", "publication_digest",
+})
+_PUBLICATION_VARIANTS = {
+    "beta_policy_screening_publication.v1": ("screening", "diagnostic_policy_execution"),
+    "beta_policy_screening_publication.v2": ("job_evaluation", "simulation_estimate"),
+}
+_CANDIDATE_FIELDS = frozenset({
+    "candidate_id", "configuration_digest", "display_name", "status", "blockers", "episodes_planned",
+    "episodes_scored", "episodes_succeeded", "episodes_failed", "episodes_void", "success_rate", "session_result_digest",
+})
+_WIRE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,191}\Z")
+_MONEY = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?\Z")
 SOURCE_KEYS = (
     "tenant_id", "site_id", "job_id", "capture_id", "task_id",
     "technical_brief_digest", "task_context_digest", "source_generation_digest",
@@ -131,6 +148,80 @@ def _epoch_stamp(value: Any) -> datetime:
         return datetime.fromtimestamp(value, tz=timezone.utc)
     except (ValueError, OSError, OverflowError) as exc:
         raise AcceptanceEvidenceError("provider_observation_timestamp_invalid") from exc
+
+
+def _publication_contract(value: Mapping[str, Any]) -> dict[str, str]:
+    """Existing exact WebApp v1/v2 wire variants, with no tier conversion.
+
+    Mirrors betaPolicyScreeningContract's strict variants and count/budget
+    invariants. Native runtime contracts are validated separately; accepting a
+    job-facing simulation_estimate never changes their diagnostic ceiling.
+    """
+    from .beta_policy_screening_result import CANDIDATE_STATUSES, SOURCE_FIELDS, campaign_status
+
+    schema = value.get("schema_version")
+    variant = _PUBLICATION_VARIANTS.get(schema) if isinstance(schema, str) else None
+    fields = _PUBLICATION_FIELDS | ({"recommendation_eligible"} if schema == "beta_policy_screening_publication.v1" else set())
+    if (variant is None or set(value) != fields
+            or (value.get("purpose"), value.get("claim_ceiling")) != variant
+            or (schema.endswith(".v1") and value.get("recommendation_eligible") is not False)
+            or value.get("execution_operator") != {"kind": "blueprint"}
+            or type(value.get("revision")) is not int or not 1 <= value["revision"] <= 9_007_199_254_740_991
+            or any(not isinstance(value.get(key), str) or not _WIRE_ID.fullmatch(value[key]) for key in ("campaign_id", "site_id"))
+            or any(not isinstance(value.get(key), str) or not _DIGEST.fullmatch(value[key]) for key in (
+                "plan_digest", "catalog_digest", "scenario_plan_digest", "publication_digest"))
+            or value["publication_digest"] != cross_runtime_canonical_digest(value, digest_field="publication_digest")):
+        raise AcceptanceEvidenceError("publication_contract_invalid")
+    source = _object(value.get("source"))
+    if set(source) != set(SOURCE_FIELDS) or any(not isinstance(item, str)
+            or not (_DIGEST if key.endswith("digest") else _WIRE_ID).fullmatch(item) for key, item in source.items()):
+        raise AcceptanceEvidenceError("publication_contract_invalid")
+    generated = value.get("generated_at")
+    if not isinstance(generated, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", generated):
+        raise AcceptanceEvidenceError("publication_contract_invalid")
+    _stamp(generated)
+    budget = _object(value.get("budget"))
+    amounts = ("limit_usd", "committed_upper_bound_usd", "spent_upper_bound_usd", "reserved_usd")
+    if (set(budget) != {"currency", *amounts} or budget["currency"] != "USD"
+            or any(not isinstance(budget.get(key), str) or len(budget[key]) > 32
+                or not _MONEY.fullmatch(budget[key]) for key in amounts)):
+        raise AcceptanceEvidenceError("publication_contract_invalid")
+    limit, committed, spent, reserved = (Decimal(budget[key]) for key in amounts)
+    if limit > 15 or spent + reserved != committed or committed > limit:
+        raise AcceptanceEvidenceError("publication_contract_invalid")
+    rows = value.get("candidates")
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 256:
+        raise AcceptanceEvidenceError("publication_contract_invalid")
+    ids = set()
+    for row in rows:
+        row = _object(row)
+        if (set(row) != _CANDIDATE_FIELDS or not isinstance(row.get("candidate_id"), str)
+                or not _WIRE_ID.fullmatch(row["candidate_id"]) or row["candidate_id"] in ids
+                or not isinstance(row.get("configuration_digest"), str) or not _DIGEST.fullmatch(row["configuration_digest"])
+                or not isinstance(row.get("status"), str) or row["status"] not in CANDIDATE_STATUSES
+                or not isinstance(row.get("display_name"), str)
+                or not 1 <= len(row["display_name"]) <= 200 or row["display_name"].strip() != row["display_name"]
+                or not isinstance(row.get("blockers"), list) or len(row["blockers"]) > 100
+                or any(not isinstance(item, str) or not 1 <= len(item) <= 300 for item in row["blockers"])
+                or any(type(row.get(key)) is not int or not 0 <= row[key] <= 1_000_000 for key in (
+                    "episodes_planned", "episodes_scored", "episodes_succeeded", "episodes_failed", "episodes_void"))):
+            raise AcceptanceEvidenceError("publication_contract_invalid")
+        ids.add(row["candidate_id"])
+        planned, scored, succeeded, failed, void = (row[key] for key in (
+            "episodes_planned", "episodes_scored", "episodes_succeeded", "episodes_failed", "episodes_void"))
+        rate, digest = row["success_rate"], row["session_result_digest"]
+        if (succeeded + failed != scored or scored + void > planned
+                or (rate is not None and (type(rate) not in (int, float) or not math.isfinite(rate)))
+                or rate != (succeeded / scored if scored else None)
+                or (digest is not None and (not isinstance(digest, str) or not _DIGEST.fullmatch(digest)))
+                or (scored > 0 and digest is None)
+                or (row["status"] == "completed" and (digest is None or planned == 0 or scored + void != planned))
+                or (row["status"] != "completed" and (scored != 0 or void != 0 or digest is not None))):
+            raise AcceptanceEvidenceError("publication_contract_invalid")
+    if value.get("status") != campaign_status({row["candidate_id"]: row for row in rows}):
+        raise AcceptanceEvidenceError("publication_contract_invalid")
+    return {"schema_version": schema, "purpose": variant[0], "claim_ceiling": variant[1]}
 
 
 def _retained_reader(root: Path, entry: Mapping[str, Any]) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
@@ -340,7 +431,7 @@ def _execution(entry: Mapping[str, Any], *, root: Path, plan: Mapping[str, Any],
     result = validate_session_result(values["result"])
     if result.get("status") != "completed_unqualified" or any(row.get("status") != "completed" for row in result["episodes"]):
         raise AcceptanceEvidenceError("execution_not_completed")
-    candidate_result_summary(result, plan=plan, candidate=candidate)
+    summary = candidate_result_summary(result, plan=plan, candidate=candidate)
     authority = validate_session_authority(values["authority"])
     settings = candidate["execution_spec"]
     provider_cap = Decimal(str(settings.get("provider_hard_cap_usd", candidate["max_cost_usd"])))
@@ -398,6 +489,7 @@ def _execution(entry: Mapping[str, Any], *, root: Path, plan: Mapping[str, Any],
             raise AcceptanceEvidenceError("issued_checkpoint_binding_mismatch")
         _episode_bytes(row, output_root, attempt["envelope"]["camera_ids"], max_queries=spec["max_policy_queries"])
     facts = dict(observations["result"].facts)
+    facts["native_result_summary"] = summary
     facts["closeout_acquired_at"] = observations["closeout"].observed_at
     facts["closeout_collection_started_at"] = _epoch_stamp(receipt.get("collection_started_at_epoch")).isoformat()
     facts["closeout_observed_at"] = _epoch_stamp(receipt.get("observed_at_epoch")).isoformat()
@@ -457,7 +549,7 @@ def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
         "customer_readback", "resource_reconciliation", "normal_retention_observed"), False)
     report: dict[str, Any] = {"schema_version": REPORT_SCHEMA, "status": "not_proven",
         "blockers": blockers, "milestones": milestones,
-        "owner_approved_finalist_recommendation": False,
+        "evaluation_path": "single_bounded_evaluation", "publication_contract": None,
         "proof_boundary": {"performs_live_actions": False, "grants_spending_authority": False,
             "physical_validation_proven": False, "concurrency_proven": False,
             "retained_evidence_only": True, "public_claim_upgrade_allowed": False}}
@@ -495,7 +587,7 @@ def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
                 raise AcceptanceEvidenceError("frozen_release_identity_invalid")
         frozen_at = _stamp(attempt.get("frozen_at"))
         boundary_kinds = attempt.get("declared_human_boundaries")
-        if not isinstance(boundary_kinds, list) or set(boundary_kinds) - {"customer_fact_confirmation", "site_finalist_approval"}:
+        if not isinstance(boundary_kinds, list) or set(boundary_kinds) - {"customer_fact_confirmation"}:
             raise AcceptanceEvidenceError("declared_boundaries_invalid")
         evidence, observations = {}, {}
         for role in ("attempt", *ROLES):
@@ -524,13 +616,12 @@ def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
         if probe["receipt_digest"] != plan["robot_free_probe_digest"]:
             raise AcceptanceEvidenceError("probe_plan_mismatch")
         publication = evidence["publication"]
-        if (publication.get("schema_version") != "beta_policy_screening_publication.v1"
-                or publication.get("publication_digest") != cross_runtime_canonical_digest(publication, digest_field="publication_digest")
+        report["publication_contract"] = _publication_contract(publication)
+        if (publication.get("campaign_id") != plan["campaign_id"]
                 or publication.get("plan_digest") != plan["plan_digest"] or publication.get("source") != plan["source"]
                 or publication.get("site_id") != plan["site_id"] or publication.get("status") != "completed"
-                or publication.get("purpose") != "screening" or publication.get("claim_ceiling") != "diagnostic_policy_execution"
-                or publication.get("execution_operator") != {"kind": "blueprint"}
-                or publication.get("recommendation_eligible") is not False):
+                or publication.get("catalog_digest") != plan["catalog_digest"]
+                or publication.get("scenario_plan_digest") != plan["scenario_plan_digest"]):
             raise AcceptanceEvidenceError("publication_binding_invalid")
         executions = manifest.get("executions")
         if not isinstance(executions, list) or not executions or len(executions) > 32:
@@ -550,10 +641,17 @@ def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
         if (not isinstance(published, list) or len(published) != len(plan["candidates"])
                 or {row["candidate_id"] for row in published} != {row["candidate_id"] for row in plan["candidates"]}):
             raise AcceptanceEvidenceError("publication_candidate_coverage_incomplete")
+        configured = {row["candidate_id"]: row for row in plan["candidates"]}
         for row in published:
+            candidate = configured[row["candidate_id"]]
+            if (row["configuration_digest"] != candidate["configuration_digest"]
+                    or row["episodes_planned"] != candidate.get("episode_count", 0)):
+                raise AcceptanceEvidenceError("publication_candidate_binding_mismatch")
             if row.get("candidate_id") in results and (row.get("session_result_digest") != results[row["candidate_id"]]
                     or row.get("status") != "completed" or row.get("episodes_planned") != 10
-                    or row.get("episodes_scored") != 10):
+                    or row.get("episodes_scored") != 10
+                    or any(row.get(key) != execution_facts[row["candidate_id"]]["native_result_summary"][key]
+                        for key in ("episodes_succeeded", "episodes_failed", "episodes_void", "success_rate"))):
                 raise AcceptanceEvidenceError("publication_result_mismatch")
         if not blockers:
             _join_observations(observations, attempt=attempt, plan=plan, publication=publication, results=results,
