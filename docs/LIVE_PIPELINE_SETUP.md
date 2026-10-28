@@ -464,6 +464,18 @@ PIPELINE_CAPTURE_TRANSFER_ALLOWED_HOSTS=f005.backblazeb2.com
 PIPELINE_CAPTURE_MALWARE_SCANNER_ARGV_JSON='["/usr/bin/clamdscan","--no-summary"]'
 ```
 
+The production intake unit supplies non-secret defaults for the store above
+and local `/usr/bin/clamscan --no-summary`. Existing environment-file settings
+override these defaults. The normal deploy provisions the declared store as
+service-owned protected evidence, then runs clean and benign EICAR scanner
+controls as the intake account before activating the release. ClamAV and its
+definitions must already be installed; a missing executable, inaccessible
+store, scanner error, or failed control refuses activation. Exact control
+outputs stay in private `runtime-preflight` evidence with digest-bound receipts.
+These checks contact no model provider and establish capture-transfer runtime
+readiness only. A healthy version endpoint alone is insufficient; read
+`capture_upload_transfer_configured` and replay a normal owner upload.
+
 The host list must contain the exact HTTPS download host returned by the current
 B2 account authorization. The scanner argv must name an absolute installed
 executable; no shell expansion is used. The endpoint consumes an HMAC-authenticated,
