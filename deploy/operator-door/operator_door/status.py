@@ -164,13 +164,56 @@ class PreflightSummaryRefused(ValueError):
     """A fixed reason code, with no report content in the error."""
 
 
+def _anchored_summary_bytes(path: Path, limit: int) -> bytes:
+    """Walk from a directory FD; no component is ever reopened by full path."""
+    if not path.is_absolute() or ".." in path.parts or not path.name:
+        raise PreflightSummaryRefused("preflight_summary_path_invalid")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directories: list[tuple[int | None, str, int]] = []
+    descriptor = None
+
+    def check_links() -> None:
+        for parent_fd, name, child_fd in directories[1:]:
+            linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            opened = os.fstat(child_fd)
+            if not stat.S_ISDIR(linked.st_mode) or (linked.st_dev, linked.st_ino) != (opened.st_dev, opened.st_ino):
+                raise PreflightSummaryRefused("preflight_summary_directory_identity_changed")
+
+    try:
+        directories.append((None, "/", os.open("/", flags)))
+        for name in path.parent.parts[1:]:
+            parent_fd = directories[-1][2]
+            directories.append((parent_fd, name, os.open(name, flags, dir_fd=parent_fd)))
+        check_links()
+        parent_fd = directories[-1][2]
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=parent_fd)
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+            raise PreflightSummaryRefused("preflight_summary_file_unsafe")
+        data = os.read(descriptor, limit + 1)
+        after = os.fstat(descriptor)
+        linked = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        check_links()
+        if (not stat.S_ISREG(linked.st_mode) or (linked.st_dev, linked.st_ino) != (before.st_dev, before.st_ino)
+                or (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns)
+                or len(data) != before.st_size or len(data) > limit):
+            raise PreflightSummaryRefused("preflight_summary_file_identity_changed")
+        return data
+    except OSError:
+        raise PreflightSummaryRefused("preflight_summary_symlink_or_open_refused") from None
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        for _parent, _name, directory_fd in reversed(directories):
+            os.close(directory_fd)
+
+
 def _preflight(config: DoorConfig) -> dict[str, Any]:
     """Read only the explicit safe projection, never the root-owned raw report."""
     try:
         path = Path(config.preflight_summary)
-        if any(parent.is_symlink() for parent in (path, *path.parents)):
-            raise PreflightSummaryRefused("preflight_summary_symlink_refused")
-        raw = _regular_bytes(path, 128 * 1024)
+        raw = _anchored_summary_bytes(path, 128 * 1024)
         if scan_bytes(raw) is not None:
             raise PreflightSummaryRefused("preflight_summary_secret_shaped")
         document = json.loads(raw)

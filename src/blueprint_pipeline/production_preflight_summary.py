@@ -14,8 +14,9 @@ import os
 import pwd
 import re
 import stat
-import tempfile
+import uuid
 from collections.abc import Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -182,6 +183,44 @@ def build_safe_summary(report: Mapping[str, Any], *, raw_report_bytes: bytes) ->
     return result
 
 
+def _check_directory_links(directories: list[tuple[int | None, str, int]]) -> None:
+    for parent_fd, name, child_fd in directories[1:]:
+        linked = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        opened = os.fstat(child_fd)
+        if not stat.S_ISDIR(linked.st_mode) or (linked.st_dev, linked.st_ino) != (opened.st_dev, opened.st_ino):
+            raise PreflightSummaryError("preflight_summary_directory_identity_changed")
+
+
+@contextmanager
+def _summary_parent(path: Path):
+    """Anchor every component to an open directory, including a new public leaf."""
+    if not path.is_absolute() or ".." in path.parts or not path.name:
+        raise PreflightSummaryError("preflight_summary_path_invalid")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    directories: list[tuple[int | None, str, int]] = []
+    try:
+        root_fd = os.open("/", flags)
+        directories.append((None, "/", root_fd))
+        parts = path.parent.parts[1:]
+        for index, name in enumerate(parts):
+            parent_fd = directories[-1][2]
+            try:
+                descriptor = os.open(name, flags, dir_fd=parent_fd)
+            except FileNotFoundError:
+                if index != len(parts) - 1:
+                    raise PreflightSummaryError("preflight_summary_parent_missing") from None
+                os.mkdir(name, mode=0o755, dir_fd=parent_fd)
+                descriptor = os.open(name, flags, dir_fd=parent_fd)
+            directories.append((parent_fd, name, descriptor))
+        _check_directory_links(directories)
+        yield directories[-1][2], directories
+    except OSError:
+        raise PreflightSummaryError("preflight_summary_symlink_or_directory_refused") from None
+    finally:
+        for _parent, _name, descriptor in reversed(directories):
+            os.close(descriptor)
+
+
 def write_safe_summary(path: Path, summary: Mapping[str, Any], *, private_parent: Path | None = None,
                        reader_ids: tuple[int, int] | None = None) -> None:
     """Publish only a schema-allowlisted summary, atomically; never chmod raw data."""
@@ -190,47 +229,54 @@ def write_safe_summary(path: Path, summary: Mapping[str, Any], *, private_parent
     data = _json_bytes(summary)
     if len(data) > MAX_SUMMARY_BYTES:
         raise PreflightSummaryError("preflight_summary_too_large")
-    for parent in (path, *path.parents):
-        if parent.is_symlink():
-            raise PreflightSummaryError("preflight_summary_symlink_refused")
     if reader_ids is None:
         try:
             account = pwd.getpwnam("blueprint")
         except KeyError:
             raise PreflightSummaryError("preflight_summary_reader_identity_unknown") from None
         reader_ids = (account.pw_uid, account.pw_gid)
-    if private_parent is not None:
-        info = private_parent.stat()
-        if private_parent != path.parent.parent or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
-            raise PreflightSummaryError("preflight_summary_private_parent_unsafe")
-        # Execute only: no directory listing and no change to raw report modes.
-        os.chmod(private_parent, 0o711)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
-    info = path.parent.stat()
-    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
-        raise PreflightSummaryError("preflight_summary_parent_unsafe")
-    # Only the dedicated public directory becomes listable. Reject any other
-    # parent that the intended service account cannot traverse; file mode alone
-    # never proves availability through a root-only ancestor.
-    os.chmod(path.parent, 0o755)
-    uid, gid = reader_ids
-    for ancestor in path.parents:
-        info = ancestor.stat()
-        bit = 0o100 if info.st_uid == uid else (0o010 if info.st_gid == gid else 0o001)
-        if not stat.S_IMODE(info.st_mode) & bit:
-            raise PreflightSummaryError("preflight_summary_ancestor_not_traversable")
-    fd, temporary = tempfile.mkstemp(prefix=".preflight-summary-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(stream.fileno())
-            os.fchmod(stream.fileno(), 0o644)
-        os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
+    with _summary_parent(path) as (directory_fd, directories):
+        if private_parent is not None:
+            if private_parent != path.parent.parent or private_parent == Path("/") or len(directories) < 3:
+                raise PreflightSummaryError("preflight_summary_private_parent_unsafe")
+            private_fd = directories[-2][2]
+            info = os.fstat(private_fd)
+            if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
+                raise PreflightSummaryError("preflight_summary_private_parent_unsafe")
+            os.fchmod(private_fd, 0o711)
+        info = os.fstat(directory_fd)
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022:
+            raise PreflightSummaryError("preflight_summary_parent_unsafe")
+        os.fchmod(directory_fd, 0o755)
+        uid, gid = reader_ids
+        for _parent, _name, descriptor in directories:
+            info = os.fstat(descriptor)
+            bit = 0o100 if info.st_uid == uid else (0o010 if info.st_gid == gid else 0o001)
+            if not stat.S_IMODE(info.st_mode) & bit:
+                raise PreflightSummaryError("preflight_summary_ancestor_not_traversable")
         try:
+            target = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            target = None
+        if target is not None and not stat.S_ISREG(target.st_mode):
+            raise PreflightSummaryError("preflight_summary_symlink_or_file_refused")
+        _check_directory_links(directories)
+        temporary = f".preflight-summary-{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                             0o600, dir_fd=directory_fd)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                _check_directory_links(directories)
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+                os.fchmod(stream.fileno(), 0o644)
+            _check_directory_links(directories)
+            os.replace(temporary, path.name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
             os.fsync(directory_fd)
+            _check_directory_links(directories)
         finally:
-            os.close(directory_fd)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+            try:
+                os.unlink(temporary, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass

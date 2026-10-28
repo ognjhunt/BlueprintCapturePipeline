@@ -109,8 +109,8 @@ def test_interrupted_summary_replace_preserves_original(tmp_path: Path, monkeypa
     target.parent.mkdir()
     target.write_bytes(b"old summary")
     from blueprint_pipeline import production_preflight_summary as summaries
-    monkeypatch.setattr(summaries.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("interrupted")))
-    with pytest.raises(OSError):
+    monkeypatch.setattr(summaries.os, "replace", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("interrupted")))
+    with pytest.raises(PreflightSummaryError):
         write_safe_summary(target, _summary(_report()), reader_ids=(os.getuid(), os.getgid()))
     assert target.read_bytes() == b"old summary"
     assert not list(target.parent.glob(".preflight-summary-*"))
