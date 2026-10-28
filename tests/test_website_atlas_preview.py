@@ -30,6 +30,15 @@ def _descriptor(capture_id="walkthrough-req1", request="req1"):
     return SimpleNamespace(site_submission_id=request, metadata={}, capture_id=capture_id, scene_id=f"site-{request}")
 
 
+def _continuation(site):
+    capture = site.capture.parent / ("supplement-" + "a" * 40)
+    (capture / "raw").mkdir(parents=True)
+    (capture / "raw/walkthrough.mov").write_bytes(b"corrected recording")
+    (capture / "pipeline").mkdir()
+    return SimpleNamespace(storage=site.storage, capture=capture, pipeline=capture / "pipeline",
+                           job=capture / "pipeline/atlas" / preview.JOB_FILE)
+
+
 def _enqueue(site, descriptor=None, source=None):
     return preview.enqueue_preview(descriptor=descriptor or _descriptor(), capture_root=site.capture,
                                    pipeline_dir=site.pipeline,
@@ -85,7 +94,7 @@ class World:
                 "digest": digest, "size_bytes": len(data), "remote_verified_at": "2026-10-22T00:00:00Z"}
 
     def push(self, *, capture_id, operation, payload):
-        assert operation == "atlas-preview" and capture_id == "walkthrough-req1"
+        assert operation == "atlas-preview" and capture_id == _job(self.site)["capture_id"]
         if self.refuse_push:
             raise ValueError(self.refuse_push)
         self.pushed.append(payload["preview"])
@@ -340,6 +349,56 @@ def test_tick_advances_every_job_and_one_bad_job_never_stops_the_others(monkeypa
     assert preview.tick(site.storage, now=world.now) == {"processing": 1, "unreadable": 1}
 
 
+def test_same_job_update_is_queued_advanced_and_published_without_repeating_the_original(monkeypatch, site):
+    _enqueue(site)
+    original = World(monkeypatch, site, [_completed])
+    assert original.advance() == "ready"
+    saved = site.job.read_bytes()
+    child = _continuation(site)
+    descriptor = _descriptor(capture_id=child.capture.name)
+    queued = _enqueue(child, descriptor=descriptor)
+    assert queued["capture_id"] == child.capture.name
+    assert _enqueue(child, descriptor=descriptor) == queued
+    current = World(monkeypatch, child, [_completed])
+    assert preview.tick(site.storage, now=current.now) == {"ready": 2}
+    assert len(current.runs) == 1
+    assert current.runs[0]["source_video"] == child.capture / "raw/walkthrough.mov"
+    assert current.runs[0]["task_context"]["capture_id"] == child.capture.name
+    assert current.published == [("atlas-scene-bundle", f"req1-{child.capture.name}.zip")]
+    assert current.pushed[-1]["capture_id"] == child.capture.name
+    assert site.job.read_bytes() == saved
+    assert (site.capture / "raw/walkthrough.mov").read_bytes() == b"video"
+
+
+def test_update_routing_preserves_exact_allowlisting_and_requires_current_source_context(monkeypatch, site):
+    child = _continuation(site)
+    descriptor = _descriptor(capture_id=child.capture.name)
+    monkeypatch.setenv(preview.ROUTING_ENV, "allowlist")
+    monkeypatch.setenv(preview.ALLOWLIST_ENV, '["walkthrough-req1"]')
+    resolved = []
+    assert _enqueue(child, descriptor=descriptor, source=lambda: resolved.append(1)) is None
+    assert resolved == []
+    monkeypatch.setenv(preview.ALLOWLIST_ENV, json.dumps([child.capture.name]))
+    assert _enqueue(child, descriptor=descriptor)["state"] == "processing"
+    world = World(monkeypatch, child, [])
+    from blueprint_pipeline import website_task_context as context
+
+    def unavailable(**_kwargs):
+        raise ValueError("website_capture_binding_source_changed")
+    monkeypatch.setattr(context, "load_current_website_task_context", unavailable)
+    world.advance()
+    assert world.runs == [] and world.published == []
+
+
+def test_a_withdrawal_stops_a_queued_update_before_provider_work(monkeypatch, site):
+    child = _continuation(site)
+    _enqueue(child, descriptor=_descriptor(capture_id=child.capture.name))
+    world = World(monkeypatch, child, [])
+    _withdraw(child)
+    assert world.advance() == "withdrawn"
+    assert world.runs == [] and world.published == []
+
+
 class _Body(io.BytesIO):
     def iter_chunks(self, size):
         while chunk := self.read(size):
@@ -359,13 +418,14 @@ class _Bucket:
         return {"Body": _Body(self.objects[Key][0])}
 
 
-def _ready(site, data=b"zip bytes"):
+def _ready(site, data=b"zip bytes", descriptor=None):
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
     site.job.parent.mkdir(parents=True, exist_ok=True)
-    _enqueue(site)
+    _enqueue(site, descriptor=descriptor)
     site.job.write_text(json.dumps({**_job(site), "state": "ready", "archive": {"digest": digest}}))
     from blueprint_pipeline.task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
-    key = f"{LARGE_ARTIFACT_KEY_PREFIX}/atlas-scene-bundle/sha256/{digest[7:]}/walkthrough-req1.zip"
+    filename = store.bundle_filename(_job(site)["capture_id"], _job(site)["request_id"])
+    key = f"{LARGE_ARTIFACT_KEY_PREFIX}/atlas-scene-bundle/sha256/{digest[7:]}/{filename}"
     return digest, _Bucket(key, data, digest)
 
 
@@ -388,6 +448,22 @@ def test_owner_downloads_read_only_the_ready_unwithdrawn_bundle_named_for_the_ca
     with pytest.raises(store.PreviewUnavailable):
         store.open_bundle(request_id="req1", capture_id="walkthrough-req1", digest=digest,
                             storage_root=site.storage, client=bucket, bucket="b")
+
+
+def test_update_download_stays_job_scoped_after_local_retirement(site):
+    child = _continuation(site)
+    digest, bucket = _ready(child, descriptor=_descriptor(capture_id=child.capture.name))
+    for root in (site.storage, site.storage / "retired"):
+        body, size = store.open_bundle(request_id="req1", capture_id=child.capture.name, digest=digest,
+                                      storage_root=root, client=bucket, bucket="b")
+        assert body.read() == b"zip bytes" and size == 9
+        with pytest.raises(store.PreviewUnavailable):
+            store.open_bundle(request_id="other", capture_id=child.capture.name, digest=digest,
+                              storage_root=root, client=bucket, bucket="b")
+    _withdraw(child)
+    with pytest.raises(store.PreviewUnavailable):
+        store.open_bundle(request_id="req1", capture_id=child.capture.name, digest=digest,
+                          storage_root=site.storage, client=bucket, bucket="b")
 
 
 def test_download_route_streams_with_digest_headers_only_for_the_webapp_client(monkeypatch, site):

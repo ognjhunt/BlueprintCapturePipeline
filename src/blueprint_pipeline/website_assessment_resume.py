@@ -185,7 +185,8 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
     from .website_preparation_status import _read, _root, read_preparation_status
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     counts = {"resumed": 0, "pending": 0}
-    roots = sorted(path.parent for path in Path(storage_root).glob("*/scenes/site-*/captures/walkthrough-*/pipeline_job_ledger.json"))
+    roots = sorted(path.parent for path in Path(storage_root).glob("*/scenes/site-*/captures/*/pipeline_job_ledger.json")
+                   if path.parent.name.startswith(("walkthrough-", "supplement-")))
     # The preceding status reconciliation already rotates this durable cursor,
     # including empty/error states. Reuse it; no second cursor/queue framework.
     cursor_path = Path(storage_root) / ".website_preparation_delivery_cursor.json"

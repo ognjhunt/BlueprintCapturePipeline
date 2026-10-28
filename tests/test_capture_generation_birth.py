@@ -17,9 +17,9 @@ from tests.test_scene_retirement_connected_acceptance import _sealed_file
 from tests.test_scene_retirement_real_participants import access_fixture
 
 
-def _fixture(tmp_path, monkeypatch, *, prepare_parent=True):
+def _fixture(tmp_path, monkeypatch, *, prepare_parent=True, owner=None):
     access, policy, root = access_fixture(tmp_path, monkeypatch)
-    owner = observation()
+    owner = observation() if owner is None else owner
     marker = owner["completion_marker"]
     video = owner["producer_delivery"]["raw_video"]
     prefix = f"scenes/{owner['scene_id']}/captures/{owner['capture_id']}"
