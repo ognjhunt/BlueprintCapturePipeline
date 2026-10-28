@@ -25,6 +25,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .common import write_json
+from .core.handoff_lease import handoff_lease_checkpoint
 from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
 from .decision_evidence_contracts import canonical_digest
 from .fresh_scene_semantic_teacher_image_edit import _validated_backend
@@ -645,6 +646,7 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
         with _review_contents(client=client, types=types, pairs=pairs,
                 prompt=prompt + json.dumps(plan["targets"], sort_keys=True),
                 output_root=output_root, binding_digest=digest) as contents:
+            handoff_lease_checkpoint("gemini_completed_background_review")
             response = client.models.generate_content(
                 model=DEFAULT_MODEL, contents=contents,
                 config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=max_output_tokens,
@@ -731,6 +733,7 @@ def _review_contents(*, client, types, pairs, prompt, output_root, binding_diges
             contents.append(label)
             if use_files:
                 if digest not in uploaded:
+                    handoff_lease_checkpoint("gemini_review_media_upload")
                     media = client.files.upload(file=BytesIO(data), config=types.UploadFileConfig(
                         mime_type=mime, display_name="blueprint-review-" + digest[7:23]))
                     if media.name:
@@ -986,6 +989,7 @@ def diagnose_inconsistent_background(*, frames: Sequence[Mapping[str, Any]],
                 timeout=120_000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
             with _review_contents(client=client, types=types, pairs=pairs, prompt=CONSISTENCY_DIAGNOSIS_PROMPT,
                     output_root=output_root, binding_digest=canonical_digest(binding)) as contents:
+                handoff_lease_checkpoint("gemini_background_consistency")
                 response = client.models.generate_content(model=DEFAULT_MODEL, contents=contents,
                     config=types.GenerateContentConfig(response_mime_type="application/json",
                                                        max_output_tokens=max_output_tokens,

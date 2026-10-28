@@ -18,7 +18,7 @@ from typing import Any, Mapping
 import numpy as np
 from PIL import Image
 
-from .common import write_json
+from .core.handoff_lease import guarded_handoff_write_json, handoff_effect, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import LocalDecodedObservationAdapter, _sha256_file
 
@@ -116,6 +116,7 @@ def prepare_website_geometry_inputs(*, source_video: Path, output_root: Path, ca
             _bound_frames(previous, manifest_path.parent, geometry=False)
             return previous
         raise ValueError("website_geometry_input_identity_conflict")
+    handoff_lease_checkpoint("website_source_frames_before_decode")
     decoded = LocalDecodedObservationAdapter().execute(
         intake_id=capture_id, capture_digest=binding["source_video_digest"],
         capture_authority_profile="monocular_video", capture_root=source_video.parent,
@@ -124,6 +125,7 @@ def prepare_website_geometry_inputs(*, source_video: Path, output_root: Path, ca
                               "provider_upload_authorized": False, "paid_compute_authorized": False},
         maximum_frames=maximum_frames,
     )
+    handoff_lease_checkpoint("website_source_frames_after_decode")
     refs = decoded["asset_references"]
     candidate_path = output_root / "source" / refs["candidate_dataset_manifest"]["relative_path"]
     index_path = output_root / "source" / refs["decoded_observation_index"]["relative_path"]
@@ -137,13 +139,14 @@ def prepare_website_geometry_inputs(*, source_video: Path, output_root: Path, ca
         if not source.is_relative_to(candidate_path.parent) or _sha256_file(source) != row["frame_digest"]:
             raise ValueError("website_source_frame_binding_invalid")
         retained = manifest_path.parent / "observations" / f"{index:06d}{source.suffix}"
-        retained.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, retained)
-        frame = {
-            "frame_id": row["frame_id"], "timestamp_seconds": row["t_video_sec"],
-            "source_image_path": str(retained), "source_image_digest": row["frame_digest"],
-            **_prepare_image(source, manifest_path.parent / "model_inputs" / f"{index:06d}.png", rotation),
-        }
+        with handoff_effect("website_source_frame_promotion"):
+            retained.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, retained)
+            frame = {
+                "frame_id": row["frame_id"], "timestamp_seconds": row["t_video_sec"],
+                "source_image_path": str(retained), "source_image_digest": row["frame_digest"],
+                **_prepare_image(source, manifest_path.parent / "model_inputs" / f"{index:06d}.png", rotation),
+            }
         for key, _ in _FRAME_ARTIFACTS[:2]:
             frame[key] = str(Path(frame[key]).relative_to(manifest_path.parent))
         prepared.append(frame)
@@ -152,7 +155,7 @@ def prepare_website_geometry_inputs(*, source_video: Path, output_root: Path, ca
               "heldout_frame_count": decoded_index.get("hidden_heldout_frame_count"),
               "heldout_pixels_included": False, "claim_ceiling": "development_only"}
     result["digest"] = canonical_digest(result, digest_field="digest")
-    write_json(manifest_path, result)
+    guarded_handoff_write_json(manifest_path, result)
     return result
 
 

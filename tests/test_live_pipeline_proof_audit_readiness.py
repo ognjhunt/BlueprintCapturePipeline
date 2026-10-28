@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from blueprint_pipeline.live_pipeline_proof_audit import _goal_requirement_audit
+from blueprint_pipeline.live_pipeline_control_plane import PACKAGE_DIR_ENV, run_live_pipeline_control_plane
+from blueprint_pipeline.live_pipeline_proof_audit import _goal_requirement_audit, build_live_pipeline_proof_audit
 from blueprint_pipeline.arena_package_audit import REQUIRED_ARTIFACTS, build_arena_package_proof_boundary_audit
 
 
@@ -32,9 +33,9 @@ def test_missing_or_contradictory_audit_does_not_prove_package(package_audit: ob
         assert goals[name]["reason"]
 
 
-def _passed_audit(tmp_path: Path) -> tuple[dict, dict, dict]:
+def _passed_audit(tmp_path: Path, *, package_name: str = "package") -> tuple[dict, dict, dict]:
     capture = tmp_path / "storage" / "bucket" / "scenes" / "scene-1" / "captures" / "capture-1"
-    package = capture / "pipeline" / "package"
+    package = capture / "pipeline" / package_name
     package.mkdir(parents=True)
     (capture / "capture_descriptor.json").write_text(json.dumps({"scene_id": "scene-1", "capture_id": "capture-1"}))
     values = {
@@ -102,3 +103,86 @@ def test_changed_cross_capability_dependency_invalidates_canonical_audit_project
     goal = _goals(summary, paths)["clips"]
     assert goal["status"] == "not_proven_in_current_control_plane"
     assert goal["reason"] == "package_audit_dependency_digest_mismatch"
+
+
+_LOCAL_GOALS = ("arena_result_ingest", "500_scenario_scheduler", "policy_adapters", "clips",
+                "review_resolution", "dataset_packaging", "customer_handoff_report", "rerun_loop")
+
+
+def _run_control_plane_and_audit(capture: Path, output: Path, *, package: Path | None = None) -> tuple[dict, dict, dict]:
+    run = run_live_pipeline_control_plane(
+        capture_root=capture, package_dir=package, output_path=output, process_inbox=False,
+        load_local_env=False, allow_digitalocean_read=False, allow_live_agent_operator=False,
+        allow_gpu_provisioning=False, allow_simulator_execution=False, allow_cpu_simulator_preflight=False,
+        allow_cpu_preflight_render=False, allow_training=False, allow_rollout_vision_labeling=False,
+        allow_delivery_upload=False, allow_live_agents_sdk=False, allow_live_codex_sdk=False,
+    )
+    setup = json.loads(Path(run["setup_manifest_path"]).read_text())
+    packet = json.loads(Path(run["external_input_packet"]["path"]).read_text())
+    audit = build_live_pipeline_proof_audit(manifest_path=output)
+    return setup, packet, audit
+
+
+@pytest.mark.parametrize("selection", ("default", "argument", "environment"))
+def test_control_plane_preserves_actual_package_binding_and_bounded_readiness(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selection: str,
+) -> None:
+    monkeypatch.delenv(PACKAGE_DIR_ENV, raising=False)
+    summary, paths, _ = _passed_audit(tmp_path, package_name="arena_eval_package" if selection == "default" else "selected-package")
+    package = Path(paths["package_dir"])
+    if selection == "environment":
+        monkeypatch.setenv(PACKAGE_DIR_ENV, str(package))
+    elif selection == "argument":
+        monkeypatch.setenv(PACKAGE_DIR_ENV, str(tmp_path / "unselected-package"))
+    setup, packet, audit = _run_control_plane_and_audit(
+        Path(paths["capture_root"]), tmp_path / "control-plane.json",
+        package=package if selection == "argument" else None,
+    )
+    accepted = setup["sections"]["local_deterministic_lane"]["package_audit"]
+    assert accepted["audit_status"] == "passed" and accepted["artifact"]["path"] == summary["artifact"]["path"]
+    assert setup["package_dir"] == str(package)
+    assert packet["configured_paths"]["package_dir"] == str(package)
+    assert packet["configured_paths"]["capture_root"] == paths["capture_root"]
+    for name in _LOCAL_GOALS:
+        goal = audit["goal_requirement_audit"][name]
+        assert goal["status"] == "ready", goal
+        assert goal["scope"] == "local_package_contract" and goal["execution_proven"] is False
+        assert goal["evidence_sha256"] and goal["validated_artifacts"]
+    assert audit["proof_boundary"]["audit_performs_live_actions"] is False
+    assert audit["proof_boundary"]["simulator_execution_proven"] is False
+    assert audit["proof_boundary"]["public_claim_upgrade_allowed"] is False
+
+
+@pytest.mark.parametrize("damage", ("absent", "capture_binding", "package_binding"))
+def test_default_package_binding_does_not_promote_missing_or_mismatched_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str,
+) -> None:
+    monkeypatch.delenv(PACKAGE_DIR_ENV, raising=False)
+    summary, paths, document = _passed_audit(tmp_path, package_name="arena_eval_package")
+    audit_path = Path(summary["artifact"]["path"])
+    if damage == "absent":
+        audit_path.unlink()
+    else:
+        document["capture_root" if damage == "capture_binding" else "package_dir"] = str(tmp_path / "other-source")
+        audit_path.write_text(json.dumps(document))
+    _setup, _packet, audit = _run_control_plane_and_audit(Path(paths["capture_root"]), tmp_path / "control-plane.json")
+    for name in _LOCAL_GOALS:
+        goal = audit["goal_requirement_audit"][name]
+        assert goal["status"] == "not_proven_in_current_control_plane"
+        assert goal["reason"]
+        if damage != "absent":
+            assert goal["reason"] == "package_audit_source_binding_mismatch"
+
+
+def test_explicit_missing_package_does_not_fall_back_to_a_valid_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(PACKAGE_DIR_ENV, raising=False)
+    _summary, paths, _document = _passed_audit(tmp_path, package_name="arena_eval_package")
+    missing_package = tmp_path / "selected-missing-package"
+    setup, packet, audit = _run_control_plane_and_audit(
+        Path(paths["capture_root"]), tmp_path / "control-plane.json", package=missing_package,
+    )
+    assert setup["package_dir"] == packet["configured_paths"]["package_dir"] == str(missing_package)
+    assert all(audit["goal_requirement_audit"][name]["status"] == "not_proven_in_current_control_plane"
+               for name in _LOCAL_GOALS)
