@@ -67,6 +67,33 @@ It does not call a provider, start an engine or query a policy.
 
 The bounded input is factual layout, not another finished native profile:
 
+- When `registered_layout` is absent, the CPU-only
+  `task_family_layout_authoring.py` adapter can compile existing engineering
+  `task_masks.layout_source_records` into that contract. Its five exact file
+  references are `capture_intake`, `calibration`, `frame_registration`,
+  `target_poses` and `robot_registration`. Each uses the existing
+  `{path, sha256, size_bytes}` evidence reference and is reopened with
+  no-follow descriptors at preparation and native packet readback. These are
+  internal engineering inputs, not JSON the customer must author.
+  Calibration pins the admitted native capture envelope and its original
+  intrinsics, pose, depth and confidence bytes. Camera metadata reads are
+  bounded to 8 MiB; depth and confidence streams remain hash-only reads.
+  The explicit `blueprint_raw_v3_2` camera-record format reads retained
+  `session_intrinsics`/`T_world_camera` field shapes and converts the declared
+  ARKit camera axes to OpenCV with a fixed axis transform. Unknown formats,
+  inconsistent session/frame IDs and changed original bytes refuse; no pose
+  fitting, geometry resizing or camera estimation occurs.
+  The frame record supplies independent surveyed point correspondences, the
+  proposed source-to-runtime transform and its explicit residual limit. The
+  adapter checks rather than fits that transform, including metric scale and
+  orientation. Separate target poses, robot/base/reset and camera references
+  must already have measured or explicitly engineered evidence. Calibration
+  or sensor declarations alone do not establish independent metric geometry.
+  The adapter requires the existing metric source-geometry claim and never
+  upgrades Atlas/estimated geometry. Missing records persist exact
+  scene-preparation measurement requirements and preserve the accepted job.
+  Layout and registration outputs use immutable, digest-bound authoring
+  stages; no provider, policy or runtime is invoked or qualified.
 - `task_masks.registered_layout` (`website_registered_task_layout.v1`) binds the
   source video, geometry, collider, metric registration receipt and transform.
   Each target binds its observed source pose, source frame IDs and engineering
@@ -171,8 +198,9 @@ independent configured contract. Supplied/manual native inputs without a source
 producer claim remain a distinct compatibility route. Older source-produced
 packets lacking the closure need local re-authoring from their retained inputs.
 
-The ordinary production capture path does not yet emit this registered factual
-layout, and WebApp does not yet persist these source-bound normal fact answers.
+The ordinary production capture path does not yet emit the complete measured
+record set or independently qualified metric geometry required by this layout
+adapter, and WebApp does not yet persist these source-bound normal fact answers.
 Those are engineering integration gaps, not requests for customer-authored
 engine JSON or another approval stage. The development fixtures are not
 registration, physics, runtime or policy qualification. No real button driver,

@@ -433,6 +433,9 @@ def author_button_family_inputs(*, family, task_context, task_masks, source_geom
             layout, catalog, stages, resets, bindings, assets, asset_sources, evidence=evidence, now=now)
         result["status"] = "authored"
         retained.append(_retain(output_root, "native-inputs", result["outputs"]))
+    for requirement in (task_masks.get("layout_authoring") or {}).get("requirements", []):
+        if requirement not in requirements:
+            requirements.append(requirement)
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     result["reference"] = _retain(output_root, "authoring-result", result)
     return result

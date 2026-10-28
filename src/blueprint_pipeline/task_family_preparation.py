@@ -43,6 +43,11 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         if _sha256_file(Path(base_scene[path_key])) != base_scene[digest_key]:
             raise ValueError("website_base_scene_changed")
     inputs = dict(evaluation_inputs or {})
+    if (family in {"button_press", "multi_step"} and inputs.get("task_success_contract") is None
+            and inputs.get("native_runtime_inputs") is None):
+        from .task_family_layout_authoring import emit_registered_task_layout
+        task_masks = emit_registered_task_layout(task_context=task_context, task_masks=task_masks,
+            source_geometry=source_geometry, base_scene=base_scene, output_root=output_root)
     blockers: list[str] = []
     if (task_context.get("capture_rights") or {}).get("derived_scene_generation_allowed") is not True:
         blockers.append("website_scene_processing_rights_required")

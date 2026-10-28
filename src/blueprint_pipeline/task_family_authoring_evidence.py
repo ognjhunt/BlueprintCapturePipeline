@@ -36,7 +36,7 @@ def _identity(value):
             value.st_mtime_ns, value.st_ctime_ns)
 
 
-def _read(reference, kind, *, as_json=False, enforce_metadata_limit=True):
+def _read(reference, kind, *, as_json=False, as_bytes=False, enforce_metadata_limit=True):
     """Hash the same no-follow descriptor read; check every ancestor linkage."""
     _require(isinstance(reference, Mapping) and set(reference) == {"path", "sha256", "size_bytes"}
         and isinstance(reference["path"], str)
@@ -44,7 +44,8 @@ def _read(reference, kind, *, as_json=False, enforce_metadata_limit=True):
         and type(reference["size_bytes"]) is int and reference["size_bytes"] >= 0, "reference_invalid:" + kind)
     path = Path(reference["path"])
     _require(path.is_absolute() and ".." not in path.parts, "path_invalid:" + kind)
-    _require(not as_json or not enforce_metadata_limit or reference["size_bytes"] <= MAX_METADATA_BYTES,
+    _require(not (as_json and as_bytes), "read_mode_invalid:" + kind)
+    _require(not (as_json or as_bytes) or not enforce_metadata_limit or reference["size_bytes"] <= MAX_METADATA_BYTES,
              "metadata_limit:" + kind)
     descriptors, links, chunks = [], [], []
     try:
@@ -66,7 +67,7 @@ def _read(reference, kind, *, as_json=False, enforce_metadata_limit=True):
             _require(len(block) <= remaining, "bytes_changed:" + kind)
             remaining -= len(block)
             digest.update(block)
-            if as_json:
+            if as_json or as_bytes:
                 chunks.append(block)
         _require(remaining == 0 and _identity(before) == _identity(os.fstat(stream))
             == _identity(os.stat(path.name, dir_fd=directory, follow_symlinks=False)), "identity_changed:" + kind)
@@ -79,6 +80,8 @@ def _read(reference, kind, *, as_json=False, enforce_metadata_limit=True):
             value = json.loads(b"".join(chunks))
             _require(isinstance(value, dict), "json_invalid:" + kind)
             return value
+        if as_bytes:
+            return b"".join(chunks)
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise AuthoringEvidenceError("website_family_authoring_evidence_unavailable:" + kind) from error
     finally:
@@ -113,6 +116,9 @@ def _verify_inputs(manifest, native, outputs):
         "task_context_digest", "source_geometry_digest", "task_masks_digest", "splat_digest", "collision_mesh_digest")},
         "source_binding_changed")
     registration = _read(manifest["registration_evidence"], "registration", as_json=True)
+    if registration.get("schema_version") == "website_metric_layout_registration.v1":
+        from .task_family_layout_authoring import verify_metric_layout_registration
+        verify_metric_layout_registration(registration)
     _require(registration.get("frame_registration") == binding["frame_registration"]
              and registration.get("source_video_digest") == manifest.get("source_video_digest"), "registration_changed")
     catalog = _read(manifest["runtime_catalog"], "runtime_catalog", as_json=True)
