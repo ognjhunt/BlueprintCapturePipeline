@@ -164,6 +164,34 @@ def test_audit_qualifies_exact_dynamic_primitive_collision_shapes(
         validate_native_task_gpu_collision_static_qualification(receipt)
 
 
+@pytest.mark.parametrize("resolution,qualified", [(256, True), (0, False), (-1, False)])
+def test_catalog_instanced_sdf_is_audited_with_native_readback_required(tmp_path, resolution, qualified):
+    from pxr import Sdf
+    source = tmp_path / "payload.usda"
+    _asset(source)
+    stage = Usd.Stage.Open(str(source))
+    stage.RemovePrim("/Asset/dynamic/missing_approximation")
+    stage.RemovePrim("/Asset/dynamic/oblong")
+    stage.RemovePrim("/Asset/static")
+    mesh = stage.GetPrimAtPath("/Asset/dynamic/regular")
+    UsdPhysics.MeshCollisionAPI(mesh).GetApproximationAttr().Set("sdf")
+    mesh.AddAppliedSchema("PhysxSDFMeshCollisionAPI")
+    mesh.CreateAttribute("physxSDFMeshCollision:sdfResolution", Sdf.ValueTypeNames.Int).Set(resolution)
+    stage.GetRootLayer().Save()
+    root_path = tmp_path / "root.usda"
+    root = Usd.Stage.CreateNew(str(root_path))
+    prim = root.DefinePrim("/Catalog", "Xform")
+    root.SetDefaultPrim(prim)
+    prim.GetReferences().AddReference("./payload.usda")
+    prim.SetInstanceable(True)
+    root.GetRootLayer().Save()
+    audit = audit_native_task_gpu_collisions(root_path)
+    assert audit["dynamic_collision_prim_count"] == 1
+    assert (audit["status"] == "qualified") is qualified
+    assert audit["dynamic_mesh_colliders"][0]["sdf_resolution"] == resolution
+    assert audit["runtime_gpu_cooking_readback_still_required"] is True
+
+
 def test_checked_in_third_scene_collision_receipts_preserve_static_claim_ceiling() -> None:
     root = (
         Path(__file__).parents[1]
