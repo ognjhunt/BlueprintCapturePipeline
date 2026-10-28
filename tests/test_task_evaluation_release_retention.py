@@ -1558,6 +1558,45 @@ def test_two_step_tool_still_refuses_a_binding_that_names_no_release(tmp_path: P
         (evidence_root / name).unlink()
 
 
+def test_two_step_tool_keeps_the_trees_the_scene_preparation_configuration_names(tmp_path: Path) -> None:
+    active, renderer, idle = "a" * 40, "c" * 40, "e" * 40
+    state = _base_state(tmp_path, commits=[active, renderer, idle], active_commit=active)
+    runtime_root = state["runtime_root"]
+    assert isinstance(runtime_root, Path)
+    # Production's bootstrap follows a renewed machinery file whose renderer is an
+    # old splat-render runtime that no binding, profile or queue names (2026-10-27).
+    machinery = tmp_path / "etc" / "machinery.renewal-20260921.json"
+    _write_json(machinery, {"schema_version": "task_evaluation_public_scene_machinery.v1",
+                            "preparation": {"runtime_root": str(runtime_root / "splat-render" / renderer)}})
+    bootstrap = tmp_path / "etc" / "scene-preparation-bootstrap.json"
+    _write_json(bootstrap, {"public_scene_machinery_path": str(machinery)})
+    configs = (tmp_path / "etc" / "absent-default-machinery.json", bootstrap)
+
+    bare = build_release_retention_plan(**state, current_deploy_commit=active)  # type: ignore[arg-type]
+    assert sorted(row["source_commit"] for row in bare["eligible_commits"]) == [renderer, idle]
+    plan = build_release_retention_plan(
+        **state, current_deploy_commit=active, protection_config_files=configs  # type: ignore[arg-type]
+    )
+
+    assert [row["source_commit"] for row in plan["eligible_commits"]] == [idle]
+    assert plan["protected_commits"][renderer] == ["configured_runtime:machinery.renewal-20260921.json"]
+    assert plan["protection_config_files"] == [str(path) for path in configs]
+    # The apply reads the same configuration again; a change since the dry run refuses before any delete.
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(json.dumps(plan), encoding="utf-8")
+    _write_json(machinery, {"preparation": {"runtime_root": str(runtime_root / "splat-render" / idle)}})
+    with pytest.raises(ReleaseRetentionError, match="release_retention_plan_changed_since_dry_run"):
+        apply_release_retention_plan(dry_run_plan_path=plan_path, acknowledgement=APPLY_ACKNOWLEDGEMENT,
+                                     receipt_out=tmp_path / "receipt.json")
+    assert (runtime_root / "splat-render" / idle).is_dir()
+    # A configuration that cannot be read blocks the whole plan.
+    machinery.write_text("{", encoding="utf-8")
+    with pytest.raises(ReleaseRetentionError, match="release_protection_config_unreadable"):
+        build_release_retention_plan(
+            **state, current_deploy_commit=active, protection_config_files=configs  # type: ignore[arg-type]
+        )
+
+
 def test_two_step_tool_keeps_a_lapsed_ancestor_a_live_descendant_needs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
