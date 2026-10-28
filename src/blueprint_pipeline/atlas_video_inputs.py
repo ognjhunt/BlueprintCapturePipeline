@@ -364,6 +364,80 @@ def selection_frame_budget(review: Mapping[str, Any]) -> int:
     return count
 
 
+def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_frames):
+    """Reuse a completed CPU handoff only with its current source/privacy bytes.
+
+    A later admission wait must not rerun feature matching and face screening.
+    The existing producer still verifies any pose result and grants no spending
+    authority. Partial handoffs follow the ordinary preparation path.
+    """
+    from .atlas_privacy_screen import screen_identity
+    from .website_scene_geometry import INPUT_SCHEMA, _bound_frames
+    from .website_worldlabs import prepare_atlas_pose_inputs
+
+    input_path, plan_path = root / GEOMETRY_INPUTS_FILE, root / "atlas_view_selection.json"
+    if input_path.is_symlink() or plan_path.is_symlink():
+        raise ValueError("atlas_retained_video_inputs_invalid")
+    if not input_path.is_file() or not plan_path.is_file():
+        return None
+    inputs, plan = json.loads(input_path.read_text()), json.loads(plan_path.read_text())
+
+    def require(condition):
+        if not condition:
+            raise ValueError("atlas_retained_video_inputs_invalid")
+
+    require(inputs.get("schema_version") == INPUT_SCHEMA
+            and inputs.get("heldout_pixels_included") is False
+            and inputs.get("generated_content") is not True
+            and plan.get("schema_version") == "atlas_view_selection.v1"
+            and plan.get("review") == dict(review)
+            and plan.get("input_digest") == inputs.get("digest"))
+    prepared = _bound_frames(inputs, root, geometry=False)
+    ids = [row["frame_id"] for row in prepared]
+    by_id = {row["frame_id"]: row for row in frames}
+    require(2 <= len(prepared) <= budget_frames and set(ids) <= by_id.keys()
+            and ids == [row["frame_id"] for row in frames if row["frame_id"] in set(ids)])
+    requirements = review.get("coverage_requirements") or []
+    working = {key for row in requirements if row.get("role") in WORKING_AREA_ROLES
+               for key in row["required_frame_ids"]}
+    surrounding = {key for row in requirements if row.get("role") == "surrounding_scene"
+                   for key in row["required_frame_ids"]}
+    require(review.get("anchor_frame_id") in ids and working <= set(ids) and surrounding & set(ids))
+    policy = plan.get("frame_policy") or {}
+    cover_count = policy.get("connected_cover_frames")
+    require(type(cover_count) is int and 2 <= cover_count <= len(prepared))
+    maximum = max(capacity, cover_count)
+    privacy = (inputs.get("binding") or {}).get("privacy_screen") or {}
+    faces = privacy.get("blurred_faces_by_frame")
+    require(type(faces) is dict and set(faces) == set(ids)
+            and all(type(value) is int and value >= 0 for value in faces.values())
+            and {key: value for key, value in privacy.items() if key != "blurred_faces_by_frame"}
+            == screen_identity())
+    require(inputs.get("binding") == {
+        "source_video_digest": survey["source_video_digest"], "maximum_frames": maximum,
+        "adapter_version": 3, "survey_digest": survey["digest"],
+        "scene_state_review_digest": canonical_digest(review), "privacy_screen": privacy})
+    require(plan.get("maximum_frames") == maximum and plan.get("selected_frame_count") == len(prepared)
+            and policy == {"basis": "accuracy_first", "provider_input_capacity": capacity,
+                           "frame_target": maximum, "connected_cover_frames": cover_count,
+                           "distinct_views_added": len(prepared) - cover_count}
+            and plan.get("privacy_screen") == privacy
+            and plan.get("task_and_surrounding_scene_covered") is True
+            and plan.get("unseen_regions_recovered") is False
+            and plan.get("geometry_or_static_state_proven") is False
+            and inputs.get("source_sample_count") == survey.get("sample_count")
+            and inputs.get("heldout_frame_count") == survey.get("heldout_frame_count"))
+    for row in prepared:
+        expected = {**by_id[row["frame_id"]],
+                    "source_image_path": str(root / "atlas_observations" / (row["frame_id"] + ".png")),
+                    "image_path": str(root / "atlas_source_views" / (row["frame_id"] + ".png")),
+                    "image_digest": row["image_digest"]}
+        require(row == expected)
+    require(plan.get("frames") == [{key: row[key] for key in
+                                    ("frame_id", "timestamp_seconds", "image_digest")} for row in prepared])
+    return prepare_atlas_pose_inputs(inputs=inputs, input_root=root, output_root=root)
+
+
 def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output_root: Path,
                          maximum_frames: int | None = None) -> dict[str, Any]:
     """Build the existing pose producer's pending input from a reviewed survey."""
@@ -415,6 +489,10 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     if review.get("additional_input_frame_ids"):
         requirements = [*requirements, {"role": "support_surface", "label": "Reviewed reconstruction gap inputs",
             "required_frame_ids": review["additional_input_frame_ids"]}]
+    retained = _retained_video_inputs(root=output_root.resolve(), survey=survey, review=review,
+                                     frames=frames, capacity=capacity, budget_frames=budget_frames)
+    if retained is not None:
+        return retained
     features = [_features(r, rotation) for r in frames]
     try:
         cover, diagnostics = select_coverage_views(frames=frames, features=features,
