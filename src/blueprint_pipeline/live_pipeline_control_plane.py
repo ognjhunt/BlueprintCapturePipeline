@@ -1989,6 +1989,12 @@ def run_live_pipeline_control_plane(
             ensure_dir(setup_output.parent)
             write_json(setup_output, setup_manifest)
 
+        if package_path is None:
+            # Setup resolves the canonical capture-local default once. Carry
+            # that effective selection into the packet's source binding.
+            resolved_package_text = _string(setup_manifest.get("package_dir"))
+            package_path = Path(resolved_package_text) if resolved_package_text else None
+
         inbox_run: Dict[str, Any]
         capture_root_for_inbox = capture_path
         if not process_inbox:
