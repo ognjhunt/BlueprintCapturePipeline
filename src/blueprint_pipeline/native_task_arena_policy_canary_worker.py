@@ -25,6 +25,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.beta_screening_runtime_control import RuntimeControlGuard, RuntimeControlStopped
 from blueprint_pipeline.team_evaluation_worker_retention import (
     _compact_team_child_result, _prefix_episode_evidence_paths, _validate_isolated_cell_result,
     _team_checkpoint as _retention_checkpoint,
@@ -1295,6 +1296,45 @@ def _seal_team_prefix(*, output_root: Path, inputs: Mapping[str, Any], authority
     _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
 
 
+def _seal_beta_control_stop(*, output_root: Path, inputs: Mapping[str, Any], authority: Mapping[str, Any],
+                            children: list[Mapping[str, Any]], construction_lineage_mode: str,
+                            receipt: Mapping[str, Any]) -> None:
+    prefix, partial = [], []
+    for index, child in enumerate(children):
+        try:
+            _validate_isolated_cell_result(child=child, inputs=inputs, index=index)
+        except RuntimeError:
+            # A revoked mid-query child is retained as its exact raw bytes. It
+            # cannot masquerade as a completed scored cell in aggregation.
+            path = output_root / "cell_runs" / f"{index:02d}" / PROVIDER_RESULT_FILENAME
+            partial.append({"relative_path": path.relative_to(output_root).as_posix(),
+                            "size_bytes": path.stat().st_size, "sha256": _sha256(path),
+                            "result_digest": child.get("result_digest")})
+        else:
+            if partial:
+                raise RuntimeError("beta_screening_runtime_nonprefix_result")
+            prefix.append(child)
+    result = (_aggregate_isolated_cell_results(inputs={**inputs, "cells": inputs["cells"][:len(prefix)]},
+        authority=authority, child_results=prefix, output_root=output_root,
+        construction_lineage_mode=construction_lineage_mode) if prefix else {
+            "schema_version": "native_task_arena_policy_canary_session_result.v1", "run_kind": BETA_RUN_KIND,
+            "run_id": inputs["run_id"], "authority_digest": authority["authority_digest"],
+            "claim_ceiling": "diagnostic_policy_execution", "candidate_ids": inputs["candidate_ids"],
+            "task_success_contract": inputs["task_success_contract"],
+            "task_success_contract_digest": inputs["task_success_contract_digest"],
+            "episodes": [], "policy_loads": [], "candidate_policy_queried": False,
+            "artifact_inventory": [], "scene_promotion_performed": False, "official_ranking_performed": False,
+            "session_closeout": {"runtime_closed": True, "provider_closeout_pending": True},
+            **beta_result_binding(inputs)})
+    result.update(status="blocked", blockers=[receipt["reason"]], planned_episodes_per_policy=len(inputs["cells"]),
+                  execution_stopped_after_cell=len(children), stopped_before_next_cell=True,
+                  execution_control_stop=dict(receipt), applicability="historical_only",
+                  retained_partial_cell_results=partial,
+                  new_processing_authorized=False, read_only_closeout_allowed=True)
+    result["result_digest"] = canonical_digest(result, digest_field="result_digest")
+    _seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+
+
 def _run_isolated_cell_processes(
     *,
     runtime_root: Path | None = None,
@@ -1329,16 +1369,42 @@ def _run_isolated_cell_processes(
         base_scene_plan=base_scene_plan,
         construction=construction,
     )
+    guard = RuntimeControlGuard(runtime_root=runtime, inputs=inputs, authority=authority) if inputs.get("run_kind") == BETA_RUN_KIND else None
+    if guard is not None:
+        try:
+            guard.check("before_session_start")
+        except RuntimeControlStopped as exc:
+            _seal_beta_control_stop(output_root=output_root, inputs=inputs, authority=authority, children=[],
+                construction_lineage_mode=construction_lineage_mode, receipt=exc.receipt)
+            return 1
     if controls_required(inputs["task_success_contract"]):
         from blueprint_pipeline.native_policy_canary_witness_delivery import transfer_paired_witness
-        return execute_strict_matrix(
+        raw_spawn = spawn
+        if guard is not None:
+            def spawn(**kwargs):
+                guard.check("before_cell_spawn")
+                return raw_spawn(**kwargs)
+        exit_code = execute_strict_matrix(
             runtime=runtime, output_root=output_root, inputs=inputs, authority=authority,
             spawn=spawn, aggregate=_aggregate_isolated_cell_results, seal=_seal_result,
             construction_lineage_mode=construction_lineage_mode, transfer_pair=transfer_paired_witness,
             stage=os.environ.get("BLUEPRINT_POLICY_CANARY_MATRIX_STAGE", "all"))
+        if guard is not None and (stopped := guard.stop_receipt()) is not None:
+            # Strict-matrix aggregation seals independently. Keep a separate
+            # digest-bound stop sidecar instead of rewriting its sealed bytes.
+            _seal_result(result_path=output_root / "beta_screening_runtime_stop.v1.json", result={
+                **stopped, "result_digest": canonical_digest(stopped)})
+        return exit_code
     child_results: list[Mapping[str, Any]] = []
     diagnostic_continuation_gate = None
     for index in range(len(inputs["cells"])):
+        if guard is not None:
+            try:
+                guard.check("before_cell_spawn")
+            except RuntimeControlStopped as exc:
+                _seal_beta_control_stop(output_root=output_root, inputs=inputs, authority=authority, children=child_results,
+                    construction_lineage_mode=construction_lineage_mode, receipt=exc.receipt)
+                return 1
         child_root = output_root / "cell_runs" / f"{index:02d}"
         child_root.mkdir(parents=True, exist_ok=False)
         try:
@@ -1530,8 +1596,6 @@ def _run_selected_cell(
     family_scene = is_task_family_scene_plan(base_scene_plan)
     if family_scene:
         os.environ["BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH"] = str(verify_family_operator_inputs(runtime, provider_manifest))
-    if bound_runtime is None and not family_scene:
-        bound_runtime = isaac_cell_runtime()
     construction_path = runtime / "runtime_inputs" / "native_task_arena_construction_result.v1.json"
     construction = _read(construction_path) if construction_path.is_file() or not family_scene else {}
     construction_lineage_mode = _construction_lineage_mode(
@@ -1539,6 +1603,16 @@ def _run_selected_cell(
         base_scene_plan=base_scene_plan,
         construction=construction,
     )
+    guard = RuntimeControlGuard(runtime_root=runtime, inputs=inputs, authority=authority) if inputs.get("run_kind") == BETA_RUN_KIND else None
+    if guard is not None:
+        try:
+            guard.check("before_cell_start")
+        except RuntimeControlStopped as exc:
+            _seal_beta_control_stop(output_root=output_root, inputs=inputs, authority=authority, children=[],
+                construction_lineage_mode=construction_lineage_mode, receipt=exc.receipt)
+            return 1
+    if bound_runtime is None and not family_scene:
+        bound_runtime = isaac_cell_runtime()
     specs = {
         candidate: _read(
             runtime
@@ -1588,6 +1662,8 @@ def _run_selected_cell(
     report_progress("static_preflight_passed")
 
     def open_session(_inputs: Mapping[str, Any]) -> dict[str, Any]:
+        if guard is not None:
+            guard.check("before_runtime_open")
         if family_scene:
             current_session["native_family"] = True
             return {"native_family": True, "provider_session_identity": authority["authority_digest"]}
@@ -1616,6 +1692,8 @@ def _run_selected_cell(
         }
 
     def load_policy(_session: Mapping[str, Any], candidate: str) -> dict[str, Any]:
+        if guard is not None:
+            guard.check("before_policy_load")
         spec = specs[candidate]
         groot_identity = None
         runtime_identity: Mapping[str, Any] = spec.get("runtime_identity") or {}
@@ -1630,6 +1708,9 @@ def _run_selected_cell(
             client = bound_runtime.policy_client(
                 spec, groot_worker_identity_receipt=groot_identity
             )
+        if guard is not None:
+            from blueprint_pipeline.native_task_arena_policy_worker import _PolicyQueryTracker
+            client = _PolicyQueryTracker(client, before_query=lambda: guard.check("before_policy_query"))
         report_progress("policy_loaded")
         return {
             "candidate_id": candidate,
@@ -2249,6 +2330,9 @@ def _run_selected_cell(
         prepolicy_observation_gate=prepolicy_observation_gate,
         prepolicy_control_gate=prepolicy_control_gate,
     )
+    if guard is not None and (stopped := guard.stop_receipt()) is not None:
+        result.update(status="blocked", execution_control_stop=stopped, applicability="historical_only",
+                      new_processing_authorized=False, read_only_closeout_allowed=True)
     result["appearance_render_backend"] = dict(appearance_render_backend)
     if current_session.get("robot_free_probe_trace") is not None:
         result["robot_free_probe_trace"] = current_session["robot_free_probe_trace"]

@@ -5952,6 +5952,8 @@ def _instance_liveness_from_payload(
                 # a human to a host that is not there.
                 "ssh_host": connection["ssh_host"],
                 "ssh_port": connection["ssh_port"],
+                "instance_id": instance_id,
+                "resource_name": row.get("label") or None,
             }
             terminal_startup_error = _terminal_startup_error(row)
             if terminal_startup_error:
@@ -6400,6 +6402,42 @@ def _remote_progress_probe_for_bundle(
         connection, attempt_dir=job_dir / "policy_remote_progress_ssh",
         **({"maximum_cell_count": cell_count} if cell_count != 10 else {}),
     )
+
+
+def _runtime_control_probe(*, probe, ready, job_dir: Path, instance_id: int, resource_name: str):
+    """Subscribe only after the existing own-instance probe establishes its SSH pin."""
+    unsubscribe = None
+
+    def wrapped(connection):
+        nonlocal unsubscribe
+        result = probe(connection)
+        if unsubscribe is not None or result.get("status") != "observed":
+            return result
+        # The specific provider endpoint is bound to the ID created by this
+        # adapter. Older provider responses may omit their optional label;
+        # the receiver additionally joins the exact sealed session authority.
+        if (connection.get("observed") is not True or connection.get("exited")
+                or connection.get("instance_id") != instance_id
+                or connection.get("resource_name") not in {None, resource_name}):
+            return result
+        endpoint = gpu_render_providers._vast_ssh_endpoint(connection)
+        pin_dir = job_dir / "policy_remote_progress_ssh"
+        if endpoint is None or gpu_render_providers._validated_vast_known_hosts_pin(
+                pin_dir / "vast_ssh_known_hosts", host=endpoint[0], port=endpoint[1]) is None:
+            return result
+        close = ready({**connection, "instance_id": instance_id, "resource_name": resource_name,
+                       "control_pin_dir": str(pin_dir)})
+        if not callable(close):
+            raise ValueError("beta_screening_runtime_control_subscription_invalid")
+        unsubscribe = close
+        return result
+
+    def close():
+        nonlocal unsubscribe
+        subscribed, unsubscribe = unsubscribe, None
+        if subscribed is not None:
+            subscribed()
+    return wrapped, close
 
 
 def _request_logs_and_fetch(
@@ -7169,9 +7207,13 @@ def run_vast_provider_adapter(
     provider_output_collector: Callable[..., Mapping[str, Any]] | None = None,
     runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     provider_runtime_environment: Mapping[str, str] | None = None,
+    runtime_control_ready: Callable[[Mapping[str, Any]], Callable[[], None]] | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
+    if runtime_control_ready is not None and (not callable(runtime_control_ready)
+            or provider_bundle_kind != "native_task_arena_policy_canary_session" or not instance_label_exact):
+        raise ValueError("beta_screening_runtime_control_configuration_invalid")
     if retain_native_task_arena_warm_session and provider_bundle_kind != "native_task_arena":
         raise ValueError("native_task_arena_warm_retention_bundle_kind_invalid")
     if (
@@ -8365,7 +8407,7 @@ def run_vast_provider_adapter(
 
     ignore_local_probe_signals = _env_truthy(
         "BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN"
-    )
+    ) and runtime_control_ready is None
     ignored_signal_counts: dict[str, int] = {}
 
     def _raise_probe_interrupt(signum: int, _frame: Any) -> None:
@@ -8422,6 +8464,7 @@ def run_vast_provider_adapter(
             # platforms that expose the given signal. Teardown still runs for
             # regular Python exceptions below.
             previous_signal_handlers.pop(signum, None)
+    runtime_control_unsubscribe = None
     try:
         create_retry_attempts: list[dict[str, Any]] = []
         create_attempt_labels: set[str] = set()
@@ -9016,6 +9059,12 @@ def run_vast_provider_adapter(
             startup_timeout_seconds=startup_timeout_seconds,
             max_live_minutes=max_live_minutes,
         )
+        progress_probe = _remote_progress_probe_for_bundle(provider_bundle_kind, resolved_job_dir,
+            cell_count=bundle_preflight.get("policy_cell_count") or 10)
+        if runtime_control_ready is not None:
+            progress_probe, runtime_control_unsubscribe = _runtime_control_probe(probe=progress_probe,
+                ready=runtime_control_ready, job_dir=resolved_job_dir, instance_id=instance_id,
+                resource_name=instance_label_exact)
         onstart_logs = _request_logs_and_fetch(
             instance_id=instance_id,
             api_key=api_key,
@@ -9035,10 +9084,7 @@ def run_vast_provider_adapter(
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
-            remote_progress_probe=_remote_progress_probe_for_bundle(
-                provider_bundle_kind, resolved_job_dir,
-                cell_count=bundle_preflight.get("policy_cell_count") or 10,
-            ),
+            remote_progress_probe=progress_probe,
         )
         # Result and log transport are independent. Preserve an observed upload
         # before any startup classification can raise and trigger teardown.
@@ -9879,6 +9925,13 @@ def run_vast_provider_adapter(
             provider_reason=exception_blockers[0],
         )
     finally:
+        # Stop controller delivery before the existing exact-resource teardown.
+        # Subscription failure cannot skip finally/watchdog cleanup.
+        if runtime_control_unsubscribe is not None:
+            try:
+                runtime_control_unsubscribe()
+            except Exception:  # noqa: BLE001 - cleanup must still destroy its own instance
+                pass
         if provider_bundle_kind in {"native_task_arena", "native_task_arena_policy_canary_session"}:
             try:
                 from .company_policy_network_lease import close_policy_network  # noqa: PLC0415

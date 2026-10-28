@@ -548,6 +548,7 @@ def run_arena_native_control_vast(
     provider_output_member_contract: Any | None = None,
     provider_output_reservation: Any | None = None,
     provider_output_delivery_resolution: Mapping[str, str] | None = None,
+    runtime_control_ready: Callable[[Mapping[str, Any]], Callable[[], None]] | None = None,
 ) -> dict[str, Any]:
     """Run one zero-retry Arena acquisition behind an independent hard-TTL watchdog.
 
@@ -1027,6 +1028,7 @@ def run_arena_native_control_vast(
                 retain_native_task_arena_warm_session=retain_warm_instance,
                 stale_offer_create_retry_limit=stale_offer_create_retry_limit,
                 provider_runtime_environment=provider_runtime_environment,
+                **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
                 **({"runtime_secret_file_paths": provider_secret_paths} if provider_secret_paths else {}),
                 allowed_geolocation_country_codes=(
                     allowed_geolocation_country_codes
