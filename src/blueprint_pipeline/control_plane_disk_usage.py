@@ -24,6 +24,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import control_plane_storage_roots as storage_roots
+from .control_plane_usage_paths import (
+    UsageDirectory,
+    UsagePathError,
+    anchored_directory,
+    descendant_directory,
+    same_identity,
+)
 from .decision_evidence_contracts import canonical_digest
 
 SURVEY_SCHEMA_VERSION = "control_plane_disk_usage_survey.v1"
@@ -427,6 +434,7 @@ class _UsageWalk:
         self.shared: dict[tuple[int, int], list[Any]] = {}
         self.entries = 0
         self.unreadable = 0
+        self.identity_refusals = 0
         self.duplicates = 0
         self.truncated = False
 
@@ -537,60 +545,84 @@ class _UsageWalk:
         self.devices.setdefault(device, [0, 0])
         if self._exhausted():
             return
+        try:
+            if stat.S_ISDIR(metadata.st_mode):
+                with anchored_directory(path, metadata) as root:
+                    self._walk_directory(path, root, os.fstat(root.fd))
+                return
+            parent, name = os.path.split(path)
+            with anchored_directory(parent, os.lstat(parent)) as anchor:
+                current = os.stat(name, dir_fd=anchor.fd, follow_symlinks=False)
+                if not same_identity(current, metadata):
+                    raise UsagePathError("entry_identity_changed")
+                anchor.check()
+                self.entries += 1
+                top = self._directory(path, _parts(_canonical(path, self.aliases)))
+                self._record(current, self._attribute(top.parts, top.match, False), device, top.parts)
+        except OSError:
+            self.identity_refusals += 1
+            self.unreadable += 1
+            self.truncated = True
+
+    def _walk_directory(self, path: str, root: UsageDirectory, metadata: os.stat_result) -> None:
+        device = metadata.st_dev
         self.entries += 1
         top = self._directory(path, _parts(_canonical(path, self.aliases)))
-        is_dir = stat.S_ISDIR(metadata.st_mode)
-        self._record(metadata, self._attribute(top.parts, top.match, is_dir), device, top.parts)
-        if not is_dir:
-            return
-        stack = [top]
+        self._record(metadata, self._attribute(top.parts, top.match, True), device, top.parts)
+        stack = [(top, metadata, ())]
         while stack:
-            directory = stack.pop()
+            directory, expected, relative = stack.pop()
             try:
-                with os.scandir(directory.path) as iterator:
-                    entries = []
-                    overflow = False
-                    # Keep time for stat/attribution of the partial, sorted batch.
-                    # A filesystem call itself cannot be preempted, but a large
-                    # directory must not consume every later mount's share.
-                    buffer_deadline = (self.clock() + self.deadline) / 2
-                    for entry in iterator:
-                        if len(entries) >= self.buffer_limit:
-                            overflow = True
-                            break
-                        entries.append(entry)
-                        if self.clock() >= buffer_deadline:
-                            overflow = True
-                            break
-                    entries.sort(key=lambda entry: entry.name)
+                with descendant_directory(root, relative, expected) as anchor:
+                    with os.scandir(anchor.fd) as iterator:
+                        entries = []
+                        overflow = False
+                        # Keep time for stat/attribution of the partial, sorted batch.
+                        buffer_deadline = (self.clock() + self.deadline) / 2
+                        for entry in iterator:
+                            if len(entries) >= self.buffer_limit:
+                                overflow = True
+                                break
+                            entries.append(entry)
+                            if self.clock() >= buffer_deadline:
+                                overflow = True
+                                break
+                        entries.sort(key=lambda entry: entry.name)
+                    anchor.check()
+                    subdirectories = []
+                    for entry in entries:
+                        if self._exhausted():
+                            return
+                        self.entries += 1
+                        try:
+                            # DirEntry came from this still-open descriptor:
+                            # its nofollow stat cannot escape via a path swap.
+                            child = entry.stat(follow_symlinks=False)
+                        except OSError:
+                            self.unreadable += 1
+                            continue
+                        child_path = os.path.join(directory.path, entry.name)
+                        if child.st_dev != device or child_path in self.mount_points:
+                            continue
+                        if stat.S_ISDIR(child.st_mode):
+                            if (child.st_dev, child.st_ino) in self.walk_roots:
+                                continue
+                            nested = self._child(directory, entry.name, child_path)
+                            self._record(child, self._attribute(nested.parts, nested.match, True), device,
+                                         nested.parts)
+                            if len(stack) + len(subdirectories) >= self.buffer_limit:
+                                self.truncated = True
+                                return
+                            subdirectories.append((nested, child, relative + (entry.name,)))
+                        else:
+                            self._record(child, self._file(directory, entry.name), device,
+                                         directory.parts + (entry.name,))
+                    anchor.check()
+            except UsagePathError:
+                raise
             except OSError:
                 self.unreadable += 1
                 continue
-            subdirectories = []
-            for entry in entries:
-                if self._exhausted():
-                    return
-                self.entries += 1
-                try:
-                    child = entry.stat(follow_symlinks=False)
-                except OSError:
-                    self.unreadable += 1
-                    continue
-                if child.st_dev != device or entry.path in self.mount_points:
-                    continue  # another filesystem: its own mount's walk counts it
-                if stat.S_ISDIR(child.st_mode):
-                    if (child.st_dev, child.st_ino) in self.walk_roots:
-                        continue  # a listed mount nested here is walked on its own
-                    nested = self._child(directory, entry.name, entry.path)
-                    self._record(child, self._attribute(nested.parts, nested.match, True), device,
-                                 nested.parts)
-                    if len(stack) + len(subdirectories) >= self.buffer_limit:
-                        self.truncated = True
-                        return
-                    subdirectories.append(nested)
-                else:
-                    self._record(child, self._file(directory, entry.name), device,
-                                 directory.parts + (entry.name,))
             if self.truncated:
                 return
             if overflow:
@@ -761,6 +793,10 @@ def survey_usage(
         truncated |= walk.truncated
     walk.truncated = truncated
     walk.finish()
+    if partition is not None and walk.identity_refusals:
+        partition["inventory_complete"] = False
+        partition["continuation_status"] = sorted(
+            set(partition["continuation_status"]) - {"continued", "started"} | {"partition_identity_refused"})
 
     filesystems: dict[int, list[str]] = {}
     for path, metadata in original_walks:
@@ -796,6 +832,7 @@ def survey_usage(
         "duration_seconds": round(max(0.0, clock() - started), 3),
         "entries_visited": walk.entries,
         "unreadable": walk.unreadable,
+        "path_identity_refusals": walk.identity_refusals,
         "unreadable_bytes": None if walk.unreadable or partition is not None and not partition["inventory_complete"] else 0,
         "byte_accounting": "current_snapshot_lower_bound" if walk.truncated or partition is not None or walk.unreadable else "current_snapshot",
         "mounts": rows,

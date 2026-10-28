@@ -43,6 +43,13 @@ files. A single exceptionally large partition may still be truncated; this
 change improves root fairness rather than claiming a full arbitrary-depth
 filesystem census.
 
+Partition discovery and every selected/nested directory walk now use retained
+directory descriptors, component-by-component nofollow opens and device/inode/
+type checks. Linkage is checked before and after observation. A cursor's cached
+stat is an expected identity, never authority to scan a path. A replaced or
+unverifiable directory yields `partition_identity_refused`, incomplete inventory
+and unknown unreadable bytes; outside targets are not traversed or attributed.
+
 Loose scratch remains a review-candidate heuristic. A fresh complete existing
 reference census can label a root active/referenced. Unknown/incomplete
 inventory, an empty reference set or an owner guess never creates retirement
@@ -69,9 +76,10 @@ Focused checks run without provider calls:
 - Disk, capacity and new partition/lifecycle regressions: 140 passed.
 
 Production safe-summary readback, natural worker/door upgrade, shadow comparison
-and actual root-owned/blueprint-user readback remain unverified. Production
-access is blocked by the retained network denial; this work does not use an
-alternate route. No deployment, paid execution, hold release or production
+and actual root-owned/blueprint-user readback remain unverified by this lane.
+This lane performs only source changes and offline checks; root coordinates any
+separately authorized existing production route. No alternate route, deployment,
+paid execution, hold release or production
 storage mutation was performed. Two overlapping normal jobs, measured
 baseline/peak/final allocated bytes, a complete current production reference
 census and normal retention observation remain necessary for AUT-19 acceptance.
@@ -80,5 +88,20 @@ The independent AUT-19 review reproduced starvation when a new job root was
 added before each four-partition pass. Its scratch regression failed on
 `f1ff10df6`; the queue correction passes it together with seven local
 continuation tests, including arrival of an earlier-sorting priority root.
-The independent selected-directory replacement regression remains the next
-source-only correction at this checkpoint.
+The independent selected-directory replacement regression also failed on that
+head and now passes. Six local identity regressions additionally cover a swap
+before open, before and after scandir, a nested swap, root replacement during
+inventory and same-device replacement by a real directory. The two existing
+path-based mock fixtures now inject by descriptor identity, retaining their
+unreadable-directory and non-UTF8 assertions.
+
+Final AUT-19 source-only review checks: 162 passed in 24.85 seconds across
+`tests/test_control_plane_disk_usage_identity.py`,
+`tests/test_control_plane_disk_usage.py`,
+`tests/test_control_plane_disk_usage_continuation.py`,
+`tests/test_control_plane_capacity_controller.py`,
+`tests/test_lane_scratch_census.py` and the exact two independent probes at
+`/tmp/autonomy-coverage-operations-review-20261028/test_aut19_independent_review.py`.
+Changed-file Ruff and whitespace checks pass. A separate broader run including
+the lane-scratch contract tests passed 176 tests before the final root-file
+error classification change; the final 162-test run includes that change.

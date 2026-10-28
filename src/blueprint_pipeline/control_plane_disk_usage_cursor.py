@@ -14,6 +14,7 @@ import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from .control_plane_usage_paths import UsagePathError, anchored_directory
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "control_plane_usage_partition_cursor.v2"
@@ -78,25 +79,30 @@ def select_partitions(
         complete = True
         root_deadline = min(deadline, clock() + inventory_share)
         try:
-            with os.scandir(path) as entries:
-                for entry in entries:
-                    if len(candidates) >= MAX_PARTITION_CANDIDATES or clock() >= root_deadline:
-                        complete = False
-                        break
-                    try:
-                        info = entry.stat(follow_symlinks=False)
-                        examined += 1
-                    except OSError:
-                        complete = False
-                        continue
-                    if info.st_dev != root_info.st_dev or entry.path in mount_points:
-                        continue
-                    # Symlink bytes may be counted by a full survey, but a
-                    # cursor must never turn a link into a traversable root.
-                    if stat.S_ISLNK(info.st_mode):
-                        complete = False
-                        continue
-                    candidates.append((entry.name, entry.path, info))
+            with anchored_directory(path, root_info) as anchor:
+                with os.scandir(anchor.fd) as entries:
+                    for entry in entries:
+                        if len(candidates) >= MAX_PARTITION_CANDIDATES or clock() >= root_deadline:
+                            complete = False
+                            break
+                        try:
+                            info = entry.stat(follow_symlinks=False)
+                            examined += 1
+                        except OSError:
+                            complete = False
+                            continue
+                        child_path = os.path.join(path, entry.name)
+                        if info.st_dev != root_info.st_dev or child_path in mount_points:
+                            continue
+                        # A cursor must never turn a link into a traversable root.
+                        if stat.S_ISLNK(info.st_mode):
+                            complete = False
+                            continue
+                        candidates.append((entry.name, child_path, info))
+        except UsagePathError:
+            candidates = []
+            complete = False
+            reasons.add("partition_identity_refused")
         except OSError:
             complete = False
             reasons.add("partition_inventory_unreadable")
