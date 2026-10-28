@@ -50,58 +50,66 @@ def _locked(root: Path):
             os.close(descriptor)
 
 
-def _read_record(path: Path) -> tuple[dict[str, Any], os.stat_result]:
+def _read_private_json(path: Path, *, error_prefix: str) -> tuple[dict[str, Any], os.stat_result]:
+    """Refuse unsafe local state before a bounded nonblocking read."""
     descriptor = -1
     try:
         if path.is_symlink():
-            raise NonceStoreError("intake_nonce_record_unsafe")
+            raise NonceStoreError(error_prefix + "_unsafe")
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-                             | getattr(os, "O_NONBLOCK", 0))
+                             | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
         metadata = os.fstat(descriptor)
         if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
                 or stat.S_IMODE(metadata.st_mode) != 0o600 or metadata.st_size > 4096):
-            raise NonceStoreError("intake_nonce_record_unsafe")
+            raise NonceStoreError(error_prefix + "_unsafe")
         payload = os.read(descriptor, 4097)
+        if len(payload) > 4096:
+            raise NonceStoreError(error_prefix + "_unsafe")
         value = json.loads(payload.decode("utf-8"))
-        if (not isinstance(value, dict) or value.get("schema_version") != SCHEMA_VERSION
-                or any(not isinstance(value.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", value[key])
-                       for key in ("client_id_sha256", "nonce_sha256"))
-                or any(type(value.get(key)) not in (int, float) or not math.isfinite(value[key])
-                       for key in ("claimed_at_epoch", "expires_at_epoch"))
-                or value["claimed_at_epoch"] < 0 or value["expires_at_epoch"] <= value["claimed_at_epoch"]):
-            raise NonceStoreError("intake_nonce_record_invalid")
+        if not isinstance(value, dict):
+            raise NonceStoreError(error_prefix + "_invalid")
         return value, metadata
     except FileNotFoundError:
         raise
     except (ValueError, UnicodeError) as exc:
-        raise NonceStoreError("intake_nonce_record_invalid") from exc
+        raise NonceStoreError(error_prefix + "_invalid") from exc
     except OSError as exc:
-        raise NonceStoreError("intake_nonce_record_unavailable") from exc
+        raise NonceStoreError(error_prefix + "_unavailable") from exc
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _read_record(path: Path) -> tuple[dict[str, Any], os.stat_result]:
+    value, metadata = _read_private_json(path, error_prefix="intake_nonce_record")
+    if (value.get("schema_version") != SCHEMA_VERSION
+            or any(not isinstance(value.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", value[key])
+                   for key in ("client_id_sha256", "nonce_sha256"))
+            or any(type(value.get(key)) not in (int, float) or not math.isfinite(value[key])
+                   for key in ("claimed_at_epoch", "expires_at_epoch"))
+            or value["claimed_at_epoch"] < 0 or value["expires_at_epoch"] <= value["claimed_at_epoch"]):
+        raise NonceStoreError("intake_nonce_record_invalid")
+    return value, metadata
 
 
 def _clock(root: Path, now: float) -> dict[str, Any]:
     if not math.isfinite(now) or now < 0:
         raise NonceStoreError("intake_nonce_clock_invalid")
     path = root / STATE_FILE
-    state = {}
-    if path.exists() or path.is_symlink():
+    try:
+        state, _ = _read_private_json(path, error_prefix="intake_nonce_clock_state")
+    except FileNotFoundError:
+        state, previous = {}, now
+    else:
         try:
-            if path.is_symlink():
-                raise ValueError("unsafe")
-            state = json.loads(path.read_text())
             previous = state["high_water_epoch"]
             if (state.get("schema_version") != "blueprint_intake_nonce_retention_state.v1"
                     or type(previous) not in (int, float) or not math.isfinite(previous) or previous < 0):
                 raise ValueError("invalid")
             if now + GRACE_SECONDS < previous:
                 raise NonceStoreError("intake_nonce_clock_rollback")
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except (ValueError, KeyError, TypeError) as exc:
             raise NonceStoreError("intake_nonce_clock_state_unavailable") from exc
-    else:
-        previous = now
     state = {**state, "schema_version": "blueprint_intake_nonce_retention_state.v1",
              "high_water_epoch": max(now, previous)}
     write_json(path, state)

@@ -163,3 +163,55 @@ def test_http_claim_defaults_to_report_only_and_exposes_bounded_health(tmp_path,
     health = service._nonce_retention_health()
     assert health["mode"] == "report_only" and health["expired"] == 1
     assert str(root) not in json.dumps(health) and "retained-old" not in json.dumps(health)
+
+
+def _claim_with_clock_failure(root, results):
+    try:
+        store.claim(root, client_id="client", nonce="clock-state-test", now=1000, max_age_seconds=300)
+    except store.NonceStoreError as exc:
+        results.put(str(exc))
+    else:
+        results.put("unexpected_acceptance")
+
+
+@pytest.mark.slow
+def test_fifo_clock_state_refuses_promptly_and_releases_global_nonce_lock(tmp_path):
+    root = _root(tmp_path)
+    clock = root / store.STATE_FILE
+    os.mkfifo(clock, mode=0o600)
+    processes = multiprocessing.get_context("fork")
+    results = processes.Queue()
+    child = processes.Process(target=_claim_with_clock_failure, args=(root, results))
+    child.start()
+    child.join(timeout=2)
+    blocked = child.is_alive()
+    if blocked:
+        child.terminate()
+        child.join(timeout=2)
+    assert not blocked, "FIFO clock state blocked the global nonce lock"
+    assert child.exitcode == 0
+    assert results.get(timeout=1) == "intake_nonce_clock_state_unsafe"
+    assert not list(root.glob("*.json"))
+    # Owned fixture repair demonstrates that the failed read released the lock.
+    clock.unlink()
+    assert store.claim(root, client_id="client", nonce="healthy-after-clock-refusal", now=1000, max_age_seconds=300)
+
+
+@pytest.mark.parametrize("damage", ["oversized", "unsafe_mode", "symlink", "directory", "non_utf8"])
+def test_clock_state_is_private_regular_size_bounded_json(tmp_path, damage):
+    root = _root(tmp_path)
+    clock = root / store.STATE_FILE
+    if damage == "directory":
+        clock.mkdir(mode=0o700)
+    elif damage == "symlink":
+        target = tmp_path / "private-clock-target"
+        target.write_text('{"schema_version":"blueprint_intake_nonce_retention_state.v1","high_water_epoch":1}')
+        target.chmod(0o600)
+        clock.symlink_to(target)
+    else:
+        clock.write_bytes(b"x" * 4097 if damage == "oversized" else b"\xff" if damage == "non_utf8"
+                          else b'{"schema_version":"blueprint_intake_nonce_retention_state.v1","high_water_epoch":1}')
+        clock.chmod(0o644 if damage == "unsafe_mode" else 0o600)
+    with pytest.raises(store.NonceStoreError, match="^intake_nonce_clock_state_(unsafe|invalid)$"):
+        store.claim(root, client_id="client", nonce="clock-state-test", now=1000, max_age_seconds=300)
+    assert not list(root.glob("*.json"))

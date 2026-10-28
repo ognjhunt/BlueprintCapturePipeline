@@ -11,6 +11,9 @@ become a new accepted claim. A failed write/fsync fails authenticated intake
 closed with a sanitized 503; it never reports success or silently drops partial
 anti-replay state. A persistent clock high-water mark prevents a forward jump
 followed by substantial clock rollback from reopening reclaimed nonces.
+Clock state uses the same nofollow, nonblocking, regular-file, private-mode and
+4,096-byte read bounds as nonce records. A FIFO or malformed clock file fails
+closed without holding the shared nonce lock indefinitely.
 
 Normal signed intake invokes a bounded maintenance observation at most once per
 minute. Its default mode is `report_only`. The optional
