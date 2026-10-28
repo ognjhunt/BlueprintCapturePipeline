@@ -9,6 +9,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import socket
 import sys
@@ -17,6 +18,19 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+
+
+def next_due_scheduler_epoch(delivery_path: Path) -> float:
+    """Advance only one test scheduler tick to the canonical retry deadline.
+
+    Do not patch time.time: source authority, nonce and HMAC timestamps retain
+    their real clock. Reading the deadline never resets retained backoff.
+    """
+    delivery = json.loads(delivery_path.read_text()) if delivery_path.is_file() else {}
+    deadline = delivery.get("next_attempt_at_epoch", 0.0)
+    if type(deadline) not in (int, float) or not math.isfinite(deadline) or deadline < 0:
+        raise ValueError("Invalid retained fixture delivery deadline")
+    return max(time.time(), float(deadline))
 
 
 def main() -> None:
@@ -201,12 +215,16 @@ def main() -> None:
             if command == "stop":
                 print(json.dumps({"command": command, "event": "stopped", "result": {"stopped": True}}), flush=True)
                 break
-            if command == "deliver":
-                counts = reconcile_preparation_wakeups(storage_root)
+            if command in {"deliver", "deliver_next_due"}:
                 delivery_path = root / "website_preparation_status_delivery.json"
+                scheduler_epoch = (next_due_scheduler_epoch(delivery_path)
+                                   if command == "deliver_next_due" else None)
+                counts = reconcile_preparation_wakeups(storage_root, **(
+                    {"now_epoch": scheduler_epoch} if scheduler_epoch is not None else {}))
                 delivery = json.loads(delivery_path.read_text()) if delivery_path.is_file() else {}
                 result = {"delivered": delivery.get("state") == "delivered", "remaining_pending": int(delivery.get("state") == "pending"),
-                          "delivery_counts": counts, "delivery": delivery, "acceptance": delivery.get("acceptance")}
+                          "delivery_counts": counts, "delivery": delivery, "acceptance": delivery.get("acceptance"),
+                          **({"scheduler_now_epoch": scheduler_epoch} if scheduler_epoch is not None else {})}
             elif command == "retry":
                 process()
                 result = listener._read_job_ledger(root)
@@ -226,7 +244,7 @@ def main() -> None:
                 result = read_preparation_status(capture_root=root, selectors=selectors)
             else:
                 raise ValueError("Unknown isolated test command")
-            print(json.dumps({"command": command, "event": "delivered" if command == "deliver" else command, "result": result}), flush=True)
+            print(json.dumps({"command": command, "event": "delivered" if command in {"deliver", "deliver_next_due"} else command, "result": result}), flush=True)
     finally:
         server.should_exit = True
         thread.join(timeout=10)
