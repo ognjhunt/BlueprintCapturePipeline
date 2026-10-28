@@ -21,6 +21,7 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .episode_visual_evidence import finalize_failed_policy_visual_evidence, finalize_visual_evidence, persist_observation_frame
 from .task_family_native_contracts import (
+    POLYGON_VALIDATION_VERSION,
     RUNTIME_SCHEMA as RUNTIME_SCHEMA,
     _ASSET_ROLES as _ASSET_ROLES,
     _ID,
@@ -101,25 +102,25 @@ def _intersection(subject: np.ndarray, clip: np.ndarray) -> np.ndarray:
     return np.asarray(output)
 
 
-def _cloth_overlap_fraction(first: Any, second: Any) -> float:
+def _cloth_overlap_fraction(first: Any, second: Any, *, diagnostics: list[str] | None = None) -> float:
     """Score finite intermediate fold projections conservatively.
 
-    An edge-on or concave cloth half is a normal intermediate state. The
-    convex clipping method cannot establish overlap there, so it contributes
-    zero progress. Malformed or nonfinite native geometry remains invalid.
+    Edge-on, concave and self-crossing projections cannot establish convex
+    overlap and contribute zero progress with a retained diagnostic. Malformed
+    or nonfinite native arrays remain invalid.
     """
     projected = [_array(value, columns=2) for value in (first, second)]
     _require(all(len(polygon) >= 3 for polygon in projected), "polygon_invalid")
     polygons = []
-    for polygon in projected:
-        extent = float(np.ptp(polygon, axis=0).max())
-        if _area(polygon) <= 1e-12 * extent * extent:
-            return 0.0
+    for label, polygon in zip(("first", "second"), projected):
         try:
             polygons.append(_polygon(polygon))
         except ValueError as exc:
-            if str(exc) not in {"task_family_native_polygon_degenerate", "task_family_native_polygon_not_convex"}:
+            reason = str(exc).removeprefix("task_family_native_polygon_")
+            if reason not in {"degenerate", "not_convex", "not_simple"}:
                 raise
+            if diagnostics is not None:
+                diagnostics.append("cloth_projection_" + reason + ":" + label)
             return 0.0
     return min(1.0, _area(_intersection(*polygons)) / max(_area(polygon) for polygon in polygons))
 
@@ -180,12 +181,15 @@ def _stage_measurements(kind: str, row: Mapping[str, Any]) -> dict[str, Any]:
     if kind == "cloth_folding":
         points, target = _array(row["keypoint_positions_m"], columns=3), _array(row["target_keypoint_positions_m"], columns=3)
         _require(points.shape == target.shape, "cloth_keypoints_invalid")
-        overlap = _cloth_overlap_fraction(row["first_fold_polygon_xy_m"], row["second_fold_polygon_xy_m"])
+        diagnostics: list[str] = []
+        overlap = _cloth_overlap_fraction(row["first_fold_polygon_xy_m"], row["second_fold_polygon_xy_m"],
+                                          diagnostics=diagnostics)
         _require(type(row.get("robot_contact_active")) is bool, "robot_contact_readback_missing")
         return {"fold_keypoint_error_m": float(np.linalg.norm(points - target, axis=1).max()),
                 "fold_overlap_fraction": overlap,
                 "robot_contact_active": row["robot_contact_active"],
-                "linear_speed_m_s": float(np.linalg.norm(_array(row["vertex_velocities_m_s"], columns=3), axis=1).max())}
+                "linear_speed_m_s": float(np.linalg.norm(_array(row["vertex_velocities_m_s"], columns=3), axis=1).max()),
+                **({"measurement_diagnostics": diagnostics} if diagnostics else {})}
     raise ValueError("task_family_native_unknown_readback")
 
 
@@ -375,7 +379,8 @@ def execute_task_family_episode(
         telemetry = {"schema_version": TELEMETRY_SCHEMA, "scope": task["scope"],
                      "contract_digest": task["contract_digest"], "runtime_identity_digest": task["runtime_identity_digest"],
                      "native_provenance": native_runtime_provenance(runtime_contract),
-                     "source": "native_simulator_state", "samples": samples}
+                     "source": "native_simulator_state", "samples": samples,
+                     "polygon_validation_version": POLYGON_VALIDATION_VERSION}
         telemetry["telemetry_digest"] = canonical_digest(telemetry, digest_field="telemetry_digest")
         try:
             scoring = score_task_family_episode(contract=task, telemetry=telemetry)
@@ -389,6 +394,7 @@ def execute_task_family_episode(
                "scoring_source": "deterministic_native_state", "physical_validation": False,
                "native_provenance": native_runtime_provenance(runtime_contract) if runtime_contract else None,
                "maximum_steps": maximum_steps, "control_frequency_hz": control_frequency_hz,
+               "polygon_validation_version": POLYGON_VALIDATION_VERSION,
                "claim_ceiling": task["claim_ceiling"] if task else "development_only"}
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
     return receipt
