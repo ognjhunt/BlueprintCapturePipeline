@@ -17,7 +17,9 @@ import numpy as np
 from .capture_intake import build_capture_admission, validate_capture_intake_envelope
 from .camera_geometry_validation import validate_se3_matrix
 from .decision_evidence_contracts import canonical_digest
-from .task_family_authoring_evidence import _read
+from .task_family_authoring_evidence import (
+    MAX_SOURCE_FRAMES, _read, valid_source_frame_identity, validate_source_frame_identities,
+)
 from .task_family_native_contracts import _pose
 
 SCHEMA = "website_metric_layout_registration.v1"
@@ -102,9 +104,9 @@ def _camera_records(calibration, coordinates, raw_originals):
     _require(coordinates.get("camera_convention") == convention, "native_coordinate_normalization_required")
     intrinsics_document = json.loads(raw_originals["camera_intrinsics"])
     rows = [json.loads(line) for line in raw_originals["camera_poses"].splitlines() if line.strip()]
-    _require(isinstance(intrinsics_document, Mapping) and len(rows) <= 4096
-        and all(isinstance(row, Mapping) and isinstance(row.get("frame_id"), str)
-                and bool(row["frame_id"]) for row in rows), "native_calibration_invalid")
+    _require(isinstance(intrinsics_document, Mapping) and len(rows) <= MAX_SOURCE_FRAMES
+        and all(isinstance(row, Mapping) and valid_source_frame_identity(row.get("frame_id"))
+                for row in rows), "native_calibration_invalid")
     intrinsics = intrinsics_document.get("intrinsics") if native_arkit else intrinsics_document
     _require(isinstance(intrinsics, Mapping)
         and all(_number(intrinsics.get(key)) for key in ("fx", "fy", "cx", "cy"))
@@ -128,6 +130,7 @@ def _camera_records(calibration, coordinates, raw_originals):
 
 
 def _derive(*, records, binding, scene, frame_rows, target_ids):
+    source_ids = validate_source_frame_identities(frame_rows)
     envelope = validate_capture_intake_envelope(records["capture_intake"])
     admission = build_capture_admission(envelope)
     _require(admission["status"] == "accepted" and admission["claim_ceiling"]["metric_geometry"] is True
@@ -168,11 +171,15 @@ def _derive(*, records, binding, scene, frame_rows, target_ids):
                                     as_bytes=kind in {"camera_intrinsics", "camera_poses"})
     intrinsics, by_native_frame = _camera_records(calibration, coordinates, raw_originals)
     measured = calibration.get("frames")
-    _require(isinstance(measured, list) and 0 < len(measured) <= 4096
-        and all(isinstance(row, Mapping) and isinstance(row.get("frame_id"), str)
-                and bool(row["frame_id"]) for row in measured)
+    _require(isinstance(measured, list) and 0 < len(measured) <= MAX_SOURCE_FRAMES
+        and all(isinstance(row, Mapping) and valid_source_frame_identity(row.get("frame_id")) for row in measured)
         and len({row["frame_id"] for row in measured}) == len(measured), "camera_frames_invalid")
     calibrated = {row["frame_id"]: row for row in measured}
+    selected_native_ids = [calibrated[identity].get("native_frame_id")
+                           for identity in source_ids if identity in calibrated]
+    _require(len(selected_native_ids) == len(source_ids)
+        and all(valid_source_frame_identity(identity) for identity in selected_native_ids)
+        and len(set(selected_native_ids)) == len(selected_native_ids), "native_frame_binding_invalid")
     for frame in frame_rows:
         actual = calibrated.get(frame["frame_id"])
         _require(actual is not None and all(actual.get(key) == frame.get(key) for key in (
@@ -244,6 +251,9 @@ def emit_registered_task_layout(*, task_context, task_masks, source_geometry, ba
     """Use existing family authoring stages; missing measurements stay required."""
     if task_masks.get("registered_layout") is not None:
         return task_masks
+    source_frames = source_geometry.get("frames")
+    validate_source_frame_identities(source_frames,
+        maximum_frames=(source_geometry.get("binding") or {}).get("maximum_frames"))
     from .task_family_button_authoring import _retain
     references = task_masks.get("layout_source_records")
     binding = {"capture_id": task_context["capture_id"], "scene_id": task_context["scene_id"],
@@ -262,7 +272,7 @@ def emit_registered_task_layout(*, task_context, task_masks, source_geometry, ba
     result = dict(task_masks)
     if not missing:
         frame_rows = [{key: row.get(key) for key in ("frame_id", "intrinsics", "world_from_camera",
-            "image_digest", "geometry_digest", "width", "height")} for row in source_geometry["frames"]]
+            "image_digest", "geometry_digest", "width", "height")} for row in source_frames]
         scene = {key: base_scene[key] for key in ("collision_mesh_digest", "meters_per_unit", "up_axis")}
         target_ids = [row["target_id"] for row in task_masks["targets"] if row.get("task_effect") in {"manipulated", "static_contact"}]
         layout = _derive(records=_records(references), binding=binding, scene=scene, frame_rows=frame_rows, target_ids=target_ids)

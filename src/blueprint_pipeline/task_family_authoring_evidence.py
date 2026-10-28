@@ -20,6 +20,7 @@ from .decision_evidence_contracts import canonical_digest
 INPUT_SCHEMA = "website_family_authoring_evidence_inputs.v1"
 MAX_METADATA_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_FRAMES = 4096
+MAX_SOURCE_FRAME_ID_BYTES = 1024
 
 
 class AuthoringEvidenceError(ValueError):
@@ -109,6 +110,27 @@ def _source_claim(native):
                or asset.get("engineering_record_digest") is not None for asset in assets if isinstance(asset, Mapping))
 
 
+def valid_source_frame_identity(value):
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        return len(value.encode("utf-8")) <= MAX_SOURCE_FRAME_ID_BYTES
+    except UnicodeError:
+        return False
+
+
+def validate_source_frame_identities(frames, *, maximum_frames=None):
+    """Use the same finite, unambiguous frame pool before authoring and readback."""
+    _require(isinstance(frames, list) and 0 < len(frames) <= MAX_SOURCE_FRAMES
+        and all(isinstance(frame, Mapping) and valid_source_frame_identity(frame.get("frame_id"))
+                for frame in frames), "frames_invalid")
+    identities = [frame["frame_id"] for frame in frames]
+    _require(len(set(identities)) == len(identities), "frames_invalid")
+    _require(maximum_frames is None or (type(maximum_frames) is int and maximum_frames >= 2
+        and len(frames) <= maximum_frames), "frames_invalid")
+    return identities
+
+
 def _verify_inputs(manifest, native, outputs):
     _require(manifest.get("schema_version") == INPUT_SCHEMA, "input_schema_invalid")
     binding = native["task_state_binding"]["source_scene_binding"]
@@ -125,8 +147,7 @@ def _verify_inputs(manifest, native, outputs):
     _require(catalog.get("catalog_digest") == canonical_digest(catalog, digest_field="catalog_digest")
              == outputs["task_family_runtime_selection"]["runtime_catalog_digest"], "catalog_changed")
     frames = manifest.get("source_frames")
-    _require(isinstance(frames, list) and 0 < len(frames) <= MAX_SOURCE_FRAMES
-             and len({frame["frame_id"] for frame in frames}) == len(frames), "frames_invalid")
+    validate_source_frame_identities(frames)
     for frame in frames:
         _read(frame["image"], "source_rgb")
         _read(frame["geometry"], "source_geometry")

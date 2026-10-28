@@ -310,6 +310,9 @@ def author_button_family_inputs(*, family, task_context, task_masks, source_geom
     layout = _layout(task_masks, source_geometry, base_scene)
     source_files = []
     if layout is not None:
+        from .task_family_authoring_evidence import validate_source_frame_identities
+        validate_source_frame_identities(source_geometry.get("frames"),
+            maximum_frames=(source_geometry.get("binding") or {}).get("maximum_frames"))
         for frame in source_geometry.get("frames", []):
             records = {"frame_id": frame["frame_id"]}
             for prefix in ("image", "geometry"):

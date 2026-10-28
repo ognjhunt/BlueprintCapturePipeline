@@ -193,7 +193,12 @@ Only references/hashes enter the packet; raw frames and engineering evidence
 are not copied into GPU assets. A validating host without already permitted
 access to an exact reference remains blocked. These references grant no access
 and there is no receipt-only fallback. Closure JSON is bounded to 8 MiB per
-record and 4,096 retained geometry frames; provider context sampling follows its
+record and 4,096 retained geometry frames. Each frame ID is a nonblank string of
+at most 1,024 UTF-8 bytes. Source frame identities must be unique before layout
+or native authoring, and every selected source frame joins a distinct retained
+native pose identity. A declared source-frame maximum remains an additional
+bound; duplicate records are refused rather than deduplicated. The same frame
+checks run again during native packet evidence readback. Provider context sampling follows its
 independent configured contract. Supplied/manual native inputs without a source
 producer claim remain a distinct compatibility route. Older source-produced
 packets lacking the closure need local re-authoring from their retained inputs.

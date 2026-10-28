@@ -6,6 +6,7 @@
 """Native-record development fixtures; no real measurement or runtime admission."""
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 from pathlib import Path
 
@@ -110,6 +111,14 @@ def _change(args, references, kind, edit):
     args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
 
 
+def _rebind_geometry(args, references):
+    geometry = args["source_geometry"]
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    args["task_masks"]["source_geometry_digest"] = geometry["digest"]
+    for kind in ("calibration", "frame_registration", "target_poses", "robot_registration"):
+        _change(args, references, kind, lambda value: value.update(source_geometry_digest=geometry["digest"]))
+
+
 def _raw_v32_records(args, references):
     """Exercise documented Raw V3.2 field/axis names with development-only bytes."""
     envelope_path = Path(references["capture_intake"]["path"])
@@ -203,6 +212,80 @@ def test_layout_restart_adopts_identical_immutable_bytes(tmp_path, monkeypatch):
               for path in (args["output_root"] / "family_authoring").rglob("*.json")}
     assert compile_website_scene_preparation(**args) == first
     assert before and all((path.read_bytes(), path.stat().st_mtime_ns) == value for path, value in before.items())
+
+
+@pytest.mark.parametrize("count", [2, 4097])
+def test_duplicate_source_frame_pool_refuses_before_intake_ready(tmp_path, monkeypatch, count):
+    args, sources = _native_records(tmp_path, monkeypatch)
+    geometry = args["source_geometry"]
+    geometry["frames"] = [deepcopy(geometry["frames"][0]) for _ in range(count)]
+    _rebind_geometry(args, sources)
+    _change(args, sources, "calibration", lambda value: value.update(frames=[value["frames"][0]]))
+    with pytest.raises(ValueError, match="authoring_evidence_frames_invalid"):
+        compile_website_scene_preparation(**args)
+    assert not (args["output_root"] / "preparation.json").exists()
+
+
+@pytest.mark.parametrize("fault", ["empty", "too_many", "missing_id", "boolean_id", "blank_id", "long_id", "limit"])
+def test_source_frame_pool_has_bounded_identities_and_cardinality(tmp_path, monkeypatch, fault):
+    args, sources = _native_records(tmp_path, monkeypatch)
+    geometry = args["source_geometry"]
+    if fault == "empty":
+        geometry["frames"] = []
+    elif fault == "too_many":
+        geometry["frames"] = [{**geometry["frames"][0], "frame_id": "source-" + str(index)} for index in range(4097)]
+    elif fault == "missing_id":
+        geometry["frames"][0].pop("frame_id")
+    elif fault == "boolean_id":
+        geometry["frames"][0]["frame_id"] = True
+    elif fault == "blank_id":
+        geometry["frames"][0]["frame_id"] = "   "
+    elif fault == "long_id":
+        geometry["frames"][0]["frame_id"] = "x" * 1025
+    else:
+        geometry["binding"]["maximum_frames"] = True
+    _rebind_geometry(args, sources)
+    with pytest.raises(ValueError, match="authoring_evidence_frames_invalid"):
+        compile_website_scene_preparation(**args)
+
+
+def test_distinct_source_frames_cannot_reuse_one_native_pose_identity(tmp_path, monkeypatch):
+    args, sources = _native_records(tmp_path, monkeypatch)
+    geometry = args["source_geometry"]
+    geometry["frames"][1]["world_from_camera"] = deepcopy(geometry["frames"][0]["world_from_camera"])
+    _rebind_geometry(args, sources)
+
+    def alias(value):
+        value["frames"][1]["world_from_camera"] = deepcopy(geometry["frames"][1]["world_from_camera"])
+        value["frames"][1]["native_frame_id"] = value["frames"][0]["native_frame_id"]
+
+    _change(args, sources, "calibration", alias)
+    with pytest.raises(ValueError, match="native_frame_binding_invalid"):
+        compile_website_scene_preparation(**args)
+
+
+def test_registration_replay_refuses_a_resealed_duplicate_source_frame_pool(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_family_layout_authoring import verify_metric_layout_registration
+
+    args, _sources = _native_records(tmp_path, monkeypatch)
+    masks = emit_registered_task_layout(**{key: args[key] for key in (
+        "task_context", "task_masks", "source_geometry", "base_scene", "output_root")})
+    receipt = json.loads(Path(masks["registered_layout"]["registration_evidence"]["path"]).read_text())
+    receipt["source_frames"] = [deepcopy(receipt["source_frames"][0])] * 2
+    receipt["registration_digest"] = canonical_digest(receipt, digest_field="registration_digest")
+    with pytest.raises(ValueError, match="authoring_evidence_frames_invalid"):
+        verify_metric_layout_registration(receipt)
+
+
+def test_source_frame_pool_preserves_absolute_and_utf8_identity_boundaries():
+    from blueprint_pipeline.task_family_authoring_evidence import validate_source_frame_identities
+
+    identities = [{"frame_id": "frame-" + str(index)} for index in range(4096)]
+    assert validate_source_frame_identities(identities) == [row["frame_id"] for row in identities]
+    assert validate_source_frame_identities([{"frame_id": "é" * 512}]) == ["é" * 512]
+    for value in ("é" * 513, "\ud800"):
+        with pytest.raises(ValueError, match="authoring_evidence_frames_invalid"):
+            validate_source_frame_identities([{"frame_id": value}])
 
 
 @pytest.mark.parametrize("kind", ["calibration", "frame_registration", "target_poses", "robot_registration"])
