@@ -25,15 +25,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+import zipfile
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
@@ -51,7 +53,7 @@ SOURCE_KEYS = (
 ROLES = (
     "service_identity_before", "upload", "task_confirmation", "authority",
     "intake_qa", "metric_scene", "robot_free_probe", "compiled_scene",
-    "candidate_plan", "queued_ack", "publication", "publication_ack",
+    "candidate_plan", "queued_ack", "publication", "site_budget", "publication_ack",
     "customer_readback", "service_identity_after", "event_history",
 )
 _PRODUCERS = {
@@ -60,6 +62,7 @@ _PRODUCERS = {
     "intake_qa": "pipeline", "metric_scene": "pipeline", "robot_free_probe": "pipeline",
     "compiled_scene": "pipeline", "candidate_plan": "pipeline", "queued_ack": "webapp",
     "publication": "pipeline", "publication_ack": "webapp", "customer_readback": "webapp",
+    "site_budget": "pipeline",
     "event_history": "operator", "normal_retention": "operator", "attempt": "operator",
 }
 _UNPLANNED = frozenset({
@@ -121,6 +124,36 @@ def _stamp(value: Any) -> datetime:
     return stamp.astimezone(timezone.utc)
 
 
+def _epoch_stamp(value: Any) -> datetime:
+    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+        raise AcceptanceEvidenceError("provider_observation_timestamp_invalid")
+    try:
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    except (ValueError, OSError, OverflowError) as exc:
+        raise AcceptanceEvidenceError("provider_observation_timestamp_invalid") from exc
+
+
+def _retained_reader(root: Path, entry: Mapping[str, Any]) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
+    """Locate copies by original digest; aliases cannot change expected bytes."""
+    aliases = {}
+    def visit(value):
+        if not isinstance(value, Mapping):
+            return
+        if "sha256" in value and ("path" in value or "relative_path" in value):
+            aliases[value["sha256"]] = value
+        else:
+            for child in value.values():
+                visit(child)
+    visit(entry)
+    def read(original):
+        original = _object(original)
+        located = aliases.get(original.get("sha256"), original)
+        if located.get("sha256") != original.get("sha256") or located.get("size_bytes") != original.get("size_bytes"):
+            raise AcceptanceEvidenceError("retained_nested_record_binding_mismatch")
+        return _record(root, located)[1]
+    return read
+
+
 def _safe_path(root: Path, value: Any) -> Path:
     if not isinstance(value, str) or not value or ".." in Path(value).parts:
         raise AcceptanceEvidenceError("artifact_path_invalid")
@@ -170,7 +203,10 @@ def _observation(role: str, record: Mapping[str, Any], payload: Mapping[str, Any
                  verifier: AcquisitionVerifier | None, attempt: Mapping[str, Any]) -> TrustedObservation:
     if verifier is None:
         raise AcceptanceEvidenceError("authenticated_acquisition_not_proven")
-    observed = verifier(role, record["sha256"], payload)
+    try:
+        observed = verifier(role, record["sha256"], payload)
+    except Exception as exc:
+        raise AcceptanceEvidenceError("authenticated_acquisition_unavailable") from exc
     if (not isinstance(observed, TrustedObservation)
             or observed.artifact_sha256 != record["sha256"]
             or observed.schema_version != payload.get("schema_version")
@@ -189,7 +225,7 @@ def _observation(role: str, record: Mapping[str, Any], payload: Mapping[str, Any
     return observed
 
 
-def _episode_bytes(row: Mapping[str, Any], output_root: Path, cameras: list[str]) -> None:
+def _episode_bytes(row: Mapping[str, Any], output_root: Path, cameras: list[str], *, max_queries: int) -> None:
     from .policy_canary_media_integrity import require_completed_episode_media
 
     episode = _object(row.get("episode"))
@@ -201,6 +237,13 @@ def _episode_bytes(row: Mapping[str, Any], output_root: Path, cameras: list[str]
     _, retained_episode = _record(output_root, artifacts["episode_receipt"])
     if retained_episode != episode:
         raise AcceptanceEvidenceError("episode_receipt_mismatch")
+    queries = episode.get("queries")
+    query_count = episode.get("policy_queries")
+    _, query_receipt = _record(output_root, artifacts["policy_query_receipt"])
+    if (type(query_count) is not int or not 1 <= query_count <= max_queries
+            or not isinstance(queries, list) or len(queries) != query_count
+            or query_receipt.get("policy_queries") != query_count or query_receipt.get("queries") != queries):
+        raise AcceptanceEvidenceError("issued_policy_query_bound_exceeded_or_unproven")
     for role, field in (("score_receipt", "score"), ("action_sequence", "commanded_actions"),
                         ("action_delivery_readback", "motion_evidence"), ("state_trace", "state_trace"),
                         ("contact_force_trace", "contact_force_evidence"),
@@ -226,6 +269,59 @@ def _episode_bytes(row: Mapping[str, Any], output_root: Path, cameras: list[str]
     require_completed_episode_media(output_root, episode, camera_ids=cameras)
 
 
+def _sealed_execution_spec(entry: Mapping[str, Any], *, root: Path, candidate: Mapping[str, Any],
+        attempt: Mapping[str, Any], authority: Mapping[str, Any], runtime: Mapping[str, Any],
+        bundle: Mapping[str, Any]) -> dict[str, Any]:
+    """Read pinned JSON inside retained ZIP bytes, never import/execute the ZIP."""
+    from .beta_robolab_runtime import validate_robolab_policy_execution_spec
+    from .beta_policy_screening_hosted import request_limit
+
+    spec = validate_robolab_policy_execution_spec(
+        _retained_reader(root, entry)(candidate["execution_spec"]["policy_execution_spec"]),
+        candidate_id=candidate["candidate_id"])
+    frozen = _object(attempt.get("candidate_runtime_identities"))
+    expected = _object(frozen.get(candidate["candidate_id"]))
+    if (spec["runtime_identity_digest"] != candidate["execution_spec"]["runtime_digest"]
+            or spec["task_success_contract"] != runtime["task_success_contract"]
+            or any(expected.get(key) != spec[key] for key in
+                   ("max_policy_queries", "open_loop_horizon"))
+            or expected.get("policy_execution_spec_digest") != spec["execution_spec_digest"]):
+        raise AcceptanceEvidenceError("issued_policy_query_or_runtime_bounds_mismatch")
+    settings = candidate["execution_spec"]
+    if "hosted_http_request_limit" in settings and settings["hosted_http_request_limit"] != request_limit(spec, candidate["episode_count"]):
+        raise AcceptanceEvidenceError("issued_hosted_http_bound_mismatch")
+    archive_record = entry.get("bundle_archive", {"path": bundle["bundle_path"],
+        "sha256": bundle["bundle_sha256"], "size_bytes": bundle["bundle_size_bytes"]})
+    if (archive_record.get("sha256") != bundle["bundle_sha256"]
+            or archive_record.get("size_bytes") != bundle["bundle_size_bytes"]):
+        raise AcceptanceEvidenceError("issued_bundle_bytes_mismatch")
+    path, _ = _record(root, archive_record, json_object=False)
+    expected_manifest = {key: value for key, value in bundle.items()
+                         if key not in {"bundle_path", "bundle_sha256", "bundle_size_bytes"}}
+    expected_files = {
+        "provider_runtime/adp_arena_provider_manifest.json": expected_manifest,
+        "provider_runtime/runtime_inputs/policy_canary_session_authority.json": dict(authority),
+        "provider_runtime/runtime_inputs/policy_canary_runtime_inputs.json": dict(runtime),
+        f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate['candidate_id']}.json": spec,
+    }
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            for name, expected_payload in expected_files.items():
+                if names.count(name) != 1 or archive.getinfo(name).file_size > _JSON_LIMIT:
+                    raise AcceptanceEvidenceError("issued_bundle_member_missing_or_ambiguous")
+                if json.loads(archive.read(name)) != expected_payload:
+                    raise AcceptanceEvidenceError("issued_bundle_member_mismatch")
+    except (OSError, ValueError, KeyError, RuntimeError, NotImplementedError, EOFError, zipfile.BadZipFile) as exc:
+        if isinstance(exc, AcceptanceEvidenceError):
+            raise
+        raise AcceptanceEvidenceError("issued_bundle_invalid") from exc
+    if (expected_manifest.get("input_digest") != canonical_digest(expected_manifest, digest_field="input_digest")
+            or expected_manifest.get("execution_spec_digests") != {candidate["candidate_id"]: spec["execution_spec_digest"]}):
+        raise AcceptanceEvidenceError("issued_bundle_spec_binding_mismatch")
+    return spec
+
+
 def _execution(entry: Mapping[str, Any], *, root: Path, plan: Mapping[str, Any],
                attempt: Mapping[str, Any], verifier: AcquisitionVerifier | None) -> tuple[str, str, dict[str, Any]]:
     from . import beta_policy_screening_closeout as closeout
@@ -246,6 +342,12 @@ def _execution(entry: Mapping[str, Any], *, root: Path, plan: Mapping[str, Any],
         raise AcceptanceEvidenceError("execution_not_completed")
     candidate_result_summary(result, plan=plan, candidate=candidate)
     authority = validate_session_authority(values["authority"])
+    settings = candidate["execution_spec"]
+    provider_cap = Decimal(str(settings.get("provider_hard_cap_usd", candidate["max_cost_usd"])))
+    if (Decimal(str(authority["hard_cap_usd"])) != provider_cap
+            or authority["hard_ttl_seconds"] != settings["hard_ttl_seconds"]
+            or provider_cap > Decimal(str(candidate["max_cost_usd"]))):
+        raise AcceptanceEvidenceError("issued_session_bounds_mismatch")
     runtime = validate_runtime_input_manifest(values["runtime_inputs"])
     activation = values["activation"]
     if (authority.get("execution_release") is not None
@@ -281,32 +383,63 @@ def _execution(entry: Mapping[str, Any], *, root: Path, plan: Mapping[str, Any],
             or consumption.get("retry_cap") != 0 or consumption.get("authority_digest") != authority["authority_digest"]
             or consumption.get("consumption_digest") != canonical_digest(consumption, digest_field="consumption_digest")):
         raise AcceptanceEvidenceError("execution_consumption_unproven")
-    if (receipt.get("schema_version") != closeout.SCHEMA or receipt.get("scope") != closeout.SCOPE
-            or receipt.get("status") != "verified" or receipt.get("blockers") != []
-            or receipt.get("provider_absence_confirmed") is not True or receipt.get("global_provider_zero_claimed") is not False
-            or receipt.get("receipt_digest") != canonical_digest(receipt, digest_field="receipt_digest")
-            or receipt.get("authority_digest") != authority["authority_digest"]
-            or receipt.get("resource_name") != authority["resource_name"]
-            or receipt.get("prepared_digest") != prepared["prepared_digest"]
-            or receipt.get("adapter_digest") != canonical_digest(adapter)
-            or receipt.get("beta_screening_admission") != result.get("beta_screening_admission")
-            or adapter.get("vast_instance_ids") != [int(receipt.get("instance_id"))]
-            or result.get("session_closeout", {}).get("provider_absence_receipt_digest") != receipt["receipt_digest"]
-            or closeout._observation_blockers(receipt, now=receipt["observed_at_epoch"])):
+    if (not closeout.retained_scoped_closeout_verified(receipt, adapter=adapter, prepared=prepared,
+                adapter_path=Path(entry.get("adapter_source_path", entry["adapter"]["path"])),
+                record_reader=_retained_reader(root, entry), observed_at_epoch=receipt.get("observed_at_epoch"))
+            or result.get("session_closeout", {}).get("provider_absence_receipt_digest") != receipt["receipt_digest"]):
         raise AcceptanceEvidenceError("owned_resource_closeout_unproven")
-    provider_closeout = _object(adapter.get("provider_closeout"))
-    if (provider_closeout.get("all_staged_objects_absent") is not True
-            or provider_closeout.get("warm_session_retained") is not False
-            or adapter.get("continuing_spend_from_this_run") is not False):
-        raise AcceptanceEvidenceError("staged_objects_or_teardown_not_proven")
-    output_root = _safe_path(root, entry.get("output_root"))
-    for row in result["episodes"]:
-        _episode_bytes(row, output_root, attempt["envelope"]["camera_ids"])
     observations = {name: _observation("execution_" + name, entry[name], values[name],
                     verifier=verifier, attempt=attempt) for name in ("result", "authority", "closeout")}
+    spec = _sealed_execution_spec(entry, root=root, candidate=candidate, attempt=attempt,
+                                 authority=authority, runtime=runtime, bundle=bundle)
+    output_root = _safe_path(root, entry.get("output_root"))
+    for row in result["episodes"]:
+        if row.get("checkpoint_digest") != spec["checkpoint_digest"]:
+            raise AcceptanceEvidenceError("issued_checkpoint_binding_mismatch")
+        _episode_bytes(row, output_root, attempt["envelope"]["camera_ids"], max_queries=spec["max_policy_queries"])
     facts = dict(observations["result"].facts)
-    facts["closeout_observed_at"] = observations["closeout"].observed_at
+    facts["closeout_acquired_at"] = observations["closeout"].observed_at
+    facts["closeout_collection_started_at"] = _epoch_stamp(receipt.get("collection_started_at_epoch")).isoformat()
+    facts["closeout_observed_at"] = _epoch_stamp(receipt.get("observed_at_epoch")).isoformat()
+    facts["issued_provider_cap_usd"] = str(provider_cap)
+    facts["issued_total_cap_usd"] = str(provider_cap + Decimal(str(settings.get("hosted_inference_maximum_usd", "0"))))
+    facts["issued_ttl_seconds"] = authority["hard_ttl_seconds"]
+    facts["issued_deadline_epoch"] = authority.get("hard_deadline_epoch")
+    facts["session_authority_digest"] = authority["authority_digest"]
+    facts["prepared_digest"] = prepared["prepared_digest"]
     return candidate["candidate_id"], result["result_digest"], facts
+
+
+def _site_budget_binding(ledger: Mapping[str, Any], *, plan: Mapping[str, Any],
+                         executions: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
+    from .beta_policy_screening_coordinator import LEDGER_SCHEMA, _budget
+
+    if (ledger.get("schema_version") != LEDGER_SCHEMA
+            or ledger.get("ledger_digest") != canonical_digest(ledger, digest_field="ledger_digest")):
+        raise AcceptanceEvidenceError("site_budget_ledger_unproven")
+    state = ledger.get("campaigns", {}).get(plan["campaign_id"], {})
+    if state.get("site_id") != plan["site_id"] or state.get("plan_digest") != plan["plan_digest"]:
+        raise AcceptanceEvidenceError("site_budget_source_mismatch")
+    budget = _budget(ledger, plan["site_id"])
+    campaign_budget = _budget(ledger, plan["site_id"], campaign_id=plan["campaign_id"])
+    if (Decimal(budget["committed_upper_bound_usd"]) > Decimal(budget["limit_usd"])
+            or Decimal(campaign_budget["committed_upper_bound_usd"]) > Decimal(plan["budget_usd"])):
+        raise AcceptanceEvidenceError("site_budget_commitment_exceeded")
+    by_candidate = {row["candidate_id"]: row for row in plan["candidates"]}
+    for candidate_id, execution in executions.items():
+        row = state.get("candidates", {}).get(candidate_id, {})
+        attempts = [*row.get("attempt_history", []), *([row["attempt"]] if row.get("attempt") else [])]
+        matched = [item for item in attempts if item.get("prepared", {}).get("prepared_digest") == execution["prepared_digest"]]
+        if len(matched) != 1:
+            raise AcceptanceEvidenceError("site_budget_attempt_binding_unproven")
+        funded = matched[0]
+        cap = Decimal(str(funded.get("maximum_cost_usd")))
+        if (funded.get("reservation_status") != "committed" or funded.get("provider_allocation_observed") is not True
+                or cap != Decimal(str(by_candidate[candidate_id]["max_cost_usd"]))
+                or Decimal(execution["issued_total_cap_usd"]) > cap):
+            raise AcceptanceEvidenceError("issued_session_site_reservation_mismatch")
+        execution["funded_launch_intent_at"] = funded.get("launch_intent_at")
+    return budget
 
 
 def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
@@ -412,6 +545,7 @@ def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
             execution_facts[candidate_id] = facts
         if set(results) != {row["candidate_id"] for row in plan["candidates"] if row["status"] == "selected"}:
             raise AcceptanceEvidenceError("selected_candidate_coverage_incomplete")
+        budget = _site_budget_binding(evidence["site_budget"], plan=plan, executions=execution_facts)
         published = publication.get("candidates")
         if (not isinstance(published, list) or len(published) != len(plan["candidates"])
                 or {row["candidate_id"] for row in published} != {row["candidate_id"] for row in plan["candidates"]}):
@@ -423,7 +557,8 @@ def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
                 raise AcceptanceEvidenceError("publication_result_mismatch")
         if not blockers:
             _join_observations(observations, attempt=attempt, plan=plan, publication=publication, results=results,
-                               frozen_at=frozen_at, execution_facts=execution_facts, blockers=blockers, report=report)
+                               frozen_at=frozen_at, execution_facts=execution_facts, site_budget=budget,
+                               blockers=blockers, report=report)
             milestones["contract_checked"] = not blockers
         if "normal_retention" in manifest.get("receipts", {}):
             _, value = _record(root, manifest["receipts"]["normal_retention"])
@@ -433,7 +568,7 @@ def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
                 and retained.facts.get("manual_cleanup_performed") is False)
         if not blockers:
             report["status"] = "verified"
-    except (OSError, ValueError, TypeError, KeyError, StopIteration, InvalidOperation) as exc:
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError, StopIteration, InvalidOperation) as exc:
         blockers.append(str(exc) if isinstance(exc, AcceptanceEvidenceError) else "retained_evidence_invalid")
     report["blockers"] = sorted(set(blockers))
     return report
@@ -442,19 +577,26 @@ def build_production_autonomy_acceptance_report(*, manifest_path: str | Path,
 def _join_observations(observed: Mapping[str, TrustedObservation], *, attempt: Mapping[str, Any],
         plan: Mapping[str, Any], publication: Mapping[str, Any], results: Mapping[str, str],
         frozen_at: datetime, execution_facts: Mapping[str, Mapping[str, Any]],
+        site_budget: Mapping[str, Any],
         blockers: list[str], report: dict[str, Any]) -> None:
     facts = {role: dict(row.facts) for role, row in observed.items()}
     stamps = {role: _stamp(row.observed_at) for role, row in observed.items()}
     chain = ["service_identity_before", "upload", "task_confirmation", "authority", "intake_qa", "metric_scene",
-             "robot_free_probe", "compiled_scene", "candidate_plan", "queued_ack", "publication",
+             "robot_free_probe", "compiled_scene", "candidate_plan", "queued_ack", "publication", "site_budget",
              "publication_ack", "customer_readback", "service_identity_after", "event_history"]
     if not frozen_at <= min(stamps.values()) or any(stamps[a] > stamps[b] for a, b in zip(chain, chain[1:])):
         blockers.append("causal_timestamp_order_invalid")
     for facts_for_execution in execution_facts.values():
-        started, finished, closed = (_stamp(facts_for_execution.get(key)) for key in
-                                    ("started_at", "completed_at", "closeout_observed_at"))
-        if not stamps["queued_ack"] <= started <= finished <= stamps["publication"] or not finished <= closed <= stamps["event_history"]:
+        started, finished, collection, closed, acquired = (_stamp(facts_for_execution.get(key)) for key in
+            ("started_at", "completed_at", "closeout_collection_started_at", "closeout_observed_at", "closeout_acquired_at"))
+        if not stamps["queued_ack"] <= started <= finished <= stamps["publication"]:
             blockers.append("execution_started_before_current_ack_or_after_publication")
+        if collection < finished:
+            blockers.append("provider_absence_observed_before_execution_completed")
+        elif not collection <= closed <= acquired <= stamps["event_history"]:
+            blockers.append("provider_absence_acquisition_time_invalid")
+        if not stamps["queued_ack"] <= _stamp(facts_for_execution.get("funded_launch_intent_at")) <= started:
+            blockers.append("site_budget_reservation_did_not_precede_launch")
     expected_runtimes = attempt.get("candidate_runtime_identities")
     if not isinstance(expected_runtimes, Mapping):
         expected_runtimes = {}
@@ -463,6 +605,8 @@ def _join_observations(observed: Mapping[str, TrustedObservation], *, attempt: M
         expected = expected_runtimes.get(candidate_id)
         expected = dict(expected) if isinstance(expected, Mapping) else {}
         configured = candidates[candidate_id]
+        if _stamp(configured["cost_quote"]["valid_until"]) < _stamp(facts_for_execution["started_at"]):
+            blockers.append("cost_quote_expired_before_execution")
         worker_image = expected.get("worker_image_digest")
         if (expected.get("configuration_digest") != configured["configuration_digest"]
                 or expected.get("runtime_identity_digest") != configured["execution_spec"]["runtime_digest"]
@@ -485,8 +629,16 @@ def _join_observations(observed: Mapping[str, TrustedObservation], *, attempt: M
             or _stamp(authority.get("expires_at")) < stamps["publication"]):
         blockers.append("current_authority_not_proven")
     cap = Decimal(str(authority.get("cap_usd")))
-    if not cap.is_finite() or not Decimal("0") < cap <= Decimal("15") or Decimal(str(plan["maximum_planned_cost_usd"])) > cap:
+    if (not cap.is_finite() or not Decimal("0") < cap <= Decimal("15")
+            or Decimal(str(plan["maximum_planned_cost_usd"])) > cap
+            or Decimal(str(site_budget["committed_upper_bound_usd"])) > cap
+            or facts["site_budget"].get("budget_ledger_id") != authority.get("budget_ledger_id")):
         blockers.append("screening_budget_binding_invalid")
+    for execution in execution_facts.values():
+        maximum_end = (_epoch_stamp(execution["issued_deadline_epoch"]) if execution.get("issued_deadline_epoch") is not None
+                       else _stamp(execution["started_at"]) + timedelta(seconds=execution["issued_ttl_seconds"]))
+        if maximum_end > _stamp(authority.get("expires_at")):
+            blockers.append("issued_session_runtime_exceeds_capture_authority")
     for role in ("task_confirmation", "intake_qa", "metric_scene", "compiled_scene"):
         if facts[role].get("completed") is not True:
             blockers.append(role + ":completion_not_proven")

@@ -6,6 +6,9 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+from pathlib import Path
+from types import SimpleNamespace
+import zipfile
 
 import numpy as np
 import pytest
@@ -23,7 +26,7 @@ from blueprint_pipeline.robot_free_probe_gate import REQUIRED_CHECKS, RIGID_RECE
 from tests.test_beta_policy_screening_closeout import Provider
 from tests.test_beta_policy_screening_coordinator import native_result, plan, seal
 from tests.test_episode_visual_evidence import _calibration
-from tests.test_native_task_arena_policy_canary_session import _authority
+from tests.test_native_task_arena_policy_canary_session import _activation, _authority
 
 
 def record(path, value=None):
@@ -49,7 +52,8 @@ class RetainedAcquisitions:
 
 
 @pytest.fixture
-def retained(tmp_path, monkeypatch):
+def retained(tmp_path, monkeypatch, request):
+    options = getattr(request, "param", {})
     def encode(paths, *, video_path, frames_per_second):
         # Exercise hashes/joins, not ffmpeg or provider execution.
         video_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,6 +74,21 @@ def retained(tmp_path, monkeypatch):
         "configured_scene_revision_digest": value["scene_revision_digest"],
         "task_success_contract_digest": value["task_success_contract_digest"]}, "receipt_digest")
     value["robot_free_probe_digest"] = probe["receipt_digest"]
+    candidate = value["candidates"][0]
+    policy_spec = seal({"schema_version": "native_task_arena_policy_canary_execution_spec.v1",
+        "candidate_id": candidate["candidate_id"], "evaluation_backend": "robolab.v1",
+        "policy_interface_id": "groot_n17_droid.v1", "execution_authority": "internal_policy_canary_unqualified",
+        "claim_ceiling": "diagnostic_policy_execution", "ranking_permitted": False,
+        "qualification_permitted": False, "scene_promotion_permitted": False,
+        "policy_endpoint": {"host": "127.0.0.1", "port": 8000}, "policy_spec": {"candidate_id": candidate["candidate_id"]},
+        "checkpoint_digest": canonical_digest({"value": "checkpoint"}),
+        "runtime_identity_digest": candidate["execution_spec"]["runtime_digest"],
+        "task_success_contract": _activation()["task_success_contract"],
+        "task_success_contract_digest": value["task_success_contract_digest"], "prompt": "Move the object",
+        "max_policy_queries": options.get("issued_max_policy_queries", 10), "open_loop_horizon": 8}, "execution_spec_digest")
+    policy_record = record(output / "policy-spec.json", policy_spec)
+    candidate["execution_spec"]["policy_execution_spec"] = policy_record
+    candidate["admission_digest"] = canonical_digest(candidate["execution_spec"])
     compiled_scene = {"schema_version": "test.compiled_scene.v1", "scene_revision_digest": value["scene_revision_digest"],
         "task_success_contract_digest": value["task_success_contract_digest"]}
     value["scene_inputs"] = record(root / "compiled_scene.json", compiled_scene)
@@ -93,6 +112,8 @@ def retained(tmp_path, monkeypatch):
                      beta_screening_admission=inner["beta_screening_admission"],
                      runtime_inputs=runtime_record, runtime_inputs_digest=runtime_inputs["runtime_inputs_digest"],
                      activation_manifest=activation_record,
+                     hard_cap_usd=options.get("issued_cap_usd", 4),
+                     hard_ttl_seconds=options.get("issued_ttl_seconds", value["candidates"][0]["execution_spec"]["hard_ttl_seconds"]),
                      **{key: inner[key] for key in ("plan_digest", "configuration_digest", "scene_revision_digest")})
     seal(authority, "authority_digest")
     bundle = {"schema_version": PROVIDER_BUNDLE_SCHEMA_VERSION, "status": "ready",
@@ -101,7 +122,20 @@ def retained(tmp_path, monkeypatch):
         "episodes_per_policy": 10, "learned_policy_rollout_count": 10, "maximum_provider_allocations": 1,
         "retry_cap": 0, "candidate_policy_queried": False, "expected_output_filename": PROVIDER_RESULT_FILENAME,
         **{key: authority[key] for key in ("runtime_inputs_digest", "authority_digest", "task_success_contract_digest")},
-        "bundle_path": "/retained-original/bundle.zip", "bundle_size_bytes": 1, "bundle_sha256": "sha256:" + "f" * 64}
+        "execution_spec_digests": {candidate["candidate_id"]: policy_spec["execution_spec_digest"]}}
+    seal(bundle, "input_digest")
+    archive_path = output / "bundle.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        for name, payload in {
+            "provider_runtime/adp_arena_provider_manifest.json": bundle,
+            "provider_runtime/runtime_inputs/policy_canary_session_authority.json": authority,
+            "provider_runtime/runtime_inputs/policy_canary_runtime_inputs.json": runtime_inputs,
+            f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate['candidate_id']}.json": policy_spec,
+        }.items():
+            archive.writestr(name, json.dumps(payload))
+    archive_record = record(archive_path)
+    bundle = {**bundle, "bundle_path": str(archive_path), "bundle_size_bytes": archive_record["size_bytes"],
+              "bundle_sha256": archive_record["sha256"]}
     for index, row in enumerate(inner["episodes"]):
         episode_id = f"episode-{index}"
         media_root = output / "episodes"
@@ -121,6 +155,8 @@ def retained(tmp_path, monkeypatch):
             policy_input_observations=observations[:1], terminal_observation=observations[1])
         episode = {"score": row["episode"]["score"], "visual_evidence": visual_evidence,
             "media_artifacts": media_artifacts, "commanded_actions": [[0.1, 0.2]],
+            "policy_queries": options.get("observed_policy_queries", 1),
+            "queries": [{"query_index": n} for n in range(options.get("observed_policy_queries", 1))],
             "motion_evidence": {"actions_reached_robot": True, "arm_moved": True},
             "state_trace": [{"step": 1}], "contact_force_evidence": [{"force": 1.0}],
             "task_object_trajectory": [[0.1, 0.2, 0.3]]}
@@ -133,7 +169,8 @@ def retained(tmp_path, monkeypatch):
             row[field] = canonical_digest({"value": content})
         evidence = {}
         for role, content in (("episode_receipt", episode), ("reset_state", {"reset": True}),
-            ("policy_query_receipt", {"candidate_policy_queried": True}), ("score_receipt", episode["score"]),
+            ("policy_query_receipt", {"candidate_policy_queried": True, "policy_queries": episode["policy_queries"],
+                                      "queries": episode["queries"]}), ("score_receipt", episode["score"]),
             ("action_sequence", episode["commanded_actions"]), ("action_delivery_readback", episode["motion_evidence"]),
             ("state_trace", episode["state_trace"]), ("contact_force_trace", episode["contact_force_evidence"]),
             ("task_object_trajectory", episode["task_object_trajectory"])):
@@ -156,7 +193,12 @@ def retained(tmp_path, monkeypatch):
             "adapter_result": record(output / "raw_adapter.json", {"vast_instance_ids": [7001]}),
             "teardown_manifest": record(output / "teardown.json", {"vast_instance_ids": [7001]})}}
     adapter_path = output / "allocator_result.json"
-    receipt = closeout.collect_scoped_closeout(adapter=adapter, prepared=prepared, adapter_path=adapter_path, provider=Provider())
+    closeout_epoch = datetime.fromisoformat(stamp(options.get("closeout_seconds", 42))).timestamp()
+    monkeypatch.setattr(closeout, "time", SimpleNamespace(time=lambda: closeout_epoch))
+    class AtTimeProvider(Provider):
+        def billable_inventory(self, **kwargs):
+            return {**super().billable_inventory(**kwargs), "observed_at_epoch": closeout_epoch}
+    receipt = closeout.collect_scoped_closeout(adapter=adapter, prepared=prepared, adapter_path=adapter_path, provider=AtTimeProvider())
     result = closeout.join_scoped_session_closeout(inner=inner, adapter=adapter, prepared=prepared,
         receipt=receipt, adapter_path=adapter_path)
     attempt = seal({"schema_version": acceptance.ATTEMPT_SCHEMA, "attempt_id": "attempt-1", "frozen_at": stamp(0),
@@ -168,34 +210,45 @@ def retained(tmp_path, monkeypatch):
         "candidate_runtime_identities": {result["candidate_ids"][0]: {
             "configuration_digest": result["configuration_digest"],
             "runtime_identity_digest": result["episodes"][0]["runtime_identity_digest"],
+            "max_policy_queries": options.get("frozen_max_policy_queries", 10), "open_loop_horizon": 8,
+            "policy_execution_spec_digest": policy_spec["execution_spec_digest"],
             "worker_image_digest": "sha256:" + "3" * 64}}}, "attempt_digest")
     publication = screening_publication(plan=value, state={"revision": 2, "updated_at": stamp(50),
         "candidates": {result["candidate_ids"][0]: {"status": "completed", "summary": candidate_result_summary(
             result, plan=value, candidate=value["candidates"][0])}}}, budget={})
     rows = {role: {"schema_version": "test.retained_observation.v1"} for role in acceptance.ROLES}
-    rows.update(robot_free_probe=probe, candidate_plan=value, publication=publication, compiled_scene=compiled_scene)
+    site_budget = seal({"schema_version": "blueprint.beta_policy_screening_ledger.v1", "campaigns": {
+        value["campaign_id"]: {"site_id": value["site_id"], "plan_digest": value["plan_digest"],
+            "candidates": {candidate["candidate_id"]: {"status": "completed", "attempt": {
+                "attempt_id": "screen-fixture-attempt", "maximum_cost_usd": options.get("reserved_cap_usd", "4"),
+                "reservation_status": "committed", "provider_allocation_observed": True,
+                "prepared": prepared, "launch_intent_at": stamp(29)}}}}}}, "ledger_digest")
+    rows.update(robot_free_probe=probe, candidate_plan=value, publication=publication, compiled_scene=compiled_scene,
+                site_budget=site_budget)
     acquisitions = RetainedAcquisitions()
     manifest = {"schema_version": acceptance.SCHEMA, "attempt": record(root / "frozen.json", attempt),
         "receipts": {role: record(root / f"{role}.json", content) for role, content in rows.items()},
         "executions": [{"candidate_id": result["candidate_ids"][0], "output_root": str(output),
             "result": record(output / "result.json", result), "authority": prepared["authority"],
             "runtime_inputs": runtime_record, "activation": activation_record,
+            "policy_execution_spec": policy_record, "bundle_archive": archive_record,
             "bundle_receipt": prepared["bundle_receipt"], "prepared": record(output / "prepared.json", prepared),
             "adapter": record(adapter_path, adapter), "closeout": record(output / "closeout.json", receipt)}]}
     facts = {role: {} for role in acceptance.ROLES}
     facts.update(service_identity_before=attempt["releases"], service_identity_after=attempt["releases"],
         upload={"natural_upload": True}, authority={"current_consent": True, "rights_current": True,
-            "grant_id": "grant-1", "budget_ledger_id": "site-budget-1", "expires_at": stamp(1000), "cap_usd": "15"},
+            "grant_id": "grant-1", "budget_ledger_id": "site-budget-1", "expires_at": stamp(4000), "cap_usd": "15"},
         task_confirmation={"completed": True}, intake_qa={"completed": True},
         metric_scene={"completed": True, "metric_evidence_qualified": True}, compiled_scene={"completed": True},
         queued_ack={"plan_digest": value["plan_digest"], "current_source": True},
+        site_budget={"budget_ledger_id": "site-budget-1"},
         publication_ack={"publication_digest": publication["publication_digest"], "revision": 2, "current_source": True, "persisted": True},
         customer_readback={"publication_digest": publication["publication_digest"], "revision": 2, "current_source": True,
             "persisted": True, "displayed": True, "result_digests": {result["candidate_ids"][0]: result["result_digest"]},
             "webapp_commit": attempt["releases"]["webapp_commit"]},
         event_history={"coverage_complete": True, "coverage_started_at": stamp(0), "coverage_ended_at": stamp(90),
             "events": [{"kind": "upload_start", "at": stamp(10), "attempt_id": "attempt-1"}]})
-    times = dict(zip(acceptance.ROLES, (1, 10, 12, 14, 16, 18, 20, 22, 24, 26, 50, 60, 70, 80, 90)))
+    times = dict(zip(acceptance.ROLES, (1, 10, 12, 14, 16, 18, 20, 22, 24, 26, 50, 55, 60, 70, 80, 90)))
     def acquire(role, rec, content, at, role_facts):
         acquisitions.rows[role, rec["sha256"]] = acceptance.TrustedObservation(
             rec["sha256"], content["schema_version"], acceptance._PRODUCERS.get(role, "pipeline"),
@@ -261,6 +314,16 @@ def test_complete_job_json_without_authenticated_acquisition_cannot_attest_itsel
     assert "upload:authenticated_acquisition_not_proven" in result["blockers"]
     retained["manifest"]["trusted_observations"] = {"upload": {"verified": True}}
     assert "job_controlled_acquisition_refused" in report(retained)["blockers"]
+
+
+def test_unavailable_trusted_acquisition_stays_unproven_and_sanitized(retained):
+    def unavailable(*_):
+        raise RuntimeError("private unavailable-credential diagnostic")
+    result = acceptance.build_production_autonomy_acceptance_report(manifest_path=retained["manifest_path"],
+                                                                  acquisition_verifier=unavailable)
+    assert result["status"] == "not_proven"
+    assert "upload:authenticated_acquisition_unavailable" in result["blockers"]
+    assert "private unavailable-credential" not in json.dumps(result)
 
 
 @pytest.mark.parametrize("role,changes,reason", [
@@ -378,10 +441,7 @@ def test_worker_image_is_frozen_separately_from_the_service_image(retained):
     worker_image = "sha256:" + "3" * 64
     attempt = deepcopy(retained["attempt"])
     candidate_id = retained["manifest"]["executions"][0]["candidate_id"]
-    attempt["candidate_runtime_identities"] = {candidate_id: {
-        "configuration_digest": retained["result"]["configuration_digest"],
-        "runtime_identity_digest": retained["result"]["episodes"][0]["runtime_identity_digest"],
-        "worker_image_digest": worker_image}}
+    attempt["candidate_runtime_identities"][candidate_id]["worker_image_digest"] = worker_image
     replace_attempt(retained, attempt)
     change_acquisition(retained, "execution_result", facts={"runtime_image_digest": worker_image,
         "worker_image_digest": worker_image, "worker_image_binding_kind": "provider_container_image_digest"})
@@ -398,7 +458,8 @@ def test_worker_image_is_frozen_separately_from_the_service_image(retained):
 def test_worker_image_unknown_mismatched_or_runtime_label_never_proves_image(retained, fault, reason):
     if fault == "expected_missing":
         attempt = deepcopy(retained["attempt"])
-        attempt.pop("candidate_runtime_identities")
+        for frozen in attempt["candidate_runtime_identities"].values():
+            frozen.pop("worker_image_digest")
         replace_attempt(retained, attempt)
     elif fault == "acquisition_missing":
         change_acquisition(retained, "execution_result", facts={"worker_image_digest": None})
@@ -409,6 +470,92 @@ def test_worker_image_unknown_mismatched_or_runtime_label_never_proves_image(ret
     result = report(retained)
     assert reason in result["blockers"]
     assert result["milestones"]["supported_production_completion"] is False
+
+
+def test_actual_nested_teardown_bytes_are_required_for_resource_reconciliation(retained):
+    entry = retained["manifest"]["executions"][0]
+    adapter = json.loads(open(entry["adapter"]["path"]).read())
+    prepared = json.loads(open(entry["prepared"]["path"]).read())
+    receipt = json.loads(open(entry["closeout"]["path"]).read())
+    assert closeout.scoped_closeout_verified(receipt, adapter=adapter, prepared=prepared,
+                                            adapter_path=retained["root"] / "candidate-output/allocator_result.json")
+    Path(adapter["provider_closeout"]["teardown_manifest"]["path"]).unlink()
+    assert not closeout.scoped_closeout_verified(receipt, adapter=adapter, prepared=prepared,
+                                                adapter_path=retained["root"] / "candidate-output/allocator_result.json")
+    result = report(retained)
+    assert result["status"] == "not_proven"
+    assert result["milestones"]["resource_reconciliation"] is False
+
+
+@pytest.mark.parametrize("retained", [{"issued_cap_usd": 1000}], indirect=True)
+def test_actual_issued_session_cap_cannot_exceed_its_site_plan_reservation(retained):
+    result = report(retained)
+    assert "issued_session_bounds_mismatch" in result["blockers"]
+    assert result["milestones"]["supported_production_completion"] is False
+
+
+@pytest.mark.parametrize("retained", [{"closeout_seconds": 5}], indirect=True)
+def test_reacquiring_an_old_absence_receipt_does_not_prove_post_execution_closeout(retained):
+    result = report(retained)
+    assert "provider_absence_observed_before_execution_completed" in result["blockers"]
+    assert result["milestones"]["resource_reconciliation"] is False
+
+
+@pytest.mark.parametrize("retained,reason", [
+    ({"issued_ttl_seconds": 7200}, "issued_session_bounds_mismatch"),
+    ({"reserved_cap_usd": "1"}, "issued_session_site_reservation_mismatch"),
+    ({"issued_max_policy_queries": 11}, "issued_policy_query_or_runtime_bounds_mismatch"),
+    ({"observed_policy_queries": 11}, "issued_policy_query_bound_exceeded_or_unproven"),
+    ({"closeout_seconds": 48}, "provider_absence_acquisition_time_invalid"),
+], indirect=["retained"])
+def test_issued_runtime_queries_reservation_and_observation_bounds(retained, reason):
+    result = report(retained)
+    assert reason in result["blockers"]
+    assert result["milestones"]["supported_production_completion"] is False
+
+
+def test_capture_authority_and_actual_budget_ledger_are_both_required(retained):
+    change_acquisition(retained, "authority", facts={"expires_at": stamp(1000)})
+    assert "issued_session_runtime_exceeds_capture_authority" in report(retained)["blockers"]
+    change_acquisition(retained, "site_budget", facts={"budget_ledger_id": "other-site-budget"})
+    assert "screening_budget_binding_invalid" in report(retained)["blockers"]
+
+
+def test_deleted_sealed_bundle_bytes_cannot_prove_runtime_or_query_authority(retained):
+    Path(retained["manifest"]["executions"][0]["bundle_archive"]["path"]).unlink()
+    assert report(retained)["status"] == "not_proven"
+
+
+def test_offline_closeout_rechecks_nested_bytes_without_refreshing_provider_state(retained, monkeypatch):
+    entry = retained["manifest"]["executions"][0]
+    adapter, prepared, receipt = [json.loads(Path(entry[name]["path"]).read_text())
+                                  for name in ("adapter", "prepared", "closeout")]
+    future = datetime.fromisoformat(stamp(1000)).timestamp()
+    monkeypatch.setattr(closeout, "time", SimpleNamespace(time=lambda: future))
+    monkeypatch.setattr(closeout, "collect_scoped_closeout", lambda **_: pytest.fail("no provider recollection"))
+    assert not closeout.scoped_closeout_verified(receipt, adapter=adapter, prepared=prepared,
+                                                adapter_path=Path(entry["adapter"]["path"]))
+    assert closeout.retained_scoped_closeout_verified(receipt, adapter=adapter, prepared=prepared,
+        adapter_path=Path(entry["adapter"]["path"]), record_reader=acceptance._retained_reader(retained["root"], entry),
+        observed_at_epoch=receipt["observed_at_epoch"])
+    assert report(retained)["status"] == "verified"
+
+
+def test_portable_nested_copies_keep_original_receipt_bytes_and_binding(retained):
+    entry = retained["manifest"]["executions"][0]
+    adapter = json.loads(Path(entry["adapter"]["path"]).read_text())
+    copies = {}
+    for name in ("adapter_result", "teardown_manifest"):
+        original = Path(adapter["provider_closeout"][name]["path"])
+        copied = retained["root"] / "portable-copy" / (name + ".json")
+        copied.parent.mkdir(exist_ok=True)
+        copied.write_bytes(original.read_bytes())
+        copies[name] = record(copied)
+        original.unlink()
+    entry["retained_records"] = copies
+    assert report(retained)["status"] == "verified"
+    copies["teardown_manifest"]["size_bytes"] += 1
+    assert "owned_resource_closeout_unproven" in report(retained)["blockers"]
 
 
 def test_release_report_option_preserves_legacy_scope_and_requires_trust(retained):
