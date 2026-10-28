@@ -1602,8 +1602,10 @@ def create_app() -> FastAPI:
             "bounded_admission_enabled": True,
             "capture_upload_transfer_configured": bool(
                 _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
-                and _string(os.getenv(CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV))
                 and _string(os.getenv(CAPTURE_MALWARE_SCANNER_ARGV_ENV))
+            ),
+            "capture_upload_backblaze_hosts_configured": bool(
+                _string(os.getenv(CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV))
             ),
             "task_evaluation_supervisor": capture_supervisor_health_status(),
             "task_evaluation_launch_queue": {

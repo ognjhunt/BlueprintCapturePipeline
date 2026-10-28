@@ -1162,6 +1162,18 @@ def test_live_pipeline_intake_service_accepts_signed_request_and_rejects_replay(
     assert "replayed intake signature nonce" in replay.text
 
 
+def test_capture_upload_health_accepts_host_authenticated_storage_without_b2_hosts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(service.CAPTURE_UPLOAD_STORE_ROOT_ENV, str(tmp_path / "capture-store"))
+    monkeypatch.setenv(service.CAPTURE_MALWARE_SCANNER_ARGV_ENV, '["/usr/bin/clamdscan"]')
+    monkeypatch.delenv(service.CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV, raising=False)
+    response = TestClient(create_app()).get("/api/live-pipeline/health")
+    assert response.status_code == 200
+    assert response.json()["capture_upload_transfer_configured"] is True
+    assert response.json()["capture_upload_backblaze_hosts_configured"] is False
+
+
 def test_configured_scene_thumbnail_readback_returns_exact_private_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
