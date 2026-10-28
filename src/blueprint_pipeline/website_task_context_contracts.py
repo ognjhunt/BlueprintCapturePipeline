@@ -232,7 +232,8 @@ def validate_website_task_context(
     if capture_id.startswith("supplement-") and continuation is None:
         raise ValueError("website_task_context_continuation_invalid")
     if continuation is not None:
-        if (not isinstance(continuation, Mapping) or continuation.get("schema_version") != "website_capture_continuation.v1"
+        if (not isinstance(continuation, Mapping) or continuation.get("schema_version") not in {
+                "website_capture_continuation.v1", "website_capture_continuation.v2"}
                 or continuation.get("capture_id") != capture_id or continuation.get("original_capture_id") != f"walkthrough-{request_id}"
                 or continuation.get("coordinate_frames_independent") is not True
                 or not isinstance(continuation.get("lineage"), list) or not 1 <= len(continuation["lineage"]) <= 8):
@@ -250,6 +251,14 @@ def validate_website_task_context(
             expected = entry["parent"]["capture_id"]
         if expected != f"walkthrough-{request_id}":
             raise ValueError("website_task_context_continuation_invalid")
+        if continuation["schema_version"] == "website_capture_continuation.v1" and any(
+                entry.get("recording_scope") == "additional_views"
+                or entry["supplement"].get("recording_scope") == "additional_views"
+                for entry in continuation["lineage"]):
+            raise ValueError("website_task_context_continuation_invalid")
+        if continuation["schema_version"] == "website_capture_continuation.v2":
+            from .website_recording_sources import recording_sources
+            recording_sources(continuation, request_id=request_id, scene_id=scene_id, capture_id=capture_id)
     return dict(value)
 
 
