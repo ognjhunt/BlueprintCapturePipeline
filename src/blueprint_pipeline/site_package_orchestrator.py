@@ -20,7 +20,6 @@ import functools
 import os
 import shutil
 import subprocess
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional
@@ -61,7 +60,7 @@ from .launch_proof_policy import (
 )
 from .object_index_stage import ensure_object_index_stage
 from .object_index_artifacts import resolve_current_object_index_artifacts
-from .clean_plate_stage import CleanPlatePolicy, apply_clean_plate_to_reconstruction_input, run_clean_plate_stage
+from .clean_plate_stage import apply_clean_plate_to_reconstruction_input, run_clean_plate_stage
 from .website_task_context import load_current_website_task_context, load_website_scene_sponsorship
 from .privacy_processing import run_privacy_postprocess
 from .provider_preview import run_preview_provider
@@ -4383,108 +4382,6 @@ def _write_failure(
     write_json(pipeline_dir / ".swap_pipeline_failed.json", payload)
 
 
-def _run_website_scene_preparation(
-    *,
-    descriptor: CaptureDescriptor,
-    capture_root: Path,
-    pipeline_dir: Path,
-    storage_root: Path,
-    gates: List[QualificationGate],
-) -> Dict[str, Any]:
-    """Prepare the website's scene without legacy neutral-readiness reports.
-
-    Fresh task context and sponsorship have already been loaded. The existing
-    clean-plate and native handoff own source, privacy, geometry and execution
-    admission; generic object-index/rubric and optional narratives add no
-    authority to that path.
-    """
-    from .website_scene_handoff import prepare_website_scene_handoff
-    from .website_task_context_contracts import (
-        holds_native_task_preparation,
-        retains_task_family_preparation,
-        sponsors_scene_preparation,
-    )
-
-    privacy_processing = {
-        "status": "pending_website_review",
-        "mode": "task_aware_prepared_images",
-        "raw_retained": True,
-        "fail_closed": True,
-    }
-    preview_requested = sponsors_scene_preparation(descriptor.metadata) or any(
-        str(value or "").strip().lower() in {"preview_simulation", "preview"}
-        for value in descriptor.requested_outputs
-    )
-    clean_plate = run_clean_plate_stage(
-        capture_root=capture_root,
-        privacy_processing=privacy_processing,
-        worldlabs_input={"status": "not_requested", "manifest_uri": None, "output_video_uri": None},
-        task_context=descriptor.metadata.get("site_task_context"),
-        website_source_video=_resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root),
-        policy=CleanPlatePolicy(
-            enabled=_worldlabs_derived_rights_allowed(metadata=descriptor.metadata) and preview_requested
-        ),
-    )
-    gates.append(QualificationGate(
-        "clean_plate_stage", clean_plate.get("status") in {"noop", "objects_removed"},
-        f"status={clean_plate.get('status')} mode={clean_plate.get('mode')}",
-    ))
-    if clean_plate.get("status") not in {"noop", "objects_removed"}:
-        raise StageError("clean_plate", ",".join(clean_plate.get("blockers") or ["website_preparation_pending"]))
-    privacy_processing.update(
-        status=clean_plate.get("privacy_status"),
-        fail_closed=not bool(clean_plate.get("privacy_verified")),
-    )
-    privacy_gate = _privacy_postprocess_gate(
-        privacy_status=str(privacy_processing.get("status") or ""), delivery_run=True,
-    )
-    gates.append(privacy_gate)
-    if not privacy_gate.passed or clean_plate.get("privacy_verified") is not True:
-        raise StageError("privacy_postprocess", "website_scene_preparation_pending")
-
-    descriptor_payload = descriptor.to_dict()
-    descriptor_payload.update(
-        privacy_processed_video_uri=None,
-        world_model_video_uri=None,
-        privacy_status=privacy_processing["status"],
-        privacy_mode=privacy_processing["mode"],
-        privacy_manifest_uri=None,
-    )
-    metadata = dict(descriptor.metadata)
-    metadata["privacy_processing"] = dict(privacy_processing)
-    metadata["clean_plate"] = {key: clean_plate.get(key) for key in (
-        "status", "mode", "adp_item", "claim_ceiling", "movable_removal_count",
-        "person_target_count", "privacy_verified", "clean_plate_video_uri",
-        "stage_manifest_uri", "source_geometry",
-    )}
-    descriptor_payload["metadata"] = metadata
-    # Keep producer members immutable; this is the pipeline-owned descriptor.
-    write_json(capture_root / "capture_descriptor.json", descriptor_payload)
-    preparation = prepare_website_scene_handoff(
-        descriptor=descriptor_payload, clean_plate=clean_plate,
-        capture_root=capture_root, now=time.time(),
-        allow_operation_coverage_review=True, allow_static_target_recovery=True,
-    )
-    write_json(pipeline_dir / "provider_run_manifest.json", {
-        "schema_version": "v1", "provider_name": None, "status": "not_requested",
-        "website_scene_preparation": preparation,
-    })
-    outbox = preparation.get("website_intake_outbox") or {}
-    context = descriptor.metadata.get("site_task_context") or {}
-    if (outbox.get("state") != "forward_pending"
-            and not holds_native_task_preparation(preparation, context)
-            and not retains_task_family_preparation(preparation, context)):
-        raise StageError("website_scene_preparation", ",".join(
-            preparation.get("blockers")
-            or (preparation.get("runtime_inputs") or {}).get("blockers")
-            or ["website_native_intake_pending"]
-        ))
-    return {
-        "status": "completed", "lane": "qualification",
-        "website_scene_preparation": preparation, "native_execution_complete": False,
-    }
-
-
 def run_qualification_pipeline(
     *,
     descriptor_gcs_uri: str,
@@ -4528,9 +4425,13 @@ def run_qualification_pipeline(
                 descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir, bucket=bucket,
                 load_task_context=load_current_website_task_context, load_sponsorship=load_website_scene_sponsorship)
             stage = "website_scene_preparation"
-            return _run_website_scene_preparation(
+            from .website_capture_preparation import run_website_capture_preparation
+            return run_website_capture_preparation(
                 descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir,
-                storage_root=storage_root, gates=gates,
+                source_video=_resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root),
+                derived_scene_generation_allowed=_worldlabs_derived_rights_allowed(metadata=descriptor.metadata),
+                gates=gates, prepare_media=run_clean_plate_stage,
+                check_privacy=_privacy_postprocess_gate, make_gate=QualificationGate,
             )
         downstream_requested_lanes = _requested_downstream_lanes(
             descriptor=descriptor,
