@@ -62,7 +62,8 @@ def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy
 
 
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
-                                 capture_root: Path, now: float) -> dict[str, Any]:
+                                 capture_root: Path, now: float,
+                                 allow_operation_coverage_review: bool = False) -> dict[str, Any]:
     root = capture_root / "pipeline" / "website_scene_preparation"
     root.mkdir(parents=True, exist_ok=True)
     handoff_path = root / "handoff.json"
@@ -72,6 +73,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         "provider_mutation_performed": False,
     }
     metadata = descriptor.get("metadata") or {}
+    operation_review_requested = False
     result["capture_id"] = descriptor["capture_id"]
     result["scene_id"] = descriptor["scene_id"]
 
@@ -89,7 +91,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             raise ValueError("website_scene_task_identity_mismatch")
         # The capture's Atlas job is its one paid reconstruction lane: its
         # object-removed background is the scene and its source pose the
-        # geometry. Nothing here buys anything.
+        # geometry. Reopening it never reconstructs or purchases geometry.
         from .website_atlas_scene_source import atlas_scene_source
         atlas = atlas_scene_source(capture_root=capture_root, output_root=root / "atlas")
         if atlas["status"] != "ready":
@@ -119,6 +121,18 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         semantics = (load_task_semantics(job_dir=capture_root / "pipeline" / "atlas", task_context=context,
                                         source_video_digest=source_video_digest)
                      if context.get("task_family") == "general_task" and source_video_digest else None)
+        if semantics is not None and allow_operation_coverage_review:
+            from .website_operation_coverage import clarification_request
+            if clarification_request(semantics, task_context=context, source_video_digest=source_video_digest) is not None:
+                # A completed saved Atlas job need not re-enter its controller.
+                # Clarify its operation reading through the same capped source
+                # allowance; no scene/pose/selection or owner fact is rewritten.
+                from .website_operation_coverage_review import clarify_operation_coverage
+                operation_review_requested = True
+                result.pop("provider_mutation_performed", None)
+                clarified = clarify_operation_coverage(job_dir=capture_root / "pipeline" / "atlas",
+                    task_context=context, source_video_digest=source_video_digest)
+                semantics = clarified["task_semantics"]
         semantics_options = {"task_semantics": semantics, "source_video_digest": source_video_digest}
         gap = native_task_preparation_gap(context, **semantics_options)
         if gap is not None:
@@ -161,8 +175,10 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             result.update(status=preparation["status"], blockers=preparation["blockers"],
                 job_disposition="accepted", task_evaluation_inputs=preparation["task_evaluation_inputs"],
                 preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
-                source_geometry_digest=geometry["digest"], provider_mutation_performed=False,
+                source_geometry_digest=geometry["digest"],
                 dispatch_blockers=preparation.get("dispatch_blockers", []))
+            if not operation_review_requested:
+                result["provider_mutation_performed"] = False
             if preparation["status"] == "intake_ready":
                 from .website_scene_dispatch import binding_root, register_website_preparation
                 native_path = root / "native_runtime_contract.json"

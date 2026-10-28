@@ -179,11 +179,14 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
             from .paid_resource_allocator import run_sponsored_website_atlas_plan
             if needs_scale_review(measurements):
                 try:
+                    from .website_operation_coverage_review import scale_operation_coverage_options
+                    semantic_options = scale_operation_coverage_options(job_dir=parent_root.parent,
+                        task_context=task_context, source_video_digest=inputs["binding"]["source_video_digest"])
                     reviewed = repair_source_scale(pose_root=pose_root,
                         pose=pose, inputs=inputs, automation=plan, previous=measurements,
                         task_context=task_context, configuration=configuration, check=check,
                         planner_runner=lambda **kw: run_sponsored_website_atlas_plan(experimental=experimental, **kw),
-                        surfaces=surfaces, surface_source=surface_source)
+                        surfaces=surfaces, surface_source=surface_source, **semantic_options)
                 except ValueError as exc:
                     # The review found no reference to add: the height priors' guesstimate stands.
                     if str(exc) != "atlas_scale_review_abstained" or not rests_on_height_priors(measurements):
@@ -208,7 +211,13 @@ def run_atlas_pipeline(*, output_root: Path, **options):
     output_root.mkdir(parents=True, exist_ok=True)
     with (output_root / "controller.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return _run_atlas_pipeline(output_root=output_root, **options)
+        result = _run_atlas_pipeline(output_root=output_root, **options)
+        if result.get("mesh_available") and options.get("task_context", {}).get("task_family") == "general_task":
+            from .website_operation_coverage_review import clarify_operation_coverage
+            clarify_operation_coverage(job_dir=output_root, task_context=options["task_context"],
+                source_video_digest=result["source_video_digest"], experimental=options.get("experimental", False),
+                invoker=options.get("invoker"), checkpoint=options.get("checkpoint"))
+        return result
 
 
 def _job_edit_scope(output_root: Path, requested: str | None) -> str:

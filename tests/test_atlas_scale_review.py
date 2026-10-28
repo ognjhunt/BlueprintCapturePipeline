@@ -6,6 +6,7 @@ import pytest
 
 from blueprint_pipeline import atlas_scale_review as repair
 from blueprint_pipeline import atlas_scene_measurements as sizes
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_atlas_scene_automation import view, plan, track
 
 
@@ -109,3 +110,107 @@ def test_automatic_repair_reviews_full_views_and_keeps_one_revision(tmp_path, mo
         previous={"digest": "prior"}, task_context={}, configuration={}, check=checked.append, planner_runner=planner)
     assert result["status"] == "estimated" and checked == ["scale_review"]
     assert path.is_relative_to(tmp_path / "scale_review/measurements")
+
+
+def _automatic_options(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_context_fov as fov, atlas_reference_masks as masking
+    frames = [view(tmp_path)]
+    source = {"frame_id": "a", "image_path": frames[0]["image_path"], "image_digest": frames[0]["image_digest"]}
+    monkeypatch.setattr(fov, "full_view_sources", lambda *_: [source])
+    monkeypatch.setattr(sizes, "load_views", lambda *_: ({}, frames))
+    monkeypatch.setattr(masking, "segment_scale_references", lambda **_: [
+        {"reference_index": 0, "frame_id": "a", "instances": track(frames)["track"]["observations"]}])
+    return dict(pose_root=tmp_path, pose={"digest": "pose"},
+        inputs={"binding": {"source_video_digest": "video"}}, automation=plan(),
+        previous={"digest": "prior"}, task_context={}, configuration={}, check=lambda _: None)
+
+
+def _coverage_request():
+    return {"scope": "operation_coverage", "task_context_digest": "sha256:" + "a" * 64,
+            "source_video_digest": "sha256:" + "b" * 64,
+            "parent_semantics_digest": "sha256:" + "c" * 64}
+
+
+@pytest.mark.parametrize("status", ["completed", "submitting", "invalid_output"])
+def test_retained_scale_attempts_keep_the_exact_legacy_request(tmp_path, monkeypatch, status):
+    options = _automatic_options(tmp_path, monkeypatch)
+    planner_root = tmp_path / "scale_review/planner"
+    planner_root.mkdir(parents=True)
+    (planner_root / "retained.json").write_text(json.dumps({"status": status}))
+    observed = []
+    def cached_planner(**kw):
+        # The normal planner owns validating/adopting/settling this same request.
+        assert "operation_coverage_request" not in kw["scaling"]
+        observed.append(kw["scaling"])
+        return {"proposal": proposal(plan()), "reference_sources": []}
+    repair.repair_source_scale(**options, planner_runner=cached_planner,
+        operation_coverage_request=_coverage_request(), operation_coverage_needed=True)
+    assert len(observed) == 1
+    assert not (tmp_path / "scale_review/operation-coverage-request.json").exists()
+
+
+def test_new_scale_clarification_keeps_the_same_cached_input_after_resolution(tmp_path, monkeypatch):
+    options = _automatic_options(tmp_path, monkeypatch)
+    cache, calls, consumed = {}, [], []
+    request = _coverage_request()
+    def cached_planner(**kw):
+        assert kw["scaling"]["operation_coverage_request"] == request
+        identity = canonical_digest({"survey": json.loads(kw["survey_path"].read_text()), "scaling": kw["scaling"]})
+        if identity not in cache:
+            calls.append(identity)
+            cache[identity] = {"proposal": {**proposal(plan()), "operation_coverage": {"independent": "reading"}},
+                               "reference_sources": []}
+            kw["output_root"].mkdir(parents=True, exist_ok=True)
+            (kw["output_root"] / (identity[7:] + ".json")).write_text(json.dumps(cache[identity]))
+        return cache[identity]
+    first = repair.repair_source_scale(**options, planner_runner=cached_planner,
+        operation_coverage_request=request, operation_coverage_needed=True,
+        operation_coverage_consumer=consumed.append)
+    retained = tmp_path / "scale_review/operation-coverage-request.json"
+    before = retained.read_bytes()
+    repeated = repair.repair_source_scale(**options, planner_runner=cached_planner,
+        operation_coverage_request=request, operation_coverage_needed=False,
+        operation_coverage_consumer=consumed.append)
+    assert first == repeated and len(calls) == 1 and len(consumed) == 2
+    assert retained.read_bytes() == before
+    assert first[0]["binding"]["automation"]["scale_review"]["proposal_digest"] == canonical_digest(
+        next(iter(cache.values()))["proposal"])
+
+
+@pytest.mark.parametrize("changed", ["body", "symlink", "oversized"])
+def test_changed_scale_clarification_sidecar_stops_before_a_model_call(tmp_path, monkeypatch, changed):
+    options = _automatic_options(tmp_path, monkeypatch)
+    root = tmp_path / "scale_review"
+    root.mkdir()
+    sidecar = root / "operation-coverage-request.json"
+    if changed == "symlink":
+        target = tmp_path / "other.json"
+        target.write_text("{}")
+        sidecar.symlink_to(target)
+    elif changed == "oversized":
+        sidecar.write_bytes(b" " * 65_537)
+    else:
+        sidecar.write_text(json.dumps({**_coverage_request(), "parent_semantics_digest": "another-parent"}))
+    def unavailable(**_):
+        raise AssertionError("Changed sidecar must not invoke a planner")
+    with pytest.raises(ValueError, match="atlas_scale_operation_coverage_request_changed"):
+        repair.repair_source_scale(**options, planner_runner=unavailable,
+            operation_coverage_request=_coverage_request(), operation_coverage_needed=True)
+
+
+def test_scale_abstention_still_retains_independent_operation_coverage(tmp_path, monkeypatch):
+    options = _automatic_options(tmp_path, monkeypatch)
+    receipt = {"proposal": {"status": "abstained", "scale_references": [], "summary": "No defensible reference",
+                           "operation_coverage": {"independent": "reading"}}}
+    consumed = []
+    with pytest.raises(ValueError, match="atlas_scale_review_abstained"):
+        repair.repair_source_scale(**options, planner_runner=lambda **_: receipt,
+            operation_coverage_request=_coverage_request(), operation_coverage_needed=True,
+            operation_coverage_consumer=consumed.append)
+    assert consumed == [receipt]
+
+
+def test_unknown_scale_proposal_fields_are_still_rejected():
+    p = {**proposal(plan()), "unrecognized": "not a scale field"}
+    with pytest.raises(ValueError):
+        repair.revised_plan(automation=plan(), proposal=p, frame_ids={"a"}, reference_sources=[])

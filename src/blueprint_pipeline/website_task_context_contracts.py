@@ -56,6 +56,17 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
     if code == "website_native_task_profile_preparation_required":
         if declared is not None or handoff.get("provider_mutation_performed") is not False:
             return False
+    elif code == "website_task_operation_coverage_unresolved":
+        from .website_operation_coverage import operation_coverage_gap
+        try:
+            if (family != "general_task" or not isinstance(gap.get("task_semantics"), Mapping)
+                    or gap != operation_coverage_gap(gap["task_semantics"], task_context=task_context,
+                        source_video_digest=gap.get("source_video_digest"))
+                    or ("provider_mutation_performed" in handoff
+                        and type(handoff["provider_mutation_performed"]) is not bool)):
+                return False
+        except (ValueError, TypeError, KeyError):
+            return False
     elif code == "website_task_profile_mechanism_mismatch":
         if declared is None and family == "general_task" and isinstance(gap.get("task_semantics"), Mapping):
             from .website_task_semantics import resolved_task_profile

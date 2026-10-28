@@ -2039,6 +2039,20 @@ def default_output_roots() -> list[Path]:
 # ----------------------------- CLI -----------------------------
 
 
+def _refresh_gcp_monthly_budget() -> None:
+    """Reobserve the canonical native controller; never freshen a cached report."""
+    try:
+        from blueprint_pipeline.gcp_monthly_budget_guard import run_configured_guard
+
+        project_budget = run_configured_guard()
+        if project_budget is not None:
+            print("GCP monthly budget: " + ("admitted" if project_budget["admission_allowed"] else "blocked"), file=sys.stderr)
+    except Exception as exc:
+        # The project's admission report expires closed if configuration breaks.
+        # Keep the existing orphan/invoice checks running for other providers.
+        print(f"GCP monthly budget controller failed: {type(exc).__name__}", file=sys.stderr)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -2163,16 +2177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # This project-scoped controller writes its own refusal/receipt. Its budget
     # cannot silently replace the unrelated providers' fleet allowance.
-    try:
-        from blueprint_pipeline.gcp_monthly_budget_guard import run_configured_guard
-
-        project_budget = run_configured_guard()
-        if project_budget is not None:
-            print("GCP monthly budget: " + ("admitted" if project_budget["admission_allowed"] else "blocked"), file=sys.stderr)
-    except Exception as exc:
-        # The project's admission report expires closed if configuration breaks.
-        # Keep the existing orphan/invoice checks running for other providers.
-        print(f"GCP monthly budget controller failed: {type(exc).__name__}", file=sys.stderr)
+    _refresh_gcp_monthly_budget()
 
     secrets_dir = Path(
         str(os.getenv("BLUEPRINT_GPU_PROVIDER_SECRETS_DIR") or SECRETS_DIR)
@@ -2355,6 +2360,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             path.parent.mkdir(parents=True, exist_ok=True)
             write_json(path, report)
             print(f"JSON snapshot written: {path}")
+        # Slow fleet inventory/reconciliation must not consume the monthly
+        # report's five-minute validity before the next timer interval begins.
+        # Repeat native budget/IAM/inventory/cutoff checks; errors stay closed.
+        _refresh_gcp_monthly_budget()
         return admission_lock
 
     def _fleet_blocks_exit(admission_lock: Mapping[str, Any] | None) -> bool:

@@ -140,6 +140,7 @@ def test_general_job_compiler_holds_bad_or_inapplicable_semantics_before_registr
         result = preparation.compile_website_scene_preparation(**args)
         assert result["intake_request"] is None
         assert result["blockers"] == ["website_task_profile_mechanism_mismatch" if fault == "mechanism"
+                                       else "website_task_operation_coverage_unresolved" if fault in {"multiple", "unsupported"}
                                        else "website_native_task_profile_preparation_required"]
 
 

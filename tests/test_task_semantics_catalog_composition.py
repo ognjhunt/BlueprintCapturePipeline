@@ -134,7 +134,7 @@ def test_unregistered_derived_operations_stay_held_without_a_narrower_fallback(f
                                             source_video_digest=source) is None
     gap = native_task_preparation_gap(context, inferred_profile_id="rigid_pick_place",
         task_semantics=artifact, source_video_digest=source)
-    assert gap["code"] == "website_native_task_profile_preparation_required"
+    assert gap["code"] == "website_task_operation_coverage_unresolved"
     assert gap["task_family"] == "general_task" and gap["description"] == context["description"]
 
 
