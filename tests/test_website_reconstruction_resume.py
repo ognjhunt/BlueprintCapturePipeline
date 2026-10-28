@@ -176,15 +176,20 @@ def test_a_ledger_that_moves_on_before_the_claim_refuses_the_replay(waiting, mon
     assert ledger["last_error"] == "unknown_provider_charge" and ledger["attempt_count"] == 1
 
 
-def test_silence_ends_the_wait_only_after_the_atlas_job_could_have_ended(waiting):
+def test_atlas_wait_becomes_overdue_retryable_only_after_the_job_window(waiting):
     root = waiting[0]
     stopped = terminal._parse_utc(listener._read_job_ledger(root)["updated_at"])
     window = timedelta(seconds=terminal.silence_seconds())
     early = stopped + window + timedelta(hours=1)
     assert terminal.record_unretried_preparation(root, alive_since=stopped, now=early) is None
     late = stopped + timedelta(seconds=MAXIMUM_JOB_SECONDS) + window + timedelta(minutes=1)
-    ended = terminal.record_unretried_preparation(root, alive_since=stopped, now=late)
-    assert ended[terminal.TERMINAL_FIELD]["reason"] == "retry_exhausted"
+    overdue = terminal.record_unretried_preparation(root, alive_since=stopped, now=late)
+    assert overdue["status"] == "failed_retryable" and overdue["last_error"] == resume.WAIT_ERROR
+    record = terminal.current_overdue(overdue)
+    assert record["reason"] == "recovery_needed" and record["retry_exhaustion_proven"] is False
+    assert record["silent_since"] == terminal._iso(stopped + timedelta(seconds=MAXIMUM_JOB_SECONDS))
+    assert terminal.TERMINAL_FIELD not in overdue and terminal.current_terminal(overdue) is None
+    assert resume.armed(overdue) and overdue[resume.FIELD] == waiting[4]
 
 
 def test_only_the_whole_atlas_wait_counts_anywhere_in_the_chain():
