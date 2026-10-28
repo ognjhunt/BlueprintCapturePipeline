@@ -182,7 +182,7 @@ def test_explicit_webapp_canonicalization_preserves_small_numeric_task_facts(tmp
         producer._facts(context, args["source_geometry"]["binding"]["source_video_digest"])
 
 
-@pytest.mark.parametrize("mode", ["unknown", [], {}])
+@pytest.mark.parametrize("mode", [None, "unknown", [], {}])
 def test_explicit_unknown_fact_canonicalizer_cannot_fall_back_to_legacy(tmp_path, monkeypatch, mode):
     args, _ = _fixture(tmp_path, monkeypatch)
     args["task_context"]["operator_answers"]["family_task_facts"]["canonicalization"] = mode

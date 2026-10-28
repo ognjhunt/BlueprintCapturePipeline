@@ -125,7 +125,8 @@ def _facts(context, video):
     if value is None:
         return {}
     _require(isinstance(value, Mapping), "owner_facts_source_changed")
-    _require(value.get("canonicalization") in (None, "rfc8785"), "owner_facts_canonicalization_invalid")
+    _require("canonicalization" not in value or value["canonicalization"] == "rfc8785",
+             "owner_facts_canonicalization_invalid")
     digest = cross_runtime_canonical_digest if value.get("canonicalization") == "rfc8785" else canonical_digest
     _require(isinstance(value, Mapping) and value.get("schema_version") == FACTS_SCHEMA
              and value.get("facts_digest") == digest(value, digest_field="facts_digest")
