@@ -49,6 +49,17 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
     task_id = task_context.get("task_id") or "website-" + task_context["context_digest"][7:27]
     scope = {"scene_id": task_context["scene_id"], "task_id": task_id,
              "task_context_digest": task_context["context_digest"]}
+    source_bindings = {"task_context_digest": task_context["context_digest"],
+        "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
+        "splat_digest": base_scene["splat_digest"], "collision_mesh_digest": base_scene["collision_mesh_digest"]}
+    produced = None
+    if inputs.get("task_success_contract") is None and inputs.get("native_runtime_inputs") is None:
+        from .task_family_button_authoring import author_button_family_inputs
+        produced = author_button_family_inputs(family=family, task_context=task_context,
+            task_masks=task_masks, source_geometry=source_geometry, base_scene=base_scene,
+            source_bindings=source_bindings, output_root=output_root, task_semantics=task_semantics, now=now)
+        if produced is not None and produced["status"] == "authored":
+            inputs.update(produced["outputs"])
     contract = inputs.get("task_success_contract")
     if contract is None:
         blockers.append("website_task_family_success_contract_required")
@@ -62,9 +73,6 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
     # Runtime inputs are data from the configured native scene, not model
     # executable code. The existing native contract entrypoint validates them.
     native = None
-    source_bindings = {"task_context_digest": task_context["context_digest"],
-        "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
-        "splat_digest": base_scene["splat_digest"], "collision_mesh_digest": base_scene["collision_mesh_digest"]}
     runtime_inputs = inputs.get("native_runtime_inputs")
     if runtime_inputs is None:
         blockers.append("website_task_family_native_runtime_inputs_required")
@@ -80,7 +88,7 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         blockers.extend(family_source_blockers(native=native, source_bindings=source_bindings, source_scene=base_scene))
     # Source/task readiness and dispatch authority are separate facts. Missing
     # dispatch inputs retain the prepared job and cannot mint a paid grant.
-    dispatch_blockers = []
+    dispatch_blockers = list(inputs.get("authoring_dispatch_blockers", []))
     request = None
     selection = inputs.get("task_family_runtime_selection")
     policy_selection = inputs.get("policy_selection")
@@ -129,7 +137,8 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
     from .task_family_authoring import retain_family_authoring_requirements
     authoring = retain_family_authoring_requirements(family=family, task_context=task_context,
         task_masks=task_masks, source_geometry=source_geometry, source_bindings=source_bindings,
-        output_root=output_root, task_semantics=task_semantics, contract=contract, native=native)
+        output_root=output_root, task_semantics=task_semantics, contract=contract, native=native,
+        producer_result=produced)
     value = {
         "schema_version": "website_scene_preparation.v1",
         "status": "needs_input" if blockers else "intake_ready" if request else "task_evaluation_ready",

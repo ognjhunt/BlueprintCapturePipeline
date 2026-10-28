@@ -94,6 +94,7 @@ def retain_family_authoring_requirements(
     source_geometry: Mapping[str, Any], source_bindings: Mapping[str, Any],
     output_root: Path, task_semantics: Mapping[str, Any] | None = None,
     contract: Mapping[str, Any] | None = None, native: Mapping[str, Any] | None = None,
+    producer_result: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Write/adopt an immutable requirement generation; never advance a stage.
 
@@ -146,13 +147,17 @@ def retain_family_authoring_requirements(
     if native is None:
         missing("native_runtime_inputs", "runtime_integration", "runtime_operator",
                 "Bind a supported engine, robot, calibrated cameras, assets and native state interface to this scene.")
+    if producer_result is not None:
+        requirements = list(producer_result["requirements"])
+    authored = (producer_result is not None and producer_result["status"] == "authored"
+                and contract is not None and native is not None)
     binding = {**dict(source_bindings), "source_video_digest": source_video,
         "task_semantics_digest": task_semantics.get("digest") if task_semantics is not None else None,
         "task_success_contract_digest": contract.get("contract_digest") if contract is not None else None,
         "native_runtime_contract_digest": native.get("contract_digest") if native is not None else None}
     value = {"schema_version": SCHEMA, "producer": PRODUCER,
-        "status": "needs_authoring" if requirements else "external_inputs_retained",
-        "precursor_only": True, "native_inputs_authored": False,
+        "status": "needs_authoring" if requirements else "native_inputs_authored" if authored else "external_inputs_retained",
+        "precursor_only": not authored, "native_inputs_authored": authored,
         "binding": binding, "task_family": family, "operations": operations,
         "source_operation_reading": source_reading,
         "requirements": requirements, "next_action": next((row for row in requirements
@@ -164,7 +169,8 @@ def retain_family_authoring_requirements(
         "source_targets": [{key: target.get(key) for key in
             ("target_id", "semantic_label", "task_effect", "target_role")} for target in task_masks.get("targets", [])],
         "native_observables": {row["stage_id"]: list(FAMILY_OBSERVABLES.get(row["task_family"], ())) for row in operations},
-        "owner_criteria": task_context.get("success_criteria"), "owner_facts_confirmed": False,
+        "owner_criteria": task_context.get("success_criteria"), "owner_facts_confirmed": authored,
+        **({"producer_result": dict(producer_result)} if producer_result is not None else {}),
         "claim_ceiling": "development_only", "provider_mutation_performed": False,
         "automatic_paid_execution_authorized": False}
     value["request_digest"] = canonical_digest(value, digest_field="request_digest")

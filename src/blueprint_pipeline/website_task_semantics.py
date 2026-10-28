@@ -133,14 +133,51 @@ def resolved_task_profile(value: Mapping[str, Any] | None, *, task_context: Mapp
         coverage = clarification["operation_coverage"]
         if not coverage["operation_coverage_complete"] or coverage["unresolved_operations"]:
             return None
-        return _operation_profile(coverage["task_family"], coverage["steps"])
+        return _operation_profile(coverage["task_family"], coverage["steps"],
+            source_stage_ids=_button_stage_identities(task_context, source_video_digest, coverage["steps"]))
     semantics = verified["semantics"]
     if not semantics["covers_entire_job"] or semantics["unresolved_aspects"]:
         return None
-    return _operation_profile(semantics["task_family"], semantics["steps"])
+    return _operation_profile(semantics["task_family"], semantics["steps"],
+        source_stage_ids=_button_stage_identities(task_context, source_video_digest, semantics["steps"]))
 
 
-def _operation_profile(task_family, steps):
+def _button_stage_identities(context, video, steps):
+    """Only retained normal fact confirmations resolve repeated button stages.
+
+    The original quotes must occur in their retained order, not be copied to
+    manufacture repetitions. IDs/count/order must match the exact source steps.
+    This describes a job; it grants no asset/runtime or execution authority.
+    """
+    if not 2 <= len(steps) <= 8 or any(task_profile_for(step["operation"]) is None
+            or task_profile_for(step["operation"]).profile_id != "button_press" for step in steps):
+        return None
+    facts = (context.get("operator_answers") or {}).get("family_task_facts")
+    if (not isinstance(facts, Mapping) or facts.get("schema_version") != "website_family_task_facts.v1"
+            or facts.get("facts_digest") != canonical_digest(facts, digest_field="facts_digest")
+            or context.get("confirmed") is not True or facts.get("confirmed") is not True
+            or not isinstance(facts.get("confirmation_reference"), str) or not facts["confirmation_reference"].strip()
+            or facts.get("capture_id") != context.get("capture_id") or facts.get("source_video_digest") != video
+            or facts.get("task_description_digest") != canonical_digest({"description": context.get("description")})
+            or facts.get("task_success_criteria_digest") != canonical_digest({"success_criteria": context.get("success_criteria")})):
+        return None
+    expected = ["operation-" + str(index).zfill(3) + "-" + canonical_digest(step)[7:15]
+                for index, step in enumerate(steps, 1)]
+    answers = facts.get("operations")
+    if (not isinstance(answers, list) or len(answers) != len(expected)
+            or [answer.get("operation_id") if isinstance(answer, Mapping) else None for answer in answers] != expected):
+        return None
+    position = 0
+    for step in steps:
+        quote = step["task_quote"]
+        found = str(context.get("description", "")).find(quote, position)
+        if not quote or found < 0:
+            return None
+        position = found + len(quote)
+    return expected
+
+
+def _operation_profile(task_family, steps, *, source_stage_ids=None):
     """Routing metadata only; every requested operation must fit one native route."""
     profile = task_profile_for(task_family)
     if profile is None:
@@ -156,7 +193,11 @@ def _operation_profile(task_family, steps):
         # from the reversed target order. Keep that sequence held until a
         # source-bound semantic step→native stage identity is available.
         if len({operation.profile_id for operation in operations}) != len(operations):
-            return None
+            expected = ["operation-" + str(index).zfill(3) + "-" + canonical_digest(step)[7:15]
+                        for index, step in enumerate(steps, 1)]
+            if (any(operation.profile_id != "button_press" for operation in operations)
+                    or source_stage_ids != expected):
+                return None
     elif len(steps) != 1 or operations[0] is None or operations[0].profile_id != profile.profile_id:
         return None
     return profile.profile_id
@@ -183,6 +224,10 @@ def require_semantic_stage_order(*, task_context: Mapping[str, Any], task_semant
     proposed = [task_profile_for(step["operation"]).profile_id for step in reading["steps"]]
     if proposed != [stage["task_family"] for stage in contract["stages"]]:
         raise ValueError("website_task_family_semantic_stages_mismatch")
+    if len(set(proposed)) != len(proposed):
+        expected = _button_stage_identities(task_context, source_video_digest, reading["steps"])
+        if expected is None or expected != [stage["stage_id"] for stage in contract["stages"]]:
+            raise ValueError("website_task_family_semantic_stages_mismatch")
 
 
 def retain_task_semantics(*, job_dir: Path, receipt: Mapping[str, Any], task_context: Mapping[str, Any],

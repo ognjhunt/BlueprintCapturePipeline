@@ -63,7 +63,10 @@ def test_changed_owner_facts_create_a_generation_without_overwriting_history(tmp
     assert second["reference"]["path"] != first["reference"]["path"]
     assert Path(first["reference"]["path"]).read_bytes() == original
     assert second["request"]["owner_criteria"] == args["task_context"]["success_criteria"]
-    assert second["request"]["next_action"]["quantity"] == "minimum_button_travel_m"
+    assert second["request"]["next_action"]["quantity"] == "minimum_hold_seconds"
+    assert second["request"]["next_action"]["owner"] == "task_owner"
+    assert any(row["quantity"] == "minimum_button_travel_m" and row["category"] == "source_measurement"
+               for row in second["request"]["requirements"])
     assert second["request"]["owner_facts_confirmed"] is False  # Prose did not become numbers.
 
 

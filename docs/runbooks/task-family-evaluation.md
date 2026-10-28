@@ -55,13 +55,44 @@ in-flight and spilled volume together. The task's explicit
 `maximum_final_in_flight_volume_ml` limits liquid still in transit at completion;
 an intermediate stream does not count as spilled liquid.
 
-Website preparation consumes `descriptor.metadata.native_task_evaluation` with
-`task_success_contract` and `native_runtime_inputs`. The retained source scene
-and frame registration must match. The handoff preserves the original job and
-the compiled `task_evaluation_inputs`. Missing fields are named individually;
-the preparation output does not claim that a simulator ran or authorize paid
-execution. The existing package/status readers retain this route across
-restarts.
+Website preparation still accepts retained internal
+`descriptor.metadata.native_task_evaluation` for compatibility. When it is
+absent, `task_family_button_authoring.py` can author one `button_press` or an
+ordered composition of at most eight distinct buttons from the ordinary job,
+retained operation reading, registered layout, exact admitted engineering model
+and explicit criteria. It builds the existing `task_success_contract`,
+`native_runtime_inputs`, asset source receipts and native measurement/reset
+bindings, then validates them with the existing materializer and source checks.
+It does not call a provider, start an engine or query a policy.
+
+The bounded input is factual layout, not another finished native profile:
+
+- `task_masks.registered_layout` (`website_registered_task_layout.v1`) binds the
+  source video, geometry, collider, metric registration receipt and transform.
+  Each target binds its observed source pose, source frame IDs and engineering
+  asset ID. The robot/base/reset and source-camera references must already be
+  registered by engineering. Estimated visible bounds cannot supply these facts.
+- Existing protected `BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH` rows may carry
+  `authoring_assets`: exact licensed self-contained primitive URDF bytes,
+  engineering evidence, contact parameters and explicit joint/sensor/reset
+  mechanics. This producer supports two links and one prismatic joint; missing
+  import support is a specific software dependency. No capture may select a
+  catalog path, executable, runtime factory or arbitrary model dependency.
+- The existing `operator_answers` carrier may retain
+  `family_task_facts` (`website_family_task_facts.v1`), bound to capture, video,
+  task-description and success-criteria digests. Confirmed operation IDs carry
+  explicit thresholds and hold durations; target confirmation is needed only
+  when the source quote does not select a unique captured button. No prose is
+  converted to numbers. Missing joint-travel or force thresholds stay
+  engineering/source dependencies; a missing job hold duration remains a normal
+  task-fact request.
+
+Repeated-family general-task routing additionally requires exact operation
+IDs/count/order and ordered, nonoverlapping verbatim source quotes. Missing IDs
+or copying one occurrence to manufacture another operation keeps routing held.
+Contract and packet readback check native stage identities as well as family
+order. A release/repress sequence on the same button remains a specific reset
+integration gap, preserving the requested job.
 
 Preparation also retains a source-bound authoring requirement generation under
 `family_authoring/<request-digest>/requirements.json`. It separates owner task
@@ -79,13 +110,23 @@ conflicts with the declared atomic family or a retained contract. An atomic
 family hint cannot discard a later operation; an unknown operation remains a
 specific native-profile preparation gap.
 
-This is an authoring precursor, not a native-input producer. Its
-`precursor_only=true` and `native_inputs_authored=false` fields are explicit;
-the accepted job remains `needs_input` until the existing materializer validates
-real inputs. A supplied internal contract is retained without asserting a new
-owner confirmation. A bounded family producer, actual engine driver, matching
-policy and observed native execution are still required to close AUT-12/AUT-13.
-No new engine or candidate configuration is enabled by this artifact.
+Unimplemented lanes retain `precursor_only=true` and
+`native_inputs_authored=false`; they stay `needs_input`. The bounded producer
+sets `native_inputs_authored=true` only after materialization validates its
+actual outputs. Its immutable source/operation/native stages adopt identical
+completed bytes across restarts and version changed inputs. A supplied internal
+contract is retained without asserting new owner confirmation. Missing or
+expired runtime qualification may retain static native inputs, but it prevents
+intake creation and remains an explicit dispatch blocker.
+
+The ordinary production capture path does not yet emit this registered factual
+layout, and WebApp does not yet persist these source-bound normal fact answers.
+Those are engineering integration gaps, not requests for customer-authored
+engine JSON or another approval stage. The development fixtures are not
+registration, physics, runtime or policy qualification. No real button driver,
+matching policy or native episode is admitted by this code; AUT-12 production
+acceptance and AUT-13 execution remain incomplete. No new engine or candidate
+configuration is enabled by these artifacts.
 
 `execute_prepared_task_family` consumes the retained preparation and transfers
 runtime ownership to execution: every preflight refusal closes the runtime,
@@ -131,7 +172,8 @@ The receipt stays outside the immutable scene revision because it binds that
 revision's digest. Missing qualification is reported specifically. Existing
 configured-controls progression remains the qualification execution route.
 
-Focused regressions live in `test_task_family_scoring.py`,
+Focused regressions live in `test_task_family_button_authoring.py`,
+`test_task_family_authoring.py`, `test_task_family_scoring.py`,
 `test_task_evaluation_task_family_native_adapter.py`, the website family
 preparation tests, `test_website_container_geometry.py`,
 `test_task_evaluation_surface_target.py`,
