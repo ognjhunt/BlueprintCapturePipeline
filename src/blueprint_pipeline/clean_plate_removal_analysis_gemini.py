@@ -43,6 +43,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from .capture_audio_minimization import AudioRemovalError, audio_free_upload_copy
 from .common import sha256_file, utc_now_iso
+from .core.handoff_lease import handoff_lease_checkpoint
 from .clean_plate_removal_response_schema import RESPONSE_SCHEMA, SYNTHETIC_SHAPES
 from .website_task_context_contracts import admits_scene_preparation
 
@@ -654,6 +655,7 @@ def _invoke_agentic_video(
     """Run the explicitly selected mode; require tool traces only for agentic."""
     if processing not in {"static", "agentic"}:
         raise ValueError("gemini_clean_plate_processing_invalid")
+    handoff_lease_checkpoint("gemini_removal_before_client")
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
         timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
     ))
@@ -662,6 +664,7 @@ def _invoke_agentic_video(
     # can record people talking, and the analysis does not use sound. Raises
     # before any upload when the copy cannot be shown audio-free.
     with audio_free_upload_copy(video_path) as (upload_path, audio_removal):
+        handoff_lease_checkpoint("gemini_removal_video_upload")
         uploaded = client.files.upload(file=str(upload_path), config={"mime_type": mime_type})
     try:
         deadline = time.monotonic() + 60
@@ -674,6 +677,7 @@ def _invoke_agentic_video(
             raise ValueError("gemini_clean_plate_file_processing_failed")
         # Agentic navigation uses a stable processed media handle, as in the
         # provider's video API example; the original stays unchanged locally.
+        handoff_lease_checkpoint("gemini_removal_analysis_request")
         response = client.interactions.create(
             model=model, store=False,
             input=[{"type": "video", "uri": uploaded.uri, "mime_type": mime_type, "processing": ({"type": "static", "fps": STATIC_FPS} if processing == "static" else "agentic")},
@@ -737,6 +741,7 @@ def _repair_prompt(prompt: str, previous_text: str, error: str) -> str:
 def _invoke_text_repair(*, api_key: str, model: str, genai: Any, types: Any, prompt: str,
                         previous_text: str, error: str) -> dict[str, Any]:
     """The repair turn: the model's own answer and the exact failed rule; no new media."""
+    handoff_lease_checkpoint("gemini_removal_validation_repair")
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
         timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
     ))
