@@ -1,25 +1,10 @@
-"""Beta journey L3/L6: record that a website capture's preparation has no retry left.
+"""Beta preparation delay observations and evidence-bound terminal projections.
 
-Pub/Sub dead-letters a handoff after an approximate number of delivery
-attempts, and nothing re-drives a dead-lettered handoff automatically. The
-count is best-effort: Pub/Sub may forward early, deliver past the maximum, or
-reset the counter (https://docs.cloud.google.com/pubsub/docs/handling-failures),
-so a delivery number is no proof that retries are over. The ledger used to keep
-its last retryable status, and the site was shown "preparing" or "needs review"
-forever.
-
-Silence is the proof used here instead. A retryable outcome, or a lease whose
-worker died, ends the preparation once no new claim of that ledger has followed
-it for SILENCE_SECONDS of this listener pulling continuously. Pub/Sub redelivers
-a deferred handoff within about 20 minutes (600 s deferral plus at most 600 s
-backoff), so a redelivery that is still coming is claimed first. A listener
-outage or a long run restarts the liveness clock, so a backlog waiting for this
-listener is never mistaken for silence.
-
-The record annotates the attempt; it is never a new job status. Claim, retry,
-acknowledgement and workspace retirement are unchanged, and a later claim (an
-operator re-drive, or a delivery after all) starts a fresh attempt without it.
-Only the ledger lock is taken here and nothing reaches the network.
+Broker delivery counts and listener liveness do not prove exhaustion for a
+particular message. Silence records an overdue observation only. The existing
+v1/v2 status vocabulary stays compatible, and a later current claim supersedes
+the observation while its immutable attempt-history entry remains available.
+No observation authorizes retry, provider effects or authority renewal.
 """
 from __future__ import annotations
 
@@ -41,6 +26,8 @@ from .handoff_job_state import (
 
 TERMINAL_FIELD = "website_preparation_terminal"
 SCHEMA_VERSION = "website_preparation_terminal.v1"
+OVERDUE_FIELD = "website_preparation_overdue"
+OVERDUE_SCHEMA_VERSION = "website_preparation_overdue.v1"
 # The shared vocabulary of website_preparation_status.v2. This module writes
 # retry_exhausted, budget_exhausted and capacity_blocked; the WebApp accepts all.
 REASONS = frozenset({"permanent_invalid", "retry_exhausted", "budget_exhausted",
@@ -107,17 +94,25 @@ def exhausted_reason(ledger: Mapping[str, Any]) -> str:
 
 
 def current_terminal(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The record, only while it still describes this ledger's current attempt."""
-    record = ledger.get(TERMINAL_FIELD)
-    if (type(record) is not dict or record.get("schema_version") != SCHEMA_VERSION
-            or record.get("reason") not in REASONS
-            or record.get("observed_status") not in _RETRYABLE_STATUSES | {"processing"}
-            or record.get("observed_status") != ledger.get("status")
-            or type(record.get("attempt_count")) is not int
-            or record.get("attempt_count") != ledger.get("attempt_count")
-            or type(record.get("source_payload_sha256")) is not str
-            or record.get("source_payload_sha256") != ledger.get("source_payload_sha256")
-            or record.get("lease_token") != ledger.get("lease_token")):
+    """Silence records cannot establish a terminal retry disposition.
+
+    The existing producer wrote only silence-based annotations. Retain them for
+    history, but do not promote even a plausible reason or digest into broker
+    evidence. AUT-02's source/attempt-bound durable disposition reader must be
+    integrated here before conclusive retry-exhaustion projection is enabled.
+    Explicit ``terminal_authority_ended`` is handled separately by the reader.
+    """
+    return None
+
+
+def current_overdue(ledger: Mapping[str, Any]) -> dict[str, Any] | None:
+    record = ledger.get(OVERDUE_FIELD)
+    if (not isinstance(record, Mapping)
+            or record.get("schema_version") != OVERDUE_SCHEMA_VERSION
+            or record.get("reason") != "recovery_needed"
+            or any(record.get(key) != ledger.get(key) for key in
+                   ("attempt_count", "source_payload_sha256", "lease_token"))
+            or record.get("observed_status") != ledger.get("status")):
         return None
     return dict(record)
 
@@ -164,7 +159,9 @@ def _commit(capture_root: Path, ledger: Mapping[str, Any], record: Mapping[str, 
     revision = ledger.get("revision")
     if type(revision) is not int or revision < 1:
         return None
-    committed = {**dict(ledger), TERMINAL_FIELD: dict(record),
+    history = [item for item in ledger.get("attempt_history", []) if isinstance(item, Mapping)]
+    committed = {**dict(ledger), OVERDUE_FIELD: dict(record),
+                 "attempt_history": [*history, {"status": "preparation_overdue_observed", **dict(record)}],
                  "schema_version": JOB_LEDGER_SCHEMA_VERSION, "revision": revision + 1}
     write_json(capture_root / JOB_LEDGER_FILENAME, committed)
     return committed
@@ -193,7 +190,7 @@ def _silent_since(ledger: Mapping[str, Any], current: datetime) -> datetime | No
 
 def record_unretried_preparation(capture_root: Path, *, alive_since: datetime,
                                  now: datetime | None = None) -> dict[str, Any] | None:
-    """End a website preparation that nothing has retried within the silence window.
+    """Observe overdue preparation without claiming that no retry remains.
 
     `alive_since` comes from note_sweep_liveness. Returns the committed ledger,
     or None when nothing was recorded: no ledger, not a website source, still
@@ -206,20 +203,26 @@ def record_unretried_preparation(capture_root: Path, *, alive_since: datetime,
             return None
         ledger = _read_job_ledger(Path(capture_root))
         silent = _silent_since(ledger, current)
-        # The window counts only time after the stop during which this listener
-        # was continuously pulling: a redelivery would have been claimed in it.
+        # Listener liveness only qualifies the delay observation. It says
+        # nothing about this message's source/DLQ/recovery delivery state.
         if (silent is None or type(ledger.get("attempt_count")) is not int
                 or type(ledger.get("source_payload_sha256")) is not str
                 or max(silent, alive_since) + timedelta(seconds=silence_seconds()) > current
-                or current_terminal(ledger) is not None):
+                or current_terminal(ledger) is not None or current_overdue(ledger) is not None):
             return None
         status = ledger.get("status")
-        record = {"schema_version": SCHEMA_VERSION,
-                  "reason": exhausted_reason(ledger) if status in _RETRYABLE_STATUSES else "retry_exhausted",
+        cause = ("control_plane_capacity" if capacity_only(ledger) else
+                 "capture_budget" if _budget_refused(ledger) else
+                 "worker_lease_expired" if status == "processing" else "queue_or_dependency_delay")
+        record = {"schema_version": OVERDUE_SCHEMA_VERSION,
+                  "reason": "recovery_needed", "known_cause": cause,
                   "basis": "no_claim_within_silence_window" if status in _RETRYABLE_STATUSES
                   else "lease_expired_without_reclaim",
                   "observed_status": status, "attempt_count": ledger.get("attempt_count"),
                   "source_payload_sha256": ledger.get("source_payload_sha256"),
                   "lease_token": ledger.get("lease_token"), "silent_since": _iso(silent),
+                  "age_seconds": max(0.0, (current - silent).total_seconds()),
+                  "next_action": "reconcile_per_job_recovery_state", "next_retry_at": None,
+                  "retry_exhaustion_proven": False,
                   "recorded_at": _iso(current)}
         return _commit(Path(capture_root), ledger, record)
