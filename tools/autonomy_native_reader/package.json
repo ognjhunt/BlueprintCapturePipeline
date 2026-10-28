@@ -1,0 +1,9 @@
+{
+  "name": "blueprint-autonomy-native-reader-proof",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Offline Firestore snapshot serialization proof; no service client or credentials",
+  "dependencies": {
+    "@google-cloud/firestore": "7.11.6"
+  }
+}
