@@ -11,6 +11,7 @@ from typing import Any, Mapping
 from typing import List, Optional
 
 from .handoff_job_state import required_stage_result_blocker
+from .core.handoff_lease import handoff_lease_checkpoint
 from .agent_runtime.orchestrator import run_agent_review
 from .agent_runtime.openai_phase2 import OpenAIPhase2Config
 from .capture_orchestrator import (
@@ -299,6 +300,7 @@ def _write_run_e2e_stage_ledger(
     capture_root: Path,
     ledger: Mapping[str, Any],
 ) -> None:
+    handoff_lease_checkpoint("run_e2e_stage_publication")
     write_json(_run_e2e_stage_ledger_path(capture_root), ledger)
     write_json(_run_e2e_summary_path(capture_root), _run_summary_from_ledger(ledger))
 
@@ -691,6 +693,7 @@ def run_end_to_end(
         artifacts_from_result: Any = None,
         input_binding_digest: str | None = None,
     ) -> Any:
+        handoff_lease_checkpoint(f"run_e2e_before:{stage}")
         # Handoff staging can replace descriptor/QA files with the original cloud
         # records on every delivery. Rebuild these cheap local projections from
         # verified raw inputs; a saved result alone cannot restore their files.
@@ -729,6 +732,7 @@ def run_end_to_end(
         )
         try:
             stage_result = callback()
+            handoff_lease_checkpoint(f"run_e2e_after:{stage}")
             blocker = required_stage_result_blocker(stage, stage_result)
             if blocker:
                 raise PipelineError(blocker)

@@ -24,6 +24,7 @@ import google.auth
 from google.cloud import storage
 
 from .common import PipelineError, utc_now_iso, write_json
+from .core.handoff_lease import HandoffLeaseError, bind_handoff_lease
 from .pubsub_handoff_disk_admission import (  # noqa: F401 - native bodies resolve this live namespace
     HandoffStagingCapacityError,
     download_with_reservation,
@@ -772,6 +773,9 @@ def _claim_job_lease(
                 _set_aside(live_receipt, "superseded")
         if status == "completed":
             if not _retained_required_stage_blockers(capture_root):
+                retained = _output_commit(capture_root, scene_id=scene_id, capture_id=capture_id)
+                if retained and _read_optional_json_object(capture_root / JOB_OUTPUT_COMMIT_FILENAME) != retained:
+                    write_json(capture_root / JOB_OUTPUT_COMMIT_FILENAME, retained)
                 return "completed", dict(ledger)
             # Older acknowledgements ignored required-stage result failures.
             # Preserve the receipt; only the incomplete stage loses resume eligibility.
@@ -837,6 +841,9 @@ def _heartbeat_job_lease(
             or _string(ledger.get("lease_token")) != token
         ):
             return False
+        expires_at = _parse_utc_timestamp(ledger.get("lease_expires_at"))
+        if expires_at is None or expires_at <= now:
+            return False
         revision = int(ledger.get("revision") or 0)
         _commit_job_ledger(
             capture_root,
@@ -860,6 +867,7 @@ def _finish_job_lease(
     token: str,
     update: Mapping[str, Any],
     after_commit: Callable[[dict[str, Any]], Any] | None = None,
+    expected_attempt_count: int | None = None,
 ) -> dict[str, Any]:
     """Commit the lease's final ledger; after_commit runs under the same lock.
 
@@ -871,12 +879,9 @@ def _finish_job_lease(
     """
 
     with _locked_job_ledger(capture_root) as ledger:
-        if (
-            ledger.get("status") != "processing"
-            or _string(ledger.get("lease_owner")) != owner
-            or _string(ledger.get("lease_token")) != token
-        ):
-            raise PipelineError("Pub/Sub job ledger lease ownership was lost before commit.")
+        _require_job_lease(ledger, owner=owner, token=token)
+        if expected_attempt_count is not None and ledger.get("attempt_count") != expected_attempt_count:
+            raise HandoffLeaseError("lost")
         revision = int(ledger.get("revision") or 0)
         committed = _commit_job_ledger(
             capture_root,
@@ -909,25 +914,67 @@ class _JobLeaseHeartbeat:
         self.lease_seconds = max(1, lease_seconds)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
+        self._failure: HandoffLeaseError | None = None
+        self._entered = False
+        self._binding: Any = None
+
+    def checkpoint(self, boundary: str = "") -> None:
+        if self._failure is not None:
+            raise HandoffLeaseError(self._failure.state, boundary) from self._failure
+        if self._entered and not self._thread.is_alive():
+            self._failure = HandoffLeaseError("unproven", boundary)
+            raise self._failure
+        try:
+            with _locked_job_ledger(self.capture_root, create=False) as ledger:
+                _require_job_lease(ledger, owner=self.owner, token=self.token)
+        except HandoffLeaseError as exc:
+            self._failure = exc
+            raise
+        except Exception as exc:
+            self._failure = HandoffLeaseError("unproven", boundary)
+            raise self._failure from exc
 
     def _run(self) -> None:
         interval = max(1.0, min(float(self.lease_seconds) / 3.0, 60.0))
         while not self._stop.wait(interval):
-            if not _heartbeat_job_lease(
-                self.capture_root,
-                owner=self.owner,
-                token=self.token,
-                lease_seconds=self.lease_seconds,
-            ):
+            try:
+                healthy = _heartbeat_job_lease(
+                    self.capture_root, owner=self.owner, token=self.token,
+                    lease_seconds=self.lease_seconds,
+                )
+            except Exception:
+                self._failure = HandoffLeaseError("unproven")
+                return
+            if not healthy:
+                self._failure = HandoffLeaseError("lost")
                 return
 
     def __enter__(self) -> "_JobLeaseHeartbeat":
+        self.checkpoint("handler_start")
         self._thread.start()
+        self._entered = True
+        self._binding = bind_handoff_lease(self.checkpoint)
+        self._binding.__enter__()
         return self
 
-    def __exit__(self, *_args: object) -> None:
-        self._stop.set()
-        self._thread.join(timeout=1.0)
+    def __exit__(self, *args: object) -> None:
+        try:
+            if args[0] is None:
+                self.checkpoint("handler_return")
+        finally:
+            self._binding.__exit__(*args)
+            self._stop.set()
+            self._thread.join(timeout=1.0)
+
+
+def _require_job_lease(ledger: Mapping[str, Any], *, owner: str, token: str) -> None:
+    if (ledger.get("status") != "processing"
+            or _string(ledger.get("lease_owner")) != owner
+            or _string(ledger.get("lease_token")) != token):
+        raise HandoffLeaseError("lost")
+    expires_at = _parse_utc_timestamp(ledger.get("lease_expires_at"))
+    if expires_at is None or expires_at <= datetime.now(timezone.utc):
+        raise HandoffLeaseError("expired")
 
 
 def _string(value: Any) -> str:
@@ -989,6 +1036,9 @@ def _write_output_commit(
     capture_id: str,
     attempt_count: int,
     result: Mapping[str, Any],
+    owner: str,
+    token: str,
+    ledger_update: Mapping[str, Any],
 ) -> dict[str, Any]:
     encoded = json.dumps(dict(result), sort_keys=True, default=str).encode("utf-8")
     commit = {
@@ -1002,7 +1052,31 @@ def _write_output_commit(
         "result_status": result.get("status"),
         "commit_is_idempotency_evidence_not_task_success": True,
     }
-    write_json(capture_root / JOB_OUTPUT_COMMIT_FILENAME, commit)
+    # A stale worker may retain its own diagnostic output, never the live name.
+    # The final ledger binds this immutable staging record before live promotion;
+    # a crash after ledger fsync is repaired from that exact record on redelivery.
+    attempt_path = f"pipeline/job_output_commits/{attempt_count}-{sha256(token.encode()).hexdigest()}.json"
+    staged = capture_root / attempt_path
+    if staged.is_symlink() or not staged.resolve().is_relative_to(capture_root.resolve()):
+        raise PipelineError("handoff_output_attempt_path_unsafe")
+    previous = _read_optional_json_object(staged)
+    if staged.exists():
+        if not previous:
+            raise PipelineError("handoff_output_attempt_invalid")
+        if any(previous.get(key) != commit.get(key) for key in (
+                "scene_id", "capture_id", "attempt_count", "result_sha256", "result_status")):
+            raise PipelineError("handoff_output_attempt_conflict")
+        commit = previous
+    else:
+        write_json(staged, commit)
+    _finish_job_lease(
+        capture_root, owner=owner, token=token,
+        update={**dict(ledger_update), "output_commit_attempt_path": attempt_path,
+                "output_result_sha256": commit["result_sha256"],
+                "output_commit_attempt_sha256": sha256(staged.read_bytes()).hexdigest()},
+        after_commit=lambda _ledger: write_json(capture_root / JOB_OUTPUT_COMMIT_FILENAME, commit),
+        expected_attempt_count=attempt_count,
+    )
     return commit
 
 
