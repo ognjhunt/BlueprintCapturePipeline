@@ -26,6 +26,27 @@ class NativeRobotAdapter:
 _ADAPTERS: dict[str, NativeRobotAdapter] = {}
 # The Arena camera slot a DROID scene's right exterior renders through.
 EXTERIOR_RIGHT_RUNTIME_NAME = "exterior_right_camera"
+ARENA_CAMERA_OBSERVATION_GROUP = "camera_obs"
+
+
+def drop_per_step_camera_observations(cfg: Any) -> bool:
+    """Remove Arena's per-step camera observation group; return whether it existed.
+
+    Arena adds one ``mdp.image`` term per camera and data type whenever cameras
+    are enabled, and Isaac Lab computes every observation group after every
+    ``env.step()``.  In the pinned Isaac Lab a camera read is what pulls the
+    RTX ``app.update()``, so those terms rendered all three cameras on every
+    15 Hz control step: run 57749451 spent 227 s of a 441 s episode inside
+    ``env.step()``.  Nothing consumes them -- the episode adapter reads the
+    scene cameras directly and renders only on the steps whose frames it uses.
+    Isaac Lab's observation manager skips a ``None`` group.
+    """
+
+    observations = getattr(cfg, "observations", None)
+    if getattr(observations, ARENA_CAMERA_OBSERVATION_GROUP, None) is None:
+        return False
+    setattr(observations, ARENA_CAMERA_OBSERVATION_GROUP, None)
+    return True
 
 
 def register_native_robot_adapter(adapter: NativeRobotAdapter) -> None:
@@ -68,9 +89,15 @@ def build_native_robot_embodiment(
     *,
     enable_cameras: bool,
     pose_class: Any,
+    default_robot_model: Any = None,
 ) -> Any:
     adapter = native_robot_adapter(str(robot.get("robot_id") or ""))
     factory = getattr(importlib.import_module(adapter.factory_module), adapter.factory_name)
+    if default_robot_model is not None:
+        if adapter.robot_id != "franka_panda" or adapter.factory_name != "build_droid_embodiment":
+            raise ValueError("native_default_model_requires_existing_droid")
+        return factory(robot, enable_cameras=enable_cameras, pose_class=pose_class,
+                       default_robot_model=default_robot_model)
     return factory(robot, enable_cameras=enable_cameras, pose_class=pose_class)
 
 
@@ -103,7 +130,8 @@ def add_droid_exterior_right_slot(embodiment: Any, cameras: Sequence[Mapping[str
 
 
 def build_droid_embodiment(
-    robot: Mapping[str, Any], *, enable_cameras: bool, pose_class: Any
+    robot: Mapping[str, Any], *, enable_cameras: bool, pose_class: Any,
+    default_robot_model: Any = None,
 ) -> Any:
     from isaaclab_arena.embodiments.droid.droid import DroidAbsoluteJointPositionEmbodiment
 
@@ -122,6 +150,9 @@ def build_droid_embodiment(
     embodiment.event_config.randomize_franka_joint_state.params["std"] = 0.0
     embodiment.get_scene_cfg()
     embodiment.scene_config.stand = None
+    if default_robot_model is not None:
+        from .site_task_native_metrology import bind_selected_droid_model
+        bind_selected_droid_model(embodiment, default_robot_model)
     return embodiment
 
 
