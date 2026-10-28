@@ -425,3 +425,48 @@ def verify_native_evidence(response, *, root, project, database, frozen_at):
         "native_serialization": native["serialization"],
         **times,
     }
+
+
+def verify_native_readback_interval(reads):
+    """A cached snapshot cannot prove persistence after the actual HTTP read.
+
+    Each native sidecar was re-opened and authenticated by the collector. Local
+    acquisition completion cannot refresh its server readTime. Clock equality
+    or ambiguity at the HTTP boundary therefore stays unproven. The legacy
+    trusted-reader path without native sidecars does not call this helper.
+    """
+    _require(
+        isinstance(reads, (tuple, list)) and len(reads) == 5, "native_readback_interval_invalid"
+    )
+    before, http, after = reads[:2], reads[2], reads[3:]
+    _require(
+        all(isinstance(row.native_evidence, Mapping) for row in (*before, *after)),
+        "native_readback_mixed_mode",
+    )
+    interval = http.acquisition_interval
+    _require(
+        isinstance(interval, Mapping)
+        and set(interval) == {"started_at", "completed_at"}
+        and all(type(value) is str for value in interval.values()),
+        "http_interval_unproven",
+    )
+    start, end = (_time(interval[key])[1] for key in ("started_at", "completed_at"))
+    local = [_time(row.observed_at)[1] for row in reads]
+    native_before = [_time(row.native_evidence["read_time"])[1] for row in before]
+    native_after = [_time(row.native_evidence["read_time"])[1] for row in after]
+    _require(
+        start <= end == local[2]
+        and local[0] <= local[1] <= start
+        and native_before == sorted(native_before)
+        and all(server <= acquired for server, acquired in zip(native_before, local[:2]))
+        and native_after == sorted(native_after)
+        and end < native_after[0] <= local[3] <= native_after[1] <= local[4]
+        and (local[-1][0] - local[0][0]) * 1_000_000_000 + local[-1][1] - local[0][1]
+        <= 120_000_000_000,
+        "native_readback_interval_invalid",
+    )
+    return {"native_readback_interval": {
+        "http_acquisition_interval": dict(interval),
+        "before_read_times": [row.native_evidence["read_time"] for row in before],
+        "after_read_times": [row.native_evidence["read_time"] for row in after],
+    }}

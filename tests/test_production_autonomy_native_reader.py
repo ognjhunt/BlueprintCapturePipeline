@@ -427,6 +427,7 @@ def test_actual_sdk_native_documents_join_collector_only_with_separate_http_read
 
     def read(selector):
         data = sources.run if selector.kind == "webapp_run" else sources.result
+        acquired = next_stamp()
         raw, _ = sdk_wire(
             data,
             project=PROJECT,
@@ -435,7 +436,7 @@ def test_actual_sdk_native_documents_join_collector_only_with_separate_http_read
             update=stamp(60).replace("+00:00", ".000000001Z")
             if change_after and selector.phase == "after"
             else stamp(60),
-            read=stamp(65),
+            read=stamp(70 + ticks[0] - 0.5),
         )
         return native.NativeSnapshotRead(
             selector,
@@ -447,7 +448,7 @@ def test_actual_sdk_native_documents_join_collector_only_with_separate_http_read
             "natural_production",
             sources.attempt["releases"]["webapp_commit"],
             sources.attempt["releases"]["webapp_image_digest"],
-            next_stamp(),
+            acquired,
         )
 
     capability = native.NativeFirestoreReader(
@@ -472,7 +473,9 @@ def test_actual_sdk_native_documents_join_collector_only_with_separate_http_read
             return capability(selector)
         # Explicit separate synthetic HTTP capability, never inferred from
         # Firestore fields. This test still establishes no real production GET.
-        return replace(http_reader(selector), observed_at=next_stamp())
+        completed = next_stamp()
+        return replace(http_reader(selector), observed_at=completed,
+            acquisition_interval={"started_at": stamp(70 + ticks[0] - 0.5), "completed_at": completed})
 
     def collector(callback):
         return AuthenticatedAcceptanceCollector(
@@ -506,3 +509,122 @@ def test_actual_sdk_native_documents_join_collector_only_with_separate_http_read
         missing_get("publication_ack", primary.retained_record["sha256"], json.loads(primary.body))
         is None
     )
+
+
+def native_field(value):
+    """Synthetic native protocol fixture, separately checked against the SDK above."""
+    if value is None:
+        return {"nullValue": "NULL_VALUE"}
+    if type(value) is bool:
+        return {"booleanValue": value}
+    if type(value) is int:
+        return {"integerValue": str(value)}
+    if type(value) is float:
+        return {"doubleValue": value}
+    if isinstance(value, str):
+        return {"stringValue": value}
+    if isinstance(value, list):
+        return {"arrayValue": {"values": [native_field(child) for child in value]}}
+    return {"mapValue": {"fields": {key: native_field(child) for key, child in value.items()}}}
+
+
+def acquire_native_interval(source_bundle, scenario):
+    root, ticks = source_bundle.retained["root"], [0]
+
+    def next_stamp():
+        ticks[0] += 1
+        return stamp(70 + ticks[0])
+
+    def read(selector):
+        acquired = next_stamp()
+        read_time = stamp(70 + ticks[0] - 0.5)
+        if selector.phase == "after":
+            if scenario == "cached_after":
+                read_time = stamp(65)
+            elif scenario in {"equal_after", "one_ns_after", "one_ns_before"} and selector.kind == "webapp_run":
+                nanos = {"equal_after": 0, "one_ns_after": 1, "one_ns_before": 0}[scenario]
+                read_time = stamp(74).replace("+00:00", f".{nanos:09d}Z")
+            elif scenario == "after_order" and selector.kind == "webapp_result":
+                read_time = stamp(74.25)
+            elif scenario == "window_ns" and selector.kind == "webapp_result":
+                acquired = stamp(192).replace("+00:00", ".000000001Z")
+        if scenario == "before_order" and selector.phase == "before" and selector.kind == "webapp_result":
+            read_time = stamp(71)
+        data = source_bundle.run if selector.kind == "webapp_run" else source_bundle.result
+        envelope = {"found": {"name": f"projects/{PROJECT}/databases/{DATABASE}/documents/{selector.resource}",
+            "fields": {key: native_field(value) for key, value in data.items()},
+            "createTime": stamp(25), "updateTime": stamp(60)}, "readTime": read_time}
+        return native.NativeSnapshotRead(selector, encoded(envelope), FORMAT, "webapp-service",
+            "firestore_server_identity", "production", "natural_production",
+            source_bundle.attempt["releases"]["webapp_commit"],
+            source_bundle.attempt["releases"]["webapp_image_digest"], acquired)
+
+    capability = native.NativeFirestoreReader(project=PROJECT, database=DATABASE,
+        campaign_id=source_bundle.plan["campaign_id"], service_identity="webapp-service",
+        read=read, retain=retainer(root))
+    primary = capability(SourceSelector("publication_ack", "webapp_result",
+        "captureTaskEvaluationRuns/" + source_bundle.run["result_record_id"]))
+    http_reader = source_bundle.collector()._reader
+
+    def joined(selector):
+        if selector.kind in {"webapp_run", "webapp_result"}:
+            value = capability(selector)
+            strip = scenario == "mixed_all" or scenario == "mixed_after" and selector.phase == "after"
+            return replace(value, native_evidence=None) if strip else value
+        completed = next_stamp()
+        interval = {"started_at": stamp(70 + ticks[0] - 0.5), "completed_at": completed}
+        if scenario == "missing_interval":
+            interval = None
+        elif scenario == "http_end":
+            interval["completed_at"] = stamp(74).replace("+00:00", ".000000001Z")
+        elif scenario == "one_ns_before":
+            completed = stamp(74).replace("+00:00", ".000000001Z")
+            interval["completed_at"] = completed
+        elif scenario == "http_start_overlap":
+            interval["started_at"] = stamp(72.5)
+        elif scenario == "http_reversed":
+            interval["started_at"] = stamp(75)
+        elif scenario == "http_extra":
+            interval["job_asserted"] = True
+        elif scenario == "http_nonstring":
+            interval["started_at"] = {"seconds": "1793145673", "nanos": 500_000_000}
+        return replace(http_reader(selector), observed_at=completed, acquisition_interval=interval)
+
+    collector = AuthenticatedAcceptanceCollector(frozen_attempt=source_bundle.attempt,
+        plan=source_bundle.plan, publication=source_bundle.publication,
+        owner_user_id="owner-1", team_namespace="tenant-1", scene_intake_id="intake-1",
+        webapp_service_identity="webapp-service", pipeline_service_identity="pipeline-service",
+        evidence_root=root, reader=joined, firestore_project_id=PROJECT, firestore_database_id=DATABASE)
+    observation = collector("publication_ack", primary.retained_record["sha256"], json.loads(primary.body))
+    return observation, collector
+
+
+@pytest.mark.parametrize("scenario", ["fresh", "one_ns_after"])
+def test_native_join_requires_real_http_interval_and_fresh_nanosecond_after_read(sources, scenario):  # noqa: F811
+    observation, collector = acquire_native_interval(sources, scenario)
+    assert observation is not None, collector.diagnostics()
+    interval = observation.facts["native_readback_interval"]
+    assert interval["http_acquisition_interval"]["completed_at"] == stamp(74)
+    assert len(interval["before_read_times"]) == len(interval["after_read_times"]) == 2
+
+
+@pytest.mark.parametrize("scenario,code", [
+    ("cached_after", "native_reader_native_readback_interval_invalid"),
+    ("equal_after", "native_reader_native_readback_interval_invalid"),
+    ("one_ns_before", "native_reader_native_readback_interval_invalid"),
+    ("window_ns", "native_reader_native_readback_interval_invalid"),
+    ("before_order", "native_reader_native_readback_interval_invalid"),
+    ("after_order", "native_reader_native_readback_interval_invalid"),
+    ("http_start_overlap", "native_reader_native_readback_interval_invalid"),
+    ("http_end", "native_reader_native_readback_interval_invalid"),
+    ("http_reversed", "native_reader_native_readback_interval_invalid"),
+    ("missing_interval", "native_reader_http_interval_unproven"),
+    ("http_extra", "native_reader_http_interval_unproven"),
+    ("http_nonstring", "native_reader_http_interval_unproven"),
+    ("mixed_after", "native_reader_native_readback_mixed_mode"),
+    ("mixed_all", "native_reader_native_readback_mixed_mode"),
+])
+def test_native_cached_overlapping_or_ambiguous_intervals_stay_unknown(sources, scenario, code):  # noqa: F811
+    observation, collector = acquire_native_interval(sources, scenario)
+    assert observation is None
+    assert collector.diagnostics()["failures"][-1]["code"] == code

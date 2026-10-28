@@ -55,7 +55,7 @@ class SourceSelector:
 class AuthenticatedSourceRead:
     """Capability result from an independently authenticated existing reader.
 
-    ``observed_at`` is the actual acquisition time; ``version`` is Firestore's
+    ``observed_at`` is the actual acquisition completion time; ``version`` is Firestore's
     document update time or the exact HTTP/controller response byte digest.
     ``retained_record`` locates those same original bytes under evidence_root.
     Service commit/image identity must come from authenticated service identity,
@@ -76,6 +76,10 @@ class AuthenticatedSourceRead:
     version: str
     http_status: int | None = None
     native_evidence: Mapping[str, Any] | None = None
+    # The existing authenticated HTTP reader supplies its real request interval,
+    # never an interval reconstructed from document/server timestamps. Required
+    # when native snapshots are joined across that HTTP acquisition.
+    acquisition_interval: Mapping[str, str] | None = None
 
 
 AuthenticatedSourceReader = Callable[[SourceSelector], AuthenticatedSourceRead | None]
@@ -349,12 +353,16 @@ class AuthenticatedAcceptanceCollector:
         if (stamps != sorted(stamps) or (stamps[-1] - stamps[0]).total_seconds() > 120
                 or _stamp(publication["generated_at"]) > stamps[0]):
             raise AcceptanceEvidenceError("acquisition_snapshot_time_invalid")
+        native_interval = {}
+        if self._native_project is not None or any(row.native_evidence is not None for row in reads):
+            from .production_autonomy_native_reader import verify_native_readback_interval
+            native_interval = verify_native_readback_interval(reads)
         facts = {"plan_digest": self._plan["plan_digest"], "publication_digest": publication["publication_digest"],
             "revision": publication["revision"], "current_source": True, "persisted": True,
             "displayed": True, "webapp_commit": self._attempt["releases"]["webapp_commit"],
             "result_digests": {row["candidate_id"]: row["session_result_digest"] for row in publication["candidates"]
                 if row.get("status") == "completed"},
-            "result_record_id": result_id, "source_scene_intake_id": self._intake}
+            "result_record_id": result_id, "source_scene_intake_id": self._intake, **native_interval}
         return result_after_read.observed_at, facts
 
     def _closeout(self, digest, payload):
