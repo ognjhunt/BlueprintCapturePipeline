@@ -31,6 +31,7 @@ import numpy as np
 from PIL import Image
 
 from .common import write_json
+from .core.handoff_lease import handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _probe_video, _sha256_file
 from .website_task_masks import decode_track_mask
@@ -513,6 +514,7 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
             from google.genai import types
             with genai.Client(api_key=_api_key()[0], http_options=types.HttpOptions(
                     timeout=180_000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
+                handoff_lease_checkpoint("gemini_assembly_classification")
                 response = client.models.generate_content(model=CLASSIFIER_MODEL,
                     contents=[prompt, *[types.Part.from_bytes(data=image, mime_type="image/jpeg") for image in images]],
                     config=types.GenerateContentConfig(response_mime_type="application/json",
@@ -532,6 +534,7 @@ def classify_frames(*, target_id: str, assembly_label: str, task_part: str, arti
                                 if getattr(usage, key, None) is not None}}
 
                 def repair(error: str) -> str:
+                    handoff_lease_checkpoint("gemini_assembly_json_repair")
                     fixed = client.models.generate_content(model=CLASSIFIER_MODEL,
                         contents=[_json_repair_prompt(response.text, error)],
                         config=types.GenerateContentConfig(response_mime_type="application/json",
@@ -664,6 +667,7 @@ def read_brand_labels(*, target_id: str, assembly_label: str, frames: Sequence[M
         from google.genai import types
         with genai.Client(api_key=_api_key()[0], http_options=types.HttpOptions(
                 timeout=180_000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
+            handoff_lease_checkpoint("gemini_assembly_brand_read")
             response = client.models.generate_content(model=CLASSIFIER_MODEL,
                 contents=[prompt, *[types.Part.from_bytes(data=image, mime_type="image/jpeg") for image, _ in crops]],
                 config=types.GenerateContentConfig(response_mime_type="application/json",

@@ -299,8 +299,8 @@ def _complete_native_profile_gap(source, *, mismatch=False):
     write_json(root / "pipeline/website_scene_preparation/handoff.json", handoff)
     listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
         attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
-                                                     "website_scene_preparation": handoff})
-    _finish(source, "completed")
+                                                     "website_scene_preparation": handoff},
+        owner="synthetic-worker", token=ledger["lease_token"], ledger_update={"status": "completed"})
     return handoff
 
 
@@ -340,6 +340,10 @@ def test_completed_native_gap_requires_exact_current_binding_and_output_commit(p
         handoff["runtime_inputs"] = {"status": "ready"}
     elif fault == "missing_output_commit":
         (prepared_source[0] / listener.JOB_OUTPUT_COMMIT_FILENAME).unlink()
+        # A missing live pointer is recoverable from the new immutable lease
+        # publication. This negative control removes all commit evidence.
+        current = listener._read_job_ledger(prepared_source[0])
+        (prepared_source[0] / current["output_commit_attempt_path"]).unlink()
     if fault != "digest":
         handoff["digest"] = canonical_digest(handoff, digest_field="digest")
     else:

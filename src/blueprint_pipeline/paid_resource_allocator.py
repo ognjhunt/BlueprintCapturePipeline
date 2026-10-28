@@ -45,9 +45,7 @@ from .groot_oscar_runpod_persistent_carrier import (
     PERSISTENT_CARRIER_PROBE_KIND,
     PERSISTENT_WATCHDOG_MAX_TTL_SECONDS,
 )
-from .groot_oscar_runpod_persistent_carrier_campaign import (
-    run_persistent_carrier_campaign,
-)
+from .groot_oscar_runpod_persistent_carrier_campaign import run_persistent_carrier_campaign
 from .groot_oscar_runpod_serverless import (
     DEFAULT_MAX_HOURLY_RATE_USD,
     DEFAULT_RESERVATION_SECONDS,
@@ -1578,6 +1576,8 @@ def _run_reconstruction_gpu_canary(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from .core.handoff_lease import handoff_lease_checkpoint
+    handoff_lease_checkpoint("canonical_allocator_entry")
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     add_teleport_provider_arguments(commands, root=ROOT)
