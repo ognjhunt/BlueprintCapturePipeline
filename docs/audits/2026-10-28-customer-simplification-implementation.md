@@ -2,6 +2,14 @@
 
 Owner instruction, October 28: implement the audit cuts and simplify the customer journey. The owner later explicitly chose **one evaluation path, with no separate finalist tier**. The owner clarified that Atlas should handle reconstruction/recovery internally: the default is video and email → Blueprint processing → reconstruction ready → proposal/result when supported. Draft correction and extra recordings remain optional details, not required customer stages. Missing facts should continue as visible unknowns where possible. Privacy, source rights, private ownership and spending limits remain.
 
+## One combined website change: 2026-10-28 22:50 UTC
+
+The complete customer simplification and retained-video recovery now use one open PR: [WebApp #1138](https://github.com/ognjhunt/Blueprint-WebApp/pull/1138), immutable head `9b9027087218d94c02628f1fec8399a77f8312c5`, directly against integration base `edf8ebefba45016a9bc7c9e4956cb8e6bc6c0397`. Git ancestry proves this source includes every #1137 commit and the integration base. Raw GitHub readback reports mergeable true. Retargeting changed no file or head SHA and started no replacement CI; existing full run `40781005683` remains the combined check.
+
+Standalone #1137 is closed as consolidated, with its source/history retained and its description pointing to #1138. Its overlapping run `40780934639` was canceled and verified terminal. The combined browser and unit-test jobs are now in progress; build, code checks, rules and Graphify have passed. This removes duplicate shipping work while preserving the full requested behavior and required combined verification.
+
+Pipeline exact-main prerequisites have passed. The remaining job is signed-source packaging, `SBOM, license, and provenance contract` / `123147328148`, in run `40771408865`; it was queued at readback. No pending environment approval was reported and the earlier gate had no runner assigned. The official 38,472-test release-provenance receipt remains a separate verified artifact. Preserve the existing consumer-first release owner/window, the frozen `17c` → `edf` pair and founder holds. The combined follow-up does not change that frozen head. Deployment and real upload/result/return/recovery remain unproven here.
+
 ## Browser-contract checkpoint: 2026-10-28 22:36 UTC
 
 Current ready PR heads are core #1137 `2dc519669c47c88aa4d2230295c963e58a1c3601` and recovery #1138 `9b9027087218d94c02628f1fec8399a77f8312c5`. Their exact CI handles are `40780934639` and `40781005683`. The recovery release-scope job and core Graphify 3.14 passed; the new browser and remaining jobs were queued. These supersede the earlier website handles below.
