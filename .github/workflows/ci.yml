@@ -26,6 +26,7 @@ jobs:
       selected_test_count: ${{ steps.plan.outputs.selected_test_count }}
       native_feature_required: ${{ steps.native-plan.outputs.required }}
       native_scene_required: ${{ steps.native-scene-plan.outputs.required }}
+      native_reader_sdk_required: ${{ steps.native-reader-plan.outputs.required }}
     steps:
       - name: Checkout with comparison history
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -83,6 +84,23 @@ jobs:
           assert all(isinstance(rows, list) and all(isinstance(row, str) for row in rows) for rows in (selected, changed))
           required = any("scene_retirement" in row or row == "deploy/operator-door/door-scene-lifecycle.sh" for row in changed)
           required = required or any(row.split("::", 1)[0] == "tests/test_scene_retirement_linux.py" for row in selected)
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
+              output.write("required=" + str(required).lower() + "\n")
+          PYTHON
+
+      - name: Require actual Firestore SDK when native reader tests are selected
+        id: native-reader-plan
+        env:
+          IMPACT_PLAN: ${{ runner.temp }}/blueprint-ci/impacted-test-plan.json
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path(os.environ["IMPACT_PLAN"]).read_text())
+          selected, changed = plan["selected_tests"], plan["changed_files"]
+          assert all(isinstance(rows, list) and all(isinstance(row, str) for row in rows) for rows in (selected, changed))
+          required = any(row.split("::", 1)[0] == "tests/test_production_autonomy_native_reader.py" for row in selected)
+          required = required or any(row.startswith("tools/autonomy_native_reader/") for row in changed)
           with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
               output.write("required=" + str(required).lower() + "\n")
           PYTHON
@@ -192,6 +210,23 @@ jobs:
           # Native camera/lifecycle rehearsals use real tensors on this CPU
           # runner. Keep the CUDA runtime out of the ordinary PR dependency set.
           uv pip install --index-url https://download.pytorch.org/whl/cpu torch==2.10.0
+
+      - name: Setup Node.js for offline native reader proof
+        if: needs.impact.outputs.native_reader_sdk_required == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      - name: Install pinned SDK for offline native reader proof
+        if: needs.impact.outputs.native_reader_sdk_required == 'true'
+        working-directory: tools/autonomy_native_reader
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          timeout --kill-after=10s 140s npm ci --ignore-scripts --no-audit --no-fund
+          node -e 'if (require("./node_modules/@google-cloud/firestore/package.json").version !== "7.11.6") process.exit(1)'
+          printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_SDK=$PWD/node_modules/@google-cloud/firestore" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_NODE=$(command -v node)" >> "${GITHUB_ENV}"
 
       - name: Install isolated daily research SDK for wire proof
         if: hashFiles('tools/daily_research/requirements.txt') != ''

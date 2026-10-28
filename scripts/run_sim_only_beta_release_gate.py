@@ -21,6 +21,10 @@ if str(SRC_ROOT) not in sys.path:
 
 from blueprint_pipeline.buyer_claim_ceiling import build_buyer_claim_ceiling  # noqa: E402
 from blueprint_pipeline.common import ensure_dir, read_json_any, utc_now_iso, write_json  # noqa: E402
+from blueprint_pipeline.production_autonomy_acceptance import (  # noqa: E402
+    AcquisitionVerifier,
+    build_production_autonomy_acceptance_report,
+)
 
 
 SCHEMA_VERSION = "blueprint.sim_only_beta_release_gate_report.v1"
@@ -534,6 +538,9 @@ def build_release_gate_report(
     production_route_forwarding_proof_path: Path | None,
     production_deployment_proof_path: Path | None,
     require_non_local_forwarding_endpoint: bool = True,
+    production_autonomy_manifest_path: Path | None = None,
+    acceptance_evidence_root: Path | None = None,
+    acquisition_verifier: AcquisitionVerifier | None = None,
 ) -> dict[str, Any]:
     local_gate, local_error = _load_mapping(local_gate_report_path)
     forwarding_report, forwarding_error = _load_mapping(forwarding_preflight_report_path)
@@ -566,6 +573,19 @@ def build_release_gate_report(
             deployment_proof=deployment_proof,
         ),
     ]
+    acceptance = None
+    if production_autonomy_manifest_path is not None:
+        acceptance = build_production_autonomy_acceptance_report(
+            manifest_path=production_autonomy_manifest_path,
+            evidence_root=acceptance_evidence_root,
+            acquisition_verifier=acquisition_verifier,
+        )
+        gates.append(_gate(
+            "supported_production_autonomy_observation",
+            passed=acceptance["status"] == "verified",
+            blockers=list(acceptance["blockers"]),
+            evidence=acceptance,
+        ))
     blockers = [f"{gate['id']}:{blocker}" for gate in gates for blocker in gate.get("blockers", [])]
     local_gate_evidence = _mapping(gates[0].get("evidence"))
     local_gate_proof_boundary = _mapping(local_gate_evidence.get("proof_boundary"))
@@ -591,6 +611,7 @@ def build_release_gate_report(
         "git_parity_proven": deployment_gate_evidence.get("git_parity_proven"),
         "simulator_execution_proven": simulator_execution_proven,
         "public_claim_upgrade_allowed": False,
+        "production_autonomy_acceptance": acceptance,
         "buyer_claim_ceiling": gates[4]["evidence"]["buyer_claim_ceiling"],
         "gates": gates,
         "proof_boundary": {
@@ -601,6 +622,8 @@ def build_release_gate_report(
             "simulator_execution_proven": simulator_execution_proven,
             "generated_world_rank_fidelity_required_for_this_gate": False,
             "remote_cloud_provider_execution_required_for_this_gate": False,
+            "production_autonomy_observation_requested": acceptance is not None,
+            "supported_production_completion": bool(acceptance and acceptance["milestones"]["supported_production_completion"]),
             "public_claim_upgrade_allowed": False,
             "buyer_facing_claim_ceiling_pinned_to_highest_truthful_claim": True,
         },
@@ -615,6 +638,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--forwarding-preflight-report", type=Path)
     parser.add_argument("--production-route-forwarding-proof", type=Path)
     parser.add_argument("--production-deployment-proof", type=Path)
+    parser.add_argument("--production-autonomy-manifest", type=Path)
+    parser.add_argument("--acceptance-evidence-root", type=Path)
     parser.add_argument("--allow-local-forwarding-endpoint", action="store_true")
     parser.add_argument("--output-path", type=Path)
     args = parser.parse_args(argv)
@@ -658,6 +683,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.production_deployment_proof.resolve() if args.production_deployment_proof else None
         ),
         require_non_local_forwarding_endpoint=not args.allow_local_forwarding_endpoint,
+        production_autonomy_manifest_path=args.production_autonomy_manifest,
+        acceptance_evidence_root=args.acceptance_evidence_root,
     )
     ensure_dir(output_path.parent)
     write_json(output_path, report)
