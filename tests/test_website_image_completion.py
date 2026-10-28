@@ -405,7 +405,10 @@ def test_background_review_keeps_client_alive_and_prices_all_novel_capture_conte
         args["plan"]["task_context_sha256"] = sha256(json.dumps(task, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         def reserve(**kwargs):
             reservations.append(kwargs)
-            return {"status": "admitted"}, object()
+            admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted",
+                         "resource_class": kwargs["resource_class"], "blockers": [],
+                         "allocation_binding_digest": kwargs["binding_digest"]}
+            return admission, _grant(admission)
         monkeypatch.setattr(receipts, "reserve_website_preparation_spend", reserve)
         real_quote = receipts.gemini_quote
         def quote(**kwargs):

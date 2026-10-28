@@ -15,6 +15,8 @@ from blueprint_pipeline import website_assembly_coverage as coverage
 from blueprint_pipeline import website_gemini_receipts as receipts
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+from blueprint_pipeline.core.handoff_lease import HandoffLeaseError, bind_handoff_lease
+from blueprint_pipeline.paid_resource_admission import require_paid_resource_admission
 
 WIDTH, HEIGHT, FOCAL = 60, 40, 50.0
 FPS = 30.0
@@ -145,12 +147,19 @@ def _context():
     return value
 
 
+def _reserve(**kwargs):
+    admission = {"schema_version": "paid_lane_admission.v1", "resource_class": kwargs["resource_class"],
+                 "status": "admitted", "allocation_binding_digest": kwargs["binding_digest"], "blockers": []}
+    return admission, require_paid_resource_admission(admission, resource_class=kwargs["resource_class"],
+                                                      expected_schema_version="paid_lane_admission.v1")
+
+
 @pytest.fixture
 def model(monkeypatch):
     """The real retained receipt path with a fake reservation and model answer."""
     calls = []
     real = receipts.retained_gemini_call
-    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", lambda **_: ({"status": "admitted"}, object()))
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", _reserve)
     # The focused brand read is its own retained call, counted apart from the classifier batches.
     state = {"answer": _answer, "brand": _no_brand, "brand_calls": []}
 
@@ -808,7 +817,7 @@ def test_the_classifier_binding_names_its_json_repair_policy(tmp_path, model):
     assert calls and all(binding["json_repair_turns"] == 1 for binding in calls)
 
 
-def _fake_genai(monkeypatch, answer):
+def _fake_genai(monkeypatch, answer, on_enter=lambda: None):
     """Stand-in google.genai: the provider calls are faked, the SDK need not be installed."""
     import sys
     import types as module_types
@@ -828,6 +837,7 @@ def _fake_genai(monkeypatch, answer):
             self.models = Models()
 
         def __enter__(self):
+            on_enter()
             return self
 
         def __exit__(self, *_):
@@ -849,7 +859,7 @@ def _fake_genai(monkeypatch, answer):
 def _real_classifier(tmp_path, monkeypatch, first_answer):
     """The real retained call and the real invoke, with a stand-in client."""
     from blueprint_pipeline import clean_plate_removal_analysis_gemini as gemini
-    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", lambda **_: ({"status": "admitted"}, object()))
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", _reserve)
     monkeypatch.setattr(gemini, "_api_key", lambda: ("fixture", "fixture"))
 
     def decode(*, video, video_digest, rotation, frames, output_root):
@@ -905,3 +915,35 @@ def test_a_cut_off_classification_is_retained_invalid_not_left_uncertain(tmp_pat
     assert all(len(row["result"]["partial_output"]) == 500 for row in stored)
     assert all(row["request"]["binding"]["thinking_level"] == "LOW" for row in stored)
     assert all(row["result"]["token_usage"]["thoughts_token_count"] == 7192 for row in stored)
+
+
+@pytest.mark.parametrize("lost_during", ["client_setup", "first_answer"])
+def test_classifier_stops_new_inference_or_repair_after_lease_loss(tmp_path, monkeypatch, lost_during):
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as gemini
+    lost = False
+
+    def check(boundary):
+        if lost:
+            raise HandoffLeaseError("lost", boundary)
+
+    def enter():
+        nonlocal lost
+        if lost_during == "client_setup":
+            lost = True
+
+    def answer(_contents):
+        nonlocal lost
+        lost = True
+        return "{", "STOP"
+
+    calls = _fake_genai(monkeypatch, answer, on_enter=enter)
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", _reserve)
+    monkeypatch.setattr(gemini, "_api_key", lambda: ("fixture", "fixture"))
+    image = tmp_path / "frame.png"
+    Image.new("RGB", (WIDTH, HEIGHT), "red").save(image)
+    frame = {"path": str(image), "sha256": _sha256_file(image), "frame_id": "frame-1",
+             "subject_box_xywh_normalized": [0.1, 0.1, 0.8, 0.8]}
+    with bind_handoff_lease(check), pytest.raises(HandoffLeaseError):
+        coverage.classify_frames(target_id="door", assembly_label="dishwasher", task_part="door",
+            articulation_kind="revolute", frames=[frame], task_context=_context(), output_root=tmp_path / "out")
+    assert len(calls) == (0 if lost_during == "client_setup" else 1)

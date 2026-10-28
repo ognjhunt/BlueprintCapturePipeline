@@ -11,6 +11,7 @@ from typing import Any, Callable, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .paid_resource_admission import require_paid_resource_admission_grant
 from .website_task_context import reserve_website_preparation_spend, validate_website_task_context
 
 
@@ -61,7 +62,7 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
                 raise ValueError("website_gemini_receipt_invalid")
             return result
         preflight()
-        admission, _grant = reserve_website_preparation_spend(task_context=task_context,
+        admission, grant = reserve_website_preparation_spend(task_context=task_context,
             binding_digest=digest, maximum_cost_usd=maximum_cost_usd, request_count=1,
             resource_class="evaluator_api", provider="google", source_video_digest=source_video_digest,
             atlas_auxiliary=source_video_digest is not None)
@@ -70,6 +71,8 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
                        "request": request, "admission": admission}, stream)
             stream.flush()
             os.fsync(stream.fileno())
+        require_paid_resource_admission_grant(grant, resource_class="evaluator_api",
+            allocation_binding_digest=digest, require_allocation_binding=True)
         result = invoke()
         receipt = {"status": "completed", "request_digest": digest, "request": request,
                    "admission": admission, "result": result, "result_digest": canonical_digest(result)}
