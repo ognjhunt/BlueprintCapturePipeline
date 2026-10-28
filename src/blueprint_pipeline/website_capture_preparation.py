@@ -7,7 +7,9 @@ from typing import Any, Callable, Mapping
 
 from .capture_bridge import CaptureDescriptor
 from .clean_plate_stage import CleanPlatePolicy
-from .common import StageError, write_json
+from .common import StageError
+from .core.handoff_lease import guarded_handoff_write_json as write_json
+from .core.handoff_lease import handoff_lease_checkpoint
 
 
 def run_website_capture_preparation(
@@ -46,6 +48,7 @@ def run_website_capture_preparation(
         str(value or "").strip().lower() in {"preview_simulation", "preview"}
         for value in descriptor.requested_outputs
     )
+    handoff_lease_checkpoint("website_preparation_before_media")
     clean_plate = prepare_media(
         capture_root=capture_root,
         privacy_processing=privacy_processing,
@@ -56,6 +59,7 @@ def run_website_capture_preparation(
             enabled=derived_scene_generation_allowed and preview_requested
         ),
     )
+    handoff_lease_checkpoint("website_preparation_after_media")
     gates.append(make_gate(
         "clean_plate_stage", clean_plate.get("status") in {"noop", "objects_removed"},
         f"status={clean_plate.get('status')} mode={clean_plate.get('mode')}",
@@ -91,11 +95,13 @@ def run_website_capture_preparation(
     descriptor_payload["metadata"] = metadata
     # Keep producer members immutable; this is the pipeline-owned descriptor.
     write_json(capture_root / "capture_descriptor.json", descriptor_payload)
+    handoff_lease_checkpoint("website_preparation_before_native_handoff")
     preparation = prepare_website_scene_handoff(
         descriptor=descriptor_payload, clean_plate=clean_plate,
         capture_root=capture_root, now=time.time(),
         allow_operation_coverage_review=True, allow_static_target_recovery=True,
     )
+    handoff_lease_checkpoint("website_preparation_after_native_handoff")
     write_json(pipeline_dir / "provider_run_manifest.json", {
         "schema_version": "v1", "provider_name": None, "status": "not_requested",
         "website_scene_preparation": preparation,
