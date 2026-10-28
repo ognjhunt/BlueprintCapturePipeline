@@ -255,3 +255,36 @@ def test_wrong_appearance_or_mass_fails_existing_fidelity_pairing(tmp_path, dime
     _reauthorize_review(profile)
     with pytest.raises(SiteTaskQualificationError, match="fidelity_failed:pick_place." + dimension):
         qualify_from_profile(profile, now=NOW)
+
+
+@pytest.mark.parametrize("changed_bytes", [False, True])
+def test_metrology_scene_must_join_the_reviewed_scene_bytes_not_only_revision(tmp_path, changed_bytes):
+    from blueprint_pipeline.site_task_simulation_qualification import SiteTaskQualificationError, qualify_from_profile
+    from tests.test_site_task_simulation_qualification import NOW, _reauthorize_review, _rewrite
+
+    recipe, snapshot, profile = _paired_qualification(tmp_path)
+    alternate = tmp_path / "different-scene.json"
+    original = (tmp_path / "scene.json").read_bytes()
+    if changed_bytes:
+        scene = json.loads(original)
+        scene["unreviewed_geometry"] = {"support_height_m": 100}
+        alternate.write_text(json.dumps(scene))
+    else:
+        alternate.write_bytes(original)
+    snapshot["scene_artifact"] = _record(alternate)
+    _rewrite_snapshot(tmp_path, recipe, snapshot)
+    (tmp_path / "recipe.json").write_text(json.dumps(recipe))
+    profile["simulator_measurement_producer"]["recipe_digest"] = digest(recipe)
+    (tmp_path / "simulator_measurement.json").write_text(json.dumps(produce_measurements(recipe, evidence_root=tmp_path)))
+    def source(request):
+        next(a for a in request["source_artifacts"] if a["role"] == "simulator_measurement").update(
+            {k: v for k, v in _record(tmp_path / "simulator_measurement.json").items() if k != "path"})
+    _rewrite(profile, "request", source)
+    _reauthorize_review(profile)
+    # The attacker re-pins the recipe/document/review but retains the scene
+    # revision string. Those do not make different scene bytes applicable.
+    if changed_bytes:
+        with pytest.raises(SiteTaskQualificationError, match="simulator_scene_bytes_mismatch"):
+            qualify_from_profile(profile, now=NOW)
+    else:
+        assert qualify_from_profile(profile, now=NOW)["evidence_scope"] == "simulation"

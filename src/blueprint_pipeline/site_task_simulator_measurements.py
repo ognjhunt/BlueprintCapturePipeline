@@ -258,6 +258,7 @@ def produce_measurements(recipe: Mapping[str, Any], *, evidence_root: Path) -> d
                 "observed_at_iso": snapshot["observed_at_iso"], "checks": list(checks.values()),
                 "extraction": {"method_id": METHOD, "implementation_sha256": "sha256:" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                                "recipe_digest": digest(recipe), "runtime_digest": snapshot["runtime_digest"],
+                               "scene_artifact": dict(snapshot["scene_artifact"]),
                                "engine_build": snapshot["engine_build"], "source_artifacts": sources,
                                "samples": extractions, "calibration_sample_ids": calibration_ids},
                 "physical_performance_claimed": False, "adp_qualified_evidence_eligible": False}

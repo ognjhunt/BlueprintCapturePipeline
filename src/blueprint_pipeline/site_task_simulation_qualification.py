@@ -244,6 +244,10 @@ def qualify_from_profile(operator_profile: Mapping[str, Any], *, now: datetime |
         # engine/render sources. Recompute those bytes at admission/closeout.
         from .site_task_simulator_measurements import produce_from_operator_profile
         _require(produce_from_operator_profile(operator_profile) == simulated, "simulator_extraction_changed")
+        metrology_scene = _object(_object(simulated["extraction"]).get("scene_artifact"))
+        _require(metrology_scene.get("sha256") == source_map["scene"]["sha256"]
+                 and metrology_scene.get("size_bytes") == source_map["scene"]["size_bytes"],
+                 "simulator_scene_bytes_mismatch")
     for doc, role in ((measured, "measurement"), (simulated, "simulator")):
         _require(doc.get("schema_version") == "blueprint.site_task_measurement_samples.v1"
                  and doc.get("binding") == binding and doc.get("producer_id") in authority.get("allowed_" + role + "_producers", [])

@@ -247,6 +247,8 @@ recipe and implementation digests, every raw artifact digest, and separate
 authored/collision/rendered/engine provenance. When the qualifier consumes
 this generated document it reopens the operator-pinned recipe and original
 sources and recomputes the readings, including at later admission/closeout.
+A metrology snapshot's scene artifact must match the reviewed scene artifact's
+exact SHA-256 and byte count; retaining the same revision label is insufficient.
 A numerical document whose raw render has changed cannot retain its prior
 qualification. Existing reviewed evidence without this producer's extraction
 record retains its compatibility path.
