@@ -30,6 +30,7 @@ from .capture_orientation import (  # noqa: F401 - preserve established helper i
     _raw_orientation_mapping,
     _resolve_capture_orientation,
     _size_payload,
+    _video_metadata,
 )
 from .capture_v32_candidate_admission import attach_capture_v32_candidate_sidecar
 from .common import (
@@ -1287,12 +1288,7 @@ def _discover_raw_sidecars(
         "original_video_path": str(raw_root / video_candidates[0]) if video_candidates else None,
         "frame_timestamps_uri": frame_timestamps_uri,
         "stream_metadata_uri": stream_metadata_uri,
-        "video_metadata": {
-            "width": try_parse_float(manifest.get("width"), 0.0),
-            "height": try_parse_float(manifest.get("height"), 0.0),
-            "fps_source": try_parse_float(manifest.get("fps_source"), 0.0),
-            "capture_start_epoch_ms": try_parse_float(manifest.get("capture_start_epoch_ms"), 0.0),
-        },
+        "video_metadata": _video_metadata(raw_root, manifest, video_candidates),
     }
     arkit_geometry_ready = bool(
         arkit_poses_uri is not None

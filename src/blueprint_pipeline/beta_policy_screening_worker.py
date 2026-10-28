@@ -1,4 +1,4 @@
-"""Automatically screen prepared website scenes and deliver diagnostic results.
+"""Automatically evaluate prepared website scenes and deliver each job's result.
 
 This worker consumes the existing scene-packet queue after compilation. The
 coordinator retains the site's budget across revisions and worker restarts;

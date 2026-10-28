@@ -9,8 +9,9 @@ launches retain their reservation and are reconciled, never retried blindly.
 The standing allowance is USD 15 for the stable website site submission,
 shared across candidate sets and scene revisions. Once allocation is observed,
 the entire reserved upper bound is conservatively charged. A lower provider
-estimate cannot silently replenish the allowance. Finalist execution is not
-authorized by this queue.
+estimate cannot silently replenish the allowance. A campaign completed within
+it is the job's evaluation result; spend beyond it needs the owner's approval
+and is never reserved by this queue.
 """
 from __future__ import annotations
 
@@ -568,6 +569,13 @@ def pending_publications(*, queue_root: str | Path | None = None,
             if (state["published_revision"] == publication["revision"]
                     and state["published_digest"] == publication["publication_digest"]):
                 continue
+            if state["published_revision"] == state["revision"]:
+                # Acknowledged bytes changed without progress (a wire contract
+                # upgrade). Send them as a new revision; the website refuses a
+                # same-revision rewrite, which would leave the result unseen.
+                _changed(state)
+                invalidated = True
+                publication = screening_publication(plan=plan, state=state, budget=_budget(ledger, state["site_id"]))
             _write(root / "publications" / f"{campaign_id}.json", publication)
             values.append(publication)
         if invalidated:
