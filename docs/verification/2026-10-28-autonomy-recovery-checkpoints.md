@@ -91,9 +91,20 @@ during an unverified provider stop/teardown propagation interval.
 
 ## Other lane1 work and production access
 
-AUT-02 retained DLQ recovery and AUT-09 site-local unspent plan refresh are not
-implemented by these checkpoints. They must not be marked complete from these
-changes. Root owns verification of the subsequently authorized existing Mac
+AUT-02 implements an optional retained-DLQ pass in the existing listener:
+durable private exact payload/provenance before ack, observe-only by default,
+explicit safe pre-lease allowlist, the original unattempted-delivery claim,
+bounded backoff, and immutable source/attempt-bound dispositions. Existing
+completed/ended/waiting/unknown effects never receive fresh retry authority.
+Access denials remain named authorized-action waits. Safe CLI/status data
+includes due/oldest age and retention/orphan alerts; raw payloads stay private.
+Recovery counts never become terminal-exhaustion or renewed budget evidence.
+Offline fault tests and existing handoff regression checks pass. Real permitted
+non-customer source→DLQ→recovery acknowledgement proof remains pending; AUT-02
+must not be marked acceptance verified from code/IAM evidence.
+
+AUT-09 site-local unspent plan refresh is not implemented by these checkpoints.
+Root owns verification of the subsequently authorized existing Mac
 production route and coordinates all production changes; no production operation
 has been assigned to this lane. This lane made no production calls, paid/model/GPU calls, deployment, hold release,
 credential change or deletion.

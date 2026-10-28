@@ -382,6 +382,12 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
     from .pubsub_retry_deferrals import clear_deferral, record_deferral, wake_older_release_deferrals
     subscriber = pubsub_v1.SubscriberClient()
     subscription_resource = _listener._canonical_subscription_resource(subscription)
+    from .handoff_recovery import record_source_result, recover_from_environment
+    try:
+        recover_from_environment(_listener, subscriber=subscriber, storage_root=storage_root,
+            source_subscription=subscription_resource, process_args=process_args, max_messages=1)
+    except Exception:
+        _listener.logger.warning('pubsub_handoff.retained_recovery_unavailable')
     acknowledged = 0
     # A deploy may have fixed what an older release deferred: end those leases first.
     wake_older_release_deferrals(storage_root=storage_root, subscriber=subscriber, subscription=subscription_resource, max_delivery_attempts=max_delivery_attempts)
@@ -396,6 +402,13 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
 
     def acknowledge(ack_id: str) -> None:
         subscriber.acknowledge(request={'subscription': subscription_resource, 'ack_ids': [ack_id]})
+
+    def remember(received, result):
+        try:
+            record_source_result(_listener, storage_root=storage_root, subscription=subscription_resource,
+                                 message=received.message, received=received, result=result)
+        except Exception:
+            _listener.logger.warning('pubsub_handoff.recovery_observation_unavailable')
     for received in pulled_one_at_a_time():
         message = received.message
         _listener.logger.info('pubsub_handoff.received', extra={'message_id': message.message_id, 'attributes': dict(message.attributes)})
@@ -425,6 +438,7 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
             with heartbeat:
                 result = _listener.process_handoff_payload(message.data, storage_root=storage_root, provider=provider, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, payload_digest=digest)
         except Exception:
+            remember(received, None)
             delivery_attempt = getattr(received, 'delivery_attempt', None)
             if isinstance(delivery_attempt, int) and delivery_attempt >= max_delivery_attempts:
                 _listener._write_delivery_evidence(storage_root=storage_root, message=message, received=received, disposition='retry_exhausted_pending_pubsub_dlq', blockers=['handoff_processing_exception'])
@@ -432,6 +446,7 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
             heartbeat.defer_retry()
             record_deferral(storage_root=storage_root, subscription=subscription_resource, received=received, payload_digest=digest, lease_seconds=_listener.RETRY_DEFER_SECONDS)
             continue
+        remember(received, result)
         if result.get('queue_disposition') == 'retryable' or result.get('status') in _listener._JOB_RETRYABLE_STATUSES:
             delivery_attempt = getattr(received, 'delivery_attempt', None)
             if isinstance(delivery_attempt, int) and delivery_attempt >= max_delivery_attempts:

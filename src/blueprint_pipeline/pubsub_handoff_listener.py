@@ -2020,12 +2020,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Only stage the capture/control-plane input; do not run run_e2e in the listener.",
     )
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--recovery-status", action="store_true")
     parser.add_argument("--bucket")
     parser.add_argument("--scene-id")
     parser.add_argument("--capture-id")
     args = parser.parse_args(argv)
 
     storage_root = args.storage_root or Path(tempfile.gettempdir()) / "blueprint-pubsub-handoffs"
+    if args.recovery_status:
+        from .handoff_recovery import status as recovery_status
+        print(json.dumps(recovery_status(storage_root=storage_root), sort_keys=True))
+        return 0
     if args.status:
         missing = [
             name
