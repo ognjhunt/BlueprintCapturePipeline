@@ -258,6 +258,76 @@ def test_unavailable_hint_backoff_survives_same_revision_repair_and_is_bounded(t
     assert len(list((tmp_path / index.DIRECTORY).glob("*.json"))) == 1
 
 
+@pytest.mark.parametrize("damage", [
+    "missing_anchor", "far_deadline", "huge_deadline", "wrong_interval", "future_anchor",
+    "invalid_count", "huge_count", "nonfinite_anchor", "negative_deadline", "typed_deadline",
+])
+def test_canonical_repair_discards_invalid_hint_backoff_without_mutating_delivery(tmp_path, damage):
+    now = time.time()
+    root = _synthetic_pending(tmp_path, 0, now=now)
+    canonical = (root / status.DELIVERY_FILE).read_bytes()
+    index.defer_unavailable(index.due(tmp_path, now=now, limit=1)[0][0], now=now)
+    hint_path = next((tmp_path / index.DIRECTORY).glob("*.json"))
+    hint = json.loads(hint_path.read_text())
+    if damage == "missing_anchor":
+        hint.pop("unavailable_last_attempt_at_epoch")
+    elif damage == "far_deadline":
+        hint["unavailable_next_attempt_at_epoch"] = now + 10**12
+    elif damage == "huge_deadline":
+        hint["unavailable_next_attempt_at_epoch"] = 10**500
+    elif damage == "wrong_interval":
+        hint["unavailable_next_attempt_at_epoch"] = now + 1800
+    elif damage == "future_anchor":
+        hint.update(unavailable_last_attempt_at_epoch=now + 10**12,
+                    unavailable_next_attempt_at_epoch=now + 10**12 + 60)
+    elif damage == "invalid_count":
+        hint["unavailable_failure_count"] = True
+    elif damage == "huge_count":
+        hint["unavailable_failure_count"] = 10**500
+    elif damage == "nonfinite_anchor":
+        hint["unavailable_last_attempt_at_epoch"] = float("nan")
+    elif damage == "negative_deadline":
+        hint["unavailable_next_attempt_at_epoch"] = -1
+    else:
+        hint["unavailable_next_attempt_at_epoch"] = str(now + 60)
+    write_json(hint_path, hint)
+    index.update(root, json.loads(canonical))
+    rebuilt = json.loads(hint_path.read_text())
+    assert not any(key.startswith("unavailable_") for key in rebuilt)
+    selected, _ = index.due(tmp_path, now=time.time(), limit=1)
+    assert len(selected) == 1 and selected[0].capture_root == root
+    assert (root / status.DELIVERY_FILE).read_bytes() == canonical
+
+
+@pytest.mark.parametrize("field", [
+    "next_attempt_at_epoch", "pending_since_epoch", "unavailable_next_attempt_at_epoch",
+    "unavailable_last_attempt_at_epoch", "unavailable_failure_count",
+])
+def test_oversized_hint_numbers_cannot_abort_healthy_callback_dispatch(tmp_path, monkeypatch, field):
+    now = 100000.0
+    roots = [_synthetic_pending(tmp_path, number, now=now) for number in range(2)]
+    corrupted = next(path for path in (tmp_path / index.DIRECTORY).glob("*.json")
+                     if json.loads(path.read_text())["capture_relative_path"].endswith(roots[0].name))
+    hint = json.loads(corrupted.read_text())
+    write_json(corrupted, {**hint, field: 10**500})
+    by_capture = {root.name: root for root in roots}
+    calls = []
+    monkeypatch.setattr(status, "retain_preparation_wakeup", lambda root: None)
+    monkeypatch.setattr(status, "read_preparation_status", _synthetic_status)
+
+    def receive(*, capture_id, **_):
+        calls.append(capture_id)
+        return _synthetic_ack(by_capture[capture_id])
+
+    monkeypatch.setattr(context, "website_webapp_request", receive)
+    for tick in range(2):
+        result = status.reconcile_preparation_wakeups(tmp_path, limit=1, now_epoch=now + tick)
+        assert result["attempted"] == result["delivered"] == 1
+    assert set(calls) == set(by_capture) and len(calls) == 2
+    metrics = json.loads((tmp_path / index.METRICS_FILE).read_text())
+    assert not metrics.get("index_unavailable", False)
+
+
 def test_missing_canonical_delivery_cannot_monopolize_a_healthy_peer(tmp_path, monkeypatch):
     now = 100000.0
     missing, healthy = [_synthetic_pending(tmp_path, number, now=now) for number in range(2)]

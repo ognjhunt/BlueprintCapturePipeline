@@ -13,6 +13,7 @@ import math
 import os
 import re
 import stat
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +25,8 @@ DIRECTORY = ".website_preparation_pending"
 SCHEMA_VERSION = "website_preparation_delivery_hint.v1"
 METRICS_FILE = ".website_preparation_delivery_metrics.json"
 MAX_HINT_SCAN = 20000
-_UNAVAILABLE_FIELDS = ("unavailable_failure_count", "unavailable_next_attempt_at_epoch")
+_UNAVAILABLE_FIELDS = ("unavailable_failure_count", "unavailable_last_attempt_at_epoch",
+                       "unavailable_next_attempt_at_epoch")
 
 
 @dataclass(frozen=True)
@@ -62,7 +64,29 @@ def _locked(storage_root: Path):
 
 
 def _number(value: Any, default: float) -> float:
-    return float(value) if type(value) in (int, float) and math.isfinite(value) and value >= 0 else default
+    if type(value) not in (int, float):
+        return default
+    try:
+        number = float(value)
+    except OverflowError:
+        return default
+    return number if math.isfinite(number) and number >= 0 else default
+
+
+def _unavailable_delay(failures: int) -> int:
+    return min(1800, 60 * 2 ** (failures - 1))
+
+
+def _unavailable_backoff(hint: Mapping[str, Any], *, now: float) -> dict[str, Any]:
+    """Only a bounded, self-consistent retained failure may delay selection."""
+    failures = hint.get("unavailable_failure_count")
+    attempted = _number(hint.get("unavailable_last_attempt_at_epoch"), -1.0)
+    deadline = _number(hint.get("unavailable_next_attempt_at_epoch"), -1.0)
+    if (type(failures) is not int or not 1 <= failures <= 6 or attempted < 0
+            or attempted > now or deadline > now + 1800
+            or deadline != attempted + _unavailable_delay(failures)):
+        return {}
+    return {key: hint[key] for key in _UNAVAILABLE_FIELDS}
 
 
 def update(capture_root: Path, delivery: Mapping[str, Any]) -> None:
@@ -94,7 +118,7 @@ def update(capture_root: Path, delivery: Mapping[str, Any]) -> None:
                 and previous.get("revision") == hint["revision"]):
             # The bounded ledger sweep must not reset an unreadable record's
             # scheduling backoff. A new canonical revision starts promptly.
-            hint.update({key: previous[key] for key in _UNAVAILABLE_FIELDS if key in previous})
+            hint.update(_unavailable_backoff(previous, now=time.time()))
         write_json(path, hint)
 
 
@@ -112,9 +136,11 @@ def defer_unavailable(selected: DueDelivery, *, now: float) -> None:
             return
         if current != selected.hint:
             return  # A newer revision/selection owns its own schedule.
-        failures = min(6, int(_number(current.get("unavailable_failure_count"), 0.0)) + 1)
+        backoff = _unavailable_backoff(current, now=now)
+        failures = min(6, backoff.get("unavailable_failure_count", 0) + 1)
         write_json(path, {**current, "unavailable_failure_count": failures,
-                         "unavailable_next_attempt_at_epoch": now + min(1800, 60 * 2 ** (failures - 1))})
+                         "unavailable_last_attempt_at_epoch": now,
+                         "unavailable_next_attempt_at_epoch": now + _unavailable_delay(failures)})
 
 
 def due(storage_root: Path, *, now: float, limit: int) -> tuple[list[DueDelivery], dict[str, Any]]:
@@ -139,8 +165,11 @@ def due(storage_root: Path, *, now: float, limit: int) -> tuple[list[DueDelivery
                         or actual_relative != relative
                         or path.stem != hashlib.sha256(relative.encode()).hexdigest()):
                     raise ValueError("invalid")
+                backoff = _unavailable_backoff(hint, now=now)
+                if not backoff and any(key in hint for key in _UNAVAILABLE_FIELDS):
+                    invalid += 1
                 next_attempt = max(_number(hint.get("next_attempt_at_epoch"), 0.0),
-                                   _number(hint.get("unavailable_next_attempt_at_epoch"), 0.0))
+                                   backoff.get("unavailable_next_attempt_at_epoch", 0.0))
                 if next_attempt <= now:
                     pending_since = _number(hint.get("pending_since_epoch"), now)
                     # Zero means immediately eligible, not older than every

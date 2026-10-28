@@ -35,6 +35,10 @@ failure. The historical repair sweep preserves that deferral for the same
 revision; a new revision resets it. A compare-and-swap against the selected hint
 prevents a late failure from delaying a newer revision. Restart does not reset
 the backoff, so one corrupt record cannot monopolize a one-item callback budget.
+Retained backoff must include a finite attempt timestamp, a bounded failure count
+and its exact matching delay. Invalid or future-anchored hint metadata is ignored
+for selection and removed by canonical repair; oversized numbers cannot abort
+selection of unrelated healthy callbacks.
 
 The existing listener writes `.website_preparation_delivery_metrics.json` with
 due backlog/age, measured successful delivery lag, actual attempts and failures,
