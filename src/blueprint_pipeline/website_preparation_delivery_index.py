@@ -14,6 +14,7 @@ import os
 import re
 import stat
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -23,6 +24,14 @@ DIRECTORY = ".website_preparation_pending"
 SCHEMA_VERSION = "website_preparation_delivery_hint.v1"
 METRICS_FILE = ".website_preparation_delivery_metrics.json"
 MAX_HINT_SCAN = 20000
+_UNAVAILABLE_FIELDS = ("unavailable_failure_count", "unavailable_next_attempt_at_epoch")
+
+
+@dataclass(frozen=True)
+class DueDelivery:
+    capture_root: Path
+    # Exact selected hint for compare-and-swap deferral. It conveys no authority.
+    hint: Mapping[str, Any]
 
 
 def _location(capture_root: Path) -> tuple[Path, str]:
@@ -72,13 +81,43 @@ def update(capture_root: Path, delivery: Mapping[str, Any]) -> None:
             if old.get("revision") == delivery.get("revision"):
                 path.unlink()
             return
-        write_json(path, {"schema_version": SCHEMA_VERSION, "capture_relative_path": relative,
-                          "revision": delivery.get("revision"),
-                          "next_attempt_at_epoch": _number(delivery.get("next_attempt_at_epoch"), 0.0),
-                          "pending_since_epoch": _number(delivery.get("pending_since_epoch"), 0.0)})
+        hint = {"schema_version": SCHEMA_VERSION, "capture_relative_path": relative,
+                "revision": delivery.get("revision"),
+                "next_attempt_at_epoch": _number(delivery.get("next_attempt_at_epoch"), 0.0),
+                "pending_since_epoch": _number(delivery.get("pending_since_epoch"), 0.0)}
+        try:
+            previous = json.loads(path.read_text())
+        except (FileNotFoundError, ValueError):
+            previous = None
+        if (type(previous) is dict and previous.get("schema_version") == SCHEMA_VERSION
+                and previous.get("capture_relative_path") == relative
+                and previous.get("revision") == hint["revision"]):
+            # The bounded ledger sweep must not reset an unreadable record's
+            # scheduling backoff. A new canonical revision starts promptly.
+            hint.update({key: previous[key] for key in _UNAVAILABLE_FIELDS if key in previous})
+        write_json(path, hint)
 
 
-def due(storage_root: Path, *, now: float, limit: int) -> tuple[list[Path], dict[str, Any]]:
+def defer_unavailable(selected: DueDelivery, *, now: float) -> None:
+    """Defer only the selected hint; never repair or acknowledge delivery bytes."""
+    storage, relative = _location(selected.capture_root)
+    key = hashlib.sha256(relative.encode()).hexdigest()
+    with _locked(storage) as directory:
+        path = directory / (key + ".json")
+        if path.is_symlink():
+            raise ValueError("preparation_delivery_index_unsafe")
+        try:
+            current = json.loads(path.read_text())
+        except (FileNotFoundError, ValueError):
+            return
+        if current != selected.hint:
+            return  # A newer revision/selection owns its own schedule.
+        failures = min(6, int(_number(current.get("unavailable_failure_count"), 0.0)) + 1)
+        write_json(path, {**current, "unavailable_failure_count": failures,
+                         "unavailable_next_attempt_at_epoch": now + min(1800, 60 * 2 ** (failures - 1))})
+
+
+def due(storage_root: Path, *, now: float, limit: int) -> tuple[list[DueDelivery], dict[str, Any]]:
     storage = Path(storage_root).absolute()
     rows = []
     invalid = scanned = 0
@@ -100,17 +139,18 @@ def due(storage_root: Path, *, now: float, limit: int) -> tuple[list[Path], dict
                         or actual_relative != relative
                         or path.stem != hashlib.sha256(relative.encode()).hexdigest()):
                     raise ValueError("invalid")
-                next_attempt = _number(hint.get("next_attempt_at_epoch"), 0.0)
+                next_attempt = max(_number(hint.get("next_attempt_at_epoch"), 0.0),
+                                   _number(hint.get("unavailable_next_attempt_at_epoch"), 0.0))
                 if next_attempt <= now:
                     pending_since = _number(hint.get("pending_since_epoch"), now)
                     # Zero means immediately eligible, not older than every
                     # retained retry. Compare real eligibility times so a
                     # stream of new revisions cannot starve an already-due one.
-                    rows.append((max(next_attempt, pending_since), pending_since, root))
+                    rows.append((max(next_attempt, pending_since), pending_since, root, hint))
             except (OSError, ValueError, KeyError, TypeError):
                 invalid += 1
     rows.sort(key=lambda row: (row[0], row[1], str(row[2])))
-    return [row[2] for row in rows[:limit]], {
+    return [DueDelivery(row[2], row[3]) for row in rows[:limit]], {
         "due_backlog": len(rows), "oldest_due_age_seconds": max([0.0, *(now - row[1] for row in rows)]),
         "hint_count_scanned": scanned, "hint_scan_limit_reached": scanned >= MAX_HINT_SCAN,
         "invalid_hint_count": invalid,

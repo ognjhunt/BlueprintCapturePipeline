@@ -2,6 +2,11 @@
 from __future__ import annotations
 
 import json
+import importlib
+import os
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -14,7 +19,10 @@ from tests.test_website_preparation_terminal_status import website_capture, _cla
 
 
 @pytest.mark.slow
-def test_new_callback_amid_ten_thousand_settled_ledgers_is_attempted_first_tick(website_capture, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("corrupt_oldest", [False, True])
+def test_new_callback_amid_ten_thousand_settled_ledgers_is_attempted_within_two_ticks(
+    website_capture, monkeypatch, corrupt_oldest,  # noqa: F811
+):
     source = website_capture
     ledger = _claim(source)
     _finish(source, ledger, status="failed_retryable", last_error="retained dependency delay")
@@ -22,17 +30,26 @@ def test_new_callback_amid_ten_thousand_settled_ledgers_is_attempted_first_tick(
     for number in range(10000):
         write_json(source.storage_root / f"history/scenes/site-{number:05d}/captures/walkthrough-{number:05d}/pipeline_job_ledger.json",
                    {"schema_version": "pipeline_job_ledger.v1", "revision": 1, "attempt_count": 1, "status": "completed"})
+    now = time.time()
+    if corrupt_oldest:
+        broken = _synthetic_pending(source.storage_root, 0, now=now)
+        (broken / status.DELIVERY_FILE).write_bytes(b'{"state":')
     calls = []
     def receive(**arguments):
         calls.append(arguments)
         return _acceptance(source, status.STATUS_V2)
     monkeypatch.setattr(context, "website_webapp_request", receive)
-    result = status.reconcile_preparation_wakeups(source.storage_root, limit=1)
+    if corrupt_oldest:
+        first = status.reconcile_preparation_wakeups(source.storage_root, limit=1, now_epoch=now)
+        assert first["attempted"] == 0 and not calls
+    result = status.reconcile_preparation_wakeups(source.storage_root, limit=1, now_epoch=now + 1)
     assert result["attempted"] == result["delivered"] == 1
     assert len(calls) == 1 and calls[0]["payload"] == source.selected
     metrics = json.loads((source.storage_root / index.METRICS_FILE).read_text())
     assert metrics["repair_scanned"] == 1
     assert metrics["successful_delivery_lag_seconds"]
+    if corrupt_oldest:
+        assert (broken / status.DELIVERY_FILE).read_bytes() == b'{"state":'
 
 
 @pytest.mark.parametrize("damage", ["missing_hint", "corrupt_hint", "corrupt_cursor"])
@@ -186,3 +203,170 @@ def test_already_due_retry_is_not_starved_by_five_new_pending_revisions(tmp_path
     assert calls[0] == retry.name
     assert len(set(calls)) == 5
     assert json.loads((retry / status.DELIVERY_FILE).read_text())["state"] == "delivered"
+
+
+@pytest.mark.parametrize("corrupt_bytes", [b'{"state":', b'[]', b'{}', b'{"state":"pending"}'])
+def test_unreadable_oldest_delivery_cannot_starve_healthy_peer_after_restart(
+    tmp_path, monkeypatch, corrupt_bytes,
+):
+    now = 100000.0
+    broken, healthy = [_synthetic_pending(tmp_path, number, now=now) for number in range(2)]
+    corrupt_path = broken / status.DELIVERY_FILE
+    corrupt_path.write_bytes(corrupt_bytes)
+    ledger_bytes = (broken / "pipeline_job_ledger.json").read_bytes()
+    calls = []
+    # The canonical repair path also refuses this record; it cannot silently
+    # replace unreadable delivery history with a new pending attempt.
+    monkeypatch.setattr(status, "retain_preparation_wakeup", lambda root: status._read(root / status.DELIVERY_FILE))
+    monkeypatch.setattr(status, "read_preparation_status", _synthetic_status)
+    def receive(*, capture_id, **_):
+        calls.append(capture_id)
+        assert capture_id == healthy.name
+        return _synthetic_ack(healthy)
+    monkeypatch.setattr(context, "website_webapp_request", receive)
+    ticks = []
+    for tick in range(3):
+        # No process-local rotation/backoff state may be required for progress.
+        importlib.reload(index)
+        ticks.append(status.reconcile_preparation_wakeups(tmp_path, limit=1, now_epoch=now + tick))
+    assert calls == [healthy.name], ticks
+    assert ticks[1]["delivered"] == 1
+    assert corrupt_path.read_bytes() == corrupt_bytes
+    assert (broken / "pipeline_job_ledger.json").read_bytes() == ledger_bytes
+    assert json.loads((healthy / status.DELIVERY_FILE).read_text())["state"] == "delivered"
+
+
+def test_unavailable_hint_backoff_survives_same_revision_repair_and_is_bounded(tmp_path):
+    now = 100000.0
+    root = _synthetic_pending(tmp_path, 0, now=now)
+    canonical = (root / status.DELIVERY_FILE).read_bytes()
+    delivery = json.loads(canonical)
+    for failure in range(1, 9):
+        selected = index.due(tmp_path, now=now, limit=1)[0][0]
+        index.defer_unavailable(selected, now=now)
+        # A late duplicate failure and historical repair cannot shorten or
+        # repeatedly extend the deferral for the already-selected hint.
+        index.defer_unavailable(selected, now=now + 1)
+        index.update(root, delivery)
+        importlib.reload(index)
+        assert index.due(tmp_path, now=now + 1, limit=1)[0] == []
+        hint = json.loads(next((tmp_path / index.DIRECTORY).glob("*.json")).read_text())
+        interval = hint["unavailable_next_attempt_at_epoch"] - now
+        assert interval == min(1800, 60 * 2 ** min(failure - 1, 5))
+        now += interval
+    assert (root / status.DELIVERY_FILE).read_bytes() == canonical
+    assert len(list((tmp_path / index.DIRECTORY).glob("*.json"))) == 1
+
+
+def test_missing_canonical_delivery_cannot_monopolize_a_healthy_peer(tmp_path, monkeypatch):
+    now = 100000.0
+    missing, healthy = [_synthetic_pending(tmp_path, number, now=now) for number in range(2)]
+    path = missing / status.DELIVERY_FILE
+    path.unlink()
+    ledger_bytes = (missing / "pipeline_job_ledger.json").read_bytes()
+    calls = []
+    monkeypatch.setattr(status, "retain_preparation_wakeup", lambda root: None)
+    monkeypatch.setattr(status, "read_preparation_status", _synthetic_status)
+
+    def receive(*, capture_id, **_):
+        calls.append(capture_id)
+        return _synthetic_ack(healthy)
+
+    monkeypatch.setattr(context, "website_webapp_request", receive)
+    first = status.reconcile_preparation_wakeups(tmp_path, limit=1, now_epoch=now)
+    importlib.reload(index)
+    second = status.reconcile_preparation_wakeups(tmp_path, limit=1, now_epoch=now + 1)
+    assert first["unavailable"] >= 1 and first["attempted"] == 0
+    assert second["delivered"] == 1 and calls == [healthy.name]
+    assert not path.exists()
+    assert (missing / "pipeline_job_ledger.json").read_bytes() == ledger_bytes
+
+
+def test_persistent_corruption_does_not_starve_new_healthy_peers_when_backoff_expires(tmp_path, monkeypatch):
+    baseline = 100000.0
+    broken = _synthetic_pending(tmp_path, 0, now=baseline)
+    corrupt_path = broken / status.DELIVERY_FILE
+    corrupt_path.write_bytes(b'{"state":')
+    roots, calls = {}, []
+    monkeypatch.setattr(status, "retain_preparation_wakeup", lambda root: status._read(root / status.DELIVERY_FILE))
+    monkeypatch.setattr(status, "read_preparation_status", _synthetic_status)
+    def receive(*, capture_id, **_):
+        calls.append(capture_id)
+        return _synthetic_ack(roots[capture_id])
+    monkeypatch.setattr(context, "website_webapp_request", receive)
+    for cycle in range(4):
+        # Every cycle starts after even the maximum deferral could expire.
+        now = baseline + cycle * 3600
+        healthy = _synthetic_pending(tmp_path, cycle + 1, now=now)
+        roots[healthy.name] = healthy
+        for tick in range(2):
+            importlib.reload(index)
+            result = status.reconcile_preparation_wakeups(tmp_path, limit=1, now_epoch=now + tick)
+            assert result["attempted"] <= 1
+        assert calls == list(roots)
+        assert corrupt_path.read_bytes() == b'{"state":'
+
+
+def test_late_unavailable_hint_cannot_delay_new_revision_and_new_revision_resets_deferral(tmp_path):
+    now = 100000.0
+    root = _synthetic_pending(tmp_path, 0, now=now)
+    selected = index.due(tmp_path, now=now, limit=1)[0][0]
+    path = root / status.DELIVERY_FILE
+    delivery = json.loads(path.read_text())
+    delivery.update(revision=2, pending_since_epoch=now)
+    write_json(path, delivery)
+    index.update(root, delivery)
+    index.defer_unavailable(selected, now=now)
+    pending = index.due(tmp_path, now=now, limit=1)[0]
+    assert len(pending) == 1 and pending[0].hint["revision"] == 2
+    index.defer_unavailable(pending[0], now=now)
+    assert index.due(tmp_path, now=now, limit=1)[0] == []
+    delivery.update(revision=3)
+    write_json(path, delivery)
+    index.update(root, delivery)
+    pending = index.due(tmp_path, now=now, limit=1)[0]
+    assert len(pending) == 1 and pending[0].hint["revision"] == 3
+    assert "unavailable_next_attempt_at_epoch" not in pending[0].hint
+
+
+@pytest.mark.slow
+def test_unreadable_delivery_deferral_is_visible_to_a_fresh_dispatcher_process(tmp_path, monkeypatch):
+    now = 100000.0
+    broken, healthy = [_synthetic_pending(tmp_path, number, now=now) for number in range(2)]
+    corrupt_path = broken / status.DELIVERY_FILE
+    corrupt_path.write_bytes(b'{"state":')
+    monkeypatch.setattr(status, "retain_preparation_wakeup", lambda root: None)
+    assert status.reconcile_preparation_wakeups(tmp_path, limit=1, now_epoch=now)["attempted"] == 0
+    result = subprocess.run([sys.executable, "-c",
+        "import json,sys; from pathlib import Path; "
+        "from blueprint_pipeline.website_preparation_delivery_index import due; "
+        "rows,_=due(Path(sys.argv[1]),now=float(sys.argv[2]),limit=1); "
+        "print(json.dumps([str(row.capture_root) for row in rows]))",
+        str(tmp_path), str(now + 1)], check=True, capture_output=True, text=True, timeout=20,
+        env={**os.environ, "PYTHONPATH": os.pathsep.join(sys.path), "PYTHONDONTWRITEBYTECODE": "1"})
+    assert json.loads(result.stdout) == [str(healthy)]
+    assert corrupt_path.read_bytes() == b'{"state":'
+
+
+@pytest.mark.parametrize("damage", ["schema", "selectors", "counter", "timestamp"])
+def test_canonical_repair_preserves_malformed_delivery_without_fabricating_history(
+    website_capture, damage,  # noqa: F811
+):
+    source = website_capture
+    _finish(source, _claim(source), status="failed_retryable", last_error="retained failure")
+    status.retain_preparation_wakeup(source.root)
+    path = source.root / status.DELIVERY_FILE
+    delivery = json.loads(path.read_text())
+    if damage == "schema":
+        delivery["schema_version"] = "unknown"
+    elif damage == "selectors":
+        delivery["selectors"] = {}
+    elif damage == "counter":
+        delivery["delivery_failure_count"] = "unknown"
+    else:
+        delivery["next_attempt_at_epoch"] = float("nan")
+    write_json(path, delivery)
+    before = path.read_bytes()
+    with pytest.raises(status.PreparationStatusUnavailable):
+        status.retain_preparation_wakeup(source.root)
+    assert path.read_bytes() == before

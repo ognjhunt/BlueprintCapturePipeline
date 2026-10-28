@@ -28,6 +28,14 @@ Eligible work is ordered by its actual eligibility time (the later of pending
 creation and retry deadline). An immediate-zero deadline does not outrank every
 already-due retry. This preserves aging without skipping retry backoff.
 
+If the canonical delivery record is missing or cannot be read, its bytes remain untouched and
+the selected existing hint receives a durable 60-second-to-30-minute scheduling
+backoff. This is an unavailable outcome, never an acknowledgement or terminal
+failure. The historical repair sweep preserves that deferral for the same
+revision; a new revision resets it. A compare-and-swap against the selected hint
+prevents a late failure from delaying a newer revision. Restart does not reset
+the backoff, so one corrupt record cannot monopolize a one-item callback budget.
+
 The existing listener writes `.website_preparation_delivery_metrics.json` with
 due backlog/age, measured successful delivery lag, actual attempts and failures,
 repair work and explicit overload or hint-scan truncation. The hint scan is
