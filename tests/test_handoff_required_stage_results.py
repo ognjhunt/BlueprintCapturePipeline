@@ -160,14 +160,17 @@ def test_required_pipeline_unknown_cannot_succeed_from_final_bundle(status):
 
 
 def test_expired_lease_cannot_recover_commit_with_required_failure(tmp_path):
+    _, lease = listener._claim_job_lease(tmp_path, scene_id="s", capture_id="c",
+                                         owner="fixture-worker", lease_seconds=900)
     listener._write_output_commit(
         tmp_path,
         scene_id="s",
         capture_id="c",
         attempt_count=1,
         result={"pipeline_status": "completed"},
+        owner="fixture-worker", token=lease["lease_token"], ledger_update={"status": "completed"},
     )
-    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline").mkdir(exist_ok=True)
     ledger_path = tmp_path / "pipeline/run_e2e_stage_ledger.json"
     ledger_path.write_text(
         json.dumps(

@@ -272,7 +272,8 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     reconstruction_enqueue: dict[str, Any] | None = None
     failure_stage = 'stage_handoff_capture'
     try:
-        with _listener._JobLeaseHeartbeat(capture_root=capture_root, owner=owner, token=token, lease_seconds=lease_seconds):
+        with _listener._JobLeaseHeartbeat(capture_root=capture_root, owner=owner, token=token, lease_seconds=lease_seconds) as lease:
+            lease.checkpoint('capture_staging')
             staged_capture_root = (selected_staged if selected_staged is not None else
                 _listener.stage_handoff_capture(handoff=handoff, storage_root=storage_root,
                                                 storage_client=storage_client,
@@ -285,6 +286,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             if producer_delivery_key is not None:
                 from .website_assessment_resume import admit_browser_preparation, safe_to_arm
                 failure_stage = 'website_assessment_preparation'
+                lease.checkpoint(failure_stage)
                 admit_browser_preparation(_listener, payload=payload, handoff=handoff,
                     capture_root=capture_root, observation=observation,
                     producer_delivery_key=producer_delivery_key, payload_digest=digest,
@@ -293,14 +295,21 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             # requests are consumed only by the separate explicit evaluation action.
             if stage_control_plane and (not website_capture):
                 failure_stage = 'control_plane_staging'
+                lease.checkpoint(failure_stage)
                 if control_plane_manifest_path is None:
                     raise _listener.PipelineError('Pub/Sub handoff control-plane staging requires a manifest path.')
                 control_plane_staging = _listener._stage_control_plane_input(handoff=handoff, capture_root=staged_capture_root, manifest_path=control_plane_manifest_path, work_dir=control_plane_work_dir, staged_inputs_path=control_plane_staged_inputs_path, overwrite=overwrite_control_plane_input)
                 failure_stage = 'reconstruction_launch_enqueue'
+                lease.checkpoint(failure_stage)
                 reconstruction_enqueue = _listener._enqueue_capture_reconstruction_if_configured(handoff=handoff, capture_root=staged_capture_root)
             failure_stage = 'run_e2e'
+            lease.checkpoint(failure_stage)
             result = run_e2e(**run_kwargs) if run_e2e_enabled or website_capture else {'status': 'skipped', 'reason': 'run_e2e_disabled_after_control_plane_staging'}
     except Exception as exc:
+        if isinstance(exc, _listener.HandoffLeaseError):
+            # Lease uncertainty does not authorize a retry or rewrite a newer
+            # claimant's history. Already-started operations remain reconcile-only.
+            raise
         if isinstance(exc, _listener.HandoffStagingCapacityError):
             return _listener.finish_staging_capacity_blocked(capture_root=capture_root, handoff=handoff, owner=owner, token=token, attempt_count=attempt_count, attempt_started_at=attempt_started_at, previous_history=previous_history, failure_stage=failure_stage, finish_job_lease=_listener._finish_job_lease)
         ending = _listener.authority_ending(exc)
@@ -328,14 +337,20 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     control_plane_staging_path = str((control_plane_staging.get('candidate') or {}).get('path') or '') or None if control_plane_staging else None
     disposition, result_blockers = _listener._handoff_result_disposition(result)
     terminal_success = disposition == 'terminal_success'
-    output_commit = _listener._write_output_commit(capture_root, scene_id=handoff.scene_id, capture_id=handoff.capture_id, attempt_count=attempt_count, result=result) if terminal_success else None
-    completion_record = {'attempt_number': attempt_count, 'status': 'completed' if terminal_success else 'retryable_blocked', 'stage': 'run_e2e', 'started_at': attempt_started_at, 'completed_at': completed_at, 'run_e2e_status': str(result.get('status') or '') or None, 'queue_disposition': disposition, 'output_commit_status': 'committed' if output_commit else None, 'output_commit_path': _listener.JOB_OUTPUT_COMMIT_FILENAME if output_commit else None, 'blockers': result_blockers}
+    output_commit = None
+    completion_record = {'attempt_number': attempt_count, 'status': 'completed' if terminal_success else 'retryable_blocked', 'stage': 'run_e2e', 'started_at': attempt_started_at, 'completed_at': completed_at, 'run_e2e_status': str(result.get('status') or '') or None, 'queue_disposition': disposition, 'output_commit_status': 'committed' if terminal_success else None, 'output_commit_path': _listener.JOB_OUTPUT_COMMIT_FILENAME if terminal_success else None, 'blockers': result_blockers}
     if control_plane_staging:
         completion_record.update({'control_plane_staging_status': control_plane_staging_status, 'control_plane_staging_path': control_plane_staging_path})
     ledger_update = {'schema_version': _listener.JOB_LEDGER_SCHEMA_VERSION, 'status': 'completed' if terminal_success else 'retryable_blocked', 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'attempt_count': attempt_count, 'started_at': job_started_at, 'updated_at': completed_at, 'last_attempt_started_at': attempt_started_at, 'completed_at': completed_at, 'run_e2e_status': str(result.get('status') or '') or None, 'last_error_type': None if terminal_success else 'RetryableBlockedResult', 'last_error': None if terminal_success else ','.join(result_blockers), 'retry_blockers': result_blockers, 'queue_disposition': disposition, 'output_commit_status': 'committed' if output_commit else None, 'output_commit_path': _listener.JOB_OUTPUT_COMMIT_FILENAME if output_commit else None, 'output_result_sha256': output_commit.get('result_sha256') if output_commit else None, 'attempt_history': [*previous_history, completion_record]}
     if control_plane_staging:
         ledger_update.update({'control_plane_staging_status': control_plane_staging_status, 'control_plane_staging_path': control_plane_staging_path})
-    _listener._finish_job_lease(capture_root, owner=owner, token=token, update=ledger_update)
+    if terminal_success:
+        ledger_update.update(output_commit_status='committed', output_commit_path=_listener.JOB_OUTPUT_COMMIT_FILENAME)
+        output_commit = _listener._write_output_commit(capture_root, scene_id=handoff.scene_id,
+            capture_id=handoff.capture_id, attempt_count=attempt_count, result=result,
+            owner=owner, token=token, ledger_update=ledger_update)
+    else:
+        _listener._finish_job_lease(capture_root, owner=owner, token=token, update=ledger_update)
     return {'schema_version': 'v1', 'status': 'processed' if terminal_success else 'retryable_blocked', 'queue_disposition': 'terminal_success' if terminal_success else 'retryable', 'blockers': result_blockers, 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'run_e2e': result, 'control_plane_staging': control_plane_staging, 'reconstruction_enqueue': reconstruction_enqueue, 'output_commit': output_commit}
 
 

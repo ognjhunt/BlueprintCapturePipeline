@@ -8,6 +8,8 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
+from hashlib import sha256
 from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
@@ -146,15 +148,39 @@ def _output_commit(
     scene_id: str,
     capture_id: str,
 ) -> dict[str, Any]:
-    commit = _read_optional_json_object(capture_root / JOB_OUTPUT_COMMIT_FILENAME)
-    if (
-        commit.get("schema_version") != JOB_OUTPUT_COMMIT_SCHEMA_VERSION
-        or commit.get("status") != "committed"
-        or commit.get("scene_id") != scene_id
-        or commit.get("capture_id") != capture_id
-        or not _string(commit.get("result_sha256"))
-        or _retained_required_stage_blockers(capture_root)
-    ):
+    if _retained_required_stage_blockers(capture_root):
         return {}
-    return commit
+    ledger = _read_job_ledger(capture_root)
+    expected = _string(ledger.get("output_result_sha256"))
+
+    def valid(commit: Mapping[str, Any]) -> bool:
+        return bool(
+            commit.get("schema_version") == JOB_OUTPUT_COMMIT_SCHEMA_VERSION
+            and commit.get("status") == "committed"
+            and commit.get("scene_id") == scene_id
+            and commit.get("capture_id") == capture_id
+            and _string(commit.get("result_sha256"))
+            and (not expected or commit.get("result_sha256") == expected)
+        )
+
+    commit = _read_optional_json_object(capture_root / JOB_OUTPUT_COMMIT_FILENAME)
+    if valid(commit):
+        return commit
+    # The ledger is the commit point. A failed live-pointer replace is repaired
+    # only from the immutable attempt record named by that completed ledger.
+    staged = _string(ledger.get("output_commit_attempt_path"))
+    if (ledger.get("status") == "completed" and expected
+            and re.fullmatch(r"pipeline/job_output_commits/[1-9][0-9]*-[0-9a-f]{64}\.json", staged)):
+        path = capture_root / staged
+        if (not path.is_symlink() and path.resolve().is_relative_to(capture_root.resolve())):
+            try:
+                matches = sha256(path.read_bytes()).hexdigest() == ledger.get("output_commit_attempt_sha256")
+            except OSError:
+                return {}
+            if not matches:
+                return {}
+            retained = _read_optional_json_object(path)
+            if valid(retained):
+                return retained
+    return {}
 

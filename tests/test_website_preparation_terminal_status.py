@@ -262,9 +262,12 @@ def test_a_dead_worker_lease_ends_only_after_it_expires_and_the_window_passes(we
     assert committed[terminal.TERMINAL_FIELD]["basis"] == "lease_expired_without_reclaim"
     assert committed[terminal.TERMINAL_FIELD]["lease_token"] == ledger["lease_token"]
     assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_terminal"
-    # A slow worker that finishes after all supersedes the record for the processing attempt.
-    _finish(website_capture, ledger, status="failed_retryable", last_error="late failure")
-    assert _read(website_capture, status_reader.STATUS_V2)["state"] == "failed_retryable"
+    # An expired worker cannot replace the later observation of its attempt.
+    before = listener._read_job_ledger(website_capture.root)
+    with pytest.raises(listener.HandoffLeaseError) as lost:
+        _finish(website_capture, ledger, status="failed_retryable", last_error="late failure")
+    assert lost.value.state == "expired"
+    assert listener._read_job_ledger(website_capture.root) == before
 
 
 @pytest.mark.parametrize("update", [{"status": "completed"}, {"status": "terminal_authority_ended"}])
