@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import Mapping
@@ -88,6 +89,22 @@ def _read(path: Path) -> dict[str, Any]:
     _require(not path.is_symlink())
     value = json.loads(path.read_text(encoding="utf-8"))
     _require(type(value) is dict)
+    return value
+
+
+def _read_delivery(path: Path) -> dict[str, Any]:
+    """Only a valid scheduling record may receive canonical retry bookkeeping."""
+    value = _read(path)
+    _require(value.get("schema_version") == "website_preparation_status_delivery.v1"
+             and value.get("state") in {"pending", "delivered"}
+             and type(value.get("revision")) is int and value["revision"] > 0)
+    validate_selectors(value.get("selectors"))
+    for field in ("delivery_attempt_count", "delivery_failure_count"):
+        counter = value.get(field, 0)
+        _require(type(counter) is int and counter >= 0)
+    for field in ("pending_since_epoch", "next_attempt_at_epoch"):
+        timestamp = value.get(field, 0.0)
+        _require(type(timestamp) in (int, float) and math.isfinite(timestamp) and timestamp >= 0)
     return value
 
 
@@ -296,7 +313,7 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
         revision = ledger.get("revision")
         _require(type(revision) is int and revision > 0)
         path = root / DELIVERY_FILE
-        old = _read(path) if path.is_file() else {}
+        old = _read_delivery(path) if path.is_file() else {}
         if old.get("selectors") == selected and old.get("revision") == revision:
             if old.get("state") == "pending" and "pending_since_epoch" not in old:
                 old = {**old, "pending_since_epoch": time.time(), "next_attempt_at_epoch": 0.0}
@@ -337,7 +354,7 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
     """Existing listener tick retries delivery independently of provider work."""
     from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .website_preparation_terminal import note_sweep_liveness, record_unretried_preparation
-    from .website_preparation_delivery_index import due, update as update_index, METRICS_FILE
+    from .website_preparation_delivery_index import due, defer_unavailable, update as update_index, METRICS_FILE
     from .website_task_context import website_webapp_request
     counts = {"attempted": 0, "delivered": 0, "unavailable": 0}
     storage_root = Path(storage_root)
@@ -375,7 +392,8 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
         pending_roots, metrics = [], {"index_unavailable": True}
         counts["unavailable"] += 1
     success_lags = []
-    for root in pending_roots:
+    for pending in pending_roots:
+        root = pending.capture_root
         delivery = None
         path = root / DELIVERY_FILE
         attempted = False
@@ -384,11 +402,10 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
             # lookup can fail. Its failure backoff must not monopolize a small
             # dispatch budget or leave unrelated healthy callbacks unvisited.
             if path.is_file():
-                delivery = _read(path)
+                delivery = _read_delivery(path)
             retain_preparation_wakeup(root)
-            if not path.is_file():
-                continue
-            delivery = _read(path)
+            _require(path.is_file())
+            delivery = _read_delivery(path)
             if delivery.get("state") != "pending":
                 update_index(root, delivery)
                 continue
@@ -452,6 +469,13 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
                             update_index(root, updated)
                 except Exception:
                     pass
+            # Unreadable canonical bytes cannot receive canonical bookkeeping.
+            # Preserve them and defer their exact recoverable hint instead. CAS
+            # refuses a concurrent new revision or a changed scheduling hint.
+            try:
+                defer_unavailable(pending, now=now)
+            except Exception:
+                pass
     if bounded:
         # Fair bounded scan across restarts; this cursor selects only members of
         # the server-owned glob, never an arbitrary path or a source authority.
