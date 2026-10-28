@@ -38,6 +38,39 @@ def test_bounded_passes_rotate_past_a_busy_historical_first_tree(tmp_path: Path)
     assert second["mounts"][0]["unvisited_bytes"] > 0
 
 
+def test_new_jobs_do_not_restart_the_four_partition_active_root_cycle(tmp_path: Path) -> None:
+    names = ("pipeline-control-plane", "production-gpu-artifacts", "pubsub-handoffs",
+             "task-evaluation-inputs", "workspace")
+    for name in names:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "data").write_bytes(b"x" * 4096)
+    previous = None
+    observed = []
+    for tick in range(5):
+        if tick:
+            (tmp_path / f"z-new-job-{tick}").mkdir()
+        result = _survey(tmp_path, previous=previous, partitions=4, limit=40)
+        observed.append({Path(row["root"]).name for row in result["top_roots"]})
+        previous = result["continuation"]
+        assert "stale_cursor_identity_refused" not in result["continuation_status"]
+        assert result["status"] == "truncated" and result["retirement_authority"] is False
+        assert result["mounts"][0]["unvisited_bytes"] > 0
+    assert "workspace" not in observed[0]
+    assert "workspace" in observed[1]
+    assert set(names) <= set.union(*observed)
+
+
+def test_new_earlier_priority_root_joins_after_previously_unvisited_root(tmp_path: Path) -> None:
+    for name in ("pipeline-control-plane", "workspace"):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "data").write_bytes(b"x" * 4096)
+    first = _survey(tmp_path)
+    (tmp_path / "beta-policy-screening").mkdir()
+    second = _survey(tmp_path, previous=first["continuation"])
+    assert "workspace" in {Path(row["root"]).name for row in second["top_roots"]}
+    assert "stale_cursor_identity_refused" not in second["continuation_status"]
+
+
 def test_inode_and_mount_identity_changes_refuse_old_cursor(tmp_path: Path) -> None:
     child = tmp_path / "a"
     child.mkdir()

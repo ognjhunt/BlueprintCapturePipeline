@@ -32,9 +32,12 @@ AUT-19 separates `survey_coverage_fraction` from `classified_fraction`, retains
 the historical `attributed_fraction` alias, and explicitly reports unvisited
 and unknown unreadable bytes. Hourly capacity surveys use four immediate-root
 partitions per configured mount, with a bounded discovery budget and
-identity/digest-bound continuation. Changes to root inode, directory/link
-inventory or mount identity refuse the old cursor. Known active producer root
-names are considered first. Each report remains a partial current snapshot;
+identity/digest-bound continuation. The bounded v2 cursor preserves a rotating
+queue of child identity digests when new job roots appear. New entries join the
+tail, so additions cannot repeatedly restart the first four partitions. Changes
+to a root or child inode/type, or mount identity, refuse the corresponding stale
+identity. Known active producer root names are considered first when discovered.
+Each report remains a partial current snapshot;
 successive byte totals must never be summed because of hardlinks and changing
 files. A single exceptionally large partition may still be truncated; this
 change improves root fairness rather than claiming a full arbitrary-depth
@@ -72,3 +75,10 @@ alternate route. No deployment, paid execution, hold release or production
 storage mutation was performed. Two overlapping normal jobs, measured
 baseline/peak/final allocated bytes, a complete current production reference
 census and normal retention observation remain necessary for AUT-19 acceptance.
+
+The independent AUT-19 review reproduced starvation when a new job root was
+added before each four-partition pass. Its scratch regression failed on
+`f1ff10df6`; the queue correction passes it together with seven local
+continuation tests, including arrival of an earlier-sorting priority root.
+The independent selected-directory replacement regression remains the next
+source-only correction at this checkpoint.

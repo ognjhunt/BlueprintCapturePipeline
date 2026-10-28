@@ -16,12 +16,34 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 
-SCHEMA_VERSION = "control_plane_usage_partition_cursor.v1"
+SCHEMA_VERSION = "control_plane_usage_partition_cursor.v2"
 MAX_PARTITION_CANDIDATES = 20_000
 _PRIORITY_NAMES = frozenset(("pubsub-handoffs", "task-evaluation-inputs", "pipeline-control-plane",
                              "production-gpu-artifacts", "lanes", "capture-reconstruction-runs",
                              "capture-reconstruction-derived", "beta-policy-screening", "team-scene-packets",
                              "rigid-robot-free-probes", "workspace"))
+
+
+def _partition_identity(name: str, info: os.stat_result) -> dict[str, Any]:
+    # Persist no untrusted file names in the public survey. The digest locates
+    # an entry in this tick's bounded inventory; it never authorizes a path open.
+    return {"name_digest": hashlib.sha256(os.fsencode(name)).hexdigest(),
+            "device": info.st_dev, "inode": info.st_ino, "mode": stat.S_IFMT(info.st_mode)}
+
+
+def _pending_valid(pending: Any) -> bool:
+    if not isinstance(pending, list) or len(pending) > MAX_PARTITION_CANDIDATES:
+        return False
+    names = set()
+    for row in pending:
+        if not isinstance(row, dict) or set(row) != {"name_digest", "device", "inode", "mode"}:
+            return False
+        name = row["name_digest"]
+        if (not isinstance(name, str) or len(name) != 64 or any(char not in "0123456789abcdef" for char in name)
+                or name in names or any(type(row[key]) is not int or row[key] < 0 for key in ("device", "inode", "mode"))):
+            return False
+        names.add(name)
+    return True
 
 
 def select_partitions(
@@ -80,7 +102,8 @@ def select_partitions(
             reasons.add("partition_inventory_unreadable")
         candidates.sort(key=lambda row: (row[0] not in _PRIORITY_NAMES, row[0]))
         identity = {"device": root_info.st_dev, "inode": root_info.st_ino,
-                    "mode": stat.S_IFMT(root_info.st_mode), "inventory_complete": complete,
+                    "mode": stat.S_IFMT(root_info.st_mode)}
+        inventory = {"inventory_complete": complete,
                     "inventory_digest": canonical_digest({"entries": [
                         [name, info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode)]
                         for name, _path, info in candidates]})}
@@ -89,18 +112,55 @@ def select_partitions(
                    and all(previous.get(key) == value for key, value in identity.items()))
         if previous and not matches:
             reasons.add("stale_cursor_identity_refused")
-        start = previous.get("next_index", 0) if matches else 0
-        if type(start) is not int or not 0 <= start < max(1, len(candidates)):
-            start = 0
+        pending = previous.get("pending") if matches else []
+        if not _pending_valid(pending):
+            pending = []
             reasons.add("cursor_position_invalid")
-        count = min(partitions_per_mount, len(candidates))
-        chosen = [candidates[(start + offset) % len(candidates)] for offset in range(count)] if candidates else []
+        current = {_partition_identity(name, info)["name_digest"]: (name, child_path, info)
+                   for name, child_path, info in candidates}
+        queue = []
+        queued_names = set()
+        for saved in pending:
+            name = saved["name_digest"]
+            candidate = current.get(name)
+            if candidate is not None and saved != _partition_identity(candidate[0], candidate[2]):
+                reasons.add("stale_cursor_identity_refused")
+                continue
+            if candidate is None and complete:
+                reasons.add("stale_cursor_identity_refused")
+                continue
+            # An incomplete inventory cannot prove a previously observed entry
+            # disappeared. Keep its position, but never select it from old stat.
+            queue.append(saved)
+            queued_names.add(name)
+        for name, _child_path, info in candidates:
+            row = _partition_identity(name, info)
+            if row["name_digest"] not in queued_names:
+                if len(queue) >= MAX_PARTITION_CANDIDATES:
+                    complete = False
+                    reasons.add("partition_queue_limit_reached")
+                    break
+                queue.append(row)
+        # Existing unvisited entries keep their place when jobs are added. New
+        # entries join the tail, and visited entries rotate behind them. A new
+        # inventory digest must not reset a busy volume to its first four roots.
+        chosen = []
+        chosen_names = set()
+        for row in queue:
+            candidate = current.get(row["name_digest"])
+            if candidate is not None:
+                chosen.append(candidate)
+                chosen_names.add(row["name_digest"])
+                if len(chosen) >= partitions_per_mount:
+                    break
         selected.extend((child_path, info) for _name, child_path, info in chosen)
         # Empty directories still have measurable metadata, but never recurse
         # into an unreadable or incomplete inventory under a false empty claim.
         if complete and not candidates:
             selected.append((path, root_info))
-        cursor["roots"][root_key] = {**identity, "next_index": (start + count) % len(candidates) if candidates else 0}
+        cursor["roots"][root_key] = {**identity, **inventory, "inventory_complete": complete,
+            "pending": [row for row in queue if row["name_digest"] not in chosen_names]
+                       + [row for row in queue if row["name_digest"] in chosen_names]}
         candidate_count += len(candidates)
         inventory_complete &= complete
     cursor["cursor_digest"] = canonical_digest(cursor, digest_field="cursor_digest")
