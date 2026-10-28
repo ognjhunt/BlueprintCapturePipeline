@@ -43,6 +43,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from .capture_audio_minimization import AudioRemovalError, audio_free_upload_copy
 from .common import sha256_file, utc_now_iso
+from .core.handoff_lease import HandoffLeaseError, handoff_lease_checkpoint
 from .clean_plate_removal_response_schema import RESPONSE_SCHEMA, SYNTHETIC_SHAPES
 from .website_task_context_contracts import admits_scene_preparation
 
@@ -121,9 +122,19 @@ PROMPT_INSTRUCTION = (
     "static_contact, static_obstacle, unrelated, uncertain, or privacy. Give a "
     "short decision_reason connecting visible evidence to the confirmed task. "
     "For a manipulated object also give task_basis_quote copied verbatim from "
-    "the task description. If which object the task means is ambiguous, keep it "
-    "with task_effect uncertain and a clarification_question; do not choose "
-    "arbitrarily. Uncertainty about unrelated background does not require a "
+    "the task description. When the task permits a choice, such as 'move one box' or "
+    "'move a cardboard box', choose one clearly observed instance that satisfies the task. "
+    "Prefer the instance whose visible geometry, support and destination are clearest; "
+    "do not demand a particular box or shelf when the task leaves that choice open. "
+    "If it permits any empty destination, choose a clearly observed empty location consistent "
+    "with the stated task. Describe the chosen instance and location in semantic_label and "
+    "decision_reason. All timestamped boxes for a target must refer to that SAME physical "
+    "instance; never group different boxes under one candidate label. A permitted choice "
+    "is not unresolved task intent. When the task specifies a particular instance or part, "
+    "preserve that identity; if it cannot be identified, keep it with task_effect uncertain "
+    "and a clarification_question. Never invent an unseen object or destination, inflate "
+    "confidence, or substitute another object for a specified one. "
+    "Uncertainty about unrelated background does not require a "
     "question. Enumerate task objects, supports, nearby obstacles, people and "
     "plausible task-object alternatives; do not inventory every distant item. "
     "Task objects which the robot manipulates are removed and rebuilt separately. "
@@ -644,6 +655,7 @@ def _invoke_agentic_video(
     """Run the explicitly selected mode; require tool traces only for agentic."""
     if processing not in {"static", "agentic"}:
         raise ValueError("gemini_clean_plate_processing_invalid")
+    handoff_lease_checkpoint("gemini_removal_before_client")
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
         timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
     ))
@@ -652,6 +664,7 @@ def _invoke_agentic_video(
     # can record people talking, and the analysis does not use sound. Raises
     # before any upload when the copy cannot be shown audio-free.
     with audio_free_upload_copy(video_path) as (upload_path, audio_removal):
+        handoff_lease_checkpoint("gemini_video_upload")
         uploaded = client.files.upload(file=str(upload_path), config={"mime_type": mime_type})
     try:
         deadline = time.monotonic() + 60
@@ -664,6 +677,7 @@ def _invoke_agentic_video(
             raise ValueError("gemini_clean_plate_file_processing_failed")
         # Agentic navigation uses a stable processed media handle, as in the
         # provider's video API example; the original stays unchanged locally.
+        handoff_lease_checkpoint("gemini_video_analysis")
         response = client.interactions.create(
             model=model, store=False,
             input=[{"type": "video", "uri": uploaded.uri, "mime_type": mime_type, "processing": ({"type": "static", "fps": STATIC_FPS} if processing == "static" else "agentic")},
@@ -727,9 +741,11 @@ def _repair_prompt(prompt: str, previous_text: str, error: str) -> str:
 def _invoke_text_repair(*, api_key: str, model: str, genai: Any, types: Any, prompt: str,
                         previous_text: str, error: str) -> dict[str, Any]:
     """The repair turn: the model's own answer and the exact failed rule; no new media."""
+    handoff_lease_checkpoint("gemini_removal_validation_repair")
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
         timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
     ))
+    handoff_lease_checkpoint("gemini_text_repair")
     response = client.interactions.create(
         model=model, store=False,
         input=[{"type": "text", "text": _repair_prompt(prompt, previous_text, error)}],
@@ -814,6 +830,8 @@ def _analyze_removal_targets(
             types=types,
             prompt=_video_prompt(processing_mode, task_context or {}),
         )
+    except HandoffLeaseError:
+        raise
     except Exception as exc:  # pragma: no cover - live provider behavior
         return empty_removal_plan(
             status="blocked",
@@ -842,6 +860,8 @@ def _analyze_removal_targets(
             return empty_removal_plan(status="blocked", model=model_name, processing=processing_mode,
                                       blockers=[str(exc), f"validation_repair_failed:{again}"],
                                       video_path=resolved_video, video_digest=video_digest)
+        except HandoffLeaseError:
+            raise
         except Exception as provider_exc:  # pragma: no cover - live provider behavior
             return empty_removal_plan(status="blocked", model=model_name, processing=processing_mode,
                                       blockers=[str(exc), _provider_error_blocker(provider_exc)],

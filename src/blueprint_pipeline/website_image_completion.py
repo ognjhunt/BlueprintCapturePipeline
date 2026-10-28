@@ -25,6 +25,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from .common import write_json
+from .core.handoff_lease import handoff_lease_checkpoint
 from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
 from .decision_evidence_contracts import canonical_digest
 from .fresh_scene_semantic_teacher_image_edit import _validated_backend
@@ -162,7 +163,30 @@ def _completion_prompt(targets: Sequence[Mapping[str, Any]]) -> str:
     return prompt + MULTI_OBJECT_PROMPT + json.dumps(names, sort_keys=True)
 
 
-def _review_prompt(targets: Sequence[Mapping[str, Any]], *, frames: Sequence[Mapping[str, Any]] = ()) -> str:
+def _review_prompt(targets: Sequence[Mapping[str, Any]], *, frames: Sequence[Mapping[str, Any]] = (),
+                   context_basis: str = 'generated_background') -> str:
+    if context_basis == 'preserved_capture':
+        if any(target.get('disposition') != 'keep' for target in targets):
+            raise ValueError('website_completion_preserved_targets_invalid')
+        return (
+            "Review generated candidate views of the same preserved captured environment. "
+            "No object removal or image inpainting is requested. Preserve every photographed object, "
+            "support, obstacle and the observed layout. Original images are capture-context references; "
+            "novel cameras may reveal different surfaces. Inspect all references before calling a fixture "
+            "invented, and do not reject an object merely because it falls outside a novel view. "
+            "Calibrated camera roll may retain portrait source rays on a landscape grid. "
+            "Reject invented, substituted, duplicated or missing captured possessions, material room "
+            "distortion, substantial missing floor/supports or geometry that obstructs the task. "
+            "Small rendering seams, speckling and minor visual defects are acceptable. "
+            "Return JSON with booleans consistent_background, task_objects_removed, unrelated_objects_preserved, "
+            "a short reason, unrelated_object_loss_frame_ids and remaining_task_object_frame_ids using exact "
+            "prepared frame IDs. Here task_objects_removed means no removal was requested and must not ask "
+            "for an existing captured object to disappear; remaining_task_object_frame_ids is empty. "
+            "This is independent visual candidate review, not geometry, collision, metric or physical validation. "
+            "Preserved targets: "
+        )
+    if context_basis != 'generated_background':
+        raise ValueError('website_completion_context_basis_invalid')
     if any(frame.get("novel_view") is True for frame in frames):
         novel_prompt = (
             "Review Atlas-generated NOVEL CAMERA views of the same object-absent environment. "
@@ -591,7 +615,8 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
         if frame.get("original_image_path"):
             originals[frame["frame_id"]] = {"frame_id": frame["frame_id"], "image_path": frame["original_image_path"],
                                              "image_digest": frame["original_image_digest"]}
-    prompt = _review_prompt(plan["targets"], frames=frames)
+    prompt = _review_prompt(plan["targets"], frames=frames,
+                           context_basis=plan.get('context_basis', 'generated_background'))
     binding = {"frames": [{"frame_id": f["frame_id"], "image_digest": f["image_digest"]} for f in frames],
                "originals": [{"frame_id": f["frame_id"], "image_digest": f["image_digest"]} for f in originals.values()],
                "task_context_sha256": plan["task_context_sha256"], "targets": plan["targets"],
@@ -621,6 +646,7 @@ def _verify_completed_background(*, frames: Sequence[Mapping[str, Any]], origina
         with _review_contents(client=client, types=types, pairs=pairs,
                 prompt=prompt + json.dumps(plan["targets"], sort_keys=True),
                 output_root=output_root, binding_digest=digest) as contents:
+            handoff_lease_checkpoint("gemini_completed_background_review")
             response = client.models.generate_content(
                 model=DEFAULT_MODEL, contents=contents,
                 config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=max_output_tokens,
@@ -707,6 +733,7 @@ def _review_contents(*, client, types, pairs, prompt, output_root, binding_diges
             contents.append(label)
             if use_files:
                 if digest not in uploaded:
+                    handoff_lease_checkpoint("gemini_review_media_upload")
                     media = client.files.upload(file=BytesIO(data), config=types.UploadFileConfig(
                         mime_type=mime, display_name="blueprint-review-" + digest[7:23]))
                     if media.name:
@@ -816,7 +843,8 @@ def verify_completed_background(*, frames: Sequence[Mapping[str, Any]], original
         if _sha256_file(Path(item["image_path"])) != item["image_digest"]:
             raise ValueError("website_image_completion_review_source_changed")
         inputs.append(item["image_digest"])
-    prompt = _review_prompt(plan["targets"], frames=frames)
+    prompt = _review_prompt(plan["targets"], frames=frames,
+                           context_basis=plan.get('context_basis', 'generated_background'))
     base_binding = {"kind": "background_review", "model": DEFAULT_MODEL, "max_output_tokens": 2048,
                     "image_digests": inputs, "frame_ids": [f["frame_id"] for f in frames], "targets": plan["targets"],
                     "prompt": prompt, "media_resolution": "MEDIA_RESOLUTION_HIGH"}
@@ -961,6 +989,7 @@ def diagnose_inconsistent_background(*, frames: Sequence[Mapping[str, Any]],
                 timeout=120_000, retry_options=types.HttpRetryOptions(attempts=1))) as client:
             with _review_contents(client=client, types=types, pairs=pairs, prompt=CONSISTENCY_DIAGNOSIS_PROMPT,
                     output_root=output_root, binding_digest=canonical_digest(binding)) as contents:
+                handoff_lease_checkpoint("gemini_background_consistency")
                 response = client.models.generate_content(model=DEFAULT_MODEL, contents=contents,
                     config=types.GenerateContentConfig(response_mime_type="application/json",
                                                        max_output_tokens=max_output_tokens,

@@ -35,6 +35,7 @@ from .native_task_arena_bundle import (
 from .native_task_arena_execution_contract import POLICY_RUNTIME_MODULE_NAMES
 from .provider_runtime_import_closure import assert_provider_runtime_import_closure
 from .native_task_arena_policy_canary_session import (
+    BETA_RUN_KIND,
     CLAIM_CEILING,
     EXECUTION_MODES,
     PROVIDER_BUNDLE_SCHEMA_VERSION,
@@ -55,6 +56,7 @@ from .task_evaluation_canary_hotfix_overlay import (
 CANARY_SHIPPED_PACKAGE_FILES = ("core/__init__.py", "core/common.py", "core/security_controls.py")
 # The team path the shared worker imports: the team's HTTPS clients and its own robot.
 TEAM_RUNTIME_MODULE_NAMES = (
+    "beta_screening_runtime_control.py", "beta_policy_screening_control_contracts.py",
     "team_candidate_policy_client.py", "droid_https_policy_client.py", "team_policy_https_client.py",
     "task_family_policy_https_client.py",
     "dreamlabs_policy_client.py", "team_arm_kinematics.py",
@@ -269,6 +271,12 @@ fi
     )
     catalog_config = ('export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"'
                       if family_runtime_catalog_staged else "")
+    control_check = ('''/isaac-sim/python.sh -m blueprint_pipeline.beta_screening_runtime_control --runtime-root "$RUNTIME_DIR"
+control_rc=$?
+if [ $control_rc -ne 0 ]; then
+  write_fallback_result beta_screening_runtime_control_refused "$control_rc"
+  exit "$control_rc"
+fi''' if run_kind == BETA_RUN_KIND else "")
     return f'''#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -316,6 +324,7 @@ teardown_servers() {{
 trap teardown_servers EXIT INT TERM HUP
 
 {credential_check}
+{control_check}
 /isaac-sim/python.sh -m blueprint_pipeline.native_task_runtime_source_provision \
   --source-receipt "$SOURCE_RECEIPT" --source-packet "$SOURCE_PACKET" \
   --extraction-dir "$RUNTIME_DIR/provisioned_runtime_sources" \
@@ -366,6 +375,7 @@ fi
 
 {provisioning}
 
+{control_check}
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
 write_fallback_result policy_canary_worker_failed_without_result "$runner_rc"

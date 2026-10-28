@@ -102,7 +102,8 @@ def test_selected_delivery_refuses_before_lease_when_owner_api_missing(tmp_path:
     assert result["queue_disposition"] == "retryable"
     assert result["owner_observation_reason"] == ("capture_owner_purpose_mismatch" if error_kind == "typed"
                                                    else "capture_owner_response_unavailable")
-    assert "private" not in json.dumps(result) and "secret" not in json.dumps(result)
+    public_failure = {key: value for key, value in result.items() if key != "capture_root"}
+    assert "private" not in json.dumps(public_failure) and "secret" not in json.dumps(public_failure)
     assert calls[0].get("expected_purpose") == purpose
     assert not (tmp_path / "capture-bucket" / "scenes" / "site-req-1" / "captures" /
                 "walkthrough-req-1").exists()
@@ -255,3 +256,178 @@ def test_valid_observation_still_cannot_enter_legacy_birth_or_direct_stage(tmp_p
         listener.stage_handoff_capture(handoff, storage_root=tmp_path)
     assert not (tmp_path / "capture-bucket" / "scenes" / "site-req-1" / "captures" /
                 "walkthrough-req-1").exists()
+
+
+def supplemental_observation():
+    value = observation()
+    original = value["capture_id"]
+    child_id = "supplement-" + "d" * 40
+    # Every produced object moves together; no original artifact is overwritten.
+    def replace(item):
+        if isinstance(item, str):
+            return item.replace(original, child_id)
+        if isinstance(item, dict):
+            return {key: replace(child) for key, child in item.items()}
+        return item
+    value = replace(value)
+    value["capture_owner"]["basis"] = "inboundRequests.capture_owner_uid"
+    def source(capture, digest):
+        return {"capture_id": capture, "raw_bundle_digest": digest,
+                "raw_manifest_uri": f"gs://capture-bucket/scenes/site-req-1/captures/{capture}/raw/manifest.json",
+                "upload_completion_digest": value["completion_marker"]["sha256"],
+                "verification_status": "pending_pipeline_storage_readback",
+                "completion_generation": value["completion_marker"]["generation"],
+                "completion_record_generation": value["producer_delivery"]["server_record"]["generation"],
+                "manifest_generation": "17000000000000000003"}
+    child = source(child_id, value["producer_delivery"]["delivery_key"])
+    parent = source(original, "sha256:" + "e" * 64)
+    value["capture_binding"] = {"schema_version": "website_capture_continuation.v1",
+        "original_capture_id": original, "capture_id": child_id, "coordinate_frames_independent": True,
+        "lineage": [{"child": child, "parent": parent, "supplement": {
+            "parent_capture_id": original, "parent_bundle_digest": parent["raw_bundle_digest"],
+            "parent_manifest_uri": parent["raw_manifest_uri"], "coverage_digest": "f" * 64}}]}
+    return seal_supplemental_observation(value)
+
+
+def seal_supplemental_observation(value):
+    from blueprint_pipeline.capture_original_owner_observer import _SOURCE_KEYS
+    value["source_projection_digest"] = cross_runtime_canonical_digest({key: value[key] for key in
+        (*_SOURCE_KEYS, "capture_binding")})
+    value["observation_digest"] = cross_runtime_canonical_digest(value, digest_field="observation_digest")
+    return value
+
+
+def test_supplemental_owner_observation_retains_same_job_lineage_and_new_source():
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+    value = supplemental_observation()
+    assert validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+        capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"]) == value
+
+
+@pytest.mark.parametrize("fault", ["missing", "cross_job", "wrong_marker", "wrong_source", "changed_parent", "cycle"])
+def test_supplemental_owner_observer_refuses_unbound_lineage_even_with_resealed_envelope(fault):
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+    value = supplemental_observation()
+    row = value["capture_binding"]["lineage"][0]
+    if fault == "cross_job":
+        row["parent"]["capture_id"] = "walkthrough-other"
+    if fault == "wrong_marker":
+        row["child"]["upload_completion_digest"] = "sha256:" + "0" * 64
+    if fault == "wrong_source":
+        row["child"]["raw_bundle_digest"] = "sha256:" + "0" * 64
+    if fault == "changed_parent":
+        row["parent"]["raw_bundle_digest"] = "sha256:" + "0" * 64
+    if fault == "cycle":
+        row["parent"] = dict(row["child"])
+    seal_supplemental_observation(value)
+    if fault == "missing":
+        value.pop("capture_binding")
+    with pytest.raises(ValueError):
+        validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+            capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"])
+
+
+def test_supplement_owner_read_derives_request_from_scene_and_requires_signed_binding(monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    value = supplemental_observation()
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://tryblueprint.io/api/internal/pipeline/sync")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "fixture-secret")
+    calls = []
+    def respond(url, **kwargs):
+        calls.append(json.loads(kwargs["data"]))
+        return SimpleNamespace(status=200, body=json.dumps(value).encode())
+    monkeypatch.setattr(observer, "safe_request", respond)
+    assert observer.load_original_owner_observation(bucket="capture-bucket", scene_id=value["scene_id"],
+        capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"]) == value
+    assert calls[0]["request_id"] == "req-1"
+
+
+def test_repair_keeps_unprocessed_original_as_history_without_inventing_completion():
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+    value = supplemental_observation()
+    parent = value["capture_binding"]["lineage"][0]["parent"]
+    parent.update(source_state="retained_unprocessed", upload_completion_digest=None,
+                  completion_generation=None, completion_record_generation=None, manifest_generation=None)
+    seal_supplemental_observation(value)
+    assert validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+        capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"]) == value
+    # The current source must still have completed producer/marker proof.
+    value["capture_binding"]["lineage"][0]["child"].update(source_state="retained_unprocessed", completion_generation=None)
+    seal_supplemental_observation(value)
+    with pytest.raises(ValueError):
+        validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+            capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"])
+
+
+def test_supplement_chain_cannot_stitch_different_intermediate_source_revisions():
+    from copy import deepcopy
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+    value = supplemental_observation()
+    first = value["capture_binding"]["lineage"][0]
+    original_parent = deepcopy(first["parent"])
+    intermediate_id = "supplement-" + "1" * 40
+    intermediate = deepcopy(original_parent)
+    intermediate.update(capture_id=intermediate_id,
+        raw_manifest_uri=f"gs://capture-bucket/scenes/site-req-1/captures/{intermediate_id}/raw/manifest.json")
+    first["parent"] = intermediate
+    first["supplement"].update(parent_capture_id=intermediate_id,
+        parent_manifest_uri=intermediate["raw_manifest_uri"])
+    second = {"child": deepcopy(intermediate), "parent": original_parent,
+              "supplement": {"parent_capture_id": original_parent["capture_id"],
+                "parent_bundle_digest": original_parent["raw_bundle_digest"],
+                "parent_manifest_uri": original_parent["raw_manifest_uri"], "coverage_digest": "2" * 64}}
+    value["capture_binding"]["lineage"].append(second)
+    seal_supplemental_observation(value)
+    assert validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+        capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"]) == value
+    second["child"]["manifest_generation"] = "999"
+    seal_supplemental_observation(value)
+    with pytest.raises(ValueError):
+        validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+            capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"])
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 408, 429, 500, 503])
+@pytest.mark.parametrize("raised", [True, False])
+def test_explicit_access_refusal_stays_distinct_from_transient_owner_read_outage(monkeypatch, status, raised):
+    from io import BytesIO
+    from types import SimpleNamespace
+    from urllib.error import HTTPError
+    from blueprint_pipeline import capture_original_owner_observer as observer
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://example.com/api/internal/pipeline/sync")
+    monkeypatch.setattr(observer, "load_pipeline_sync_token", lambda: "fake-secret")
+    calls = []
+    def respond(*args, **kwargs):
+        calls.append("one bounded owner read")
+        if raised:
+            raise HTTPError("https://example.com/private?token=private", status, "private remote body", {},
+                            BytesIO(b'{"private":"body"}'))
+        return SimpleNamespace(status=status, body=b'{"private":"body"}')
+    monkeypatch.setattr(observer, "safe_request", respond)
+    expected = ("capture_owner_response_denied" if 400 <= status < 500 and status not in {408, 429}
+                else "capture_owner_response_unavailable")
+    with pytest.raises(observer.CaptureOwnerObservationError) as failure:
+        observer.load_original_owner_observation(bucket="capture-bucket", scene_id="site-req-1",
+            capture_id="walkthrough-req-1", marker_generation="17000000000000000001")
+    assert str(failure.value) == expected and calls == ["one bounded owner read"]
+    assert "private" not in str(failure.value) and "token" not in str(failure.value)
+
+
+def test_explicit_owner_read_denial_does_not_retry_in_another_purpose(tmp_path, monkeypatch):
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    calls = []
+    def denied(**kwargs):
+        calls.append(kwargs)
+        raise observer.CaptureOwnerObservationError("capture_owner_response_denied")
+    monkeypatch.setattr(observer, "load_original_owner_observation", denied)
+    value = observation()
+    event = {"bucket": value["bucket"], "scene_id": value["scene_id"], "capture_id": value["capture_id"],
+        "raw_prefix_uri": value["raw_prefix_uri"], "source_finalize": {
+            "bucket": value["bucket"], "object_name": value["completion_marker"]["object_name"],
+            "generation": value["completion_marker"]["generation"], "event_id": "event", "event_source": "storage"}}
+    result = listener.process_handoff_payload(event, storage_root=tmp_path, provider="local",
+                                              run_e2e=lambda **kw: pytest.fail("denial reached execution"))
+    assert result["owner_observation_reason"] == "capture_owner_response_denied" and len(calls) == 1

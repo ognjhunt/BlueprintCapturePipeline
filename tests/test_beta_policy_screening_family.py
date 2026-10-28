@@ -191,6 +191,10 @@ def test_paused_family_launch_keeps_source_gate_before_allocator(tmp_path, monke
     from blueprint_pipeline import beta_policy_screening_worker as worker
     from blueprint_pipeline import task_evaluation_control_stage_policy as control_policy
     from blueprint_pipeline import team_candidate_quick10_launch as native
+    from blueprint_pipeline import allocator_invocation as jobs
+    from blueprint_pipeline import beta_policy_screening_control_transport as control_transport
+    from tests.test_beta_policy_screening_control_contracts import response
+    import time
 
     assert control_policy.CONTROLS_PAUSED is True
     planning, catalog, _profile, _facts, _spec_value, _written = family_planning_fixture(tmp_path, monkeypatch)
@@ -210,20 +214,27 @@ def test_paused_family_launch_keeps_source_gate_before_allocator(tmp_path, monke
             raise ValueError("source_authority_" + source_state)
         return {}
 
-    def start_allocator(argv, **_):
+    def current_control(*, binding, **kwargs):
         assert calls == ["current_source"]
-        assert argv == prepared["argv"]
+        calls.append("scoped_control")
+        return response(scope=binding, now=int(time.time()), deadline=int(time.time()) + 3600)
+
+    def start_allocator(path, **_):
+        assert calls == ["current_source", "scoped_control"]
+        argv = jobs.manifest(path)["argv"]
+        assert argv[:-2] == prepared["argv"] and argv[-2] == "--team-candidate-execution-deadline-epoch"
         calls.append("allocator_transport")
         return 12345
 
     monkeypatch.setattr(worker, "require_current_source", current_source)
-    monkeypatch.setattr(native, "_start_allocator", start_allocator)
+    monkeypatch.setattr(control_transport, "request_control", current_control)
+    monkeypatch.setattr(jobs, "start_invocation", start_allocator)
     monkeypatch.setattr(native, "_process_start_ticks", lambda _pid: "1")
     result = launch.launch_candidate(plan=plan, candidate=candidate, attempt_dir=attempt, prepared=prepared)
     assert "qualified_family_control_plane_unavailable" not in sys.modules
     if source_state == "current":
         assert result["status"] == "running"
-        assert calls == ["current_source", "allocator_transport"]
+        assert calls == ["current_source", "scoped_control", "allocator_transport"]
     else:
         assert result["status"] == "blocked" and result["no_allocation_proven"] is True
         assert result["provider_allocation_performed"] is False

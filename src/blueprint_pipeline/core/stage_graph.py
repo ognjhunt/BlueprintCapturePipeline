@@ -38,6 +38,7 @@ import os
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
@@ -444,7 +445,7 @@ def run_stage_graph(
                     for stage in submittable:
                         running += 1
                         observed_max_overlap = max(observed_max_overlap, running)
-                        futures[pool.submit(_execute, stage)] = stage.stage_id
+                        futures[pool.submit(copy_context().run, _execute, stage)] = stage.stage_id
                     if not futures:
                         if len(executions) < len(ordered) and not (
                             failure_observed and cancel_pending_on_failure

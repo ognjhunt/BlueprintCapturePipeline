@@ -215,6 +215,10 @@
     "src/blueprint_pipeline/site_package_orchestrator.py": [
       "tests/test_qualification_alpha.py"
     ],
+    "src/blueprint_pipeline/website_capture_preparation.py": [
+      "tests/test_website_preparation_direct_path.py",
+      "tests/test_website_direct_path_wrapper.py"
+    ],
     "src/blueprint_pipeline/task_evaluation_launch_activation_worker.py": [
       "tests/test_task_evaluation_launch_activation_worker.py"
     ],

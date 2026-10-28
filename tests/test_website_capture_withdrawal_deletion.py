@@ -287,10 +287,30 @@ def test_archived_atlas_previews_of_the_walkthrough_are_found_by_name_even_after
     assert not world["store"].present(mine) and world["store"].present(theirs)
 
 
-def test_deletion_waits_for_a_running_preview_step_and_then_holds_it_off(world):
+def test_withdrawal_finds_only_its_job_scoped_revision_previews_without_local_capture_records(world):
+    child = "supplement-" + "a" * 40
+    mine = [_uri("atlas-scene-bundle", digit, f"req1-{capture}.zip")
+            for digit, capture in (("5", child), ("6", "supplement-" + "b" * 40))]
+    others = [_uri("atlas-scene-bundle", "7", f"{request}-{child}.zip")
+              for request in ("req2", "req11")]
+    others.append(_uri("atlas-scene-bundle", "8", "req1-supplement-invalid.zip"))
+    for uri in [*mine, *others]:
+        world["store"].put(uri, b"synthetic preview", versions=2, marker=True)
+    assert not list(world["capture"].parent.glob("supplement-*"))
+    plan = _plan(world)
+    assert plan["unresolved"] == []
+    found = {row["uri"] for row in plan["objects"]}
+    assert set(mine) <= found and not set(others) & found
+    _apply(world, plan)
+    assert all(not world["store"].present(uri) for uri in mine)
+    assert all(world["store"].present(uri) for uri in others)
+
+
+@pytest.mark.parametrize("capture_id", ["walkthrough-req1", "supplement-" + "a" * 40])
+def test_deletion_waits_for_a_running_preview_step_and_then_holds_it_off(world, capture_id):
     import fcntl
     from blueprint_pipeline import website_atlas_preview as preview
-    job_dir = world["capture"] / "pipeline/atlas"
+    job_dir = world["capture"].parent / capture_id / "pipeline/atlas"
     job_dir.mkdir(parents=True)
     (job_dir / preview.LOCK_FILE).touch()
     (job_dir / preview.JOB_FILE).write_text("{}")
@@ -303,6 +323,47 @@ def test_deletion_waits_for_a_running_preview_step_and_then_holds_it_off(world):
     _apply(world, plan)
     # The local cleanup removes the job and its lock with the site's other files.
     assert not (job_dir / preview.JOB_FILE).exists() and not (job_dir / preview.LOCK_FILE).exists()
+
+
+def test_deletion_holds_every_revision_lock_and_releases_earlier_locks_on_busy_refusal(world, monkeypatch):
+    import fcntl
+    from blueprint_pipeline.website_atlas_preview_store import JOB_FILE, LOCK_FILE
+    job_dirs = [world["capture"] / "pipeline/atlas", *[
+        world["capture"].parent / ("supplement-" + char * 40) / "pipeline/atlas" for char in ("a", "b")]]
+    for directory in job_dirs:
+        directory.mkdir(parents=True)
+        (directory / LOCK_FILE).touch()
+        (directory / JOB_FILE).write_text("{}")
+    plan = _plan(world)
+    with (job_dirs[-1] / LOCK_FILE).open("r") as busy:
+        fcntl.flock(busy, fcntl.LOCK_EX)
+        with pytest.raises(deletion.WithdrawalDeletionError, match="atlas_preview_busy"):
+            _apply(world, plan)
+    assert world["store"].deleted == []
+    for directory in job_dirs:
+        with (directory / LOCK_FILE).open("r") as released:
+            fcntl.flock(released, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    object_store = world["resolution"]["object_store"]
+    delete = object_store.delete
+    def while_locked(key, version):
+        for directory in job_dirs:
+            with (directory / LOCK_FILE).open("r") as held:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        delete(key, version)
+    monkeypatch.setattr(object_store, "delete", while_locked)
+    _apply(world, plan)
+    assert all(not (directory / JOB_FILE).exists() for directory in job_dirs)
+
+
+def test_missing_revision_preview_lock_refuses_before_any_deletion(world):
+    from blueprint_pipeline.website_atlas_preview_store import JOB_FILE
+    job = world["capture"].parent / ("supplement-" + "a" * 40) / "pipeline/atlas" / JOB_FILE
+    _write(job, {})
+    with pytest.raises(deletion.WithdrawalDeletionError, match="atlas_preview_lock_missing"):
+        _apply(world, _plan(world))
+    assert world["store"].deleted == [] and job.is_file()
 
 
 def test_previews_cannot_be_ruled_out_without_the_object_store(world):

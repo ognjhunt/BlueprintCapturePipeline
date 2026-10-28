@@ -646,7 +646,8 @@
       "const": "screening"
     },
     "recommendation_eligible": {
-      "const": false
+      "const": false,
+      "description": "Legacy field retained only in plans enqueued before 2026-10-28; new plans omit it."
     },
     "robot_free_probe_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -751,7 +752,6 @@
     "maximum_planned_cost_usd",
     "purpose",
     "claim_ceiling",
-    "recommendation_eligible",
     "candidates"
   ],
   "type": "object"

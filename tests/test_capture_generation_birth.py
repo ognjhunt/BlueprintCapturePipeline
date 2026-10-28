@@ -17,9 +17,9 @@ from tests.test_scene_retirement_connected_acceptance import _sealed_file
 from tests.test_scene_retirement_real_participants import access_fixture
 
 
-def _fixture(tmp_path, monkeypatch, *, prepare_parent=True):
+def _fixture(tmp_path, monkeypatch, *, prepare_parent=True, owner=None):
     access, policy, root = access_fixture(tmp_path, monkeypatch)
-    owner = observation()
+    owner = observation() if owner is None else owner
     marker = owner["completion_marker"]
     video = owner["producer_delivery"]["raw_video"]
     prefix = f"scenes/{owner['scene_id']}/captures/{owner['capture_id']}"
@@ -684,7 +684,10 @@ def test_selected_staging_failure_reason_is_safe_and_preclaim(tmp_path, monkeypa
         run_e2e=lambda **_: pytest.fail('ran'))
     assert result['status'] == 'capture_source_membership_unavailable_retryable'
     assert result['queue_disposition'] == 'retryable' and result['staging_reason'] == reason
-    assert "secret" not in json.dumps(result) and "private" not in json.dumps(result)
+    # macOS temporary directories live under /private; exclude that known
+    # local selector while checking that provider exception text is absent.
+    safe_result = {key: value for key, value in result.items() if key != 'capture_root'}
+    assert "secret" not in json.dumps(safe_result) and "private" not in json.dumps(safe_result)
     assert not target.exists()
 
 

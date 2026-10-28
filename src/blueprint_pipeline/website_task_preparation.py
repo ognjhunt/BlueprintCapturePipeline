@@ -25,7 +25,7 @@ from scipy.spatial import cKDTree
 
 from . import task_evaluation_scene_intake as intake
 from .adp009d_newton_gripper_drive import FULL_STROKE_M
-from .common import write_json
+from .core.handoff_lease import guarded_handoff_write_json as write_json
 from .decision_evidence_contracts import canonical_digest
 from .website_task_context_contracts import website_task_context_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse

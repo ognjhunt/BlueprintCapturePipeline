@@ -19,6 +19,11 @@ from .decision_evidence_contracts import (
     canonical_json,
 )
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
+from .task_evaluation_launch_webapp_sync import (
+    PIPELINE_SYNC_TOKEN_FILE_ENV,
+    PipelineSyncTokenError,
+    load_pipeline_sync_token,
+)
 
 
 TESTBED_WEBAPP_URL_ENV = "PIPELINE_TESTBED_WEBAPP_URL"
@@ -158,7 +163,6 @@ def sync_site_task_testbed_to_webapp(
         website_task_context_digest=website_task_context_digest,
     )
     resolved_url = _text(endpoint_url) or _text(os.getenv(TESTBED_WEBAPP_URL_ENV))
-    resolved_token = _text(token) or _text(os.getenv("PIPELINE_SYNC_TOKEN"))
     common = {
         "schema_version": "site_task_testbed_webapp_sync_result.v1",
         "capture_session_id": payload["capture_session_id"],
@@ -168,8 +172,14 @@ def sync_site_task_testbed_to_webapp(
         "testbed_digest": payload["testbed_digest"],
         "proof_boundary": payload["proof_boundary"],
     }
-    if not resolved_url or not resolved_token:
+    if not resolved_url:
         return {**common, "status": "skipped", "reason": "sync_not_configured", "attempts": 0}
+    try:
+        resolved_token = load_pipeline_sync_token(token=token)
+    except PipelineSyncTokenError as exc:
+        configured = token is not None or bool(_text(os.getenv(PIPELINE_SYNC_TOKEN_FILE_ENV)))
+        return {**common, "status": "failed" if configured else "skipped",
+                "reason": str(exc) if configured else "sync_not_configured", "attempts": 0}
     resolved_url = validated_https_sync_url(resolved_url)
     body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     attempts = max(1, min(int(max_attempts), 10))

@@ -40,6 +40,7 @@ class PaidResourceAdmissionGrant:
     schema_version: str
     _issuer: object = field(repr=False, compare=False)
     allocation_binding_digest: str | None = None
+    _lease_check: Any = field(default=None, repr=False, compare=False)
 
 
 class PaidResourceAdmissionBlocked(RuntimeError):
@@ -85,7 +86,8 @@ def require_paid_resource_admission(
     expected_schema_version: str,
 ) -> PaidResourceAdmissionGrant:
     """Return an in-process grant or raise before a provider mutation."""
-
+    from .core.handoff_lease import handoff_lease_checkpoint, current_handoff_lease_check
+    handoff_lease_checkpoint("paid_resource_admission")
     blockers: list[str] = _monthly_budget_blockers(resource_class)
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")
@@ -113,6 +115,7 @@ def require_paid_resource_admission(
             else None
         ),
         _issuer=_GRANT_ISSUER,
+        _lease_check=current_handoff_lease_check(),
     )
 
 
@@ -122,9 +125,16 @@ def require_paid_resource_admission_grant(
     resource_class: str,
     allocation_binding_digest: str | None = None,
     require_allocation_binding: bool = False,
+    permit_reconciliation: bool = False,
 ) -> None:
     """Validate the opaque in-process capability issued by the chokepoint."""
 
+    if not permit_reconciliation:
+        from .core.handoff_lease import handoff_lease_checkpoint
+        if isinstance(grant, PaidResourceAdmissionGrant) and grant._lease_check is not None:
+            grant._lease_check("paid_provider_effect")
+        else:
+            handoff_lease_checkpoint("paid_provider_effect")
     blockers: list[str] = _monthly_budget_blockers(resource_class)
     if not isinstance(grant, PaidResourceAdmissionGrant):
         blockers.append("paid_resource_admission_grant_missing")

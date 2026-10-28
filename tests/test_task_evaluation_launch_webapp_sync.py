@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -206,3 +207,12 @@ def test_paid_publication_preflight_requires_file_backed_sync_token(
         match="pipeline_sync_token_file_required",
     ):
         sync_module.load_pipeline_sync_token(require_file=True)
+
+
+def test_sync_token_refuses_fifo_without_blocking_or_using_ambient(tmp_path, monkeypatch):
+    token_file = tmp_path / "unsafe-token-pipe"
+    os.mkfifo(token_file, mode=0o600)
+    monkeypatch.setenv(sync_module.PIPELINE_SYNC_TOKEN_FILE_ENV, str(token_file))
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "ambient-must-not-be-used")
+    with pytest.raises(sync_module.PipelineSyncTokenError, match="^pipeline_sync_token_file_unsafe$"):
+        sync_module.load_pipeline_sync_token()

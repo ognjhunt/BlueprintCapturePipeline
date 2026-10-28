@@ -11,6 +11,7 @@ from blueprint_pipeline.clean_plate_removal_analysis_gemini import (
     parse_removal_plan_response,
 )
 from blueprint_pipeline.capture_audio_minimization import AudioRemovalError
+from blueprint_pipeline.core.handoff_lease import HandoffLeaseError, bind_handoff_lease
 from tests.capture_audio_fakes import VIDEO_ONLY_MARKER, FakeMediaTools
 
 
@@ -280,12 +281,18 @@ def _analysis(tmp_path, monkeypatch, *, first, repaired):
     monkeypatch.setenv(analysis.GATE_ENV, "1")
     monkeypatch.setattr(analysis, "_api_key", lambda: ("fixture", "fixture"))
     monkeypatch.setattr(analysis, "_video_processing", lambda path, mode: ("static", 10.0))
-    monkeypatch.setattr(analysis, "_invoke_agentic_video", lambda **_k: {
-        "text": json.dumps({"targets": first}), "video_processing": {"mode": "static"}})
+    def initial(**_kwargs):
+        if isinstance(first, Exception):
+            raise first
+        return {"text": json.dumps({"targets": first}), "video_processing": {"mode": "static"}}
+
+    monkeypatch.setattr(analysis, "_invoke_agentic_video", initial)
     repairs = []
 
     def repair(**kwargs):
         repairs.append(kwargs)
+        if isinstance(repaired, Exception):
+            raise repaired
         return {"text": json.dumps({"targets": repaired})}
 
     monkeypatch.setattr(analysis, "_invoke_text_repair", repair)
@@ -404,3 +411,84 @@ def test_task_video_analysis_uploads_nothing_without_a_video_only_copy(monkeypat
 
     assert uploads == []
     assert _provider_error_blocker(error.value) == "gemini_clean_plate_upload_audio_removal_failed"
+
+
+@pytest.mark.parametrize("lost_during", ["audio_copy", "upload", "processing_poll"])
+def test_lease_loss_stops_next_provider_effect_but_still_deletes_uploaded_media(tmp_path, monkeypatch, lost_during):
+    from contextlib import contextmanager
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+
+    source = tmp_path / "source.mov"
+    source.write_bytes(b"source video")
+    lost = False
+    calls = []
+
+    def check(boundary):
+        if lost:
+            raise HandoffLeaseError("lost", boundary)
+
+    @contextmanager
+    def audio_copy(path):
+        nonlocal lost
+        if lost_during == "audio_copy":
+            lost = True
+        yield path, {"audio_removed": True}
+
+    active = NS(name="files/existing", uri="https://provider.test/file", state=NS(name="ACTIVE"))
+
+    def upload(**_kwargs):
+        nonlocal lost
+        calls.append("upload")
+        if lost_during == "upload":
+            lost = True
+        return (NS(name=active.name, state=NS(name="PROCESSING"))
+                if lost_during == "processing_poll" else active)
+
+    def poll(**_kwargs):
+        nonlocal lost
+        calls.append("poll")
+        lost = True
+        return active
+
+    def generate(**_kwargs):
+        calls.append("generate")
+        return NS(status="completed", steps=[output('{"targets":[]}')])
+
+    files = NS(upload=upload, get=poll, delete=lambda **kwargs: calls.append(("delete", kwargs["name"])))
+    genai = NS(Client=lambda **_: NS(files=files, interactions=NS(create=generate)))
+    monkeypatch.setattr(analysis, "audio_free_upload_copy", audio_copy)
+    monkeypatch.setattr(analysis.time, "sleep", lambda _seconds: None)
+    with bind_handoff_lease(check), pytest.raises(HandoffLeaseError):
+        _invoke_agentic_video(api_key="fake", model=DEFAULT_MODEL, processing="static",
+            video_path=source, genai=genai, types=NS(HttpOptions=NS, HttpRetryOptions=NS))
+    expected = [] if lost_during == "audio_copy" else ["upload"]
+    if lost_during == "processing_poll":
+        expected.append("poll")
+    if lost_during != "audio_copy":
+        expected.append(("delete", active.name))
+    assert calls == expected
+
+
+def test_lease_loss_cannot_start_another_paid_repair_turn():
+    from blueprint_pipeline.clean_plate_removal_analysis_gemini import _invoke_text_repair
+    calls = []
+    genai = NS(Client=lambda **_: NS(interactions=NS(create=lambda **kwargs: calls.append(kwargs)
+        or NS(status="completed", steps=[output('{"targets":[]}')]))))
+
+    def lost(boundary):
+        raise HandoffLeaseError("lost", boundary)
+
+    with bind_handoff_lease(lost), pytest.raises(HandoffLeaseError):
+        _invoke_text_repair(api_key="fake", model=DEFAULT_MODEL, genai=genai,
+            types=NS(HttpOptions=NS, HttpRetryOptions=NS), prompt="Find targets.",
+            previous_text="{}", error="removal_analysis_target_invalid")
+    assert calls == []
+
+
+@pytest.mark.parametrize("during_repair", [False, True])
+def test_analysis_propagates_lease_loss_instead_of_retaining_a_blocked_model_answer(tmp_path, monkeypatch, during_repair):
+    error = HandoffLeaseError("lost", "provider")
+    with pytest.raises(HandoffLeaseError) as raised:
+        _analysis(tmp_path, monkeypatch,
+            first=[_door(), _rack()] if during_repair else error, repaired=error)
+    assert raised.value is error

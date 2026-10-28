@@ -1,9 +1,12 @@
-"""Diagnostic beta screening results, kept outside recommendation evidence.
+"""The beta job's evaluation result: a bounded simulation estimate.
 
-Beta journey: a prepared site's candidate screening. Native session validation
-owns media, simulator scoring and provider closeout. This projection adds exact
-campaign/configuration/cell bindings; it never makes a screening winner or a
-qualified finalist from a small sample.
+Beta journey: a prepared site's automatic candidate evaluation. The run under
+the site allowance is the job's evaluation; there is no second scoring tier.
+Native session validation owns media, simulator scoring and provider closeout.
+This projection adds exact campaign/configuration/cell bindings and publishes
+each candidate's sample size and counts as they are. It is an estimate for the
+recorded task and conditions, never certified physical performance or safety,
+and it never enters Arm Decision Proof qualified or physical evidence.
 """
 from __future__ import annotations
 
@@ -14,8 +17,10 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .team_policy_episode_outcome import episode_outcome
 
-PUBLICATION_SCHEMA = "beta_policy_screening_publication.v1"
-CLAIM_CEILING = "diagnostic_policy_execution"
+PUBLICATION_SCHEMA = "beta_policy_screening_publication.v2"
+# The job-facing ceiling. The native session keeps its own runtime ceiling,
+# which is what keeps beta runs out of ADP qualified evidence.
+CLAIM_CEILING = "simulation_estimate"
 SOURCE_FIELDS = (
     "scene_intent_id", "scene_intent_digest", "capture_id", "task_id",
     "task_context_digest", "scene_revision_digest",
@@ -136,8 +141,8 @@ def screening_publication(
         "scenario_plan_digest": plan["scenario_plan_digest"],
         "source": {field: plan["source"][field] for field in SOURCE_FIELDS},
         "revision": state["revision"], "status": campaign_status(state["candidates"]),
-        "purpose": "screening", "execution_operator": {"kind": "blueprint"},
-        "claim_ceiling": CLAIM_CEILING, "recommendation_eligible": False,
+        "purpose": "job_evaluation", "execution_operator": {"kind": "blueprint"},
+        "claim_ceiling": CLAIM_CEILING,
         "candidates": candidates, "budget": dict(budget),
         "generated_at": state["updated_at"], "publication_digest": "",
     }

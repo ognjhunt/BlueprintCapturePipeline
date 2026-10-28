@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from PIL import Image
 
 from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
+from .core.handoff_lease import handoff_lease_checkpoint
 from .local_reconstruction_adapters import _sha256_file
 from .website_gemini_receipts import gemini_quote, retained_gemini_call
 
@@ -140,6 +141,7 @@ def ground_task_target(*, target: Mapping[str, Any], tracks: Sequence[Mapping[st
             contents = [prompt, types.Part.from_bytes(data=image_path.read_bytes(), mime_type="image/png")]
             if crop_path is not None:
                 contents.append(types.Part.from_bytes(data=crop_path.read_bytes(), mime_type="image/png"))
+            handoff_lease_checkpoint("gemini_task_target_grounding")
             response = client.models.generate_content(model=DEFAULT_MODEL,
                 contents=contents,
                 config=types.GenerateContentConfig(response_mime_type="application/json", max_output_tokens=2048,

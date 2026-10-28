@@ -20,6 +20,26 @@ from .local_reconstruction_adapters import _sha256_file
 COMPLETION_REVISION = "v14"
 
 
+def _context_binding(context_basis, review, pose, context):
+    if context_basis == 'generated_background':
+        return {}
+    from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
+
+    automation = review.get('automation') or {}
+    objects = automation.get('objects')
+    if (context_basis != 'preserved_capture'
+            or review.get('subject_origin') not in PRESERVED_SCENE_ORIGINS
+            or not automation
+            or not isinstance(objects, list)
+            or any(not isinstance(row, dict) or row.get('disposition') != 'keep' for row in objects)
+            or automation.get('removal_instruction', '').strip()
+            or review.get('transient_frame_ids')):
+        raise ValueError('atlas_completion_preserved_context_invalid')
+    return {'context_basis': context_basis, 'source_pose_digest': pose['digest'],
+            'source_video_digest': pose['binding']['source_video_digest'],
+            'task_context_digest': context['context_digest']}
+
+
 def camera_candidates(frames):
     """A scene-relative candidate pool; the planner chooses count and viewpoints.
 
@@ -117,10 +137,12 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                    task_runner, planner_runner, release_blockers, max_polls, checkpoint=None,
                    existing_geometry_frames=(), expected_frames=(), splat_root=None,
                    reference_frames=None, coverage_feedback=None, source_survey_path=None,
-                   recorded_frames=(), context_pose_root=None, context_pose_digest=None):
+                   recorded_frames=(), context_pose_root=None, context_pose_digest=None,
+                   context_basis='generated_background'):
     """Plan -> generate RGBD -> independent review, all resumable under one cap."""
     from .website_image_completion import verify_completed_background
 
+    binding = _context_binding(context_basis, review, pose, context)
     root.mkdir(parents=True, exist_ok=True)
     # Completed native generation and its admission remain reusable. A new
     # source-first decision governs future purchases, not another purchase of
@@ -128,6 +150,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     saved_report = root / 'completion.json'
     if saved_report.is_file():
         saved = json.loads(saved_report.read_text())
+        if (saved.get('context_basis', 'generated_background') != context_basis
+                or binding and any(saved.get(key) != value for key, value in binding.items())):
+            raise ValueError('atlas_completion_context_basis_changed')
         native_roots = saved.get('generated_roots', [])
         if (saved.get('status') == 'passed' and native_roots
                 and all((Path(p) / 'result.json').is_file() for p in native_roots)):
@@ -223,7 +248,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                   'generated_frame_ids': [], 'preservation_paths': [str(root / 'gaps/survey.json')],
                   'review': {'status': 'not_required', 'reason': 'no_eligible_geometry_gaps'},
                   'gap_survey_digest': gaps['digest'], 'completion_extent': 'identified_missing_geometry_only',
-                  'generation_extent': extent, 'generated_geometry_ready': True, 'claim_ceiling': 'development_only'}
+                  'generation_extent': extent, 'generated_geometry_ready': True, 'claim_ceiling': 'development_only',
+                  **binding}
         report.update(whole_scene_complete=False, coverage_basis='surveyed_camera_gaps_only')
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'completion.json', report)
@@ -252,7 +278,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                               "source_image_path": str(path), "source_image_digest": asset["sha256"]})
     survey = {"source_video_digest": pose["binding"]["source_video_digest"], "heldout_pixels_included": False,
               "display_rotation_degrees": 0, "frames": survey_frames,
-              "content_basis": "independently_reviewed_generated_background"}
+              "content_basis": ('preserved_capture_context' if binding else
+                                'independently_reviewed_generated_background')}
     survey["digest"] = canonical_digest(survey, digest_field="digest")
     survey_path = root / "survey.json"
     if survey_path.exists() and json.loads(survey_path.read_text()) != survey:
@@ -266,7 +293,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                 "uncaptured_regions": review.get("uncaptured_regions", []), "previews": previews,
                 'unsupported_camera_ids': unsupported,
                 'gap_survey': {k: v for k, v in gaps.items() if k != 'previews'},
-                "input_basis": "generated_background_not_raw_capture", "claim_ceiling": "development_only"}
+                "input_basis": ('preserved_capture_context_with_estimated_depth' if binding else
+                                'generated_background_not_raw_capture'),
+                "claim_ceiling": "development_only", **binding}
     if coverage_feedback is not None:
         feedback['post_export_coverage'] = coverage_feedback
     if expected_frames:
@@ -349,7 +378,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                   'gap_assessment': proposal['gap_assessment'], 'whole_scene_complete': False,
                   'environment_surfaces': proposal.get('environment_surfaces', []),
                   'coverage_basis': 'task_prioritized_review_of_surveyed_export',
-                  'generated_geometry_ready': True, 'claim_ceiling': 'development_only'}
+                  'generated_geometry_ready': True, 'claim_ceiling': 'development_only', **binding}
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'completion.json', report)
         return [], report
@@ -374,7 +403,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                   'reason': ('atlas_recorded_source_views_must_be_recovered_before_generation'
                              if audit['additional_source_frame_ids'] else 'atlas_source_visibility_uncertain'),
                   'source_evidence': audit, 'planner': planned, 'new_atlas_generation_calls': 0,
-                  'claim_ceiling': 'development_only'}
+                  'claim_ceiling': 'development_only', **binding}
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'source-action.json', report)
         return None, report
@@ -394,7 +423,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                   'review': {'status': 'not_required', 'reason': 'source_review_found_physical_openings'},
                   'source_evidence': audit, 'new_atlas_generation_calls': 0,
                   'generated_geometry_ready': True, 'whole_scene_complete': False,
-                  'claim_ceiling': 'development_only'}
+                  'claim_ceiling': 'development_only', **binding}
         report['digest'] = canonical_digest(report, digest_field='digest')
         write_json(root / 'completion.json', report)
         return [], report
@@ -428,6 +457,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
                 "disposition": obj["disposition"]} for obj in review["automation"]["objects"]]
     plan = {"targets": targets, "task_context_sha256": hashlib.sha256(json.dumps(
         dict(context), sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
+    if binding:
+        plan['context_basis'] = context_basis
     _, blockers = release_blockers()
     if blockers:
         raise ValueError("atlas_completion_review_release_not_admitted:" + ",".join(blockers))
@@ -460,7 +491,8 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
               "view_gap_reasons": reasons,
               "claim_ceiling": "development_only",
               "whole_scene_complete": False, "coverage_basis": "surveyed_camera_gaps_only",
-              "simulation_qualified": False, "metric_measurement_proven": False, "physical_evidence": False}
+              "simulation_qualified": False, "metric_measurement_proven": False, "physical_evidence": False,
+              **binding}
     if visual["status"] != "passed":
         report["reason"] = "atlas_completion_visual_review_required"
     report["digest"] = canonical_digest(report, digest_field="digest")

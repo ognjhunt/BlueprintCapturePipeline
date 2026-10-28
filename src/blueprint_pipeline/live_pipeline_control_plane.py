@@ -20,8 +20,7 @@ from typing import Any, Callable, Dict, List, Mapping, Sequence
 from .agent_operator_runtime import LIVE_AGENTS_SDK_ENV, LIVE_CODEX_SDK_ENV
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json, write_text
 from .live_pipeline_setup import (
-    CONTROL_PLANE_NOT_PROOF,
-    build_live_pipeline_setup_manifest,
+    CONTROL_PLANE_NOT_PROOF, build_live_pipeline_setup_manifest, resolved_setup_package_directory,
 )
 from .robot_eval_job_orchestrator import (
     CPU_BACKENDS,
@@ -1989,6 +1988,7 @@ def run_live_pipeline_control_plane(
             ensure_dir(setup_output.parent)
             write_json(setup_output, setup_manifest)
 
+        package_path = package_path or resolved_setup_package_directory(setup_manifest)
         inbox_run: Dict[str, Any]
         capture_root_for_inbox = capture_path
         if not process_inbox:

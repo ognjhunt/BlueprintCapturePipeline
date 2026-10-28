@@ -310,9 +310,16 @@ def _verified_submission(value: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(request.get("available_sensor_streams"), list):
         blockers.append("capture_upload_request_sensor_streams_invalid")
     transfer = _mapping(submission.get("transfer"))
-    if transfer.get("provider") != "backblaze":
+    if transfer.get("provider") == "firebase":
+        from .capture_upload_firebase_transfer import validate_firebase_transfer
+        try:
+            validate_firebase_transfer(submission)
+        except (ValueError, KeyError, TypeError):
+            blockers.append("capture_firebase_source_binding_invalid")
+    elif transfer.get("provider") != "backblaze":
         blockers.append("capture_transfer_provider_invalid")
-    if not _text(transfer.get("url")) or not _text(transfer.get("authorization")):
+    if not _text(transfer.get("url")) or (transfer.get("provider") != "firebase"
+                                        and not _text(transfer.get("authorization"))):
         blockers.append("capture_transfer_grant_missing")
     expiry = _parse_expiry(transfer.get("expires_at_iso"))
     if expiry is None or expiry <= datetime.now(timezone.utc):
@@ -381,6 +388,9 @@ def _build_envelope(
     source_capture_binding = _mapping(request.get("source_capture_binding"))
     if source_capture_binding:
         envelope["source_capture_binding"] = source_capture_binding
+    if submission['transfer'].get('provider') == 'firebase':
+        from .capture_upload_firebase_transfer import validate_firebase_transfer
+        envelope['upload_validation']['source_storage_binding'] = validate_firebase_transfer(submission)
     return envelope
 
 
@@ -390,6 +400,7 @@ def process_capture_upload_submission(
     store_root: Path,
     allowed_hosts: Sequence[str] | None = None,
     transfer_opener: Callable[..., ContextManager[BinaryIO]] | None = None,
+    firebase_transfer_opener: Callable[..., ContextManager[BinaryIO]] | None = None,
     malware_scanner: Callable[[Path], Mapping[str, Any]] | None = None,
     qa_builder: Callable[..., Mapping[str, Any]] | None = None,
     profile_probe: Callable[..., Mapping[str, Any]] | None = None,
@@ -427,17 +438,24 @@ def process_capture_upload_submission(
         return {**existing, "already_exists": True}
 
     hosts = _allowed_hosts(allowed_hosts)
-    if not hosts:
+    firebase_source = submission['transfer'].get('provider') == 'firebase'
+    if not hosts and not firebase_source:
         raise CaptureUploadTransferError(["capture_transfer_allowed_hosts_not_configured"])
     transfer = _mapping(submission["transfer"])
     url = _text(transfer["url"])
     authorization = _text(transfer["authorization"])
-    _validate_transfer_url(url, hosts)
+    if not firebase_source:
+        _validate_transfer_url(url, hosts)
     filename = _text(_mapping(request["original_file"])["original_filename"])
     expected_size = int(_mapping(request["original_file"])["size_bytes"])
     quarantine_root = store_root / "quarantine"
     quarantine_root.mkdir(parents=True, exist_ok=True)
     opener = transfer_opener or _open_transfer
+    if firebase_source:
+        from .capture_upload_firebase_transfer import open_firebase_transfer
+        firebase_opener = firebase_transfer_opener or open_firebase_transfer
+        def opener(**_kwargs):
+            return firebase_opener(url=url, generation=transfer['generation'], timeout_seconds=timeout_seconds)
     scanner = malware_scanner or _configured_malware_scan
     try:
         with tempfile.TemporaryDirectory(prefix="capture-transfer-", dir=quarantine_root) as temp:

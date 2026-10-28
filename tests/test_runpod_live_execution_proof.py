@@ -4,6 +4,7 @@ import json
 import urllib.error
 import zipfile
 from pathlib import Path
+import pytest
 
 from blueprint_pipeline import runpod_live_execution_proof as runpod_proof
 from blueprint_pipeline.paid_resource_admission import (
@@ -40,6 +41,43 @@ def _paid_grant() -> PaidResourceAdmissionGrant:
         resource_class="runpod_live_execution",
         expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION,
     )
+
+
+def test_lost_handoff_lease_preserves_exact_retained_pod_closeout_only(tmp_path, monkeypatch):
+    from blueprint_pipeline.core.handoff_lease import HandoffLeaseError, bind_handoff_lease
+    request_path = _provider_launch_request(tmp_path / "request.json")
+    adapter = tmp_path / "adapter.json"
+    _write_json(adapter, {"job_id": "runpod-proof-job", "runpod_response": {"id": "pod-owned"}})
+    monkeypatch.setenv(RUNPOD_API_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_GPU_LAUNCH_GATE_ENV, "true")
+    monkeypatch.setenv(RUNPOD_API_KEY_ENV, "fake-test-key")
+    monkeypatch.setattr(runpod_proof, "_read_runpod_api_key", lambda: ("fake-test-key", {}))
+    calls = []
+
+    def http(**kwargs):
+        calls.append((kwargs["method"], kwargs["url"]))
+        if kwargs["method"] == "POST":
+            return 200, {"id": "pod-owned", "desiredStatus": "STOPPED"}
+        return 200, {"items": [{"id": "pod-owned", "desiredStatus": "STOPPED" if len(calls) > 1 else "RUNNING"}]}
+
+    monkeypatch.setattr(runpod_proof, "_http_json", http)
+    grant = _paid_grant()
+
+    def lost(boundary):
+        raise HandoffLeaseError("lost", boundary)
+
+    with bind_handoff_lease(lost):
+        result = collect_runpod_live_execution_proof(provider_launch_request_path=request_path,
+            adapter_result_path=adapter, stop_pod=True, allow_runpod_api_call=True,
+            paid_resource_admission_grant=grant)
+        assert result["pod_stop_performed"] is True, (result.get("status"), result.get("reason"), result.get("blockers"))
+        assert any(url.endswith("/pods/pod-owned/stop") for _, url in calls)
+        calls.clear()
+        with pytest.raises(HandoffLeaseError):
+            collect_runpod_live_execution_proof(provider_launch_request_path=request_path,
+                adapter_result_path=adapter, pod_id="pod-unrelated", stop_pod=True,
+                allow_runpod_api_call=True, paid_resource_admission_grant=grant)
+        assert calls == []
 
 
 def _provider_launch_request(path: Path) -> Path:

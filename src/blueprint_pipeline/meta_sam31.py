@@ -447,92 +447,101 @@ def run_meta_sam31(*, frame_registry: Sequence[Mapping[str, Any]], frame_artifac
                 or isinstance(budget, bool) or not isinstance(budget, (int, float)) or not math.isfinite(budget)
                 or budget < unit_cost * len(pending)):
             raise ValueError("meta_sam_authorization_missing")
+    def dispatch(request: Request, **kwargs: Any) -> Any:
+        require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
+            allocation_binding_digest=admission_digest, require_allocation_binding=True)
+        return opener(request, **kwargs)
+
     media = None
     if not retained:
-        media = ({"type": "input_video", "file_id": _upload_video(clip=clip, root=root, token=token, opener=opener)}
+        media = ({"type": "input_video", "file_id": _upload_video(clip=clip, root=root, token=token, opener=dispatch)}
                  if video_artifact else
                  {"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode((root / "frame-000000.png").read_bytes()).decode()}
                  if image_request else {"type": "input_video", "video_url": "data:video/mp4;base64," + base64.b64encode(clip.read_bytes()).decode()})
-    tracks, receipts = [], []
-    for index, prompt in enumerate(prompts):
-        result_path, intent_path = root / f"response-{index}.json", root / f"intent-{index}.json"
-        if result_path.is_file():
-            receipt = json.loads(result_path.read_text())
-            if receipt["binding_digest"] != digest or receipt["clip_digest"] != _sha256_file(clip):
-                raise ValueError("meta_sam_retained_response_changed")
-            response = receipt["response"]
+    try:
+        tracks, receipts = [], []
+        for index, prompt in enumerate(prompts):
+            result_path, intent_path = root / f"response-{index}.json", root / f"intent-{index}.json"
+            if result_path.is_file():
+                receipt = json.loads(result_path.read_text())
+                if receipt["binding_digest"] != digest or receipt["clip_digest"] != _sha256_file(clip):
+                    raise ValueError("meta_sam_retained_response_changed")
+                response = receipt["response"]
+            else:
+                if retained:
+                    raise ValueError("meta_sam_retained_response_missing")
+                if intent_path.exists():
+                    raise ValueError("meta_sam_submission_requires_reconciliation")
+                payload = {"model": MODEL, "stream": False, "metadata": {"mask_encoding": "one_bit"}, "input": [
+                    {"type": "message", "role": "user", "content": [
+                        {"type": "input_text", "text": prompt["text"]},
+                        media]}]}
+                request = Request(ENDPOINT, data=json.dumps(payload).encode(), method="POST",
+                                  headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
+                require_paid_resource_admission_grant(admission_grant, resource_class="evaluator_api",
+                    allocation_binding_digest=admission_digest, require_allocation_binding=True)
+                with intent_path.open("x") as file:
+                    json.dump({"binding_digest": digest, "clip_digest": _sha256_file(clip),
+                               "allocation_binding_digest": admission_digest}, file)
+                    file.flush()
+                    os.fsync(file.fileno())
+                try:
+                    with dispatch(request, timeout=300) as result:
+                        raw = result.read(64 * 1024**2 + 1)
+                    if len(raw) > 64 * 1024**2:
+                        raise ValueError("meta_sam_response_too_large")
+                    response = json.loads(raw)
+                except HTTPError as exc:
+                    # Never include the request, key or a provider-echoed body in logs.
+                    write_json(root / f"failure-{index}.json", {"http_status": exc.code, "binding_digest": digest})
+                    raise ValueError(f"meta_sam_http_{exc.code}") from None
+                receipt = {"binding_digest": digest, "clip_digest": _sha256_file(clip),
+                           "allocation_binding_digest": admission_digest, "response": response,
+                           "reserved_cost_usd": unit_cost}
+                temporary = result_path.with_suffix(".tmp")
+                write_json(temporary, receipt)
+                os.replace(temporary, result_path)
+            processed = (response.get("usage") or {}).get("video_frames_processed")
+            if not image_request and (isinstance(processed, bool) or not isinstance(processed, int) or processed < 0):
+                raise ValueError("meta_sam_usage_missing")
+            if not image_request and processed > max(50, len(frame_registry)):
+                raise ValueError("meta_sam_usage_exceeds_reservation")
+            parsed_path = root / f"parsed-response-{index}.json"
+            parsed_binding = {"response_digest": _sha256_file(result_path), "request_digest": digest,
+                              "parser_revision": 1, "profile": PROFILE}
+            if parsed_path.is_file():
+                parsed = json.loads(parsed_path.read_text())
+                if (parsed.get("binding") != parsed_binding
+                        or parsed.get("digest") != canonical_digest(parsed, digest_field="digest")):
+                    raise ValueError("meta_sam_retained_tracks_changed")
+                decoded = parsed["tracks"]
+            else:
+                if require_retained_video:
+                    raise ValueError("meta_sam_retained_tracks_changed")
+                backend: list[str] = []
+                decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend)
+                parsed = {"binding": parsed_binding, "tracks": decoded, "parser_runtime": backend[0]}
+                parsed["digest"] = canonical_digest(parsed, digest_field="digest")
+                temporary = parsed_path.with_suffix(".tmp")
+                write_json(temporary, parsed)
+                os.replace(temporary, parsed_path)
+            tracks.extend(decoded)
+            receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
+        result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
+                  "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
+        if require_retained_video:
+            if json.loads((root / "tracks.json").read_text()) != result:
+                raise ValueError("meta_sam_retained_tracks_changed")
         else:
-            if retained:
-                raise ValueError("meta_sam_retained_response_missing")
-            if intent_path.exists():
-                raise ValueError("meta_sam_submission_requires_reconciliation")
-            payload = {"model": MODEL, "stream": False, "metadata": {"mask_encoding": "one_bit"}, "input": [
-                {"type": "message", "role": "user", "content": [
-                    {"type": "input_text", "text": prompt["text"]},
-                    media]}]}
-            request = Request(ENDPOINT, data=json.dumps(payload).encode(), method="POST",
-                              headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
-            with intent_path.open("x") as file:
-                json.dump({"binding_digest": digest, "clip_digest": _sha256_file(clip),
-                           "allocation_binding_digest": admission_digest}, file)
-                file.flush()
-                os.fsync(file.fileno())
+            write_json(root / "tracks.json", result)
+        return result
+    finally:
+        if video_artifact and not retained:
             try:
-                with opener(request, timeout=300) as result:
-                    raw = result.read(64 * 1024**2 + 1)
-                if len(raw) > 64 * 1024**2:
-                    raise ValueError("meta_sam_response_too_large")
-                response = json.loads(raw)
-            except HTTPError as exc:
-                # Never include the request, key or a provider-echoed body in logs.
-                write_json(root / f"failure-{index}.json", {"http_status": exc.code, "binding_digest": digest})
-                raise ValueError(f"meta_sam_http_{exc.code}") from None
-            receipt = {"binding_digest": digest, "clip_digest": _sha256_file(clip),
-                       "allocation_binding_digest": admission_digest, "response": response,
-                       "reserved_cost_usd": unit_cost}
-            temporary = result_path.with_suffix(".tmp")
-            write_json(temporary, receipt)
-            os.replace(temporary, result_path)
-        processed = (response.get("usage") or {}).get("video_frames_processed")
-        if not image_request and (isinstance(processed, bool) or not isinstance(processed, int) or processed < 0):
-            raise ValueError("meta_sam_usage_missing")
-        if not image_request and processed > max(50, len(frame_registry)):
-            raise ValueError("meta_sam_usage_exceeds_reservation")
-        parsed_path = root / f"parsed-response-{index}.json"
-        parsed_binding = {"response_digest": _sha256_file(result_path), "request_digest": digest,
-                          "parser_revision": 1, "profile": PROFILE}
-        if parsed_path.is_file():
-            parsed = json.loads(parsed_path.read_text())
-            if (parsed.get("binding") != parsed_binding
-                    or parsed.get("digest") != canonical_digest(parsed, digest_field="digest")):
-                raise ValueError("meta_sam_retained_tracks_changed")
-            decoded = parsed["tracks"]
-        else:
-            if require_retained_video:
-                raise ValueError("meta_sam_retained_tracks_changed")
-            backend: list[str] = []
-            decoded = parse_tracks(response, prompt=prompt, registry=frame_registry, backend_out=backend)
-            parsed = {"binding": parsed_binding, "tracks": decoded, "parser_runtime": backend[0]}
-            parsed["digest"] = canonical_digest(parsed, digest_field="digest")
-            temporary = parsed_path.with_suffix(".tmp")
-            write_json(temporary, parsed)
-            os.replace(temporary, parsed_path)
-        tracks.extend(decoded)
-        receipts.append({"path": str(result_path), "sha256": _sha256_file(result_path)})
-    result = {"schema_version": "website_meta_sam31_tracks.v1", "status": "completed", "binding_digest": digest,
-              "profile": PROFILE, "tracks": tracks, "responses": receipts, "claim_ceiling": "development_only"}
-    if require_retained_video:
-        if json.loads((root / "tracks.json").read_text()) != result:
-            raise ValueError("meta_sam_retained_tracks_changed")
-    else:
-        write_json(root / "tracks.json", result)
-    if video_artifact and not retained:
-        try:
-            request = Request("https://api.meta.ai/v1/files/" + media["file_id"], method="DELETE",
-                              headers={"Authorization": "Bearer " + token})
-            with opener(request, timeout=30) as response:
-                value = json.loads(response.read(100_000))
-            write_json(root / "video-cleanup.json", {"file_id": media["file_id"], "deleted": value.get("deleted") is True})
-        except Exception:
-            write_json(root / "video-cleanup.json", {"file_id": media["file_id"], "deleted": False})
-    return result
+                request = Request("https://api.meta.ai/v1/files/" + media["file_id"], method="DELETE",
+                                  headers={"Authorization": "Bearer " + token})
+                with opener(request, timeout=30) as response:
+                    value = json.loads(response.read(100_000))
+                write_json(root / "video-cleanup.json", {"file_id": media["file_id"], "deleted": value.get("deleted") is True})
+            except Exception:
+                write_json(root / "video-cleanup.json", {"file_id": media["file_id"], "deleted": False})

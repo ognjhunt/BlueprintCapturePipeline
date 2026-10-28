@@ -1,4 +1,4 @@
-"""Automatically screen prepared website scenes and deliver diagnostic results.
+"""Automatically evaluate prepared website scenes and deliver each job's result.
 
 This worker consumes the existing scene-packet queue after compilation. The
 coordinator retains the site's budget across revisions and worker restarts;
@@ -86,10 +86,13 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                           "scene_revision_digest": request["scene_revision_digest"]}
                 campaign_id = "screening-" + canonical_digest({"source": source,
                     "catalog_digest": catalog["catalog_digest"], "protocol": "beta_policy_screening.v1"})[7:39]
-                existing = root / "plans" / f"{campaign_id}.json"
-                if existing.exists():
-                    outcome.update(enqueue_screening_campaign(_read(existing), queue_root=root))
-                else:
+                from .beta_policy_screening_refresh import (
+                    active_campaign_id, maybe_refresh_campaign, retain_planning_bindings,
+                )
+                active_id = active_campaign_id(root, campaign_id)
+                existing = root / "plans" / f"{active_id}.json"
+
+                def current_plan(_previous, next_id, inputs_dir):
                     context = require_current_source(source, site_id=retained["scene_id"])
                     result, receipt, _zero = _validate_source(Path(request["source_launch_root"]))
                     if (result.get("configured_scene_revision_digest") != source["scene_revision_digest"]
@@ -106,9 +109,16 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     probe = enqueue_rigid_robot_free_probe(capture)
                     outcome["robot_free_probe_status"] = probe["status"]
                     inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
-                        source=source, inputs_dir=root / "inputs" / campaign_id)
-                    plan = build_screening_plan(catalog, inputs["scene"], campaign_id=campaign_id,
+                        source=source, inputs_dir=inputs_dir)
+                    if _previous is None:
+                        retain_planning_bindings(root, next_id, capabilities=inputs["capabilities"],
+                            expectations=inputs.get("refresh_expectations"))
+                    return build_screening_plan(catalog, inputs["scene"], campaign_id=next_id,
                         capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"])
+                if existing.exists():
+                    outcome.update(maybe_refresh_campaign(queue_root=root, base_campaign_id=campaign_id, build=current_plan))
+                else:
+                    plan = current_plan(None, campaign_id, root / "inputs" / campaign_id)
                     outcome.update(enqueue_screening_campaign(plan, queue_root=root))
             except (OSError, ValueError, RuntimeError, KeyError) as exc:
                 # No raw remote response, URL, credentials or customer content in operational logs.

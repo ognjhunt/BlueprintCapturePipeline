@@ -16,6 +16,15 @@ from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.semantic_teacher_image_edit_worker import _multipart, _normalized_usage
 
 
+def test_preserved_capture_review_keeps_objects_instead_of_requesting_their_absence():
+    prompt = completion._review_prompt([], frames=[{'novel_view': True}], context_basis='preserved_capture')
+    assert 'No object removal or image inpainting is requested' in prompt
+    assert 'Preserve every photographed object' in prompt and 'object-absent' not in prompt
+    assert 'not geometry, collision, metric or physical validation' in prompt
+    with pytest.raises(ValueError, match='preserved_targets_invalid'):
+        completion._review_prompt([{'disposition': 'remove'}], context_basis='preserved_capture')
+
+
 def _grant(admission):
     return require_paid_resource_admission(admission, resource_class=admission["resource_class"],
                                            expected_schema_version="paid_lane_admission.v1")
@@ -396,7 +405,10 @@ def test_background_review_keeps_client_alive_and_prices_all_novel_capture_conte
         args["plan"]["task_context_sha256"] = sha256(json.dumps(task, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
         def reserve(**kwargs):
             reservations.append(kwargs)
-            return {"status": "admitted"}, object()
+            admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted",
+                         "resource_class": kwargs["resource_class"], "blockers": [],
+                         "allocation_binding_digest": kwargs["binding_digest"]}
+            return admission, _grant(admission)
         monkeypatch.setattr(receipts, "reserve_website_preparation_spend", reserve)
         real_quote = receipts.gemini_quote
         def quote(**kwargs):
