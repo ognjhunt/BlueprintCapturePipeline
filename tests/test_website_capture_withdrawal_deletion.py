@@ -287,6 +287,25 @@ def test_archived_atlas_previews_of_the_walkthrough_are_found_by_name_even_after
     assert not world["store"].present(mine) and world["store"].present(theirs)
 
 
+def test_withdrawal_finds_only_its_job_scoped_revision_previews_without_local_capture_records(world):
+    child = "supplement-" + "a" * 40
+    mine = [_uri("atlas-scene-bundle", digit, f"req1-{capture}.zip")
+            for digit, capture in (("5", child), ("6", "supplement-" + "b" * 40))]
+    others = [_uri("atlas-scene-bundle", "7", f"{request}-{child}.zip")
+              for request in ("req2", "req11")]
+    others.append(_uri("atlas-scene-bundle", "8", "req1-supplement-invalid.zip"))
+    for uri in [*mine, *others]:
+        world["store"].put(uri, b"synthetic preview", versions=2, marker=True)
+    assert not list(world["capture"].parent.glob("supplement-*"))
+    plan = _plan(world)
+    assert plan["unresolved"] == []
+    found = {row["uri"] for row in plan["objects"]}
+    assert set(mine) <= found and not set(others) & found
+    _apply(world, plan)
+    assert all(not world["store"].present(uri) for uri in mine)
+    assert all(world["store"].present(uri) for uri in others)
+
+
 def test_deletion_waits_for_a_running_preview_step_and_then_holds_it_off(world):
     import fcntl
     from blueprint_pipeline import website_atlas_preview as preview

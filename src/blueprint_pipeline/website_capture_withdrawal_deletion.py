@@ -381,14 +381,17 @@ class B2ObjectVersions:
             markers = {"KeyMarker": page["NextKeyMarker"], "VersionIdMarker": page["NextVersionIdMarker"]}
         raise WithdrawalDeletionError("website_withdrawal_deletion_object_listing_unbounded")
 
-    def named(self, prefix: str, filename: str) -> list[str]:
-        """Every key under ``prefix`` whose last part is ``filename``, in any version."""
+    def named(self, prefix: str, filename: str, *, continuation_request_id: str | None = None) -> list[str]:
+        """Exact original and job-scoped continuation archive names, in any version."""
         keys, markers = set(), {}
+        continuation = (re.compile(re.escape(f"{continuation_request_id}-supplement-") + r"[a-f0-9]{40}\.zip")
+                        if continuation_request_id is not None else None)
         for _page in range(10_000):
             page = self.client.list_object_versions(Bucket=self.bucket, Prefix=prefix, **markers)
             for row in [*(page.get("Versions") or []), *(page.get("DeleteMarkers") or [])]:
                 key = str(row.get("Key") or "")
-                if key.rpartition("/")[2] == filename:
+                name = key.rpartition("/")[2]
+                if key.startswith(prefix) and (name == filename or continuation and continuation.fullmatch(name)):
                     keys.add(key)
             if not page.get("IsTruncated"):
                 return sorted(f"s3://{self.bucket}/{key}" for key in keys)
@@ -429,7 +432,7 @@ def _scene_workspace(site: Path, identity: Mapping[str, str], unresolved: list[d
 
 def _atlas_preview_uris(object_store: Any, identity: Mapping[str, str],
                         unresolved: list[dict[str, Any]]) -> list[str]:
-    """Archived Atlas previews of the walkthrough, named for it by ``website_atlas_preview``."""
+    """Original and same-job revision previews, including after workspace retirement."""
     from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
     from .website_atlas_preview_store import ARTIFACT_KIND, bundle_filename
     prefix = f"{LARGE_ARTIFACT_KEY_PREFIX}/{ARTIFACT_KIND}/sha256/"
@@ -437,7 +440,8 @@ def _atlas_preview_uris(object_store: Any, identity: Mapping[str, str],
         unresolved.append({"prefix": prefix, "reason": "website_withdrawal_deletion_object_store_unconfigured"})
         return []
     try:
-        return object_store.named(prefix, bundle_filename(identity["capture_id"]))
+        return object_store.named(prefix, bundle_filename(identity["capture_id"]),
+                                  continuation_request_id=identity["request_id"])
     except WithdrawalDeletionError as error:
         unresolved.append({"prefix": prefix, "reason": str(error)})
         return []

@@ -47,10 +47,10 @@ def _orchestrated(root, owner, context):
 
 
 @pytest.fixture
-def waiting(request, monkeypatch):
-    root, owner, context, _, _, _ = request.getfixturevalue("prepared_source")
+def waiting(prepared_source, monkeypatch):  # noqa: F811 - imported pytest fixture
+    root, owner, context, _, _, _ = prepared_source
     birth = capture_birth_source_projection(root)
-    payload = json.loads(WIRE_FIXTURE.read_bytes())
+    payload = json.loads(WIRE_FIXTURE.read_text().replace("walkthrough-req-1", owner["capture_id"]))
     payload["source_finalize"] = {"bucket": owner["bucket"], "object_name": owner["completion_marker"]["object_name"],
         "generation": owner["completion_marker"]["generation"], "event_id": "original-event",
         "event_source": "original-source"}
@@ -101,6 +101,7 @@ def test_a_redelivery_while_still_waiting_arms_again(waiting):
     assert ledger["attempt_count"] == 2 and resume.armed(ledger)
 
 
+@pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 @pytest.mark.parametrize("state", ["ready", "failed", "needs_input"])
 def test_a_final_atlas_job_replays_the_same_original_payload_once(waiting, state):
     root, _, _, raw, record = waiting
@@ -131,6 +132,7 @@ def test_a_job_waiting_to_recheck_authority_is_not_final(waiting, monkeypatch):
                                                      process_args={"provider": "openai"}) == {"resumed": 0, "pending": 1}
 
 
+@pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 @pytest.mark.parametrize("change", ["payload", "source", "active", "wrong_error", "owner", "context"])
 def test_a_changed_source_ledger_or_authority_is_never_replayed(waiting, monkeypatch, change):
     root = waiting[0]

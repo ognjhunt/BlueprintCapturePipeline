@@ -34,7 +34,8 @@ from typing import Any
 from .common import write_json
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .website_atlas_preview_store import (
-    _ID, ARTIFACT_KIND, JOB_FILE, LOCK_FILE, MAXIMUM_JOB_SECONDS, SCHEMA, TERMINAL, bundle_filename, capture_withdrawn as _withdrawn,
+    ARTIFACT_KIND, JOB_FILE, LOCK_FILE, MAXIMUM_JOB_SECONDS, SCHEMA, TERMINAL,
+    bundle_filename, capture_name_matches_request, capture_withdrawn as _withdrawn,
     read_job as _read)
 
 logger = logging.getLogger(__name__)
@@ -101,13 +102,18 @@ def enqueue_preview(*, descriptor: Any, capture_root: Path, pipeline_dir: Path,
     try:
         request_id = str(descriptor.site_submission_id or descriptor.metadata.get("site_submission_id") or "")
         capture_id, scene_id = descriptor.capture_id, descriptor.scene_id
-        if (not _ID.fullmatch(request_id) or scene_id != f"site-{request_id}"
-                or capture_id != f"walkthrough-{request_id}" or not routed(capture_id)):
+        if (not capture_name_matches_request(request_id, capture_id) or scene_id != f"site-{request_id}"
+                or not routed(capture_id)):
+            return None
+        root = Path(capture_root).resolve()
+        if (root.name != capture_id or root.parent.parent.name != scene_id
+                or Path(pipeline_dir).resolve() != root / "pipeline"):
             return None
         path = Path(pipeline_dir) / "atlas" / JOB_FILE
         if path.is_file():
-            return _read(path)
-        root = Path(capture_root).resolve()
+            job = _read(path)
+            return job if (job.get("request_id"), job.get("scene_id"), job.get("capture_id")) == (
+                request_id, scene_id, capture_id) else None
         if _withdrawn(root):
             return None
         resolved = source_video()
@@ -200,7 +206,7 @@ def _archive(job: Mapping[str, Any], result: Mapping[str, Any]) -> dict[str, Any
     if path.is_symlink() or _sha256_file(path) != download["zip_sha256"]:
         raise ValueError("atlas_preview_bundle_changed")
     verify_dedicated_artifact_store()
-    filename = bundle_filename(job["capture_id"])
+    filename = bundle_filename(job["capture_id"], job["request_id"])
     reference = publish_configured_scene_artifact(path=path, artifact_kind=ARTIFACT_KIND, filename=filename)
     if reference["digest"] != download["zip_sha256"]:
         raise ValueError("atlas_preview_archive_mismatch")
@@ -502,7 +508,9 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
 
 def tick(storage_root: Path, *, now: Callable[[], float] = time.time) -> dict[str, int]:
     counts: dict[str, int] = {}
-    for path in sorted(Path(storage_root).glob(f"*/scenes/site-*/captures/walkthrough-*/pipeline/atlas/{JOB_FILE}")):
+    for path in sorted(Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}")):
+        if not capture_name_matches_request(path.parents[4].name.removeprefix("site-"), path.parents[2].name):
+            continue
         try:
             outcome = advance_job(path, now=now)
         except Exception as error:  # noqa: BLE001 - one unreadable job never stops the others
