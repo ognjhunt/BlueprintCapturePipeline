@@ -63,7 +63,8 @@ def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy
 
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
                                  capture_root: Path, now: float,
-                                 allow_operation_coverage_review: bool = False) -> dict[str, Any]:
+                                 allow_operation_coverage_review: bool = False,
+                                 allow_static_target_recovery: bool = False) -> dict[str, Any]:
     root = capture_root / "pipeline" / "website_scene_preparation"
     root.mkdir(parents=True, exist_ok=True)
     handoff_path = root / "handoff.json"
@@ -151,10 +152,18 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             plan_path = Path(clean_plate["removal_plan_path"])
             if not plan_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
                 raise ValueError("website_scene_removal_plan_outside_capture")
+            recovery_options = {}
+            video = clean_plate.get("input_video_path")
+            if allow_static_target_recovery and isinstance(video, str):
+                source_video = Path(video)
+                if (not source_video.is_symlink()
+                        and source_video.resolve().is_relative_to(capture_root.resolve())):
+                    recovery_options = {"task_context": context, "source_video": source_video,
+                                        "recovery_geometry": atlas["source_geometry"]}
             masks = complete_retained_static_task_masks(plan=json.loads(plan_path.read_text()),
                 source_geometry=clean_plate["source_frames"], task_masks=clean_plate["task_masks"],
                 output_root=plan_path.parent / "task_masks",
-                view_plan_root=plan_path.parent / "mask_view_plan")
+                view_plan_root=plan_path.parent / "mask_view_plan", **recovery_options)
             clean_plate = {**clean_plate, "task_masks": masks}
         geometry = atlas["source_geometry"]
         result.update(geometry_backend=geometry["geometry_backend"],

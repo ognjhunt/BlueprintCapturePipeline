@@ -144,6 +144,114 @@ def test_retained_context_is_not_current_authority(prepared_source, monkeypatch)
     assert _post(prepared_source).status_code == 503
 
 
+def _unconfirmed_task_for_ordinary_birth(source, monkeypatch, *, retain_context=True):
+    root, owner, task, selected, _, _ = source
+    task.update(purpose="scene_preparation", confirmed=False, confirmed_at=None)
+    task["context_digest"] = canonical_digest(task, digest_field="context_digest")
+    selected["task_context_digest"] = task["context_digest"]
+    context_path = root / "pipeline/website_task_context.json"
+    if retain_context:
+        write_json(context_path, task)
+    else:
+        context_path.unlink()
+    reads = []
+
+    def fresh_owner(**kwargs):
+        # The original authenticated capture keeps its ordinary owner scope.
+        assert kwargs.get("expected_purpose") is None
+        return observer.validate_observation(owner, **kwargs)
+
+    def fresh_context(**kwargs):
+        purpose = kwargs.get("purpose")
+        reads.append(("context", purpose))
+        value = dict(task)
+        if purpose is None:
+            value.pop("purpose")  # Same projection as the actual WebApp route.
+            value["context_digest"] = canonical_digest(value, digest_field="context_digest")
+        return context_reader.validate_website_task_context(value, **kwargs)
+
+    def sponsorship(*, task_context, now, create):
+        assert create is False and task_context == task
+        reads.append(("grant", create))
+        return {}  # Standing checks the existing grant through this read seam.
+
+    monkeypatch.setattr(observer, "load_original_owner_observation", fresh_owner)
+    monkeypatch.setattr(context_reader, "load_current_website_task_context", fresh_context)
+    monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", sponsorship)
+    return reads
+
+
+@pytest.mark.parametrize("version", [status_reader.STATUS_V1, status_reader.STATUS_V2, status_reader.STATUS_V3])
+@pytest.mark.parametrize("retain_context", [True, False])
+def test_ordinary_capture_reports_unconfirmed_preparation_without_changing_birth(
+        prepared_source, monkeypatch, version, retain_context):
+    from blueprint_pipeline.task_evaluation_scene_retirement_generations import capture_birth_source_projection
+
+    reads = _unconfirmed_task_for_ordinary_birth(prepared_source, monkeypatch, retain_context=retain_context)
+    root = prepared_source[0]
+    birth = capture_birth_source_projection(root)
+    store = Path(birth["owner_observation_raw_ref"]["path"]).parent
+    def files():
+        return {str(p): p.read_bytes() for directory in (root, store)
+                for p in directory.rglob("*") if p.is_file()}
+    before = files()
+    value = status_reader.read_preparation_status(capture_root=root, selectors=prepared_source[3],
+                                                  schema_version=version)
+    assert value["state"] == "preparing" and value["attempt_count"] == 1
+    assert reads[-1] == ("grant", False)
+    assert ("context", "scene_preparation") in reads
+    assert before == files()
+    assert prepared_source[2]["confirmed"] is False
+
+
+def test_ordinary_capture_can_retain_preparation_wakeup_before_task_context(
+        prepared_source, monkeypatch):
+    reads = _unconfirmed_task_for_ordinary_birth(prepared_source, monkeypatch, retain_context=False)
+    status_reader.retain_preparation_wakeup(prepared_source[0])
+    value = json.loads((prepared_source[0] / status_reader.DELIVERY_FILE).read_text())
+    assert value["selectors"] == prepared_source[3] and value["state"] == "pending"
+    assert reads == [("context", None), ("context", "scene_preparation")]
+
+
+def test_unconfirmed_retained_context_without_preparation_scope_still_refuses(
+        prepared_source, monkeypatch):
+    reads = _unconfirmed_task_for_ordinary_birth(prepared_source, monkeypatch)
+    task = dict(prepared_source[2])
+    task.pop("purpose")
+    task["context_digest"] = canonical_digest(task, digest_field="context_digest")
+    write_json(prepared_source[0] / "pipeline/website_task_context.json", task)
+    with pytest.raises(status_reader.PreparationStatusUnavailable):
+        status_reader.read_preparation_status(capture_root=prepared_source[0], selectors=prepared_source[3])
+    assert reads == []
+
+
+@pytest.mark.parametrize("code", ["website_task_context_response_invalid", "website_task_context_digest_mismatch",
+    "website_control_task-context_http_503:task_context_unavailable",
+    "website_control_task-context_http_409:website_run_closed_by_owner"])
+def test_status_does_not_change_scope_after_an_unrelated_context_refusal(prepared_source, monkeypatch, code):
+    (prepared_source[0] / "pipeline/website_task_context.json").unlink()
+    calls = []
+    def refuse(**kwargs):
+        calls.append(kwargs.get("purpose"))
+        raise ValueError(code)
+    monkeypatch.setattr(context_reader, "load_current_website_task_context", refuse)
+    with pytest.raises(status_reader.PreparationStatusUnavailable):
+        status_reader.read_preparation_status(capture_root=prepared_source[0], selectors=prepared_source[3])
+    assert calls == [None]
+
+
+def test_scoped_preparation_status_preserves_a_new_owner_closure(prepared_source, monkeypatch):
+    reads = _unconfirmed_task_for_ordinary_birth(prepared_source, monkeypatch)
+    def closed(**kwargs):
+        reads.append(("context", kwargs.get("purpose")))
+        raise ValueError("website_control_task-context_http_409:website_run_closed_by_owner")
+    monkeypatch.setattr(context_reader, "load_current_website_task_context", closed)
+    with pytest.raises(status_reader.PreparationStatusUnavailable) as result:
+        status_reader.read_preparation_status(capture_root=prepared_source[0], selectors=prepared_source[3])
+    assert str(result.value.__cause__).endswith("website_run_closed_by_owner")
+    assert reads == [("context", "scene_preparation")]
+
+
 def test_revision_change_during_current_context_refuses_snapshot(prepared_source, monkeypatch):
     root, _, context, _, ledger, _ = prepared_source
     def heartbeat(**kwargs):

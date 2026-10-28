@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -409,7 +410,9 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                           output_root: Path, meta_admission: Mapping[str, Any] | None = None,
                           meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None,
                           source_video: Path | None = None, defer_kept_static: bool = False,
-                          view_plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                          view_plan: Mapping[str, Any] | None = None,
+                          retained_static_masks: Mapping[str, Any] | None = None,
+                          recovery_geometry: Mapping[str, Any] | None = None) -> dict[str, Any]:
     targets = tracked_task_targets(plan)
     if not [target for target in targets if not is_person_removal(target)]:
         raise ValueError("website_task_targets_missing")
@@ -439,6 +442,20 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                     source_geometry["binding"]["source_video_digest"]):
             raise ValueError("website_mask_view_plan_invalid")
         binding["view_plan_digest"] = view_plan["digest"]
+    recovering = retained_static_masks is not None
+    if recovering:
+        if task_context is not None and plan.get("task_context_sha256") != hashlib.sha256(json.dumps(
+                dict(task_context), sort_keys=True, separators=(",", ":")).encode()).hexdigest():
+            raise ValueError("website_retained_static_recovery_context_changed")
+        if (provider != "meta" or not source_video or not task_context or defer_kept_static
+                or retained_static_masks.get("status") != "object_removal_ready"
+                or retained_static_masks.get("digest") != canonical_digest(retained_static_masks, digest_field="digest")
+                or retained_static_masks.get("binding") != binding
+                or not recovery_geometry
+                or recovery_geometry.get("digest") != canonical_digest(recovery_geometry, digest_field="digest")
+                or recovery_geometry.get("binding", {}).get("source_video_digest") !=
+                    source_geometry.get("binding", {}).get("source_video_digest")):
+            raise ValueError("website_retained_static_recovery_binding_invalid")
     request_key = canonical_digest(binding)
     root = output_root.resolve() / request_key[7:23]
     root.mkdir(parents=True, exist_ok=True)
@@ -458,6 +475,12 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         registry, video_artifact = prepare_continuous_video(source=source_video,
             source_digest=source_geometry["binding"]["source_video_digest"], root=root)
         full_registry = registry
+    if recovering and not _registry_frames(retained_static_masks, recovery_geometry):
+        raise ValueError("website_retained_static_recovery_geometry_invalid")
+    retained_targets = {row["target_id"]: row for row in (retained_static_masks or {}).get("targets", [])}
+    recovery_ids = {frame["frame_id"] for frame in recovery_geometry["frames"]} if recovering else set()
+    grounding_registry = ([row for row in registry if row["source_frame_id"] in recovery_ids]
+                          if recovering else registry)
     if provider == "meta" and source_video is not None:
         by_id = {row["source_frame_id"]: row for row in registry}
         for frame in frames:
@@ -498,7 +521,9 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         anchor = (0 if not evidence or evidence[0].get("timestamp_seconds") is None else
                   min(range(len(registry)), key=lambda i: abs(registry[i]["decoded_pts_seconds"] - evidence[0]["timestamp_seconds"])))
         text = target.get("segmentation_prompt") or target["semantic_label"]
-        if view_plan is not None and target.get("task_effect") == "manipulated":
+        if target["target_id"] in retained_targets:
+            text = retained_targets[target["target_id"]]["segmentation_prompt"]
+        elif view_plan is not None and target.get("task_effect") == "manipulated":
             from .website_task_grounding import ground_task_target
             grounded = ground_task_target(target=target, tracks=[], registry=registry,
                 video=video_artifact, task_context=task_context, output_root=root / "grounding")
@@ -533,7 +558,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     if provider == "meta":
         result = run_meta_sam31(frame_registry=registry, frame_artifacts=artifacts, prompts=prompts,
                                output_root=root, admission=meta_admission or {}, admission_grant=meta_admission_grant,
-                               task_context=task_context, video_artifact=video_artifact)
+                               task_context=task_context, video_artifact=video_artifact,
+                               **({"require_retained_video": True} if recovering else {}))
         geometry_ids = {frame["frame_id"] for frame in frames}
         # Full tracks stay in the provider receipt. Sampled source frames drive
         # editing now; the same tracks gain geometry later without a second call.
@@ -562,6 +588,11 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     deferred_target_ids = []
     selected_track_ids = set()
     for target in targets:
+        if target["target_id"] in retained_targets:
+            retained_target = retained_targets[target["target_id"]]
+            selected.append(dict(retained_target))
+            selected_track_ids.add(retained_target["source_track"]["track_id"])
+            continue
         if defer_kept_static and target.get("disposition") == "keep" and target.get("task_effect") != "manipulated":
             deferred_target_ids.append(target["target_id"])
             continue
@@ -590,12 +621,14 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         try:
             identity = select_task_track(target=target, tracks=candidates, frames=identity_frames)
         except ValueError as exc:
+            static_contact = target.get("task_effect") == "static_contact" and target.get("disposition") == "keep"
             if (str(exc) != f"task_target_track_ambiguous:{target['target_id']}"
                     or provider != "meta" or not video_artifact or not task_context
-                    or view_plan is not None):
+                    or (view_plan is not None and not (recovering and static_contact))
+                    or (recovering and not static_contact)):
                 raise
             from .website_task_grounding import ground_task_target
-            grounded = ground_task_target(target=target, tracks=candidates, registry=registry,
+            grounded = ground_task_target(target=target, tracks=candidates, registry=grounding_registry,
                 video=video_artifact, task_context=task_context, output_root=root / "grounding")
             grounding = grounded["grounding"]
             try:
@@ -610,35 +643,40 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                 # not, and fails here rather than shipping one frame of evidence.
                 single_frame_rescue = (target.get("task_effect") == "static_contact"
                                        and target.get("disposition") == "keep")
-                try:
-                    # Bounded concept search, each candidate proved on the
-                    # grounded frame first. Reuse full-video transport and
-                    # admission; never buy repeated identical attempts, and never
-                    # buy a whole clip for a noun the segmenter has not resolved.
-                    grounded = resolve_video_segmentation_concept(target=grounded, tracks=candidates,
-                        registry=registry, video=video_artifact, task_context=task_context,
-                        grounding_root=root / "grounding", probe_root=root / "concept_probes",
-                        failed_concept=previous_prompt)
-                except ValueError as concept_exc:
-                    if str(concept_exc) != ambiguous or not single_frame_rescue:
-                        raise
+                if recovering and single_frame_rescue:
+                    # The paid clip is complete. A static support needs one
+                    # calibrated observed mask, never another full-video call.
                     identity = segment_grounded_static_target(target=grounded, registry=registry,
                         task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
                     selected_prompt = grounded["segmentation_prompt"]
                 else:
-                    grounding = grounded["grounding"]
-                    refined = run_meta_sam31(frame_registry=registry, frame_artifacts=[],
-                        prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"],
-                                  "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
-                        admission={}, task_context=task_context, video_artifact=video_artifact)
                     try:
-                        identity = select_task_track(target=grounded, tracks=refined["tracks"], frames=identity_frames)
-                    except ValueError as refined_exc:
-                        if str(refined_exc) != ambiguous or not single_frame_rescue:
+                        # Removed objects still need full-video coverage. Prove
+                        # a changed concept before buying their clip.
+                        grounded = resolve_video_segmentation_concept(target=grounded, tracks=candidates,
+                            registry=registry, video=video_artifact, task_context=task_context,
+                            grounding_root=root / "grounding", probe_root=root / "concept_probes",
+                            failed_concept=previous_prompt)
+                    except ValueError as concept_exc:
+                        if str(concept_exc) != ambiguous or not single_frame_rescue:
                             raise
                         identity = segment_grounded_static_target(target=grounded, registry=registry,
                             task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
-                    selected_prompt = grounded["segmentation_prompt"]
+                        selected_prompt = grounded["segmentation_prompt"]
+                    else:
+                        grounding = grounded["grounding"]
+                        refined = run_meta_sam31(frame_registry=registry, frame_artifacts=[],
+                            prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"],
+                                      "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
+                            admission={}, task_context=task_context, video_artifact=video_artifact)
+                        try:
+                            identity = select_task_track(target=grounded, tracks=refined["tracks"], frames=identity_frames)
+                        except ValueError as refined_exc:
+                            if str(refined_exc) != ambiguous or not single_frame_rescue:
+                                raise
+                            identity = segment_grounded_static_target(target=grounded, registry=registry,
+                                task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
+                        selected_prompt = grounded["segmentation_prompt"]
                 # The concept can change while target id stays fixed; replace the
                 # sampled candidate below from the exact selected full track.
             tracks = [row for row in tracks if row["track_id"] != identity["track_id"]]
@@ -669,28 +707,60 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
     if video_artifact:
         manifest["source_frame_registry"] = full_registry
         manifest["source_video_digest"] = source_geometry["binding"]["source_video_digest"]
+    if recovering:
+        manifest["retained_static_recovery"] = {"source_task_masks_digest": retained_static_masks["digest"],
+            "reference_geometry_digest": recovery_geometry["digest"], "full_video_reused": True,
+            "static_contact_only": True}
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
-    write_json(root / ("task_masks.object_removal.json" if deferred_target_ids else "task_masks.json"), manifest)
+    manifest_path = root / ("task_masks.object_removal.json" if deferred_target_ids else "task_masks.json")
+    if recovering and manifest_path.is_file():
+        if json.loads(manifest_path.read_text()) != manifest:
+            raise ValueError("website_retained_static_masks_manifest_changed")
+    else:
+        write_json(manifest_path, manifest)
     return manifest
 
 
 def complete_retained_static_task_masks(*, plan: Mapping[str, Any],
                                         source_geometry: Mapping[str, Any],
                                         task_masks: Mapping[str, Any],
-                                        output_root: Path, view_plan_root: Path) -> dict[str, Any]:
-    """Select kept objects from the first, paid SAM response without a provider call.
+                                        output_root: Path, view_plan_root: Path,
+                                        task_context: Mapping[str, Any] | None = None,
+                                        source_video: Path | None = None,
+                                        recovery_geometry: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Select kept objects from the first paid SAM response.
 
     The view-first clip already includes the kept-object prompts. Its tracks were
     deferred for object removal, not absent from the provider response. A missing
     or ambiguous retained observation is a preparation refusal, never a reason
-    to purchase another clip implicitly.
+    to purchase another clip implicitly. Explicit current context, source video
+    and calibrated recovery geometry permit an ambiguous kept contact surface
+    to use exact-frame grounding and a single-image mask under admission.
     """
-    complete = select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
-        task_masks=task_masks, output_root=output_root, view_plan_root=view_plan_root)
+    try:
+        complete = select_retained_static_task_masks(plan=plan, source_geometry=source_geometry,
+            task_masks=task_masks, output_root=output_root, view_plan_root=view_plan_root)
+    except ValueError as exc:
+        target = next((row for row in tracked_task_targets(plan) if
+                       str(exc) == f"task_target_track_ambiguous:{row['target_id']}"), None)
+        if (not target or target.get("task_effect") != "static_contact" or target.get("disposition") != "keep"
+                or task_context is None or source_video is None or recovery_geometry is None):
+            raise
+        if plan.get("task_context_sha256") != hashlib.sha256(json.dumps(
+                dict(task_context), sort_keys=True, separators=(",", ":")).encode()).hexdigest():
+            raise ValueError("website_retained_static_recovery_context_changed") from exc
+        view_plan = None
+        if task_masks["binding"]["mask_input_pixels"] == "selected_original_views_v1":
+            view_plan = next(row for path in view_plan_root.glob("*/view_plan.json") if
+                (row := json.loads(path.read_text())).get("digest") == task_masks["binding"]["view_plan_digest"])
+        complete = run_website_task_masks(plan=plan, source_geometry=source_geometry, output_root=output_root,
+            task_context=task_context, source_video=source_video, view_plan=view_plan,
+            retained_static_masks=task_masks, recovery_geometry=recovery_geometry)
     completed_path = output_root.resolve() / canonical_digest(task_masks["binding"])[7:23] / "task_masks.json"
     if completed_path.is_file() and json.loads(completed_path.read_text()) != complete:
         raise ValueError("website_retained_static_masks_manifest_changed")
-    write_json(completed_path, complete)
+    if not completed_path.is_file():
+        write_json(completed_path, complete)
     return complete
 
 
