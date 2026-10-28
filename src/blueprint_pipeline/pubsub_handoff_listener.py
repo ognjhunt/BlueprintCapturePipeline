@@ -1637,6 +1637,11 @@ def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage
     from .pubsub_handoff_scene_operations import _process_handoff_payload_body
     with ExitStack() as lifetime:
         handoff = parse_handoff_payload(payload)
+        from .handoff_recovery import retained_source_hold
+        held = retained_source_hold(sys.modules[__name__], storage_root=storage_root, handoff=handoff,
+                                    payload_digest=payload_sha256(payload))
+        if held is not None:
+            return held
         root = _handoff_capture_root(handoff, storage_root=storage_root)
         if handoff.source_membership_selector is not None:
             from .task_evaluation_scene_retirement_generations import _capture_admission

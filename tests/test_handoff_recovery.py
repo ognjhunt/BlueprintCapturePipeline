@@ -275,3 +275,127 @@ def test_recovery_status_uses_existing_listener_cli_without_capture_selectors(tm
     assert listener.main(["--storage-root", str(tmp_path), "--recovery-status"]) == 0
     value = json.loads(capsys.readouterr().out)
     assert value["schema_version"] == recovery.STATUS_SCHEMA and value["retained"] == 0
+
+
+@pytest.mark.parametrize("failure,reason,expected,reads", [
+    ("denied", "capture_staging_access_denied", "waiting_authorized_action", 1),
+    ("metadata", "capture_staging_source_invalid", "permanent_invalid", 1),
+    ("transient", "capture_staging_transport_unavailable", "safe_pre_effect", 3),
+])
+def test_canonical_wrapped_membership_failures_preserve_denial_and_invalidity(
+        tmp_path, monkeypatch, failure, reason, expected, reads):
+    from google.api_core.exceptions import Forbidden, ServiceUnavailable
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    from tests.test_capture_generation_birth import _fixture
+    _, _, target, owner, selector, membership = _fixture(tmp_path, monkeypatch, prepare_parent=False)
+    raw = json.dumps({"bucket": owner["bucket"], "scene_id": owner["scene_id"],
+        "capture_id": owner["capture_id"], "raw_prefix_uri": owner["raw_prefix_uri"],
+        "source_finalize": {**json.loads(membership)["source_finalize"], "event_id": "evt-one", "event_source": "storage"},
+        "source_membership_selector": selector}).encode()
+    monkeypatch.setattr(observer, "load_original_owner_observation", lambda **_: owner)
+    observed = []
+    class Blob:
+        generation = selector["generation"]
+        size = selector["size_bytes"] + 1
+        def reload(self, **_kwargs):
+            observed.append("read")
+            if failure == "denied":
+                raise Forbidden("private provider body must stay hidden")
+            if failure == "transient":
+                raise ServiceUnavailable("private provider body must stay hidden")
+    class Bucket:
+        def blob(self, *_args, **_kwargs):
+            return Blob()
+    class Client:
+        def bucket(self, *_args):
+            return Bucket()
+    storage = target.parents[4]
+    args = {"provider": "local", "storage_client": Client(), "run_e2e_enabled": False, "run_evaluation_prep": False}
+    result = listener.process_handoff_payload(raw, storage_root=storage, **args)
+    assert result["staging_reason"] == reason
+    receipt = received(raw)
+    recovery.record_source_result(listener, storage_root=storage, subscription=SOURCE,
+        message=receipt.message, received=receipt, result=result)
+    recovery.pull_retained(listener, subscriber=Broker([receipt]), storage_root=storage, subscription=DLQ,
+        source_subscription=SOURCE, process_args=args, enable_safe=True, max_messages=1, now=1001)
+    recovery.process_retained(listener, storage_root=storage, source_subscription=SOURCE,
+        process_args=args, enable_safe=True, now=100000, dependency_generation="new-release")
+    retained = recovery._read(entry(storage, raw) / "state.json")
+    assert retained["status"] == expected and len(observed) == reads
+    assert "private" not in json.dumps(retained) and not target.exists()
+    if failure != "transient":
+        # A later unavailable duplicate and ordinary source redelivery do not
+        # constitute a correction to the denied/invalid exact source authority.
+        recovery.record_source_result(listener, storage_root=storage, subscription=SOURCE,
+            message=receipt.message, received=receipt, result=SAFE)
+        replay = listener.process_handoff_payload(raw, storage_root=storage, **args)
+        assert replay["staging_reason"] == reason and len(observed) == 1
+        changed_delivery = json.loads(raw)
+        changed_delivery["source_finalize"]["event_id"] = "duplicate-event-with-same-authority"
+        reformatted = json.dumps(changed_delivery, indent=2).encode()
+        replay = listener.process_handoff_payload(reformatted, storage_root=storage, **args)
+        assert replay["staging_reason"] == reason and len(observed) == 1
+
+
+def test_denial_is_absorbing_across_later_outage_observations(tmp_path, monkeypatch):
+    receipt = received()
+    recovery.record_source_result(listener, storage_root=tmp_path, subscription=SOURCE,
+        message=receipt.message, received=receipt, result={**SAFE, "owner_observation_reason": "capture_owner_response_denied"})
+    path = recovery._root(tmp_path) / "source_observations" / (hashlib.sha256(payload()).hexdigest() + ".json")
+    denied_bytes = path.read_bytes()
+    for _ in range(3):
+        recovery.record_source_result(listener, storage_root=tmp_path, subscription=SOURCE,
+            message=receipt.message, received=receipt, result=SAFE)
+    assert path.read_bytes() == denied_bytes
+    monkeypatch.setattr(listener, "process_handoff_payload", lambda *a, **k: pytest.fail("denied source retried"))
+    tick(tmp_path, Broker([receipt]), enabled=True)
+    recovery.process_retained(listener, storage_root=tmp_path, source_subscription=SOURCE,
+        process_args={}, enable_safe=True, now=100000, dependency_generation="another-release")
+    assert recovery._read(entry(tmp_path) / "state.json")["attempts"] == 0
+
+
+@pytest.mark.parametrize("fault", ["initial_state_crash", "corrupt_state"])
+def test_partial_journal_does_not_starve_healthy_successor_or_infer_ack(tmp_path, monkeypatch, fault):
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    good, bad = source_failed(tmp_path, payload("good")), source_failed(tmp_path, payload("bad"))
+    recovery.retain_dlq_message(listener, storage_root=tmp_path, subscription=DLQ,
+        source_subscription=SOURCE, received=received(good), now=1001)
+    write = launch._write
+    def crash(path, value):
+        if path == entry(tmp_path, bad) / "state.json":
+            raise OSError("power loss before initial successor state")
+        return write(path, value)
+    monkeypatch.setattr(launch, "_write", crash)
+    with pytest.raises(OSError):
+        recovery.retain_dlq_message(listener, storage_root=tmp_path, subscription=DLQ,
+            source_subscription=SOURCE, received=received(bad), now=1001)
+    monkeypatch.setattr(launch, "_write", write)
+    if fault == "corrupt_state":
+        (entry(tmp_path, bad) / "state.json").write_text("{interrupted")
+    evidence = (entry(tmp_path, bad) / "event.json").read_bytes()
+    calls = []
+    monkeypatch.setattr(listener, "process_handoff_payload", complete_handler(calls))
+    observed = recovery.process_retained(listener, storage_root=tmp_path, source_subscription=SOURCE,
+        process_args={}, enable_safe=True, limit=1, now=1002)
+    assert len(calls) == 1 and recovery._read(entry(tmp_path, good) / "state.json")["status"] == "completed"
+    assert observed["incomplete_entries"] == 1 and "handoff_recovery_partial_entry" in observed["alerts"]
+    assert (entry(tmp_path, bad) / "event.json").read_bytes() == evidence
+    assert not list((entry(tmp_path, bad) / "acknowledged").glob("*.json"))
+    if fault == "initial_state_crash":
+        assert not (entry(tmp_path, bad) / "state.json").exists()
+        tick(tmp_path, Broker([received(bad)]), enabled=True, now=1003)
+        assert len(calls) == 2 and recovery._read(entry(tmp_path, bad) / "state.json")["status"] == "completed"
+
+
+def test_failure_retaining_replay_outcome_cannot_reuse_old_safe_observation(tmp_path, monkeypatch):
+    source_failed(tmp_path)
+    calls = []
+    monkeypatch.setattr(listener, "process_handoff_payload", lambda *a, **k: calls.append("one") or SAFE)
+    def crash(*_args, **_kwargs):
+        raise OSError("lost outcome persistence")
+    monkeypatch.setattr(recovery, "_record_result", crash)
+    tick(tmp_path, Broker([received()]), enabled=True)
+    recovery.process_retained(listener, storage_root=tmp_path, source_subscription=SOURCE,
+        process_args={}, enable_safe=True, now=100000)
+    assert calls == ["one"]
+    assert recovery._read(entry(tmp_path) / "state.json")["status"] == "reconciliation_required"

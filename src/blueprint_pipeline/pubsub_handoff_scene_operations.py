@@ -178,9 +178,11 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                     **({"expected_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}))
             except Exception as error:
                 from .capture_delivery_staging import CaptureStagingError, STAGING_REASON_CODES
+                from .capture_delivery_failure_kind import staging_failure_reason
 
-                reason = (str(error) if isinstance(error, (CaptureStagingError, CaptureOwnerObservationError))
-                          and str(error) in STAGING_REASON_CODES else 'capture_staging_unavailable')
+                reason = staging_failure_reason(error) or (
+                    str(error) if isinstance(error, (CaptureStagingError, CaptureOwnerObservationError))
+                    and str(error) in STAGING_REASON_CODES else 'capture_staging_unavailable')
                 _listener.logger.warning('pubsub_handoff.capture_source_membership_unavailable',
                                          extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                                                 'staging_reason': reason})

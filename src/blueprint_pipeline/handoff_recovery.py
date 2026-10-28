@@ -34,11 +34,7 @@ DISPOSITION_SCHEMA = "blueprint.handoff_recovery_disposition.v1"
 _SAFE_CAUSES = {
     ("capture_owner_observation_unavailable_retryable", "capture_owner_response_unavailable"):
         "capture_owner_transport_unavailable",
-    ("capture_source_membership_unavailable_retryable", "capture_staging_owner_observation_unavailable"):
-        "capture_owner_transport_unavailable",
-    ("capture_source_membership_unavailable_retryable", "capture_staging_membership_unavailable"):
-        "capture_membership_transport_unavailable",
-    ("capture_source_membership_unavailable_retryable", "capture_staging_unavailable"):
+    ("capture_source_membership_unavailable_retryable", "capture_staging_transport_unavailable"):
         "capture_staging_transport_unavailable",
 }
 _ACTIONS = {"capture_owner_transport_unavailable": "restore_capture_owner_observation",
@@ -49,7 +45,12 @@ _SUMMARY_ACTIONS = {**_ACTIONS, "classification_pending": "classify_original_eff
     "prior_delivery_source_conflict": "reconcile_original_delivery",
     "existing_explicit_processing_wait": "existing_wait_reconciler",
     "original_effect_state_unproven": "reconcile_original_operation",
-    "capture_owner_access_denied": "restore_authorized_capture_owner_read"}
+    "capture_owner_access_denied": "restore_authorized_capture_owner_read",
+    "capture_staging_access_denied": "restore_authorized_capture_source_read",
+    "capture_staging_source_invalid": "correct_original_source_evidence"}
+_HELD_CAUSES = {"capture_owner_response_denied": "capture_owner_access_denied",
+                "capture_staging_access_denied": "capture_staging_access_denied",
+                "capture_staging_source_invalid": "capture_staging_source_invalid"}
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -98,29 +99,84 @@ def _selectors(handoff) -> dict[str, Any]:
                 if handoff.source_membership_selector else None}
 
 
+def _source_authority(handoff) -> dict[str, Any]:
+    selectors = _selectors(handoff)
+    if handoff.source_finalize:
+        # Delivery event IDs and JSON layout are not source authority changes.
+        selectors["source_finalize"] = {key: handoff.source_finalize[key]
+                                        for key in ("bucket", "object_name", "generation")}
+    return selectors
+
+
+def _source_hold(storage_root: Path, handoff) -> dict[str, Any] | None:
+    scope = _source_authority(handoff)
+    path = Path(storage_root) / DIRECTORY / "source_holds" / (canonical_digest(scope)[7:] + ".json")
+    if not path.exists():
+        return None
+    _root(storage_root)
+    value = _read(path)
+    if (value.get("schema_version") != "blueprint.handoff_source_authority_hold.v1"
+            or value.get("source_authority") != scope or value.get("cause") not in _HELD_CAUSES.values()):
+        raise ValueError("handoff_recovery_source_hold_invalid")
+    return value
+
+
 def record_source_result(listener, *, storage_root: Path, subscription: str, message: Any,
                          received: Any, result: Mapping[str, Any] | None) -> None:
     """Private named pre-lease evidence; no exception text or payload in status."""
-    raw = bytes(message.data)
+    _record_result(listener, storage_root=storage_root, subscription=subscription, raw=bytes(message.data),
+                   result=result, source_message_id=str(message.message_id),
+                   delivery_attempt=getattr(received, "delivery_attempt", None))
+
+
+def _record_result(listener, *, storage_root: Path, subscription: str, raw: bytes,
+                   result: Mapping[str, Any] | None, source_message_id=None, delivery_attempt=None) -> None:
     handoff = listener.parse_handoff_payload(raw)
     code = (result or {}).get("owner_observation_reason") or (result or {}).get("staging_reason")
     cause = _SAFE_CAUSES.get(((result or {}).get("status"), code))
-    denied = code == "capture_owner_response_denied"
+    held = _HELD_CAUSES.get(code)
     # A duplicate can fail its read while the original owns paid effects.
     # That new pre-lease failure never erases the original effect ledger.
     if listener._read_job_ledger(listener._handoff_capture_root(handoff, storage_root=storage_root)):
         cause = None
-        denied = False
+        held = None
     root = _root(storage_root) / "source_observations"
     root.mkdir(exist_ok=True, mode=0o700)
+    if held:
+        scope = _source_authority(handoff)
+        holds = root.parent / "source_holds"
+        holds.mkdir(exist_ok=True, mode=0o700)
+        from .beta_policy_screening_launch import _write
+        try:
+            _write(holds / (canonical_digest(scope)[7:] + ".json"), {
+                "schema_version": "blueprint.handoff_source_authority_hold.v1",
+                "source_authority": scope, "cause": held})
+        except FileExistsError:
+            pass  # The first refusal is absorbing for these exact source selectors.
+    retained_hold = _source_hold(storage_root, handoff)
+    if retained_hold:
+        held, cause = retained_hold["cause"], None
     digest = hashlib.sha256(raw).hexdigest()
-    write_json(root / (digest + ".json"), {
-        "schema_version": "blueprint.handoff_source_recovery_observation.v1", "source_payload_sha256": digest,
-        "source_subscription": subscription, "source_message_id": str(message.message_id),
-        "source_delivery_attempt": getattr(received, "delivery_attempt", None), **_selectors(handoff),
-        "effect_state": "pre_lease" if cause else "waiting_for_authorized_action" if denied else "unproven",
-        "cause": cause or ("capture_owner_access_denied" if denied else "original_effect_state_unproven"),
-        "observed_at_epoch": time.time()})
+    descriptor = os.open(root / (digest + ".lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        path = root / (digest + ".json")
+        previous = _read(path) if path.exists() else {}
+        # A later outage, release, timer or duplicate delivery cannot supply
+        # materially new authorization for these exact immutable source bytes.
+        if previous.get("effect_state") in {"waiting_for_authorized_action", "permanent_invalid"}:
+            return
+        write_json(path, {
+            "schema_version": "blueprint.handoff_source_recovery_observation.v1", "source_payload_sha256": digest,
+            "source_subscription": subscription,
+            "source_message_id": source_message_id if source_message_id is not None else previous.get("source_message_id"),
+            "source_delivery_attempt": delivery_attempt if source_message_id is not None else previous.get("source_delivery_attempt"),
+            **_selectors(handoff),
+            "effect_state": "pre_lease" if cause else "permanent_invalid" if held == "capture_staging_source_invalid"
+                else "waiting_for_authorized_action" if held else "unproven",
+            "cause": cause or held or "original_effect_state_unproven", "observed_at_epoch": time.time()})
+    finally:
+        os.close(descriptor)
 
 
 def _published_at(message: Any, fallback: float) -> float | None:
@@ -132,6 +188,34 @@ def _published_at(message: Any, fallback: float) -> float | None:
         return epoch
     except (ValueError, TypeError, OverflowError):
         return None
+
+
+def retained_source_hold(listener, *, storage_root: Path, handoff, payload_digest: str) -> dict[str, Any] | None:
+    """An ordinary broker redelivery cannot reread a denied immutable source."""
+    path = Path(storage_root) / DIRECTORY / "source_observations" / (payload_digest + ".json")
+    retained = _source_hold(storage_root, handoff)
+    if retained:
+        value = {"source_payload_sha256": payload_digest,
+                 "effect_state": "permanent_invalid" if retained["cause"] == "capture_staging_source_invalid"
+                    else "waiting_for_authorized_action", **_selectors(handoff), "cause": retained["cause"]}
+    elif not path.exists():
+        return None
+    else:
+        _root(storage_root)
+        value = _read(path)
+    if (value.get("source_payload_sha256") == payload_digest
+            and value.get("effect_state") in {"waiting_for_authorized_action", "permanent_invalid"}
+            and value.get("cause") in _HELD_CAUSES.values()
+            and all(value.get(key) == item for key, item in _selectors(handoff).items())):
+        reason = next(code for code, cause in _HELD_CAUSES.items() if cause == value["cause"])
+        owner = reason == "capture_owner_response_denied"
+        return {"schema_version": "v1", "status": "capture_owner_observation_unavailable_retryable" if owner
+                    else "capture_source_membership_unavailable_retryable", "queue_disposition": "retryable",
+                "bucket": handoff.bucket, "scene_id": handoff.scene_id, "capture_id": handoff.capture_id,
+                "capture_root": str(listener._handoff_capture_root(handoff, storage_root=storage_root)),
+                "owner_observation_reason" if owner else "staging_reason": reason,
+                "blockers": [value["cause"]], "next_action": _SUMMARY_ACTIONS[value["cause"]]}
+    return None
 
 
 def retain_dlq_message(listener, *, storage_root: Path, subscription: str, source_subscription: str,
@@ -238,18 +322,23 @@ def _classify(listener, *, storage_root: Path, entry: Path, source_subscription:
                     "next_action": "existing_wait_reconciler", **ledger_binding}
         return {"status": "reconciliation_required", "cause": "original_effect_state_unproven",
                 "next_action": "reconcile_original_operation", **ledger_binding}
+    held = _source_hold(storage_root, handoff)
+    if held:
+        return {"status": "permanent_invalid" if held["cause"] == "capture_staging_source_invalid" else "waiting_authorized_action",
+                "cause": held["cause"], "next_action": _SUMMARY_ACTIONS[held["cause"]]}
     state = _read(entry / "state.json")
-    if state.get("effect_reconciliation_required"):
-        return {"status": "reconciliation_required", "cause": "original_effect_state_unproven",
-                "next_action": "reconcile_original_operation"}
     observation_path = _root(storage_root) / "source_observations" / (entry.name + ".json")
     before = _read(observation_path) if observation_path.exists() else {}
     if (before.get("source_subscription") == source_subscription
             and before.get("source_payload_sha256") == entry.name
-            and before.get("effect_state") == "waiting_for_authorized_action"
-            and before.get("cause") == "capture_owner_access_denied"):
-        return {"status": "waiting_authorized_action", "cause": "capture_owner_access_denied",
-                "next_action": "restore_authorized_capture_owner_read"}
+            and before.get("effect_state") in {"waiting_for_authorized_action", "permanent_invalid"}
+            and before.get("cause") in _HELD_CAUSES.values()
+            and all(before.get(key) == value for key, value in _selectors(handoff).items())):
+        return {"status": "permanent_invalid" if before["effect_state"] == "permanent_invalid" else "waiting_authorized_action",
+                "cause": before["cause"], "next_action": _SUMMARY_ACTIONS[before["cause"]]}
+    if state.get("effect_reconciliation_required"):
+        return {"status": "reconciliation_required", "cause": "original_effect_state_unproven",
+                "next_action": "reconcile_original_operation"}
     if (handoff.source_finalize is not None and handoff.source_membership_selector is not None
             and before.get("source_subscription") == source_subscription
             and before.get("source_payload_sha256") == entry.name
@@ -274,6 +363,88 @@ def _backoff(digest: str, attempts: int) -> float:
     return min(3600, 60 * 2 ** min(attempts, 6)) + int(digest[:4], 16) % 30
 
 
+def _retained_states(root: Path) -> tuple[list[tuple[Path, dict[str, Any]]], int]:
+    """Partial/corrupt successors stay unacknowledged and cannot poison peers."""
+    values, incomplete = [], 0
+    for entry in root.iterdir():
+        if not re.fullmatch(r"[0-9a-f]{64}", entry.name) or not entry.is_dir() or entry.is_symlink():
+            continue
+        try:
+            value = _read(entry / "state.json")
+            if (value.get("schema_version") != "blueprint.handoff_recovery_state.v1"
+                    or value.get("source_payload_sha256") != entry.name
+                    or type(value.get("attempts")) is not int or value["attempts"] < 0
+                    or not isinstance(value.get("status"), str) or not isinstance(value.get("cause"), str)
+                    or any(type(value.get(key)) not in (int, float) or not math.isfinite(value[key]) or value[key] < 0
+                           for key in ("next_attempt_at_epoch", "first_retained_at_epoch"))
+                    or type(value.get("last_observed_at_epoch", 0)) not in (int, float)
+                    or not math.isfinite(value.get("last_observed_at_epoch", 0))):
+                raise ValueError("handoff_recovery_state_invalid")
+            values.append((entry, value))
+        except (OSError, ValueError, TypeError):
+            incomplete += 1
+    return values, incomplete
+
+
+def _process_entry(listener, *, entry: Path, state: dict[str, Any], storage_root: Path,
+                   source_subscription: str, process_args: Mapping[str, Any], enable_safe: bool,
+                   moment: float, dependency_generation: str) -> None:
+    event, raw, handoff = _event(listener, entry)
+    dependency_changed = (dependency_generation and dependency_generation != state.get("dependency_generation"))
+    if moment < state["next_attempt_at_epoch"] and not dependency_changed:
+        return
+    classification = _classify(listener, storage_root=storage_root, entry=entry,
+                               source_subscription=source_subscription)
+    if (classification["status"] == "safe_pre_effect" and enable_safe
+            and (moment >= state["next_attempt_at_epoch"] or dependency_changed)):
+        # The last classifier can race source processing. The real
+        # claim CAS refuses every existing ledger before execution.
+        state.update(status="processing", attempts=state["attempts"] + 1,
+            dependency_generation=dependency_generation, last_attempt_at_epoch=moment,
+            next_attempt_at_epoch=moment + _backoff(entry.name, state["attempts"]),
+            effect_reconciliation_required=True)
+        write_json(entry / "state.json", state)
+        try:
+            result = listener.process_handoff_payload(raw, storage_root=storage_root,
+                payload_digest=entry.name, require_unattempted_delivery=True, **dict(process_args))
+        except Exception:
+            result = None  # Reclassify the actual effect ledger; never blind retry.
+        # Preserve a new known pre-lease failure for the same exact
+        # bytes. A generic exception can't turn into retry authority.
+        if result is not None and result.get("queue_disposition") == "retryable":
+            _record_result(listener, storage_root=storage_root, subscription=source_subscription,
+                raw=raw, result=result)
+            code = result.get("owner_observation_reason") or result.get("staging_reason")
+            if code in _HELD_CAUSES:
+                classification = _classify(listener, storage_root=storage_root, entry=entry,
+                                           source_subscription=source_subscription)
+            elif (result.get("status"), code) not in _SAFE_CAUSES:
+                state["cause"] = "original_effect_state_unproven"
+                state["effect_reconciliation_required"] = True
+                write_json(entry / "state.json", state)
+                classification = {"status": "reconciliation_required", "cause": state["cause"],
+                    "next_action": "reconcile_original_operation"}
+            else:
+                state["effect_reconciliation_required"] = False
+                write_json(entry / "state.json", state)
+                classification = _classify(listener, storage_root=storage_root, entry=entry,
+                                           source_subscription=source_subscription)
+        else:
+            classification = _classify(listener, storage_root=storage_root, entry=entry,
+                                       source_subscription=source_subscription)
+            if classification["status"] == "safe_pre_effect":
+                classification = {"status": "reconciliation_required", "cause": "original_effect_state_unproven",
+                                  "next_action": "reconcile_original_operation"}
+                state["effect_reconciliation_required"] = True
+    if state["next_attempt_at_epoch"] <= moment:
+        state["next_attempt_at_epoch"] = moment + _backoff(entry.name, state["attempts"])
+    disposition = _commit_disposition(entry, event, classification, moment)
+    state.update(classification, disposition_digest=disposition["disposition_digest"],
+                 retry_exhaustion_proven=False, last_observed_at_epoch=moment,
+                 dependency_generation=dependency_generation)
+    write_json(entry / "state.json", state)
+
+
 def process_retained(listener, *, storage_root: Path, source_subscription: str, process_args: Mapping[str, Any],
                      enable_safe: bool = False, limit: int = 1, now: float | None = None,
                      dependency_generation: str = "") -> dict[str, Any]:
@@ -282,62 +453,32 @@ def process_retained(listener, *, storage_root: Path, source_subscription: str, 
     examined = 0
     try:
         with _lock(root):
-            entries = sorted((path for path in root.iterdir() if re.fullmatch(r"[0-9a-f]{64}", path.name)
-                              and path.is_dir() and not path.is_symlink()),
-                             key=lambda path: (_read(path / "state.json").get("next_attempt_at_epoch", 0),
-                                               _read(path / "state.json").get("last_observed_at_epoch", 0)))
-            for entry in entries:
+            states, _incomplete = _retained_states(root)
+            entries = sorted(states, key=lambda item: (item[1]["next_attempt_at_epoch"],
+                                                       item[1].get("last_observed_at_epoch", 0)))
+            isolated = 0
+            for entry, state in entries:
                 if examined >= max(0, min(limit, 100)):
                     break
-                event, raw, handoff = _event(listener, entry)
-                state = _read(entry / "state.json")
-                dependency_changed = (dependency_generation and dependency_generation != state.get("dependency_generation"))
-                if moment < state["next_attempt_at_epoch"] and not dependency_changed:
+                if (moment < state["next_attempt_at_epoch"] and not
+                        (dependency_generation and dependency_generation != state.get("dependency_generation"))):
                     continue
-                examined += 1
-                classification = _classify(listener, storage_root=storage_root, entry=entry,
-                                           source_subscription=source_subscription)
-                if (classification["status"] == "safe_pre_effect" and enable_safe
-                        and (moment >= state["next_attempt_at_epoch"] or dependency_changed)):
-                    # The last classifier can race source processing. The real
-                    # claim CAS refuses every existing ledger before execution.
-                    state.update(status="processing", attempts=state["attempts"] + 1,
-                        dependency_generation=dependency_generation, last_attempt_at_epoch=moment,
-                        next_attempt_at_epoch=moment + _backoff(entry.name, state["attempts"]))
-                    write_json(entry / "state.json", state)
-                    try:
-                        result = listener.process_handoff_payload(raw, storage_root=storage_root,
-                            payload_digest=entry.name, require_unattempted_delivery=True, **dict(process_args))
-                    except Exception:
-                        result = None  # Reclassify the actual effect ledger; never blind retry.
-                    # Preserve a new known pre-lease failure for the same exact
-                    # bytes. A generic exception can't turn into retry authority.
-                    if result is not None and result.get("queue_disposition") == "retryable":
-                        code = result.get("owner_observation_reason") or result.get("staging_reason")
-                        if (result.get("status"), code) not in _SAFE_CAUSES:
-                            state["cause"] = "original_effect_state_unproven"
-                            state["effect_reconciliation_required"] = True
-                            write_json(entry / "state.json", state)
-                            classification = {"status": "reconciliation_required", "cause": state["cause"],
-                                "next_action": "reconcile_original_operation"}
-                        else:
-                            classification = _classify(listener, storage_root=storage_root, entry=entry,
-                                                       source_subscription=source_subscription)
-                    else:
-                        classification = _classify(listener, storage_root=storage_root, entry=entry,
-                                                   source_subscription=source_subscription)
-                        if classification["status"] == "safe_pre_effect":
-                            classification = {"status": "reconciliation_required", "cause": "original_effect_state_unproven",
-                                              "next_action": "reconcile_original_operation"}
-                            state["effect_reconciliation_required"] = True
-                if state["next_attempt_at_epoch"] <= moment:
-                    state["next_attempt_at_epoch"] = moment + _backoff(entry.name, state["attempts"])
-                disposition = _commit_disposition(entry, event, classification, moment)
-                state.update(classification, disposition_digest=disposition["disposition_digest"],
-                             retry_exhaustion_proven=False, last_observed_at_epoch=moment,
-                             dependency_generation=dependency_generation)
-                write_json(entry / "state.json", state)
-            return status(storage_root=storage_root, now=moment)
+                try:
+                    _process_entry(listener, entry=entry, state=state, storage_root=storage_root,
+                        source_subscription=source_subscription, process_args=process_args,
+                        enable_safe=enable_safe, moment=moment, dependency_generation=dependency_generation)
+                    examined += 1
+                except (OSError, ValueError, TypeError, KeyError):
+                    # Preserve every partial byte and unknown effect. A broker
+                    # redelivery can complete a pre-state journal; no synthetic
+                    # ack or attempt completion is inferred here.
+                    isolated += 1
+            result = status(storage_root=storage_root, now=moment)
+            if isolated:
+                result["isolated_entries"] = isolated
+                result["alerts"] = sorted(set(result["alerts"]) | {"handoff_recovery_entry_unavailable"})
+                write_json(root / "status.json", result)
+            return result
     except BlockingIOError:
         return {"schema_version": STATUS_SCHEMA, "status": "worker_busy"}
 
@@ -345,18 +486,34 @@ def process_retained(listener, *, storage_root: Path, source_subscription: str, 
 def status(*, storage_root: Path, now: float | None = None) -> dict[str, Any]:
     root = _root(storage_root)
     moment = time.time() if now is None else now
-    rows = [_read(path) for path in root.glob("*/state.json") if re.fullmatch(r"[0-9a-f]{64}", path.parent.name)]
+    states, incomplete = _retained_states(root)
+    rows = [value for _entry, value in states]
     pending = [row for row in rows if row["status"] not in {"completed", "authority_ended", "permanent_invalid"}]
     due = [row for row in pending if row["next_attempt_at_epoch"] <= moment]
     pending_ids = {row["source_payload_sha256"] for row in pending}
-    provenance = [_read(path) for path in root.glob("*/broker/*.json") if path.parents[1].name in pending_ids]
+    provenance, corrupt_provenance = [], 0
+    for path in root.glob("*/broker/*.json"):
+        if path.parents[1].name not in pending_ids:
+            continue
+        try:
+            retained = _read(path)
+            if (retained.get("source_payload_sha256") != path.parents[1].name
+                    or any(retained.get(key) is not None and (type(retained[key]) not in (int, float)
+                        or not math.isfinite(retained[key])) for key in (
+                            "retention_deadline_epoch", "dlq_publish_at_epoch"))):
+                raise ValueError("handoff_recovery_provenance_invalid")
+            provenance.append(retained)
+        except (OSError, ValueError, TypeError):
+            corrupt_provenance += 1
     deadlines = [value["retention_deadline_epoch"] for value in provenance if value.get("retention_deadline_epoch") is not None]
     published = {}
     for value in provenance:
         if value.get("dlq_publish_at_epoch") is not None:
             key = value["source_payload_sha256"]
             published[key] = min(value["dlq_publish_at_epoch"], published.get(key, value["dlq_publish_at_epoch"]))
-    alerts = []
+    alerts = ["handoff_recovery_partial_entry"] if incomplete else []
+    if corrupt_provenance:
+        alerts.append("handoff_recovery_entry_unavailable")
     if any(row["status"] == "orphaned" for row in rows):
         alerts.append("handoff_recovery_orphaned_dlq")
     if any(not value.get("publish_time_proven") for value in provenance):
@@ -367,7 +524,7 @@ def status(*, storage_root: Path, now: float | None = None) -> dict[str, Any]:
         alerts.append("handoff_recovery_reconciliation_required")
     causes = {cause: [row for row in pending if row["cause"] == cause] for cause in _SUMMARY_ACTIONS}
     value = {"schema_version": STATUS_SCHEMA, "status": "observed", "retained": len(rows),
-        "pending": len(pending), "due_backlog": len(due),
+        "pending": len(pending), "due_backlog": len(due), "incomplete_entries": incomplete,
         "oldest_age_seconds": max([moment - min(row["first_retained_at_epoch"],
             published.get(row["source_payload_sha256"], row["first_retained_at_epoch"])) for row in pending] or [0]),
         "oldest_due_age_seconds": max([moment - row["next_attempt_at_epoch"] for row in due] or [0]),

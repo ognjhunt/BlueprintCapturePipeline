@@ -33,6 +33,23 @@ and one wake after an observed release/dependency generation change. A denial,
 changed source, deliberate hold or unclassified error is never made retryable
 by elapsed time or deployment.
 
+Staging wrappers preserve typed HTTP access refusals and source integrity
+failures. Only positively identified network/time-out/408/429/5xx failures
+enter the transport allowlist; a generic staging exception is unknown. Access
+denials and malformed generation-pinned source evidence are absorbing for the
+same bucket/capture/finalization and membership authority. A later unavailable
+observation, JSON reformat, event ID, restart or release cannot clear them.
+Source redelivery also returns the retained hold before another remote read.
+Corrected permissions require materially new verified source authority; this
+worker provides no automatic hold override or credential change.
+
+A crash before the initial successor state is durable leaves its event and
+broker bytes untouched and unacknowledged. Redelivery can complete that initial
+state. Missing/corrupt entries are isolated and reported by the safe status
+summary so they cannot starve healthy successors. A crash while recording a
+replay outcome retains reconciliation authority, rather than reusing an older
+safe pre-effect observation.
+
 Completed canonical output is adopted. Ended authority remains ended. Explicit
 assessment/reconstruction waits retain their existing wait reconcilers.
 Unknown provider outcomes retain the original operation and an exact named
