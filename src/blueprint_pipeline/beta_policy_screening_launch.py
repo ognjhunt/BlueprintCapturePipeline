@@ -1,4 +1,4 @@
-"""Execute diagnostic beta candidates through the canonical canary allocator.
+"""Execute beta job-evaluation candidates through the canonical canary allocator.
 
 Beta L5: preparation seals the existing scene and policy runtime, then one
 deterministic attempt can start at most one canonical allocator. A missing
@@ -96,10 +96,6 @@ def _identity(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str
 
 
 def _check_quote(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
-    finalist = plan.get("purpose") == "finalist"
-    if finalist:
-        from .beta_policy_finalists import require_finalist_authority
-        require_finalist_authority(plan)
     quote = candidate["cost_quote"]
     expires = datetime.fromisoformat(str(quote["valid_until"]).replace("Z", "+00:00"))
     cap = Decimal(str(candidate["max_cost_usd"]))
@@ -107,7 +103,7 @@ def _check_quote(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
     rate = Decimal(str(execution["max_hourly_rate_usd"]))
     ttl = execution["hard_ttl_seconds"]
     if (expires.tzinfo is None or expires <= datetime.now(timezone.utc)
-            or not cap.is_finite() or not Decimal("0") < cap <= Decimal(str(plan["budget_usd"])) <= Decimal("20" if finalist else "15")
+            or not cap.is_finite() or not Decimal("0") < cap <= Decimal(str(plan["budget_usd"])) <= Decimal("15")
             or not rate.is_finite() or rate <= 0 or type(ttl) is not int or ttl < 1800
             or rate * Decimal(ttl) / Decimal(3600) > cap
             or quote.get("quote_digest") != canonical_digest(quote, digest_field="quote_digest")
@@ -191,9 +187,7 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
         raise ValueError("beta_screening_episode_count_invalid")
     run_id = "beta-" + canonical_digest({**identity, "attempt_dir": str(root)})[7:39]
     binding = {"schema_version": BETA_ADMISSION_SCHEMA_VERSION, **identity,
-               "admission_digest": candidate["admission_digest"], "evaluation_purpose": plan["purpose"],
-               **({"owner_authority_digest": plan["finalist_binding"]["owner_authority_digest"],
-                   "finalist_id": plan["campaign_id"]} if plan["purpose"] == "finalist" else {}),
+               "admission_digest": candidate["admission_digest"], "evaluation_purpose": "screening",
                "backend": execution["backend"], "scene_revision_digest": plan["scene_revision_digest"],
                "task_success_contract_digest": scene["task_success_contract_digest"],
                **({"pre_policy_site_qualification_required": True,

@@ -641,23 +641,18 @@ def run_native_task_arena_policy_canary_session_vast(
                 **recorded,
             }
         owner = authority.get("scene_execution_owner")
-        finalist = (authority.get("beta_screening_admission") or {}).get("evaluation_purpose") == "finalist"
         def owner_pre_create() -> dict[str, Any]:
             from .task_evaluation_scene_execution_authority import require_scene_execution_authority
-            if "scene_execution_owner" in authority:
-                if not isinstance(owner, Mapping):
-                    raise ValueError("policy_canary_scene_execution_owner_invalid")
-                require_scene_execution_authority(owner, maximum_spend_usd=hard_cap_usd, provider="vast")
-            if finalist:
-                from .beta_policy_finalists import consume_finalist_provider_create
-                return consume_finalist_provider_create(authority, prepared_bundle, job_dir=job_dir, max_hourly_rate_usd=max_hourly_rate_usd)
+            if not isinstance(owner, Mapping):
+                raise ValueError("policy_canary_scene_execution_owner_invalid")
+            require_scene_execution_authority(owner, maximum_spend_usd=hard_cap_usd, provider="vast")
             return {"status": "consumed", "authority_digest": authority["authority_digest"],
                     "scene_attempt_id": owner["scene_attempt_id"]}
 
         pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
         groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
         result = run_arena_native_control_vast(
-            pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority or finalist else None,
+            pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
             approval_path=".",
             job_dir=job_dir,
             paid_resource_admission_grant=paid_resource_admission_grant,

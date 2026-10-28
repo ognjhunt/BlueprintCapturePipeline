@@ -720,8 +720,7 @@ def run_arena_native_control_vast(
         if type(hard_deadline_epoch) not in (int, float) or not math.isfinite(hard_deadline_epoch):
             raise ValueError("adp_arena_hard_deadline_invalid")
         remaining_live_minutes = min(remaining_live_minutes, math.floor((hard_deadline_epoch - time.time()) / 60))
-    full_team_session = (bundle.get("run_kind") == "team_candidate_evaluation"
-                         or (bundle.get("beta_screening_admission") or {}).get("evaluation_purpose") == "finalist")
+    full_team_session = bundle.get("run_kind") == "team_candidate_evaluation"
     if full_team_session and remaining_live_minutes * 60 < hard_ttl_seconds:
         result = {"schema_version": result_schema_version, "generated_at": generated,
                   "status": "blocked", "provider_mutations_performed": 0,

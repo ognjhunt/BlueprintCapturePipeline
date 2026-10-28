@@ -141,12 +141,12 @@ def _candidate_set(value: Any, run_kind: Any) -> tuple[str, ...]:
     return (str(value[0]),)
 
 
-def episodes_per_policy_for(run_kind: Any, cell_count: Any, *, finalist: bool = False) -> int:
+def episodes_per_policy_for(run_kind: Any, cell_count: Any) -> int:
     """The episode count a session of ``run_kind`` with ``cell_count`` cells must carry."""
     if run_kind not in (TEAM_RUN_KIND, BETA_RUN_KIND):
         return EPISODES_PER_POLICY
     if (isinstance(cell_count, bool) or not isinstance(cell_count, int)
-            or not 1 <= cell_count <= (EPISODES_PER_POLICY if run_kind == BETA_RUN_KIND and not finalist else TEAM_MAX_CELLS_PER_SESSION)):
+            or not 1 <= cell_count <= (EPISODES_PER_POLICY if run_kind == BETA_RUN_KIND else TEAM_MAX_CELLS_PER_SESSION)):
         raise PolicyCanarySessionError("policy_canary_team_cell_count_invalid")
     return cell_count
 
@@ -183,12 +183,6 @@ def _beta_admission_binding(payload: Mapping[str, Any]) -> None:
     digests = ("admission_digest", "plan_digest", "configuration_digest", "scene_revision_digest",
                "task_success_contract_digest")
     fields = {"schema_version", "candidate_id", "evaluation_purpose", "backend", *digests}
-    finalist = row.get("evaluation_purpose") == "finalist"
-    if finalist:
-        fields |= {"owner_authority_digest", "finalist_id"}
-    count = len(payload["cells"]) if isinstance(payload.get("cells"), list) else payload.get("episodes_per_policy")
-    count_valid = (count == 200 and _digest(row.get("owner_authority_digest"))
-                   and re.fullmatch(r"finalist-[a-f0-9]{32}", str(row.get("finalist_id") or ""))) if finalist else type(count) is int and 1 <= count <= EPISODES_PER_POLICY
     family = row.get("backend") == "task_family_native.v1"
     if family:
         fields |= {"pre_policy_site_qualification_required", "family_static_readiness_digest"}
@@ -209,8 +203,7 @@ def _beta_admission_binding(payload: Mapping[str, Any]) -> None:
                                 and _digest(row.get("robot_free_probe_receipt_digest")))
     if (set(row) != fields
             or row.get("schema_version") != BETA_ADMISSION_SCHEMA_VERSION
-            or row.get("evaluation_purpose") not in {"screening", "finalist"} or not count_valid
-            or finalist and family or not family_binding_valid
+            or row.get("evaluation_purpose") != "screening" or not family_binding_valid
             or not all(_digest(row.get(key)) for key in digests)
             or [row.get("candidate_id")] != list(payload.get("candidate_ids") or [])
             or any(row.get(key) != payload.get(key) for key in
@@ -382,8 +375,7 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise PolicyCanarySessionError("policy_canary_runtime_input_authority_invalid")
     cells = payload.get("cells")
-    if not isinstance(cells, list) or len(cells) != episodes_per_policy_for(payload.get("run_kind"), len(cells),
-            finalist=_mapping(payload.get("beta_screening_admission")).get("evaluation_purpose") == "finalist"):
+    if not isinstance(cells, list) or len(cells) != episodes_per_policy_for(payload.get("run_kind"), len(cells)):
         raise PolicyCanarySessionError("policy_canary_runtime_input_cells_invalid")
     seen_cells: set[str] = set()
     seen_seeds: set[int] = set()
@@ -452,8 +444,7 @@ def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
         or payload.get("run_kind") not in RUN_KINDS
         or payload.get("claim_ceiling") != CLAIM_CEILING
         or payload.get("episodes_per_policy")
-        != episodes_per_policy_for(payload.get("run_kind"), payload.get("episodes_per_policy"),
-            finalist=_mapping(payload.get("beta_screening_admission")).get("evaluation_purpose") == "finalist")
+        != episodes_per_policy_for(payload.get("run_kind"), payload.get("episodes_per_policy"))
         or payload.get("learned_policy_rollout_count")
         != payload.get("episodes_per_policy") * len(candidate_ids)
         or payload.get("maximum_provider_allocations") != 1
@@ -767,8 +758,7 @@ def validate_session_result(
         or payload.get("run_kind") not in RUN_KINDS
         or payload.get("claim_ceiling") != CLAIM_CEILING
         or payload.get("episodes_per_policy")
-        != episodes_per_policy_for(payload.get("run_kind"), payload.get("episodes_per_policy"),
-            finalist=_mapping(payload.get("beta_screening_admission")).get("evaluation_purpose") == "finalist")
+        != episodes_per_policy_for(payload.get("run_kind"), payload.get("episodes_per_policy"))
         or payload.get("learned_policy_rollout_count")
         != payload.get("episodes_per_policy") * len(candidate_ids)
         or payload.get("retry_cap") != 0

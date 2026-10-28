@@ -121,12 +121,12 @@ def test_provider_bundle_stages_only_operator_catalog_and_sealed_qualification(t
         _family_operator_inputs({"qualified-policy": spec})
 
 
-def _family_beta_admission_payload():
+def test_family_beta_admission_requires_pending_qualification_instead_of_invented_probe():
     from blueprint_pipeline.native_task_arena_policy_canary_session import (
-        BETA_ADMISSION_SCHEMA_VERSION, BETA_RUN_KIND,
+        BETA_ADMISSION_SCHEMA_VERSION, BETA_RUN_KIND, PolicyCanarySessionError, _beta_admission_binding,
     )
 
-    payload = {"run_kind": BETA_RUN_KIND, "candidate_ids": ["qualified-policy"], "episodes_per_policy": 1,
+    payload = {"run_kind": BETA_RUN_KIND, "candidate_ids": ["qualified-policy"],
                "task_success_contract": _scene()["task_spec"]["task_success_contract"],
                "pre_policy_site_qualification_required": True, "family_static_readiness_digest": SHA,
                **{key: SHA for key in ("scene_revision_digest", "task_success_contract_digest",
@@ -136,28 +136,8 @@ def _family_beta_admission_payload():
         "evaluation_purpose": "screening", "backend": FAMILY_BACKEND, "admission_digest": SHA,
         **{key: payload[key] for key in ("scene_revision_digest", "task_success_contract_digest",
             "plan_digest", "configuration_digest", "pre_policy_site_qualification_required", "family_static_readiness_digest")}}
-    return payload
-
-
-def test_family_beta_admission_requires_pending_qualification_instead_of_invented_probe():
-    from blueprint_pipeline.native_task_arena_policy_canary_session import PolicyCanarySessionError, _beta_admission_binding
-
-    payload = _family_beta_admission_payload()
     _beta_admission_binding(payload)
     payload["pre_policy_site_qualification_required"] = False
-    with pytest.raises(PolicyCanarySessionError, match="beta_admission_binding_invalid"):
-        _beta_admission_binding(payload)
-
-
-@pytest.mark.parametrize("episodes_per_policy", [None, 0, 11, True], ids=["missing", "zero", "over_screening_cap", "boolean"])
-def test_family_beta_admission_requires_a_bounded_screening_episode_count(episodes_per_policy):
-    from blueprint_pipeline.native_task_arena_policy_canary_session import PolicyCanarySessionError, _beta_admission_binding
-
-    payload = _family_beta_admission_payload()
-    if episodes_per_policy is None:
-        payload.pop("episodes_per_policy")
-    else:
-        payload["episodes_per_policy"] = episodes_per_policy
     with pytest.raises(PolicyCanarySessionError, match="beta_admission_binding_invalid"):
         _beta_admission_binding(payload)
 

@@ -1,4 +1,4 @@
-"""Automatically screen prepared website scenes and deliver diagnostic results.
+"""Automatically evaluate prepared website scenes and deliver each job's result.
 
 This worker consumes the existing scene-packet queue after compilation. The
 coordinator retains the site's budget across revisions and worker restarts;
@@ -184,9 +184,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     before = deliver_publications(queue_root=root, refresh_startable=True)
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
         max_launches=args.max_launches)
-    from .beta_policy_finalists import process_finalists
-    finalists = process_finalists()
-    print(json.dumps({"sources": sources, "execution": execution, "finalists": finalists, "publication_before": before,
+    print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
                       "publication_after": deliver_publications(queue_root=root)}, sort_keys=True))
     return 0
 
