@@ -53,11 +53,7 @@ _GEOMETRY = {
 
 def _operations(*, family: str, task_context: Mapping[str, Any],
                 task_semantics: Mapping[str, Any] | None, source_video_digest: str | None,
-                contract: Mapping[str, Any] | None) -> list[dict[str, Any]]:
-    if contract is not None:
-        return [{"stage_id": row["stage_id"], "task_family": row["task_family"],
-                 "stage_identity_basis": "retained_success_contract", "order": index}
-                for index, row in enumerate(contract["stages"], start=1)]
+                contract: Mapping[str, Any] | None) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     if task_semantics is not None:
         from .website_task_semantics import validate_task_semantics
         value = validate_task_semantics(task_semantics, task_context=task_context,
@@ -66,18 +62,31 @@ def _operations(*, family: str, task_context: Mapping[str, Any],
                    or value["semantics"])
         complete = reading.get("operation_coverage_complete", reading.get("covers_entire_job"))
         unresolved = reading.get("unresolved_operations", reading.get("unresolved_aspects"))
-        if complete and not unresolved:
-            steps = reading["steps"]
-            kinds = [canonical_task_family(step["operation"]) for step in steps]
-            if all(kind in FAMILY_CRITERIA for kind in kinds):
-                return [{"stage_id": "operation-" + str(index).zfill(3) + "-" + canonical_digest(step)[7:15],
-                         "task_family": kind, "order": index,
-                         "stage_identity_basis": "derived_source_bound_operation", "source_operation": dict(step)}
-                        for index, (step, kind) in enumerate(zip(steps, kinds), start=1)]
+        steps = reading["steps"]
+        kinds = [canonical_task_family(step["operation"]) for step in steps]
+        contract_matches = contract is None or kinds == [row["task_family"] for row in contract["stages"]]
+        scope_matches = (canonical_task_family(reading["task_family"]) == family
+                         and (len(steps) >= 2 if family == "multi_step" else len(steps) == 1 and kinds == [family]))
+        operations = []
+        for index, (step, kind) in enumerate(zip(steps, kinds), start=1):
+            retained = contract["stages"][index - 1] if contract is not None and contract_matches else None
+            operations.append({"stage_id": retained["stage_id"] if retained else
+                "operation-" + str(index).zfill(3) + "-" + canonical_digest(step)[7:15],
+                "task_family": kind, "order": index, "source_operation": dict(step),
+                "stage_identity_basis": "retained_success_contract" if retained else "derived_source_bound_operation"})
+        # Incomplete/unknown readings still describe observed requested work.
+        # Never replace them with an atomic fallback or drop their next fact.
+        return operations, {"complete": complete, "unresolved": unresolved,
+            "matches_declared_scope": scope_matches, "matches_retained_contract": contract_matches,
+            "reading": json.loads(json.dumps(reading, allow_nan=False))}
+    if contract is not None:
+        return [{"stage_id": row["stage_id"], "task_family": row["task_family"],
+                 "stage_identity_basis": "retained_success_contract", "order": index}
+                for index, row in enumerate(contract["stages"], start=1)], None
     if family != "multi_step":
         return [{"stage_id": "operation-001", "task_family": family, "order": 1,
-                 "stage_identity_basis": "single_declared_task_family"}]
-    return []
+                 "stage_identity_basis": "single_declared_task_family"}], None
+    return [], None
 
 
 def retain_family_authoring_requirements(
@@ -100,8 +109,8 @@ def retain_family_authoring_requirements(
     if any(source_bindings.get(key) != digest for key, digest in expected.items()):
         raise ValueError("website_task_family_authoring_binding_mismatch")
     source_video = (source_geometry.get("binding") or {}).get("source_video_digest")
-    operations = _operations(family=family, task_context=task_context, task_semantics=task_semantics,
-                             source_video_digest=source_video, contract=contract)
+    operations, source_reading = _operations(family=family, task_context=task_context,
+        task_semantics=task_semantics, source_video_digest=source_video, contract=contract)
     requirements: list[dict[str, Any]] = []
 
     def missing(key: str, category: str, owner: str, question: str, *, stage_id: str | None = None,
@@ -110,11 +119,17 @@ def retain_family_authoring_requirements(
             "status": "required", "question": question, "stage_id": stage_id,
             "quantity": quantity, "unit": unit, "authority_created": False})
 
-    if not operations:
+    if not operations or (source_reading is not None and (not source_reading["complete"]
+            or source_reading["unresolved"] or not source_reading["matches_declared_scope"]
+            or not source_reading["matches_retained_contract"])):
         missing("ordered_operations", "task_fact", "task_owner",
                 "What are the ordered robot operations and the target of each operation?")
     for operation in operations:
         stage_id, kind = operation["stage_id"], operation["task_family"]
+        if kind not in FAMILY_CRITERIA:
+            missing(stage_id + ":native_family_profile", "runtime_integration", "runtime_operator",
+                    "Prepare an independent native measurement profile for the retained operation.", stage_id=stage_id)
+            continue
         if contract is None:
             for quantity in (*FAMILY_CRITERIA[kind], "minimum_hold_seconds"):
                 unit, question = _QUESTIONS[quantity]
@@ -139,6 +154,7 @@ def retain_family_authoring_requirements(
         "status": "needs_authoring" if requirements else "external_inputs_retained",
         "precursor_only": True, "native_inputs_authored": False,
         "binding": binding, "task_family": family, "operations": operations,
+        "source_operation_reading": source_reading,
         "requirements": requirements, "next_action": next((row for row in requirements
             if row["category"] == "task_fact"), requirements[0] if requirements else None),
         "retained_stage_inputs": {"task_success_contract": contract is not None,
@@ -147,7 +163,7 @@ def retain_family_authoring_requirements(
             ("frame_id", "image_digest", "geometry_digest")} for frame in source_geometry.get("frames", [])],
         "source_targets": [{key: target.get(key) for key in
             ("target_id", "semantic_label", "task_effect", "target_role")} for target in task_masks.get("targets", [])],
-        "native_observables": {row["stage_id"]: list(FAMILY_OBSERVABLES[row["task_family"]]) for row in operations},
+        "native_observables": {row["stage_id"]: list(FAMILY_OBSERVABLES.get(row["task_family"], ())) for row in operations},
         "owner_criteria": task_context.get("success_criteria"), "owner_facts_confirmed": False,
         "claim_ceiling": "development_only", "provider_mutation_performed": False,
         "automatic_paid_execution_authorized": False}

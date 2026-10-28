@@ -72,6 +72,13 @@ restart. Changed inputs create a new immutable generation. Prose success
 definitions remain prose; this precursor does not invent numeric pass marks or
 renew authority.
 
+Incomplete or unrecognized source operations remain in their original order,
+including their exact quotes and unresolved aspects. Clarifying the complete
+ordered job comes before numeric criteria when that reading is incomplete or
+conflicts with the declared atomic family or a retained contract. An atomic
+family hint cannot discard a later operation; an unknown operation remains a
+specific native-profile preparation gap.
+
 This is an authoring precursor, not a native-input producer. Its
 `precursor_only=true` and `native_inputs_authored=false` fields are explicit;
 the accepted job remains `needs_input` until the existing materializer validates

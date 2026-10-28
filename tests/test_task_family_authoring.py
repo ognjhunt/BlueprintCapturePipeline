@@ -104,6 +104,55 @@ def _ordered_job(tmp_path):
     return args
 
 
+def _incomplete_declared_job(tmp_path, *, unknown_operation=False):
+    args = _ordered_job(tmp_path)
+    context = args["task_context"]
+    context["task_family"] = "button_press"
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    receipt = copy.deepcopy(args["task_semantics"]["planner_receipt"])
+    receipt["binding"]["task_context_digest"] = context["context_digest"]
+    receipt["binding_digest"] = canonical_digest(receipt["binding"])
+    reading = receipt["proposal"]["task_semantics"]
+    reading["covers_entire_job"] = False
+    reading["unresolved_aspects"] = ["The wiping target and operation need clarification."]
+    if unknown_operation:
+        reading["steps"][1]["operation"] = "unimplemented_wiping_operation"
+    receipt["proposal_digest"] = canonical_digest(receipt["proposal"])
+    args["task_semantics"] = task_semantics_from_receipt(receipt=receipt,
+        task_context=context, source_video_digest=args["source_geometry"]["binding"]["source_video_digest"])
+    return args
+
+
+@pytest.mark.parametrize("supplied_contract", [False, True])
+def test_incomplete_source_operations_are_not_replaced_by_a_declared_atomic_family(tmp_path, supplied_contract):
+    args = _incomplete_declared_job(tmp_path)
+    if supplied_contract:
+        args["evaluation_inputs"] = {"task_success_contract": _evaluation_inputs(args)["task_success_contract"]}
+    result = preparation.compile_website_scene_preparation(**args)
+    value = _artifact(result)["request"]
+    assert [row["task_family"] for row in value["operations"]] == ["button_press", "wiping"]
+    assert [row["order"] for row in value["operations"]] == [1, 2]
+    assert value["operations"][1]["source_operation"]["task_quote"] == "wipe the table"
+    assert value["source_operation_reading"]["unresolved"] == ["The wiping target and operation need clarification."]
+    assert value["next_action"]["requirement_id"] == "ordered_operations"
+    assert value["next_action"]["quantity"] is None
+    assert value["retained_stage_inputs"]["task_success_contract"] is supplied_contract
+    assert result["status"] == "needs_input" and value["native_inputs_authored"] is False
+    assert preparation.compile_website_scene_preparation(**args) == result
+
+
+def test_unrecognized_retained_operation_keeps_its_quote_and_specific_software_gap(tmp_path):
+    args = _incomplete_declared_job(tmp_path, unknown_operation=True)
+    value = _artifact(preparation.compile_website_scene_preparation(**args))["request"]
+    second = value["operations"][1]
+    assert second["task_family"] is None
+    assert second["source_operation"]["operation"] == "unimplemented_wiping_operation"
+    assert second["source_operation"]["task_quote"] == "wipe the table"
+    assert value["next_action"]["requirement_id"] == "ordered_operations"
+    assert any(row["requirement_id"] == second["stage_id"] + ":native_family_profile"
+               and row["category"] == "runtime_integration" for row in value["requirements"])
+
+
 def test_source_bound_multistep_order_and_step_identities_survive_restart(tmp_path):
     args = _ordered_job(tmp_path)
     result = preparation.compile_website_scene_preparation(**args)
