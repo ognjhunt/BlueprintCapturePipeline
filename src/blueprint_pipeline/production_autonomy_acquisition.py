@@ -75,6 +75,7 @@ class AuthenticatedSourceRead:
     observed_at: str
     version: str
     http_status: int | None = None
+    native_evidence: Mapping[str, Any] | None = None
 
 
 AuthenticatedSourceReader = Callable[[SourceSelector], AuthenticatedSourceRead | None]
@@ -161,7 +162,8 @@ class AuthenticatedAcceptanceCollector:
                  scene_intake_id: str, webapp_service_identity: str,
                  pipeline_service_identity: str, evidence_root: str | Path,
                  reader: AuthenticatedSourceReader,
-                 own_resources: tuple[OwnResourcePin, ...] = ()):
+                 own_resources: tuple[OwnResourcePin, ...] = (),
+                 firestore_project_id: str | None = None, firestore_database_id: str | None = None):
         from .beta_policy_screening_plan import validate_screening_plan
 
         # Private snapshots prevent caller mutation after pinning. No path or
@@ -186,12 +188,17 @@ class AuthenticatedAcceptanceCollector:
                     for name in ("pipeline", "webapp"))
                 or not callable(reader)
                 or any(not _ID.fullmatch(value) for value in (owner_user_id, team_namespace, scene_intake_id,
-                    webapp_service_identity, pipeline_service_identity))):
+                    webapp_service_identity, pipeline_service_identity))
+                or (firestore_project_id is None) != (firestore_database_id is None)
+                or (firestore_project_id is not None and (not isinstance(firestore_project_id, str)
+                    or not _ID.fullmatch(firestore_project_id) or not isinstance(firestore_database_id, str)
+                    or not (firestore_database_id == "(default)" or _ID.fullmatch(firestore_database_id))))):
             raise AcceptanceEvidenceError("acquisition_pin_invalid")
         self._frozen = _stamp(self._attempt.get("frozen_at"))
         self._owner, self._team, self._intake = owner_user_id, team_namespace, scene_intake_id
         self._peers = {"webapp": webapp_service_identity, "pipeline": pipeline_service_identity}
         self._root, self._reader = Path(evidence_root).absolute(), reader
+        self._native_project, self._native_database = firestore_project_id, firestore_database_id
         self._cache: dict[tuple[str, str], TrustedObservation | None] = {}
         self._failures: list[dict[str, str]] = []
         self._identities: list[dict[str, Any]] = []
@@ -264,6 +271,10 @@ class AuthenticatedAcceptanceCollector:
         # descriptor is indexed only after safe path/type/size/hash validation.
         identity["retained_record"] = dict(response.retained_record)
         payload = _json(response.body)
+        if response.native_evidence is not None:
+            from .production_autonomy_native_reader import verify_native_evidence
+            identity.update(verify_native_evidence(response, root=self._root, project=self._native_project,
+                database=self._native_database, frozen_at=self._attempt["frozen_at"]))
         expected_auth = ("firestore_server_identity" if selector.kind in {"webapp_run", "webapp_result"}
             else "authenticated_https_response" if webapp else "authenticated_controller_snapshot")
         if (response.environment != "production" or response.origin != "natural_production"
