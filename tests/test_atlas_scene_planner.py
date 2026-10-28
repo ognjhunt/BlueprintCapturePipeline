@@ -56,9 +56,10 @@ def test_review_cannot_include_unsafe_frames_or_omit_room(tmp_path):
 
 
 @pytest.mark.parametrize("violation", [None, "remove", "instruction", "transient", "captured_surrogate", "uncertain"])
-def test_synthetic_addition_requires_task_regions_and_preserves_every_captured_object(tmp_path, violation):
+@pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject"])
+def test_preserved_task_requires_regions_and_keeps_every_captured_object(tmp_path, violation, subject_origin):
     _, survey, proposal, policy = fixture(tmp_path)
-    proposal["subject_origin"] = "synthetic_design"
+    proposal["subject_origin"] = subject_origin
     proposal["coverage_requirements"][0]["role"] = "task_region"
     proposal["automation"] = {"scale_references": [], "objects": [
         {"target_id": "support", "label": "observed support", "segmentation_prompt": "support",
@@ -81,7 +82,7 @@ def test_synthetic_addition_requires_task_regions_and_preserves_every_captured_o
             planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
     else:
         result = planner.proposal_review(proposal, survey=survey, policy=policy, pose_budget=4)
-        assert result["subject_origin"] == "synthetic_design"
+        assert result["subject_origin"] == subject_origin
         assert result["automation"]["objects"][0]["disposition"] == "keep"
         assert result["selection_budget"]["maximum_pose_cost_usd"] == 4
 

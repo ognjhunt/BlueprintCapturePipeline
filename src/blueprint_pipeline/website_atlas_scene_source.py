@@ -26,6 +26,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
+from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
 from .local_reconstruction_adapters import _sha256_file
 
 PROVIDER = "world_labs_atlas"
@@ -209,7 +210,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         # Read a completed background revision without changing the capture's
         # controller state, original observations, scale evidence or publication.
         result = retained
-    preserved = result.get("subject_origin") == "synthetic_design"
+    preserved = result.get("subject_origin") in PRESERVED_SCENE_ORIGINS
     if preserved:
         if (result.get("captured_scene_preserved") is not True
                 or result.get("object_removal_performed") is not False
@@ -359,5 +360,5 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     }
     return {"status": "ready", "base_scene": base, "source_geometry": geometry,
             "source_pose_digest": source["digest"], "background_pose_digest": background_pose["digest"],
-            **({"subject_origin": "synthetic_design", "scene_content": "captured_scene_preserved"} if preserved else {}),
+            **({"subject_origin": result["subject_origin"], "scene_content": "captured_scene_preserved"} if preserved else {}),
             "alignment": "anchored" if anchor else "registration_search"}

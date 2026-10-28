@@ -59,6 +59,7 @@ _NEEDS_NEW_CAPTURE = frozenset({"atlas_scene_planner_abstained", "atlas_task_and
                                 "atlas_insufficient_overlapping_distinct_views",
                                 "atlas_coverage_anchor_quality_insufficient"})
 _NEEDS_TASK_INPUT = frozenset({"atlas_scene_subject_origin_uncertain", "atlas_scene_subject_origin_changed",
+                              "atlas_scene_requires_preserved_capture",
                               "atlas_synthetic_subject_requires_preserved_capture"})
 _WITHDRAWN = frozenset({"source_revoked", "website_capture_withdrawn", "consent_revoked"})
 

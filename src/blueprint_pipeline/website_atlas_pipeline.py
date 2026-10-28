@@ -20,6 +20,7 @@ from pathlib import Path
 import time
 
 from .common import write_json
+from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -237,7 +238,7 @@ def _job_edit_scope(output_root: Path, requested: str | None) -> str:
 
 def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
                      source_digest, configuration, check, experimental, max_polls, model):
-    """Reconstruct an additive task from full-view observations, without editing.
+    """Reconstruct an environment-preserving task from full-view observations.
 
     Selection and scale still use the production agents and validators. Missing
     surfaces remain gaps: novel views require a later source-first gap review,
@@ -249,12 +250,14 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     from .atlas_result_bundle import export_pose_bundle
     from .paid_resource_allocator import run_sponsored_website_atlas_task
 
-    if (review.get("subject_origin") != "synthetic_design"
+    if (review.get("subject_origin") not in PRESERVED_SCENE_ORIGINS
             or not review.get("automation")
             or any(row.get("disposition") != "keep" for row in review["automation"]["objects"])
             or review["automation"].get("removal_instruction", "").strip()
             or review.get("transient_frame_ids")):
-        raise ValueError("atlas_synthetic_subject_requires_preserved_capture")
+        raise ValueError("atlas_synthetic_subject_requires_preserved_capture"
+                         if review.get("subject_origin") == "synthetic_design"
+                         else "atlas_scene_requires_preserved_capture")
     source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
         task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
         configuration=configuration)
@@ -304,7 +307,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         splat_root=splat_root, mesh_root=mesh_root, analysis_paths=analysis)
     result = {"schema_version": "website_atlas_pipeline_result.v1", "status": "needs_input",
         "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
-        "subject_origin": "synthetic_design", "captured_scene_preserved": True,
+        "subject_origin": review["subject_origin"], "captured_scene_preserved": True,
         "object_removal_performed": False, "image_inpainting_performed": False,
         "generated_completion_performed": False, "uncaptured_regions": review["uncaptured_regions"],
         "geometry_authority": "captured_rgb_derived_depth_and_reconstructed_mesh_estimates",
@@ -453,7 +456,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     retain_task_semantics(job_dir=output_root, receipt=receipt, task_context=task_context,
                           source_video_digest=source_digest)
     write_json(output_root / "atlas_scene_review.json", review)
-    if review.get("subject_origin") == "synthetic_design":
+    if review.get("subject_origin") in PRESERVED_SCENE_ORIGINS:
         return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,
             policy=policy, task_context=task_context, source_digest=source_digest,
             configuration=load_configuration(task_context, source_digest), check=check,

@@ -1,6 +1,12 @@
 """Typed, scene-dependent proposals; none of these model estimates grant rights."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+SubjectOrigin = Literal["captured", "synthetic_design", "no_manipulated_subject", "uncertain"]
+PRESERVED_SCENE_ORIGINS = ("synthetic_design", "no_manipulated_subject")
 
 
 class ImageRegion(BaseModel):
