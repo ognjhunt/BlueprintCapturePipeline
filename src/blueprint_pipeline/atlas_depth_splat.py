@@ -849,8 +849,14 @@ def build_depth_splat(pose_root: Path, output_root: Path, *, voxel_footprint_mul
 
 def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_multiple=2.0,
                       generated_result_digests=(), visual_review_digest=None,
-                      rebuild_source_manifest_digest=None):
+                      rebuild_source_manifest_digest=None,
+                      generated_appearance_basis='generated_object_absent_background'):
     """Shared writer; edited RGBD remains explicitly generated and separately bound."""
+    if (generated_appearance_basis not in ('generated_object_absent_background',
+                                         'preserved_capture_with_bounded_completion')
+            or generated_appearance_basis == 'preserved_capture_with_bounded_completion'
+            and (not generated_result_digests or not visual_review_digest)):
+        raise ValueError('atlas_depth_splat_generated_context_invalid')
     splat, report = fuse_posed_frames(frames, voxel_footprint_multiple=voxel_footprint_multiple)
     data = encode_spz(splat)
     decoded = decode_spz(data)
@@ -872,7 +878,7 @@ def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_mult
                 "photometric_optimization": False, "generated_content": bool(generated_result_digests),
                 **({"generated_result_digests": list(generated_result_digests),
                     "visual_review_digest": visual_review_digest,
-                    "appearance_basis": "generated_object_absent_background"} if generated_result_digests else {}),
+                    "appearance_basis": generated_appearance_basis} if generated_result_digests else {}),
                 "metric_measurement_proven": False, "claim_scope": "development_only"}
     if rebuild_source_manifest_digest is not None:
         manifest['rebuild_source_manifest_digest'] = rebuild_source_manifest_digest

@@ -23,10 +23,10 @@ WIRE_FIXTURE = Path(__file__).parent / "fixtures/website_assessment_resume/brows
 
 
 @pytest.fixture
-def waiting(request, monkeypatch):
-    root, owner, context, selected, _, _ = request.getfixturevalue("prepared_source")
+def waiting(prepared_source, monkeypatch):  # noqa: F811 - imported pytest fixture
+    root, owner, context, selected, _, _ = prepared_source
     birth = capture_birth_source_projection(root)
-    payload = json.loads(WIRE_FIXTURE.read_bytes())
+    payload = json.loads(WIRE_FIXTURE.read_text().replace("walkthrough-req-1", owner["capture_id"]))
     payload["source_finalize"] = {"bucket": owner["bucket"], "object_name": owner["completion_marker"]["object_name"],
         "generation": owner["completion_marker"]["generation"], "event_id": "original-event", "event_source": "original-source"}
     payload["source_membership_selector"] = birth["source_membership_selector"]
@@ -124,6 +124,7 @@ def test_task_family_upgrade_preserves_context_changes_and_archive_conflicts_as_
     assert original_path.read_bytes() == original
 
 
+@pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 def test_pending_preflight_retains_exact_bytes_and_never_claims_another_attempt(waiting, monkeypatch):
     root, _, _, raw, record = waiting
     before = listener._read_job_ledger(root)
@@ -134,6 +135,7 @@ def test_pending_preflight_retains_exact_bytes_and_never_claims_another_attempt(
     assert listener._read_job_ledger(root) == before
 
 
+@pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 def test_completed_assessment_resumes_same_original_payload_after_empty_pubsub(waiting, monkeypatch):
     root, _, _, raw, _ = waiting
     _ready(waiting, monkeypatch)
@@ -156,6 +158,7 @@ def test_completed_assessment_resumes_same_original_payload_after_empty_pubsub(w
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 @pytest.mark.parametrize("change", ["payload", "source", "active", "terminal", "wrong_error", "physical", "owner", "context"])
 def test_refuses_changed_source_terminal_active_unknown_failure_or_false_authority(waiting, monkeypatch, change):
     root, owner, _, _, _ = waiting

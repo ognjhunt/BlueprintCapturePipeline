@@ -543,3 +543,76 @@ def test_external_reconstruction_upload_rejects_fake_ply_shape(tmp_path: Path) -
                 "scanner": "fixture-clam",
             },
         )
+
+
+def _firebase_submission():
+    value = _submission()
+    session, owner = value['capture_session_id'], value['customer_id']
+    value['transfer'].update(provider='firebase', authorization='', generation='1793207002780033',
+        url=f'gs://blueprint-8c1ca.appspot.com/operations/capture-uploads/{owner}/{session}/{session}.mp4')
+    return value
+
+
+def test_firebase_source_uses_exact_owned_generation_and_retains_no_credential(tmp_path):
+    seen = {}
+    value = _firebase_submission()
+    result = process_capture_upload_submission(value, store_root=tmp_path, allowed_hosts=[],
+        firebase_transfer_opener=_opener(_payload(), seen), malware_scanner=_scanner,
+        qa_builder=_qa_builder, profile_probe=_profile_probe)
+    assert result['admission_status'] == 'accepted'
+    assert seen['generation'] == value['transfer']['generation']
+    assert seen['url'] == value['transfer']['url']
+    assert 'authorization' not in seen
+    envelope = json.loads((tmp_path / result['artifact_reference']['uri'] / 'capture_intake_envelope.json').read_text())
+    assert envelope['upload_validation']['source_storage_binding'] == {
+        'provider': 'firebase', 'uri': value['transfer']['url'], 'generation': value['transfer']['generation']}
+    seen.clear()
+    replay = process_capture_upload_submission(value, store_root=tmp_path, allowed_hosts=[],
+        firebase_transfer_opener=_opener(_payload(), seen), malware_scanner=_scanner,
+        qa_builder=_qa_builder, profile_probe=_profile_probe)
+    assert replay['already_exists'] is True
+    assert seen == {}
+
+
+@pytest.mark.parametrize('change', [
+    {'url': 'gs://untrusted.example/operations/capture-uploads/owner/file.mp4'},
+    {'url': 'gs://blueprint-8c1ca.appspot.com/operations/capture-uploads/other/capture-upload-session-1/capture-upload-session-1.mp4'},
+    {'url': 'gs://blueprint-8c1ca.appspot.com/operations/capture-uploads/firebase-buyer-1/capture-upload-session-1/capture-upload-session-1.mp4?generation=9'},
+    {'generation': ''}, {'generation': 'latest'}, {'generation': True}, {'authorization': 'owner-token'},
+])
+def test_firebase_transfer_rejects_unowned_or_unpinned_inputs_before_read(tmp_path, change):
+    value = _firebase_submission()
+    value['transfer'].update(change)
+    seen = {}
+    with pytest.raises(CaptureUploadTransferError, match='capture_firebase_source_binding_invalid'):
+        process_capture_upload_submission(value, store_root=tmp_path,
+            firebase_transfer_opener=_opener(_payload(), seen))
+    assert seen == {}
+
+
+def test_native_firebase_reader_pins_generation_and_closes_its_existing_credential_client(monkeypatch):
+    from google.cloud import storage
+    from blueprint_pipeline.capture_upload_firebase_transfer import open_firebase_transfer
+    seen = {}
+    stream = io.BytesIO(_payload())
+    class Client:
+        def bucket(self, name):
+            seen['bucket'] = name
+            return self
+        def blob(self, name, *, generation):
+            seen.update(object_path=name, generation=generation)
+            return self
+        def open(self, mode, *, timeout):
+            seen.update(mode=mode, timeout=timeout)
+            return closing(stream)
+        def close(self):
+            seen['client_closed'] = True
+    monkeypatch.setattr(storage, 'Client', Client)
+    with pytest.raises(RuntimeError, match='consumer failure'):
+        with open_firebase_transfer(url='gs://blueprint-8c1ca.appspot.com/owned.mp4',
+                                    generation='1793207002780033', timeout_seconds=7) as source:
+            assert source.read() == _payload()
+            raise RuntimeError('consumer failure')
+    assert seen == {'bucket':'blueprint-8c1ca.appspot.com', 'object_path':'owned.mp4',
+                    'generation':1793207002780033, 'mode':'rb', 'timeout':7, 'client_closed':True}
+    assert stream.closed

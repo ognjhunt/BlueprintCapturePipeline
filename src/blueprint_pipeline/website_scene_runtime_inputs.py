@@ -10,7 +10,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .common import write_json
+from .core.handoff_lease import guarded_handoff_write_json as write_json, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .task_evaluation_completed_scene_geometry import normalize_completed_mesh
@@ -19,6 +19,7 @@ from .task_evaluation_completed_scene_geometry import normalize_completed_mesh
 def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
                                    source_geometry: Mapping[str, Any], task_masks: Mapping[str, Any],
                                    output_root: Path) -> dict[str, Any]:
+    handoff_lease_checkpoint("website_runtime_inputs_start")
     if preparation.get("digest") != canonical_digest(preparation, digest_field="digest"):
         raise ValueError("website_native_preparation_changed")
     # A designed subject (website_synthetic_subject) was never captured, so it has no frames.
@@ -61,10 +62,12 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
     source = Path(base_scene["collision_mesh_path"])
     normalized = normalize_completed_mesh(source=source, original_filename=source.name,
                                          coordinate_frame=frame, output_root=collision_root)
+    handoff_lease_checkpoint("website_runtime_inputs_after_collision")
     collision = collision_root / normalized["output"]["relative_path"]
     from .website_native_background import reconcile_enclosed_fixture_collision
     reconciliation = reconcile_enclosed_fixture_collision(source=collision, preparation=preparation,
         output_root=output_root / "collision-reconciliation")
+    handoff_lease_checkpoint("website_runtime_inputs_after_reconciliation")
     collision_record = ({**reconciliation["output"], "reconciliation": reconciliation}
                         if reconciliation is not None else {
                             "path": str(collision), "digest": normalized["output"]["sha256"],
@@ -72,6 +75,7 @@ def prepare_website_runtime_inputs(*, preparation: Mapping[str, Any], base_scene
     from .website_object_observations import materialize_object_observations, REFERENCE_ROLE
     observations = materialize_object_observations(preparation=preparation, source_geometry=source_geometry,
         task_masks=task_masks, output_root=output_root / "object_observations")
+    handoff_lease_checkpoint("website_runtime_inputs_after_observations")
     value = {
         "schema_version": "website_scene_runtime_inputs.v1", "status": "background_collision_prepared",
         "preparation_digest": preparation["digest"], "claim_ceiling": "development_only",

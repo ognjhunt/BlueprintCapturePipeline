@@ -273,6 +273,15 @@ structured proposal only. Web search is unnecessary for this camera decision.
 """
 
 
+PRESERVED_COMPLETION_INSTRUCTIONS = (
+    "Plan Atlas novel-view completion of ONE preserved captured environment. "
+    "The supplied RGB context preserves the photographed objects and layout; its depth is a reconstruction estimate. "
+    "No object removal or image inpainting is requested. Preserve every captured object, support and obstacle. "
+    "Generated missing surfaces remain candidate estimates, never raw capture truth or metric measurements. "
+    + COMPLETION_INSTRUCTIONS[COMPLETION_INSTRUCTIONS.index("The camera candidate table"):]
+)
+
+
 POST_EXPORT_COMPLETION_INSTRUCTIONS = """
 This is a feedback pass on the actual exported reconstruction. Prioritize surfaces
 necessary for the task, its supports, approach/access space, nearby obstacles and
@@ -838,6 +847,8 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
     instructions = (SCALE_INSTRUCTIONS if scaling is not None else COMPLETION_INSTRUCTIONS if completion is not None else
                     INSTRUCTIONS + AUTOMATION_INSTRUCTIONS + SUBJECT_ORIGIN_INSTRUCTIONS
                     + (REFINEMENT_INSTRUCTIONS if feedback is not None else ""))
+    if completion is not None and completion.get('context_basis') == 'preserved_capture':
+        instructions = PRESERVED_COMPLETION_INSTRUCTIONS
     schema = (ScaleProposal if scaling is not None else CompletionProposal if completion is not None
               else CurrentRefinementProposal if feedback is not None else CurrentSceneProposal)
     semantic_review = (task_context.get("task_family") == "general_task"
