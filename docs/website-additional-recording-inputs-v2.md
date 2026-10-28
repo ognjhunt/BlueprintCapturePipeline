@@ -33,6 +33,12 @@ changing observations may require reconstruction. No new queue or provider is
 introduced. Deploy this consumer before the v2 WebApp producer. Optional clips
 must not delay release or make another customer step compulsory.
 
+Recording-set validation lives in the pure `website_recording_contracts` module.
+Read-only context and hold contracts do not import the runtime downloader,
+composer, native task adapter or paid workers. The existing resolver re-exports
+that validator for compatibility. The 68 focused contract and import-boundary
+checks pass after this separation.
+
 Validation: 193 focused source, media, ingestion, preview, preparation, survey
 and resume tests passed, including real FFmpeg video in both clip orders,
 pixel/timestamp preservation, rotation, audio removal, padding-aware analysis

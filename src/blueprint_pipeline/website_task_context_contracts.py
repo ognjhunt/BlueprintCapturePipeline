@@ -257,7 +257,7 @@ def validate_website_task_context(
                 for entry in continuation["lineage"]):
             raise ValueError("website_task_context_continuation_invalid")
         if continuation["schema_version"] == "website_capture_continuation.v2":
-            from .website_recording_sources import recording_sources
+            from .website_recording_contracts import recording_sources
             recording_sources(continuation, request_id=request_id, scene_id=scene_id, capture_id=capture_id)
     return dict(value)
 
