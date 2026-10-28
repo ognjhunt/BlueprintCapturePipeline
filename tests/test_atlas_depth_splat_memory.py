@@ -77,6 +77,30 @@ def test_merge_does_not_concatenate_full_quantity_tables(tmp_path, monkeypatch):
         assert len(sums.keys) and np.isfinite(sums.sums).all()
 
 
+def test_fixed_flush_bound_preserves_legacy_streaming_reduction_with_skewed_weights(monkeypatch):
+    # The old threshold grew with its table and therefore grouped later frames
+    # differently. Exercise that difference without a million-row fixture.
+    sums = fusion.VoxelSums(.01)
+    monkeypatch.setattr(sums, "MIN_MERGE_ROWS", 16)
+    old_keys, old_columns = np.empty(0, np.int64), np.empty((12, 0))
+    pending, rows, old_merges = [], 0, 0
+    for index in range(30):
+        batch = samples(index, count=83)
+        sums.add(batch)
+        reduced = legacy_frame_reduction(batch, .01)
+        pending.append(reduced)
+        rows += len(reduced[0])
+        if rows >= max(16, len(old_keys) // 2):
+            old_keys, old_columns = legacy_merge([(old_keys, old_columns), *pending])
+            pending, rows = [], 0
+            old_merges += 1
+    if pending:
+        old_keys, old_columns = legacy_merge([(old_keys, old_columns), *pending])
+    assert old_merges < 30  # This actually changes addition grouping.
+    np.testing.assert_array_equal(sums.keys, old_keys)
+    np.testing.assert_allclose(sums.sums.T, old_columns, rtol=1e-12, atol=1e-12)
+
+
 def test_pending_reduction_flushes_at_fixed_bound_even_with_a_large_old_table(monkeypatch):
     sums = fusion.VoxelSums(.01)
     sums._keys = np.arange(100, dtype=np.int64)
@@ -141,18 +165,54 @@ def test_scratch_budget_refuses_before_mapping_or_creating_large_files(tmp_path,
     assert not list(tmp_path.glob(".atlas-fusion-*"))
 
 
+@pytest.mark.parametrize("available_gib", [2, 6])
+def test_scratch_honors_shared_device_floor_and_competing_reservations(tmp_path, monkeypatch, available_gib):
+    from types import SimpleNamespace
+    from blueprint_pipeline import control_plane_disk_budget as budget
+
+    original = budget.reserve_control_plane_disk
+    ledger = tmp_path / "ledger"
+    gib = 1024**3
+    monkeypatch.setenv("BLUEPRINT_CONTROL_PLANE_DISK_FLOOR_BYTES", str(8 * gib))
+
+    def reserve(*args, **kwargs):
+        assert args == ("cpu_prestage",) and kwargs["workload"] == "atlas_depth_fusion"
+        assert kwargs["expected_bytes"] == 4 * gib
+        return original(*args, **{**kwargs, "reservation_root": ledger,
+            "disk_usage": lambda _: SimpleNamespace(total=100*gib, free=(8+available_gib)*gib)})
+
+    monkeypatch.setattr(budget, "reserve_control_plane_disk", reserve)
+    if available_gib == 2:
+        with pytest.raises(budget.ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+            with fusion._FusionScratch(tmp_path / "first"):
+                pytest.fail("The bulk disk floor was consumed")
+        assert not list((tmp_path / "first").glob(".atlas-fusion-*"))
+    else:
+        with fusion._FusionScratch(tmp_path / "first") as first:
+            assert first.reservation.path.is_file()
+            with pytest.raises(budget.ControlPlaneDiskBudgetError, match="control_plane_disk_budget_exceeded"):
+                with fusion._FusionScratch(tmp_path / "second"):
+                    pytest.fail("Concurrent scratch stole the first reservation")
+        assert not first.reservation.path.exists()
+        with fusion._FusionScratch(tmp_path / "second") as second:
+            assert second.reservation.path.is_file()
+        assert not second.reservation.path.exists()
+    assert not list(ledger.glob("*.json"))
+
+
 @pytest.mark.parametrize("fail", [False, True])
 def test_writer_owns_and_cleans_fusion_scratch_on_success_and_failure(tmp_path, monkeypatch, fail):
     pose_root = retained_pose_root(tmp_path / "pose")
     result, frames = fusion.load_posed_rgbd(pose_root)
     output = tmp_path / "splat"
     original = fusion.fuse_posed_frames
-    roots = []
+    roots, reservations = [], []
 
     def observe_scratch(frames, **kwargs):
         scratch = kwargs.get("scratch")
         assert isinstance(scratch, fusion._FusionScratch)
         roots.append(scratch.root)
+        reservations.append(scratch.reservation.path)
         scratch.allocate((41,), dtype=np.float32)
         if fail:
             raise ValueError("deliberate_fusion_failure")
@@ -168,4 +228,5 @@ def test_writer_owns_and_cleans_fusion_scratch_on_success_and_failure(tmp_path, 
         assert manifest["world_frame"] == "atlas_world_rub_y_up"
         assert manifest["claim_scope"] == "development_only"
     assert roots and all(not root.exists() for root in roots)
+    assert reservations and all(not path.exists() for path in reservations)
     assert not list(output.glob(".atlas-fusion-*"))

@@ -552,17 +552,25 @@ class _FusionScratch:
         self.bytes = self.peak_bytes = self._counter = 0
 
     def __enter__(self):
+        from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT, reserve_control_plane_disk
+
         self.output_root.mkdir(parents=True, exist_ok=True)
         if self.output_root.is_symlink():
             raise ValueError("atlas_depth_splat_scratch_path_invalid")
         abandoned = sum(path.stat().st_size for folder in self.output_root.glob(".atlas-fusion-*")
             if folder.is_dir() and not folder.is_symlink() for path in folder.glob("buffer-*.bin")
             if path.is_file() and not path.is_symlink())
-        self.maximum_bytes = min(self.MAXIMUM_BYTES - abandoned,
-            shutil.disk_usage(self.output_root).free - self.FREE_RESERVE_BYTES)
+        self.maximum_bytes = self.MAXIMUM_BYTES - abandoned
         if self.maximum_bytes <= 0:
             raise ValueError("atlas_depth_splat_scratch_budget_exceeded")
-        self._temporary = tempfile.TemporaryDirectory(prefix=".atlas-fusion-", dir=self.output_root)
+        self.reservation = reserve_control_plane_disk("cpu_prestage", target_root=self.output_root,
+            expected_bytes=self.maximum_bytes, workload="atlas_depth_fusion",
+            reservation_root=os.environ.get("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT") or DEFAULT_RESERVATION_ROOT)
+        try:
+            self._temporary = tempfile.TemporaryDirectory(prefix=".atlas-fusion-", dir=self.output_root)
+        except BaseException:
+            self.reservation.release(outcome="failed")
+            raise
         self.root = Path(self._temporary.name)
         return self
 
@@ -605,12 +613,15 @@ class _FusionScratch:
             path.unlink()
             self.bytes -= size
 
-    def __exit__(self, *_):
+    def __exit__(self, exc_type, *_):
         try:
             for array, _, _ in list(self._arrays.values()):
                 self.release(array)
         finally:
-            self._temporary.cleanup()
+            try:
+                self._temporary.cleanup()
+            finally:
+                self.reservation.release(outcome="failed" if exc_type is not None else "completed")
 
 
 def _stored_depth(depth, scratch):
@@ -956,7 +967,8 @@ def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_mult
         splat, report = fuse_posed_frames(frames, voxel_footprint_multiple=voxel_footprint_multiple, scratch=scratch)
         report["working_storage"] = {"kind": "bounded_output_device_scratch",
             "maximum_bytes": scratch.maximum_bytes, "peak_bytes": scratch.peak_bytes,
-            "merge_block_rows": VoxelSums.MERGE_BLOCK_ROWS, "source_pixels_reduced": False}
+            "merge_block_rows": VoxelSums.MERGE_BLOCK_ROWS, "source_pixels_reduced": False,
+            "disk_admission": scratch.reservation.receipt()}
     data = encode_spz(splat)
     decoded = decode_spz(data)
     if decoded.count != splat.count or np.max(np.abs(decoded.xyz - splat.xyz)) > 1.0 / (1 << SPZ_FRACTIONAL_BITS):
