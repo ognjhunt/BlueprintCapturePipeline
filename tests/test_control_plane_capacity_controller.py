@@ -1315,7 +1315,7 @@ def test_direct_controller_call_surveys_by_default(tmp_path, monkeypatch):
         reservation_root=tmp_path / "ledger", webhook_url="", volume=None,
         ack="", token="", disk_usage=_usage(free_gib=100.0), now=1_000.0,
     )
-    assert calls == [{"mounts": [str(tmp_path), "/"]}]
+    assert calls == [{"mounts": [str(tmp_path), "/"], "continuation": None, "partitions_per_mount": 4}]
     assert report["usage"]["status"] == "complete"
 
 
