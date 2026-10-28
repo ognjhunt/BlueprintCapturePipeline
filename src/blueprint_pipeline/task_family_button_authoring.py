@@ -294,15 +294,20 @@ def author_button_family_inputs(*, family, task_context, task_masks, source_geom
     facts = _facts(task_context, video) if bounded else {}
     _require(set(facts) <= {row["stage_id"] for row in operations}, "owner_operation_changed")
     layout = _layout(task_masks, source_geometry, base_scene)
+    source_files = []
     if layout is not None:
         for frame in source_geometry.get("frames", []):
+            records = {"frame_id": frame["frame_id"]}
             for prefix in ("image", "geometry"):
                 reference = file_record(Path(frame[prefix + "_path"]))
                 _require(reference["sha256"] == frame[prefix + "_digest"], "source_frame_bytes_changed")
+                records[prefix] = reference
+            source_files.append(records)
     catalog = _catalog(layout)
     targets = {row["target_id"]: row for row in task_masks.get("targets", [])}
     layouts = (layout or {}).get("targets", {})
     stages, resets, bindings, assets, asset_sources, used = [], {}, {}, [], {}, set()
+    engineering_assets = {}
     for operation in operations if bounded else ():
         key = operation["stage_id"]
         answer = facts.get(key, {})
@@ -361,6 +366,7 @@ def author_button_family_inputs(*, family, task_context, task_masks, source_geom
             missing(key, "button_engineering_asset", "source_measurement",
                     "Retain the licensed button model, joint/activation/reset evidence and exact dependency bytes.")
             continue
+        engineering_assets[asset["record"]["asset_id"]] = asset["record"]
         pose = _registered_pose(placed["pose_source"], layout["frame_registration"])
         mechanics = asset["mechanics"]
         asset_id = "button-" + hashlib.sha256(target_id.encode()).hexdigest()[:20]
@@ -399,8 +405,14 @@ def author_button_family_inputs(*, family, task_context, task_masks, source_geom
               "requirements": requirements, "stages": retained, "claim_ceiling": "development_only",
               "provider_mutation_performed": False, "automatic_paid_execution_authorized": False}
     if not requirements:
+        from .task_family_authoring_evidence import INPUT_SCHEMA
+        evidence = _retain(output_root, "evidence-inputs", {"schema_version": INPUT_SCHEMA,
+            "binding": dict(source_bindings), "source_video_digest": video, "layout_digest": layout["layout_digest"],
+            "registration_evidence": layout["registration_evidence"], "runtime_catalog": file_record(catalog[0]),
+            "source_frames": source_files, "engineering_assets": list(engineering_assets.values())})
+        retained.append(evidence)
         result["outputs"] = _compile(family, task_context, source_bindings, source_geometry, base_scene,
-            layout, catalog, stages, resets, bindings, assets, asset_sources, now=now)
+            layout, catalog, stages, resets, bindings, assets, asset_sources, evidence=evidence, now=now)
         result["status"] = "authored"
         retained.append(_retain(output_root, "native-inputs", result["outputs"]))
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
@@ -409,7 +421,7 @@ def author_button_family_inputs(*, family, task_context, task_masks, source_geom
 
 
 def _compile(family, context, source_bindings, geometry, scene, layout, catalog, stages, resets,
-             bindings, assets, asset_sources, *, now):
+             bindings, assets, asset_sources, *, evidence, now):
     path, registry, runtime = catalog
     scope = {"scene_id": context["scene_id"], "task_id": context.get("task_id") or "website-" + context["context_digest"][7:27],
              "task_context_digest": context["context_digest"]}
@@ -437,7 +449,8 @@ def _compile(family, context, source_bindings, geometry, scene, layout, catalog,
                 "task_context_digest": context["context_digest"], "reset": resets}
     inputs = {"assets": assets, "task_state_binding": {"source": "native_simulator_state", "engine_id": runtime["engine_id"],
         "runtime_identity_digest": runtime["runtime_identity_digest"], "stage_bindings": bindings,
-        "source_scene_binding": {**source_bindings, "frame_registration": frame}},
+        "source_scene_binding": {**source_bindings, "frame_registration": frame},
+        "source_authoring_evidence": evidence},
         "robot_base_pose_world": _registered_pose(robot["base_pose_source"], frame),
         "robot_joint_reset_positions_rad": robot["joint_reset_positions_rad"], "robot_configuration": robot["configuration"],
         "cameras": cameras, "scenario_cell_id": "capture-authored-0", "scenario_instance_digest": canonical_digest(scenario),

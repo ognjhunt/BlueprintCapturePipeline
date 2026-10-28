@@ -87,11 +87,14 @@ The bounded input is factual layout, not another finished native profile:
   engineering/source dependencies; a missing job hold duration remains a normal
   task-fact request.
 
-Repeated-family general-task routing additionally requires exact operation
+Repeated-family routing additionally requires exact operation
 IDs/count/order and ordered, nonoverlapping verbatim source quotes. Missing IDs
 or copying one occurrence to manufacture another operation keeps routing held.
 Contract and packet readback check native stage identities as well as family
-order. A release/repress sequence on the same button remains a specific reset
+order, including explicit multi-step hints and aliases. Website multi-step
+contracts require their retained source reading and original context. Standalone
+manually authored native materialization retains its separate entrypoint.
+A release/repress sequence on the same button remains a specific reset
 integration gap, preserving the requested job.
 
 Preparation also retains a source-bound authoring requirement generation under
@@ -118,6 +121,25 @@ completed bytes across restarts and version changed inputs. A supplied internal
 contract is retained without asserting new owner confirmation. Missing or
 expired runtime qualification may retain static native inputs, but it prevents
 intake creation and remains an explicit dispatch blocker.
+
+Source-produced native inputs pin an immutable `evidence-inputs` stage under
+`task_state_binding.source_authoring_evidence`. The packet pins the exact
+requirements/producer receipt through `source_authoring_requirements`.
+Materialization, packet verification and provider-bundle preflight reopen the
+registration receipt, engineering evidence, operator catalog, retained RGB/depth
+frames and every immutable authoring stage. Native outputs must match their
+producer receipt. Missing or changed bytes, dropped closure fields and ancestor
+swaps refuse through the existing packet boundary. Reopening uses no-follow
+descriptors, checks ancestor linkage and bounds reads by the pinned size.
+
+Only references/hashes enter the packet; raw frames and engineering evidence
+are not copied into GPU assets. A validating host without already permitted
+access to an exact reference remains blocked. These references grant no access
+and there is no receipt-only fallback. Closure JSON is bounded to 8 MiB per
+record and 4,096 retained geometry frames; provider context sampling follows its
+independent configured contract. Supplied/manual native inputs without a source
+producer claim remain a distinct compatibility route. Older source-produced
+packets lacking the closure need local re-authoring from their retained inputs.
 
 The ordinary production capture path does not yet emit this registered factual
 layout, and WebApp does not yet persist these source-bound normal fact answers.

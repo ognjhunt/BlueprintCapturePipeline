@@ -56,6 +56,8 @@ def family_source_references(*, preparation, runtime_inputs_path, task_context=N
     require(retained == native, "website_task_family_runtime_contract_changed")
     require(not family_source_blockers(native=native, source_bindings=inputs["source_bindings"],
             source_scene=inputs["source_scene"]), "website_task_family_source_binding_incomplete")
+    from .task_family_authoring_evidence import preparation_authoring_reference
+    preparation_authoring_reference(inputs=inputs, native=native)
     task = preparation["intake_request"]["task"]
     require(task.get("native_runtime_contract_digest") == native["contract_digest"]
             and task.get("task_success_contract_digest") == native["task_spec"]["task_success_contract"]['contract_digest']
@@ -100,6 +102,8 @@ def materialize_website_task_family_packet(*, preparation, runtime_inputs_path, 
                                    task_context=task_context)
     inputs = preparation["task_evaluation_inputs"]
     native = inputs["native_runtime_contract"]
+    from .task_family_authoring_evidence import preparation_authoring_reference
+    authoring_reference = preparation_authoring_reference(inputs=inputs, native=native)
     output = safe_path(output_root)
     require(output.is_absolute() and not output.exists(), "website_task_family_packet_output_exists")
     output.mkdir(parents=True, mode=0o750)
@@ -123,6 +127,8 @@ def materialize_website_task_family_packet(*, preparation, runtime_inputs_path, 
             "policy_selection": inputs.get("policy_selection"),
             "scene_intent": intent_reference, "preparation_attempt": attempt_reference,
             "release_binding": release_reference, "assets": rows, "paid_authority_granted": False}
+        if authoring_reference is not None:
+            request["source_authoring_requirements"] = authoring_reference
         request["request_digest"] = canonical_digest(request, digest_field="request_digest")
         write_json(output / "native_task_arena_packet_request.v1.json", request)
         write_json(output / "native_task_runtime_contract.v1.json", native)

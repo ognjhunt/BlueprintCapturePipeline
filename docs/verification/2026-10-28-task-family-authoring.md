@@ -94,6 +94,24 @@ The standalone manual native materializer remains separate. The bounded
 authoring/semantics/preparation/packet set passed 162 checks in 7.82 seconds after
 repair. Independent replay of the original review probe remains pending.
 
+The same independent review found post-preparation source/evidence mutation
+was not reopened by the packet reader. Nineteen regressions reproduced that
+gap before repair. Native inputs now pin an immutable evidence-input manifest;
+the packet pins the requirements and producer result. Verification reopens
+registration, engineering, RGB/depth, catalog and every source/operation/native
+stage against their exact retained bytes and compares native outputs to their
+producer receipt. Source-authored packets cannot omit the closure to inherit
+the manual compatibility path. Raw media and engineering payloads are not copied
+into GPU assets; references grant no new access, and unavailable source bytes
+refuse. The helper also fences a parent swap during its descriptor read and
+bounds a growing input by the pinned size. The new manifest is a fifth crash
+boundary with identical restart adoption. The final 28 closure regressions plus
+unchanged source governance passed 29 checks in 25.56 seconds. The combined
+authoring/source/packet set passed 79 checks in 19.74 seconds; the earlier native
+bundle regression set passed 171 in 55.45 seconds. Ruff and whitespace checks
+pass. Independent replay remains pending; these author results do not declare
+the repair independently reviewed or production accepted.
+
 ## PAUSED: proposed first existing-profile journey
 
 Selection, source admission and execution are paused for feasibility

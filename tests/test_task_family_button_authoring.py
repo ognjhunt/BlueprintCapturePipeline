@@ -304,7 +304,7 @@ def test_missing_physical_button_threshold_is_engineering_dependency(tmp_path, m
     assert "engineering/source evidence" in next_action["question"]
 
 
-@pytest.mark.parametrize("boundary", ["source-button-", "operation-1", "native-inputs", "authoring-result"])
+@pytest.mark.parametrize("boundary", ["source-button-", "operation-1", "evidence-inputs", "native-inputs", "authoring-result"])
 def test_restart_after_each_authoring_stage_adopts_identical_bytes(tmp_path, monkeypatch, boundary):
     args, _ = _fixture(tmp_path, monkeypatch)
     original = producer._retain
