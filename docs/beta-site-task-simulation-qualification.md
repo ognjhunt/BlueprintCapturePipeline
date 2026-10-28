@@ -223,7 +223,7 @@ explicit extraction:
 | Observation | `rgbd_length` | Two retained endpoint pixels, RGB, optical-axis depth, and pinhole intrinsics |
 | Task dynamics | `rigid_body_mass` | Actual native-engine rigid-body mass attribute |
 
-The snapshot schema is
+The original diagnostic snapshot schema is
 `blueprint.site_task_runtime_metrology_snapshot.v1`. It binds the same full
 qualification identity, `source_kind: native_engine_readback`, `engine_build`,
 `runtime_digest`, UTC `observed_at_iso`, and its canonical `snapshot_digest`.
@@ -232,6 +232,27 @@ plus `geometry_points_m`, `registered_floor_plane`, `collision_bounds_m`,
 `collision_rays`, `rigid_body_masses_kg`, `calibration_sample_ids`, and named
 `rendered_rgbd` records. An absent ray hit is a missing bounded measurement,
 never infinite clearance.
+
+Operator preparation and qualification recomputation require
+`blueprint.site_task_runtime_metrology_snapshot.v2`. Alongside those retained
+fields, v2 pins `robot_model_dependency_closure_digest` and
+`robot_model_source_import_digest`. The existing operator-selected
+`default_robot_model` import authenticates both pins. Its root model and every
+dependency are reopened through the existing descriptor-safe verifier and
+retained as exact source records in the measurement extraction. A changed
+dependency, reviewed closure or import generation refuses even when the root
+model file is unchanged. The emitted v2 extraction records the full closure
+and import digest, with `runtime_open_proven: false`: retained-byte verification
+does not establish which asset an engine opened. This preparation currently
+uses the existing DROID default-model operator import; it does not add another
+robot family or qualification profile.
+
+Direct v1 extraction remains diagnostic and explicitly marks robot dependency
+evidence unproven. It cannot fall back into operator qualification preparation.
+Old numeric documents must not be relabelled v2 without the actual retained
+closure and original snapshot producer binding. Runtime snapshot emission,
+staging and actual engine-open evidence, independent paired site readings and
+reviewed thresholds remain separate pending obligations.
 
 Each render record retains its artifact, `model: rectified_pinhole`,
 `depth_quantity: optical_axis_m`, `renderer_digest`, and `camera_pose_digest`.

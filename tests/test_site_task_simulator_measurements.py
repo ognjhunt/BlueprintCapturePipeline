@@ -10,7 +10,8 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest as digest
 from blueprint_pipeline.site_task_simulator_measurements import (
-    RECIPE_SCHEMA, SNAPSHOT_SCHEMA, SimulatorMeasurementError, produce_measurements,
+    CLOSED_SNAPSHOT_SCHEMA, RECIPE_SCHEMA, SNAPSHOT_SCHEMA, SimulatorMeasurementError,
+    produce_from_operator_profile, produce_measurements,
     retain_measurements,
 )
 from tests.test_site_task_simulation_qualification import fixture as qualification_fixture
@@ -21,8 +22,8 @@ def _record(path):
     return {"path": path.name, "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw)}
 
 
-def fixture(root):
-    profile = qualification_fixture(root)
+def fixture(root, *, binding=None):
+    profile = qualification_fixture(root, binding=binding)
     binding = json.loads((root / "request.json").read_text())["binding"]
     (root / "scene.json").write_text(json.dumps({"scene_revision_digest": binding["scene_revision_digest"]}))
     rgb = np.zeros((21, 21, 3), dtype=np.uint8)
@@ -66,6 +67,116 @@ def _rewrite_snapshot(root, recipe, snapshot):
     snapshot["snapshot_digest"] = digest(snapshot, digest_field="snapshot_digest")
     (root / "snapshot.json").write_text(json.dumps(snapshot))
     recipe["snapshot"] = _record(root / "snapshot.json")
+
+
+def _operator_recipe(root, recipe, profile):
+    path = root / "recipe.json"
+    path.write_text(json.dumps(recipe))
+    profile["simulator_measurement_producer"] = {
+        "recipe_path": str(path), "recipe_digest": digest(recipe),
+        "evidence_root": str(root), "producer_id": recipe["producer_id"]}
+    return profile
+
+
+def test_root_model_only_readings_cannot_enter_operator_qualification_preparation(tmp_path):
+    recipe, _, profile = fixture(tmp_path)
+    _operator_recipe(tmp_path, recipe, profile)
+    # The original retained format still supports diagnostic extraction, but
+    # its root-file hash cannot stand in for an authenticated robot closure.
+    diagnostic = produce_measurements(recipe, evidence_root=tmp_path)
+    assert diagnostic["checks"]
+    assert diagnostic["extraction"]["robot_model_dependency_evidence"] == {
+        "status": "unproven", "runtime_open_proven": False}
+    with pytest.raises(SimulatorMeasurementError, match="robot_model_closure_unproven"):
+        produce_from_operator_profile(profile)
+
+
+def _closed_fixture(root, monkeypatch):
+    from blueprint_pipeline.blueprint_robot_model_delivery import stage_default_robot_model
+    from tests.test_blueprint_robot_model_delivery import fixture as model_fixture
+    from tests.test_site_task_simulation_qualification import _rewrite
+
+    recipe, snapshot, profile = fixture(root, binding={"policy_interface_id": "openpi_droid.v1"})
+    operator = root / "operator"
+    operator.mkdir()
+    model_profile, source, closure = model_fixture(operator, monkeypatch)
+    # Explicit synthetic import; this exercises byte coupling, never USD load,
+    # engine provenance, measurements or a real qualification claim.
+    model = (root / "robot_model.json").read_bytes()
+    (source / closure["model_path"]).write_bytes(model)
+    selected = next(row for row in closure["files"] if row["path"] == closure["model_path"])
+    selected.update(sha256="sha256:" + hashlib.sha256(model).hexdigest(), size_bytes=len(model))
+    closure["closure_digest"] = digest(closure, digest_field="closure_digest")
+    model_profile["default_robot_model"].update(model_sha256=selected["sha256"],
+        dependency_closure_digest=closure["closure_digest"])
+    imported = {"model": selected, "dependency_closure": closure, "import_digest": "sha256:" + "e" * 64}
+    monkeypatch.setattr("blueprint_pipeline.deployment_embodiment_asset_import.verify_prepared_asset_directory",
+                        lambda path: copy.deepcopy(imported))
+    profile.update(model_profile)
+    profile["site_task_qualification"]["default_robot_model_closure_digest"] = closure["closure_digest"]
+    runtime = root / "runtime-robot"
+    stage_default_robot_model(profile=profile, target_directory=runtime)
+    model_record = {**_record(runtime / closure["model_path"]), "path": "runtime-robot/" + closure["model_path"]}
+    snapshot.update(schema_version=CLOSED_SNAPSHOT_SCHEMA, robot_model_artifact=model_record,
+        robot_model_dependency_closure_digest=closure["closure_digest"], robot_model_source_import_digest=imported["import_digest"])
+    _rewrite_snapshot(root, recipe, snapshot)
+    _rewrite(profile, "request", lambda request: next(row for row in request["source_artifacts"]
+        if row["role"] == "robot_model").update(model_record))
+    _operator_recipe(root, recipe, profile)
+    return recipe, snapshot, profile, imported
+
+
+def test_operator_preparation_binds_all_retained_model_bytes_and_source_generation(tmp_path, monkeypatch):
+    _, _, profile, imported = _closed_fixture(tmp_path, monkeypatch)
+    document = produce_from_operator_profile(profile)
+    evidence = document["extraction"]["robot_model_dependency_evidence"]
+    assert evidence["dependency_closure"] == imported["dependency_closure"]
+    assert evidence["source_import_digest"] == imported["import_digest"]
+    assert evidence["status"] == "retained_bytes_verified" and evidence["runtime_open_proven"] is False
+    assert document["extraction"]["method_id"].endswith(".v2")
+    names = {row["path"] for row in document["extraction"]["source_artifacts"]}
+    assert {"runtime-robot/robot.usda", "runtime-robot/textures/body.png"} <= names
+    assert produce_from_operator_profile(profile) == document
+
+
+@pytest.mark.parametrize("change", ["dependency", "root", "missing", "symlink", "source_generation",
+    "snapshot_closure", "review_closure", "missing_closure", "root_path", "operator_binding", "config_closure"])
+def test_closed_metrology_refuses_changed_dependencies_and_generations(tmp_path, monkeypatch, change):
+    recipe, snapshot, profile, imported = _closed_fixture(tmp_path, monkeypatch)
+    model = tmp_path / "runtime-robot" / "robot.usda"
+    dependency = model.parent / "textures" / "body.png"
+    if change in {"dependency", "root"}:
+        (dependency if change == "dependency" else model).write_bytes(b"changed retained bytes")
+    elif change in {"missing", "symlink"}:
+        dependency.unlink()
+        if change == "symlink":
+            dependency.symlink_to(model)
+    elif change == "source_generation":
+        imported["import_digest"] = "sha256:" + "f" * 64
+    elif change == "snapshot_closure":
+        snapshot["robot_model_dependency_closure_digest"] = "sha256:" + "f" * 64
+    elif change == "review_closure":
+        profile["site_task_qualification"]["default_robot_model_closure_digest"] = "sha256:" + "f" * 64
+    elif change == "missing_closure":
+        snapshot.pop("robot_model_dependency_closure_digest")
+    elif change == "operator_binding":
+        profile.pop("default_robot_model")
+    elif change == "config_closure":
+        profile["default_robot_model"]["dependency_closure_digest"] = "sha256:" + "f" * 64
+    else:
+        alternate = tmp_path / "renamed.usda"
+        alternate.write_bytes(model.read_bytes())
+        snapshot["robot_model_artifact"] = _record(alternate)
+    _rewrite_snapshot(tmp_path, recipe, snapshot)
+    _operator_recipe(tmp_path, recipe, profile)
+    with pytest.raises(SimulatorMeasurementError):
+        produce_from_operator_profile(profile)
+
+
+def test_closed_snapshot_cannot_use_job_or_snapshot_bytes_as_operator_authority(tmp_path, monkeypatch):
+    recipe, _, _, _ = _closed_fixture(tmp_path, monkeypatch)
+    with pytest.raises(SimulatorMeasurementError, match="robot_model_operator_required"):
+        produce_measurements(recipe, evidence_root=tmp_path)
 
 
 def test_six_dimensions_calculated_from_distinct_retained_sources(tmp_path):
@@ -161,10 +272,11 @@ def test_existing_qualification_command_prepares_only_operator_pinned_readings(t
     from blueprint_pipeline.team_candidate_quick10_registry import REGISTRY_ENV, REGISTRY_SCHEMA
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
-    recipe, _, _ = fixture(tmp_path / "evidence")
+    recipe, _, selected_profile, _ = _closed_fixture(tmp_path / "evidence", monkeypatch)
     recipe_path = tmp_path / "recipe.json"
     recipe_path.write_text(json.dumps(recipe))
-    profile = {"capture_root": str(tmp_path.resolve()), "simulator_measurement_producer": {
+    profile = {"capture_root": str(tmp_path.resolve()), "default_robot_model": selected_profile["default_robot_model"],
+        "site_task_qualification": selected_profile["site_task_qualification"], "simulator_measurement_producer": {
         "recipe_path": str(recipe_path), "recipe_digest": digest(recipe),
         "evidence_root": str(tmp_path / "evidence"), "producer_id": recipe["producer_id"]}}
     registry = {"schema_version": REGISTRY_SCHEMA, "profiles": [profile]}
@@ -184,17 +296,17 @@ def test_existing_qualification_command_prepares_only_operator_pinned_readings(t
         main(args)
 
 
-def _paired_qualification(root):
+def _paired_qualification(root, monkeypatch):
     from blueprint_pipeline.site_task_fidelity_profile_templates import template
     from tests.test_site_task_simulation_qualification import _reauthorize_review, _rewrite
 
-    recipe, snapshot, profile = fixture(root)
+    recipe, snapshot, profile, _ = _closed_fixture(root, monkeypatch)
     recipe_path = root / "recipe.json"
     recipe_path.write_text(json.dumps(recipe))
     profile["simulator_measurement_producer"] = {
         "recipe_path": str(recipe_path), "recipe_digest": digest(recipe), "evidence_root": str(root),
         "producer_id": recipe["producer_id"]}
-    generated = produce_measurements(recipe, evidence_root=root)
+    generated = produce_from_operator_profile(profile)
     (root / "simulator_measurement.json").write_text(json.dumps(generated))
     criteria = [{k: row[k] for k in ("id", "dimension", "unit", "minimum_sample_count", "maximum_absolute_error", "maximum_rms_error")}
                 for row in template("rigid_pick_place")["checks"]]
@@ -218,11 +330,11 @@ def _paired_qualification(root):
     return recipe, snapshot, profile
 
 
-def test_qualifier_recomputes_generated_readings_from_original_runtime_sources(tmp_path):
+def test_qualifier_recomputes_generated_readings_from_original_runtime_sources(tmp_path, monkeypatch):
     from blueprint_pipeline.site_task_simulation_qualification import qualify_from_profile
     from tests.test_site_task_simulation_qualification import NOW
 
-    _, _, profile = _paired_qualification(tmp_path)
+    _, _, profile = _paired_qualification(tmp_path, monkeypatch)
     receipt = qualify_from_profile(profile, now=NOW)
     assert all(c["max_abs_error"] == 0 for field in ("registration_receipt", "fidelity_review_receipt")
                for c in receipt[field]["checks"])
@@ -231,12 +343,32 @@ def test_qualifier_recomputes_generated_readings_from_original_runtime_sources(t
         qualify_from_profile(profile, now=NOW)
 
 
+def test_qualifier_does_not_fall_back_to_root_only_metrology(tmp_path, monkeypatch):
+    from blueprint_pipeline.site_task_simulation_qualification import qualify_from_profile
+    from tests.test_site_task_simulation_qualification import NOW, _reauthorize_review, _rewrite
+
+    recipe, snapshot, profile = _paired_qualification(tmp_path, monkeypatch)
+    assert qualify_from_profile(profile, now=NOW)["receipt_digest"]
+    snapshot["schema_version"] = SNAPSHOT_SCHEMA
+    snapshot.pop("robot_model_dependency_closure_digest")
+    snapshot.pop("robot_model_source_import_digest")
+    _rewrite_snapshot(tmp_path, recipe, snapshot)
+    _operator_recipe(tmp_path, recipe, profile)
+    diagnostic = produce_measurements(recipe, evidence_root=tmp_path)
+    (tmp_path / "simulator_measurement.json").write_text(json.dumps(diagnostic))
+    _rewrite(profile, "request", lambda request: next(row for row in request["source_artifacts"]
+        if row["role"] == "simulator_measurement").update(_record(tmp_path / "simulator_measurement.json")))
+    _reauthorize_review(profile)
+    with pytest.raises(SimulatorMeasurementError, match="robot_model_closure_unproven"):
+        qualify_from_profile(profile, now=NOW)
+
+
 @pytest.mark.parametrize("dimension", ["observation", "task_dynamics"])
-def test_wrong_appearance_or_mass_fails_existing_fidelity_pairing(tmp_path, dimension):
+def test_wrong_appearance_or_mass_fails_existing_fidelity_pairing(tmp_path, monkeypatch, dimension):
     from blueprint_pipeline.site_task_simulation_qualification import SiteTaskQualificationError, qualify_from_profile
     from tests.test_site_task_simulation_qualification import NOW, _reauthorize_review, _rewrite
 
-    recipe, snapshot, profile = _paired_qualification(tmp_path)
+    recipe, snapshot, profile = _paired_qualification(tmp_path, monkeypatch)
     if dimension == "observation":
         with np.load(tmp_path / "render.npz") as arrays:
             rgb, depth, k = arrays["rgb"], arrays["depth_m"], arrays["intrinsics"]
@@ -247,7 +379,7 @@ def test_wrong_appearance_or_mass_fails_existing_fidelity_pairing(tmp_path, dime
     _rewrite_snapshot(tmp_path, recipe, snapshot)
     (tmp_path / "recipe.json").write_text(json.dumps(recipe))
     profile["simulator_measurement_producer"]["recipe_digest"] = digest(recipe)
-    (tmp_path / "simulator_measurement.json").write_text(json.dumps(produce_measurements(recipe, evidence_root=tmp_path)))
+    (tmp_path / "simulator_measurement.json").write_text(json.dumps(produce_from_operator_profile(profile)))
     def source(request):
         next(a for a in request["source_artifacts"] if a["role"] == "simulator_measurement").update(
             {k: v for k, v in _record(tmp_path / "simulator_measurement.json").items() if k != "path"})
@@ -258,11 +390,11 @@ def test_wrong_appearance_or_mass_fails_existing_fidelity_pairing(tmp_path, dime
 
 
 @pytest.mark.parametrize("changed_bytes", [False, True])
-def test_metrology_scene_must_join_the_reviewed_scene_bytes_not_only_revision(tmp_path, changed_bytes):
+def test_metrology_scene_must_join_the_reviewed_scene_bytes_not_only_revision(tmp_path, monkeypatch, changed_bytes):
     from blueprint_pipeline.site_task_simulation_qualification import SiteTaskQualificationError, qualify_from_profile
     from tests.test_site_task_simulation_qualification import NOW, _reauthorize_review, _rewrite
 
-    recipe, snapshot, profile = _paired_qualification(tmp_path)
+    recipe, snapshot, profile = _paired_qualification(tmp_path, monkeypatch)
     alternate = tmp_path / "different-scene.json"
     original = (tmp_path / "scene.json").read_bytes()
     if changed_bytes:
@@ -275,7 +407,7 @@ def test_metrology_scene_must_join_the_reviewed_scene_bytes_not_only_revision(tm
     _rewrite_snapshot(tmp_path, recipe, snapshot)
     (tmp_path / "recipe.json").write_text(json.dumps(recipe))
     profile["simulator_measurement_producer"]["recipe_digest"] = digest(recipe)
-    (tmp_path / "simulator_measurement.json").write_text(json.dumps(produce_measurements(recipe, evidence_root=tmp_path)))
+    (tmp_path / "simulator_measurement.json").write_text(json.dumps(produce_from_operator_profile(profile)))
     def source(request):
         next(a for a in request["source_artifacts"] if a["role"] == "simulator_measurement").update(
             {k: v for k, v in _record(tmp_path / "simulator_measurement.json").items() if k != "path"})

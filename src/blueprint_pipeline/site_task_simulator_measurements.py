@@ -29,8 +29,10 @@ from .site_task_simulation_qualification import BINDING_FIELDS, DIMENSIONS
 
 RECIPE_SCHEMA = "blueprint.site_task_simulator_measurement_recipe.v1"
 SNAPSHOT_SCHEMA = "blueprint.site_task_runtime_metrology_snapshot.v1"
+CLOSED_SNAPSHOT_SCHEMA = "blueprint.site_task_runtime_metrology_snapshot.v2"
 SAMPLES_SCHEMA = "blueprint.site_task_measurement_samples.v1"
 METHOD = "retained_rigid_engine_and_rectified_rgbd.v1"
+CLOSED_METHOD = "retained_rigid_engine_and_rectified_rgbd.v2"
 MAX_SOURCE_BYTES = 128 * 1024 * 1024
 _SHA = re.compile(r"sha256:[0-9a-f]{64}")
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,191}")
@@ -192,7 +194,41 @@ def _extract(reading: Mapping[str, Any], snapshot: Mapping[str, Any], *, renders
     return _rgbd_length(renders[name], reading, camera), "calibrated_rendered_rgbd"
 
 
-def produce_measurements(recipe: Mapping[str, Any], *, evidence_root: Path) -> dict[str, Any]:
+def _robot_sources(root, snapshot, binding, operator_profile):
+    model_path, _ = _source(root, snapshot.get("robot_model_artifact"))
+    _require(snapshot["robot_model_artifact"]["sha256"] == binding["robot_model_digest"], "robot_model_binding_invalid")
+    if snapshot["schema_version"] == SNAPSHOT_SCHEMA:
+        _require(operator_profile is None, "robot_model_closure_unproven")
+        return [dict(snapshot["robot_model_artifact"])], {"status": "unproven", "runtime_open_proven": False}
+    _require(isinstance(operator_profile, Mapping), "robot_model_operator_required")
+    closure_digest = snapshot.get("robot_model_dependency_closure_digest")
+    import_digest = snapshot.get("robot_model_source_import_digest")
+    _require(_SHA.fullmatch(str(closure_digest)) and _SHA.fullmatch(str(import_digest)), "robot_model_closure_unproven")
+    authority = operator_profile.get("site_task_qualification")
+    if isinstance(authority, Mapping) and "default_robot_model_closure_digest" in authority:
+        _require(authority["default_robot_model_closure_digest"] == closure_digest, "robot_model_review_closure_changed")
+    from .blueprint_robot_model_delivery import BlueprintRobotModelError, require_default_robot_model
+    try:
+        receipt = require_default_robot_model(profile=operator_profile, model_path=model_path,
+            expected_model_sha256=binding["robot_model_digest"], expected_closure_digest=closure_digest)
+    except BlueprintRobotModelError:
+        raise SimulatorMeasurementError("site_task_simulator_measurement_robot_model_closure_changed") from None
+    _require(receipt["source_import_digest"] == import_digest, "robot_model_source_generation_changed")
+    closure = receipt["dependency_closure"]
+    sources = []
+    for row in closure["files"]:
+        path = model_path.parent / row["path"]
+        _require(path.is_relative_to(root), "robot_model_closure_path_invalid")
+        record = {"path": path.relative_to(root).as_posix(), "sha256": row["sha256"], "size_bytes": row["size_bytes"]}
+        _source(root, record)
+        sources.append(record)
+    return sources, {"status": "retained_bytes_verified", "dependency_closure": closure,
+        "source_import_digest": import_digest, "runtime_open_proven": False,
+        "claim_ceiling": "retained_robot_bytes_not_engine_use"}
+
+
+def produce_measurements(recipe: Mapping[str, Any], *, evidence_root: Path,
+                         operator_profile: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Calculate frozen samples; never accept independent site readings as inputs.
 
     ``snapshot`` retains native scene/engine attributes and exact runtime/model
@@ -211,7 +247,7 @@ def produce_measurements(recipe: Mapping[str, Any], *, evidence_root: Path) -> d
     _require(isinstance(producer, str) and _ID.fullmatch(producer), "producer_invalid")
     _, raw = _source(root, recipe.get("snapshot"))
     snapshot = _json(raw)
-    _require(snapshot.get("schema_version") == SNAPSHOT_SCHEMA and snapshot.get("binding") == binding
+    _require(snapshot.get("schema_version") in {SNAPSHOT_SCHEMA, CLOSED_SNAPSHOT_SCHEMA} and snapshot.get("binding") == binding
              and snapshot.get("source_kind") == "native_engine_readback"
              and isinstance(snapshot.get("engine_build"), str) and snapshot["engine_build"]
              and _SHA.fullmatch(str(snapshot.get("runtime_digest")))
@@ -222,10 +258,8 @@ def produce_measurements(recipe: Mapping[str, Any], *, evidence_root: Path) -> d
     _, scene_raw = _source(root, snapshot.get("scene_artifact"))
     scene = _json(scene_raw)
     _require(scene.get("scene_revision_digest") == binding["scene_revision_digest"], "scene_binding_invalid")
-    _source(root, snapshot.get("robot_model_artifact"))
-    _require(snapshot["robot_model_artifact"]["sha256"] == binding["robot_model_digest"], "robot_model_binding_invalid")
-    renders, sources = {}, [dict(recipe["snapshot"]), dict(snapshot["scene_artifact"]),
-                           dict(snapshot["robot_model_artifact"])]
+    robot_sources, robot_evidence = _robot_sources(root, snapshot, binding, operator_profile)
+    renders, sources = {}, [dict(recipe["snapshot"]), dict(snapshot["scene_artifact"]), *robot_sources]
     for name, camera in snapshot.get("rendered_rgbd", {}).items():
         _require(isinstance(name, str) and _ID.fullmatch(name) and isinstance(camera, Mapping), "render_record_invalid")
         _, data = _source(root, camera.get("artifact"))
@@ -256,7 +290,9 @@ def produce_measurements(recipe: Mapping[str, Any], *, evidence_root: Path) -> d
                             "selector": dict(reading), "snapshot_digest": snapshot["snapshot_digest"]})
     document = {"schema_version": SAMPLES_SCHEMA, "binding": dict(binding), "producer_id": producer,
                 "observed_at_iso": snapshot["observed_at_iso"], "checks": list(checks.values()),
-                "extraction": {"method_id": METHOD, "implementation_sha256": "sha256:" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "extraction": {"method_id": CLOSED_METHOD if snapshot["schema_version"] == CLOSED_SNAPSHOT_SCHEMA else METHOD,
+                               "robot_model_dependency_evidence": robot_evidence,
+                               "implementation_sha256": "sha256:" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                                "recipe_digest": digest(recipe), "runtime_digest": snapshot["runtime_digest"],
                                "scene_artifact": dict(snapshot["scene_artifact"]),
                                "engine_build": snapshot["engine_build"], "source_artifacts": sources,
@@ -308,7 +344,7 @@ def produce_from_operator_profile(profile: Mapping[str, Any]) -> dict[str, Any]:
     recipe = _json(recipe_path.read_bytes())
     _require(digest(recipe) == settings["recipe_digest"] and recipe.get("producer_id") == settings["producer_id"],
              "operator_recipe_changed")
-    return produce_measurements(recipe, evidence_root=root)
+    return produce_measurements(recipe, evidence_root=root, operator_profile=profile)
 
 
 def main(argv: list[str] | None = None) -> int:
