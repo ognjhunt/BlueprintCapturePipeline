@@ -535,6 +535,7 @@ class VoxelSums:
     """
 
     MIN_MERGE_ROWS = 1_000_000
+    MERGE_CHUNK_ROWS = 65_536
 
     def __init__(self, voxel: float):
         self.voxel = voxel
@@ -557,9 +558,19 @@ class VoxelSums:
 
     def _merge(self) -> None:
         if self._pending:
-            self._keys, self._columns = _sum_by_key(
-                np.concatenate([self._keys, *(keys for keys, _ in self._pending)]),
-                np.concatenate([self._columns, *(columns for _, columns in self._pending)], axis=1))
+            # Each table already has sorted, unique keys. Avoid copying all
+            # twelve columns into a second pixel-sized table and constructing
+            # a full inverse index before allocating the merged sums.
+            tables = [(self._keys, self._columns), *self._pending]
+            keys = np.unique(np.concatenate([part_keys for part_keys, _ in tables]))
+            columns = np.zeros((12, len(keys)))
+            for part_keys, part_columns in tables:
+                for start in range(0, len(part_keys), self.MERGE_CHUNK_ROWS):
+                    end = start + self.MERGE_CHUNK_ROWS
+                    slots = np.searchsorted(keys, part_keys[start:end])
+                    for row in range(12):
+                        columns[row, slots] += part_columns[row, start:end]
+            self._keys, self._columns = keys, columns
             self._pending, self._pending_rows = [], 0
 
     @property
