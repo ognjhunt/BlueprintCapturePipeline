@@ -1,4 +1,4 @@
-"""Matched diagnostic cells, independent admission and one aggregate site cap."""
+"""Matched cells, independent admission and one aggregate site cap."""
 
 from __future__ import annotations
 
@@ -77,14 +77,29 @@ def reseal(value):
     return value
 
 
-def test_forty_candidates_share_ten_cells_and_remain_diagnostic():
+def test_forty_candidates_share_ten_cells_in_one_evaluation_tier():
     value = plan(40, "0.20")
     assert len(value["candidates"]) == 40
     assert {row["status"] for row in value["candidates"]} == {"selected"}
     assert value["maximum_planned_cost_usd"] == "8.00"
     assert all(row["scenario_cells"] == value["scenario_cells"] for row in value["candidates"])
-    assert value["recommendation_eligible"] is False and value["purpose"] == "screening"
+    # No diagnostic-only ceiling on the job's use of its result; the runtime
+    # ceiling that keeps beta runs out of ADP evidence is unchanged.
+    assert "recommendation_eligible" not in value and value["purpose"] == "screening"
+    assert value["claim_ceiling"] == "diagnostic_policy_execution"
     assert validate_screening_plan(value) == value
+
+
+@pytest.mark.parametrize("legacy, valid", [(False, True), (True, False)])
+def test_retained_legacy_plan_field_stays_valid_only_as_false(legacy, valid):
+    value = plan()
+    value["recommendation_eligible"] = legacy
+    reseal(value)
+    if valid:
+        assert validate_screening_plan(value) == value
+    else:
+        with pytest.raises(BetaPolicyScreeningPlanError, match="plan_schema_invalid"):
+            validate_screening_plan(value)
 
 
 def test_machine_readable_plan_schema_accepts_mixed_admission_outcomes():

@@ -402,10 +402,10 @@ def test_actual_family_capture_to_native_screening_publication(
             "spent_upper_bound_usd": "4", "reserved_usd": "0"})
     assert publication["candidates"][0]["episodes_scored"] == 10
     assert publication["candidates"][0]["success_rate"] == (1.0 if expected_success else 0.0)
-    assert publication["source"] == plan["source"] and publication["recommendation_eligible"] is False
-    assert publication["claim_ceiling"] == "diagnostic_policy_execution"
+    assert publication["source"] == plan["source"] and "recommendation_eligible" not in publication
+    assert publication["claim_ceiling"] == "simulation_estimate" and publication["purpose"] == "job_evaluation"
     from jsonschema import Draft202012Validator
-    schema_path = Path(__file__).resolve().parents[1] / "docs/schemas/beta_policy_screening_publication.v1.schema.json"
+    schema_path = Path(__file__).resolve().parents[1] / "docs/schemas/beta_policy_screening_publication.v2.schema.json"
     Draft202012Validator(json.loads(schema_path.read_text())).validate(publication)
     assert publication["publication_digest"] == cross_runtime_canonical_digest(publication, digest_field="publication_digest")
     wire = json.dumps(publication)
