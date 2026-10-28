@@ -29,6 +29,7 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint
+ReadWritePaths=/var/lib/blueprint/capture-intakes
 ReadWritePaths=/var/lib/blueprint/scene-retirement/journals/processes
 TasksMax=512
 LimitNOFILE=65536
@@ -41,6 +42,9 @@ Environment=BLUEPRINT_LAUNCH_PROOF_MODE=production
 Environment=PRIVACY_PIPELINE_ENABLED=true
 Environment=PRIVACY_FAIL_CLOSED=true
 Environment=PIPELINE_SYNC_REQUIRED=true
+# Non-secret defaults; the existing EnvironmentFiles retain override authority.
+Environment=PIPELINE_CAPTURE_INTAKE_STORE_ROOT=/var/lib/blueprint/capture-intakes
+Environment='PIPELINE_CAPTURE_MALWARE_SCANNER_ARGV_JSON=["/usr/bin/clamscan","--no-summary"]'
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_TARGET_ROOT=/var/lib/blueprint/task-evaluation-inputs
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS=launch_preparation=/var/lib/blueprint/task-evaluation-inputs/prepared-references,episode_compilation=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes,launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,handoff_staging=/var/lib/blueprint/pubsub-handoffs,scene_configuration_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries

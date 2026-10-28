@@ -133,6 +133,7 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         kwargs = dict(runtime_inputs)
         if set(kwargs) & {"scene_id", "task_id", "task_spec", "destination"}:
             raise ValueError("website_task_family_native_runtime_scope_override")
+        handoff_lease_checkpoint("website_task_family_native_materialization")
         native = materialize_native_task_runtime_contract(scene_id=scope["scene_id"], task_id=task_id,
             task_spec={"task_kind": family, "task_success_contract": contract}, **kwargs)
         blockers.extend(family_source_blockers(native=native, source_bindings=source_bindings, source_scene=base_scene))

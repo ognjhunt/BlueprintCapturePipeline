@@ -43,6 +43,7 @@ import json
 import math
 import os
 import re
+import shlex
 import signal
 import stat
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
@@ -1810,6 +1811,111 @@ def _install_scene_retirement_stores(*, root_prefix: str | Path | None = None) -
                      errno=getattr(exc, 'errno', None)) from exc
 
 
+def _capture_transfer_configuration(
+    unit_text: str, *, read_file: Callable[[Path], str] | None = None,
+) -> dict[str, Any] | None:
+    """Read only the two intake settings, honoring systemd EnvironmentFile order."""
+    names = {"PIPELINE_CAPTURE_INTAKE_STORE_ROOT", "PIPELINE_CAPTURE_MALWARE_SCANNER_ARGV_JSON"}
+    values: dict[str, str] = {}
+    files: list[str] = []
+    for raw in unit_text.splitlines():
+        line = raw.strip()
+        if line.startswith("Environment="):
+            for assignment in shlex.split(line.partition("=")[2]):
+                key, separator, value = assignment.partition("=")
+                if separator and key in names:
+                    values[key] = value
+        elif line.startswith("EnvironmentFile="):
+            files.extend(shlex.split(line.partition("=")[2]))
+    if not names.intersection(values):
+        return None  # Rollbacks to units without capture-transfer defaults remain supported.
+    for item in files:
+        path = Path(item.removeprefix("-"))
+        if not path.is_absolute():
+            raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid")
+        try:
+            if read_file is not None:
+                text = read_file(path)
+            else:
+                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+                with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
+                    info = os.fstat(stream.fileno())
+                    if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
+                        raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid")
+                    text = stream.read(1024 * 1024 + 1)
+        except FileNotFoundError:
+            if item.startswith("-"):
+                continue
+            raise ControlPlaneDeployError("deploy_capture_transfer_environment_missing") from None
+        for raw in text.splitlines():
+            key, separator, value = raw.strip().partition("=")
+            key = key.strip()
+            if not separator or key not in names:
+                continue
+            value = value.strip()
+            if value.endswith("\\"):
+                raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid")
+            if value.startswith(("'", '"')):
+                parsed = shlex.split(value)
+                if len(parsed) != 1:
+                    raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid")
+                value = parsed[0]
+            values[key] = value
+    try:
+        result = {"store_root": values["PIPELINE_CAPTURE_INTAKE_STORE_ROOT"],
+                  "scanner_argv": json.loads(values["PIPELINE_CAPTURE_MALWARE_SCANNER_ARGV_JSON"])}
+    except (KeyError, json.JSONDecodeError) as exc:
+        raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid") from exc
+    return result
+
+
+def _verify_capture_transfer_runtime(*, release: Path, unit_text: str, account: str) -> dict[str, Any] | None:
+    configuration = _capture_transfer_configuration(unit_text)
+    if configuration is None:
+        return None
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/runuser", "--user", account, "--", sys.executable,
+             "-m", "blueprint_pipeline.capture_upload_runtime"],
+            input=json.dumps(configuration), text=True, check=False, capture_output=True, timeout=150,
+            cwd=release, env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
+                              "PYTHONPATH": str(release / "src"), "PYTHONDONTWRITEBYTECODE": "1"},
+        )
+        value = json.loads(result.stdout) if len(result.stdout) <= 16384 else {}
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise ControlPlaneDeployError("deploy_capture_transfer_runtime_probe_failed") from exc
+    if not isinstance(value, dict):
+        raise ControlPlaneDeployError("deploy_capture_transfer_runtime_probe_invalid")
+    if result.returncode != 0 or value.get("status") != "ready":
+        reason = value.get("reason", "capture_transfer_runtime_probe_failed")
+        if not isinstance(reason, str) or not re.fullmatch(r"capture_transfer_[a-z0-9_:]+", reason):
+            reason = "capture_transfer_runtime_probe_failed"
+        failure = ControlPlaneDeployError("deploy_" + reason)
+        diagnostic = value.get("diagnostic")
+        if (isinstance(diagnostic, dict) and set(diagnostic) == {
+                "control", "exit_code", "evidence_relative_path", "evidence_sha256"}
+                and diagnostic["control"] in {"clean", "known_test_signature"}
+                and type(diagnostic["exit_code"]) is int
+                and isinstance(diagnostic["evidence_relative_path"], str)
+                and re.fullmatch(r"runtime-preflight/[0-9a-f]{32}\.json", diagnostic["evidence_relative_path"])
+                and isinstance(diagnostic["evidence_sha256"], str)
+                and re.fullmatch(r"[0-9a-f]{64}", diagnostic["evidence_sha256"])):
+            setattr(failure, "capture_upload_runtime_diagnostic", diagnostic)
+        raise failure
+    controls = value.get("controls")
+    if (not isinstance(controls, dict)
+            or not all(isinstance(controls.get(key), dict) for key in ("clean", "known_test_signature"))
+            or value.get("provider_mutation_performed") is not False
+            or value.get("source_footage_processed") is not False
+            or value.get("robot_episode_executed") is not False
+            or type(controls["clean"].get("exit_code")) is not int
+            or controls["clean"]["exit_code"] != 0
+            or type(controls["known_test_signature"].get("exit_code")) is not int
+            or controls["known_test_signature"]["exit_code"] != 1):
+        raise ControlPlaneDeployError("deploy_capture_transfer_runtime_probe_invalid")
+    return value
+
+
 def _install_unit_sandbox_paths(
     *,
     release_path: str | Path,
@@ -1901,13 +2007,21 @@ def _install_unit_sandbox_paths(
                     "owner_gid": owner_gid,
                 }
             )
-    return {
+    receipt = {
         "status": "ready",
         "unit_count": len(units),
         "verified_count": len(verified),
         "created_count": len(created),
         "created": created,
     }
+    intake_unit = release / "deploy/systemd/blueprint-pipeline-intake.service"
+    if root_prefix is None and intake_unit.is_file() and "blueprint-pipeline-intake.service" in units:
+        runtime = _verify_capture_transfer_runtime(
+            release=release, unit_text=intake_unit.read_text(encoding="utf-8"), account=account,
+        )
+        if runtime is not None:
+            receipt["capture_upload_runtime"] = runtime
+    return receipt
 
 
 def _install_scene_object_discovery_runtime_directories(
@@ -5754,6 +5868,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "signed_release", "build_sdk", "resume_initial_intent", "refresh", "prepare", "publish_installer"}
                 and diagnostic.get("reason") in {"deadline", "validation", "io", "unexpected"}):
             blocked["runtime_diagnostic"] = {key: diagnostic[key] for key in ("phase", "reason")}
+        if str(exc).startswith("deploy_capture_transfer_"):
+            capture_diagnostic = getattr(exc, "capture_upload_runtime_diagnostic", None)
+            if isinstance(capture_diagnostic, dict):
+                blocked["capture_upload_runtime_diagnostic"] = capture_diagnostic
         print(json.dumps(blocked, indent=1, sort_keys=True))
         return 2
 
