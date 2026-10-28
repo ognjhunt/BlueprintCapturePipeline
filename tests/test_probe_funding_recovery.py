@@ -80,3 +80,24 @@ def test_missing_readback_cannot_synthesize_no_funding(tmp_path):
     assert result["status"] == "unknown" and result["funded"] is None
     assert result["last_remote_status"] == "unavailable"
     assert not (tmp_path / funding.FUNDING_FILENAME).exists()
+
+
+def test_default_readback_is_disabled_until_server_contract_verified(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context
+    funding.retain_request(tmp_path, request())
+    calls = []
+    def send(**kwargs):
+        calls.append(kwargs)
+        return observation(kwargs["payload"]["spend"])
+    monkeypatch.setattr(website_task_context, "website_webapp_request", send)
+    monkeypatch.delenv(funding.READBACK_ENV, raising=False)
+    for _ in range(2):
+        result = funding.reconcile_funding(tmp_path, now=1001)
+        assert result["status"] == "unknown" and result["funded"] is None
+        assert result["last_remote_status"] == "contract_not_enabled"
+    assert calls == [] and not (tmp_path / funding.RECONCILIATION_FILENAME).exists()
+    monkeypatch.setenv(funding.READBACK_ENV, "true")
+    result = funding.reconcile_funding(tmp_path, now=1001)
+    assert len(calls) == 1 and calls[0]["payload"]["create"] is False
+    assert result["funded"] is True and result["status"] == "unknown"
+    assert not (tmp_path / funding.FUNDING_FILENAME).exists()

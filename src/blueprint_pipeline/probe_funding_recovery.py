@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 import math
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -21,6 +22,7 @@ OBSERVATION_FILENAME = "website_preparation_spend_observation.json"
 RECONCILIATION_FILENAME = "website_preparation_spend_reconciliation.json"
 FUNDING_FILENAME = "website_preparation_spend_admission.json"
 PROTOCOL = "rigid_probe_durable_funding_request.v1"
+READBACK_ENV = "BLUEPRINT_PREPARATION_SPEND_OBSERVATION_ENABLED"
 # These existing WebApp transaction errors occur before a reservation commit.
 _NO_RESERVATION_REFUSALS = frozenset({"consent_expired", "website_scene_preparation_budget_exhausted",
                                       "website_scene_sponsorship_missing"})
@@ -122,6 +124,12 @@ def reconcile_funding(job_dir: Path, *, reader: Callable[..., Mapping[str, Any]]
     state = funding_state(job_dir)
     if state["status"] != "unknown":
         return state
+    # An older WebApp may ignore create:false and reserve again. Enable this
+    # transport only after the read-only server contract has been deployed and
+    # verified. Offline injected readers never touch that endpoint.
+    if reader is None and os.getenv(READBACK_ENV) != "true":
+        return {**state, "last_remote_status": "contract_not_enabled",
+                "next_action": "verify_preparation_spend_observation_contract"}
     request = request_intent(job_dir)
     moment = time.time() if now is None else now
     progress_path = job_dir / RECONCILIATION_FILENAME
