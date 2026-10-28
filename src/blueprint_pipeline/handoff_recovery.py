@@ -266,8 +266,7 @@ def retain_dlq_message(listener, *, storage_root: Path, subscription: str, sourc
             _write(state_path, initial)
         except FileExistsError:
             pass  # Never reset a concurrently processing durable successor.
-    if _read(state_path).get("source_payload_sha256") != digest:
-        raise ValueError("handoff_recovery_state_binding_changed")
+    _state(entry)  # A matching digest alone cannot justify acknowledging an unusable successor.
     return entry
 
 
@@ -363,6 +362,29 @@ def _backoff(digest: str, attempts: int) -> float:
     return min(3600, 60 * 2 ** min(attempts, 6)) + int(digest[:4], 16) % 30
 
 
+def _state(entry: Path) -> dict[str, Any]:
+    """One actionable/conservative successor schema for ACK and processing."""
+    value = _read(entry / "state.json")
+    if (value.get("schema_version") != "blueprint.handoff_recovery_state.v1"
+            or value.get("source_payload_sha256") != entry.name
+            or any(not isinstance(value.get(key), str) for key in ("status", "cause", "next_action"))
+            or value.get("status") not in {"retained", "processing", "safe_pre_effect", "completed", "authority_ended",
+                "permanent_invalid", "orphaned", "waiting_existing_resume", "reconciliation_required", "waiting_authorized_action"}
+            or value.get("cause") not in set(_SUMMARY_ACTIONS) | {
+                "canonical_output_committed", "canonical_authority_ended", "handoff_payload_invalid"}
+            or value.get("next_action") not in set(_SUMMARY_ACTIONS.values()) | {
+                "none", "classify_original_operation_before_replay"}
+            or type(value.get("attempts")) is not int or value["attempts"] < 0
+            or any(type(value.get(key)) not in (int, float) or not math.isfinite(value[key]) or value[key] < 0
+                   for key in ("next_attempt_at_epoch", "first_retained_at_epoch"))
+            or type(value.get("last_observed_at_epoch", 0)) not in (int, float)
+            or not math.isfinite(value.get("last_observed_at_epoch", 0))
+            or "effect_reconciliation_required" in value and type(value["effect_reconciliation_required"]) is not bool
+            or "retry_exhaustion_proven" in value and value["retry_exhaustion_proven"] is not False):
+        raise ValueError("handoff_recovery_state_invalid")
+    return value
+
+
 def _retained_states(root: Path) -> tuple[list[tuple[Path, dict[str, Any]]], int]:
     """Partial/corrupt successors stay unacknowledged and cannot poison peers."""
     values, incomplete = [], 0
@@ -370,16 +392,7 @@ def _retained_states(root: Path) -> tuple[list[tuple[Path, dict[str, Any]]], int
         if not re.fullmatch(r"[0-9a-f]{64}", entry.name) or not entry.is_dir() or entry.is_symlink():
             continue
         try:
-            value = _read(entry / "state.json")
-            if (value.get("schema_version") != "blueprint.handoff_recovery_state.v1"
-                    or value.get("source_payload_sha256") != entry.name
-                    or type(value.get("attempts")) is not int or value["attempts"] < 0
-                    or not isinstance(value.get("status"), str) or not isinstance(value.get("cause"), str)
-                    or any(type(value.get(key)) not in (int, float) or not math.isfinite(value[key]) or value[key] < 0
-                           for key in ("next_attempt_at_epoch", "first_retained_at_epoch"))
-                    or type(value.get("last_observed_at_epoch", 0)) not in (int, float)
-                    or not math.isfinite(value.get("last_observed_at_epoch", 0))):
-                raise ValueError("handoff_recovery_state_invalid")
+            value = _state(entry)
             values.append((entry, value))
         except (OSError, ValueError, TypeError):
             incomplete += 1

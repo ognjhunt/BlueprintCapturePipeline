@@ -399,3 +399,25 @@ def test_failure_retaining_replay_outcome_cannot_reuse_old_safe_observation(tmp_
         process_args={}, enable_safe=True, now=100000)
     assert calls == ["one"]
     assert recovery._read(entry(tmp_path) / "state.json")["status"] == "reconciliation_required"
+
+
+@pytest.mark.parametrize("field,bad", [("attempts", "invalid-counter"), ("attempts", True),
+    ("next_attempt_at_epoch", "unknown"), ("next_action", None), ("cause", "unknown"),
+    ("status", "unusable"), ("cause", {}), ("next_action", []), ("effect_reconciliation_required", "false")])
+def test_matching_digest_cannot_ack_semantically_unusable_successor(tmp_path, monkeypatch, field, bad):
+    raw = source_failed(tmp_path)
+    recovery.retain_dlq_message(listener, storage_root=tmp_path, subscription=DLQ,
+        source_subscription=SOURCE, received=received(raw), now=1001)
+    path = entry(tmp_path) / "state.json"
+    changed = recovery._read(path)
+    changed[field] = bad
+    path.write_text(json.dumps(changed))
+    before = path.read_bytes()
+    broker = Broker([received(raw)])
+    monkeypatch.setattr(listener, "process_handoff_payload", lambda *a, **k: pytest.fail("unusable successor executed"))
+    with pytest.raises(ValueError, match="state_invalid"):
+        tick(tmp_path, broker, enabled=True)
+    assert broker.acks == [] and not list((entry(tmp_path) / "acknowledged").glob("*.json"))
+    observed = recovery.process_retained(listener, storage_root=tmp_path, source_subscription=SOURCE,
+        process_args={}, enable_safe=True, limit=1, now=1002)
+    assert observed["incomplete_entries"] == 1 and path.read_bytes() == before
