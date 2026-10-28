@@ -109,6 +109,13 @@ new work can start. A cost increase above remaining commitment reports
 `beta_screening_refresh_budget_action_required`; no grant is renewed. Failed
 refresh checks wait five minutes before reopening dependencies.
 
+Uncommitted proposals retain their selected candidate/origin bindings separately
+from historical descriptors. If a crash leaves a proposal whose quote later
+expires, the next permitted pass retains a new proposal identity and a
+supersedes/reason link. The old proposal and plan bytes remain unchanged. A
+changed eligible origin set also receives a distinct proposal. These local
+proposal sequences grant no paid retries and do not replenish commitments.
+
 Private `planning_bindings` records retain the original scientific descriptor
 for a hosted candidate even when its credential is unavailable; they contain
 no credential contents and grant no capability. Availability refresh is bounded

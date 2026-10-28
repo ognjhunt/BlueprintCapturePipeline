@@ -15,11 +15,14 @@ from decimal import Decimal
 import hashlib
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 
 REFRESH_RETRY_SECONDS = 300
+_PROPOSAL_REASONS = {"unspent_quote_or_availability_refresh", "eligible_unspent_origins_changed",
+                     "legacy_unsealed_proposal", "uncommitted_cost_quote_expired"}
 _PRICE_FIELDS = {"max_hourly_rate_usd", "provider_hard_cap_usd", "hosted_inference_maximum_usd",
                  "hosted_max_cost_per_request_usd"}
 
@@ -224,6 +227,49 @@ def _budget_action(baseline):
             "next_action": "retain_site_commitments_and_review_cost_or_existing_authority"}
 
 
+def _origin_binding(origin: Mapping[str, Any]) -> dict[str, Any]:
+    return {"campaign_id": origin["campaign_id"], "plan_digest": origin["plan"]["plan_digest"],
+            "attempt_id": origin["row"].get("attempt", {}).get("attempt_id")}
+
+
+def _proposal_id(scope: Mapping[str, Any], sequence: int) -> str:
+    identity = {key: scope[key] for key in ("base_campaign_id", "supersedes", "generation")}
+    if sequence:
+        identity.update(proposal_sequence=sequence, proposal_scope_digest=canonical_digest(scope))
+    return "screening-refresh-" + canonical_digest(identity)[7:39]
+
+
+def _proposal(value: Mapping[str, Any], *, scope, sequence, campaign_id):
+    """Selection is retained separately from historical selected descriptors."""
+    from .beta_policy_screening_plan import validate_screening_plan
+    if value.get("schema_version") == "beta_policy_screening_plan.v1":
+        plan = validate_screening_plan(value)
+        if plan["campaign_id"] != campaign_id:
+            raise ValueError("beta_screening_refresh_generation_invalid")
+        return plan, None  # Legacy proposals have no sealed selection; supersede immutably.
+    if (set(value) != {"schema_version", "scope", "proposal_sequence", "selected_candidate_ids", "plan",
+                       "supersedes_proposal_id", "reason", "proposal_digest"}
+            or value.get("schema_version") != "blueprint.beta_screening_refresh_proposal.v1"
+            or value.get("proposal_digest") != canonical_digest(value, digest_field="proposal_digest")
+            or value.get("scope") != scope or type(value.get("proposal_sequence")) is not int
+            or value["proposal_sequence"] != sequence
+            or not isinstance(value.get("reason"), str) or value["reason"] not in _PROPOSAL_REASONS
+            or not isinstance(value.get("plan"), Mapping)
+            or value.get("supersedes_proposal_id") is not None and (not isinstance(value["supersedes_proposal_id"], str)
+                or not re.fullmatch(r"screening-refresh-[0-9a-f]{32}", value["supersedes_proposal_id"]))):
+        raise ValueError("beta_screening_refresh_proposal_invalid")
+    selected = value.get("selected_candidate_ids")
+    if (not isinstance(selected, list) or not selected or any(not isinstance(key, str) for key in selected)
+            or selected != sorted(set(selected)) or not set(selected) <= set(scope["origins"])):
+        raise ValueError("beta_screening_refresh_proposal_selection_invalid")
+    plan = validate_screening_plan(value["plan"])
+    if plan["campaign_id"] != campaign_id:
+        raise ValueError("beta_screening_refresh_generation_invalid")
+    if not set(selected) <= {row["candidate_id"] for row in plan["candidates"] if row["status"] == "selected"}:
+        raise ValueError("beta_screening_refresh_proposal_selection_invalid")
+    return plan, set(selected)
+
+
 def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
                            build: Callable[[Mapping[str, Any], str, Path], Mapping[str, Any]]) -> dict[str, Any]:
     """Reopen current source, rebuild unpaid facts, and atomically retain a generation."""
@@ -272,30 +318,75 @@ def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
             checks = root / "refresh_checks"
             checks.mkdir(mode=0o700, exist_ok=True)
             check_path = checks / (current_id + ".json")
+            previous = {}
             if check_path.exists():
                 previous = _read(check_path)
+                if not isinstance(previous.get("retry_not_before"), str):
+                    raise ValueError("beta_screening_refresh_backoff_invalid")
                 deadline = datetime.fromisoformat(previous["retry_not_before"])
                 if deadline.tzinfo is None:
                     raise ValueError("beta_screening_refresh_backoff_invalid")
                 if deadline > datetime.now(timezone.utc):
                     return baseline
-            _write(check_path, {"retry_not_before": (datetime.now(timezone.utc) + timedelta(seconds=REFRESH_RETRY_SECONDS)).isoformat()})
+            retry_before = (datetime.now(timezone.utc) + timedelta(seconds=REFRESH_RETRY_SECONDS)).isoformat()
+            _write(check_path, {**previous, "retry_not_before": retry_before})
             # Every refresh reopens actual current authority; catalog/quote age
             # can never renew source consent or change owner task truth.
             reopen_refresh_source(current)
             generation = int(state.get("refresh", {}).get("generation", 0)) + 1
-            identity = canonical_digest({"base_campaign_id": base_campaign_id,
-                "supersedes": current["plan_digest"], "generation": generation})[7:39]
-            next_id = "screening-refresh-" + identity
-            pending_path = checks / (next_id + ".plan.json")
-            if pending_path.exists():
-                fresh = validate_screening_plan(_read(pending_path))
+            scope = {"base_campaign_id": base_campaign_id, "supersedes": current["plan_digest"],
+                     "generation": generation, "origins": {key: _origin_binding(origins[key]) for key in sorted(eligible)}}
+            scope_digest = canonical_digest(scope)
+            sequence = previous.get("proposal_sequence", 0)
+            if type(sequence) is not int or not 0 <= sequence <= 1_000_000:
+                raise ValueError("beta_screening_refresh_proposal_sequence_invalid")
+            supersedes_proposal = previous.get("supersedes_proposal_id")
+            proposal_reason = previous.get("proposal_reason", "unspent_quote_or_availability_refresh")
+            prior_scope_digest = previous.get("proposal_scope_digest")
+            if (prior_scope_digest is not None and (not isinstance(prior_scope_digest, str)
+                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", prior_scope_digest))
+                    or not isinstance(proposal_reason, str) or proposal_reason not in _PROPOSAL_REASONS
+                    or supersedes_proposal is not None and (not isinstance(supersedes_proposal, str)
+                        or not re.fullmatch(r"screening-refresh-[0-9a-f]{32}", supersedes_proposal))):
+                raise ValueError("beta_screening_refresh_proposal_binding_invalid")
+            if prior_scope_digest is not None and prior_scope_digest != scope_digest:
+                old_id = previous.get("proposal_id")
+                if not isinstance(old_id, str) or not re.fullmatch(r"screening-refresh-[0-9a-f]{32}", old_id):
+                    raise ValueError("beta_screening_refresh_proposal_binding_invalid")
+                supersedes_proposal = old_id if (checks / (old_id + ".plan.json")).exists() else None
+                proposal_reason = "eligible_unspent_origins_changed"
+                sequence += 1
+            cached = None
+            # Inspect at most two retained proposals, and build at most one new
+            # quote per pass. Old bytes never change when an outage expires them.
+            for _ in range(2):
+                if sequence > 1_000_000:
+                    raise ValueError("beta_screening_refresh_proposal_sequence_invalid")
+                next_id = _proposal_id(scope, sequence)
+                pending_path = checks / (next_id + ".plan.json")
+                _write(check_path, {"retry_not_before": retry_before, "proposal_sequence": sequence,
+                    "proposal_scope_digest": scope_digest, "proposal_id": next_id,
+                    "supersedes_proposal_id": supersedes_proposal, "proposal_reason": proposal_reason})
+                if not pending_path.exists():
+                    break
+                fresh, selected = _proposal(_read(pending_path), scope=scope, sequence=sequence, campaign_id=next_id)
+                _unchanged(current, fresh, expectations=expectations)
+                from .beta_policy_screening_coordinator import _quote_current
+                if selected is not None and all(_quote_current(row) for row in fresh["candidates"]
+                                                if row["candidate_id"] in selected):
+                    cached = _read(pending_path)
+                    break
+                supersedes_proposal = next_id
+                proposal_reason = "legacy_unsealed_proposal" if selected is None else "uncommitted_cost_quote_expired"
+                sequence += 1
             else:
+                return {**baseline, "refresh_status": "fresh_cost_quote_required"}
+            if cached is None:
                 fresh = validate_screening_plan(build(current, next_id, root / "inputs" / next_id))
+                selected = {row["candidate_id"] for row in fresh["candidates"] if row["status"] == "selected"} & eligible
             if fresh["campaign_id"] != next_id:
                 raise ValueError("beta_screening_refresh_generation_invalid")
             _unchanged(current, fresh, expectations=expectations)
-            selected = {row["candidate_id"] for row in fresh["candidates"] if row["status"] == "selected"} & eligible
             if any(row["candidate_id"] in eligible and "site_screening_budget_insufficient" in row["blockers"]
                    for row in fresh["candidates"]):
                 return _budget_action(baseline)
@@ -320,11 +411,15 @@ def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
             fresh["maximum_planned_cost_usd"] = format(maximum, ".2f")
             fresh["plan_digest"] = canonical_digest(fresh, digest_field="plan_digest")
             fresh = validate_screening_plan(fresh)
-            if pending_path.exists():
-                if _read(pending_path) != fresh:
+            proposal = {"schema_version": "blueprint.beta_screening_refresh_proposal.v1", "scope": scope,
+                "proposal_sequence": sequence, "selected_candidate_ids": sorted(selected), "plan": fresh,
+                "supersedes_proposal_id": supersedes_proposal, "reason": proposal_reason}
+            proposal["proposal_digest"] = canonical_digest(proposal, digest_field="proposal_digest")
+            if cached is not None:
+                if cached != proposal:
                     raise ValueError("beta_screening_refresh_retained_generation_changed")
             else:
-                _write(pending_path, fresh)
+                _write(pending_path, proposal)
             # New pending work, old unspent supersession, completed adoption and
             # the active-generation pointer share ONE durable ledger commit.
             # A crash can never expose adopted completed rows as new pending work.
@@ -332,7 +427,7 @@ def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
                 old_state = ledger["campaigns"][current_id]
                 actual = _origins(root, current, old_state, ledger, expectations=expectations)
                 if (not selected <= _eligible(root, current, old_state, origins=actual)
-                        or any(actual[key]["campaign_id"] != origins[key]["campaign_id"] for key in selected)):
+                        or any(_origin_binding(actual[key]) != scope["origins"][key] for key in selected)):
                     raise ValueError("beta_screening_refresh_old_effect_state_changed")
                 if proposed > _remaining(ledger, old_state, selected, origins=actual):
                     raise ValueError("beta_screening_refresh_budget_action_required")
@@ -362,7 +457,9 @@ def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
                             "prior_campaign_id": actual[key]["campaign_id"]}
                 next_state["refresh"] = {"generation": generation, "base_campaign_id": base_campaign_id,
                     "supersedes_campaign_id": current_id, "supersedes_plan_digest": current["plan_digest"],
-                    "reason": "unspent_quote_or_availability_refresh", "recorded_at": _now()}
+                    "reason": "unspent_quote_or_availability_refresh", "recorded_at": _now(),
+                    "proposal_sequence": sequence, "supersedes_proposal_id": supersedes_proposal,
+                    "proposal_reason": proposal_reason}
                 ledger.setdefault("refreshes", {})[base_campaign_id] = {"active_campaign_id": next_id,
                     "generation": generation, "supersedes": current["plan_digest"]}
                 _changed(next_state)

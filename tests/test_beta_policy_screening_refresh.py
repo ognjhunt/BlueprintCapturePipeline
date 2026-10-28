@@ -560,3 +560,106 @@ def test_availability_only_generation_does_not_strand_later_original_quote_expir
     assert row(tmp_path, second["campaign_id"], "candidate-001")["status"] == "preparing"
     assert row(tmp_path, second["campaign_id"], "candidate-001")["refreshed_from_campaign_id"] == "campaign-1"
     assert coordinator._budget(coordinator._ledger(tmp_path), initial["site_id"])["reserved_usd"] == "8"
+
+
+@pytest.mark.parametrize("crashes", [1, 2])
+def test_expired_uncommitted_proposals_are_superseded_immutably_after_day_long_crashes(
+        tmp_path, monkeypatch, clock, crashes):
+    value = plan()
+    source_authority(tmp_path, monkeypatch, value)
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+    original = (tmp_path / coordinator.LEDGER_FILENAME).read_bytes()
+    build, builds = builder(clock)
+    clock.instant += timedelta(hours=25)
+    def power_loss(*_args):
+        raise OSError("crash after proposal fsync before ledger commit")
+    retained = {}
+    for _ in range(crashes):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(coordinator, "_save", power_loss)
+            with pytest.raises(OSError, match="proposal fsync"):
+                refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+        assert (tmp_path / coordinator.LEDGER_FILENAME).read_bytes() == original
+        for path in [*(tmp_path / "plans").glob("*.json"), *(tmp_path / "refresh_checks").glob("*.plan.json")]:
+            retained.setdefault(path, path.read_bytes())
+        clock.instant += timedelta(hours=25)
+    outcome = refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    assert outcome["refresh_status"] == "refreshed" and len(builds) == crashes + 1
+    current_id = outcome["campaign_id"]
+    ledger = coordinator._ledger(tmp_path)
+    assert len(ledger["campaigns"]) == 2
+    assert ledger["campaigns"][current_id]["refresh"]["proposal_sequence"] == crashes
+    assert ledger["campaigns"][current_id]["refresh"]["supersedes_proposal_id"] == builds[-2]
+    assert ledger["campaigns"][current_id]["refresh"]["proposal_reason"] == "uncommitted_cost_quote_expired"
+    assert all(path.read_bytes() == raw for path, raw in retained.items())
+    assert coordinator._budget(ledger, value["site_id"])["reserved_usd"] == "4"
+    assert not list((tmp_path / "attempts").iterdir())
+    backend = Backend({"status": "running", "provider_allocation_performed": True})
+    for _ in range(3):
+        clock.instant += timedelta(seconds=301)
+        refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+        process(tmp_path, backend)
+    assert backend.launches == 1 and len(builds) == crashes + 1
+    assert all(path.read_bytes() == raw for path, raw in retained.items())
+
+
+def test_cached_proposal_retains_exact_selection_instead_of_historical_descriptors(tmp_path, monkeypatch, clock):
+    value = plan(count=2)
+    source_authority(tmp_path, monkeypatch, value)
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+    clock.instant += timedelta(hours=25)
+    real_build, builds = builder(clock)
+    def build(previous, next_id, directory):
+        fresh = real_build(previous, next_id, directory)
+        fresh["candidates"][1] = {key: item for key, item in fresh["candidates"][1].items()
+                                  if key in {"candidate_id", "configuration_digest", "display_name"}}
+        fresh["candidates"][1].update(status="unavailable", blockers=["credential_unavailable:PINNED_POLICY_CREDENTIAL"])
+        fresh["maximum_planned_cost_usd"] = "4.00"
+        return seal(fresh, "plan_digest")
+    def power_loss(*_args):
+        raise OSError("lost ledger write")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(coordinator, "_save", power_loss)
+        with pytest.raises(OSError):
+            refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    [path] = list((tmp_path / "refresh_checks").glob("*.plan.json"))
+    cached = json.loads(path.read_text())
+    assert cached["selected_candidate_ids"] == ["candidate-000"]
+    assert cached["plan"]["candidates"][1]["status"] == "selected"  # Historical descriptor only.
+    old_bytes = path.read_bytes()
+    clock.instant += timedelta(seconds=301)
+    outcome = refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    assert len(builds) == 1 and path.read_bytes() == old_bytes
+    assert row(tmp_path, outcome["campaign_id"])["status"] == "preparing"
+    beta = row(tmp_path, outcome["campaign_id"], "candidate-001")
+    assert beta["status"] == "blocked" and "attempt" not in beta
+    assert coordinator._budget(coordinator._ledger(tmp_path), value["site_id"])["reserved_usd"] == "4"
+
+
+def test_newly_expired_origin_supersedes_still_current_uncommitted_selection(tmp_path, monkeypatch, clock):
+    value = plan(count=2)
+    value["candidates"][1]["cost_quote"]["valid_until"] = (clock.instant + timedelta(days=1)).isoformat()
+    seal(value["candidates"][1]["cost_quote"], "quote_digest")
+    seal(value, "plan_digest")
+    source_authority(tmp_path, monkeypatch, value)
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+    process(tmp_path, CapacityBackend())
+    clock.instant += timedelta(hours=2)
+    build, builds = builder(clock)
+    def power_loss(*_args):
+        raise OSError("lost ledger commit")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(coordinator, "_save", power_loss)
+        with pytest.raises(OSError):
+            refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    [old] = list((tmp_path / "refresh_checks").glob("*.plan.json"))
+    before = old.read_bytes()
+    assert json.loads(before)["selected_candidate_ids"] == ["candidate-000"]
+    clock.instant += timedelta(hours=23)
+    outcome = refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    assert len(builds) == 2 and old.read_bytes() == before
+    state = coordinator._ledger(tmp_path)["campaigns"][outcome["campaign_id"]]
+    assert state["refresh"]["proposal_reason"] == "eligible_unspent_origins_changed"
+    assert state["refresh"]["supersedes_proposal_id"] == builds[0]
+    assert {candidate["status"] for candidate in state["candidates"].values()} == {"preparing"}
+    assert coordinator._budget(coordinator._ledger(tmp_path), value["site_id"])["reserved_usd"] == "8"
