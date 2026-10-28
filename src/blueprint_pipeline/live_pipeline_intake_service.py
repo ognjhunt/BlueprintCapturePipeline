@@ -1576,6 +1576,7 @@ def create_app() -> FastAPI:
             }
         return JSONResponse(status_code=200 if payload["commit_proven"] else 503, content=payload)
 
+    @app.get("/api/live-pipeline/health")
     @app.get("/health")
     def health() -> Dict[str, Any]:
         manifest_path = _manifest_path()
@@ -2245,6 +2246,11 @@ def create_app() -> FastAPI:
                 status_code=503,
                 detail="capture supervisor execution configuration is invalid",
             ) from exc
+        constraints = _mapping(_mapping(_mapping(payload.get('request')).get('governance')).get('provider_constraints'))
+        if (constraints.get('external_processing_allowed') is False
+                or constraints.get('automatic_model_inference_allowed') is False):
+            supervisor_options = {**supervisor_options, 'allow_live_agents_sdk': False,
+                                  'agent_inference_budget_usd': 0.0}
         store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
         if not store_root_text:
             raise HTTPException(

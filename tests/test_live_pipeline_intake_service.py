@@ -703,8 +703,12 @@ def test_live_pipeline_intake_service_error_edges(
     assert client.get("/api/live-pipeline/intake-audit", headers=headers).status_code == 500
 
 
+@pytest.mark.parametrize('constraints, expected_live', [
+    ({}, True), ({'automatic_model_inference_allowed': False}, False),
+    ({'external_processing_allowed': False}, False),
+])
 def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, constraints, expected_live
 ) -> None:
     monkeypatch.setenv(INTAKE_TOKEN_ENV, "token")
     monkeypatch.setenv(
@@ -787,6 +791,7 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     submission = {
         "schema_version": "capture_upload_transfer_submission.v1",
         "capture_session_id": "capture-upload-session-1",
+        "request": {"governance": {"provider_constraints": constraints}},
         "transfer": {
             "url": "https://download.example.test/file/capture.mp4",
             "authorization": "ephemeral-secret",
@@ -794,6 +799,7 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     }
     client = TestClient(create_app())
     supervisor_health = client.get("/health").json()["task_evaluation_supervisor"]
+    assert client.get('/api/live-pipeline/health').json()['task_evaluation_supervisor'] == supervisor_health
     assert supervisor_health["configuration_status"] == "valid"
     assert supervisor_health["live_inference_configured"] is True
     assert supervisor_health["live_operator_gate_enabled"] is True
@@ -821,8 +827,8 @@ def test_live_pipeline_capture_upload_intake_is_authenticated_and_secret_free(
     assert seen["store_root"] == (tmp_path / "capture-intakes").resolve()
     assert seen["supervisor_options"] == {
         "agent_model": "gpt-5-mini",
-        "allow_live_agents_sdk": True,
-        "agent_inference_budget_usd": 0.5,
+        "allow_live_agents_sdk": expected_live,
+        "agent_inference_budget_usd": 0.5 if expected_live else 0.0,
     }
 
 
