@@ -303,13 +303,14 @@ def test_active_franka_goal_binds_exact_scene_and_policy_boundaries() -> None:
     assert "The historical ten-role index remains `7/10`" in prompt
 
 
-def test_agent_guide_and_transition_make_scenario_harness_durable() -> None:
-    guide = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+def test_transition_makes_scenario_harness_durable() -> None:
+    # The scenario-harness protocol is ADP-only and lives with the program, not
+    # in the general agent guide (owner direction 2026-10-28).
     transition = (
         PROGRAM_ROOT / "ADP_009_PUBLIC_SCENE_TRANSITION_DECISION.md"
     ).read_text(encoding="utf-8")
 
-    for text in (guide, transition):
+    for text in (transition,):
         assert "immutable canonical anchor" in text
         assert "placement/approach" in text
         assert "camera/sensor" in text
