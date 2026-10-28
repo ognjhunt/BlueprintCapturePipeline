@@ -54,6 +54,12 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+# Sandbox probes also run this file directly, without a package context.
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from blueprint_pipeline.production_preflight_routes import BETA_RIGID_UNITS, access_contract
+from blueprint_pipeline.production_preflight_summary import PreflightSummaryError, build_safe_summary, write_safe_summary
+
 SCHEMA_VERSION = "task_evaluation_production_chain_preflight.v1"
 RELEASE_LINK = Path("/opt/blueprint/task-evaluation-control-plane")
 RELEASES_ROOT = Path("/opt/blueprint/task-evaluation-control-plane-releases")
@@ -170,11 +176,7 @@ def _module_path(src: Path, name: str) -> Path | None:
 
 
 def import_closure(src: Path, entry: str, entry_path: Path | None = None) -> dict[str, Path]:
-    """Every in-package module reachable from ``entry`` by any import statement.
-
-    Lazy imports inside functions count: a root the code writes on one branch
-    is still a root the unit must be able to write.
-    """
+    """Conservative discovery, including lazy imports; this conveys no path authority."""
 
     found: dict[str, Path] = {}
     pending: list[tuple[str, Path | None]] = [(entry, entry_path)]
@@ -340,6 +342,30 @@ def path_probe(path_text: str) -> dict[str, Any]:
     return verdict
 
 
+def read_probe(path_text: str, *, executable: bool = False) -> dict[str, Any]:
+    """Observe read/execute access without asking for or testing write permission."""
+    path = Path(path_text)
+    try:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            return {"status": "symlink_unproven", "exists": True}
+        if path.is_dir():
+            with os.scandir(path) as entries:
+                next(entries, None)
+            readable = os.access(path, os.R_OK | os.X_OK)
+        else:
+            with path.open("rb") as stream:
+                stream.read(1)
+            readable = True
+        if executable and not os.access(path, os.X_OK):
+            return {"status": "not_executable", "exists": True}
+        return {"status": "readable" if readable else "unreadable", "exists": True}
+    except FileNotFoundError:
+        return {"status": "missing", "exists": False}
+    except OSError as error:
+        return {"status": "unreadable", "exists": None, "errno": error.errno}
+
+
 # --------------------------------------------------------------------------- #
 # Probe role (inside the unit's sandbox)
 # --------------------------------------------------------------------------- #
@@ -489,11 +515,22 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         "paths": {},
     }
     findings: list[dict[str, Any]] = report["findings"]
+    lane = getattr(args, "lane", "diagnostic")
+    coverage, requirements = access_contract(args.unit, args.module, os.environ, worker=getattr(args, "worker_module", None)) if lane == "beta_rigid" else (
+        {"status": "diagnostic_only", "route": "diagnostic"}, []
+    )
+    report["coverage"] = coverage
+    report["lane"] = lane
+    access_by_path = {row["path"].rstrip("/"): row for row in requirements}
+    if lane == "beta_rigid" and coverage["status"] == "unknown":
+        findings.append(_finding("warning", "entrypoint_coverage_unknown"))
 
     entry_path = None
     if args.module.endswith(".py"):
         entry_path = release / args.module
     closure = import_closure(src, args.module, entry_path)
+    if lane == "beta_rigid" and getattr(args, "worker_module", None):
+        closure.update(import_closure(src, args.worker_module))
     report["closure_size"] = len(closure)
     sources = {}
     for name, path in closure.items():
@@ -516,12 +553,31 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
         path_text = path_text.rstrip("/") or "/"
         row = seen.get(path_text)
         if row is None:
-            verdict = path_probe(path_text)
+            requirement = access_by_path.get(path_text)
+            template = any(marker in path_text for marker in ("{", "}", "${", "*", "%(", "%("))
+            if lane == "beta_rigid" and template:
+                verdict = {"status": "unresolved_template", "exists": None}
+            elif lane == "beta_rigid" and (requirement is None or requirement["access"] in {"read", "execute"}):
+                verdict = read_probe(path_text, executable=bool(requirement and requirement["access"] == "execute"))
+            else:
+                verdict = path_probe(path_text)
             storage_class = _classify(path_text)
             in_rw = _in_read_write_paths(path_text, read_write)
             declared_ro = _in_read_write_paths(path_text, read_only)
             row = {**verdict, "storage_class": storage_class, "in_read_write_paths": in_rw, "declared_read_only": declared_ro, "sources": []}
             row["severity"] = _severity_for_directory(verdict, storage_class=storage_class, in_rw=in_rw, declared_ro=declared_ro)
+            if lane == "beta_rigid":
+                row["requirement"] = "confirmed_required" if requirement else "static_candidate"
+                row["access"] = requirement["access"] if requirement else "unproven"
+                if template:
+                    row["severity"], row["code"] = "warning", "path_template_unresolved"
+                elif requirement:
+                    accepted = {"writable", "missing_creatable"} if requirement["access"] == "write" else {"readable"}
+                    row["severity"] = "ok" if verdict["status"] in accepted else "blocker"
+                    row["code"] = "required_path_access_refused"
+                else:
+                    row["severity"] = "info" if verdict["status"] == "readable" else "warning"
+                    row["code"] = "static_path_requirement_unconfirmed"
             seen[path_text] = row
         row["sources"].append({"source": source, "modules": list(modules)} if modules else {"source": source})
         sha = SHA_IN_PATH.search(path_text)
@@ -532,13 +588,15 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 # bound to it.  Keep the finding visible, but as information.
                 findings.append(_finding("info", "git_safe_directory_names_other_release", path=path_text, source=source, bound_sha=sha.group(1)))
             else:
-                findings.append(_finding("blocker", "path_bound_to_other_release", path=path_text, source=source, bound_sha=sha.group(1)))
+                findings.append(_finding("warning" if lane == "beta_rigid" and path_text not in access_by_path else "blocker", "path_bound_to_other_release", path=path_text, source=source, bound_sha=sha.group(1)))
         sha8 = SHA8_IN_INPUT.search(path_text)
         if active_sha and sha8 and sha8.group(1) != active_sha[:8] and "/task-evaluation-inputs/" in path_text:
             # Per-release input directories are reused across releases by content
             # identity; the prefix is where the bytes were installed, not a binding.
             findings.append(_finding("info", "input_installed_under_other_release_prefix", path=path_text, source=source, installed_sha8=sha8.group(1)))
 
+    for requirement in requirements:
+        examine(requirement["path"], source=f"boundary:{requirement['basis']}")
     for path_text, modules in literal_roots(sources).items():
         examine(path_text, source="code_literal", modules=modules)
 
@@ -608,7 +666,7 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
             findings.append(
                 _finding(
                     row["severity"],
-                    f"path_{row.get('status')}",
+                    row.get("code") or f"path_{row.get('status')}",
                     path=path_text,
                     storage_class=row.get("storage_class"),
                     in_read_write_paths=row.get("in_read_write_paths"),
@@ -617,8 +675,12 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                     errno=row.get("errno"),
                     sources=[entry["source"] for entry in row["sources"]][:6],
                     modules=sorted({m for entry in row["sources"] for m in entry.get("modules", [])})[:8] or None,
+                    requirement=row.get("requirement"), access=row.get("access"),
                 )
             )
+    report["coverage"]["unresolved_static_candidates"] = sum(
+        row.get("requirement") == "static_candidate" for row in seen.values()
+    )
     return report
 
 
@@ -684,6 +746,14 @@ def entry_module(props: Mapping[str, list[str]]) -> str | None:
     return None
 
 
+def wrapped_worker(props: Mapping[str, list[str]]) -> str | None:
+    for text in props.get("ExecStart", []):
+        match = re.search(r"--worker (blueprint_pipeline\.[a-z0-9_]+)", text)
+        if match:
+            return match.group(1)
+    return None
+
+
 def environment_files(props: Mapping[str, list[str]]) -> list[tuple[str, bool]]:
     files: list[tuple[str, bool]] = []
     for text in props.get("EnvironmentFiles", []):
@@ -744,6 +814,8 @@ def systemd_run_command(
     module: str,
     release: Path,
     active_sha: str,
+    lane: str = "diagnostic",
+    worker_module: str | None = None,
 ) -> list[str]:
     slug = re.sub(r"[^a-z0-9]+", "-", unit.removesuffix(".service"))[:40]
     command = [
@@ -777,6 +849,10 @@ def systemd_run_command(
             f"--read-only-paths={_first(props, 'ReadOnlyPaths')}",
         ]
     )
+    if lane != "diagnostic":
+        command.extend(["--lane", lane])
+        if worker_module:
+            command.extend(["--worker-module", worker_module])
     return command
 
 
@@ -1613,15 +1689,16 @@ def disk_admission_check(units: Mapping[str, dict[str, Any]]) -> list[dict[str, 
     return findings
 
 
-def unit_health_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, Any]]:
+def unit_health_checks(units: Mapping[str, dict[str, Any]], *, lane: str = "diagnostic") -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for unit_name, unit in units.items():
         props = unit["properties"]
         state = _first(props, "ActiveState")
         result = _first(props, "Result")
         # A skipped ExecCondition (``exec-condition``) is a condition unit working as designed, not a failure.
+        held = any("/usr/bin/false" in condition or "/bin/false" in condition for condition in props.get("ExecCondition", []))
         if state == "failed" or result not in {"success", "", "exec-condition"}:
-            findings.append(_finding("warning", "unit_failed_state", unit=unit_name, active_state=state, result=result, exec_main_status=_first(props, "ExecMainStatus")))
+            findings.append(_finding("blocker" if lane == "beta_rigid" and unit_name in BETA_RIGID_UNITS and not held else "warning", "unit_failed_state", unit=unit_name, active_state=state, result=result, exec_main_status=_first(props, "ExecMainStatus")))
         if _first(props, "LoadState") != "loaded":
             findings.append(_finding("blocker", "unit_not_loaded", unit=unit_name, load_state=_first(props, "LoadState")))
         for condition in props.get("ExecCondition", []):
@@ -1629,11 +1706,12 @@ def unit_health_checks(units: Mapping[str, dict[str, Any]]) -> list[dict[str, An
                 # An ExecCondition that always fails is an operator hold on the
                 # unit; the chain stalls there without any queue evidence.
                 drop_ins = [p for p in (_first(props, "DropInPaths") or "").split() if p]
-                findings.append(_finding("blocker", "unit_execution_hold_present", unit=unit_name, exec_condition=condition[:160], drop_ins=drop_ins or None))
+                findings.append(_finding("info" if lane == "beta_rigid" else "blocker", "unit_intentionally_held" if lane == "beta_rigid" else "unit_execution_hold_present", unit=unit_name, exec_condition=condition[:160], drop_ins=drop_ins or None))
         for trigger in (_first(props, "TriggeredBy") or "").split():
             trigger_state = _first(unit_properties(trigger), "ActiveState")
             if trigger_state != "active":
-                findings.append(_finding("blocker", "unit_trigger_inactive", unit=unit_name, trigger=trigger, active_state=trigger_state))
+                required = lane != "beta_rigid" or unit_name in BETA_RIGID_UNITS
+                findings.append(_finding("info" if held or not required else "blocker", "unit_intentionally_held" if held and lane == "beta_rigid" else ("unit_trigger_inactive" if required else "unit_trigger_not_required"), unit=unit_name, trigger=trigger, active_state=trigger_state))
     return findings
 
 
@@ -1737,7 +1815,8 @@ def run_chain(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
         print("run must execute as root on the control-plane host", file=sys.stderr)
         return 3
-    report: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "generated_at": _now(), "units": {}, "host_findings": []}
+    lane = getattr(args, "lane", "diagnostic")
+    report: dict[str, Any] = {"schema_version": SCHEMA_VERSION, "generated_at": _now(), "units": {}, "host_findings": [], "lane": lane}
     release, active_sha, findings = active_release()
     report["active_release"] = str(release) if release else None
     report["active_sha"] = active_sha
@@ -1749,7 +1828,7 @@ def run_chain(args: argparse.Namespace) -> int:
         ids = (0, 0)
     script = Path(args.probe_script or __file__).resolve()
     units: dict[str, dict[str, Any]] = report["units"]
-    selected = list(args.unit) if args.unit else list(CHAIN_UNITS)
+    selected = list(args.unit) if args.unit else list(BETA_RIGID_UNITS if lane == "beta_rigid" else CHAIN_UNITS)
     for unit_name in selected:
         props = unit_properties(unit_name)
         if not props or _first(props, "LoadState") == "not-found":
@@ -1767,6 +1846,8 @@ def run_chain(args: argparse.Namespace) -> int:
             "findings": [],
         }
         units[unit_name] = entry
+        entry["configuration_sha256"] = hashlib.sha256(json.dumps({"properties": props, "environment": env}, sort_keys=True).encode()).hexdigest()
+        entry["coverage"] = {"status": "unknown", "reason": "sandbox_not_observed"}
         if module is None:
             entry["findings"].append(_finding("warning", "entry_module_unrecognised", unit=unit_name))
             continue
@@ -1776,6 +1857,8 @@ def run_chain(args: argparse.Namespace) -> int:
         command = systemd_run_command(
             unit=unit_name, props=props, directives=configured_directives(unit_name), python=python, script=script,
             module=module, release=release, active_sha=active_sha,
+            lane=lane,
+            worker_module=wrapped_worker(props),
         )
         entry["sandbox_command_directives"] = [item for item in command if item.startswith(tuple(f"{d}=" for d in SANDBOX_DIRECTIVES))]
         completed = subprocess.run(command, capture_output=True, text=True, check=False, timeout=600)
@@ -1790,18 +1873,24 @@ def run_chain(args: argparse.Namespace) -> int:
             )
             continue
         entry["probe"] = probe
+        entry["coverage"] = probe.get("coverage", {"status": "unknown"})
         entry["findings"].extend(probe.get("findings", []))
 
-    report["host_findings"].extend(intent_checks(active_sha, ids))
-    report["host_findings"].extend(binding_checks(units, active_sha, ids))
-    report["host_findings"].extend(handoff_checks(units, ids))
+    # The historical full diagnostic remains the default. The opt-in beta
+    # report is a shadow of its maintained route; unrelated owner/team intent
+    # branches are not active-route requirements.
+    if lane == "diagnostic":
+        report["host_findings"].extend(intent_checks(active_sha, ids))
+        report["host_findings"].extend(binding_checks(units, active_sha, ids))
+        report["host_findings"].extend(handoff_checks(units, ids))
     report["host_findings"].extend(project_spend_checks(units, ids))
     report["host_findings"].extend(spend_refresh_sandbox_checks(units))
-    report["host_findings"].extend(owner_scope_checks(units, ids))
+    if lane == "diagnostic":
+        report["host_findings"].extend(owner_scope_checks(units, ids))
     report["host_findings"].extend(credential_file_checks(units))
     report["host_findings"].extend(provider_credit_check(units))
     report["host_findings"].extend(disk_admission_check(units))
-    report["host_findings"].extend(unit_health_checks(units))
+    report["host_findings"].extend(unit_health_checks(units, lane=lane))
     report["host_findings"].extend(remote_execution_checks(units, ids))
     report["episode_compilation_execution"] = episode_compilation_execution(units, ids)
     report["host_findings"].extend(intake_check(units, ids))
@@ -1822,11 +1911,27 @@ def run_chain(args: argparse.Namespace) -> int:
         warnings.extend((unit_name, f) for f in entry.get("findings", []) if f["severity"] == "warning")
     report["blocker_count"] = len(blockers)
     report["warning_count"] = len(warnings)
+    summary_error = None
     if args.json_out:
-        Path(args.json_out).parent.mkdir(parents=True, exist_ok=True, mode=0o750)
-        Path(args.json_out).write_text(json.dumps(report, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+        path = Path(args.json_out)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        raw_report_bytes = (json.dumps(report, indent=1, sort_keys=True) + "\n").encode()
+        # Raw environments/references remain private even with a permissive
+        # interactive umask. The public projection has an independent schema.
+        if path.is_symlink():
+            raise PreflightSummaryError("preflight_raw_report_symlink_refused")
+        path.write_bytes(raw_report_bytes)
+        path.chmod(0o600)
+        try:
+            summary = build_safe_summary(report, raw_report_bytes=raw_report_bytes)
+            write_safe_summary(path.parent / "public" / "summary.json", summary, private_parent=path.parent)
+        except PreflightSummaryError as error:
+            summary_error = str(error)
+        except OSError:
+            summary_error = "preflight_safe_summary_io_failed"
     if getattr(args, "history_out", None):
         append_history(Path(args.history_out), report, blockers=[f for _s, f in blockers])
+        Path(args.history_out).chmod(0o600)
 
     def line(scope: str | None, finding: Mapping[str, Any]) -> str:
         detail = {k: v for k, v in finding.items() if k not in {"severity", "code"}}
@@ -1840,12 +1945,14 @@ def run_chain(args: argparse.Namespace) -> int:
     print(f"WARNINGS ({len(warnings)}):")
     for scope, finding in warnings:
         print(line(scope, finding))
+    if summary_error:
+        print(summary_error)
     if args.show_unset:
         for unit_name, entry in units.items():
             unset = entry.get("probe", {}).get("environment_names_read_but_unset", {})
             if unset:
                 print(f"  [{unit_name}] read-but-unset: {', '.join(sorted(unset))[:900]}")
-    return 2 if blockers else 0
+    return 2 if blockers or summary_error else 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1853,6 +1960,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="role", required=True)
     run = sub.add_parser("run", help="root: probe every chain unit under its own sandbox and run the host checks")
     run.add_argument("--unit", action="append", help="restrict to these units (repeatable)")
+    run.add_argument("--lane", choices=("diagnostic", "beta_rigid"), default="diagnostic", help="opt-in selected-route shadow; the full diagnostic remains the default")
     run.add_argument("--json-out")
     run.add_argument("--history-out")
     run.add_argument("--probe-script", help="path of this file as visible inside the sandboxes")
@@ -1862,6 +1970,8 @@ def build_parser() -> argparse.ArgumentParser:
     probe = sub.add_parser("probe", help="inside a sandbox: report what this unit can reach")
     probe.add_argument("--unit", required=True)
     probe.add_argument("--module", required=True)
+    probe.add_argument("--lane", choices=("diagnostic", "beta_rigid"), default="diagnostic")
+    probe.add_argument("--worker-module")
     probe.add_argument("--release", required=True)
     probe.add_argument("--active-sha", default="")
     probe.add_argument("--read-write-paths", default="")

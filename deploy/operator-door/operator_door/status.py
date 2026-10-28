@@ -8,8 +8,11 @@ is most useful precisely when something on the host is broken.
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
+import math
 import os
+import re
 import stat
 import time
 from pathlib import Path
@@ -32,6 +35,15 @@ _CAPACITY_KEYS = (
 )
 _MAX_JSON_BYTES = 256 * 1024
 _MAX_BREAK_GLASS_LEDGER_BYTES = 16 * 1024 * 1024
+_PREFLIGHT_SCHEMA = "task_evaluation_production_chain_preflight_summary.v1"
+_PREFLIGHT_KEYS = frozenset(("schema_version", "generated_at", "observed_at_epoch", "active_sha",
+                           "report_sha256", "configuration_sha256", "lane", "coverage", "counts",
+                           "findings", "proof_boundary", "summary_sha256"))
+_BETA_TRIGGERS = frozenset((
+    "blueprint-pubsub-handoff-listener.timer", "blueprint-team-scene-packet.path",
+    "blueprint-rigid-robot-free-probe-runner.path", "blueprint-rigid-robot-free-probe-runner.timer",
+    "blueprint-beta-policy-screening.timer",
+))
 
 
 def _section(builder: Callable[[], Any], code: str) -> Any:
@@ -148,6 +160,135 @@ def _capacity(config: DoorConfig) -> dict[str, Any]:
     return {key: document[key] for key in _CAPACITY_KEYS if key in document}
 
 
+class PreflightSummaryRefused(ValueError):
+    """A fixed reason code, with no report content in the error."""
+
+
+def _preflight(config: DoorConfig) -> dict[str, Any]:
+    """Read only the explicit safe projection, never the root-owned raw report."""
+    try:
+        path = Path(config.preflight_summary)
+        if any(parent.is_symlink() for parent in (path, *path.parents)):
+            raise PreflightSummaryRefused("preflight_summary_symlink_refused")
+        raw = _regular_bytes(path, 128 * 1024)
+        if scan_bytes(raw) is not None:
+            raise PreflightSummaryRefused("preflight_summary_secret_shaped")
+        document = json.loads(raw)
+        if not isinstance(document, dict) or set(document) != _PREFLIGHT_KEYS or document.get("schema_version") != _PREFLIGHT_SCHEMA:
+            raise PreflightSummaryRefused("preflight_summary_schema_invalid")
+        for field in ("report_sha256", "configuration_sha256", "summary_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", str(document.get(field) or "")):
+                raise PreflightSummaryRefused("preflight_summary_digest_invalid")
+        content = {key: value for key, value in document.items() if key != "summary_sha256"}
+        encoded = (json.dumps(content, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode()
+        if hashlib.sha256(encoded).hexdigest() != document["summary_sha256"]:
+            raise PreflightSummaryRefused("preflight_summary_digest_mismatch")
+        observed = document.get("observed_at_epoch")
+        if type(observed) not in (int, float) or not math.isfinite(observed) or not -300 <= time.time() - observed <= 3600:
+            raise PreflightSummaryRefused("preflight_summary_stale_or_future")
+        generated = _dt.datetime.strptime(document["generated_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc).timestamp()
+        if generated != observed:
+            raise PreflightSummaryRefused("preflight_summary_timestamp_mismatch")
+        release = _active_release(config).get("commit")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(release or "")) or document["active_sha"] != release:
+            raise PreflightSummaryRefused("preflight_summary_release_mismatch")
+        if document["lane"] not in {"diagnostic", "beta_rigid", "unknown"} or document["proof_boundary"] != "selected_route_plumbing_only":
+            raise PreflightSummaryRefused("preflight_summary_scope_invalid")
+        counts, coverage, rows = document["counts"], document["coverage"], document["findings"]
+        if not isinstance(counts, dict) or set(counts) != {"blocker", "warning", "info"} or not all(type(value) is int and value >= 0 for value in counts.values()):
+            raise PreflightSummaryRefused("preflight_summary_counts_invalid")
+        if not isinstance(coverage, dict) or set(coverage) != {"status", "unit_count", "unknown_units"} or coverage.get("status") not in {"selected_route_contract", "unknown_or_partial"} or not all(type(coverage.get(key)) is int and coverage[key] >= 0 for key in ("unit_count", "unknown_units")):
+            raise PreflightSummaryRefused("preflight_summary_coverage_invalid")
+        if not isinstance(rows, list) or len(rows) > 1000:
+            raise PreflightSummaryRefused("preflight_summary_findings_invalid")
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {"severity", "code", "count", "units", "category", "owner", "next_action"}:
+                raise PreflightSummaryRefused("preflight_summary_finding_invalid")
+            if row["severity"] not in counts or type(row["count"]) is not int or row["count"] < 1:
+                raise PreflightSummaryRefused("preflight_summary_finding_invalid")
+            if not all(isinstance(row[key], str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", row[key]) for key in ("code", "category", "owner", "next_action")):
+                raise PreflightSummaryRefused("preflight_summary_finding_invalid")
+            if not isinstance(row["units"], list) or len(row["units"]) > 128 or not all(isinstance(unit, str) and (unit in {"host", "unrecognized_unit"} or re.fullmatch(r"blueprint-[a-z0-9-]{1,100}\.(?:service|timer|path)", unit)) for unit in row["units"]):
+                raise PreflightSummaryRefused("preflight_summary_units_invalid")
+        return {"status": "observed", **document}
+    except PreflightSummaryRefused as error:
+        return {"status": "refused", "reason": str(error)}
+    except (OSError, ValueError, TypeError, KeyError):
+        return {"status": "unavailable", "reason": "preflight_summary_unreadable_or_invalid"}
+
+
+def _handoff_delivery(config: DoorConfig) -> dict[str, Any]:
+    raw = _regular_bytes(Path(config.handoff_delivery_metrics), _MAX_JSON_BYTES)
+    if scan_bytes(raw) is not None:
+        raise SecretContentRefused("secret_content")
+    document = json.loads(raw)
+    if not isinstance(document, dict) or document.get("schema_version") != "website_preparation_delivery_metrics.v1":
+        raise ValueError("delivery_metrics_schema_invalid")
+    keys = ("observed_at_epoch", "attempted", "delivered", "unavailable", "due_backlog",
+            "oldest_due_age_seconds", "hint_count_scanned", "hint_scan_limit_reached", "invalid_hint_count",
+            "overloaded", "repair_scanned", "successful_delivery_lag_seconds")
+    safe: dict[str, Any] = {"schema_version": document["schema_version"]}
+    for key in keys:
+        value = document.get(key)
+        if type(value) in (int, float) and math.isfinite(value) and value >= 0 or type(value) is bool:
+            safe[key] = value
+    return safe
+
+
+def _screening_progress(config: DoorConfig) -> dict[str, Any]:
+    raw = _regular_bytes(Path(config.screening_worker_status), 32 * 1024)
+    if scan_bytes(raw) is not None:
+        raise SecretContentRefused("secret_content")
+    value = json.loads(raw)
+    if not isinstance(value, dict) or value.get("schema_version") != "blueprint.beta_policy_screening_worker_status.v1":
+        raise ValueError("screening_status_schema_invalid")
+    safe = {"schema_version": value["schema_version"]}
+    for key in ("status", "coverage", "reason"):
+        candidate = value.get(key)
+        if candidate is None or isinstance(candidate, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", candidate):
+            safe[key] = candidate
+    for key in ("observed_at_epoch", "campaign_count", "publication_pending", "oldest_eligible_wait_seconds",
+                "last_ledger_progress_at_epoch", "last_successful_publication_at_epoch"):
+        candidate = value.get(key)
+        if candidate is None or type(candidate) in (int, float) and math.isfinite(candidate) and candidate >= 0:
+            safe[key] = candidate
+    for key in ("candidate_counts", "blocker_categories"):
+        candidates = value.get(key)
+        if isinstance(candidates, dict):
+            safe[key] = {name: count for name, count in candidates.items()
+                         if isinstance(name, str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", name) and type(count) is int and count >= 0}
+    failure = value.get("last_publication_failure")
+    if isinstance(failure, dict) and failure.get("category") in {"auth", "source", "ack", "unavailable", "unknown"}:
+        safe["last_publication_failure"] = {key: failure.get(key) for key in ("category", "owner", "next_action", "next_retry_at_epoch", "observed_at_epoch")
+            if failure.get(key) is None or type(failure.get(key)) in (int, float) and math.isfinite(failure[key])
+            or isinstance(failure.get(key), str) and re.fullmatch(r"[a-z][a-z0-9_]{0,95}", failure[key])}
+    return safe
+
+
+def _unit_health(controller_units: Any, failed_units: Any) -> dict[str, Any]:
+    if not isinstance(controller_units, list) or not isinstance(failed_units, list):
+        return {"status": "unknown", "reason": "unit_inventory_unavailable"}
+    known = {row["Id"] for row in controller_units if isinstance(row, dict) and isinstance(row.get("Id"), str)}
+    rows = []
+    for row in controller_units:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("Id")
+        if row.get("ActiveState") == "failed" or name in failed_units:
+            state = "required_unit_failed"
+        elif name in _BETA_TRIGGERS and row.get("ActiveState") != "active":
+            state = "required_trigger_inactive"
+        elif row.get("ActiveState") == "inactive" and row.get("Type") == "oneshot" and row.get("Result") == "success":
+            state = "successful_inactive_oneshot"
+        elif row.get("ActiveState") == "active":
+            state = "active"
+        else:
+            state = "unknown_or_inactive"
+        rows.append({"unit": name, "state": state, "invocation_id": row.get("InvocationID")})
+    return {"status": "observed", "current": rows,
+            "historical_diagnostics": [name for name in failed_units if name not in known]}
+
+
 def _door_requests(config: DoorConfig) -> dict[str, int]:
     spool = Path(config.spool_root)
     return {state: len(list((spool / state).glob("*.json"))) for state in ("pending", "processing")}
@@ -165,6 +306,8 @@ def _holds(config: DoorConfig) -> list[dict[str, Any]]:
 
 def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) -> dict[str, Any]:
     state = Path(config.control_plane_state)
+    failed = _section(lambda: [row["unit"] for row in host.list_units("blueprint-*", states=("failed",))], "failed_units_unavailable")
+    controllers = _section(lambda: host.unit_properties(config.controller_units), "controller_units_unavailable")
     return {
         "schema": SCHEMA,
         "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
@@ -185,12 +328,12 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
         "paid_launch_locks": _section(host.paid_launch_locks, "locks_unavailable"),
         "spend_guard": _section(lambda: _small_json(state / "gpu_spend_guard" / "latest.json"),
                                 "spend_guard_unavailable"),
-        "failed_units": _section(
-            lambda: [row["unit"] for row in host.list_units("blueprint-*", states=("failed",))],
-            "failed_units_unavailable",
-        ),
-        "controller_units": _section(lambda: host.unit_properties(config.controller_units),
-                                     "controller_units_unavailable"),
+        "failed_units": failed,
+        "controller_units": controllers,
+        "unit_health": _unit_health(controllers, failed),
+        "preflight": _preflight(config),
+        "preparation_delivery": _section(lambda: _handoff_delivery(config), "preparation_delivery_unavailable"),
+        "beta_screening": _section(lambda: _screening_progress(config), "beta_screening_unavailable"),
         "disk": _section(lambda: host.disk(("/", "/var/lib/blueprint", "/mnt/blueprint-work")),
                          "disk_unavailable"),
         "capacity": _section(lambda: _capacity(config), "capacity_unavailable"),
