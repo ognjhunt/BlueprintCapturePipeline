@@ -1,0 +1,46 @@
+{
+  "artifact_id": 12854982270,
+  "artifact_name": "full-test-lane-40771511590",
+  "claim_boundary": {
+    "canonical_full_lane_verified": true,
+    "live_deployment_health_proven": false
+  },
+  "collection": {
+    "files": {
+      "cpu_full.json": {
+        "sha256": "319c39bc43d76abd1beb75be0d116dc089d75066f95df72598625b4456ade9fc",
+        "size_bytes": 1522
+      },
+      "full-test-lane-executed.json": {
+        "sha256": "0b6bc955868ef950a9adfe6adb16a60de4b96b7f22e4b789f268a4381a1c0a6f",
+        "size_bytes": 26619452
+      },
+      "full-test-lane-junit.xml": {
+        "sha256": "b88c82013ac982d99e9213b93f89f1ed3ae2a32b7b9297586524935865de20ca",
+        "size_bytes": 59143730
+      },
+      "full-test-lane-planned.json": {
+        "sha256": "567f26ba013be0cee2f64cd34c7c9d70f75032adcaabc127e8c8dfec605fab1b",
+        "size_bytes": 26619451
+      },
+      "full-test-lane-shard-aggregate.json": {
+        "sha256": "b090c0b10c34eca7ebf7f09e8e3baaa5f00e4533d73045bb8d2644a22e1e55b6",
+        "size_bytes": 17396
+      }
+    },
+    "nodeids_sha256": "6410c2fd342f50bed1a8ff62d96b1022e7030c029d75287a1233eab362fbdac0",
+    "shard_count": 12,
+    "shard_plan_digest": "a29baa30fe79f9ac25ed0bb1b69abd2843c97b32a4d6695b0126b56106afeb16",
+    "skipped_count": 0,
+    "test_count": 38472
+  },
+  "git_sha": "17c645541f8b3e9a95cb0d67b5603df804533cc4",
+  "job_name": "Full pytest lane on CPU runner",
+  "repository": "ognjhunt/BlueprintCapturePipeline",
+  "run_id": 40771511590,
+  "run_url": "https://github.com/ognjhunt/BlueprintCapturePipeline/actions/runs/40771511590",
+  "schema_version": "blueprint.deploy_release_provenance.v1",
+  "status": "verified",
+  "workflow_name": "Full Test Lane",
+  "workflow_path": ".github/workflows/full-test-lane.yml"
+}

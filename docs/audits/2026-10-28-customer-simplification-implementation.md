@@ -16,6 +16,14 @@ Optional #1136/#3037 remain draft and independent. Their runs `40773895675` and 
 
 No live upload/account/email/paid call, proposal acceptance, founder-hold change or deployment occurred in this lane. Real deployed upload-to-scored-result, return and retained-source recovery remain required. The goal remains active. The earlier question authorizing messages to the integration/autonomy tasks remains unanswered; no task messages were sent.
 
+## Verified release receipt: 2026-10-28 22:21 UTC
+
+The official hosted source-attestation run `40776848740` and every verification/upload step succeeded. Artifact `12855947202`, `production-deploy-provenance-17c645541f8b3e9a95cb0d67b5603df804533cc4`, is retained byte-for-byte as [`customer-simplification-17c645541-release-provenance.json`](customer-simplification-17c645541-release-provenance.json). Its archive SHA-256 matches GitHub's `9b5588ea912e52e07a0bfe8de6405221596b27d8e4e290c1fe214d5448e8bdde`; receipt SHA-256 is `a051c3f6e6de74e9f5a5ff9ac7e0973ff3d94faa8123f434c9b283f507490604`. It binds promotion `40771511590`, exact commit `17c645541f8b3e9a95cb0d67b5603df804533cc4` and 38,472 tests. Its claim boundary explicitly leaves live deployment health unproven. No full suite or hosted run was restarted.
+
+The current operator-door readback proves the earlier Pipeline release `a30ea42872d2bec997e8f6a447e1066c53215cf5`, not `17c6455`; the public website still serves `c2e842a256411e11bfa436448ad57fed4896e7a5`. Preserve the established deploy owner. Core WebApp `40777912096` has passed its hosted check and Graphify 3.12; remaining core/recovery jobs were queued at readback. Neither website PR is merged.
+
+An independent local attempt used the exact four verifier sources from `17c6455`, Python 3.12.11 and defusedxml 0.7.1, but failed during extraction because the Mac had about 700 MiB free and the retained archive expands to 778,745,664 bytes. That attempt did not produce a verified receipt. Its temporary extraction was cleaned up. No connected general cloud-runtime tool was available here. The subsequently completed official hosted receipt above supplies the canonical proof; it was downloaded and its archive, source/run identity, schema and claim boundary were checked locally using only about 1 KiB. No broad cleanup, environment allocation, provider/model call, private selector read, hold change or deployment was performed.
+
 ## Current source and ownership
 
 The existing task `i think we need to massively simplify our pipeline/website,…` (`01a1833b-fd86-715b-ad6f-6f6409c310c8`) owns the broader source integration. The parent autonomy coordinator is its intended sole deployment owner. Do not race their release or reintroduce the obsolete finalist tier.
