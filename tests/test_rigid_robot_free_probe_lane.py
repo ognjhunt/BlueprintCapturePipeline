@@ -767,6 +767,60 @@ def test_old_unfunded_ingest_cannot_hide_legacy_unknown_funding(tmp_path):
     assert json.loads((attempt / runner.INGEST_FILENAME).read_text()) == retained
 
 
+@pytest.mark.parametrize("pid_receipt_survives", [True, False])
+def test_frozen_pre_aut08_bare_allocator_response_loss_never_becomes_unfunded(
+        tmp_path, monkeypatch, pid_receipt_survives):
+    world = build_world(tmp_path, monkeypatch)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    staged = staged_attempt(world)
+    attempt = staged["root"]
+    # The historical runner never created a named invocation. Retain the
+    # unused modern staging bytes separately so this exercises its bare path.
+    (attempt / "invocation").rename(attempt / "modern_staging_unused")
+    runner._write_exclusive(attempt / runner.INTENT_FILENAME, {"observed_at_iso": "legacy"})
+    fixture = Path(__file__).parent / "fixtures/aut08_legacy_probe_funding.py.txt"
+    legacy_namespace = dict(vars(lane))
+    exec(compile(fixture.read_text(), str(fixture), "exec"), legacy_namespace)
+    monkeypatch.setattr(lane, "reserve_probe_funding", legacy_namespace["reserve_probe_funding"])
+    remote_admissions = []
+
+    def commit_then_lose_response(**kwargs):
+        remote_admissions.append(kwargs["payload"]["spend"])
+        raise OSError("legacy funding response lost after commit")
+
+    class BareProcess:
+        pid = 12346
+
+        def __init__(self, command, **kwargs):
+            assert command[1:3] == ["-m", "blueprint_pipeline.paid_resource_allocator"]
+            self.code = allocator.main(command[3:])
+
+        def wait(self):
+            return self.code
+
+    monkeypatch.setattr(website_task_context, "website_webapp_request", commit_then_lose_response)
+    monkeypatch.setattr(runner.subprocess, "Popen", BareProcess)
+    assert runner.run_allocator(staged["argv"], attempt=attempt) == 2
+    if not pid_receipt_survives:
+        (attempt / runner.PROCESS_FILENAME).rename(attempt / "lost_pid_receipt_unused.json")
+    assert len(remote_admissions) == 1 and not (attempt / "invocation").exists()
+    from blueprint_pipeline import probe_funding_recovery as recovery
+    assert not (attempt / "allocator" / lane.FUNDING_FILENAME).exists()
+    assert not (attempt / "allocator" / recovery.REQUEST_FILENAME).exists()
+    state = current_probe_state(world["capture"])
+    assert runner.settle_attempt(attempt, state=state)["state"] == "unknown"
+    assert not (attempt / runner.INGEST_FILENAME).exists()
+    retained_bad_ingest = runner._record_ingest(attempt, {"state": "unfunded_blocked", "funded": False,
+                                                       "allocated": False})
+    assert runner.settle_attempt(attempt, state=state)["state"] == "unknown"
+    assert json.loads((attempt / runner.INGEST_FILENAME).read_text()) == retained_bad_ingest
+    assert runner._counts(attempt.parent.parent) == (1, 0)
+    row = runner.run_queue(world["queue"], hooks={"source_commit": lambda: COMMIT})[0]
+    assert row["status"] == "waiting" and row["next_action"] == "recover_exact_legacy_funding_request"
+    assert len(remote_admissions) == 1 and len(runner._attempts(attempt.parent.parent)) == 1
+    assert world["transport_calls"] == []
+
+
 def test_ingest_refuses_a_trace_that_is_not_this_requests(tmp_path, monkeypatch) -> None:
     world = build_world(tmp_path, monkeypatch)
     staged = staged_attempt(world)

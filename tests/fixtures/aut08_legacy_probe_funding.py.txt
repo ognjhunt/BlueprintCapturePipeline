@@ -1,0 +1,34 @@
+"""Frozen pre-AUT08 function from 541066318 for response-loss compatibility tests.
+
+Execute only in a test namespace with fake WebApp transport; no production imports.
+"""
+
+def reserve_probe_funding(*, task_context: Mapping[str, Any], binding_digest: str, hard_cap_usd: float,
+                          job_dir: Path) -> tuple[dict[str, Any] | None, list[str]]:
+    """Reserve the cap once from the capture's website preparation grant, or say why not."""
+
+    from .website_task_context import reserve_website_preparation_spend
+
+    path = Path(job_dir) / FUNDING_FILENAME
+    if path.exists() or path.is_symlink():
+        return None, ["rigid_robot_free_probe_website_grant_already_reserved"]
+
+    def retain(value: Mapping[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(dict(value), indent=2, sort_keys=True) + "\n")
+
+    try:
+        admission, _grant = reserve_website_preparation_spend(
+            task_context=task_context, binding_digest=binding_digest, maximum_cost_usd=float(hard_cap_usd),
+            request_count=1, resource_class="gpu_render", provider="vast", retain_admission=retain)
+    except PaidResourceAdmissionBlocked as exc:
+        if "paid_resource_admission_not_admitted" in exc.blockers:
+            # The WebApp already reserved this exact binding: one binding is never paid twice.
+            return None, ["rigid_robot_free_probe_website_grant_already_reserved"]
+        return None, ["rigid_robot_free_probe_paid_budget_blocked", *exc.blockers]
+    except (OSError, RuntimeError, ValueError) as exc:
+        return None, [_grant_refusal(str(exc))]
+    if not path.is_file():
+        return None, ["rigid_robot_free_probe_website_grant_admission_not_retained"]
+    return dict(admission), []

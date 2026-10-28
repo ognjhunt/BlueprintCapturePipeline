@@ -329,8 +329,9 @@ def _legacy_funding_unknown(attempt: Path) -> bool:
     from .allocator_invocation import manifest
     from .probe_funding_recovery import PROTOCOL
     path = attempt / "invocation/manifest.json"
-    return ((attempt / "invocation/started.json").exists()
-            and (not path.exists() or manifest(path)["binding"].get("funding_request_protocol") != PROTOCOL))
+    return ((not path.exists() or manifest(path)["binding"].get("funding_request_protocol") != PROTOCOL)
+            and any((attempt / name).exists() for name in (
+                INTENT_FILENAME, PROCESS_FILENAME, RESULT_FILENAME, "invocation/started.json")))
 
 
 def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]:
@@ -342,6 +343,13 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
 
     from .probe_funding_recovery import funding_state, reconcile_funding
     legacy_funding_unknown = _legacy_funding_unknown(attempt)
+    funding = funding_state(attempt / "allocator")
+    if legacy_funding_unknown and funding["status"] == "no_request":
+        # Pre-protocol allocators were bare subprocesses, including crashes
+        # before their PID receipt. Their blocked result or cached unfunded
+        # ingest cannot prove the remote reservation transaction never ran.
+        return {"state": "unknown", "reason": "probe_legacy_funding_reconciliation_required",
+                "next_action": "recover_exact_legacy_funding_request", "funded": None}
     recorded = _read_optional(attempt / INGEST_FILENAME)
     if recorded is not None:
         if legacy_funding_unknown and recorded.get("state") in UNFUNDED_STATES:
@@ -349,7 +357,6 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
                     "next_action": "recover_exact_legacy_funding_request", "funded": None}
         return recorded
     result = _read_optional(attempt / RESULT_FILENAME)
-    funding = funding_state(attempt / "allocator")
     if funding["status"] == "unknown":
         # The old RPC may have committed even without a retained response.
         # Reconcile only after preventing the old allocator from dispatching.

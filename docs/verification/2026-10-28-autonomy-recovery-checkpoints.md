@@ -40,6 +40,11 @@ A not-reserved snapshot cannot fence a delayed original RPC. Reads use bounded
 60–600-second backoff and expose the exact accounting next action. Known explicit
 WebApp transaction refusals retain exact no-reservation evidence; old invocation
 records without the durable funding-request protocol remain held if they ran.
+This includes the original bare allocator's launch intent, process receipt or
+result, without a named invocation and even if its PID receipt was lost. An old
+cached unfunded ingest does not override that ambiguity. Compatibility tests
+execute the frozen `541066318` reservation function through the bare default
+runner and inject a committed WebApp transaction with a lost response.
 No provider-zero snapshot is used to establish
 a no-create proof. Recovery of genuine lost provider responses, output transfer
 and teardown still needs provider-specific evidence and acceptance observation;
