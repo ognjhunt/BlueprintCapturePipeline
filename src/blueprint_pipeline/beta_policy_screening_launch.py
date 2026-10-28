@@ -1,4 +1,4 @@
-"""Execute diagnostic beta candidates through the canonical canary allocator.
+"""Execute beta job-evaluation candidates through the canonical canary allocator.
 
 Beta L5: preparation seals the existing scene and policy runtime, then one
 deterministic attempt can start at most one canonical allocator. A missing

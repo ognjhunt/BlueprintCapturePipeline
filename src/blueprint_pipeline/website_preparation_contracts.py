@@ -33,7 +33,14 @@ def preparation_consent_valid(request):
 
 
 def validate_preparation_proposal(authority, context):
-    proposal = authority.get("assessment_preparation_proposal")
+    """The received video is enough to prepare (owner decision 2026-10-28).
+
+    A grant need not carry an assessment proposal. A retained one is advisory
+    context only, and still must be well formed and bound to this capture.
+    """
+    if "assessment_preparation_proposal" not in authority:
+        return
+    proposal = authority["assessment_preparation_proposal"]
     _require(type(proposal) is dict and set(proposal) == {
         "schema_version", "request_id", "capture_id", "job_id", "run_id", "source_key", "context_digest",
         "packet_sha256", "questions_pending", "scope", "robot_suitability_verified", "physical_trial_authorized"})

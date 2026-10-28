@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
+
+from .common import try_parse_float
 
 def _first_int(*values: Any) -> Optional[int]:
     for value in values:
@@ -250,6 +253,128 @@ def _capture_orientation_from_metadata(
     return {}
 
 
+def _stream_rotation_degrees(stream: Mapping[str, Any]) -> int:
+    tags = stream.get("tags") if isinstance(stream.get("tags"), Mapping) else {}
+    side_data_list = (
+        stream.get("side_data_list") if isinstance(stream.get("side_data_list"), list) else []
+    )
+    rotation_candidates: List[Any] = [tags.get("rotate") if isinstance(tags, Mapping) else None]
+    for item in side_data_list:
+        if isinstance(item, Mapping):
+            rotation_candidates.append(item.get("rotation"))
+    return next(
+        (
+            normalized
+            for normalized in (
+                _normalize_rotation_degrees(candidate) for candidate in rotation_candidates
+            )
+            if normalized is not None
+        ),
+        0,
+    )
+
+
+def _positive_number(value: Any) -> Optional[float]:
+    text = str(value or "").strip()
+    try:
+        if "/" in text:
+            numerator, denominator = text.split("/", 1)
+            number = float(numerator) / float(denominator)
+        else:
+            number = float(text)
+    except (ValueError, ZeroDivisionError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def _ffprobe_video_metadata(video_path: Path) -> Dict[str, float]:
+    """Width and height as displayed, frame rate and duration, read off the file.
+
+    For a manifest that cannot say: a browser upload whose browser could not
+    play the video records these as null rather than guessing. Returns only the
+    values ffprobe reported, and ``{}`` when it is missing or rejects the file.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-print_format",
+                "json",
+                "-show_streams",
+                "-show_format",
+                str(video_path),
+            ],
+            check=False,
+            text=True,
+            capture_output=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    if result.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    streams = payload.get("streams") if isinstance(payload, Mapping) else None
+    stream = next(
+        (
+            item
+            for item in (streams if isinstance(streams, list) else [])
+            if isinstance(item, Mapping) and item.get("codec_type") == "video"
+        ),
+        None,
+    )
+    if not isinstance(stream, Mapping):
+        return {}
+    format_info = payload.get("format") if isinstance(payload.get("format"), Mapping) else {}
+    display = _display_size_from_rotation(
+        _first_int(stream.get("width")),
+        _first_int(stream.get("height")),
+        _stream_rotation_degrees(stream),
+    )
+    measured = {
+        "width": _positive_number(display.get("width")),
+        "height": _positive_number(display.get("height")),
+        "fps_source": _positive_number(stream.get("avg_frame_rate"))
+        or _positive_number(stream.get("r_frame_rate")),
+        "duration_seconds": _positive_number(format_info.get("duration"))
+        or _positive_number(stream.get("duration")),
+    }
+    return {key: value for key, value in measured.items() if value is not None}
+
+
+def _video_metadata(
+    raw_root: Path, manifest: Mapping[str, Any], video_candidates: List[str]
+) -> Dict[str, Any]:
+    """The manifest's video values, measured off the file where it has none.
+
+    A browser upload may legitimately record width, height or frame rate as
+    null: the browser that sent it could not play the video. The file itself is
+    the authority then. ``value_sources`` names where each value came from, and
+    a value nobody could read stays ``0.0`` with source ``None``.
+    """
+    metadata: Dict[str, Any] = {
+        key: try_parse_float(manifest.get(key), 0.0)
+        for key in ("width", "height", "fps_source", "capture_start_epoch_ms")
+    }
+    sources: Dict[str, Optional[str]] = {
+        key: "raw_manifest" if value > 0 else None for key, value in metadata.items()
+    }
+    missing = [key for key in ("width", "height", "fps_source") if not sources[key]]
+    if missing and video_candidates:
+        measured = _ffprobe_video_metadata(raw_root / video_candidates[0])
+        for key in missing:
+            if key in measured:
+                metadata[key] = measured[key]
+                sources[key] = "ffprobe_video_file"
+    metadata["value_sources"] = sources
+    return metadata
+
+
 def _ffprobe_capture_orientation(video_path: Path) -> Dict[str, Any]:
     try:
         result = subprocess.run(
@@ -289,24 +414,7 @@ def _ffprobe_capture_orientation(video_path: Path) -> Dict[str, Any]:
         return {}
     encoded_width = _first_int(stream.get("width"))
     encoded_height = _first_int(stream.get("height"))
-    tags = stream.get("tags") if isinstance(stream.get("tags"), Mapping) else {}
-    side_data_list = (
-        stream.get("side_data_list") if isinstance(stream.get("side_data_list"), list) else []
-    )
-    rotation_candidates: List[Any] = [tags.get("rotate") if isinstance(tags, Mapping) else None]
-    for item in side_data_list:
-        if isinstance(item, Mapping):
-            rotation_candidates.append(item.get("rotation"))
-    rotation_degrees = next(
-        (
-            normalized
-            for normalized in (
-                _normalize_rotation_degrees(candidate) for candidate in rotation_candidates
-            )
-            if normalized is not None
-        ),
-        0,
-    )
+    rotation_degrees = _stream_rotation_degrees(stream)
     display_size = _display_size_from_rotation(encoded_width, encoded_height, rotation_degrees)
     return _orientation_payload(
         encoded_width=encoded_width,

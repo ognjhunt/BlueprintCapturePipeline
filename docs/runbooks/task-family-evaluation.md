@@ -26,6 +26,17 @@ calibrated cameras, robot interfaces, engine identity and a scenario binding.
 It supports multiple subjects and deformable state without applying the
 single-rigid-object compiler to them.
 
+Stacking support rings must be simple and convex. The validator checks
+nonadjacent intersections/touches, unique vertices and all convex half-planes
+in a translated unit-extent frame with a `1e-12` relative distance tolerance.
+Forward collinear boundary vertices are supported; backtracking is refused
+before runtime materialization. Cloth projections that are edge-on, concave or
+self-crossing contribute zero overlap progress and retain a
+`measurement_diagnostics` reason; nonfinite or malformed arrays invalidate the
+episode. New telemetry and episode receipts identify
+`polygon_validation_version=simple_convex_polygon.v2`. Historical receipts are
+immutable; any rescore must produce a new version and digest.
+
 The same materializer is available without a Python session:
 
 ```bash
