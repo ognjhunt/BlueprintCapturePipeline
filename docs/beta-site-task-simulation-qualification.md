@@ -179,8 +179,102 @@ Name it as a calibration reading in WebApp's export, which then leaves it out
 of every check. Website scenes currently carry estimated metres, so no site
 reading calibrates a scene today.
 
-The simulator-side producer for these quantities does not exist yet. Each
-template check's `simulator_reading` states what that producer must read.
+The retained rigid-reading producer is
+`blueprint_pipeline.site_task_simulator_measurements`. It calculates all six
+dimensions from an exact native-engine readback and calibrated rendered RGB-D;
+it never creates the independent site readings or accepts a collider extent as
+an observation measurement. Articulated and other family extraction methods
+remain unimplemented. The native runtime still needs to emit the exact
+metrology snapshot and retained RGB-D described below before this producer can
+be used for a real scene. No real measurement or reviewed qualification is
+established by its hermetic tests.
+
+### Retained rigid-reading preparation
+
+The existing operator registry may supply `simulator_measurement_producer`,
+with `recipe_path`, the recipe's cross-runtime canonical `recipe_digest`,
+`evidence_root`, and `producer_id`. This field is operator-only; capture/job
+payloads cannot supply it through derived scene profiles. Prepare readings
+through the existing qualification entrypoint:
+
+```bash
+python -m blueprint_pipeline.site_task_simulation_qualification \
+  --capture-root /absolute/capture \
+  --prepare-simulator-measurements --out /absolute/retained/simulator-measurement.json
+```
+
+This command performs no model, GPU, network, qualification or publication
+operation. It preserves an identical result on restart and refuses an existing
+conflicting output. `--publish` cannot be combined with this preparation mode.
+
+The pinned recipe schema is
+`blueprint.site_task_simulator_measurement_recipe.v1`. It contains the exact
+qualification `binding`, `family: rigid_pick_place`, `producer_id`, a
+`snapshot: {path, sha256, size_bytes}` record relative to `evidence_root`, and
+`readings`. Each reading binds a template `check_id` and `sample_id` to one
+explicit extraction:
+
+| Dimension | Operation | Retained source |
+| --- | --- | --- |
+| Scale | `point_distance` or `horizontal_distance` | Named authored world points in metres |
+| Registration | `floor_height` | Named world point and unit-normal registered floor plane |
+| Collision | `collision_ray_clearance` | Actual nearest-scene-collision query origin and hit point |
+| Task state | `collision_extent` | Exact subject collision bounds and selected scoring-frame axis |
+| Observation | `rgbd_length` | Two retained endpoint pixels, RGB, optical-axis depth, and pinhole intrinsics |
+| Task dynamics | `rigid_body_mass` | Actual native-engine rigid-body mass attribute |
+
+The snapshot schema is
+`blueprint.site_task_runtime_metrology_snapshot.v1`. It binds the same full
+qualification identity, `source_kind: native_engine_readback`, `engine_build`,
+`runtime_digest`, UTC `observed_at_iso`, and its canonical `snapshot_digest`.
+It retains digest/size/path records for the original scene and robot model,
+plus `geometry_points_m`, `registered_floor_plane`, `collision_bounds_m`,
+`collision_rays`, `rigid_body_masses_kg`, `calibration_sample_ids`, and named
+`rendered_rgbd` records. An absent ray hit is a missing bounded measurement,
+never infinite clearance.
+
+Each render record retains its artifact, `model: rectified_pinhole`,
+`depth_quantity: optical_axis_m`, `renderer_digest`, and `camera_pose_digest`.
+Its lossless NPZ contains only `rgb` (uint8 H×W×3), `depth_m` (floating H×W),
+and `intrinsics` (3×3). Depth is unprojected at the frozen endpoint pixels;
+missing/invalid depth refuses. Array headers and decompressed byte counts are
+bounded before allocation. A reading used for calibration cannot be reused in
+any qualification check. No inferred scale, material or threshold fallback
+exists.
+
+The emitted existing measurement document also retains extraction identity,
+recipe and implementation digests, every raw artifact digest, and separate
+authored/collision/rendered/engine provenance. When the qualifier consumes
+this generated document it reopens the operator-pinned recipe and original
+sources and recomputes the readings, including at later admission/closeout.
+A numerical document whose raw render has changed cannot retain its prior
+qualification. Existing reviewed evidence without this producer's extraction
+record retains its compatibility path.
+
+### Blueprint default robot bytes
+
+An operator may select the default DROID robot through `default_robot_model`:
+`schema_version: blueprint.default_robot_model.v1`, the exact DROID
+`embodiment_preset_id`, the absolute prepared `directory`, `model_sha256`, and
+`dependency_closure_digest`. The directory must pass the existing
+`deployment_embodiment_asset_import.verify_prepared_asset_directory` checks;
+an asset name or downloaded root layer alone is insufficient.
+
+`blueprint_robot_model_delivery.stage_default_robot_model` reuses the existing
+closed-USD copier. It retains every dependency and adopts only byte-identical
+staged content. The qualification authority must pin
+`default_robot_model_closure_digest` to that same closure; qualification and
+`require_current_qualification` recheck all staged model/dependency bytes with
+anchored directory descriptors. Local DROID interface IDs are accepted by the
+portable qualification validator alongside the existing admitted HTTPS
+interfaces. Team model behavior is preserved.
+
+This closes a local staging/qualifier seam. Provider bundle staging and the
+runtime must still open these exact retained bytes and carry the same closure
+through actual execution and closeout before a default-robot execution is
+claimed qualified. No configured production model, runtime emission, genuine
+paired site measurement, human threshold/review, or real execution is supplied
+by these changes.
 
 ## Receipt, publication and execution
 

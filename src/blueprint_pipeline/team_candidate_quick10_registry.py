@@ -64,7 +64,8 @@ REQUIRED_DERIVED_FIELDS = DERIVED_FIELDS[:6]
 OPERATOR_FIELDS = ("allowed_founder_approvers", "max_hourly_rate_usd", "open_loop_horizon", "team_rights",
                    "machine_avoidlist_path", "private_robot_models", "prepared_robot_models",
                    "screening_candidates", "screening_hard_ttl_seconds", "screening_candidate_cap_usd",
-                   "native_runtime_source_receipt")
+                   "native_runtime_source_receipt", "default_robot_model", "site_task_qualification",
+                   "simulator_measurement_producer")
 # The scene's nominal cell: what the prompt and query budget are read from.
 NOMINAL_CELL = {"cell_id": "scene.nominal", "seed": 0, "family": "canonical_anchor",
                 "resolved_scenario": {"family": "canonical_anchor", "ordinal": 0, "parameters": {}}}
