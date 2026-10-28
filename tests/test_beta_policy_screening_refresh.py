@@ -450,3 +450,113 @@ def test_refresh_metadata_cannot_change_its_generation_binding(tmp_path, monkeyp
     with pytest.raises(ValueError, match="refresh_backoff_invalid|refresh_generation_invalid"):
         refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
     assert len(coordinator._ledger(tmp_path)["campaigns"]) == 1 and "attempt" not in row(tmp_path)
+
+
+@pytest.mark.parametrize("expire_original_first", [False, True])
+def test_later_original_quote_expiry_refreshes_from_actual_unspent_origin(
+        tmp_path, monkeypatch, clock, expire_original_first):
+    value = plan(count=2)
+    beta = value["candidates"][1]
+    beta["cost_quote"]["valid_until"] = (clock.instant + timedelta(days=1)).isoformat()
+    seal(beta["cost_quote"], "quote_digest")
+    seal(value, "plan_digest")
+    source_authority(tmp_path, monkeypatch, value)
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+    original_bytes = (tmp_path / "plans/campaign-1.json").read_bytes()
+    backend = CapacityBackend()
+    process(tmp_path, backend)
+    original_beta = deepcopy(row(tmp_path, candidate_id="candidate-001")["attempt"])
+    build, builds = builder(clock)
+    clock.instant += timedelta(hours=2)
+    first = refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    first_id = first["campaign_id"]
+    assert row(tmp_path, first_id, "candidate-001")["prior_campaign_id"] == "campaign-1"
+    assert row(tmp_path, candidate_id="candidate-001")["attempt"] == original_beta
+    assert coordinator._budget(coordinator._ledger(tmp_path), value["site_id"])["reserved_usd"] == "8"
+    first_bytes = (tmp_path / "plans" / (first_id + ".json")).read_bytes()
+    clock.instant += timedelta(hours=25)
+    if expire_original_first:
+        process(tmp_path, backend)
+        assert row(tmp_path, candidate_id="candidate-001")["status"] == "deferred"
+    commitments = []
+    save = coordinator._save
+    def observe_commit(root, ledger):
+        commitments.append(coordinator._budget(ledger, value["site_id"])["reserved_usd"])
+        return save(root, ledger)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(coordinator, "_save", observe_commit)
+        second = refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    assert commitments == ["8"]
+    second_id = second["campaign_id"]
+    assert second_id != first_id and len(builds) == 2
+    assert row(tmp_path, second_id, "candidate-001")["status"] == "preparing"
+    assert row(tmp_path, second_id, "candidate-001")["refreshed_from_campaign_id"] == "campaign-1"
+    retained = row(tmp_path, candidate_id="candidate-001")
+    assert retained["attempt"]["attempt_id"] == original_beta["attempt_id"]
+    assert retained["attempt"]["reservation_status"] == "released" and retained["superseded_by"] == second_id
+    assert coordinator._budget(coordinator._ledger(tmp_path), value["site_id"])["reserved_usd"] == "8"
+    assert (tmp_path / "plans/campaign-1.json").read_bytes() == original_bytes
+    assert (tmp_path / "plans" / (first_id + ".json")).read_bytes() == first_bytes
+    backend.busy = False
+    backend.observation = {"status": "running", "provider_allocation_performed": True}
+    process(tmp_path, backend, max_launches=2)
+    assert backend.launches == 2
+    for _ in range(3):
+        refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+        process(tmp_path, backend, max_launches=2)
+    assert backend.launches == len(builds) == 2
+    assert coordinator._budget(coordinator._ledger(tmp_path), value["site_id"])["reserved_usd"] == "8"
+
+
+def test_origin_that_launched_after_partial_refresh_never_becomes_new_retry_authority(tmp_path, monkeypatch, clock):
+    value = plan(count=2)
+    value["candidates"][1]["cost_quote"]["valid_until"] = (clock.instant + timedelta(days=1)).isoformat()
+    seal(value["candidates"][1]["cost_quote"], "quote_digest")
+    seal(value, "plan_digest")
+    source_authority(tmp_path, monkeypatch, value)
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+    capacity = CapacityBackend()
+    process(tmp_path, capacity)
+    build, _ = builder(clock)
+    clock.instant += timedelta(hours=2)
+    refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    unknown = Backend(OSError("original provider response is unknown"))
+    coordinator._advance_candidate(tmp_path, value, value["candidates"][1], executor=unknown, require_publication_ack=False)
+    original = deepcopy(row(tmp_path, candidate_id="candidate-001"))
+    assert original["status"] == "reconciliation_required" and unknown.launches == 1
+    clock.instant += timedelta(hours=25)
+    outcome = refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    assert row(tmp_path, outcome["campaign_id"], "candidate-001")["prior_campaign_id"] == "campaign-1"
+    assert row(tmp_path, candidate_id="candidate-001") == original
+    assert coordinator._budget(coordinator._ledger(tmp_path), value["site_id"])["reserved_usd"] == "8"
+    assert unknown.launches == 1
+
+
+def test_availability_only_generation_does_not_strand_later_original_quote_expiry(tmp_path, monkeypatch, clock):
+    ready = plan(count=2)
+    initial = deepcopy(ready)
+    initial["candidates"][0] = {key: value for key, value in initial["candidates"][0].items()
+                              if key in {"candidate_id", "configuration_digest", "display_name"}}
+    initial["candidates"][0].update(status="unavailable", blockers=["credential_unavailable:PINNED_POLICY_CREDENTIAL"])
+    initial["maximum_planned_cost_usd"] = "4.00"
+    initial["candidates"][1]["cost_quote"]["valid_until"] = (clock.instant + timedelta(days=1)).isoformat()
+    seal(initial["candidates"][1]["cost_quote"], "quote_digest")
+    seal(initial, "plan_digest")
+    source_authority(tmp_path, monkeypatch, initial)
+    coordinator.enqueue_screening_campaign(initial, queue_root=tmp_path)
+    refresh.retain_planning_bindings(tmp_path, "campaign-1", capabilities={"candidate_bindings": {
+        candidate["candidate_id"]: {"execution_spec": candidate["execution_spec"]} for candidate in ready["candidates"]}})
+    capacity = CapacityBackend()
+    process(tmp_path, capacity)
+    rebuild, builds = builder(clock)
+    def build(_previous, next_id, directory):
+        return rebuild(ready, next_id, directory)
+    first = refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    assert row(tmp_path, first["campaign_id"], "candidate-001")["prior_campaign_id"] == "campaign-1"
+    clock.instant += timedelta(hours=25)
+    process(tmp_path, capacity)
+    second = refresh.maybe_refresh_campaign(queue_root=tmp_path, base_campaign_id="campaign-1", build=build)
+    assert second["campaign_id"] != first["campaign_id"] and len(builds) == 2
+    assert row(tmp_path, second["campaign_id"], "candidate-001")["status"] == "preparing"
+    assert row(tmp_path, second["campaign_id"], "candidate-001")["refreshed_from_campaign_id"] == "campaign-1"
+    assert coordinator._budget(coordinator._ledger(tmp_path), initial["site_id"])["reserved_usd"] == "8"

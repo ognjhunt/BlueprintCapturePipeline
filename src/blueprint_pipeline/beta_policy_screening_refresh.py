@@ -135,12 +135,45 @@ def _pre_effect(root: Path, row: Mapping[str, Any]) -> bool:
     return True
 
 
-def _eligible(root: Path, plan: Mapping[str, Any], state: Mapping[str, Any]) -> set[str]:
-    from .beta_policy_screening_coordinator import _quote_current
-    result = set()
+def _origins(root: Path, plan: Mapping[str, Any], state: Mapping[str, Any], ledger: Mapping[str, Any],
+             *, expectations=None) -> dict[str, dict[str, Any]]:
+    """Resolve only our retained no-retry wrappers to their actual operation."""
+    from .beta_policy_screening_coordinator import _plan
+    plans = {plan["campaign_id"]: plan}
+    result = {}
+    if state["plan_digest"] != plan["plan_digest"]:
+        raise ValueError("beta_screening_refresh_origin_plan_changed")
     for configured in plan["candidates"]:
-        key = configured["candidate_id"]
+        key, campaign_id = configured["candidate_id"], plan["campaign_id"]
         row = state["candidates"][key]
+        seen = {campaign_id}
+        while (row["status"] == "blocked" and row.get("blockers") == ["beta_screening_prior_attempt_not_retry_authority"]
+               and row.get("prior_campaign_id")):
+            campaign_id = row["prior_campaign_id"]
+            if campaign_id in seen:
+                raise ValueError("beta_screening_refresh_origin_cycle")
+            seen.add(campaign_id)
+            origin = ledger["campaigns"].get(campaign_id)
+            if origin is None or origin["site_id"] != plan["site_id"]:
+                raise ValueError("beta_screening_refresh_origin_scope_changed")
+            if campaign_id not in plans:
+                plans[campaign_id] = _plan(root, campaign_id, origin["plan_digest"])
+                _unchanged(plans[campaign_id], plan, expectations=expectations)
+            row = origin["candidates"][key]
+        result[key] = {"campaign_id": campaign_id, "plan": plans[campaign_id], "row": row}
+    return result
+
+
+def _eligible(root: Path, plan: Mapping[str, Any], state: Mapping[str, Any], *, origins=None) -> set[str]:
+    from .beta_policy_screening_coordinator import _quote_current
+    if origins is None:
+        from .beta_policy_screening_coordinator import _ledger
+        base_id = state.get("refresh", {}).get("base_campaign_id", plan["campaign_id"])
+        origins = _origins(root, plan, state, _ledger(root), expectations=_planning_bindings(root, base_id))
+    result = set()
+    for key, origin in origins.items():
+        configured = next(row for row in origin["plan"]["candidates"] if row["candidate_id"] == key)
+        row = origin["row"]
         if row["status"] in {"completed", "running", "launching", "reconciliation_required"} or not _pre_effect(root, row):
             continue
         if configured["status"] == "selected" and not _quote_current(configured) and row["status"] in {
@@ -176,12 +209,12 @@ def _unchanged(old: Mapping[str, Any], new: Mapping[str, Any], *, expectations=N
                 raise ValueError("beta_screening_refresh_new_configuration_identity_required")
 
 
-def _remaining(ledger, state, selected) -> Decimal:
+def _remaining(ledger, state, selected, *, origins=None) -> Decimal:
     from .beta_policy_screening_coordinator import SITE_LIMIT, _budget
     commitment = Decimal(_budget(ledger, state["site_id"])["committed_upper_bound_usd"])
-    transfer = sum((Decimal(row["attempt"]["maximum_cost_usd"])
-                    for key, row in state["candidates"].items() if key in selected
-                    and row.get("attempt", {}).get("reservation_status") == "reserved"), Decimal(0))
+    rows = {key: record["row"] for key, record in origins.items()} if origins is not None else state["candidates"]
+    transfer = sum((Decimal(rows[key]["attempt"]["maximum_cost_usd"]) for key in selected
+                    if rows[key].get("attempt", {}).get("reservation_status") == "reserved"), Decimal(0))
     return SITE_LIMIT - commitment + transfer
 
 
@@ -213,14 +246,15 @@ def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
             with _lock(root):
                 ledger = _ledger(root)
                 state = deepcopy(ledger["campaigns"][current_id])
+            origins = _origins(root, current, state, ledger, expectations=expectations)
             adoptions = {}
             for key, row in state["candidates"].items():
-                prior_id = row.get("prior_campaign_id")
-                prior = ledger["campaigns"].get(prior_id, {}).get("candidates", {}).get(key, {})
-                if prior_id and row["status"] == "blocked" and prior.get("status") == "completed":
-                    _unchanged(_plan(root, prior_id), current, expectations=expectations)
+                origin = origins[key]
+                prior = origin["row"]
+                if origin["campaign_id"] != current_id and prior["status"] == "completed":
                     adoptions[key] = {"status": "completed", "blockers": [],
-                        "summary": deepcopy(prior["summary"]), "adopted_from_campaign_id": prior_id}
+                        "summary": deepcopy(prior["summary"]),
+                        "adopted_from_campaign_id": prior.get("adopted_from_campaign_id", origin["campaign_id"])}
             if adoptions:
                 require_current_source(current["source"], site_id=current["site_id"])
                 with _lock(root):
@@ -231,7 +265,8 @@ def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
                     _changed(retained_state)
                     _save(root, ledger)
                     state = deepcopy(retained_state)
-            eligible = _eligible(root, current, state)
+                    origins = _origins(root, current, state, ledger, expectations=expectations)
+            eligible = _eligible(root, current, state, origins=origins)
             if not eligible:
                 return baseline
             checks = root / "refresh_checks"
@@ -271,7 +306,7 @@ def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
                 return {**baseline, "refresh_status": "fresh_cost_quote_required"}
             proposed = sum((Decimal(row["max_cost_usd"]) for row in fresh["candidates"]
                             if row["candidate_id"] in selected), Decimal(0))
-            if proposed > _remaining(ledger, state, selected):
+            if proposed > _remaining(ledger, state, selected, origins=origins):
                 return _budget_action(baseline)
             old_config = {row["candidate_id"]: row for row in current["candidates"]}
             # Historical selected descriptors retain the exact old receipt
@@ -295,19 +330,26 @@ def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
             # A crash can never expose adopted completed rows as new pending work.
             def transition(ledger, next_state):
                 old_state = ledger["campaigns"][current_id]
-                if proposed > _remaining(ledger, old_state, selected):
+                actual = _origins(root, current, old_state, ledger, expectations=expectations)
+                if (not selected <= _eligible(root, current, old_state, origins=actual)
+                        or any(actual[key]["campaign_id"] != origins[key]["campaign_id"] for key in selected)):
+                    raise ValueError("beta_screening_refresh_old_effect_state_changed")
+                if proposed > _remaining(ledger, old_state, selected, origins=actual):
                     raise ValueError("beta_screening_refresh_budget_action_required")
                 for key, old_row in old_state["candidates"].items():
                     if key in selected:
-                        if not _pre_effect(root, old_row):
-                            raise ValueError("beta_screening_refresh_old_effect_state_changed")
-                        if old_row.get("attempt"):
-                            old_row["attempt"]["reservation_status"] = "released"
+                        origin = actual[key]
+                        origin_row = origin["row"]
+                        if origin_row.get("attempt"):
+                            origin_row["attempt"]["reservation_status"] = "released"
+                        origin_row.update(status="deferred", blockers=["beta_screening_plan_superseded_unspent"], superseded_by=next_id)
+                        if origin["campaign_id"] != current_id:
+                            _changed(ledger["campaigns"][origin["campaign_id"]])
                         configured = next(row for row in fresh["candidates"] if row["candidate_id"] == key)
                         # Transfer the commitment in the same ledger replace;
                         # there is no zero-reservation window between plans.
                         next_state["candidates"][key].update(status="preparing",
-                            attempt=_new_attempt(fresh, configured))
+                            attempt=_new_attempt(fresh, configured), refreshed_from_campaign_id=origin["campaign_id"])
                         old_row.update(status="deferred", blockers=["beta_screening_plan_superseded_unspent"], superseded_by=next_id)
                         _changed(old_state)
                     elif old_row["status"] == "completed":
@@ -317,7 +359,7 @@ def maybe_refresh_campaign(*, queue_root: Path, base_campaign_id: str,
                     elif next_state["candidates"][key]["status"] == "pending":
                         next_state["candidates"][key] = {"status": "blocked",
                             "blockers": ["beta_screening_prior_attempt_not_retry_authority"],
-                            "prior_campaign_id": old_row.get("prior_campaign_id", current_id)}
+                            "prior_campaign_id": actual[key]["campaign_id"]}
                 next_state["refresh"] = {"generation": generation, "base_campaign_id": base_campaign_id,
                     "supersedes_campaign_id": current_id, "supersedes_plan_digest": current["plan_digest"],
                     "reason": "unspent_quote_or_availability_refresh", "recorded_at": _now()}
