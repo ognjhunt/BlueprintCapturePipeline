@@ -134,3 +134,55 @@ def test_index_cannot_select_an_arbitrary_capture_path(tmp_path):
                "capture_relative_path": "../../outside/scenes/site-x/captures/walkthrough-x"})
     roots, metrics = index.due(tmp_path, now=10, limit=1)
     assert roots == [] and metrics["invalid_hint_count"] == 1
+
+
+def test_source_lookup_outage_backs_off_without_monopolizing_healthy_callback(tmp_path, monkeypatch):
+    now = 100000.0
+    broken, healthy = [_synthetic_pending(tmp_path, number, now=now) for number in range(2)]
+    calls = []
+    def retain(root):
+        if root == broken:
+            raise TimeoutError("private current-source lookup failure")
+    monkeypatch.setattr(status, "retain_preparation_wakeup", retain)
+    monkeypatch.setattr(status, "read_preparation_status", _synthetic_status)
+    def receive(*, capture_id, **_):
+        calls.append(capture_id)
+        assert capture_id == healthy.name
+        return _synthetic_ack(healthy)
+    monkeypatch.setattr(context, "website_webapp_request", receive)
+    for tick in range(3):
+        status.reconcile_preparation_wakeups(tmp_path, limit=1, now_epoch=now + tick)
+    assert calls == [healthy.name]
+    failed = json.loads((broken / status.DELIVERY_FILE).read_text())
+    assert failed["state"] == "pending" and failed["next_attempt_at_epoch"] > now + 2
+    assert failed["delivery_attempt_count"] == 0 and failed["delivery_failure_count"] == 1
+    assert failed["last_error_type"] == "TimeoutError"
+    assert "private current-source" not in json.dumps(failed)
+
+
+def test_already_due_retry_is_not_starved_by_five_new_pending_revisions(tmp_path, monkeypatch):
+    now = 100000.0
+    retry = _synthetic_pending(tmp_path, 0, now=now)
+    delivery = json.loads((retry / status.DELIVERY_FILE).read_text())
+    delivery.update(delivery_attempt_count=1, next_attempt_at_epoch=now - 1)
+    write_json(retry / status.DELIVERY_FILE, delivery)
+    index.update(retry, delivery)
+    roots = {retry.name: retry}
+    calls = []
+    monkeypatch.setattr(status, "retain_preparation_wakeup", lambda root: None)
+    monkeypatch.setattr(status, "read_preparation_status", _synthetic_status)
+    def receive(*, capture_id, **_):
+        calls.append(capture_id)
+        return _synthetic_ack(roots[capture_id])
+    monkeypatch.setattr(context, "website_webapp_request", receive)
+    for tick in range(5):
+        fresh = _synthetic_pending(tmp_path, tick + 1, now=now + tick)
+        fresh_delivery = json.loads((fresh / status.DELIVERY_FILE).read_text())
+        fresh_delivery["pending_since_epoch"] = now + tick
+        write_json(fresh / status.DELIVERY_FILE, fresh_delivery)
+        index.update(fresh, fresh_delivery)
+        roots[fresh.name] = fresh
+        status.reconcile_preparation_wakeups(tmp_path, limit=1, now_epoch=now + tick)
+    assert calls[0] == retry.name
+    assert len(set(calls)) == 5
+    assert json.loads((retry / status.DELIVERY_FILE).read_text())["state"] == "delivered"

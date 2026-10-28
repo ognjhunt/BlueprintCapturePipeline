@@ -102,7 +102,11 @@ def due(storage_root: Path, *, now: float, limit: int) -> tuple[list[Path], dict
                     raise ValueError("invalid")
                 next_attempt = _number(hint.get("next_attempt_at_epoch"), 0.0)
                 if next_attempt <= now:
-                    rows.append((next_attempt, _number(hint.get("pending_since_epoch"), now), root))
+                    pending_since = _number(hint.get("pending_since_epoch"), now)
+                    # Zero means immediately eligible, not older than every
+                    # retained retry. Compare real eligibility times so a
+                    # stream of new revisions cannot starve an already-due one.
+                    rows.append((max(next_attempt, pending_since), pending_since, root))
             except (OSError, ValueError, KeyError, TypeError):
                 invalid += 1
     rows.sort(key=lambda row: (row[0], row[1], str(row[2])))

@@ -22,6 +22,12 @@ acknowledge them. A corrupt cursor restarts only historical repair. Repair
 after a complete lost index is incremental and is not covered by the two-tick
 healthy-index latency target.
 
+The worker loads canonical pending delivery before refreshing current source,
+so source-lookup failure receives the same bounded backoff as transport failure.
+Eligible work is ordered by its actual eligibility time (the later of pending
+creation and retry deadline). An immediate-zero deadline does not outrank every
+already-due retry. This preserves aging without skipping retry backoff.
+
 The existing listener writes `.website_preparation_delivery_metrics.json` with
 due backlog/age, measured successful delivery lag, actual attempts and failures,
 repair work and explicit overload or hint-scan truncation. The hint scan is

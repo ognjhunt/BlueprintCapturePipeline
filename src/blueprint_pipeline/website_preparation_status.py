@@ -380,8 +380,12 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
         path = root / DELIVERY_FILE
         attempted = False
         try:
+            # Retain the canonical pending record before a current-source
+            # lookup can fail. Its failure backoff must not monopolize a small
+            # dispatch budget or leave unrelated healthy callbacks unvisited.
+            if path.is_file():
+                delivery = _read(path)
             retain_preparation_wakeup(root)
-            path = root / DELIVERY_FILE
             if not path.is_file():
                 continue
             delivery = _read(path)
@@ -434,7 +438,7 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
             counts["unavailable"] += 1
             # Source/control outages also back off. This changes no authority,
             # and cannot acknowledge or overwrite a concurrent newer revision.
-            if delivery is not None:
+            if delivery is not None and delivery.get("state") == "pending":
                 try:
                     with _existing_job_ledger_lock(root) as lock_state:
                         if lock_state == "ledger_present" and _read(path) == delivery:
