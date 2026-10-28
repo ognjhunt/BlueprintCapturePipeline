@@ -32,13 +32,20 @@ class Prim:
 
 
 class Adapter(IsaacEpisodeAdapter):
-    def __init__(self):
-        pass
+    def __init__(self, built):
+        self._env = built.env
+        self._camera_scene_names = dict(built.camera_scene_names)
 
     def read_control_observation_metadata(self):
+        camera = self._env.unwrapped.scene[self._camera_scene_names["external"]]
+        rgb = camera.data.output["rgb"][0]
         return {"timestamp_ns": 0, "simulation_time_s": 0.,
-                "calibrations": {"external": {"camera_model": "pinhole", "resolution": [5, 5]}},
+                "calibrations": {"external": {"camera_model": "pinhole",
+                    "resolution": [rgb.shape[1], rgb.shape[0]],
+                    "intrinsic_matrix": camera.data.intrinsic_matrices[0].tolist()}},
                 "synchronizations": {"external": {"host_bytes_ready": True,
+                    "sensor_freshness": {"status": "observed", "frame_index": int(camera.frame[0]),
+                        "reset_generation": 3, "control_step_index": 0},
                     "render": {"reset_generation": 3, "control_step_index": 0}}}}
 
 
@@ -110,7 +117,7 @@ def test_depth_conversion_refuses_invalid_calibration_or_samples(case):
 def test_six_readbacks_keep_representations_and_native_values_distinct(monkeypatch):
     built, selectors, camera = fixture(monkeypatch)
     before = camera.data.output["distance_to_camera"].copy()
-    capture = built.read_site_task_metrology(selectors=selectors, episode_adapter=Adapter())
+    capture = built.read_site_task_metrology(selectors=selectors, episode_adapter=Adapter(built))
     report, values = capture.report, capture.report["values"]
     assert set(report["dimensions"]) == {"scale", "registration", "collision", "task_state", "observation", "task_dynamics"}
     assert report["complete_native_dimensions"] is True
@@ -127,10 +134,10 @@ def test_six_readbacks_keep_representations_and_native_values_distinct(monkeypat
 
 def test_rgb_only_shift_changes_observed_association_with_collision_and_depth_fixed(monkeypatch):
     built, selectors, camera = fixture(monkeypatch)
-    first = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter())
+    first = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter(built))
     camera.data.output["rgb"][:] = 0
     camera.data.output["rgb"][0, 2, 2:5] = [255, 0, 0]
-    second = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter())
+    second = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter(built))
     assert first.report["values"]["collision_bounds_m"] == second.report["values"]["collision_bounds_m"]
     assert np.array_equal(first.rgbd["policy"]["depth_m"], second.rgbd["policy"]["depth_m"])
     assert first.report["values"]["rendered_rgbd"]["policy"]["pixels"] == [[1, 2], [3, 2]]
@@ -202,7 +209,7 @@ def test_droid_binding_changes_only_verified_spawn_path_and_rechecks_generation(
 
 def test_retained_capture_keeps_original_range_and_derived_depth_hashes(tmp_path, monkeypatch):
     built, selectors, _ = fixture(monkeypatch)
-    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter())
+    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter(built))
     report = native.retain_native_metrology(capture, tmp_path / "capture")
     record = report["render_artifacts"]["policy"]
     data = (tmp_path / "capture" / record["path"]).read_bytes()
@@ -225,7 +232,7 @@ def test_retention_refuses_unsafe_render_names_before_writing(tmp_path):
 
 def test_retained_directory_replacement_cannot_escape_anchored_writer(tmp_path, monkeypatch):
     built, selectors, _ = fixture(monkeypatch)
-    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter())
+    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter(built))
     target, moved, outside = tmp_path / "capture", tmp_path / "moved", tmp_path / "outside"
     outside.mkdir()
     (outside / "policy.npz").write_bytes(b"outside-original")
@@ -245,13 +252,13 @@ def test_retained_directory_replacement_cannot_escape_anchored_writer(tmp_path, 
 def test_native_background_missing_depth_is_retained_but_feature_depth_must_exist(monkeypatch):
     built, selectors, camera = fixture(monkeypatch)
     camera.data.output["distance_to_camera"][0, 0, 0, 0] = np.inf
-    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter())
+    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter(built))
     assert capture.report["dimensions"]["observation"]["status"] == "observed"
     assert np.isinf(capture.rgbd["policy"]["original_depth"][0, 0])
     assert capture.rgbd["policy"]["depth_m"][0, 0] == 0
     assert not capture.rgbd["policy"]["valid_depth"][0, 0]
     camera.data.output["distance_to_camera"][0, 2, 1, 0] = np.inf
-    refused = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter())
+    refused = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter(built))
     assert refused.report["dimensions"]["observation"] == {
         "status": "unproven", "reason": "native_metrology_native_depth_feature_missing"}
 
@@ -291,15 +298,69 @@ def test_serialized_default_model_cannot_reach_native_builder(monkeypatch):
 def test_reset_generation_change_cannot_make_complete_native_capture(monkeypatch):
     built, selectors, _ = fixture(monkeypatch)
     class Changed(Adapter):
-        def __init__(self):
+        def __init__(self, built):
+            super().__init__(built)
             self.calls = 0
         def read_control_observation_metadata(self):
             self.calls += 1
             metadata = super().read_control_observation_metadata()
             metadata["synchronizations"]["external"]["render"]["reset_generation"] = self.calls
             return metadata
-    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Changed())
+    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Changed(built))
     assert capture.report["complete_native_dimensions"] is False
     assert capture.report["reset_render_generation"] == {"status": "unproven",
         "reason": "native_reset_render_generation_missing_or_changed"}
     assert capture.report["runtime_open_proven"] is False
+
+
+@pytest.mark.parametrize("same_environment", [False, True])
+def test_real_episode_metadata_must_attest_selected_native_camera(monkeypatch, same_environment):
+    from tests.test_adp009d_isaac_episode_adapter import _Env, _adapter
+    built, selectors, _ = fixture(monkeypatch)
+    other = _Env(channels=3)
+    adapter = _adapter(other, simulation_step_seconds=1 / 15)
+    if same_environment:
+        built.env.unwrapped.scene.update(other.unwrapped.scene)
+        built.env.unwrapped.device = "cpu"
+        built.env.unwrapped.sim = other.unwrapped.sim
+        adapter._env = built.env
+    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=adapter)
+    assert capture.report["complete_native_dimensions"] is False
+    assert capture.report["dimensions"]["observation"]["status"] == "unproven"
+    assert capture.rgbd == {}
+    assert capture.report["runtime_open_proven"] is False
+
+
+@pytest.mark.parametrize("field", ["resolution", "intrinsic_matrix", "frame_index"])
+def test_camera_metadata_must_match_the_actual_retained_buffers(monkeypatch, field):
+    built, selectors, _ = fixture(monkeypatch)
+    class Mismatched(Adapter):
+        def read_control_observation_metadata(self):
+            value = super().read_control_observation_metadata()
+            if field == "frame_index":
+                value["synchronizations"]["external"]["sensor_freshness"][field] += 1
+            elif field == "resolution":
+                value["calibrations"]["external"][field] = [1280, 720]
+            else:
+                value["calibrations"]["external"][field][0][0] = 1000.
+            return value
+    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Mismatched(built))
+    assert capture.report["dimensions"]["observation"] == {
+        "status": "unproven", "reason": "native_metrology_native_camera_metadata_mismatch"}
+    assert capture.report["complete_native_dimensions"] is False
+    assert capture.rgbd == {}
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, OSError])
+def test_native_stage_getter_failures_keep_sanitized_partial_readbacks(monkeypatch, failure):
+    built, selectors, _ = fixture(monkeypatch)
+    def unavailable():
+        raise failure("private-source/path token=synthetic-marker")
+    monkeypatch.setattr(native, "_stage", unavailable)
+    capture = native.read_rigid_native_metrology(built, selectors=selectors, episode_adapter=Adapter(built))
+    assert capture.report["complete_native_dimensions"] is False
+    assert all(capture.report["dimensions"][name]["status"] == "unproven"
+               for name in ("scale", "registration", "collision", "task_state"))
+    assert capture.report["dimensions"]["task_dynamics"]["status"] == "observed"
+    assert "private-source" not in json.dumps(capture.report)
+    assert "synthetic-marker" not in json.dumps(capture.report)

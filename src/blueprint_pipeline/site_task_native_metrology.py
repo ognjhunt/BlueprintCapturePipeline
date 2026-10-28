@@ -234,13 +234,30 @@ def _dynamics(built, selections):
     return masses, raw
 
 
-def _camera(built, adapter, selector):
+def _bound_adapter(built, adapter):
     from .adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
     _require(isinstance(adapter, IsaacEpisodeAdapter), "native_episode_adapter_required")
-    role = selector["camera_role"]
-    _require(role in built.camera_scene_names, "native_camera_unavailable")
-    metadata = adapter.read_control_observation_metadata()
+    adapter_env = getattr(adapter, "_env", None)
+    _require(adapter_env is not None and adapter_env.unwrapped is built.env.unwrapped,
+             "native_episode_environment_mismatch")
+
+
+def _bound_camera(built, adapter, role):
+    _bound_adapter(built, adapter)
+    names = getattr(adapter, "_camera_scene_names", None)
+    _require(isinstance(names, Mapping) and role in names and role in built.camera_scene_names,
+             "native_camera_unavailable")
     camera = built.env.unwrapped.scene[built.camera_scene_names[role]]
+    _require(adapter._env.unwrapped.scene[names[role]] is camera,
+             "native_episode_camera_mismatch")
+    return camera
+
+
+def _camera(built, adapter, selector):
+    role = selector["camera_role"]
+    camera = _bound_camera(built, adapter, role)
+    metadata = adapter.read_control_observation_metadata()
+    _require(_bound_camera(built, adapter, role) is camera, "native_episode_camera_mismatch")
     before = _array(camera.frame)
     output = camera.data.output
     rgb = _array(output["rgb"])[0]
@@ -267,6 +284,15 @@ def _camera(built, adapter, selector):
              and all(type(sync["render"].get(key)) is int and sync["render"][key] >= 0
                      for key in ("reset_generation", "control_step_index")),
              "native_render_generation_unproven")
+    freshness = sync.get("sensor_freshness")
+    _require(isinstance(freshness, Mapping) and freshness.get("status") == "observed"
+             and type(freshness.get("frame_index")) is int and before.size == 1
+             and freshness["frame_index"] == before.reshape(-1)[0]
+             and all(freshness.get(key) == sync["render"][key]
+                     for key in ("reset_generation", "control_step_index"))
+             and calibration.get("resolution") == [rgb.shape[1], rgb.shape[0]]
+             and np.array_equal(np.asarray(calibration.get("intrinsic_matrix")), k),
+             "native_camera_metadata_mismatch")
     valid_depth = np.isfinite(original) & (original > 0)
     return {"rgb": rgb, "depth_m": depth, "intrinsics": k, "original_depth": original,
             "valid_depth": valid_depth}, {
@@ -278,9 +304,8 @@ def _camera(built, adapter, selector):
         "calibration": dict(calibration), "synchronization": dict(sync)}
 
 
-def _capture_epoch(adapter):
-    from .adp009d_isaac_episode_adapter import IsaacEpisodeAdapter
-    _require(isinstance(adapter, IsaacEpisodeAdapter), "native_episode_adapter_required")
+def _capture_epoch(built, adapter):
+    _bound_adapter(built, adapter)
     metadata = adapter.read_control_observation_metadata()
     syncs = metadata.get("synchronizations")
     _require(isinstance(syncs, Mapping) and 1 <= len(syncs) <= 8, "native_render_generation_unproven")
@@ -408,12 +433,12 @@ def read_rigid_native_metrology(built: NativeTaskArenaEnvironment, *, selectors:
               "model_open_status": {"status": "unproven", "reason": "native_dependency_open_receipts_unavailable"}}
     values, status, frames = report["values"], report["dimensions"], {}
     try:
-        epoch_before = _capture_epoch(episode_adapter)
+        epoch_before = _capture_epoch(built, episode_adapter)
     except (NativeMetrologyError, ImportError, AttributeError, KeyError, TypeError, ValueError, RuntimeError, OSError):
         epoch_before = None
     try:
         stage = _stage()
-    except (ImportError, AttributeError, NativeMetrologyError):
+    except (ImportError, AttributeError, NativeMetrologyError, RuntimeError, OSError):
         stage = None
     def observe(dimension, callback):
         try:
@@ -468,7 +493,7 @@ def read_rigid_native_metrology(built: NativeTaskArenaEnvironment, *, selectors:
                            ("task_state", task_state), ("observation", observation), ("task_dynamics", dynamics)):
         observe(name, callback)
     try:
-        epoch_after = _capture_epoch(episode_adapter)
+        epoch_after = _capture_epoch(built, episode_adapter)
     except (NativeMetrologyError, ImportError, AttributeError, KeyError, TypeError, ValueError, RuntimeError, OSError):
         epoch_after = None
     stable_epoch = epoch_before is not None and epoch_before == epoch_after
