@@ -47,7 +47,7 @@ def test_summary_publication_anchors_parent_during_replacement(tmp_path: Path, m
             swapped = True
 
     def open_at(name, flags, *args, **kwargs):
-        if boundary == "create" and isinstance(name, str) and name.startswith(".preflight-summary-"):
+        if boundary == "create" and isinstance(name, (str, os.PathLike)) and Path(name).name.startswith(".preflight-summary-"):
             swap()
         return original_open(name, flags, *args, **kwargs)
 
@@ -79,7 +79,7 @@ def test_door_parent_replacement_cannot_read_through_outside_symlink(tmp_path: P
 
     def open_at(name, flags, *args, **kwargs):
         nonlocal swapped
-        if name == "summary.json" and not swapped:
+        if isinstance(name, (str, os.PathLike)) and Path(name).name == "summary.json" and not swapped:
             public.rename(tmp_path / "moved")
             public.symlink_to(outside, target_is_directory=True)
             swapped = True

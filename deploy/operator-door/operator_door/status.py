@@ -168,7 +168,11 @@ def _anchored_summary_bytes(path: Path, limit: int) -> bytes:
     """Walk from a directory FD; no component is ever reopened by full path."""
     if not path.is_absolute() or ".." in path.parts or not path.name:
         raise PreflightSummaryRefused("preflight_summary_path_invalid")
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    # Linux O_PATH permits an anchored walk through execute-only preflight
+    # parents without granting directory listing. Other platforms fail closed
+    # if their available search/read flags cannot open the configured ancestor.
+    search = getattr(os, "O_PATH", getattr(os, "O_SEARCH", os.O_RDONLY))
+    flags = search | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     directories: list[tuple[int | None, str, int]] = []
     descriptor = None
 
