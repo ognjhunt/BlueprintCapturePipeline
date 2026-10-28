@@ -234,7 +234,10 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
     try:
         context = load_current_website_task_context(request_id=job["request_id"], scene_id=job["scene_id"],
                                                     capture_id=job["capture_id"], purpose="scene_preparation")
-        result = run_atlas_pipeline(source_video=capture_root / job["source_video"], output_root=job_dir,
+        from .website_recording_sources import resolve_recording_video
+        video = resolve_recording_video(task_context=context, capture_root=capture_root,
+            source_video=capture_root / job["source_video"])
+        result = run_atlas_pipeline(source_video=video, output_root=job_dir,
                                     task_context=context, max_polls=1, checkpoint=checkpoint)
         if result["status"] == "processing":
             return _transition(job, current, "processing", None, stage=result["stage"], transient_failures=0,

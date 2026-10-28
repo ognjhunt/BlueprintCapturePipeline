@@ -1,0 +1,104 @@
+{
+  "development_only": true,
+  "brief": {
+    "requestId": "req1",
+    "summary": "Move the carton",
+    "confirmedAtIso": "2026-10-06T00:00:00Z",
+    "operatorAnswers": {},
+    "operatorUnknown": []
+  },
+  "rights": {
+    "derived_scene_generation_allowed": true,
+    "data_licensing_allowed": false,
+    "capture_contributor_payout_eligible": false,
+    "consent_status": "granted",
+    "consent_revoked": false,
+    "consent_scope": [
+      "derived_scene_generation",
+      "robot_evaluation"
+    ],
+    "statement_version": "2026-09-18.v1",
+    "recorded_at_iso": "2026-10-06T00:00:00Z"
+  },
+  "context": {
+    "schema_version": "website_site_task_context.v1",
+    "request_id": "req1",
+    "scene_id": "site-req1",
+    "capture_id": "supplement-81312d3867fcb1c3abdfa6c8b936cc3e7e70002b",
+    "description": "Move the carton",
+    "confirmed": true,
+    "confirmed_at": "2026-10-06T00:00:00Z",
+    "operator_answers": {},
+    "unresolved": [],
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "2026-09-18.v1",
+      "recorded_at_iso": "2026-10-06T00:00:00Z"
+    },
+    "capture_binding": {
+      "schema_version": "website_capture_continuation.v2",
+      "original_capture_id": "walkthrough-req1",
+      "capture_id": "supplement-81312d3867fcb1c3abdfa6c8b936cc3e7e70002b",
+      "lineage": [
+        {
+          "supplement": {
+            "parent_capture_id": "walkthrough-req1",
+            "parent_bundle_digest": "sha256:b68b43bab5f45bc403eccb7cd1304159bf791b262b5fb6e7fa5e3e710647501d",
+            "parent_manifest_uri": "gs://synthetic/scenes/site-req1/captures/walkthrough-req1/raw/manifest.json",
+            "coverage_digest": "109abff1bd19e8f33908fd59d5000d6c020e20b5201d47da9126c479e8c7b8e3",
+            "recording_scope": "additional_views"
+          },
+          "child": {
+            "capture_id": "supplement-81312d3867fcb1c3abdfa6c8b936cc3e7e70002b",
+            "raw_bundle_digest": "sha256:c249d84a214ac1fb8fdbbbbb619266a94a331e5804c0b65fcf885a0c48fbd709",
+            "raw_manifest_uri": "gs://synthetic/scenes/site-req1/captures/supplement-81312d3867fcb1c3abdfa6c8b936cc3e7e70002b/raw/manifest.json",
+            "upload_completion_digest": "sha256:b75171b4d859695d96ef942c9d7314d518d15f2136787f4a3ac149a85e06830a",
+            "verification_status": "pending_pipeline_storage_readback",
+            "completion_generation": "123",
+            "completion_record_generation": "123",
+            "manifest_generation": "123",
+            "raw_video": {
+              "object_name": "scenes/site-req1/captures/supplement-81312d3867fcb1c3abdfa6c8b936cc3e7e70002b/raw/walkthrough.mov",
+              "generation": "123",
+              "size_bytes": 9,
+              "crc32c": "AAAAAA==",
+              "sha256": "sha256:b3cc0475bb78a5026098858e9889acf666d31062d513d303314eca31d36e72f2"
+            }
+          },
+          "parent": {
+            "capture_id": "walkthrough-req1",
+            "raw_bundle_digest": "sha256:b68b43bab5f45bc403eccb7cd1304159bf791b262b5fb6e7fa5e3e710647501d",
+            "raw_manifest_uri": "gs://synthetic/scenes/site-req1/captures/walkthrough-req1/raw/manifest.json",
+            "upload_completion_digest": "sha256:924c4ff48113d552556c901b97e5d339c405c8d72c6ad8a38707a96552779537",
+            "verification_status": "pending_pipeline_storage_readback",
+            "completion_generation": "123",
+            "completion_record_generation": "123",
+            "manifest_generation": "123",
+            "raw_video": {
+              "object_name": "scenes/site-req1/captures/walkthrough-req1/raw/walkthrough.mov",
+              "generation": "123",
+              "size_bytes": 9,
+              "crc32c": "AAAAAA==",
+              "sha256": "sha256:b3cc0475bb78a5026098858e9889acf666d31062d513d303314eca31d36e72f2"
+            }
+          },
+          "recording_scope": "additional_views"
+        }
+      ],
+      "recording_capture_ids": [
+        "walkthrough-req1",
+        "supplement-81312d3867fcb1c3abdfa6c8b936cc3e7e70002b"
+      ],
+      "coordinate_frames_independent": true
+    },
+    "context_digest": "sha256:a818204e35c93454594bd36ba8e3af2f0ae0f89d7ae2c5a9dc0c44af8739806d"
+  }
+}

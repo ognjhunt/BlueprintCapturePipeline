@@ -303,6 +303,37 @@ def test_supplemental_owner_observation_retains_same_job_lineage_and_new_source(
         capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"]) == value
 
 
+@pytest.mark.parametrize("fault", [None, "drop_original", "wrong_selected_video", "downgrade"])
+def test_added_view_owner_observation_binds_both_sources_and_the_delivered_clip(fault):
+    from copy import deepcopy
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+    value = supplemental_observation()
+    binding = value["capture_binding"]
+    binding["schema_version"] = "website_capture_continuation.v2"
+    entry = binding["lineage"][0]
+    entry["recording_scope"] = entry["supplement"]["recording_scope"] = "additional_views"
+    for source in (entry["child"], entry["parent"]):
+        source["raw_video"] = {**deepcopy(value["producer_delivery"]["raw_video"]),
+            "object_name": f"scenes/{value['scene_id']}/captures/{source['capture_id']}/raw/walkthrough.mov"}
+    binding["recording_capture_ids"] = [entry["parent"]["capture_id"], value["capture_id"]]
+    if fault == "drop_original":
+        binding["recording_capture_ids"] = [value["capture_id"]]
+    elif fault == "wrong_selected_video":
+        entry["child"]["raw_video"]["generation"] = "1"
+    elif fault == "downgrade":
+        binding["schema_version"] = "website_capture_continuation.v1"
+        binding.pop("recording_capture_ids")
+        entry.pop("recording_scope")
+    seal_supplemental_observation(value)
+    if fault:
+        with pytest.raises(ValueError):
+            validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"], capture_id=value["capture_id"],
+                marker_generation=value["completion_marker"]["generation"])
+    else:
+        assert validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"], capture_id=value["capture_id"],
+            marker_generation=value["completion_marker"]["generation"]) == value
+
+
 @pytest.mark.parametrize("fault", ["missing", "cross_job", "wrong_marker", "wrong_source", "changed_parent", "cycle"])
 def test_supplemental_owner_observer_refuses_unbound_lineage_even_with_resealed_envelope(fault):
     from blueprint_pipeline.capture_original_owner_observer import validate_observation

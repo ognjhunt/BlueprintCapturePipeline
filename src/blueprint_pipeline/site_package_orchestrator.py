@@ -4426,9 +4426,14 @@ def run_qualification_pipeline(
                 load_task_context=load_current_website_task_context, load_sponsorship=load_website_scene_sponsorship)
             stage = "website_scene_preparation"
             from .website_capture_preparation import run_website_capture_preparation
+            from .website_recording_sources import resolve_recording_video
+            website_video = resolve_recording_video(
+                task_context=descriptor.metadata["site_task_context"], capture_root=capture_root,
+                source_video=_resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root), bucket=bucket,
+            )
             return run_website_capture_preparation(
                 descriptor=descriptor, capture_root=capture_root, pipeline_dir=pipeline_dir,
-                source_video=_resolve_optional_uri_to_path(descriptor.raw_video_uri, storage_root),
+                source_video=website_video,
                 derived_scene_generation_allowed=_worldlabs_derived_rights_allowed(metadata=descriptor.metadata),
                 gates=gates, prepare_media=run_clean_plate_stage,
                 check_privacy=_privacy_postprocess_gate, make_gate=QualificationGate,

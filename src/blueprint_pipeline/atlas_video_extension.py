@@ -67,6 +67,8 @@ def extend_survey(*, source_video: Path, base_survey: Path, decoded_index: Path,
         raise ValueError("atlas_static_interval_invalid")
     if _sha256_file(source_video) != survey["source_video_digest"] or index.get("video_digest") != survey["source_video_digest"]:
         raise ValueError("atlas_extension_source_changed")
+    from .website_recording_composition import load_composition, frame_provenance
+    composition = load_composition(source_video, survey["source_video_digest"])
     times = index["decoded_presentation_times_seconds"]
     visible = {int(row["frame_id"].split("-")[-1]) for row in survey["frames"]}
     indexed_visible = {int(row["frame_id"].split("-")[-1]) for row in index["sampled_frames"]}
@@ -106,17 +108,19 @@ def extend_survey(*, source_video: Path, base_survey: Path, decoded_index: Path,
     for identifier, timestamp, path in sorted(sources, key=lambda r: r[1]):
         with Image.open(path) as source:
             upright = source.convert("RGB").rotate(rotation, expand=True)
-            small = upright.copy()
+            provenance = frame_provenance(composition, timestamp)
+            content = upright.crop(provenance["source_content_bounds"]) if provenance else upright
+            small = content.copy()
             small.thumbnail((640, 640))
             gray = np.asarray(small.convert("L"))
             frames.append({"frame_id": identifier, "timestamp_seconds": timestamp,
                 "source_image_path": str(path), "source_image_digest": _sha256_file(path),
                 "sharpness": round(float(cv2.Laplacian(gray, cv2.CV_64F).var()), 4),
                 "clipped_fraction": round(float(np.mean((gray < 5) | (gray > 250))), 4),
-                "width": upright.width, "height": upright.height})
+                "width": upright.width, "height": upright.height, **provenance})
             tile = Image.new("RGB", (256, 170), "#181818")
-            upright.thumbnail((256, 144))
-            tile.paste(upright, (0, 0))
+            content.thumbnail((256, 144))
+            tile.paste(content, (0, 0))
             ImageDraw.Draw(tile).text((4, 148), f"{timestamp:.2f}s {identifier}", fill="white")
             tiles.append(tile)
     sheet = Image.new("RGB", (1280, math.ceil(len(tiles) / 5) * 170), "#181818")

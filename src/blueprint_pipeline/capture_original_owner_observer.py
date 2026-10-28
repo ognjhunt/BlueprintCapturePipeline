@@ -140,9 +140,12 @@ def _website_request_id(scene_id: str, capture_id: str) -> str:
 
 def _validate_continuation(value: Any, *, request_id: str, scene_id: str, capture_id: str,
                            bucket: str, marker_generation: str, marker_sha256: str, delivery: dict[str, Any]) -> None:
-    binding = _object(value, {"schema_version", "original_capture_id", "capture_id", "lineage", "coordinate_frames_independent"})
+    multiple = isinstance(value, dict) and value.get("schema_version") == "website_capture_continuation.v2"
+    binding = _object(value, {"schema_version", "original_capture_id", "capture_id", "lineage", "coordinate_frames_independent"}
+                      | ({"recording_capture_ids"} if multiple else set()))
     original = f"walkthrough-{request_id}"
-    if (binding["schema_version"] != "website_capture_continuation.v1" or binding["original_capture_id"] != original
+    if (binding["schema_version"] not in {"website_capture_continuation.v1", "website_capture_continuation.v2"}
+            or binding["original_capture_id"] != original
             or binding["capture_id"] != capture_id or binding["coordinate_frames_independent"] is not True
             or type(binding["lineage"]) is not list or not 1 <= len(binding["lineage"]) <= 8):
         _refuse("capture_owner_capture_identity_invalid")
@@ -150,9 +153,13 @@ def _validate_continuation(value: Any, *, request_id: str, scene_id: str, captur
     for index, row in enumerate(binding["lineage"]):
         if expected == original:
             _refuse("capture_owner_capture_identity_invalid")
-        row = _object(row, {"child", "parent", "supplement"})
+        row = _object(row, {"child", "parent", "supplement"} | ({"recording_scope"} if multiple else set()))
         child, parent = row["child"], row["parent"]
-        link = _object(row["supplement"], {"parent_capture_id", "parent_bundle_digest", "parent_manifest_uri", "coverage_digest"})
+        extra_scope = isinstance(row["supplement"], dict) and "recording_scope" in row["supplement"]
+        link = _object(row["supplement"], {"parent_capture_id", "parent_bundle_digest", "parent_manifest_uri", "coverage_digest"}
+                       | ({"recording_scope"} if extra_scope else set()))
+        if extra_scope and (not multiple or link["recording_scope"] != "additional_views"):
+            _refuse("capture_owner_source_invalid")
         if type(child) is not dict or type(parent) is not dict or child.get("capture_id") != expected or expected in seen:
             _refuse("capture_owner_capture_identity_invalid")
         if previous_parent is not None and previous_parent != child:
@@ -185,6 +192,16 @@ def _validate_continuation(value: Any, *, request_id: str, scene_id: str, captur
         expected, previous_parent = parent["capture_id"], parent
     if expected != original:
         _refuse("capture_owner_capture_identity_invalid")
+    if multiple:
+        from .website_recording_sources import recording_sources
+        try:
+            recording_sources(binding, request_id=request_id, scene_id=scene_id, capture_id=capture_id, bucket=bucket)
+            current_video = binding["lineage"][0]["child"].get("raw_video") or {}
+            if any(current_video.get(key) != delivery["raw_video"][key]
+                   for key in ("object_name", "generation", "size_bytes", "crc32c")):
+                _refuse("capture_owner_source_invalid")
+        except ValueError:
+            _refuse("capture_owner_source_invalid")
 
 
 def validate_observation(

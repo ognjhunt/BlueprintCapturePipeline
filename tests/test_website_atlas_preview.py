@@ -202,6 +202,26 @@ def test_a_routed_upload_becomes_an_archived_preview_and_leaves_nothing_at_world
     assert len(world.runs) == 2 and len(world.pushed) == 2
 
 
+def test_worker_resolves_current_observation_set_before_calling_reconstruction(monkeypatch, site):
+    from blueprint_pipeline import website_recording_sources as sources
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"}])
+    method = site.capture / "pipeline/combined-recordings.mp4"
+    method.write_bytes(b"derived observations")
+    calls = []
+
+    def resolve(**kwargs):
+        calls.append(kwargs)
+        assert not world.runs
+        assert kwargs["task_context"]["context_digest"] == "sha256:" + "c" * 64
+        return method
+
+    monkeypatch.setattr(sources, "resolve_recording_video", resolve)
+    assert world.advance() == "processing"
+    assert calls[0]["source_video"] == site.capture / "raw/walkthrough.mov"
+    assert world.runs[0]["source_video"] == method
+
+
 def test_rejected_background_without_download_waits_without_publishing_a_bundle(monkeypatch, site):
     _enqueue(site)
     world = World(monkeypatch, site, [{"status": "needs_input", "download": None,
