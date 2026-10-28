@@ -229,8 +229,10 @@ def run_allocator(argv: list[str], *, attempt: Path) -> int:
     """Run the canonical allocator for one attempt; its own watchdog survives this process."""
 
     invocation = attempt / "invocation/manifest.json"
-    if invocation.exists():
-        from .allocator_invocation import start_invocation
+    if invocation.exists() and "--execute" in argv:
+        from .allocator_invocation import start_invocation, manifest
+        if list(argv) != manifest(invocation)["argv"]:
+            raise ValueError("rigid_robot_free_probe_invocation_argv_mismatch")
         try:
             pid = start_invocation(invocation, log_path=attempt / "allocator.log")
         except OSError:

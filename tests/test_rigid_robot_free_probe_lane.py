@@ -653,6 +653,49 @@ def test_an_allocator_that_cannot_start_allocates_nothing_and_defers(tmp_path, m
     assert world["webapp_calls"] == [] and world["transport_calls"] == []
 
 
+def test_default_preflight_honors_dry_argv_with_paid_manifest_present(tmp_path, monkeypatch) -> None:
+    """Exercise the default wrapper, not the test hook that calls allocator.main."""
+    from blueprint_pipeline import allocator_invocation as jobs
+
+    world = build_world(tmp_path, monkeypatch)
+    commands = []
+
+    class DryProcess:
+        pid = 12345
+
+        def __init__(self, command, **kwargs):
+            commands.append(command)
+            assert command[1:3] == ["-m", "blueprint_pipeline.paid_resource_allocator"]
+            assert "--execute" not in command
+            self.code = allocator.main(command[3:])
+
+        def wait(self):
+            return self.code
+
+    monkeypatch.setattr(runner.subprocess, "Popen", DryProcess)
+    monkeypatch.setattr(jobs, "start_invocation", lambda *a, **k: pytest.fail("dry preflight started paid wrapper"))
+    result = runner.preflight_capture(world["capture"], scratch_dir=tmp_path / "scratch",
+                                      hooks={"source_commit": lambda: COMMIT})
+    attempt = Path(result["attempt_root"])
+    assert result["status"] == "ready" and len(commands) == 1
+    assert "--execute" in jobs.manifest(attempt / "invocation/manifest.json")["argv"]
+    assert not (attempt / "invocation/provider_create_intent.json").exists()
+    assert not (attempt / "allocator" / lane.FUNDING_FILENAME).exists()
+    assert world["webapp_calls"] == []
+    assert world["transport_calls"] and all(call["execute"] is False for call in world["transport_calls"])
+
+
+def test_default_paid_wrapper_requires_exact_retained_argv(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline import allocator_invocation as jobs
+
+    world = build_world(tmp_path, monkeypatch)
+    staged = staged_attempt(world)
+    monkeypatch.setattr(jobs, "start_invocation", lambda *a, **k: pytest.fail("changed paid arguments started"))
+    with pytest.raises(ValueError, match="invocation_argv_mismatch"):
+        runner.run_allocator(_with(staged["argv"], "--adp-max-spend-usd", "0.01"), attempt=staged["root"])
+    assert world["webapp_calls"] == [] and world["transport_calls"] == []
+
+
 def test_ingest_refuses_a_trace_that_is_not_this_requests(tmp_path, monkeypatch) -> None:
     world = build_world(tmp_path, monkeypatch)
     staged = staged_attempt(world)
