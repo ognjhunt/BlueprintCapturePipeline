@@ -18,7 +18,9 @@ from typing import Literal
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .atlas_automation_plan import AutomationPlan, AUTOMATION_INSTRUCTIONS, ScaleReference
+from .atlas_automation_plan import (
+    AutomationPlan, AUTOMATION_INSTRUCTIONS, ScaleReference, SubjectOrigin, PRESERVED_SCENE_ORIGINS,
+)
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
@@ -50,10 +52,15 @@ Keep a sharp view of the overall room as well as task close-ups. No pricing or
 provider actions are available to you. Return only the structured proposal."""
 
 SUBJECT_ORIGIN_INSTRUCTIONS = """
-Classify subject_origin from the owner's task and the observed frames. Use
-synthetic_design only when the task explicitly adds a new authored object that
+Classify subject_origin from the COMPLETE owner's task and the observed frames.
+Use no_manipulated_subject when the task needs no object moved, altered or added,
+such as navigating through or inspecting an environment. Cover the route, stopping
+area or inspection region as task_region; never invent a manipulated subject.
+Do not use this classification merely because a requested manipulated object is
+missing or unobserved. Preserve every operation in the original task.
+Use synthetic_design only when the task explicitly adds a new authored object that
 is absent from the capture. Do not choose a captured surrogate for that object.
-For synthetic_design, every captured object, support and obstacle must be kept;
+For synthetic_design and no_manipulated_subject, every captured object, support and obstacle must be kept;
 automation objects must all have disposition keep and removal_instruction must
 be empty. Cover the intended source/destination interaction areas with role
 task_region instead of pretending the synthetic object was photographed.
@@ -100,7 +107,7 @@ class SceneProposal(BaseModel):
     automation: AutomationPlan | None = None
     # None preserves retained pre-origin planner receipts. New scene reviews
     # explicitly classify origin; no synthetic geometry enters capture truth.
-    subject_origin: Literal["captured", "synthetic_design", "uncertain"] | None = None
+    subject_origin: SubjectOrigin | None = None
 
 
 class RefinementProposal(SceneProposal):
@@ -110,11 +117,11 @@ class RefinementProposal(SceneProposal):
 
 
 class CurrentSceneProposal(SceneProposal):
-    subject_origin: Literal["captured", "synthetic_design", "uncertain"]
+    subject_origin: SubjectOrigin
 
 
 class CurrentRefinementProposal(RefinementProposal):
-    subject_origin: Literal["captured", "synthetic_design", "uncertain"]
+    subject_origin: SubjectOrigin
 
 
 class SemanticSceneProposal(CurrentSceneProposal):
@@ -353,7 +360,7 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                         or row.get("clipped_fraction", 0) > thresholds["maximum_clipped_fraction"]}
     excluded = (unsafe & selected) - quality_rejected
     roles = {r["role"] for r in value["coverage_requirements"]}
-    task_role = "task_region" if origin == "synthetic_design" else "task_object"
+    task_role = "task_region" if origin in PRESERVED_SCENE_ORIGINS else "task_object"
     if (not unsafe <= frames.keys() or not required <= selected
             or not additional <= selected or (required | additional) & unsafe
             or value["anchor_frame_id"] not in required or not {task_role, "surrounding_scene"} <= roles):
@@ -383,10 +390,11 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
                 or (value["action"] == "refine" and not (additional - set(feedback["prior_selected_frame_ids"])))):
             raise ValueError("atlas_refinement_state_or_selection_invalid")
     automation = value.get("automation")
-    if origin == "synthetic_design" and (
+    if origin in PRESERVED_SCENE_ORIGINS and (
             not automation or any(o["disposition"] != "keep" for o in automation["objects"])
             or automation["removal_instruction"].strip() or transient or "task_object" in roles):
-        raise ValueError("atlas_synthetic_subject_requires_preserved_capture")
+        raise ValueError("atlas_synthetic_subject_requires_preserved_capture" if origin == "synthetic_design"
+                         else "atlas_scene_requires_preserved_capture")
     if {k["target_id"] for k in kinds} & {o["target_id"] for o in (automation or {}).get("objects", [])}:
         raise ValueError("atlas_scene_planner_transients_invalid")
     if automation:
@@ -396,7 +404,7 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
             raise ValueError("atlas_automation_frames_not_selected")
     # Hold the required RGBD coverage aside before selecting pose inputs.
     # Buying posing alone must not consume the rest of the shared allowance.
-    if origin != "synthetic_design":
+    if origin not in PRESERVED_SCENE_ORIGINS:
         pose_budget = round(pose_budget - len(required) * policy["rgbd_view_cost_usd"], 6)
     if pose_budget < 2 * policy["pose_input_cost_usd"]:
         raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")

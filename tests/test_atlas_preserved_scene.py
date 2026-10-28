@@ -1,4 +1,4 @@
-"""Additive tasks reconstruct observed geometry without an editing side route."""
+"""Environment-preserving tasks never enter the object-removal side route."""
 from __future__ import annotations
 
 import json
@@ -18,13 +18,14 @@ from tests.test_website_atlas_scene_source import job_fixture, write, digest
 from tests.test_atlas_scene_planner import fixture as planner_fixture
 
 
-def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp_path, monkeypatch):
+@pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject"])
+def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp_path, monkeypatch, subject_origin):
     from blueprint_pipeline import atlas_video_inputs as inputs, website_atlas_pose as pose_api
     _, survey, proposal, policy = planner_fixture(tmp_path)
     video = tmp_path / "source.mov"
     video.write_bytes(b"fresh source")
     survey["source_video_digest"] = pipeline._sha256_file(video)
-    proposal.update(subject_origin="synthetic_design", automation={
+    proposal.update(subject_origin=subject_origin, automation={
         "scale_references": [], "objects": [], "removal_instruction": "", "mask_margin_fraction": .01})
     proposal["coverage_requirements"][0]["role"] = "task_region"
     policy["reviewed_on"] = datetime.now(timezone.utc).date().isoformat()
@@ -41,17 +42,37 @@ def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp
     for name in ("run_sponsored_website_atlas_task", "run_sponsored_website_atlas_automation",
                  "run_sponsored_website_atlas_pose"):
         monkeypatch.setattr(allocator, name, lambda **kw: pytest.fail("Legacy editing/generation route was entered"))
-    result = pipeline.run_atlas_pipeline(source_video=video, output_root=tmp_path / "job",
-        task_context={"capture_id": "fresh", "context_digest": "task"})
+    context = {"capture_id": "fresh", "context_digest": "task", "description":
+        "Navigate from the near end of the visible aisle to a stopping point before the end bookshelf, "
+        "avoiding contact with the shelves on either side."}
+    result = pipeline.run_atlas_pipeline(source_video=video, output_root=tmp_path / "job", task_context=context)
     assert result["status"] == "processing" and len(routed) == 1
-    assert routed[0]["review"]["subject_origin"] == "synthetic_design"
-    assert routed[0]["task_context"]["capture_id"] == "fresh"
+    assert routed[0]["review"]["subject_origin"] == subject_origin
+    assert routed[0]["task_context"] == context
+
+
+@pytest.mark.parametrize("tamper", ["remove", "instruction", "transient"])
+def test_cached_environment_plan_cannot_enter_paid_pose_after_an_edit_is_injected(tmp_path, monkeypatch, tamper):
+    review = {"subject_origin": "no_manipulated_subject", "automation": {
+        "objects": [{"disposition": "keep"}], "removal_instruction": ""}}
+    if tamper == "remove":
+        review["automation"]["objects"][0]["disposition"] = "remove"
+    elif tamper == "instruction":
+        review["automation"]["removal_instruction"] = "Erase the shelves"
+    else:
+        review["transient_frame_ids"] = ["person-in-view"]
+    monkeypatch.setattr(pipeline, "_source_pose", lambda **kw: pytest.fail("Invalid plan reached paid pose"))
+    with pytest.raises(ValueError, match="atlas_scene_requires_preserved_capture"):
+        pipeline._preserved_scene(pose_root=tmp_path, output_root=tmp_path, inputs={}, review=review,
+            policy={}, task_context={}, source_digest="source", configuration={}, check=lambda _: None,
+            experimental=False, max_polls=1, model="test")
 
 
 @pytest.mark.parametrize("source_status", ["processing", "needs_input", "completed"])
 @pytest.mark.parametrize("cached_splat", [False, True])
+@pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject"])
 def test_preserved_reconstruction_exports_observations_and_never_buys_appearance(
-        tmp_path, monkeypatch, source_status, cached_splat):
+        tmp_path, monkeypatch, source_status, cached_splat, subject_origin):
     pose_root = tmp_path / "pose"
     source_root = pose_root / "full-view-source-v1"
     source_root.mkdir(parents=True)
@@ -59,7 +80,7 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
     (source_root / "atlas_posed_rgbd_result.json").write_text(json.dumps(pose))
     (source_root / "scene_measurements.json").write_text("{}")
     (tmp_path / "atlas_scene_review.json").write_text("{}")
-    proposal = {"subject_origin": "synthetic_design", "automation": {
+    proposal = {"subject_origin": subject_origin, "automation": {
         "objects": [{"disposition": "keep"}], "removal_instruction": ""},
         "uncaptured_regions": ["unobserved underside"]}
     calls, exports, decodes = [], [], []
@@ -106,6 +127,7 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
         assert result["status"] == "processing" and calls == ["source_pose"] and not exports and not decodes
         return
     assert result["captured_scene_preserved"] is True
+    assert result["subject_origin"] == subject_origin
     assert result["image_inpainting_performed"] is False and result["object_removal_performed"] is False
     assert result["generated_completion_performed"] is False and result["simulation_qualified"] is False
     assert result["uncaptured_regions"] == ["unobserved underside"]
@@ -120,11 +142,12 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
 
 
 @pytest.mark.parametrize("tamper", [None, "removal", "pose"])
-def test_production_scene_handoff_accepts_preserved_geometry_without_fabricating_removal(tmp_path, tamper):
+@pytest.mark.parametrize("subject_origin", ["synthetic_design", "no_manipulated_subject"])
+def test_production_scene_handoff_accepts_preserved_geometry_without_fabricating_removal(tmp_path, tamper, subject_origin):
     root = job_fixture(tmp_path, same_pose=tamper != "pose")
     result = json.loads((root / "result.json").read_text())
     background = result.pop("automation")["background"]
-    result.update(subject_origin="synthetic_design", captured_scene_preserved=True,
+    result.update(subject_origin=subject_origin, captured_scene_preserved=True,
         object_removal_performed=tamper == "removal", image_inpainting_performed=False,
         generated_completion_performed=False, mesh_available=True, splat_manifest_digest=background["splat_manifest_digest"])
     shutil.move(root / "automation/background_splat", root / "splat")
@@ -137,6 +160,7 @@ def test_production_scene_handoff_accepts_preserved_geometry_without_fabricating
     else:
         value = scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
         assert value["status"] == "ready" and value["scene_content"] == "captured_scene_preserved"
+        assert value["subject_origin"] == subject_origin
         assert value["base_scene"]["anchor"]["basis"] == "same_atlas_pose"
         assert value["base_scene"]["scale_authority"] == "atlas_reference_estimate"
         assert not (root / "automation/background/prepared_background.json").exists()

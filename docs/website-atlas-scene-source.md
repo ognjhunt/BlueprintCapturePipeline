@@ -20,6 +20,17 @@ object-removal manifest is manufactured. Scale remains an estimate, and the
 handoff does not qualify the task, robot, synthetic asset or native physics.
 An uncertain origin or a conflicting edit plan refuses before reconstruction.
 
+Tasks that do not move, alter or add an object use the explicit
+`subject_origin: no_manipulated_subject` plan. Navigation and inspection can
+cover their route, stopping area or inspection region as `task_region`, alongside
+the wider scene, without inventing a task object. This uses the same preserved
+environment reconstruction and source handoff. Every observed object stays in
+place; removal, inpainting and transient-containing selected inputs are refused.
+An unobserved manipulated object is still uncertain, not a task without a subject.
+This enables beta scene preparation (ADP-040/050, day 28 dependency rehearsal);
+it provides no navigation policy, metric registration, native physics admission
+or successful episode evidence.
+
 ## What the job buys, in order
 
 For captured manipulated subjects, the existing replacement route is unchanged:

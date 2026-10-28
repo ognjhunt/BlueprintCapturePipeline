@@ -269,6 +269,7 @@ def test_a_missing_grant_waits_then_resumes_when_the_owner_grant_exists(monkeypa
     (ValueError("atlas_scene_subject_origin_changed"), "needs_input", "atlas_scene_subject_origin_changed"),
     (ValueError("atlas_synthetic_subject_requires_preserved_capture"), "needs_input",
      "atlas_synthetic_subject_requires_preserved_capture"),
+    (ValueError("atlas_scene_requires_preserved_capture"), "needs_input", "atlas_scene_requires_preserved_capture"),
     (ValueError("website_control_task-context_http_409:source_revoked"), "withdrawn", "website_capture_withdrawn"),
     (type("AtlasHttpError", (RuntimeError,), {"status": 403})("website_atlas_api_403:forbidden"), "failed",
      "website_atlas_api_403"),
