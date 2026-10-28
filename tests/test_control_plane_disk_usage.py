@@ -465,9 +465,11 @@ def test_unreadable_directories_are_counted_and_the_survey_completes(tmp_path, m
     base = tmp_path / "var/lib/blueprint"
     (base / "sub").mkdir(parents=True)
     real_scandir = os.scandir
+    denied = os.lstat(base / "sub")
 
     def failing_scandir(path):
-        if str(path).endswith("sub"):
+        opened = os.fstat(path) if isinstance(path, int) else os.lstat(path)
+        if (opened.st_dev, opened.st_ino) == (denied.st_dev, denied.st_ino):
             raise PermissionError("denied")
         return real_scandir(path)
 
@@ -546,9 +548,11 @@ def test_non_utf8_filename_is_escaped_in_the_report(tmp_path, monkeypatch):
     actual = base / "bad"
     actual.write_bytes(b"x")
     real_scandir = os.scandir
+    expected = os.lstat(base)
 
     def scandir(path):
-        if str(path) == str(base):
+        opened = os.fstat(path) if isinstance(path, int) else os.lstat(path)
+        if (opened.st_dev, opened.st_ino) == (expected.st_dev, expected.st_ino):
             return nullcontext([SimpleNamespace(name="bad-\udcff", path=str(actual),
                                                 stat=lambda **_kwargs: os.lstat(actual))])
         return real_scandir(path)
