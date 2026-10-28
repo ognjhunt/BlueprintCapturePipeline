@@ -702,6 +702,8 @@ def test_funding_response_loss_retains_exact_request_and_never_opens_new_attempt
     from blueprint_pipeline import allocator_invocation as jobs
     from blueprint_pipeline import probe_funding_recovery as recovery
     from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    # This fake server implements the new read-only observation contract.
+    monkeypatch.setenv(recovery.READBACK_ENV, "true")
 
     class SimulatedPowerLoss(BaseException):
         pass
