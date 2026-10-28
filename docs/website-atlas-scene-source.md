@@ -13,8 +13,10 @@ production planner returns `subject_origin: synthetic_design` and covers the
 planned interaction areas as `task_region`. Its validated plan must keep every
 captured object and contain no removal instruction or selected transient to
 erase. The controller then reconstructs the selected full-field source views
-through the existing padded pose, scale, depth-fusion and mesh stages. It does
-not buy unconditional novel views. Uncaptured surfaces remain explicit gaps.
+through the existing padded pose, scale and depth-fusion stages. When the required
+prices are reviewed, the existing completion seam surveys the retained export
+and original source gallery before proposing any novel views. It buys no
+unconditional generation and leaves uncaptured regions explicit.
 The same scene-source handoff reads this preserved environment directly; no
 object-removal manifest is manufactured. Scale remains an estimate, and the
 handoff does not qualify the task, robot, synthetic asset or native physics.
@@ -30,6 +32,24 @@ An unobserved manipulated object is still uncertain, not a task without a subjec
 This enables beta scene preparation (ADP-040/050, day 28 dependency rehearsal);
 it provides no navigation policy, metric registration, native physics admission
 or successful episode evidence.
+
+Preserved-scene completion uses captured RGB context with estimated depth, rather
+than claiming that an object-removed background was supplied. Every proposed fill
+must name a bounded geometry gap. Generated RGBD then passes independent visual
+review, joint pose estimation against the retained source views, shared-source
+registration and deterministic geometry recovery. An attractive image with no
+exportable depth stops before another mesh purchase. Useful additional source
+views identified in the original recording stop new generation with a retained
+`source_recovery_required` action; they are not a request to film the site again.
+
+The original depth fusion stays intact. A separately identified completed splat
+binds the original export, generation, registration, geometry-recovery and review
+digests. Its mesh and download bundle use that exact completed export. The scene
+handoff verifies the bound admission and all retained evidence hashes, and labels
+the result `captured_scene_with_bounded_completion`. An incomplete completion is
+not published as a ready preview just because a partial source ZIP exists.
+Generated geometry remains a development-only estimate with unproven metric,
+physics and execution status.
 
 ## What the job buys, in order
 

@@ -49,14 +49,18 @@ def test_signed_status_refuses_unconfigured_server_root(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def prepared_source(tmp_path, monkeypatch):
-    _, _, root, owner, member, raw = _fixture(tmp_path, monkeypatch)
+def prepared_source(tmp_path, monkeypatch, request):
+    from tests.test_capture_original_owner_observer import supplemental_observation
+    selected_owner = supplemental_observation() if getattr(request, "param", None) == "continuation" else None
+    _, _, root, owner, member, raw = _fixture(tmp_path, monkeypatch, owner=selected_owner)
     birth_capture_member(root, observation=owner, membership_selector=member, membership_raw=raw)
     context = {"schema_version": "website_site_task_context.v1", **{key: owner[key]
                 for key in ("request_id", "scene_id", "capture_id")}, "confirmed": True,
                "confirmed_at": "2026-10-08T00:00:00Z", "description": "Synthetic owned preparation control",
                "success_criteria": {"successDefinition": None, "successRate": None,
                                     "cycleTimeSeconds": None, "unknown": True}}
+    if "capture_binding" in owner:
+        context["capture_binding"] = owner["capture_binding"]
     context["context_digest"] = canonical_digest(context, digest_field="context_digest")
     write_json(root / "pipeline/website_task_context.json", context)
     def fresh_owner(**kwargs):
@@ -383,7 +387,9 @@ def test_durable_delivery_retry_never_reopens_provider_work(prepared_source, mon
     assert status_reader.reconcile_preparation_wakeups(storage_root)["attempted"] == 1
     pending = json.loads((root / status_reader.DELIVERY_FILE).read_text())
     assert pending["state"] == "pending" and pending["delivery_attempt_count"] == 1
-    assert status_reader.reconcile_preparation_wakeups(storage_root)["delivered"] == 1
+    assert status_reader.reconcile_preparation_wakeups(storage_root)["attempted"] == 0
+    assert status_reader.reconcile_preparation_wakeups(storage_root,
+        now_epoch=pending["next_attempt_at_epoch"] + 1)["delivered"] == 1
     assert status_reader.reconcile_preparation_wakeups(storage_root)["attempted"] == 0
     assert listener._read_job_ledger(root) == before
     assert len(calls) == 2 and all(call["payload"] == selected for call in calls)

@@ -47,10 +47,10 @@ def _orchestrated(root, owner, context):
 
 
 @pytest.fixture
-def waiting(request, monkeypatch):
-    root, owner, context, _, _, _ = request.getfixturevalue("prepared_source")
+def waiting(prepared_source, monkeypatch):  # noqa: F811 - imported pytest fixture
+    root, owner, context, _, _, _ = prepared_source
     birth = capture_birth_source_projection(root)
-    payload = json.loads(WIRE_FIXTURE.read_bytes())
+    payload = json.loads(WIRE_FIXTURE.read_text().replace("walkthrough-req-1", owner["capture_id"]))
     payload["source_finalize"] = {"bucket": owner["bucket"], "object_name": owner["completion_marker"]["object_name"],
         "generation": owner["completion_marker"]["generation"], "event_id": "original-event",
         "event_source": "original-source"}
@@ -101,6 +101,7 @@ def test_a_redelivery_while_still_waiting_arms_again(waiting):
     assert ledger["attempt_count"] == 2 and resume.armed(ledger)
 
 
+@pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 @pytest.mark.parametrize("state", ["ready", "failed", "needs_input"])
 def test_a_final_atlas_job_replays_the_same_original_payload_once(waiting, state):
     root, _, _, raw, record = waiting
@@ -131,6 +132,7 @@ def test_a_job_waiting_to_recheck_authority_is_not_final(waiting, monkeypatch):
                                                      process_args={"provider": "openai"}) == {"resumed": 0, "pending": 1}
 
 
+@pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 @pytest.mark.parametrize("change", ["payload", "source", "active", "wrong_error", "owner", "context"])
 def test_a_changed_source_ledger_or_authority_is_never_replayed(waiting, monkeypatch, change):
     root = waiting[0]
@@ -176,15 +178,20 @@ def test_a_ledger_that_moves_on_before_the_claim_refuses_the_replay(waiting, mon
     assert ledger["last_error"] == "unknown_provider_charge" and ledger["attempt_count"] == 1
 
 
-def test_silence_ends_the_wait_only_after_the_atlas_job_could_have_ended(waiting):
+def test_atlas_wait_becomes_overdue_retryable_only_after_the_job_window(waiting):
     root = waiting[0]
     stopped = terminal._parse_utc(listener._read_job_ledger(root)["updated_at"])
     window = timedelta(seconds=terminal.silence_seconds())
     early = stopped + window + timedelta(hours=1)
     assert terminal.record_unretried_preparation(root, alive_since=stopped, now=early) is None
     late = stopped + timedelta(seconds=MAXIMUM_JOB_SECONDS) + window + timedelta(minutes=1)
-    ended = terminal.record_unretried_preparation(root, alive_since=stopped, now=late)
-    assert ended[terminal.TERMINAL_FIELD]["reason"] == "retry_exhausted"
+    overdue = terminal.record_unretried_preparation(root, alive_since=stopped, now=late)
+    assert overdue["status"] == "failed_retryable" and overdue["last_error"] == resume.WAIT_ERROR
+    record = terminal.current_overdue(overdue)
+    assert record["reason"] == "recovery_needed" and record["retry_exhaustion_proven"] is False
+    assert record["silent_since"] == terminal._iso(stopped + timedelta(seconds=MAXIMUM_JOB_SECONDS))
+    assert terminal.TERMINAL_FIELD not in overdue and terminal.current_terminal(overdue) is None
+    assert resume.armed(overdue) and overdue[resume.FIELD] == waiting[4]
 
 
 def test_only_the_whole_atlas_wait_counts_anywhere_in_the_chain():

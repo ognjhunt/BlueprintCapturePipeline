@@ -485,57 +485,41 @@ def _nonce_store_dir() -> Path:
 
 
 def _claim_intake_nonce(*, client_id: str, nonce: str, now: float, max_age_seconds: float) -> bool:
-    """Atomically claim a scoped nonce across processes and restarts."""
+    """Atomic replay protection and report-only bounded retention observations."""
+    from .intake_nonce_retention import NonceStoreError, REPORT_FILE, claim, sweep
+    try:
+        root = _nonce_store_dir()
+        accepted = claim(root, client_id=client_id, nonce=nonce, now=now, max_age_seconds=max_age_seconds)
+        report = root / REPORT_FILE
+        if not report.exists() or now - report.stat().st_mtime >= 60:
+            sweep(root, now=now, limit=64,
+                  apply=_truthy(os.getenv("BLUEPRINT_INTAKE_NONCE_CLEANUP_ENABLED")))
+        return accepted
+    except (NonceStoreError, OSError) as exc:
+        # A disk/clock/unknown-state failure must never make a nonce replayable.
+        raise HTTPException(status_code=503, detail=(str(exc) if isinstance(exc, NonceStoreError)
+                             else "intake_nonce_store_unavailable")) from exc
 
-    root = _nonce_store_dir()
-    digest = sha256(f"{client_id}\0{nonce}".encode("utf-8")).hexdigest()
-    path = root / f"{digest}.json"
-    expires_at = now + max(max_age_seconds * 2, max_age_seconds + 60)
-    payload = (
-        json.dumps(
-            {
-                "schema_version": "blueprint_intake_nonce_claim.v1",
-                "client_id_sha256": sha256(client_id.encode("utf-8")).hexdigest(),
-                "nonce_sha256": sha256(nonce.encode("utf-8")).hexdigest(),
-                "claimed_at_epoch": now,
-                "expires_at_epoch": expires_at,
-            },
-            sort_keys=True,
-        )
-        + "\n"
-    ).encode("utf-8")
-    for _attempt in range(2):
-        try:
-            descriptor = os.open(
-                path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
-            )
-        except FileExistsError:
-            existing = _read_mapping_file(path)
-            try:
-                existing_expiry = float(existing.get("expires_at_epoch") or 0.0)
-            except (TypeError, ValueError):
-                existing_expiry = 0.0
-            if existing_expiry > now:
-                return False
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-            continue
-        try:
-            os.write(descriptor, payload)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        directory_descriptor = os.open(root, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-        return True
-    return False
+
+def _nonce_retention_health() -> dict[str, Any]:
+    """Expose bounded counts only; health reads create no security state."""
+    from .intake_nonce_retention import REPORT_FILE
+    configured = _string(os.getenv(INTAKE_NONCE_STORE_DIR_ENV))
+    root = (Path(configured).expanduser() if configured
+            else _manifest_path().expanduser().resolve().parent / "intake_nonce_store")
+    path = root / REPORT_FILE
+    if path.is_symlink():
+        return {"status": "unavailable"}
+    value = _read_mapping_file(path)
+    if value.get("schema_version") != "blueprint_intake_nonce_retention_report.v1":
+        return {"status": "not_observed", "default_mode": "report_only"}
+    return {"status": "observed", **{key: value.get(key) for key in (
+        "observed_at_epoch", "mode", "inspection_limit", "canonical_filenames_discovered",
+        "record_inspection_truncated", "free_bytes", "free_inodes", "observation_scope",
+        "inspected", "expired", "fresh", "unproven", "reclaimed", "inspected_bytes", "expired_bytes",
+        "discovery_entries_examined", "discovery_entry_limit", "discovery_time_budget_seconds",
+        "discovery_elapsed_seconds", "discovery_time_budget_reached", "discovery_continuation_scope",
+        "directory_pass_completed", "inventory_complete")}}
 
 
 def _build_intake_signature(
@@ -1576,6 +1560,7 @@ def create_app() -> FastAPI:
             }
         return JSONResponse(status_code=200 if payload["commit_proven"] else 503, content=payload)
 
+    @app.get("/api/live-pipeline/health")
     @app.get("/health")
     def health() -> Dict[str, Any]:
         manifest_path = _manifest_path()
@@ -1597,12 +1582,15 @@ def create_app() -> FastAPI:
             "signed_intake_required": not _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)),
             "legacy_bearer_enabled": _truthy(os.getenv(INTAKE_ALLOW_LEGACY_BEARER_ENV)),
             "shared_nonce_store_enabled": True,
+            "nonce_retention": _nonce_retention_health(),
             "server_capture_root_mapping_enforced": True,
             "bounded_admission_enabled": True,
             "capture_upload_transfer_configured": bool(
                 _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
-                and _string(os.getenv(CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV))
                 and _string(os.getenv(CAPTURE_MALWARE_SCANNER_ARGV_ENV))
+            ),
+            "capture_upload_backblaze_hosts_configured": bool(
+                _string(os.getenv(CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV))
             ),
             "task_evaluation_supervisor": capture_supervisor_health_status(),
             "task_evaluation_launch_queue": {
@@ -2245,6 +2233,11 @@ def create_app() -> FastAPI:
                 status_code=503,
                 detail="capture supervisor execution configuration is invalid",
             ) from exc
+        constraints = _mapping(_mapping(_mapping(payload.get('request')).get('governance')).get('provider_constraints'))
+        if (constraints.get('external_processing_allowed') is False
+                or constraints.get('automatic_model_inference_allowed') is False):
+            supervisor_options = {**supervisor_options, 'allow_live_agents_sdk': False,
+                                  'agent_inference_budget_usd': 0.0}
         store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
         if not store_root_text:
             raise HTTPException(
