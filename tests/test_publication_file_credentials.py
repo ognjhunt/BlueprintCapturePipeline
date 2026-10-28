@@ -181,6 +181,29 @@ def test_explicit_override_and_recovered_file_reuse_identical_artifact(tmp_path,
     assert bodies[0] == bodies[1]
 
 
+def test_failed_file_only_testbed_publication_recovers_retained_request_without_reconstruction(tmp_path, monkeypatch):
+    module, sync, arguments, _ = _case("testbed")
+    retained_testbed = json.dumps(arguments["testbed"], sort_keys=True)
+    retained_request = json.dumps(arguments["decision_evidence_request"], sort_keys=True)
+    private = tmp_path / "missing-until-recovery"
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN_FILE", str(private))
+    monkeypatch.delenv("PIPELINE_SYNC_TOKEN", raising=False)
+    bodies, tokens = _transport(monkeypatch, module, "testbed")
+    refused = sync(**arguments)
+    assert refused["status"] == "failed" and refused["attempts"] == 0
+    assert bodies == tokens == []
+    # The transport retries the already compiled scientific bytes; no compiler
+    # or reconstruction step is used to recover a private transport credential.
+    monkeypatch.setattr(testbed_fixture, "compile_site_task_testbed", lambda **_: pytest.fail("unexpected compilation"))
+    private.write_text("recovered-file-token")
+    private.chmod(0o600)
+    accepted = sync(**arguments)
+    assert accepted["status"] == "succeeded" and len(bodies) == 1
+    offered = json.loads(bodies[0])
+    assert json.dumps(offered["testbed"], sort_keys=True) == retained_testbed
+    assert json.dumps(offered["decision_evidence_request"], sort_keys=True) == retained_request
+
+
 @pytest.mark.parametrize("kind", ["testbed", "qa", "reconstruction"])
 @pytest.mark.parametrize("mismatch", ["digest", "source"])
 def test_file_credentials_do_not_weaken_receipt_binding(tmp_path, monkeypatch, kind, mismatch):
