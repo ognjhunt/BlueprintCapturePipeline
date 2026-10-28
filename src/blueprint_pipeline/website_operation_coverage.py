@@ -15,6 +15,7 @@ from typing import Any, Mapping
 from pydantic import BaseModel, ConfigDict, Field
 
 from .decision_evidence_contracts import canonical_digest
+from .website_task_context_contracts import website_task_context_digest
 from .task_profile_contracts import TASK_PROFILES
 from .website_task_semantics import OperativeStep
 
@@ -109,7 +110,7 @@ def validate_coverage(value: Mapping[str, Any], *, request: Mapping[str, Any],
     if (request.get("scope") != "operation_coverage"
             or request.get("schema_version") != "website_operation_coverage_request.v1"
             or request.get("task_context_digest") != task_context.get("context_digest")
-            or task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")):
+            or task_context.get("context_digest") != website_task_context_digest(task_context)):
         raise ValueError("website_task_operation_coverage_binding_invalid")
     coverage = OperationCoverage.model_validate(value).model_dump(mode="json")
     sources = _strings({key: task_context.get(key) for key in (

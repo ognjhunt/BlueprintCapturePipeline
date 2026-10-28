@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .website_task_context_contracts import website_task_context_digest
 from .launch_immutable_input_writer import write_exclusive_private_bytes
 from .task_family_scoring import FAMILY_CRITERIA, FAMILY_OBSERVABLES, canonical_task_family
 
@@ -103,7 +104,9 @@ def retain_family_authoring_requirements(
     No generic prose success definition is converted to numeric thresholds.
     """
     for value, field in ((task_context, "context_digest"), (task_masks, "digest"), (source_geometry, "digest")):
-        if value.get(field) != canonical_digest(value, digest_field=field):
+        expected = (website_task_context_digest(value) if field == "context_digest"
+                    else canonical_digest(value, digest_field=field))
+        if value.get(field) != expected:
             raise ValueError("website_task_family_authoring_source_changed")
     expected = {"task_context_digest": task_context["context_digest"],
                 "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"]}

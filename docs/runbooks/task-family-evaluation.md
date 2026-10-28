@@ -89,6 +89,13 @@ The bounded input is factual layout, not another finished native profile:
   New WebApp records declare `canonicalization: "rfc8785"`; their fact,
   description and success-criteria digests use the existing RFC8785 boundary.
   Unflagged retained records preserve their original Python canonicalization.
+  The outer `website_site_task_context.v1` record declares the same flag when
+  it carries these facts. All context readers honor it without changing raw
+  artifact hashes or source/capture bindings; unknown or non-string explicit
+  modes refuse. This changes byte compatibility, never measurement or spending
+  authority. The v4 producer stays disabled until both deployed consumers are
+  verified. The retained Node-generated context/vector fixture covers `1e-7`,
+  integral `1.0`, UTF-16 key order and distinct composed/decomposed Unicode.
 
 Repeated-family routing additionally requires exact operation
 IDs/count/order and ordered, nonoverlapping verbatim source quotes. Missing IDs

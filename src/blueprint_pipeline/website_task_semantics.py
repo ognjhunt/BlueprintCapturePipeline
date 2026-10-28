@@ -13,7 +13,8 @@ from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .website_task_context_contracts import website_task_context_digest
 from .task_profile_contracts import TASK_PROFILES, task_profile_for
 
 
@@ -72,7 +73,7 @@ def task_semantics_from_receipt(*, receipt: Mapping[str, Any], task_context: Map
     proposal = receipt.get("proposal") or {}
     if "task_semantics" not in proposal:
         return None
-    if (task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
+    if (task_context.get("context_digest") != website_task_context_digest(task_context)
             or not isinstance(source_video_digest, str) or not _SHA.fullmatch(source_video_digest)
             or receipt.get("status") != "completed"
             or receipt.get("binding_digest") != canonical_digest(binding)
@@ -153,13 +154,18 @@ def _button_stage_identities(context, video, steps):
             or task_profile_for(step["operation"]).profile_id != "button_press" for step in steps):
         return None
     facts = (context.get("operator_answers") or {}).get("family_task_facts")
+    if not isinstance(facts, Mapping):
+        return None
+    if "canonicalization" in facts and facts["canonicalization"] != "rfc8785":
+        raise ValueError("website_button_authoring_owner_facts_canonicalization_invalid")
+    digest = cross_runtime_canonical_digest if facts.get("canonicalization") == "rfc8785" else canonical_digest
     if (not isinstance(facts, Mapping) or facts.get("schema_version") != "website_family_task_facts.v1"
-            or facts.get("facts_digest") != canonical_digest(facts, digest_field="facts_digest")
+            or facts.get("facts_digest") != digest(facts, digest_field="facts_digest")
             or context.get("confirmed") is not True or facts.get("confirmed") is not True
             or not isinstance(facts.get("confirmation_reference"), str) or not facts["confirmation_reference"].strip()
             or facts.get("capture_id") != context.get("capture_id") or facts.get("source_video_digest") != video
-            or facts.get("task_description_digest") != canonical_digest({"description": context.get("description")})
-            or facts.get("task_success_criteria_digest") != canonical_digest({"success_criteria": context.get("success_criteria")})):
+            or facts.get("task_description_digest") != digest({"description": context.get("description")})
+            or facts.get("task_success_criteria_digest") != digest({"success_criteria": context.get("success_criteria")})):
         return None
     expected = ["operation-" + str(index).zfill(3) + "-" + canonical_digest(step)[7:15]
                 for index, step in enumerate(steps, 1)]

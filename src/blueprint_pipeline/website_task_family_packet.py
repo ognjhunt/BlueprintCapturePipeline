@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .website_task_context_contracts import website_task_context_digest
 from .task_evaluation_scene_attempt_evidence import record
 from .task_evaluation_scene_configuration_submission_inputs import checked_file
 from .task_evaluation_scene_progression_contracts import require, safe_path
@@ -40,7 +41,7 @@ def family_source_references(*, preparation, runtime_inputs_path, task_context=N
     else:
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile, require_semantic_stage_order
-        require(task_context.get('context_digest') == canonical_digest(task_context, digest_field='context_digest')
+        require(task_context.get('context_digest') == website_task_context_digest(task_context)
                 and task_context.get('context_digest') == preparation['binding']['task_context_digest']
                 and native['task_spec']['task_success_contract']['scope']['task_context_digest'] == task_context['context_digest'],
                 'website_task_family_source_context_changed')
