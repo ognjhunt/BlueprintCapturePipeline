@@ -54,5 +54,3 @@ def test_malformed_resealed_response_never_extends_current_processing(field):
 def test_stale_current_control_cannot_mint_freshness():
     with pytest.raises(ValueError, match="execution_control_invalid"):
         contract.validate_control(response(), binding=binding(), now=1121)
-
-

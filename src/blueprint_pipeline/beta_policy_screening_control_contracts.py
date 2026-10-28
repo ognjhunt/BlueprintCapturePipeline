@@ -70,5 +70,3 @@ def validate_control(value: Mapping[str, Any], *, binding: Mapping[str, Any], no
             or abs(next_check - (observed_epoch * 1000 + 60_000)) > 1):
         raise ValueError("beta_screening_execution_control_invalid")
     return dict(value)
-
-
