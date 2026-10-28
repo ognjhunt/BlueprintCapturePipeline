@@ -93,6 +93,31 @@ def _run_legacy_cosmos_predict2_5_validation(
     )
 
 
+def _completed_website_preparation_only(value: Any) -> bool:
+    """Recognize the admitted website preparation receipt, never a full run.
+
+    The qualification producer emits this receipt only after its current source,
+    grant/privacy checks and native handoff/explicit preparation hold succeed.
+    Generic scientific-envelope clarification is not another preparation gate.
+    """
+    if not isinstance(value, Mapping) or value.get("status") != "completed":
+        return False
+    if value.get("lanes") != ["qualification"]:
+        return False
+    rows = value.get("results")
+    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping):
+        return False
+    row = rows[0]
+    preparation = row.get("website_scene_preparation")
+    return (
+        row.get("lane") == "qualification"
+        and row.get("status") == "completed"
+        and row.get("native_execution_complete") is False
+        and isinstance(preparation, Mapping)
+        and bool(preparation)
+    )
+
+
 def _pipeline_lane_runs_evaluation_prep(
     pipeline_lane: str,
     pipeline_result: Mapping[str, Any],
@@ -858,25 +883,43 @@ def run_end_to_end(
             "lanes": value.get("lanes") if isinstance(value, Mapping) else None,
         },
     )
-    supervisor = _run_stage(
-        "task_evaluation_supervisor",
-        lambda: run_capture_build_supervisor(
-            capture_root=context.capture_root,
-            agent_model=supervisor_agent_model,
-            allow_live_agents_sdk=allow_live_supervisor_agents,
-            agent_inference_budget_usd=supervisor_inference_budget_usd,
-        ),
-        artifacts_from_result=lambda value: {
-            "run_id": value.get("run_id") if isinstance(value, Mapping) else None,
-            "terminal_report_path": (
-                value.get("terminal_report_path") if isinstance(value, Mapping) else None
+    if (
+        _completed_website_preparation_only(pipeline)
+        and not run_evaluation_prep
+        and not robot_eval_requested
+        and not run_cosmos_validation
+    ):
+        supervisor = {
+            "status": "skipped",
+            "reason": "website_scene_preparation_uses_native_handoff",
+            "native_execution_complete": False,
+            "proof_state_mutated_by_agent": False,
+        }
+        _mark_run_e2e_stage(
+            stage_ledger, capture_root=context.capture_root,
+            stage="task_evaluation_supervisor", status="skipped",
+            detail=supervisor["reason"], result_snapshot=supervisor,
+        )
+    else:
+        supervisor = _run_stage(
+            "task_evaluation_supervisor",
+            lambda: run_capture_build_supervisor(
+                capture_root=context.capture_root,
+                agent_model=supervisor_agent_model,
+                allow_live_agents_sdk=allow_live_supervisor_agents,
+                agent_inference_budget_usd=supervisor_inference_budget_usd,
             ),
-            "event_ledger_path": (
-                value.get("event_ledger_path") if isinstance(value, Mapping) else None
-            ),
-        },
-        input_binding_digest=str(supervisor_execution_profile["execution_profile_digest"]),
-    )
+            artifacts_from_result=lambda value: {
+                "run_id": value.get("run_id") if isinstance(value, Mapping) else None,
+                "terminal_report_path": (
+                    value.get("terminal_report_path") if isinstance(value, Mapping) else None
+                ),
+                "event_ledger_path": (
+                    value.get("event_ledger_path") if isinstance(value, Mapping) else None
+                ),
+            },
+            input_binding_digest=str(supervisor_execution_profile["execution_profile_digest"]),
+        )
     if run_agent_review_stage:
         review = _run_stage(
             "agent_review",
