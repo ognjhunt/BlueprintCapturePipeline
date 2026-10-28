@@ -107,3 +107,65 @@ def runtime_control_ready_for_authority(*, authority: Mapping[str, Any], execute
         return subscribe_own_runtime_control(connection=connection,
             attempt_dir=Path(connection["control_pin_dir"]), authority=authority)
     return ready
+
+
+def runtime_control_probe(*, probe, ready, job_dir: Path, instance_id: int, resource_name: str):
+    """Subscribe only after the existing own-instance probe establishes its SSH pin."""
+    from . import gpu_render_providers
+    unsubscribe = None
+
+    def wrapped(connection):
+        nonlocal unsubscribe
+        result = probe(connection)
+        if unsubscribe is not None or result.get("status") != "observed":
+            return result
+        # The specific provider endpoint is bound to the ID created by this
+        # adapter. Older provider responses may omit their optional label;
+        # the receiver additionally joins the exact sealed session authority.
+        if (connection.get("observed") is not True or connection.get("exited")
+                or connection.get("instance_id") != instance_id
+                or connection.get("resource_name") not in {None, resource_name}):
+            return result
+        endpoint = gpu_render_providers._vast_ssh_endpoint(connection)
+        pin_dir = job_dir / "policy_remote_progress_ssh"
+        if endpoint is None or gpu_render_providers._validated_vast_known_hosts_pin(
+                pin_dir / "vast_ssh_known_hosts", host=endpoint[0], port=endpoint[1]) is None:
+            return result
+        close = ready({**connection, "instance_id": instance_id, "resource_name": resource_name,
+                       "control_pin_dir": str(pin_dir)})
+        if not callable(close):
+            raise ValueError("beta_screening_runtime_control_subscription_invalid")
+        unsubscribe = close
+        return result
+
+    def close():
+        nonlocal unsubscribe
+        subscribed, unsubscribe = unsubscribe, None
+        if subscribed is not None:
+            subscribed()
+    return wrapped, close
+
+
+class RuntimeControlRelay:
+    """Keep optional provider subscription setup and exact teardown in one scope."""
+
+    def __init__(self, *, ready, provider_bundle_kind: str, resource_name: str | None):
+        if ready is not None and (not callable(ready)
+                or provider_bundle_kind != "native_task_arena_policy_canary_session" or not resource_name):
+            raise ValueError("beta_screening_runtime_control_configuration_invalid")
+        self.ready, self.resource_name, self.unsubscribe = ready, resource_name, None
+
+    def wrap(self, probe, *, job_dir: Path, instance_id: int):
+        if self.ready is None:
+            return probe
+        wrapped, self.unsubscribe = runtime_control_probe(probe=probe, ready=self.ready, job_dir=job_dir,
+            instance_id=instance_id, resource_name=self.resource_name)
+        return wrapped
+
+    def close(self) -> None:
+        subscribed, self.unsubscribe = self.unsubscribe, None
+        if subscribed is not None:
+            try:
+                subscribed()
+            except BaseException:  # noqa: BLE001 - even an interrupted unsubscribe must allow exact owned teardown
+                pass

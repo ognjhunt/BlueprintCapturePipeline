@@ -231,6 +231,23 @@ def test_team_execution_uses_no_blueprint_monitor_hook():
     assert delivery.runtime_control_ready_for_authority(authority={"run_kind": "team_candidate_evaluation"}, execute=True) is None
 
 
+def test_interrupted_subscription_close_cannot_skip_owned_teardown(tmp_path, monkeypatch):
+    from blueprint_pipeline import gpu_render_providers as ssh
+    events = []
+    def unsubscribe():
+        events.append("unsubscribe")
+        raise KeyboardInterrupt("control listener interrupted")
+    monkeypatch.setattr(ssh, "_validated_vast_known_hosts_pin", lambda *a, **k: (tmp_path / "known_hosts", "fingerprint"))
+    relay = delivery.RuntimeControlRelay(ready=lambda connection: unsubscribe,
+        provider_bundle_kind="native_task_arena_policy_canary_session", resource_name="owned-one")
+    probe = relay.wrap(lambda connection: {"status": "observed", "milestones": []}, job_dir=tmp_path, instance_id=41)
+    probe({"observed": True, "instance_id": 41, "resource_name": "owned-one", "ssh_host": "provider.example.com", "ssh_port": 22001})
+    relay.close()
+    events.append("owned_teardown")
+    relay.close()
+    assert events == ["unsubscribe", "owned_teardown"]
+
+
 def test_beta_authority_stop_cannot_be_ignored_by_legacy_local_signal_option(tmp_path, monkeypatch):
     from tests.test_vast_provider_adapter import _configure_live_gates, _paid_grant
     _configure_live_gates(tmp_path, monkeypatch)
