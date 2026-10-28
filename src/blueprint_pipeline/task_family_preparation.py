@@ -24,6 +24,37 @@ from .task_family_scoring import (
 )
 
 
+def _retain_processing_rights_gap(*, family, task_context, task_masks, source_geometry,
+                                 removal_manifest, base_scene, output_root, task_semantics):
+    """Retain the accepted job without opening or authoring denied source bytes."""
+    task_id = task_context.get("task_id") or "website-" + task_context["context_digest"][7:27]
+    source_bindings = {"task_context_digest": task_context["context_digest"],
+        "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
+        "splat_digest": base_scene.get("splat_digest"), "collision_mesh_digest": base_scene.get("collision_mesh_digest")}
+    value = {"schema_version": "website_scene_preparation.v1", "status": "needs_input",
+        "blockers": ["website_scene_processing_rights_required"], "dispatch_blockers": [],
+        "job_disposition": "accepted", "claim_ceiling": "development_only",
+        "binding": {**source_bindings, "removal_manifest_digest": canonical_digest(removal_manifest)},
+        "task_evaluation_inputs": {"task_family": family,
+            "scope": {"scene_id": task_context["scene_id"], "task_id": task_id,
+                "task_context_digest": task_context["context_digest"]},
+            **({"task_semantics": dict(task_semantics),
+                "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest")}
+               if task_semantics is not None else {}),
+            "runtime_adapter": "task_evaluation_task_family_native_adapter",
+            "task_success_contract": None, "native_runtime_contract": None,
+            "source_bindings": source_bindings,
+            "requirements": {family: {"criteria": list(FAMILY_CRITERIA.get(family, ())),
+                "native_observables": list(FAMILY_OBSERVABLES.get(family, ())),
+                **({"ordered_stages_required": True} if family == "multi_step" else {})}},
+            "source_targets": [], "automatic_paid_execution_authorized": False},
+        "intake_request": None, "thumbnail": None, "provider_mutation_performed": False}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    detached = json.loads(json.dumps(value, allow_nan=False))
+    write_json(output_root / "preparation.json", detached)
+    return detached
+
+
 def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                         removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                         base_scene: Mapping[str, Any], output_root: Path,
@@ -32,12 +63,25 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
                         task_semantics: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Retain the whole job, including multiple subjects and deformable state."""
     handoff_lease_checkpoint("website_task_family_preparation_start")
+    if task_context.get("confirmed") is not True:
+        # The public compiler already applies this pure guard. Direct family
+        # callers must retain the same complete preparation grant validation.
+        from .website_preparation_contracts import validate_preparation_authority
+        validate_preparation_authority(task_context=task_context, authority=spend or {}, now=now)
     from .website_task_semantics import effective_task_profile
     source_video_digest = (source_geometry.get("binding") or {}).get("source_video_digest")
     family = canonical_task_family(effective_task_profile(task_context=task_context,
         task_semantics=task_semantics, source_video_digest=source_video_digest))
     if family is None:
         raise ValueError("website_task_family_unknown")
+    rights = task_context.get("capture_rights")
+    if (not isinstance(rights, Mapping) or rights.get("derived_scene_generation_allowed") is not True
+            or ("consent_revoked" in rights and rights["consent_revoked"] is not False)
+            or rights.get("consent_status") == "revoked"
+            or rights.get("future_processing_allowed") is False):
+        return _retain_processing_rights_gap(family=family, task_context=task_context, task_masks=task_masks,
+            source_geometry=source_geometry, removal_manifest=removal_manifest, base_scene=base_scene,
+            output_root=output_root, task_semantics=task_semantics)
     if task_masks.get("source_geometry_digest") != source_geometry.get("digest"):
         raise ValueError("website_preparation_geometry_binding_mismatch")
     for path_key, digest_key in (("splat_path", "splat_digest"), ("collision_mesh_path", "collision_mesh_digest")):
@@ -51,8 +95,6 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
             source_geometry=source_geometry, base_scene=base_scene, output_root=output_root)
         handoff_lease_checkpoint("website_task_family_preparation_after_layout")
     blockers: list[str] = []
-    if (task_context.get("capture_rights") or {}).get("derived_scene_generation_allowed") is not True:
-        blockers.append("website_scene_processing_rights_required")
     task_id = task_context.get("task_id") or "website-" + task_context["context_digest"][7:27]
     scope = {"scene_id": task_context["scene_id"], "task_id": task_id,
              "task_context_digest": task_context["context_digest"]}
