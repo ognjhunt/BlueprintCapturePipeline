@@ -180,6 +180,24 @@ def test_required_output_denied_is_still_a_blocker(tmp_path: Path, monkeypatch: 
     assert len(blockers) == 1 and blockers[0]["code"] == "required_path_access_refused"
 
 
+def test_required_queue_template_refuses_before_any_path_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    args = _probe_args(tmp_path)
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    template = "/var/lib/blueprint/{root}"
+    monkeypatch.setenv("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", template)
+    monkeypatch.setenv("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", str(inputs))
+    writes = []
+    monkeypatch.setattr(preflight, "write_probe", lambda path: writes.append(path) or {"status": "read_only"})
+    report = preflight.run_probe(args)
+    assert not writes
+    assert report["coverage"]["status"] == "unknown"
+    assert report["coverage"]["reason"] == "required_path_binding_unresolved"
+    row = report["paths"][template]
+    assert row["requirement"] == "required_unresolved" and row["severity"] == "blocker"
+    assert any(finding["code"] == "required_path_template_unresolved" and finding["severity"] == "blocker" for finding in report["findings"])
+
+
 def test_route_health_separates_held_unused_and_broken_required_trigger(monkeypatch: pytest.MonkeyPatch) -> None:
     def properties(_trigger: str) -> dict:
         return {"ActiveState": ["inactive"]}

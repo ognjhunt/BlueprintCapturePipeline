@@ -570,7 +570,13 @@ def run_probe(args: argparse.Namespace) -> dict[str, Any]:
                 row["requirement"] = "confirmed_required" if requirement else "static_candidate"
                 row["access"] = requirement["access"] if requirement else "unproven"
                 if template:
-                    row["severity"], row["code"] = "warning", "path_template_unresolved"
+                    if requirement:
+                        row["severity"], row["code"] = "blocker", "required_path_template_unresolved"
+                        row["requirement"] = "required_unresolved"
+                        report["coverage"]["status"] = "unknown"
+                        report["coverage"]["reason"] = "required_path_binding_unresolved"
+                    else:
+                        row["severity"], row["code"] = "warning", "path_template_unresolved"
                 elif requirement:
                     accepted = {"writable", "missing_creatable"} if requirement["access"] == "write" else {"readable"}
                     row["severity"] = "ok" if verdict["status"] in accepted else "blocker"
