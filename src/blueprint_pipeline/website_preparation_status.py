@@ -14,12 +14,17 @@ A preparation-only task stays unconfirmed, so its read also asks the WebApp
 where the grant stands. A grant that expired still names the context it was
 issued for, so the ledger is reported as for a current one. A preparation with
 no grant yet is not read. The read never creates, renews or spends a grant.
+
+The default-off v4 adds optional source-bound family authoring to this same
+receipt/outbox. A missing optional proof keeps its delivery pending with a
+fixed private diagnostic; the original preparation state/outcome is preserved.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import math
+import os
 import re
 import time
 from collections.abc import Mapping
@@ -36,13 +41,16 @@ _UNAVAILABLE = "website_preparation_status_unavailable"
 STATUS_V1 = "website_preparation_status.v1"
 STATUS_V2 = "website_preparation_status.v2"
 STATUS_V3 = "website_preparation_status.v3"
-# The WebApp opts in per read; an absent or unknown value is answered with v1.
+STATUS_V4 = "website_preparation_status.v4"
+FAMILY_STATUS_ENV = "BLUEPRINT_WEBSITE_FAMILY_TASK_FACTS_V4_ENABLED"
+# The WebApp opts in per read; v4 additionally requires FAMILY_STATUS_ENV.
 VERSION_HEADER = "x-blueprint-preparation-status-version"
 _STATES_V1 = frozenset({"preparing", "awaiting_inputs", "failed_retryable", "authority_ended", "handed_off"})
 _STATES_V2 = _STATES_V1 | {"capacity_delayed", "failed_terminal"}
 _ACCEPTANCE = {"website_preparation_status_acceptance.v1": (STATUS_V1, _STATES_V1),
                "website_preparation_status_acceptance.v2": (STATUS_V2, _STATES_V2),
-               "website_preparation_status_acceptance.v3": (STATUS_V3, _STATES_V2)}
+               "website_preparation_status_acceptance.v3": (STATUS_V3, _STATES_V2),
+               "website_preparation_status_acceptance.v4": (STATUS_V4, _STATES_V2)}
 _CODES = {"preparing": "preparation_in_progress", "awaiting_inputs": "preparation_inputs_pending",
           "capacity_delayed": "preparation_capacity_delayed", "failed_retryable": "preparation_retryable_failure",
           "failed_terminal": "preparation_failed_terminal", "authority_ended": "preparation_authority_ended",
@@ -58,6 +66,8 @@ def requested_status_version(value: Any) -> str:
     """The newest receipt schema this Pipeline has at or below what the reader asked for."""
     text = value.strip() if type(value) is str else ""
     if re.fullmatch(r"[1-9][0-9]{0,2}", text):
+        if int(text) >= 4 and os.getenv(FAMILY_STATUS_ENV) == "true":
+            return STATUS_V4
         return STATUS_V3 if int(text) >= 3 else STATUS_V2 if int(text) == 2 else STATUS_V1
     return STATUS_V1
 
@@ -166,7 +176,8 @@ def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
 
 def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                             schema_version: str = STATUS_V1,
-                            grantless_assessment_wait: bool = False) -> dict[str, Any]:
+                            grantless_assessment_wait: bool = False,
+                            _projection_diagnostics: list[str] | None = None) -> dict[str, Any]:
     """Read an as-of snapshot; refuse missing, changed or unverified authority."""
     from .capture_original_owner_observer import load_original_owner_observation
     from .consent_takedown import read_consent_state
@@ -175,7 +186,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
     from .website_task_context import validate_website_task_context
 
     try:
-        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3})
+        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4}
+                 and (schema_version != STATUS_V4 or os.getenv(FAMILY_STATUS_ENV) == "true"))
         selected = validate_selectors(dict(selectors))
         root = _root(capture_root)
         _require(root.name == selected["capture_id"] and root.parent.name == "captures"
@@ -234,6 +246,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             website_scene_sponsorship_standing(task_context=current, now=time.time(),
                                                allow_missing=waits_on_assessment)
         terminal_reason = None
+        handoff, family_prepared = None, False
         if before.get("status") == "completed":
             from .website_task_context_contracts import holds_native_task_preparation, retains_task_family_preparation
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
@@ -248,27 +261,52 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             _require(bool(_output_commit(root, scene_id=selected["scene_id"], capture_id=selected["capture_id"])))
             state = ("awaiting_inputs" if native_profile_held or (family_prepared and handoff["status"] == "needs_input")
                      else "handed_off")
-        elif schema_version in {STATUS_V2, STATUS_V3}:
+        elif schema_version in {STATUS_V2, STATUS_V3, STATUS_V4}:
             state, terminal_reason = _v2_state(before)
         else:
             _require(before.get("status") in _LEDGER_STATES)
             state = _LEDGER_STATES[before["status"]]
         outcome = None
-        if schema_version == STATUS_V3:
+        if schema_version in {STATUS_V3, STATUS_V4}:
             from .website_preparation_outcome import read_preparation_outcome
             outcome = read_preparation_outcome(capture_root=root,
                 task_context_digest=selected["task_context_digest"], state=state)
+        family_authoring = None
+        if schema_version == STATUS_V4:
+            from .website_preparation_family_status import read_family_authoring_projection
+            family_authoring, diagnostic = read_family_authoring_projection(capture_root=root,
+                task_context=current, birth=birth, ledger=before, handoff=handoff, family_prepared=family_prepared)
+            if diagnostic is not None and _projection_diagnostics is not None:
+                _projection_diagnostics.append(diagnostic)
+            current_after = _current_context(request_id=selected["request_id"], scene_id=selected["scene_id"],
+                capture_id=selected["capture_id"], purpose=context_purpose,
+                allow_unconfirmed_preparation=raw_retained is None)
+            owner_after = load_original_owner_observation(bucket=delivery["source_finalize"]["bucket"],
+                scene_id=selected["scene_id"], capture_id=selected["capture_id"],
+                marker_generation=selected["completion_marker_generation"],
+                **({"expected_purpose": purpose} if purpose else {}))
+            _require(current_after == current and capture_birth_source_projection(root,
+                expected_purpose="scene_preparation") == birth)
+            _require(all(owner_after.get(key) == owner.get(key) for key in
+                ("capture_owner", "capture_rights", "producer_delivery", "completion_marker", "purpose")))
         after = _read_job_ledger(root)
         _require(before == after)
         _require(read_consent_state(root)["state"] != "revoked")
         result = {"schema_version": schema_version, **selected,
                   "attempt_count": before["attempt_count"], "revision": before["revision"],
                   "state": state, "code": _CODES[state],
-                  **({"terminal_reason": terminal_reason} if schema_version in {STATUS_V2, STATUS_V3} else {}),
-                  **({"outcome": outcome} if schema_version == STATUS_V3 else {}),
+                  **({"terminal_reason": terminal_reason} if schema_version in {STATUS_V2, STATUS_V3, STATUS_V4} else {}),
+                  **({"outcome": outcome} if schema_version in {STATUS_V3, STATUS_V4} else {}),
+                  **({"family_authoring": family_authoring} if schema_version == STATUS_V4 else {}),
                   "correlation_id": cross_runtime_canonical_digest({**selected,
                       "attempt_count": before["attempt_count"], "revision": before["revision"]})}
         result["status_digest"] = cross_runtime_canonical_digest(result)
+        if schema_version == STATUS_V4 and len(json.dumps(result, ensure_ascii=False,
+                separators=(",", ":"), allow_nan=False).encode()) > 65536:
+            result["family_authoring"] = None
+            result["status_digest"] = cross_runtime_canonical_digest(result, digest_field="status_digest")
+            if _projection_diagnostics is not None:
+                _projection_diagnostics.append("website_family_authoring_payload_limit")
         return result
     except PreparationStatusUnavailable:
         raise
@@ -418,15 +456,20 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
             error = None
             acceptance = None
             current_status = None
+            projection_diagnostics = []
             try:
                 acceptance = validate_acceptance(website_webapp_request(capture_id=selected["capture_id"],
                     operation="preparation-status", payload=selected), selected)
                 # The callback may legitimately commit a newer status than our
                 # preflight. Verify against fresh authority, never an old receipt.
+                accepted_version = accepted_status_version(acceptance)
                 current_status = read_preparation_status(capture_root=root, selectors=selected,
-                                                         schema_version=accepted_status_version(acceptance))
+                    schema_version=accepted_version,
+                    **({"_projection_diagnostics": projection_diagnostics} if accepted_version == STATUS_V4 else {}))
                 _require(acceptance["status_digest"] == current_status["status_digest"]
                          and acceptance["state"] == current_status["state"])
+                if projection_diagnostics:
+                    error = "FamilyAuthoringProjectionPending"
             except Exception as exc:
                 error = type(exc).__name__  # Private retry bookkeeping only, never raw response/error.
             # Network is over. Under lock update only the still-current delivery;
@@ -434,7 +477,7 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
             with _existing_job_ledger_lock(root) as lock_state:
                 if lock_state != "ledger_present" or _read(path) != delivery:
                     continue
-                if error is None:
+                if error is None or current_status is not None:
                     ledger = _read_job_ledger(root)
                     _require(current_status is not None and ledger.get("revision") == current_status["revision"]
                              and ledger.get("attempt_count") == current_status["attempt_count"])
@@ -446,6 +489,11 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
                                   "last_attempt_at_epoch": now,
                                   "delivered_at_epoch": now if error is None else None,
                                   "last_error_type": error, "acceptance": acceptance}
+                if projection_diagnostics:
+                    updated["last_optional_projection_failure"] = {"code": projection_diagnostics[-1],
+                                                                  "observed_at_epoch": now}
+                if projection_diagnostics or delivery.get("last_optional_projection_failure"):
+                    updated["optional_projection_state"] = "pending" if projection_diagnostics else "current"
                 write_json(path, updated)
                 update_index(root, updated)
             counts["delivered"] += int(error is None)
