@@ -41,6 +41,13 @@ and fresh identity checks. At most four streams are cached per process, and both
 stream and FD close on completion, error, eviction or fork. This adds no queue
 or alternate nonce authority; existing flat files remain canonical.
 
+If a stream retained from an earlier tick reaches EOF, the same healthy tick
+can open one current stream from its already locked directory FD. Both windows
+share the original record count, directory-entry count and monotonic deadline.
+A newly opened stream reaching EOF stops rather than reopening again. This
+uses the remaining bounded budget without resetting limits or delaying all
+current work until another tick. A replaced directory still refuses the result.
+
 The claim/reclaim lock itself is opened relative to a nofollow directory FD held
 through the whole operation. Clock reads, metadata temporary-file creation,
 atomic replacement, fsync, nonce creation and expiry unlink all use that same
@@ -70,6 +77,14 @@ clock rollback, malformed/symlink/permission state, injected full-disk fsync
 failure, incremental expiry, a 10,000-entry legacy inventory under continuing
 claims, discovery deadline/entry limits, fair continuation, root replacement,
 cursor closure/restart, and a bounded-rate traffic soak stabilizing within the
-TTL, grace and inspection-lag envelope. Production starts with observation only
+TTL, grace and inspection-lag envelope. The soak also uses a deterministic
+newest-claim-first directory order: before the cached-EOF repair it reproduced
+alternating 36/40 canonical records with the time budget unexhausted, as reported
+on PR3028. The repair preserves its 36-record bound, 32-record inspection cap,
+72-entry discovery cap, and original retention/age checks. Separate regressions
+cover fresh-EOF termination, shared remaining budgets, the original deadline,
+descriptor closure and replacement during restart.
+
+Production starts with observation only
 and still requires measured-volume retention evidence before cleanup is enabled
 by the existing policy owner.
