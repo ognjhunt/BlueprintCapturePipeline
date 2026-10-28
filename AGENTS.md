@@ -1,419 +1,65 @@
 # BlueprintCapturePipeline Agent Guide
 
-This guide is canonical for everyone working in this repo: human engineers and
-any coding agent (Claude, Codex, or other). Harness-specific entry files (for
-example `CLAUDE.md`) are thin summaries that defer to this file. If a summary
-drifts from this guide, this guide wins; if docs disagree with each other, use
-[`docs/DOCTRINE_PRECEDENCE.md`](docs/DOCTRINE_PRECEDENCE.md).
+This guide applies to everyone working here, human or agent. `CLAUDE.md` is a
+pointer to it.
 
 ## Mission
 
-`BlueprintCapturePipeline` serves the free beta's job-first automation service
-and **Arm Decision Proof v1**. Owner direction on 2026-10-21 supersedes the
-invited-team evaluation and one-click booking journey. The site records or
-uploads video of one recurring job; the existing video analysis drafts the
-brief and the site corrects it. Assessment cannot advance without retained
-video (owner correction, 2026-10-21). Blueprint prepares the capture-backed
-site simulation, runs supported configurations it can access, reports an
-explicit capability gap where none can run, and helps compare real written
-delivery proposals. The customer chooses a proposal; the customer and deployment partner agree physical
-work directly. Reported pilot outcomes retain their separate provenance.
+A site sends a video of one recurring job. This repo turns it into a
+simulation of the site, runs the candidate robot policies and embodiments in it,
+and returns a bounded estimate of what works, or "held — we can't simulate this
+kind of job yet". Blueprint runs the candidates itself, then works alongside a
+deployment company on the real site. WebApp owns the customer side.
 
-Pipeline owns evidence planning, method qualification, independent execution,
-normalized scientific results, uncertainty, abstention, claim ceilings and
-Physical Outcome Joins. WebApp owns commercial state and customer interaction.
-Use existing operating surfaces and the smallest reversible changes; do not add
-review stages, dashboards, certifications or approval loops. Rights, access,
-scientific truth, physical operations and authorized-spending controls remain.
-Shared doctrine is canonical in `doctrine/` and synchronized across three repos.
+Shared doctrine is generated from `doctrine/` (see `doctrine/README.md`).
 
-For Arm Decision Proof v1: qualify the reusable service first on exact, rights-cleared public datasets—including
-one metric 3DGS/collision object removal, released-code inpainting, and exact
-SimReady USD replacement—then take one fresh capture of one previously unseen
-fixed-arm workcell. Blueprint must prospectively choose or eliminate one of
-exactly two frozen policy/configuration candidates for the next scarce
-physical-test budget, or explicitly abstain, then adjudicate that decision and
-one predicted failure boundary with held-out physical trials.
+## The Only Hard Stops
 
-Owner decision 2026-10-05
-(`gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`)
-opens a demand-discovery phase across robot forms and task families; the rule is
-under Product Rules. The 2026-10-27 owner request explicitly authorizes fixing
-beta evaluation support across task families and robot forms, including
-deformables and humanoids. The fixed-arm, rigid-object envelope above continues
-to bound Arm Decision Proof, rather than beta implementation work.
+Fail closed only for:
 
-A **Task Evaluation Run** is a bounded technical assessment when new evidence
-is needed, not a mandatory step for every commercial job. The maintained
-Site-Task Testbed is its reusable substrate; the candidate Minimum Sufficient
-Evaluation Replica is a construction method; the Physical Outcome Join is the
-proof. SiteBench may name the bounded case study, not a second product.
+- **Privacy:** people in captures are screened, and consent is respected.
+- **Rights:** capture permissions, revocation, and dataset or model licenses.
+- **Money:** the per-site budget (USD 15 for screening candidates), the Google
+  Cloud monthly ceiling (USD 100), and the paid-resource allocator below. Never
+  start paid compute or provider calls outside it.
 
-## Read First
+Everything else keeps going. If an input is missing, ambiguous or unverified,
+flag it, make the best supported guess, and continue the same job. Fixing a
+failure means fixing its cause; do not add a gate, approval step, review stage
+or readiness check unless it protects privacy, rights or money. Delete checks
+that protect none of the three.
 
-All paths are repo-root-relative:
+Ask the owner first before contacting outside companies, sending email, or
+deleting retained data.
 
-1. [`docs/arm_decision_proof_v1/north_star_contract.json`](docs/arm_decision_proof_v1/north_star_contract.json)
-2. [`docs/arm_decision_proof_v1/README.md`](docs/arm_decision_proof_v1/README.md)
-3. [`docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`](docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md)
-4. [`docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`](docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md)
-5. [`docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md`](docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md) — historical ADP-008 decision
-6. [`PLATFORM_CONTEXT.md`](PLATFORM_CONTEXT.md) — current product and proof doctrine
-7. [`WORLD_MODEL_STRATEGY_CONTEXT.md`](WORLD_MODEL_STRATEGY_CONTEXT.md) — backend admission and build priorities
-8. [`docs/DOCTRINE_PRECEDENCE.md`](docs/DOCTRINE_PRECEDENCE.md) — how to resolve documentation conflicts
-9. [`README.md`](README.md), [`pyproject.toml`](pyproject.toml), and [`docs/architecture/ai-onboarding-map.md`](docs/architecture/ai-onboarding-map.md)
+## Two Truths
 
-Org context (roles, agent lanes, who owns what): [`AUTONOMOUS_ORG.md`](AUTONOMOUS_ORG.md).
+- Don't make things up: no invented results, captures, approvals or readiness.
+  Unknown stays unknown.
+- Simulation results are bounded estimates; they never certify physical
+  performance or safety.
 
-## Sibling-Checkout Convention
+## Arm Decision Proof v1
 
-`BlueprintCapture`, `Blueprint-WebApp`, and this repo are sibling checkouts whose
-location is environment-dependent. Some docs write sibling paths using the
-conventional layout `$HOME/workspace/<repo>`; read that as "the local checkout of
-`<repo>`, wherever it lives in your environment", not as a literal path. If a
-referenced sibling repo is not present in your environment, say so and treat the
-dependent step as blocked instead of guessing.
+`arm-decision-proof-v1` is a separate evidence program with its own protocol in
+`docs/arm_decision_proof_v1/`. That protocol applies only to ADP work. Beta
+results never enter ADP evidence, and only ADP may claim physical validation.
 
-## Product Rules
+## Sibling Checkouts
 
-- **Two programs are active:** the free beta's job-first automation service
-  (owner direction 2026-10-21) and `arm-decision-proof-v1`. The beta requires
-  retained job video before assessment; Arm Decision Proof retains
-  its frozen two-candidate protocol and physical-validation authority.
-  Historical schemas, records and adapters remain compatibility unless a
-  current blocker needs their smallest reusable component.
-- Before accepting work, name what it unblocks: a free beta journey step (for
-  example "beta: job-to-evidence request" or "beta: concurrent scene
-  preparation"), or the ADP backlog item and day-7/day-14/day-21/day-28,
-  day-35, or day-42 gate. Also name the observed completion artifact, why
-  existing infrastructure is insufficient, and the smallest reversible change.
-  Missing any answer means the work is out of focus.
-- Keep geometry, capture observations, simulators, learned evaluators, providers,
-  and physical evidence replaceable behind stable capture and evaluation contracts.
-- Resolve the uncertainty that matters for the job using the Decision/Evidence
-  Router and current qualified methods. Without retained video a job waits;
-  no capture, testbed or run is ever fabricated. Existing licensed Blueprint-managed
-  execution and approved team-supplied routes are both eligible. Keep
-  commercial deliverability and proposal prices separate from scientific
-  verdicts. Preserve ADP's exactly two frozen candidates, matched conditions,
-  independent scoring, media, holdouts and authoritative physical joins.
-  Legacy five-policy, policy-improvement, post-training, humanoid, world-model
-  and provider contracts remain compatibility/internal machinery.
-- **Owner decisions 2026-10-26 (beta).**
-  - Blueprint runs the candidates itself: "WE will run many
-    policies/apis/embodiments, etc. - then contact deployment companies that
-    support the winning approach so we shouldnt be relying on robot teams for
-    anything."
-  - For each prepared site, an automatic screening round runs Blueprint's
-    candidate policies, policy APIs and embodiments. It has a standing budget of
-    $15 per site, about 10 episodes per candidate. Full scoring of finalists
-    needs the owner's per-site OK. Deployment companies are contacted only with
-    owner approval.
-  - No job is refused by task kind. Refuse only when the harness determines that
-    no robot team has proven the capability (for example, mining with a
-    pickaxe).
-  - A job a team could do but the simulator cannot score yet is accepted. The
-    site is told the evaluation is being prepared, and the job is held and
-    counted as demand evidence for what to build next.
-  - Scene builds and the robot-free check run automatically under each capture's
-    website grant. The first real run of each new lane is a capped test.
-  - Blueprint's own finalist scoring can back a recommended pilot, not only
-    partner-run evaluations. The owner's words: "let Blueprint's own finalist
-    scoring back a recommended pilot on the website, not only partner-run
-    evaluations."
-  - The evidence bar is unchanged: a simulator-scored site evaluation of that
-    job, the job's pass mark, an admitted runtime, and a passed robot-free probe.
-- Preserve rights, privacy, provenance, and capture truth through the pipeline.
-- **Owner direction 2026-10-27 (beta task coverage).** Implement the missing
-  task-family evaluation paths, rigid robot-free execution and placement into
-  containers. Pouring, wiping, insertion, stacking, buttons, cloth, multi-step
-  work and other embodiments are not held behind a program freeze or another
-  focus decision. Route by the actual task, assets, reset, simulator state,
-  independent scoring and executable policy/robot interfaces. Missing inputs
-  and unimplemented physics remain specific preparation requirements; they
-  never establish that robots cannot do the job. This authorization serves
-  beta job-to-evaluation and leaves ADP's two-candidate physical proof intact.
-- Treat readiness and review *outputs* (qualification summaries, trust scores, readiness matrices) as optional support layers. Do not confuse that posture with the module historically named for it: `src/blueprint_pipeline/site_package_orchestrator.py` (formerly `qualification.py`) is the core capture→package orchestration spine, not a secondary readiness module.
-- Do not make downstream generated artifacts appear more authoritative than raw capture evidence.
-- Use existing captures, fixtures, OpenUSD scenes, and SimReady candidates to
-  exercise downstream compiler/runtime/receipt/replay/sealing/outcome-join paths
-  now. Keep them `development_only`; they cannot qualify partner capture, owner
-  task truth, registration, task physics, observation-domain match, sim-to-real
-  fidelity, or partner value. Never copy fixture data into qualified evidence.
-  Real beta capture-derived results can support a recommendation within their
-  qualified scope; they never enter Arm Decision Proof qualified evidence.
-  A job without a capture can still progress commercially.
-- ADP-008 is observed complete. The 2026-08-06 ADP-009 transition accepts the
-  bounded InteriorGS/SAGE/SimReady construction rehearsal while preserving the
-  historical suite at `7/10`, and fresh Raw V3.2 capture replaces ScanNet++ as
-  the required real metric transfer.
-- **2026-08-13: artifixer3D+ with `gpt-image-2` is the appearance path.** A real
-  run beat both prior candidates, so AuraFusion360 is retired as the quality
-  challenger and Inpaint360GS as the author smoke; neither is a nonblocking
-  abstention any longer because neither is required. Their lanes, bundles, and
-  allocator branches remain in the tree and are simply not launched — no launch
-  profile, and no outstanding rights work. Recorded with what each would have
-  needed in `docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md`. Before fresh capture, direct engineering
-  work to one development-only basic Franka pick-and-place rehearsal on the
-  exact sealed public scene with exactly two frozen runnable learned-policy
-  candidates, complete lossless policy-input media, deterministic non-policy
-  scoring, replay, and teardown. GR00T versions and an exact Cosmos DROID
-  action-policy release may compete during preflight, but only two total
-  candidates enter the matrix; a Cosmos reasoner/world model remains a
-  separately labeled auxiliary. Then use the existing Raw V3.2 path for one
-  fresh clean-background/object-present workcell capture.
-- **Demand discovery (owner decision 2026-10-05,
-  `gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`,
-  which supersedes the same-day humanoid tote-handling record).** Prospecting,
-  screening, outreach, and partner discovery are open across robot forms (fixed
-  arm, humanoid, wheeled, bimanual, and others) and task families, deformables
-  included. Name ADP-010 and the partner-phase day-7 gate for this work. Measure
-  demand by behavior on both sides: site replies, interest, and submitted videos
-  by task family, and robot teams seeking sites or evaluations by form and task.
-  The 2026-10-27 owner task-coverage direction supplies the beta implementation
-  authorization across those forms and families. ADP's fixed-arm, rigid-object
-  envelope still bounds its first physical proof. Spend stays inside
-  approved allowances. Sending and automatic first contact stay off; a draft is
-  not permission to send. Five-policy/general-ranking campaigns,
-  world-model/evaluator research, reconstruction/provider bakeoffs, universal
-  runtimes, dynamic-scene research, post-training products, cross-site
-  generalization claims, and WebApp/growth work unrelated to the beta journeys
-  still need an observed blocker in one of the two active programs and an
-  explicit scope change. Serving many beta sites is not that frozen item:
-  scene preparation and evaluation throughput for several concurrent beta
-  sites, with spend caps, is active beta work. Per-site candidate screening
-  under the 2026-10-26 standing budget is also active beta work. It compares
-  candidates for one site's job, and it is a different claim from the closed,
-  inconclusive general-ranking thesis:
-  - Screening-round results are diagnostic.
-  - A recommendation needs the finalists' full scoring within its qualified
-    scope.
-  - Physical-validation claims stay with Arm Decision Proof.
-  - It makes no general or cross-site ranking claim.
+`BlueprintCapture`, `Blueprint-WebApp` and this repo are sibling checkouts;
+where they live depends on the environment. If a sibling you need is missing,
+say so.
 
-## Repo Map
+## Cloud Sessions
 
-- `src/blueprint_pipeline/`: core orchestration, runtime services, stages, and adapters
-  - `site_package_orchestrator.py` (formerly `qualification.py`): the capture→site-package orchestration spine
-  - Decision/Evidence Router, EvaluationRunSpec, scenario matrix, runtime
-    adapters, episode receipts, rank-fidelity statistics, and Physical Outcome
-    Join: the reusable Arm Decision Proof spine
-  - legacy robot-evaluation, WAM, humanoid, and provider modules: compatibility
-    unless an active-program blocker explicitly requires them
-- `tests/`: pipeline, synthesis, runtime, and contract coverage
-- `docs/arm_decision_proof_v1/`: the first evaluation-proof track, its partner packet, backlog, and master goal
-- `docs/`: stable dependency contracts, compatibility docs, and historical evidence
-- `scripts/`: environment setup and runtime launch helpers
-- `skillpacks/`: reusable operational skill content
-- `autoresearch/`: eval targets and scoring harness
-
-## Working Rules
-
-- **Development cost controls (owner direction 2026-10-23).** Google Cloud
-  project `blueprint-8c1ca` has a USD 100/calendar-month ceiling, separate from
-  capture/run allowances. The owner authorized USD 125 for October 2026 only;
-  November and later months return to USD 100 without resetting recorded costs.
-  Local disk pressure does not authorize an unbounded
-  cloud VM, duplicate retained assets, or another full paid rerun. Replay saved
-  stage outputs without network/model calls first; pay only for the changed
-  provider boundary after its preflight passes. Every temporary cloud VM needs
-  an explicit budget-bounded provider-native expiry, owner/run binding and
-  teardown readback. No ad hoc VM creation/start outside the canonical allocator.
-  Inventory CPU and GPU resources in every registered GCP project/zone even
-  without a configured GPU launcher. Missing inventory or unknown pricing is
-  unknown spend, never zero. Preserve current releases, rollback/proof image
-  digests and unknown ownership; preview registry cleanup against that needed
-  set before deletion. Budget alerts are not hard caps; native service caps
-  do not cover every GCP service. Never claim the monthly ceiling is enforced
-  merely because a budget exists. See `docs/runbooks/development-cloud-cost-controls.md`.
-
-- **Agent autonomy (user direction `Sentinel_ee0f838338808191b9e431227a652f65`):**
-  agents choose research strategy, configured tools and depth. Harmless formatting,
-  extra metadata, date precision, expected pending usage and arbitrary result quotas
-  must not prematurely stop useful work. Prefer lossless evidence-backed normalization,
-  actionable same-session repair and quarantine of only unsupported claims; preserve
-  original evidence and never fabricate support. Keep spending authority, access/security
-  and deletion approvals, idempotency/duplicate effects, opt-outs and the current
-  draft-only/no-send direction. Do not respond by adding another gate framework.
-- Keep research workflow code and instructions in Blueprint-controlled GitHub,
-  structured state in the existing company database with portable exports, and
-  private business artifacts in authorized company object storage using standard
-  files and manifests. Stable Blueprint IDs are canonical; provider/session IDs
-  are provenance only. Do not make Dot, ChatGPT Library, or one model vendor a
-  production dependency. Preserve existing approval, privacy and cleanup guards.
-- **Execute without serial debugging loops.** When the user asks to reach a
-  concrete stage, keep that stage as the immediate objective. Before an attempt,
-  batch the complete applicable preflight: exact runtime inputs, launch arguments,
-  billing/spend admission, resource identity, watchdog, and teardown. A dry run
-  must not claim launch readiness while leaving deterministic execute-only checks
-  untested. After a blocker, make one focused repair and replay that same complete
-  preflight; reuse unchanged assets and completed stages. Defer unrelated audits,
-  improvements, and broad tests until the requested stage is running or terminal.
-  Every 10 minutes without reaching the stage, report the exact remaining blocker,
-  observed progress, and the concrete next action or necessary user decision.
-  Do not substitute another speculative ETA or an expanding investigation.
-  This checkpoint requires a decision and a status update, not an automatic pause
-  or a new permission request. Preserve the existing rights, spend, evidence,
-  watchdog, and teardown requirements.
-- Work the Arm Decision Proof critical path in order for proof work, and the
-  beta journey steps for beta work. Prefer changes that turn an existing
-  development-only seam into a replayable, fail-closed precursor of the partner
-  proof or of a beta journey step; do not optimize unrelated platform breadth.
-- For splat survey, inspection, or scene-understanding work, first use and extend
-  the existing `scene_placement/interiorgs_index.py`, `splat_scene_analysis.py`,
-  `scene_placement/perception_views.py`, and object-index Splat Analyzer seams.
-  Survey the full known room topology before target close-ups, keep model-derived
-  Splat Analyzer boxes candidate-only, and report unseen or uncaptured regions
-  explicitly; moving a virtual camera cannot recover missing source observations.
-- Keep splat survey previews separate from method inputs. A preview may use the
-  complete splat for reconnaissance, but an ADP method input must additionally
-  bind the exact renderer and version, calibrated camera pose and intrinsics,
-  source-splat digest and retained count, output dimensions and supersampling,
-  color/alpha settings, image digests, and a renderer-fidelity qualification.
-  Do not call a browser preview, an unrecorded screenshot, or a camera plan a
-  maximum-quality or evaluation-authorized render. Render SAGE collision geometry
-  only for alignment/debug evidence; InteriorGS remains the appearance source.
-- Do not impose a blanket local-only or no-external-provider rule. External CAD,
-  model, reconstruction, and agent services may be proposed or used when the
-  exact input bytes are rights-admitted for that disclosure, provider retention
-  and training terms are accepted by an authorized human, secrets stay in the
-  canonical secret integration, and any spend or upload has the required
-  authority. Third-party dataset nonredistribution terms still fail closed;
-  user preference cannot waive a publisher's license or another owner's rights.
-- Agents whose job is creating or iterating CAD/SimReady objects must use the
-  harness-installed CAD skill set: `cad`, `cad-viewer`, `urdf`, `sdf`, `srdf`,
-  `step-parts`, `implicit-cad`, `dxf`, `gcode`
-  (earthtojake/text-to-cad @ `4fd71ea7`, MIT) and `multi-agent-cad`
-  (Pan-Chera/Multi-Agent-CAD @ `42737c40`, MIT, build123d). Pinned clones and
-  the usage contract live in
-  [`docs/cad_authoring_skills_harness_2026-08-09.md`](docs/cad_authoring_skills_harness_2026-08-09.md).
-  Their outputs are `development_only` candidate geometry: retain
-  script+parameters+kernel+export together, pass the independent deterministic
-  validators, never promote generated geometry over observed source-derived
-  geometry, and require a component admission packet before any ADP evidence
-  use.
-- Choose the partner and its actual stack before choosing a permanent robot,
-  simulator, provider, or reconstruction backend. Build from scratch as little
-  as possible and use thin adapters.
-- Preserve raw bundle truth and downstream compatibility with other Blueprint repos.
-- Do not hardwire the company to one model family, checkpoint, or provider.
-- Keep cross-repo contracts explicit when changing bundle, runtime, or sync behavior.
-- Never resolve a failure only by hand or by a one-off workaround. Use
-  risk-based verification:
-  - **Experimental/canary lane:** before paid mutation, bind the run to a clean
-    immutable commit (a protected experiment branch or `main`) and immutable
-    input hashes; run focused hermetic tests for every changed scientific,
-    launch, spend, watchdog, teardown, and provider-zero contract; and require
-    the canonical fail-closed paid-resource gate. A repository-wide fast lane,
-    hosted-check completion, and merge to `main` are not prerequisites for the
-    canary. Preserve failures and publish the encoded fix before a production
-    release or terminal scientific claim.
-  - **Policy-canary worker, bundle, episode, or client changes:** the focused
-    hermetic tests are the lifecycle rehearsal
-    (`tests/test_native_task_arena_policy_canary_lifecycle_rehearsal.py`) and
-    the provider import-closure suite
-    (`tests/test_provider_runtime_import_closure.py`). Run both before any paid
-    Quick-10 attempt: they drive the real per-cell orchestration, episode
-    runner, and policy clients against a fake Isaac with production close and
-    rebuild semantics, and import the sealed bundle in an isolated interpreter.
-    A defect they can catch must never be discovered on a rented GPU.
-  - **Build loop (target: under 2 minutes):** run only the deterministic tests,
-    schema checks, replay fixtures, and changed-file lint that cover the edited
-    surface. Do not run a repository-wide lane merely because a change is ready
-    to commit.
-  - **PR gate (target: under 10 minutes):** gate ordinary pull requests with
-    impacted tests plus the small always-on contract, security, and paid-resource
-    sentinel set. The PR description or check output must record why each command
-    covers a changed claim or risk.
-  - **Repository fast lane:** this is a bounded integration diagnostic, not the
-    default build-loop or ordinary-PR command. Every multi-minute, subprocess,
-    simulator, render, module-entrypoint, or external-runtime test belongs in a
-    slower lane, and CI must enforce the lane's wall-time budget. A marker
-    expression alone is not proof that the lane is fast.
-  - **Full suite:** run only for an explicit production/deployment promotion, a
-    scheduled integration run, or a recorded dependency-boundary analysis that
-    finds the change cross-cutting. Do not require it for an ordinary PR or merely
-    because a commit is called a release candidate. Run the smallest deterministic
-    set that covers the changed contracts; hosted impacted checks gate PRs.
-  - **GPU tests:** run only when the changed path reaches a qualified GPU gate or
-    an explicit promotion requires that gate. A `gpu` marker by itself neither
-    authorizes paid execution nor makes GPU coverage relevant.
-  - **Failure handling:** rerun one isolated, apparently unrelated failure only in
-    isolation and diagnose it. Do not automatically restart a broad or full suite.
-  Every reported verification command must name the claim or risk it protects;
-  "run everything" is not evidence by itself. For non-paid commands expected to
-  exceed two minutes, run them in the background or CI and report only start,
-  meaningful milestones or failures, and the final result. Paid runs retain their
-  stricter monitoring, spend, watchdog, and teardown requirements.
-  A manual action taken to save a live run remains a stopgap; encode and focus-
-  test the equivalent in the same session (precedents: PR #180 builder swap,
-  PR #181 compute-cap ceiling).
-- **The only loop for a failed production stage** (2026-09-05: hours between
-  attempts were spent re-running finished GPU stages and deploying to discover
-  the next fact). (1) Replay the failed child's saved job against the candidate
-  code first: `python -m blueprint_pipeline.task_evaluation_stage_replay
-  --child <sam31-id> --isolate` on the host runs the stage handler from the
-  candidate tree on the retained inputs in a scratch root, as the service user,
-  with no network, no GPU and no model call, and names the refusing predicate;
-  iterate until the boundary passes. (2) A resubmission adopts every completed
-  stage (completed-prefix adoption) and never re-runs finished GPU work for
-  identical inputs. (3) Batch independent fixes and deploy once; keep unrelated
-  improvements out of the restart path. (4) Read the chain preflight
-  (`preflight/latest.json`: `blocker_count`, `host_findings`, per-unit
-  `findings`) before submitting. A defect first found by a paid run that a
-  replay would have shown is a process defect to record with the fix.
-- Compatibility work must preserve prior proof boundaries. In particular,
-  generated-video or simulator execution never becomes physical truth, and a
-  candidate policy or provider never grades itself.
-- Every newly executed ADP simulator policy **evaluation** must use the reusable
-  scenario harness rather than a one-off rollout: preserve one immutable canonical anchor;
-  preregister typed, seed-resolved placement/approach, illumination,
-  camera/sensor, bounded-physics, admitted object cousins, and
-  held-out-composition families; give both frozen candidates identical resolved
-  cells and seeds; and run the zero-action negative plus deterministic scripted
-  positive controls over every scored cell. Report canonical and per-family
-  task metrics, degradation, failures, contacts, and digest-bound media. A
-  simulator startup, single nominal rollout, or ad hoc perturbation remains a
-  smoke/canary and must not be called an evaluation. Object cousins may vary
-  admitted appearance, material, or geometry, but may not silently replace the
-  sealed task object or expand the task family.
-- Every newly executed policy-evaluation episode must retain the exact lossless
-  observation frames shown to the policy, a digest-bound frame manifest, and a
-  derived human-review video. Completed episodes without all three are invalid;
-  failures before the first observation must retain an explicit typed media gap.
-  The receipt must identify whether success came from deterministic simulator
-  state, a human, or a learned evaluator. A policy may never grade itself, and a
-  review video remains derived visual evidence rather than physical truth.
-- For Paperclip/autonomous-loop closeouts, apply the Blueprint-WebApp
-  `docs/autonomous-loop-evidence-checklist-2026-05-03.md` (sibling checkout; see
-  the sibling-checkout convention above) before claiming `done`, `blocked`, or
-  `awaiting_human_decision`.
-- Disk hygiene for agent scratch (2026-08-02 audit: ~40 GB of session clones
-  accumulated in six days and filled the disk): put throwaway clones under
-  `/private/tmp` or a date-stamped `~/workspace/<purpose>-YYYYMMDD` name,
-  prefer `git worktree add` against an existing checkout over a fresh clone,
-  and delete your scratch dirs at session end. The reaper is
-  `python scripts/agent_workspace_gc.py` (dry-run by default; deletion
-  requires `--apply --ack reap-agent-scratch`); it only removes clean, pushed
-  scratch dirs idle beyond the age window and always keeps primaries,
-  evidence/inputs/dataset names, and dirty/unpushed/no-remote clones. Repo
-  `output/` and `robot_eval_jobs/` stay governed by
-  `scripts/manage_output_artifact_retention.py`; `~/.claude` is bounded by
-  Claude Code's built-in `cleanupPeriodDays` cleanup.
-
-## Cloud Agent Sessions
-
-Claude Code cloud sessions cannot SSH to the control-plane host. They read run
-state, pull inputs, start units and deploy commits already on `main` through
-the operator door ([`docs/OPERATOR_DOOR.md`](docs/OPERATOR_DOOR.md)) with
-`python3 scripts/operator_door.py`, never by putting SSH keys or tunnels into a
-cloud environment. A failed stage is replayed in the session against pulled
-inputs, not on the host. Session setup and the scene procedure live in the sibling
-Blueprint-WebApp checkout's `docs/runbooks/cloud-scene-runs.md`.
+Cloud sessions reach the control-plane host through the operator door
+(`python3 scripts/operator_door.py`, see `docs/OPERATOR_DOOR.md`), never SSH.
+Setup lives in the WebApp checkout's `docs/runbooks/cloud-scene-runs.md`.
 
 ## Commands
 
-Paid resource allocation:
+Paid resource allocation (the only supported launchers):
 
 ```bash
 python -m blueprint_pipeline.paid_resource_allocator cpu-build <arguments>
@@ -423,56 +69,25 @@ python -m blueprint_pipeline.paid_resource_allocator provider-reconstruction <ar
 python -m blueprint_pipeline.paid_resource_allocator remote-cpu-job <arguments>
 ```
 
-These are the only supported CPU-build, model-volume, GPU-canary, paid
-provider-reconstruction, and remote CPU job (Cloud Run) allocation commands.
-Provider-specific builder/canary modules are adapters and must not be invoked
-as launchers. Every new paid-resource path must pass the shared fail-closed
-admission seam and the CI bypass verifier.
-
-Install:
+Install and test:
 
 ```bash
 python -m pip install -e .[dev]
+python -m blueprint_pipeline.impacted_test_selection  # changed tests, capped at 120s
+ruff check <changed Python files>
+scripts/pytest_fast.sh                                # broader, slower
 ```
 
-Run tests:
+Replay a failed production stage locally before redeploying:
 
 ```bash
-python -m blueprint_pipeline.impacted_test_selection  # changed tests + sentinels, hard-capped at 120s
-ruff check <changed Python files>          # build loop: changed-file lint only
-scripts/pytest_fast.sh                     # bounded repository integration diagnostic
-scripts/pytest_full.sh                     # explicit promotion/scheduled/cross-cutting only
+python -m blueprint_pipeline.task_evaluation_stage_replay --child <id> --isolate
 ```
 
-Test lanes (PIPE-05): heavy subprocess/Isaac/render/module-entrypoint tests are tagged
-`@pytest.mark.slow` (and `gpu`). Bare `pytest` currently deselects those markers,
-but it still selects the repository-wide non-slow collection and has no guaranteed
-wall-time; do not use it as the default build-loop or ordinary-PR gate. Experimental
-canaries use the focused hermetic tests required by the canary-lane rule above. The
-success-claim contract truth tests always run against the committed
-fixture in `tests/fixtures/kitchen_task_min/`; set `BLUEPRINT_TEST_LOCAL_ARTIFACTS=1`
-to additionally sweep real `output/kitchen_task_scaling_preflight_*` artifacts.
-
-Targeted launch checks:
-
-```bash
-python scripts/run_external_alpha_launch_gate.py
-python -m blueprint_pipeline.run_e2e --capture-root <path-to-staged-capture> --provider openai
-```
-
-Common entrypoints:
+Entrypoints:
 
 ```bash
 python main.py
 python -m blueprint_pipeline.capture_orchestrator
 python -m blueprint_pipeline.runtime_service_app
 ```
-
-## Slash-Skill Workflows
-
-A repo-local gstack install lives at `.agents/skills/gstack` for agents whose
-harness supports slash-skill workflows. Prefer `/investigate`, `/review`,
-`/codex`, and `/cso` for cross-repo failures, security-sensitive work, and final
-review. Agents without slash-skill support should apply the same discipline
-manually: investigate cross-repo failures before patching, and route
-security-sensitive work through review.

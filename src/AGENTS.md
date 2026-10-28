@@ -1,22 +1,11 @@
 # Agent Guide For `src/`
 
-Read the root `AGENTS.md`, `PLATFORM_CONTEXT.md`, and
-`WORLD_MODEL_STRATEGY_CONTEXT.md` first.
+Read the root `AGENTS.md` first.
 
-Two programs are active: the free beta's job-first automation service and Arm
-Decision Proof v1 (owner update 2026-10-21). A source change must name the beta
-journey step, or the ADP backlog item and day gate, it unblocks. Existing modules outside that path are
-compatibility code, not invitations to extend their former lanes.
-
-`src/` contains runtime code. Preserve behavior unless the user explicitly asks
-for an implementation change. Keep model providers replaceable behind stable
-capture, package, adapter, runtime, and sync contracts.
-
-Prefer thin changes to the existing Decision/Evidence Router, EvaluationRunSpec,
-two-candidate matrix, runtime receipt, sealing, statistics, and Physical Outcome
-Join paths. Do not start humanoid, deformable, world-model, provider-bakeoff,
-post-training, or universal-runtime work without an observed blocker in one of
-the two active programs.
+`src/` contains runtime code. Keep model providers replaceable behind stable
+capture, package, adapter, runtime, and sync contracts. Beta work may use any
+task family or robot form Blueprint can run; Arm Decision Proof keeps its own
+protocol in `docs/arm_decision_proof_v1/`.
 
 Do not edit env files, secrets, provider tokens, GPU runner config, or live
 deployment config from this tree. Prefer targeted tests for touched modules.

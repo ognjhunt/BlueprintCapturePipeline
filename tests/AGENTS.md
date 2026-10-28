@@ -13,5 +13,6 @@ Use `PYTHONDONTWRITEBYTECODE=1` when avoiding local cache churn. Prefer focused
 pytest targets for touched modules, then broader gates only when launch contracts
 or cross-repo behavior changed.
 
-Do not weaken fail-closed tests around privacy-safe media, fallback geometry,
-WebApp upstream links, provider credentials, or operator/live evidence.
+Do not weaken fail-closed tests that protect privacy, rights or money
+(privacy-safe media, provider credentials, spend). Tests that pin other gates
+may be changed or deleted along with the gate.

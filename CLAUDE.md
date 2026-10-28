@@ -1,110 +1,14 @@
 # BlueprintCapturePipeline Claude Guide
 
-[`AGENTS.md`](AGENTS.md) is the canonical working guide for all agents (Claude,
-Codex, or other) and human engineers. Everything there is binding; this file is
-the Claude-harness entry summary and must not drift ahead of it.
+Read [`AGENTS.md`](AGENTS.md); it applies to every agent.
 
-Read first (repo-root-relative):
-
-1. `docs/arm_decision_proof_v1/north_star_contract.json`
-2. `docs/arm_decision_proof_v1/README.md`
-3. `docs/arm_decision_proof_v1/IMPLEMENTATION_BACKLOG.md`
-4. `docs/arm_decision_proof_v1/PUBLIC_EVIDENCE_LADDER.md`
-5. `docs/arm_decision_proof_v1/PUBLIC_REFERENCE_SUBSTRATE.md` (historical ADP-008 decision)
-6. `PLATFORM_CONTEXT.md`
-7. `WORLD_MODEL_STRATEGY_CONTEXT.md`
-8. `AGENTS.md`
-9. `docs/DOCTRINE_PRECEDENCE.md` (when docs disagree)
-
-Key rules (full text and precedents in `AGENTS.md`):
-
-- Two programs are active.
-  - The **free beta's job-first automation service**. Owner direction
-    2026-10-21 supersedes the invited-team evaluation.
-  - **Arm Decision Proof v1**, the evidence program: one partner, site, fixed
-    arm, rigid-object task, and two real frozen candidates, prospectively sealed
-    and physically adjudicated. ADP keeps sole authority over
-    physical-validation claims.
-  - The fixed-arm envelope is the default build target for both, not a ban on
-    other robot forms.
-- Owner decisions 2026-10-26 (full text in `AGENTS.md`):
-  - Blueprint itself runs many candidate policies, APIs and embodiments per
-    site. The standing screening budget is $15 per site; finalists need the
-    owner's OK.
-  - Blueprint never relies on robot teams.
-  - No job is refused by task kind unless the harness finds that no team has the
-    capability.
-  - Jobs a team could do but our simulator can't score yet are accepted, held,
-    and counted as demand evidence.
-- Every task must name the beta journey step, or the ADP backlog item and day
-  gate, it unblocks. Existing captures/scenes may exercise downstream seams only
-  as `development_only`; beta site-capture results stay out of ADP qualified
-  evidence.
-- ADP-008 is observed complete. Complete ADP-009 with **artifixer3D+ with
-  `gpt-image-2` as the appearance path**; targeted ScanNet++ real measured
-  transfer after access; one exact SimReady USD; and a bounded NVIDIA USD
-  Content Agents comparison before the fresh-site phase. Paper-only methods and
-  unrecorded rights fail closed.
-- **Inpaint360GS and AuraFusion360 are retired as appearance methods**
-  (2026-08-13): a real artifixer3D + `gpt-image-2` run produced materially
-  better results, so neither is needed as a primary adapter or a quality
-  challenger. Their lanes, bundles, and allocator branches stay in the tree; no
-  launch profile will be built for them and no further rights work is required.
-  See `docs/arm_decision_proof_v1/LIVE_LANE_REACHABILITY.md`.
-- Demand discovery is open (owner decision 2026-10-05,
-  `gs://blueprint-8c1ca.appspot.com/operations/recovery/2026-10-05/owner-decisions/owner-decision-demand-discovery-20261005.json`):
-  prospecting, screening, outreach, and partner discovery span every robot form
-  (fixed arm, humanoid, wheeled, bimanual, others) and task family, deformables
-  included; this work names ADP-010 and the partner-phase day-7 gate. Building
-  evaluation support for a new form or task family needs a recorded owner
-  focus decision based on demand evidence; until then the fixed-arm,
-  rigid-object envelope is the default build target. Spend stays inside
-  approved allowances; sending and automatic first contact stay off.
-  Five-policy/general-ranking, world-model, provider bakeoff, post-training,
-  cross-site generalization claims, and product work unrelated to the beta
-  journeys stay frozen. Active beta work includes scene preparation and
-  evaluation throughput for several concurrent beta sites, and per-site
-  candidate screening under the 2026-10-26 budget.
-- Keep world-model backends swappable behind stable contracts.
-- Protect provenance, rights, privacy, and raw capture truth.
-- Optimize for the single customer-facing Task Evaluation Run. Treat the
-  maintained Site-Task Testbed as its reusable substrate and any rights-cleared
-  evaluation or post-training export as an evidence use inside the run.
-- Readiness and review *outputs* are optional support layers. The module
-  historically named for them — now
-  `src/blueprint_pipeline/site_package_orchestrator.py` (formerly
-  `qualification.py`) — is the core capture→package orchestrator, not a
-  secondary readiness module.
-- Never resolve a failure by hand or by one-off workaround: every fix lands as
-  code on main with a hermetic fast-lane test pinning the contract and, where a
-  paid path exists, a fail-closed gate (precedents: PR #180, PR #181).
-- Before claiming Paperclip/autonomous-loop `done`, `blocked`, or
-  `awaiting_human_decision`, apply the Blueprint-WebApp
-  `docs/autonomous-loop-evidence-checklist-2026-05-03.md` (sibling checkout;
-  path is environment-dependent — see the sibling-checkout convention in
-  `AGENTS.md`).
-
-Key commands:
+In short: video in, site simulation, Blueprint runs the candidates, the site
+gets a bounded estimate or "held". The only hard stops are privacy, rights
+and money; everything else is flagged and keeps going. Don't make things up.
+Arm Decision Proof v1 is a separate evidence program with its own protocol in
+`docs/arm_decision_proof_v1/`.
 
 ```bash
-python -m blueprint_pipeline.impacted_test_selection  # changed tests + sentinels, hard-capped at 120s
-ruff check <changed files>            # default build loop: changed-file lint only
-scripts/pytest_fast.sh                # bounded repository integration diagnostic
-scripts/pytest_full.sh                # explicit promotion/scheduled/cross-cutting only
-python -m blueprint_pipeline.run_e2e
-python scripts/run_external_alpha_launch_gate.py
-python scripts/agent_workspace_gc.py   # reap stale agent scratch clones (dry-run; delete needs --apply --ack reap-agent-scratch)
+python -m blueprint_pipeline.impacted_test_selection
+ruff check <changed files>
 ```
-
-Test lanes (PIPE-05): heavy subprocess/Isaac/render/module-entrypoint tests are tagged
-`@pytest.mark.slow` (and `gpu`). Bare `pytest` deselects those markers but still has
-no guaranteed wall-time, so it is not the default build-loop or ordinary-PR gate.
-Use the risk-based verification contract in `AGENTS.md`. The success-claim contract
-truth tests always run against the committed fixture in
-`tests/fixtures/kitchen_task_min/`; set `BLUEPRINT_TEST_LOCAL_ARTIFACTS=1` to
-additionally sweep real `output/kitchen_task_scaling_preflight_*` artifacts.
-
-## gstack
-
-- Use the repo-local gstack install at `.agents/skills/gstack` when you need slash-skill workflows.
-- Prefer `/investigate`, `/review`, `/codex`, and `/cso` for cross-repo failures, security-sensitive work, and final review.
