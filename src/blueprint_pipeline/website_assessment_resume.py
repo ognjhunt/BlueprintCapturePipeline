@@ -216,7 +216,7 @@ def reconcile_waiting_assessments(listener, *, storage_root: Path, process_args,
             # Reuse the actual status reader's complete active birth/membership,
             # fresh owner/video/rights, local consent, immutable current context
             # and unchanged ledger checks; a historical sidecar grants nothing.
-            status = read_preparation_status(capture_root=root, selectors={"request_id": request_id,
+            status = read_preparation_status(capture_root=root, grantless_assessment_wait=True, selectors={"request_id": request_id,
                 "scene_id": handoff.scene_id, "capture_id": handoff.capture_id,
                 "completion_marker_generation": handoff.source_finalize["generation"],
                 "producer_delivery_key": record["producer_delivery_key"],

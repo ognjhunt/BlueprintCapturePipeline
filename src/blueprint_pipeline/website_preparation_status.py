@@ -146,7 +146,8 @@ def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
 
 
 def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
-                            schema_version: str = STATUS_V1) -> dict[str, Any]:
+                            schema_version: str = STATUS_V1,
+                            grantless_assessment_wait: bool = False) -> dict[str, Any]:
     """Read an as-of snapshot; refuse missing, changed or unverified authority."""
     from .capture_original_owner_observer import load_original_owner_observation
     from .consent_takedown import read_consent_state
@@ -202,10 +203,17 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         # A completed job always retained its context; never hand off without it.
         _require(retained is not None or before.get("status") != "completed")
         if current.get("confirmed") is False:
+            from .website_assessment_resume import PENDING_CODE
             from .website_task_context import website_scene_sponsorship_standing
             # A status grants nothing, so a grant that expired still binds the
             # context it was issued for. It never changes the reported state.
-            website_scene_sponsorship_standing(task_context=current, now=time.time())
+            # A capture that waited on its assessment never had a grant: only
+            # its resume may read it, because that resume requests the first one.
+            waits_on_assessment = (grantless_assessment_wait and before.get("status") == "failed_retryable"
+                                   and before.get("last_error") == PENDING_CODE
+                                   and isinstance(before.get("assessment_resume"), dict))
+            website_scene_sponsorship_standing(task_context=current, now=time.time(),
+                                               allow_missing=waits_on_assessment)
         terminal_reason = None
         if before.get("status") == "completed":
             from .website_task_context_contracts import holds_native_task_preparation, retains_task_family_preparation
