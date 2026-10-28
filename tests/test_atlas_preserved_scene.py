@@ -49,7 +49,9 @@ def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp
 
 
 @pytest.mark.parametrize("source_status", ["processing", "needs_input", "completed"])
-def test_preserved_reconstruction_exports_observations_and_never_buys_appearance(tmp_path, monkeypatch, source_status):
+@pytest.mark.parametrize("cached_splat", [False, True])
+def test_preserved_reconstruction_exports_observations_and_never_buys_appearance(
+        tmp_path, monkeypatch, source_status, cached_splat):
     pose_root = tmp_path / "pose"
     source_root = pose_root / "full-view-source-v1"
     source_root.mkdir(parents=True)
@@ -60,17 +62,28 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
     proposal = {"subject_origin": "synthetic_design", "automation": {
         "objects": [{"disposition": "keep"}], "removal_instruction": ""},
         "uncaptured_regions": ["unobserved underside"]}
-    calls, exports = [], []
+    calls, exports, decodes = [], [], []
     monkeypatch.setattr(pipeline, "_source_pose", lambda **kw: calls.append("source_pose") or {
         "status": source_status, "operation_id": "source", "reason": "scale_unresolved",
         "scale_status": "estimated_from_named_assumptions"})
     monkeypatch.setattr(source_inputs, "prepare_source_pose", lambda root: (source_root, {}))
-    monkeypatch.setattr(splats, "load_posed_rgbd", lambda root: (pose, ["observed_depth"]))
-    def fuse(root, output):
+    frames = ["observed_depth"]
+    def decode(root):
         assert root == source_root
+        decodes.append(root)
+        return pose, frames
+    monkeypatch.setattr(splats, "load_posed_rgbd", decode)
+    def fuse(*, frames, result, output_root):
+        assert result is pose and frames is retained_frames
+        assert output_root == tmp_path / "splat"
         calls.append("fuse")
         return {"digest": "splat", "splat_kind": "depth_fused_draft"}
-    monkeypatch.setattr(splats, "build_depth_splat", fuse)
+    retained_frames = frames
+    monkeypatch.setattr(splats, "write_depth_splat", fuse)
+    monkeypatch.setattr(splats, "build_depth_splat", lambda *a, **kw: pytest.fail("Source RGBD was decoded twice"))
+    if cached_splat:
+        write(tmp_path / "splat/atlas_depth_splat_manifest.json", {
+            "digest": "splat", "splat_kind": "depth_fused_draft"})
     def mesh_attempt(root, output):
         output.mkdir()
         return {"request": {"splat": "bound"}, "uploads": {}}, output
@@ -90,17 +103,19 @@ def test_preserved_reconstruction_exports_observations_and_never_buys_appearance
         task_context={"context_digest": "task"}, source_digest="source", configuration={}, check=stages.append,
         experimental=False, max_polls=1, model="test")
     if source_status == "processing":
-        assert result["status"] == "processing" and calls == ["source_pose"] and not exports
+        assert result["status"] == "processing" and calls == ["source_pose"] and not exports and not decodes
         return
     assert result["captured_scene_preserved"] is True
     assert result["image_inpainting_performed"] is False and result["object_removal_performed"] is False
     assert result["generated_completion_performed"] is False and result["simulation_qualified"] is False
     assert result["uncaptured_regions"] == ["unobserved underside"]
     assert exports[0]["pose_root"] == source_root and "generated_roots" not in exports[0]
+    assert decodes == [source_root]
+    expected = ["source_pose"] + ([] if cached_splat else ["fuse"])
     if source_status == "completed":
-        assert calls == ["source_pose", "fuse", "mesh", "register"] and stages == ["mesh"]
+        assert calls == expected + ["mesh", "register"] and stages == ["mesh"]
     else:
-        assert calls == ["source_pose", "fuse"] and not stages
+        assert calls == expected and not stages
         assert "scale_unresolved" in result["blockers"] and not result["mesh_available"]
 
 

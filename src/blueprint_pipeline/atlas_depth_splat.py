@@ -23,7 +23,11 @@ import argparse
 import gzip
 import json
 import math
+import mmap
+import os
+import shutil
 import struct
+import tempfile
 import zlib
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -455,7 +459,7 @@ def _upsampled_on_surface(ratio: np.ndarray, grid_depth: np.ndarray, depth: np.n
     return np.where(weight > 0, total / np.where(weight > 0, weight, 1.0), 1.0)
 
 
-def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def consensus_depths(frames: Sequence[Mapping[str, Any]], *, scratch=None) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Rescale each frame's depth towards the median of the depth its overlapping views see along its pixels.
 
     A pixel's world point is projected into each voting view, the views with the
@@ -499,7 +503,11 @@ def consensus_depths(frames: Sequence[Mapping[str, Any]]) -> tuple[list[dict[str
             voted.append(float(counted.sum()) / depth.size)
         for frame, (ratio, grid_depth) in zip(frames, ratios):
             full = _upsampled_on_surface(ratio, grid_depth, frame["depth"])
-            frame["depth"] = (frame["depth"] * full).astype(frame["depth"].dtype)
+            previous = frame["depth"]
+            corrected = (previous * full).astype(previous.dtype)
+            frame["depth"] = _stored_depth(corrected, scratch)
+            if scratch is not None:
+                scratch.release(previous)
         voted_by_pass.append(round(float(np.median(voted)), 4))
         voters_by_pass.append(float(np.median(voters)))
     return frames, {"basis": "median_of_most_agreeing_views", "passes": DEPTH_CONSENSUS_PASSES,
@@ -527,17 +535,107 @@ def _sum_by_key(keys: np.ndarray, columns: np.ndarray) -> tuple[np.ndarray, np.n
     return unique, sums
 
 
+class _FusionScratch:
+    """Finite, private scratch on the existing output device; never input evidence.
+
+    Aggregate columns and corrected depths are file-backed so clean pages can
+    be reclaimed without swap. Both generations count during a merge. Existing
+    abandoned scratch counts against the same cap and is never silently erased.
+    """
+
+    MAXIMUM_BYTES = 4 * 1024**3
+    FREE_RESERVE_BYTES = 512 * 1024**2
+
+    def __init__(self, output_root: Path):
+        self.output_root = Path(output_root)
+        self._arrays = {}
+        self.bytes = self.peak_bytes = self._counter = 0
+
+    def __enter__(self):
+        self.output_root.mkdir(parents=True, exist_ok=True)
+        if self.output_root.is_symlink():
+            raise ValueError("atlas_depth_splat_scratch_path_invalid")
+        abandoned = sum(path.stat().st_size for folder in self.output_root.glob(".atlas-fusion-*")
+            if folder.is_dir() and not folder.is_symlink() for path in folder.glob("buffer-*.bin")
+            if path.is_file() and not path.is_symlink())
+        self.maximum_bytes = min(self.MAXIMUM_BYTES - abandoned,
+            shutil.disk_usage(self.output_root).free - self.FREE_RESERVE_BYTES)
+        if self.maximum_bytes <= 0:
+            raise ValueError("atlas_depth_splat_scratch_budget_exceeded")
+        self._temporary = tempfile.TemporaryDirectory(prefix=".atlas-fusion-", dir=self.output_root)
+        self.root = Path(self._temporary.name)
+        return self
+
+    def allocate(self, shape, dtype=np.float64):
+        dtype = np.dtype(dtype)
+        size = math.prod(shape) * dtype.itemsize
+        if not size:
+            return np.zeros(shape, dtype=dtype)
+        if (size + self.bytes > self.maximum_bytes
+                or size > shutil.disk_usage(self.root).free - self.FREE_RESERVE_BYTES):
+            raise ValueError("atlas_depth_splat_scratch_budget_exceeded")
+        path = self.root / f"buffer-{self._counter:06d}.bin"
+        self._counter += 1
+        try:
+            with path.open("xb") as stream:
+                if hasattr(os, "posix_fallocate"):
+                    os.posix_fallocate(stream.fileno(), 0, size)
+                else:
+                    stream.truncate(size)
+            array = np.memmap(path, dtype=dtype, mode="r+", shape=shape)
+        except OSError as exc:
+            path.unlink(missing_ok=True)
+            raise ValueError("atlas_depth_splat_scratch_reservation_failed") from exc
+        self._arrays[id(array)] = (array, path, size)
+        self.bytes += size
+        self.peak_bytes = max(self.peak_bytes, self.bytes)
+        return array
+
+    def cool(self, array):
+        if id(array) in self._arrays:
+            array.flush()
+            if hasattr(array._mmap, "madvise") and hasattr(mmap, "MADV_DONTNEED"):
+                array._mmap.madvise(mmap.MADV_DONTNEED)
+
+    def release(self, array):
+        record = self._arrays.pop(id(array), None)
+        if record is not None:
+            owned, path, size = record
+            owned._mmap.close()
+            path.unlink()
+            self.bytes -= size
+
+    def __exit__(self, *_):
+        try:
+            for array, _, _ in list(self._arrays.values()):
+                self.release(array)
+        finally:
+            self._temporary.cleanup()
+
+
+def _stored_depth(depth, scratch):
+    if scratch is None:
+        return depth
+    stored = scratch.allocate(depth.shape, depth.dtype)
+    stored[:] = depth
+    scratch.cool(stored)
+    return stored
+
+
 class VoxelSums:
     """Running confidence-weighted sums per voxel, so memory follows voxels rather than pixels.
 
-    Each frame is reduced to its own voxels first. Reduced frames merge into the
-    table once they reach half its size, so the table is not re-sorted per frame.
+    Each frame is reduced to its own voxels first. Pending reduced frames have
+    a fixed size bound. Large aggregate columns can use the writer's admitted
+    scratch device rather than multiplying anonymous full-table allocations.
     """
 
     MIN_MERGE_ROWS = 1_000_000
+    MERGE_BLOCK_ROWS = 65_536
 
-    def __init__(self, voxel: float):
+    def __init__(self, voxel: float, *, scratch=None):
         self.voxel = voxel
+        self._scratch = scratch
         self._keys = np.empty(0, np.int64)
         # weight, weighted xyz, rgb and normal, sample count, weighted slanted footprint
         self._columns = np.empty((12, 0))
@@ -552,14 +650,28 @@ class VoxelSums:
                                   np.ones_like(weights)[None], (slant * weights)[None]])
         self._pending.append(_sum_by_key(_voxel_keys(sample["points"], self.voxel), columns))
         self._pending_rows += len(self._pending[-1][0])
-        if self._pending_rows >= max(self.MIN_MERGE_ROWS, len(self._keys) // 2):
+        if self._pending_rows >= self.MIN_MERGE_ROWS:
             self._merge()
 
     def _merge(self) -> None:
         if self._pending:
-            self._keys, self._columns = _sum_by_key(
-                np.concatenate([self._keys, *(keys for keys, _ in self._pending)]),
-                np.concatenate([self._columns, *(columns for _, columns in self._pending)], axis=1))
+            # All input tables are already key-unique and sorted. Merge keys
+            # only, then add bounded column blocks in their original order.
+            # Concatenating every 12-column table previously kept the old,
+            # concatenated and reduced tables alive together at production size.
+            tables = [(self._keys, self._columns), *self._pending]
+            keys = np.unique(np.concatenate([row[0] for row in tables]))
+            columns = (self._scratch.allocate((12, len(keys))) if self._scratch is not None
+                       else np.zeros((12, len(keys))))
+            for prior_keys, prior_columns in tables:
+                for start in range(0, len(prior_keys), self.MERGE_BLOCK_ROWS):
+                    stop = start + self.MERGE_BLOCK_ROWS
+                    indices = np.searchsorted(keys, prior_keys[start:stop])
+                    columns[:, indices] += prior_columns[:, start:stop]
+            if self._scratch is not None:
+                self._scratch.release(self._columns)
+                self._scratch.cool(columns)
+            self._keys, self._columns = keys, columns
             self._pending, self._pending_rows = [], 0
 
     @property
@@ -650,7 +762,7 @@ def splats2mesh_input(splat: SplatData, voxel: float, *, limit: int | None = Non
 
 
 def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
-                      voxel_footprint_multiple: float = 2.0) -> tuple[SplatData, dict[str, Any]]:
+                      voxel_footprint_multiple: float = 2.0, scratch=None) -> tuple[SplatData, dict[str, Any]]:
     """Gate cross-view agreement, then stream every usable pixel into a draft splat.
 
     Full-resolution samples exist for one frame at a time; only bounded subsamples and
@@ -658,20 +770,20 @@ def fuse_posed_frames(frames: Sequence[Mapping[str, Any]], *,
     """
     if not math.isfinite(voxel_footprint_multiple) or voxel_footprint_multiple <= 0:
         raise ValueError("atlas_depth_splat_voxel_multiple_invalid")
-    frames = [{**frame, "depth": smoothed_depth(frame["depth"])} for frame in frames]
+    frames = [{**frame, "depth": _stored_depth(smoothed_depth(frame["depth"]), scratch)} for frame in frames]
     samples = [_subsample(surface_samples(frame)) for frame in frames]
     agreement = cross_view_agreement(frames, samples)
     if (agreement["median_relative_residual"] is not None
             and agreement["median_relative_residual"] > MAX_MEDIAN_CROSS_VIEW_RESIDUAL):
         raise ValueError("atlas_depth_splat_cross_view_inconsistent")
-    frames, consensus = consensus_depths(frames)
+    frames, consensus = consensus_depths(frames, scratch=scratch)
     samples = [_subsample(surface_samples(frame)) for frame in frames]
     consensus["median_relative_residual_after"] = cross_view_agreement(frames, samples)["median_relative_residual"]
     footprints = np.concatenate([sample["footprint"] for sample in samples])
     if not len(footprints):
         raise ValueError("atlas_depth_splat_no_usable_depth")
     voxel = float(voxel_footprint_multiple * np.median(footprints))
-    sums = VoxelSums(voxel)
+    sums = VoxelSums(voxel, scratch=scratch)
     for frame in frames:
         sums.add(surface_samples(frame))
     fused = sums.fused()
@@ -840,7 +952,11 @@ def write_depth_splat(*, frames, result, output_root: Path, voxel_footprint_mult
                       generated_result_digests=(), visual_review_digest=None,
                       rebuild_source_manifest_digest=None):
     """Shared writer; edited RGBD remains explicitly generated and separately bound."""
-    splat, report = fuse_posed_frames(frames, voxel_footprint_multiple=voxel_footprint_multiple)
+    with _FusionScratch(output_root) as scratch:
+        splat, report = fuse_posed_frames(frames, voxel_footprint_multiple=voxel_footprint_multiple, scratch=scratch)
+        report["working_storage"] = {"kind": "bounded_output_device_scratch",
+            "maximum_bytes": scratch.maximum_bytes, "peak_bytes": scratch.peak_bytes,
+            "merge_block_rows": VoxelSums.MERGE_BLOCK_ROWS, "source_pixels_reduced": False}
     data = encode_spz(splat)
     decoded = decode_spz(data)
     if decoded.count != splat.count or np.max(np.abs(decoded.xyz - splat.xyz)) > 1.0 / (1 << SPZ_FRACTIONAL_BITS):

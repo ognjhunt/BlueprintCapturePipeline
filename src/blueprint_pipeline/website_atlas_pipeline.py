@@ -244,7 +244,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     rather than being bought unconditionally at the photographed camera poses.
     """
     from .atlas_source_pose_inputs import prepare_source_pose
-    from .atlas_depth_splat import build_depth_splat, load_posed_rgbd, splats2mesh_attempt
+    from .atlas_depth_splat import write_depth_splat, load_posed_rgbd, splats2mesh_attempt
     from .atlas_mesh_registration import register_atlas_mesh
     from .atlas_result_bundle import export_pose_bundle
     from .paid_resource_allocator import run_sponsored_website_atlas_task
@@ -269,7 +269,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     splat_root = output_root / "splat"
     manifest = splat_root / "atlas_depth_splat_manifest.json"
     splat = (json.loads(manifest.read_text()) if manifest.is_file()
-             else build_depth_splat(source_root, splat_root))
+             else write_depth_splat(frames=frames, result=pose, output_root=splat_root))
     blockers = ["metric_scene_registration_unproven"]
     mesh_root = None
     # A scale/authority refusal may still leave useful retained observations.
