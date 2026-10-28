@@ -251,10 +251,13 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
 # binding, the assessment proposal, the expected context digest and the retained
 # grant's digest, policy, purpose and context.
 _SPONSORSHIP_EXPIRED = "website_control_scene-sponsorship_http_409:consent_expired"
+_SPONSORSHIP_MISSING = "website_control_scene-sponsorship_http_409:website_scene_sponsorship_missing"
 
 
-def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: float) -> str:
-    """Status evidence only: "current" or "expired"; any other answer raises.
+def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: float,
+                                       allow_missing: bool = False) -> str:
+    """Status evidence only: "current", "expired" or, when allowed, "missing";
+    any other answer raises.
 
     The read never creates or renews a grant, and its answer authorizes nothing.
     """
@@ -263,6 +266,8 @@ def website_scene_sponsorship_standing(*, task_context: Mapping[str, Any], now: 
     except ValueError as exc:
         if str(exc) == _SPONSORSHIP_EXPIRED:
             return "expired"
+        if allow_missing and str(exc) == _SPONSORSHIP_MISSING:
+            return "missing"
         raise
     return "current"
 

@@ -309,12 +309,16 @@ def test_a_hand_off_is_never_reported_on_an_expired_grant_without_its_evidence(p
 
 # ----------------------------------------------------------- assessment wait
 
-def test_a_preparation_with_no_grant_yet_is_still_not_read_and_nothing_resumes(prep_capture, monkeypatch):
-    """The WebApp cannot verify a preparation it has issued no grant for, and the paid
-    assessment resume reads status before it asks for one. Both stay as they were."""
+def test_a_preparation_with_no_grant_yet_is_not_delivered_but_its_resume_requests_the_grant(
+        prep_capture, monkeypatch):
+    """The WebApp cannot verify a preparation it has issued no grant for, so its status
+    is never delivered. Once the assessment is ready, the resume may read that grant-less
+    wait and request the first grant: owner decision 2026-10-26 (scene builds run under
+    each capture's website grant), applied to this resume on 2026-10-28. Before that the
+    resume read status first and so could never request one."""
     _wait_for_assessment(prep_capture)
     monkeypatch.setattr(listener, "process_handoff_payload",
-                        lambda *args, **kwargs: pytest.fail("a status read resumed a paid preparation"))
+                        lambda *args, **kwargs: pytest.fail("a refused grant resumed a paid preparation"))
     for answer in (PENDING, MISSING):
         prep_capture.webapp.sponsorship = answer
         prep_capture.webapp.calls.clear()
@@ -323,6 +327,10 @@ def test_a_preparation_with_no_grant_yet_is_still_not_read_and_nothing_resumes(p
         assert status_reader.reconcile_preparation_wakeups(prep_capture.storage_root)["attempted"] == 0
         assert resume.reconcile_waiting_assessments(listener, storage_root=prep_capture.storage_root,
                                                     process_args={"provider": "openai"}) == {"resumed": 0, "pending": 1}
-        grant_reads = [payload for operation, payload in prep_capture.webapp.calls if operation == "scene-sponsorship"]
-        assert grant_reads and all(payload.get("create") is False for payload in grant_reads)
+        creates = [payload.get("create", True) for operation, payload in prep_capture.webapp.calls
+                   if operation == "scene-sponsorship"]
+        # Still waiting: standing reads only. Ready but grant-less: the resume asks for
+        # the first grant; this WebApp refuses it, so nothing paid runs.
+        assert creates and (all(create is False for create in creates) if answer == PENDING
+                            else creates[-1] is True)
         assert "preparation-status" not in {operation for operation, _ in prep_capture.webapp.calls}

@@ -265,3 +265,77 @@ def test_browser_retention_refuses_unsupported_nested_records_or_credentials(cha
     raw = json.dumps(payload).encode()
     with pytest.raises(ValueError, match="website_assessment_resume_binding_invalid"):
         resume._payload_bytes(listener, raw, listener.payload_sha256(raw))
+
+
+MISSING_GRANT = "website_control_scene-sponsorship_http_409:website_scene_sponsorship_missing"
+
+
+@pytest.fixture
+def grantless_waiting(request, monkeypatch):
+    """Production 2026-10-28: an unconfirmed brief, and no grant was ever issued."""
+    from tests.test_website_preparation_status import _unconfirmed_task_for_ordinary_birth
+    _unconfirmed_task_for_ordinary_birth(request.getfixturevalue("prepared_source"), monkeypatch)
+    return request.getfixturevalue("waiting")
+
+
+def _grantless_webapp(monkeypatch, waiting):
+    _ready(waiting, monkeypatch)
+    proposal = context_reader.load_website_scene_sponsorship(task_context={}, now=0)
+    reads = []
+    def sponsorship(*, task_context, now, create=True):
+        reads.append(create)
+        if create is False:
+            raise ValueError(MISSING_GRANT)
+        return proposal
+    monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", sponsorship)
+    return reads
+
+
+def _status_selectors(waiting):
+    _, _, _, raw, record = waiting
+    handoff = listener.parse_handoff_payload(raw)
+    return {"request_id": handoff.scene_id.removeprefix("site-"), "scene_id": handoff.scene_id,
+            "capture_id": handoff.capture_id, "completion_marker_generation": handoff.source_finalize["generation"],
+            "producer_delivery_key": record["producer_delivery_key"],
+            "source_payload_sha256": record["source_payload_sha256"], "task_context_digest": record["task_context_digest"]}
+
+
+def test_grantless_assessment_wait_resumes_and_requests_its_first_grant(grantless_waiting, monkeypatch):
+    root = grantless_waiting[0]
+    reads = _grantless_webapp(monkeypatch, grantless_waiting)
+    calls = []
+    monkeypatch.setattr(listener, "process_handoff_payload", lambda payload, **kwargs: calls.append(kwargs) or {"status": "processed"})
+    result = resume.reconcile_waiting_assessments(listener, storage_root=root.parents[4], process_args={"provider": "openai"})
+    assert result == {"resumed": 1, "pending": 0}
+    # The status read sees no grant yet; the resume's own admission requests it.
+    assert reads == [False, True]
+    assert len(calls) == 1 and calls[0]["expected_assessment_resume"]["record"] == grantless_waiting[4]
+
+
+def test_status_delivery_still_refuses_a_grantless_wait(grantless_waiting, monkeypatch):
+    from blueprint_pipeline.website_preparation_status import PreparationStatusUnavailable, read_preparation_status
+    _grantless_webapp(monkeypatch, grantless_waiting)
+    with pytest.raises(PreparationStatusUnavailable):
+        read_preparation_status(capture_root=grantless_waiting[0], selectors=_status_selectors(grantless_waiting))
+    status = read_preparation_status(capture_root=grantless_waiting[0], selectors=_status_selectors(grantless_waiting),
+                                     grantless_assessment_wait=True)
+    assert status["state"] == "failed_retryable"
+
+
+@pytest.mark.parametrize("change", ["other_error", "no_resume_record", "other_webapp_refusal"])
+def test_missing_grant_is_accepted_only_for_the_assessment_wait(grantless_waiting, monkeypatch, change):
+    from blueprint_pipeline.website_preparation_status import PreparationStatusUnavailable, read_preparation_status
+    root = grantless_waiting[0]
+    _grantless_webapp(monkeypatch, grantless_waiting)
+    if change == "other_webapp_refusal":
+        monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", lambda **_: (_ for _ in ()).throw(
+            ValueError("website_control_scene-sponsorship_http_409:website_task_context_changed")))
+    else:
+        ledger = listener._read_job_ledger(root)
+        if change == "other_error":
+            ledger["last_error"] = "unknown_provider_charge"
+        else:
+            ledger.pop("assessment_resume")
+        write_json(root / listener.JOB_LEDGER_FILENAME, ledger)
+    with pytest.raises(PreparationStatusUnavailable):
+        read_preparation_status(capture_root=root, selectors=_status_selectors(grantless_waiting), grantless_assessment_wait=True)
