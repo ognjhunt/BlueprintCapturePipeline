@@ -75,7 +75,8 @@ def sources(retained):  # noqa: F811 -- reuse the existing native evidence fixtu
         value = acquisition.AuthenticatedSourceRead(selector, raw, rec, producer + "-service", auth,
             "production", "natural_production", attempt["releases"][producer + "_commit"],
             attempt["releases"][producer + "_image_digest"], stamp(70 + len(calls)),
-            stamp(60) if auth == "firestore_server_identity" else rec["sha256"])
+            stamp(60) if auth == "firestore_server_identity" else rec["sha256"],
+            200 if auth == "authenticated_https_response" else None)
         return replace(value, **overrides.get(selector.kind, {}))
 
     def collector():
@@ -193,6 +194,10 @@ def test_authenticated_source_must_retain_the_same_original_bytes(sources):
     ("webapp_result", {"observed_at": stamp(-1)}),
     ("webapp_result", {"version": stamp(59)}),
     ("webapp_workspace", {"version": "asserted-response-id"}),
+    ("webapp_workspace", {"http_status": None}),
+    ("webapp_workspace", {"http_status": 401}),
+    ("webapp_workspace", {"http_status": 409}),
+    ("webapp_workspace", {"http_status": 503}),
 ])
 def test_job_labels_fixture_changed_service_or_invalid_versions_are_not_authentication(sources, kind, changes):
     sources.overrides[kind] = changes

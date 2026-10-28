@@ -74,6 +74,7 @@ class AuthenticatedSourceRead:
     image_digest: str
     observed_at: str
     version: str
+    http_status: int | None = None
 
 
 AuthenticatedSourceReader = Callable[[SourceSelector], AuthenticatedSourceRead | None]
@@ -265,6 +266,7 @@ class AuthenticatedAcceptanceCollector:
             else "authenticated_https_response" if webapp else "authenticated_controller_snapshot")
         if (response.environment != "production" or response.origin != "natural_production"
                 or response.authentication != expected_auth or response.service_identity != self._peers[producer]
+                or (expected_auth == "authenticated_https_response" and response.http_status != 200)
                 or response.commit != self._attempt["releases"][producer + "_commit"]
                 or response.image_digest != self._attempt["releases"][producer + "_image_digest"]
                 or _stamp(response.observed_at) < self._frozen):
@@ -276,7 +278,8 @@ class AuthenticatedAcceptanceCollector:
             raise AcceptanceEvidenceError("authenticated_response_identity_invalid")
         identity.update({"version": response.version, "observed_at": response.observed_at,
             "service_identity": response.service_identity, "authentication": response.authentication,
-            "commit": response.commit, "image_digest": response.image_digest, "status": "verified"})
+            "commit": response.commit, "image_digest": response.image_digest,
+            "http_status": response.http_status, "status": "verified"})
         return payload, response
 
     def _webapp(self, role, digest, payload):
