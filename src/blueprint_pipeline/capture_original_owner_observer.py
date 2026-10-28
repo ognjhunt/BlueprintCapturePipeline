@@ -129,6 +129,64 @@ def _gcs_row(value: Any, *, object_name: str | None = None, video: bool = False)
     return row
 
 
+def _website_request_id(scene_id: str, capture_id: str) -> str:
+    request_id = scene_id.removeprefix("site-")
+    if (not scene_id.startswith("site-") or not _identifier(request_id, max_length=120)
+            or not (capture_id == f"walkthrough-{request_id}"
+                    or re.fullmatch(r"supplement-[a-f0-9]{40}", capture_id))):
+        _refuse("capture_owner_capture_identity_invalid")
+    return request_id
+
+
+def _validate_continuation(value: Any, *, request_id: str, scene_id: str, capture_id: str,
+                           bucket: str, marker_generation: str, marker_sha256: str, delivery: dict[str, Any]) -> None:
+    binding = _object(value, {"schema_version", "original_capture_id", "capture_id", "lineage", "coordinate_frames_independent"})
+    original = f"walkthrough-{request_id}"
+    if (binding["schema_version"] != "website_capture_continuation.v1" or binding["original_capture_id"] != original
+            or binding["capture_id"] != capture_id or binding["coordinate_frames_independent"] is not True
+            or type(binding["lineage"]) is not list or not 1 <= len(binding["lineage"]) <= 8):
+        _refuse("capture_owner_capture_identity_invalid")
+    expected, seen, previous_parent = capture_id, set(), None
+    for index, row in enumerate(binding["lineage"]):
+        if expected == original:
+            _refuse("capture_owner_capture_identity_invalid")
+        row = _object(row, {"child", "parent", "supplement"})
+        child, parent = row["child"], row["parent"]
+        link = _object(row["supplement"], {"parent_capture_id", "parent_bundle_digest", "parent_manifest_uri", "coverage_digest"})
+        if type(child) is not dict or type(parent) is not dict or child.get("capture_id") != expected or expected in seen:
+            _refuse("capture_owner_capture_identity_invalid")
+        if previous_parent is not None and previous_parent != child:
+            _refuse("capture_owner_source_invalid")
+        seen.add(expected)
+        for source in (child, parent):
+            identifier = source.get("capture_id")
+            if not isinstance(identifier, str):
+                _refuse("capture_owner_capture_identity_invalid")
+            _website_request_id(scene_id, identifier)
+            retained_parent = (source is parent and identifier == original
+                               and source.get("source_state") == "retained_unprocessed")
+            generations = ("completion_generation", "completion_record_generation", "manifest_generation")
+            if (not _sha(source.get("raw_bundle_digest"))
+                    or source.get("raw_manifest_uri") != f"gs://{bucket}/scenes/{scene_id}/captures/{identifier}/raw/manifest.json"
+                    or (retained_parent and (source.get("upload_completion_digest") is not None
+                                            or any(source.get(key) is not None for key in generations)))
+                    or (not retained_parent and (not _sha(source.get("upload_completion_digest"))
+                                                or not all(_generation(source.get(key)) for key in generations)))):
+                _refuse("capture_owner_source_invalid")
+        if (link["parent_capture_id"] != parent.get("capture_id")
+                or link["parent_bundle_digest"] != parent.get("raw_bundle_digest")
+                or link["parent_manifest_uri"] != parent.get("raw_manifest_uri") or not isinstance(link["coverage_digest"], str) or not re.fullmatch(r"[a-f0-9]{64}", link["coverage_digest"])):
+            _refuse("capture_owner_source_invalid")
+        if index == 0 and (child["completion_generation"] != marker_generation
+                or child["completion_record_generation"] != delivery["server_record"]["generation"]
+                or child["upload_completion_digest"] != marker_sha256
+                or delivery["kind"] == "website_browser_capture_delivery" and child["raw_bundle_digest"] != delivery["delivery_key"]):
+            _refuse("capture_owner_marker_generation_mismatch")
+        expected, previous_parent = parent["capture_id"], parent
+    if expected != original:
+        _refuse("capture_owner_capture_identity_invalid")
+
+
 def validate_observation(
     value: Any, *, bucket: str, scene_id: str, capture_id: str,
     marker_generation: str, now_epoch: int | None = None,
@@ -137,15 +195,15 @@ def validate_observation(
     """Validate the complete bounded projection against the delivered selector."""
     if not _generation(marker_generation):
         _refuse("capture_owner_marker_generation_invalid")
-    if not capture_id.startswith("walkthrough-"):
-        _refuse("capture_owner_capture_identity_invalid")
-    request_id = capture_id.removeprefix("walkthrough-")
+    request_id = _website_request_id(scene_id, capture_id)
+    supplemental = capture_id != f"walkthrough-{request_id}"
     if (not _identifier(request_id, max_length=120)
             or scene_id != f"site-{request_id}" or not _identifier(bucket)):
         _refuse("capture_owner_capture_identity_invalid")
     if expected_purpose not in {None, "scene_preparation"}:
         _refuse("capture_owner_purpose_invalid")
-    value = _object(value, _RESPONSE_KEYS | ({"purpose"} if expected_purpose else set()))
+    value = _object(value, _RESPONSE_KEYS | ({"purpose"} if expected_purpose else set())
+                    | ({"capture_binding"} if supplemental else set()))
     if expected_purpose and value.get("purpose") != expected_purpose:
         _refuse("capture_owner_purpose_mismatch")
     raw_prefix = f"scenes/{scene_id}/captures/{capture_id}/raw"
@@ -158,7 +216,7 @@ def validate_observation(
     if not (expected_purpose == "scene_preparation" and value["capture_owner"] is None):
         owner = _object(value["capture_owner"], {"user_id", "basis"})
         if (not _identifier(owner["user_id"])
-                or owner["basis"] != "inboundRequests.account_owner_uid"):
+                or owner["basis"] not in {"inboundRequests.account_owner_uid", "inboundRequests.capture_owner_uid"}):
             _refuse("capture_owner_identity_invalid")
     source = _object(value["source_document"], {"collection", "document_id", "update_time"})
     update_time = _object(source["update_time"], {"seconds", "nanoseconds"})
@@ -214,6 +272,9 @@ def validate_observation(
         expected = f"{receipt_prefix}producer_deliveries/browser-video-{video['generation']}.json"
         if receipt["object_name"] != expected:
             _refuse("capture_owner_delivery_invalid")
+    if supplemental:
+        _validate_continuation(value["capture_binding"], request_id=request_id, scene_id=scene_id,
+                               capture_id=capture_id, bucket=bucket, marker_generation=marker_generation, marker_sha256=marker["sha256"], delivery=delivery)
     observed = value["observed_at_epoch"]
     valid_until = value["valid_until_epoch"]
     now = int(time.time()) if now_epoch is None else now_epoch
@@ -225,7 +286,8 @@ def validate_observation(
         _refuse("capture_owner_observation_stale")
     if (not _sha(value["source_projection_digest"])
             or value["source_projection_digest"] != cross_runtime_canonical_digest({
-                key: value[key] for key in (*_SOURCE_KEYS, *(("purpose",) if expected_purpose else ()))
+                key: value[key] for key in (*_SOURCE_KEYS, *(("purpose",) if expected_purpose else ()),
+                                         *(("capture_binding",) if supplemental else ()))
             })
             or not _sha(value["observation_digest"])
             or value["observation_digest"] != cross_runtime_canonical_digest(
@@ -256,9 +318,9 @@ def load_original_owner_observation(
     """One signed read through the installed Pipeline sync credential and API origin."""
     if not _integer(remaining_timeout_ms, 1, 10_000):
         _refuse("capture_owner_timeout_invalid")
-    if not _generation(marker_generation) or not capture_id.startswith("walkthrough-"):
+    if not _generation(marker_generation):
         _refuse("capture_owner_capture_identity_invalid")
-    request_id = capture_id.removeprefix("walkthrough-")
+    request_id = _website_request_id(scene_id, capture_id)
     if not _identifier(request_id, max_length=120) or scene_id != f"site-{request_id}":
         _refuse("capture_owner_capture_identity_invalid")
     configured = os.getenv("PIPELINE_SYNC_WEBAPP_URL", "").strip()
