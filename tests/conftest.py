@@ -151,13 +151,9 @@ def _isolated_control_plane_disk_reservation_root(tmp_path_factory, monkeypatch)
     from blueprint_pipeline import control_plane_disk_budget as budget
     original_reserve = budget.reserve_control_plane_disk
     def reserve(*args, **kwargs):
-        if (kwargs.get('workload') in {'provider_archive_download', 'team_archive_extraction', 'atlas_depth_fusion'}
+        if (kwargs.get('workload') in {'provider_archive_download', 'team_archive_extraction'}
                 and kwargs.get('reservation_root') == budget.DEFAULT_RESERVATION_ROOT):
             kwargs['reservation_root'] = root
-        if kwargs.get('workload') == 'atlas_depth_fusion':
-            from types import SimpleNamespace
-            kwargs.setdefault('disk_usage', lambda _: SimpleNamespace(
-                total=2 * 1024**4, free=1024**4, used=1024**4))
         return original_reserve(*args, **kwargs)
     monkeypatch.setattr(budget, 'reserve_control_plane_disk', reserve)
     # Hermetic archive extraction exercises the real shared reservation ledger;
