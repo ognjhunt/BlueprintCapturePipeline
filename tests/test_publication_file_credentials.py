@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import pytest
 
 from blueprint_pipeline import capture_qa_webapp_sync as qa_sync
@@ -194,7 +195,14 @@ def test_failed_file_only_testbed_publication_recovers_retained_request_without_
     assert bodies == tokens == []
     # The transport retries the already compiled scientific bytes; no compiler
     # or reconstruction step is used to recover a private transport credential.
-    monkeypatch.setattr(testbed_fixture, "compile_site_task_testbed", lambda **_: pytest.fail("unexpected compilation"))
+    def no_compilation(**_):
+        pytest.fail("unexpected compilation")
+    # Guard the actual direct import used by _case, the compiler's canonical
+    # export, and the fixture module alias; mutating recovery to rebuild cannot
+    # hide behind a different imported name.
+    monkeypatch.setattr(sys.modules[__name__], "compile_site_task_testbed", no_compilation)
+    monkeypatch.setattr("blueprint_pipeline.site_task_testbed_compiler.compile_site_task_testbed", no_compilation)
+    monkeypatch.setattr(testbed_fixture, "compile_site_task_testbed", no_compilation)
     private.write_text("recovered-file-token")
     private.chmod(0o600)
     accepted = sync(**arguments)
