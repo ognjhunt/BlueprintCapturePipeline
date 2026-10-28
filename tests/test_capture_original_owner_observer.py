@@ -255,3 +255,105 @@ def test_valid_observation_still_cannot_enter_legacy_birth_or_direct_stage(tmp_p
         listener.stage_handoff_capture(handoff, storage_root=tmp_path)
     assert not (tmp_path / "capture-bucket" / "scenes" / "site-req-1" / "captures" /
                 "walkthrough-req-1").exists()
+
+
+def supplemental_observation():
+    value = observation()
+    original = value["capture_id"]
+    child_id = "supplement-" + "d" * 40
+    # Every produced object moves together; no original artifact is overwritten.
+    def replace(item):
+        if isinstance(item, str):
+            return item.replace(original, child_id)
+        if isinstance(item, dict):
+            return {key: replace(child) for key, child in item.items()}
+        return item
+    value = replace(value)
+    value["capture_owner"]["basis"] = "inboundRequests.capture_owner_uid"
+    def source(capture, digest):
+        return {"capture_id": capture, "raw_bundle_digest": digest,
+                "raw_manifest_uri": f"gs://capture-bucket/scenes/site-req-1/captures/{capture}/raw/manifest.json",
+                "upload_completion_digest": value["completion_marker"]["sha256"],
+                "verification_status": "pending_pipeline_storage_readback",
+                "completion_generation": value["completion_marker"]["generation"],
+                "completion_record_generation": value["producer_delivery"]["server_record"]["generation"],
+                "manifest_generation": "17000000000000000003"}
+    child = source(child_id, value["producer_delivery"]["delivery_key"])
+    parent = source(original, "sha256:" + "e" * 64)
+    value["capture_binding"] = {"schema_version": "website_capture_continuation.v1",
+        "original_capture_id": original, "capture_id": child_id, "coordinate_frames_independent": True,
+        "lineage": [{"child": child, "parent": parent, "supplement": {
+            "parent_capture_id": original, "parent_bundle_digest": parent["raw_bundle_digest"],
+            "parent_manifest_uri": parent["raw_manifest_uri"], "coverage_digest": "f" * 64}}]}
+    return seal_supplemental_observation(value)
+
+
+def seal_supplemental_observation(value):
+    from blueprint_pipeline.capture_original_owner_observer import _SOURCE_KEYS
+    value["source_projection_digest"] = cross_runtime_canonical_digest({key: value[key] for key in
+        (*_SOURCE_KEYS, "capture_binding")})
+    value["observation_digest"] = cross_runtime_canonical_digest(value, digest_field="observation_digest")
+    return value
+
+
+def test_supplemental_owner_observation_retains_same_job_lineage_and_new_source():
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+    value = supplemental_observation()
+    assert validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+        capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"]) == value
+
+
+@pytest.mark.parametrize("fault", ["missing", "cross_job", "wrong_marker", "wrong_source", "changed_parent", "cycle"])
+def test_supplemental_owner_observer_refuses_unbound_lineage_even_with_resealed_envelope(fault):
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+    value = supplemental_observation()
+    row = value["capture_binding"]["lineage"][0]
+    if fault == "cross_job":
+        row["parent"]["capture_id"] = "walkthrough-other"
+    if fault == "wrong_marker":
+        row["child"]["upload_completion_digest"] = "sha256:" + "0" * 64
+    if fault == "wrong_source":
+        row["child"]["raw_bundle_digest"] = "sha256:" + "0" * 64
+    if fault == "changed_parent":
+        row["parent"]["raw_bundle_digest"] = "sha256:" + "0" * 64
+    if fault == "cycle":
+        row["parent"] = dict(row["child"])
+    seal_supplemental_observation(value)
+    if fault == "missing":
+        value.pop("capture_binding")
+    with pytest.raises(ValueError):
+        validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+            capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"])
+
+
+def test_supplement_owner_read_derives_request_from_scene_and_requires_signed_binding(monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    value = supplemental_observation()
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://tryblueprint.io/api/internal/pipeline/sync")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "fixture-secret")
+    calls = []
+    def respond(url, **kwargs):
+        calls.append(json.loads(kwargs["data"]))
+        return SimpleNamespace(status=200, body=json.dumps(value).encode())
+    monkeypatch.setattr(observer, "safe_request", respond)
+    assert observer.load_original_owner_observation(bucket="capture-bucket", scene_id=value["scene_id"],
+        capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"]) == value
+    assert calls[0]["request_id"] == "req-1"
+
+
+def test_repair_keeps_unprocessed_original_as_history_without_inventing_completion():
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+    value = supplemental_observation()
+    parent = value["capture_binding"]["lineage"][0]["parent"]
+    parent.update(source_state="retained_unprocessed", upload_completion_digest=None,
+                  completion_generation=None, completion_record_generation=None, manifest_generation=None)
+    seal_supplemental_observation(value)
+    assert validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+        capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"]) == value
+    # The current source must still have completed producer/marker proof.
+    value["capture_binding"]["lineage"][0]["child"].update(source_state="retained_unprocessed", completion_generation=None)
+    seal_supplemental_observation(value)
+    with pytest.raises(ValueError):
+        validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
+            capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"])

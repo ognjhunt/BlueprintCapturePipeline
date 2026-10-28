@@ -179,22 +179,30 @@ preflight repair, lost allocator receipts, cancellation, partial progress and
 provider-zero. Observe a real stopped/partial outcome and its WebApp delivery
 before claiming the recovery journey is proven.
 
-For missing capture information, ask for the specific view or measurement on
-the existing job. Its owner link can create an immutable replacement or
-additional-view child capture. A film-only link cannot declare that change.
-The signed child link, server-retained parent identities, generation-specific
-storage receipts and authenticated owner observation establish the lineage;
-an ID or filename alone does not. Do not relabel a supplement as the original
-walkthrough or edit finalized source membership.
+For missing capture information, keep the same job and the original recording.
+The owner chooses **Update walkthrough** on the existing job page and records a
+complete updated walkthrough, including the missing view and the full job cycle.
+The server creates an immutable `supplement-<digest>` capture under that job;
+issued update links, parent source identities and recording permission are
+revalidated before upload and publication. Film-only links cannot issue an
+update, but an explicitly issued update token can upload its own new source.
 
-Retain original footage, reconstruction, results and failure reasons. Selecting
-a new source ends the applicability of affected old results; it does not erase
-them or let them qualify the child. Resume reusable work only when its source
-bindings remain valid. Parent and child coordinate frames are independent:
-lineage alone does not register or fuse their geometry, or prove that a parent
-scene can be reused for a child task. Current consent, privacy, task, probe and
-execution admission still apply to the selected source. Verify the same-job
-repair on actual authorized footage before claiming live recovery success.
+The selected child carries `website_capture_continuation.v1`, binding every
+parent/child source to the original job with independent coordinate frames.
+An original upload that was retained but never processed remains explicitly
+`retained_unprocessed`; no completion marker or successful reconstruction is
+invented for it. Existing parent bytes, receipts and results remain historical.
+A child is selected only after its own privacy and completed-source proof.
+An old capture cannot start new preparation after a newer child is selected;
+read-only ownership/rights observations remain available for closeout.
+
+Lineage is record continuity, not a registered multi-capture reconstruction.
+The current scene uses the complete updated walkthrough; it does not combine
+an isolated extra angle with the original geometry. Reuse only source-bound
+artifacts whose inputs still match. The new revision needs its own preparation,
+robot-free check and runtime admission; it cannot inherit an old successful
+score or recommendation. Observe this route on the actual site account before
+calling live capture recovery complete.
 
 ## Reconstruction providers
 
