@@ -383,7 +383,9 @@ def test_durable_delivery_retry_never_reopens_provider_work(prepared_source, mon
     assert status_reader.reconcile_preparation_wakeups(storage_root)["attempted"] == 1
     pending = json.loads((root / status_reader.DELIVERY_FILE).read_text())
     assert pending["state"] == "pending" and pending["delivery_attempt_count"] == 1
-    assert status_reader.reconcile_preparation_wakeups(storage_root)["delivered"] == 1
+    assert status_reader.reconcile_preparation_wakeups(storage_root)["attempted"] == 0
+    assert status_reader.reconcile_preparation_wakeups(storage_root,
+        now_epoch=pending["next_attempt_at_epoch"] + 1)["delivered"] == 1
     assert status_reader.reconcile_preparation_wakeups(storage_root)["attempted"] == 0
     assert listener._read_job_ledger(root) == before
     assert len(calls) == 2 and all(call["payload"] == selected for call in calls)

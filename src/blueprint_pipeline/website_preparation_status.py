@@ -134,7 +134,7 @@ def _current_context(*, request_id: str, scene_id: str, capture_id: str,
 
 def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
     """Typed v2 meaning of a ledger that is not handed off."""
-    from .website_preparation_terminal import capacity_only, current_terminal
+    from .website_preparation_terminal import capacity_only, current_terminal, current_overdue
     status = ledger.get("status")
     _require(status in _LEDGER_STATES)
     terminal = current_terminal(ledger) if status != "terminal_authority_ended" else None
@@ -142,6 +142,8 @@ def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
         return "failed_terminal", terminal["reason"]
     if status in {"failed_retryable", "retryable_blocked"} and capacity_only(ledger):
         return "capacity_delayed", None
+    if status == "processing" and current_overdue(ledger) is not None:
+        return "failed_retryable", None
     return _LEDGER_STATES[status], None
 
 
@@ -265,6 +267,7 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
     """
     from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
+    from .website_preparation_delivery_index import update as update_index
     root = _root(capture_root)
     birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
     if not birth:
@@ -295,10 +298,17 @@ def retain_preparation_wakeup(capture_root: Path) -> None:
         path = root / DELIVERY_FILE
         old = _read(path) if path.is_file() else {}
         if old.get("selectors") == selected and old.get("revision") == revision:
+            if old.get("state") == "pending" and "pending_since_epoch" not in old:
+                old = {**old, "pending_since_epoch": time.time(), "next_attempt_at_epoch": 0.0}
+                write_json(path, old)
+            update_index(root, old)
             return
-        write_json(path, {"schema_version": "website_preparation_status_delivery.v1",
+        delivery = {"schema_version": "website_preparation_status_delivery.v1",
                           "state": "pending", "selectors": selected, "revision": revision,
-                          "delivery_attempt_count": 0})
+                          "delivery_attempt_count": 0, "delivery_failure_count": 0,
+                          "pending_since_epoch": time.time(), "next_attempt_at_epoch": 0.0}
+        write_json(path, delivery)
+        update_index(root, delivery)
 
 
 def validate_acceptance(value: Any, selected: Mapping[str, str]) -> dict[str, Any]:
@@ -322,16 +332,17 @@ def accepted_status_version(acceptance: Mapping[str, Any]) -> str:
     return _ACCEPTANCE[acceptance["schema_version"]][0]
 
 
-def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dict[str, int]:
+def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
+                                 now_epoch: float | None = None) -> dict[str, int]:
     """Existing listener tick retries delivery independently of provider work."""
     from .handoff_job_state import _existing_job_ledger_lock, _read_job_ledger
     from .website_preparation_terminal import note_sweep_liveness, record_unretried_preparation
+    from .website_preparation_delivery_index import due, update as update_index, METRICS_FILE
     from .website_task_context import website_webapp_request
     counts = {"attempted": 0, "delivered": 0, "unavailable": 0}
     storage_root = Path(storage_root)
     try:
-        # This drain runs on every listener tick, so its own cadence is the
-        # evidence that a redelivery could have been received.
+        # Liveness qualifies overdue observations, never per-message exhaustion.
         alive_since = note_sweep_liveness(storage_root)
     except OSError:
         alive_since = None
@@ -346,23 +357,43 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dic
     if cursor in keys:
         pivot = keys.index(cursor) + 1
         roots = roots[pivot:] + roots[:pivot]
-    bounded = roots[:max(0, min(limit, 50))]
+    maximum = max(0, min(limit, 50))
+    # Historical/index repair has its own budget. Settled history cannot consume
+    # the callback budget; newly retained revisions enter the due index directly.
+    bounded = roots[:maximum]
     for root in bounded:
         try:
-            # A preparation nothing retried within the silence window has ended;
-            # record that before reporting the ledger.
             if alive_since is not None:
                 record_unretried_preparation(root, alive_since=alive_since)
+            retain_preparation_wakeup(root)
+        except Exception:
+            counts["unavailable"] += 1
+    now = time.time() if now_epoch is None else now_epoch
+    try:
+        pending_roots, metrics = due(storage_root, now=now, limit=maximum)
+    except Exception:
+        pending_roots, metrics = [], {"index_unavailable": True}
+        counts["unavailable"] += 1
+    success_lags = []
+    for root in pending_roots:
+        delivery = None
+        path = root / DELIVERY_FILE
+        attempted = False
+        try:
             retain_preparation_wakeup(root)
             path = root / DELIVERY_FILE
             if not path.is_file():
                 continue
             delivery = _read(path)
             if delivery.get("state") != "pending":
+                update_index(root, delivery)
+                continue
+            if delivery.get("next_attempt_at_epoch", 0.0) > now:
                 continue
             selected = validate_selectors(delivery["selectors"])
             read_preparation_status(capture_root=root, selectors=selected)
             counts["attempted"] += 1
+            attempted = True
             error = None
             acceptance = None
             current_status = None
@@ -386,12 +417,37 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dic
                     ledger = _read_job_ledger(root)
                     _require(current_status is not None and ledger.get("revision") == current_status["revision"]
                              and ledger.get("attempt_count") == current_status["attempt_count"])
-                write_json(path, {**delivery, "state": "pending" if error else "delivered",
+                failures = delivery.get("delivery_failure_count", 0) + int(error is not None)
+                updated = {**delivery, "state": "pending" if error else "delivered",
                                   "delivery_attempt_count": delivery.get("delivery_attempt_count", 0) + 1,
-                                  "last_error_type": error, "acceptance": acceptance})
+                                  "delivery_failure_count": failures,
+                                  "next_attempt_at_epoch": now + min(1800, 60 * 2 ** min(failures - 1, 5)) if error else 0.0,
+                                  "last_attempt_at_epoch": now,
+                                  "delivered_at_epoch": now if error is None else None,
+                                  "last_error_type": error, "acceptance": acceptance}
+                write_json(path, updated)
+                update_index(root, updated)
             counts["delivered"] += int(error is None)
-        except Exception:
+            if error is None:
+                success_lags.append(max(0.0, now - delivery.get("pending_since_epoch", now)))
+        except Exception as exc:
             counts["unavailable"] += 1
+            # Source/control outages also back off. This changes no authority,
+            # and cannot acknowledge or overwrite a concurrent newer revision.
+            if delivery is not None:
+                try:
+                    with _existing_job_ledger_lock(root) as lock_state:
+                        if lock_state == "ledger_present" and _read(path) == delivery:
+                            failures = delivery.get("delivery_failure_count", 0) + 1
+                            updated = {**delivery, "state": "pending",
+                                "delivery_attempt_count": delivery.get("delivery_attempt_count", 0) + int(attempted),
+                                "delivery_failure_count": failures,
+                                "next_attempt_at_epoch": now + min(1800, 60 * 2 ** min(failures - 1, 5)),
+                                "last_error_type": type(exc).__name__}
+                            write_json(path, updated)
+                            update_index(root, updated)
+                except Exception:
+                    pass
     if bounded:
         # Fair bounded scan across restarts; this cursor selects only members of
         # the server-owned glob, never an arbitrary path or a source authority.
@@ -400,4 +456,10 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50) -> dic
                        "last_capture_digest": hashlib.sha256(str(bounded[-1]).encode()).hexdigest()})
         except OSError:
             counts["unavailable"] += 1
+    try:
+        write_json(storage_root / METRICS_FILE, {"schema_version": "website_preparation_delivery_metrics.v1",
+                   "observed_at_epoch": now, **metrics, **counts, "repair_scanned": len(bounded),
+                   "successful_delivery_lag_seconds": success_lags})
+    except OSError:
+        counts["unavailable"] += 1
     return counts

@@ -210,9 +210,11 @@ def main() -> None:
             elif command == "retry":
                 process()
                 result = listener._read_job_ledger(root)
-            elif command == "exhaust":
-                # What the listener sweep records once nothing has claimed this
-                # source for a full silence window of continuous listening.
+            elif command in {"overdue", "exhaust"}:
+                # The compatibility "exhaust" command no longer fabricates a
+                # terminal disposition from silence. Both names exercise the
+                # actual overdue observation; AUT-02 must supply independently
+                # verified broker/recovery evidence for real exhaustion.
                 from datetime import datetime, timedelta, timezone
                 from blueprint_pipeline.website_preparation_status import retain_preparation_wakeup
                 from blueprint_pipeline import website_preparation_terminal as terminal
