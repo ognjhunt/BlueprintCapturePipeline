@@ -83,10 +83,15 @@ def test_launch_intent_crash_is_not_retried_or_released(tmp_path, monkeypatch):
 def test_new_pre_spawn_crash_recovers_only_after_durable_no_create_fence(tmp_path, monkeypatch):
     from blueprint_pipeline import allocator_invocation as jobs
     from blueprint_pipeline import beta_policy_screening_worker as service
+    from blueprint_pipeline import beta_policy_screening_control_transport as control_transport
+    from tests.test_beta_policy_screening_control_contracts import binding, response
+    import time
 
     monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
     monkeypatch.setattr(launch, "_check_quote", lambda *args: None)
     monkeypatch.setattr(service, "require_current_source", lambda *args, **kwargs: {})
+    monkeypatch.setattr(control_transport, "request_control", lambda *, binding, **kwargs:
+                        response(scope=binding, now=int(time.time()), deadline=int(time.time()) + 3600))
     authority = launch._write(tmp_path / "authority.json", {"authority_digest": "sha256:" + "c" * 64,
                                                           "resource_name": "canonical-owned-resource"})
     bundle = launch._write(tmp_path / "bundle.json", {"bundle_sha256": "sha256:" + "d" * 64})
@@ -99,7 +104,8 @@ def test_new_pre_spawn_crash_recovers_only_after_durable_no_create_fence(tmp_pat
         raise RuntimeError("crash before or after spawn acknowledgment")
 
     monkeypatch.setattr(jobs, "start_invocation", crash)
-    kwargs = dict(plan={"source": {}, "site_id": "site-request1", "plan_digest": "sha256:" + "e" * 64},
+    kwargs = dict(plan={"campaign_id": "campaign-one", "source": binding()["source"], "site_id": "site-request1",
+                        "plan_digest": "sha256:" + "e" * 64},
                   candidate={"candidate_id": "candidate", "configuration_digest": "sha256:" + "f" * 64},
                   attempt_dir=tmp_path, prepared=prepared)
     with pytest.raises(RuntimeError):

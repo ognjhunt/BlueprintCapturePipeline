@@ -65,6 +65,17 @@ def manifest(path: Path) -> dict[str, Any]:
             or not isinstance(value.get("argv"), list) or not value["argv"]
             or any(not isinstance(arg, str) or "\x00" in arg for arg in value["argv"])):
         raise ValueError("allocator_invocation_manifest_invalid")
+    control = value.get("control") or {}
+    scope = control.get("source_control_binding")
+    if scope is not None:
+        from .beta_policy_screening_control_contracts import validate_binding
+        validate_binding(scope)
+        if (scope["invocation_id"] != value["invocation_id"] or scope["source"] != control.get("source")
+                or scope["site_id"] != control.get("site_id")
+                or any(scope[key] != value["binding"].get(key) for key in (
+                    "prepared_digest", "plan_digest", "candidate_id", "configuration_digest",
+                    "authority_digest", "resource_name", "attempt_id"))):
+            raise ValueError("allocator_invocation_control_binding_invalid")
     return value
 
 
@@ -193,8 +204,9 @@ def run_invocation(path: Path, *, allocator: Callable[[Sequence[str]], int] | No
                     from .paid_resource_allocator import main as allocator
                 from .beta_policy_screening_control import CurrentSourceMonitor
                 monitor = CurrentSourceMonitor(value) if value.get("control") is not None else nullcontext()
-                with monitor:
-                    return allocator(value["argv"])
+                with monitor as active:
+                    effective_argv = active.allocator_argv(value["argv"]) if active is not None else value["argv"]
+                    return allocator(effective_argv)
             finally:
                 for key, old in previous.items():
                     if old is None:

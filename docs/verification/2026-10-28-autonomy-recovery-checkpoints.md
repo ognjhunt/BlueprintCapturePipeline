@@ -72,14 +72,22 @@ lock protects bounded local create-intent admission/fsync; remote calls and
 teardown do not hold it. Deterministic two-observer races cover revoked consent,
 shortened deadlines, newer unavailability and the final intent admission gap.
 
-**Still incomplete:** the current beta task-context transport does not supply the
-team route's run-specific cancellation record or a scoped GPU per-cell control
-lease. No global sync credential is forwarded to a provider to fill that gap.
-Actual authority-expiry fields must be supplied by the applicable authenticated
-authority contract; absence of such a field is not proof of indefinite authority.
-Full AUT-10 acceptance remains open for those integrations and genuine teardown
-observation. This document makes no claim that no GPU cell can begin during the
-provider's stop/teardown propagation interval.
+The new signed existing-run control read binds campaign, source, candidate,
+configuration, attempt, allocator invocation, preparation, authority and resource.
+New launches require its actual intake expiry; they cannot use a missing expiry
+as indefinite authority. The wrapper reapplies any smaller observed bound before
+allocator execution. Pure strict validators contain no credential/transport
+imports. A live exact-resource monitor registry supplies verified observations
+to an independently owned controller-to-provider callback; no global sync
+credential is delivered in that callback. Delivery failure stops its exact
+monitor while canonical finally/teardown remains available.
+
+**Still incomplete at this checkpoint:** qualification owns the pinned-SSH
+fixed-file delivery and GPU cell/load/query guards. Their integration and real
+own-resource teardown/expiry/cancel acceptance must pass before full AUT-10 is
+claimed. Older retained invocations without this contract do not acquire a new
+GPU control channel. This document makes no claim that no GPU cell can begin
+during an unverified provider stop/teardown propagation interval.
 
 ## Other lane1 work and production access
 

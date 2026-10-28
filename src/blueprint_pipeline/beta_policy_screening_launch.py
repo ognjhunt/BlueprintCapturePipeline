@@ -292,7 +292,7 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
     from .allocator_invocation import retain_invocation, start_invocation
     root = Path(attempt_dir).resolve()
     _validate_prepared(plan, candidate, root, prepared)
-    if (root / "allocator_launch_intent.json").exists():
+    if (root / "allocator_launch_intent.json").exists() or (root / "invocation/manifest.json").exists():
         return reconcile_candidate(plan=plan, candidate=candidate, attempt_dir=root, prepared=prepared)
     try:
         _check_quote(plan, candidate)
@@ -308,6 +308,28 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
                                      episodes=candidate["episode_count"])
         from .beta_policy_screening_worker import require_current_source
         current_source = require_current_source(plan["source"], site_id=plan["site_id"])
+        authority = _read(_bound_path(prepared["authority"]))
+        bundle = _read(_bound_path(prepared["bundle_receipt"]))
+        invocation_binding = {
+            "prepared_digest": prepared["prepared_digest"], "plan_digest": plan["plan_digest"],
+            "candidate_id": candidate["candidate_id"], "configuration_digest": candidate["configuration_digest"],
+            "authority_digest": authority["authority_digest"], "resource_name": authority["resource_name"],
+            "bundle_sha256": bundle["bundle_sha256"], "provider": "vast", "attempt_id": root.name}
+        source_control_binding = {key: invocation_binding[key] for key in (
+            "prepared_digest", "plan_digest", "candidate_id", "configuration_digest", "authority_digest",
+            "resource_name", "attempt_id")}
+        source_control_binding.update(campaign_id=plan["campaign_id"], site_id=plan["site_id"],
+            source=dict(plan["source"]), invocation_id=canonical_digest(invocation_binding))
+        from .beta_policy_screening_control import _deadline
+        from .beta_policy_screening_control_transport import request_control
+        preflight_control = request_control(binding=source_control_binding,
+                                            execution_deadline_epoch=_deadline(current_source))
+        _write(root / "control_preflight" / (preflight_control["control_digest"][7:] + ".json"), preflight_control)
+        if preflight_control["status"] != "current":
+            raise ValueError("beta_screening_current_source_revoked_before_spawn")
+        # This authenticated existing-source contract supplies the actual
+        # intake expiry. A missing expiry can never become a four-hour default.
+        deadline = preflight_control["execution_deadline_at_ms"] / 1000
     except (ValueError, OSError, RuntimeError) as exc:
         # Claim the same exclusive intent slot as a launch, so a concurrent
         # caller cannot start after this refusal releases its reservation.
@@ -320,22 +342,14 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         return {"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
                 "no_allocation_proven": True, "blockers": [refusal["blocker"]]}
     try:
-        authority = _read(_bound_path(prepared["authority"]))
-        bundle = _read(_bound_path(prepared["bundle_receipt"]))
-        from .beta_policy_screening_control import _deadline
-        deadline = _deadline(current_source)
         argv = list(prepared["argv"])
         if deadline is not None:
             argv += ["--team-candidate-execution-deadline-epoch", str(deadline)]
         invocation = retain_invocation(attempt_dir=root, argv=argv, control={
             "site_id": plan["site_id"], "source": plan["source"],
             "prepared_digest": prepared["prepared_digest"], "initial_observed_at_epoch": time.time(),
-            "execution_deadline_epoch": deadline,
-        }, binding={
-            "prepared_digest": prepared["prepared_digest"], "plan_digest": plan["plan_digest"],
-            "candidate_id": candidate["candidate_id"], "configuration_digest": candidate["configuration_digest"],
-            "authority_digest": authority["authority_digest"], "resource_name": authority["resource_name"],
-            "bundle_sha256": bundle["bundle_sha256"], "provider": "vast"})
+            "execution_deadline_epoch": deadline, "source_control_binding": source_control_binding,
+        }, binding=invocation_binding)
         _write(root / "allocator_launch_intent.json", {"prepared_digest": prepared["prepared_digest"],
                                                      "invocation_manifest": str(invocation)})
     except FileExistsError:
