@@ -24,6 +24,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from . import control_plane_storage_roots as storage_roots
+from .control_plane_usage_paths import (
+    UsageDirectory,
+    UsagePathError,
+    anchored_directory,
+    descendant_directory,
+    same_identity,
+)
 from .decision_evidence_contracts import canonical_digest
 
 SURVEY_SCHEMA_VERSION = "control_plane_disk_usage_survey.v1"
@@ -427,6 +434,7 @@ class _UsageWalk:
         self.shared: dict[tuple[int, int], list[Any]] = {}
         self.entries = 0
         self.unreadable = 0
+        self.identity_refusals = 0
         self.duplicates = 0
         self.truncated = False
 
@@ -537,60 +545,84 @@ class _UsageWalk:
         self.devices.setdefault(device, [0, 0])
         if self._exhausted():
             return
+        try:
+            if stat.S_ISDIR(metadata.st_mode):
+                with anchored_directory(path, metadata) as root:
+                    self._walk_directory(path, root, os.fstat(root.fd))
+                return
+            parent, name = os.path.split(path)
+            with anchored_directory(parent, os.lstat(parent)) as anchor:
+                current = os.stat(name, dir_fd=anchor.fd, follow_symlinks=False)
+                if not same_identity(current, metadata):
+                    raise UsagePathError("entry_identity_changed")
+                anchor.check()
+                self.entries += 1
+                top = self._directory(path, _parts(_canonical(path, self.aliases)))
+                self._record(current, self._attribute(top.parts, top.match, False), device, top.parts)
+        except OSError:
+            self.identity_refusals += 1
+            self.unreadable += 1
+            self.truncated = True
+
+    def _walk_directory(self, path: str, root: UsageDirectory, metadata: os.stat_result) -> None:
+        device = metadata.st_dev
         self.entries += 1
         top = self._directory(path, _parts(_canonical(path, self.aliases)))
-        is_dir = stat.S_ISDIR(metadata.st_mode)
-        self._record(metadata, self._attribute(top.parts, top.match, is_dir), device, top.parts)
-        if not is_dir:
-            return
-        stack = [top]
+        self._record(metadata, self._attribute(top.parts, top.match, True), device, top.parts)
+        stack = [(top, metadata, ())]
         while stack:
-            directory = stack.pop()
+            directory, expected, relative = stack.pop()
             try:
-                with os.scandir(directory.path) as iterator:
-                    entries = []
-                    overflow = False
-                    # Keep time for stat/attribution of the partial, sorted batch.
-                    # A filesystem call itself cannot be preempted, but a large
-                    # directory must not consume every later mount's share.
-                    buffer_deadline = (self.clock() + self.deadline) / 2
-                    for entry in iterator:
-                        if len(entries) >= self.buffer_limit:
-                            overflow = True
-                            break
-                        entries.append(entry)
-                        if self.clock() >= buffer_deadline:
-                            overflow = True
-                            break
-                    entries.sort(key=lambda entry: entry.name)
+                with descendant_directory(root, relative, expected) as anchor:
+                    with os.scandir(anchor.fd) as iterator:
+                        entries = []
+                        overflow = False
+                        # Keep time for stat/attribution of the partial, sorted batch.
+                        buffer_deadline = (self.clock() + self.deadline) / 2
+                        for entry in iterator:
+                            if len(entries) >= self.buffer_limit:
+                                overflow = True
+                                break
+                            entries.append(entry)
+                            if self.clock() >= buffer_deadline:
+                                overflow = True
+                                break
+                        entries.sort(key=lambda entry: entry.name)
+                    anchor.check()
+                    subdirectories = []
+                    for entry in entries:
+                        if self._exhausted():
+                            return
+                        self.entries += 1
+                        try:
+                            # DirEntry came from this still-open descriptor:
+                            # its nofollow stat cannot escape via a path swap.
+                            child = entry.stat(follow_symlinks=False)
+                        except OSError:
+                            self.unreadable += 1
+                            continue
+                        child_path = os.path.join(directory.path, entry.name)
+                        if child.st_dev != device or child_path in self.mount_points:
+                            continue
+                        if stat.S_ISDIR(child.st_mode):
+                            if (child.st_dev, child.st_ino) in self.walk_roots:
+                                continue
+                            nested = self._child(directory, entry.name, child_path)
+                            self._record(child, self._attribute(nested.parts, nested.match, True), device,
+                                         nested.parts)
+                            if len(stack) + len(subdirectories) >= self.buffer_limit:
+                                self.truncated = True
+                                return
+                            subdirectories.append((nested, child, relative + (entry.name,)))
+                        else:
+                            self._record(child, self._file(directory, entry.name), device,
+                                         directory.parts + (entry.name,))
+                    anchor.check()
+            except UsagePathError:
+                raise
             except OSError:
                 self.unreadable += 1
                 continue
-            subdirectories = []
-            for entry in entries:
-                if self._exhausted():
-                    return
-                self.entries += 1
-                try:
-                    child = entry.stat(follow_symlinks=False)
-                except OSError:
-                    self.unreadable += 1
-                    continue
-                if child.st_dev != device or entry.path in self.mount_points:
-                    continue  # another filesystem: its own mount's walk counts it
-                if stat.S_ISDIR(child.st_mode):
-                    if (child.st_dev, child.st_ino) in self.walk_roots:
-                        continue  # a listed mount nested here is walked on its own
-                    nested = self._child(directory, entry.name, entry.path)
-                    self._record(child, self._attribute(nested.parts, nested.match, True), device,
-                                 nested.parts)
-                    if len(stack) + len(subdirectories) >= self.buffer_limit:
-                        self.truncated = True
-                        return
-                    subdirectories.append(nested)
-                else:
-                    self._record(child, self._file(directory, entry.name), device,
-                                 directory.parts + (entry.name,))
             if self.truncated:
                 return
             if overflow:
@@ -614,6 +646,11 @@ def _mount_row(mount: str, used: int | None, surveyed: int, classified: int) -> 
         "used_bytes": used,
         "surveyed_bytes": surveyed,
         "classified_bytes": classified,
+        "survey_coverage_fraction": fraction,
+        "classified_fraction": None if used is None else (1.0 if used == 0 else round(min(1.0, classified / used), 4)),
+        "unvisited_bytes": None if used is None else max(0, used - surveyed),
+        # Compatibility alias: historically this meant surveyed / used, not
+        # classified / used. Do not silently change its denominator.
         "attributed_fraction": fraction,
     }
 
@@ -675,6 +712,9 @@ def survey_usage(
     max_seconds: float = DEFAULT_SURVEY_MAX_SECONDS,
     clock: Callable[[], float] = time.time,
     mountinfo: str | os.PathLike[str] = MOUNTINFO_PATH,
+    continuation: Mapping[str, Any] | None = None,
+    partitions_per_mount: int | None = None,
+    scratch_census: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attribute every byte on ``mounts`` to a storage class, a root and an owner.
 
@@ -727,6 +767,17 @@ def survey_usage(
         if key not in seen:
             seen.add(key)
             walks.append((path, metadata))
+    original_walks = list(walks)
+    partition = None
+    if partitions_per_mount is not None:
+        from .control_plane_disk_usage_cursor import select_partitions
+
+        walks, partition = select_partitions(original_walks, continuation=continuation,
+            partitions_per_mount=partitions_per_mount, mount_points=walk.mount_points,
+            deadline=started + max_seconds / 4, clock=clock)
+        # A listed nested mount remains excluded from its parent's traversal,
+        # even when this pass visits only some children of that nested root.
+        seen.update((metadata.st_dev, metadata.st_ino) for _path, metadata in walks)
     walk.walk_roots = frozenset(seen)
     root_count = max(1, len(walks))
     entry_share, extra_entries = divmod(max_entries, root_count)
@@ -742,9 +793,13 @@ def survey_usage(
         truncated |= walk.truncated
     walk.truncated = truncated
     walk.finish()
+    if partition is not None and walk.identity_refusals:
+        partition["inventory_complete"] = False
+        partition["continuation_status"] = sorted(
+            set(partition["continuation_status"]) - {"continued", "started"} | {"partition_identity_refused"})
 
     filesystems: dict[int, list[str]] = {}
-    for path, metadata in walks:
+    for path, metadata in original_walks:
         filesystems.setdefault(metadata.st_dev, []).append(path)
     rows = []
     for device, paths in filesystems.items():
@@ -772,11 +827,14 @@ def survey_usage(
                     key=lambda item: (-item[1][0], item[0][2], item[0][1], item[0][0]))
     survey: dict[str, Any] = {
         "schema_version": SURVEY_SCHEMA_VERSION,
-        "status": "truncated" if walk.truncated else "complete",
+        "status": "truncated" if walk.truncated or partition is not None else "complete",
         "observed_at_epoch": started,
         "duration_seconds": round(max(0.0, clock() - started), 3),
         "entries_visited": walk.entries,
         "unreadable": walk.unreadable,
+        "path_identity_refusals": walk.identity_refusals,
+        "unreadable_bytes": None if walk.unreadable or partition is not None and not partition["inventory_complete"] else 0,
+        "byte_accounting": "current_snapshot_lower_bound" if walk.truncated or partition is not None or walk.unreadable else "current_snapshot",
         "mounts": rows,
         "by_class": [
             {"storage_class": storage_class, "allocated_bytes": allocated,
@@ -804,7 +862,8 @@ def survey_usage(
         "orphan_scratch_largest_bytes": max((allocated for _root, allocated in orphan_scratch), default=0),
         "orphan_scratch_roots": [
             {"root": root, "allocated_bytes": allocated,
-             "newest_mtime_epoch": walk.unclassified_mtime.get(root)}
+             "newest_mtime_epoch": walk.unclassified_mtime.get(root),
+             **scratch_lifecycle_disposition(root, scratch_census, now=started)}
             for root, allocated in orphan_scratch[:SURVEY_ORPHAN_ROOT_ROWS]
         ],
         "container_runtime_roots": [
@@ -813,7 +872,7 @@ def survey_usage(
         "container_runtime_bytes": sum(allocated for _root, allocated in container_runtime),
         # A truncated walk may stop before these stores: their totals are then
         # lower bounds, and an absent store is unknown rather than empty.
-        "container_runtime_complete": not walk.truncated,
+        "container_runtime_complete": not walk.truncated and partition is None and not walk.unreadable,
         "hardlinks": {
             "shared_inodes": len(walk.shared),
             "shared_bytes": sum(held[2] for held in walk.shared.values()),
@@ -821,9 +880,36 @@ def survey_usage(
         },
         "survey_digest": "",
     }
+    if partition is not None:
+        survey.update(partition)
+        survey["snapshot_observed_at_epoch"] = started
     survey = sanitize_public_survey(_report_safe(survey))
     survey["survey_digest"] = canonical_digest(survey, digest_field="survey_digest")
     return survey
+
+
+def scratch_lifecycle_disposition(root: str, census: Mapping[str, Any] | None, *, now: float) -> dict[str, Any]:
+    """Join existing reference evidence; a survey heuristic never grants cleanup."""
+    disposition = {"lifecycle_disposition": "unknown", "retirement_eligible": False,
+                   "lifecycle_reason": "fresh_complete_reference_census_required"}
+    if not isinstance(census, Mapping) or census.get("schema_version") != "control_plane_lane_scratch_census.v1":
+        return disposition
+    observed = census.get("observed_at_epoch")
+    if type(observed) not in (int, float) or not 0 <= now - observed <= 300 or census.get("status") != "complete" or census.get("scan_errors") != []:
+        return disposition
+    rows = census.get("rows")
+    if not isinstance(rows, list):
+        return disposition
+    for row in rows:
+        if not isinstance(row, Mapping) or row.get("path") != root:
+            continue
+        references = row.get("references")
+        if isinstance(references, list) and references:
+            return {**disposition, "lifecycle_disposition": "active_or_referenced", "lifecycle_reason": "existing_census_reference"}
+        # Owner guesses, age, empty references and an incomplete restore proof
+        # are never promoted to an approved retirement disposition here.
+        return {**disposition, "lifecycle_reason": "owner_retention_and_restore_proof_required"}
+    return disposition
 
 
 __all__ = [

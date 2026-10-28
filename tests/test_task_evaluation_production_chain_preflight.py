@@ -278,7 +278,7 @@ def test_execution_holds_are_named_with_their_source(tmp_path: Path) -> None:
     canary = "blueprint-task-evaluation-policy-canary-dispatcher.service"
     health = preflight.unit_health_checks({canary: {"properties": {
         "ActiveState": ["inactive"], "Result": ["exec-condition"], "LoadState": ["loaded"], "TriggeredBy": [""],
-        "ExecCondition": ["{ path=/usr/bin/false ; argv[]=/usr/bin/false ; ignore_errors=no }"],
+        "ExecCondition": ["{ path=/usr/bin/false ; argv[]=/usr/bin/false ; ignore_errors=no ; code=exited ; status=1 }"],
         "DropInPaths": ["/etc/systemd/system/blueprint-task-evaluation-policy-canary-dispatcher.service.d/99-no-dispatch-hold.conf"],
     }}})
     [hold_finding] = [f for f in health if f["code"] == "unit_execution_hold_present"]

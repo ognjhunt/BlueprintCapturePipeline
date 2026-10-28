@@ -21,6 +21,30 @@ from pathlib import Path
 import pytest
 
 
+def _install_census_sources(package: Path) -> None:
+    package.mkdir(parents=True)
+    sources = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
+    for name in ("__init__", "control_plane_lane_scratch_census",
+                 "control_plane_kernel_process", "control_plane_usage_paths",
+                 "control_plane_disk_usage", "control_plane_lane_scratch",
+                 "control_plane_storage_pins", "control_plane_storage_roots",
+                 "decision_evidence_contracts", "control_plane_lane_legacy_owner",
+                 "control_plane_lane_legacy_owner_door", "control_plane_lane_owner_consents",
+                 "control_plane_lane_scratch_decisions"):
+        shutil.copyfile(sources / f"{name}.py", package / f"{name}.py")
+
+
+def test_legacy_owner_fixture_imports_exact_census_closure(tmp_path: Path) -> None:
+    package = tmp_path / "installed" / "blueprint_pipeline"
+    _install_census_sources(package)
+    code = ("import sys;sys.path.insert(0,sys.argv[1]);"
+            "from blueprint_pipeline.control_plane_lane_scratch_census import _process_references,build_census;"
+            "from blueprint_pipeline.control_plane_lane_legacy_owner_door import _public_report")
+    done = subprocess.run([sys.executable, "-I", "-S", "-B", "-c", code, str(package.parent)],
+                          capture_output=True, text=True, timeout=20)
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
 def _root_fixture() -> dict:
     assert sys.platform == "linux" and os.geteuid() == 0
     assert Path("/proc/1/exe").resolve() == Path("/usr/lib/systemd/systemd")
@@ -113,16 +137,7 @@ def _root_fixture() -> dict:
         # Install the exact source scanner under /var/lib: the transient has
         # ProtectHome=yes and cannot import from the checkout in /Users.
         package = root / "installed" / "blueprint_pipeline"
-        package.mkdir(parents=True)
-        sources = Path(__file__).resolve().parents[1] / "src" / "blueprint_pipeline"
-        for name in ("__init__", "control_plane_lane_scratch_census",
-                     "control_plane_kernel_process",
-                     "control_plane_disk_usage", "control_plane_lane_scratch",
-                     "control_plane_storage_pins", "control_plane_storage_roots",
-                     "decision_evidence_contracts", "control_plane_lane_legacy_owner",
-                     "control_plane_lane_legacy_owner_door", "control_plane_lane_owner_consents",
-                     "control_plane_lane_scratch_decisions"):
-            shutil.copyfile(sources / f"{name}.py", package / f"{name}.py")
+        _install_census_sources(package)
         process_root = root / "fixture-proc"
         process_root.mkdir()
         (process_root / str(child.pid)).symlink_to(Path("/proc") / str(child.pid))
