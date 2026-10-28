@@ -233,6 +233,11 @@ class CurrentSourceMonitor:
         self._latest: dict[str, Any] = {}
         self._sinks: dict[object, Callable] = {}
         self.binding = self.control.get("source_control_binding")
+        if self.binding is not None:
+            from .beta_policy_screening_control_contracts import validate_binding
+            validate_binding(self.binding)
+            if any(self.control.get(key) != self.binding[key] for key in ("source", "site_id", "prepared_digest")):
+                raise ValueError("beta_screening_control_binding_changed")
         self.identity = ((self.binding["authority_digest"], self.binding["resource_name"])
                          if self.binding is not None else None)
 
