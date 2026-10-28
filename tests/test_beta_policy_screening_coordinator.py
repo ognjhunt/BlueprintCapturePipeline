@@ -1,4 +1,4 @@
-"""The beta queue cannot duplicate spend or upgrade diagnostic evidence."""
+"""The beta queue cannot duplicate spend, exceed the site allowance or upgrade ADP evidence."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -61,7 +61,7 @@ def plan(*, campaign_id="campaign-1", site_id="site-job-1", cost="4.00", count=1
              "robot_free_probe_digest": digest("probe"), "scene_inputs": receipt, "catalog_digest": digest("catalog"),
              "scenario_cells": cells, "scenario_plan_digest": canonical_digest({"cells": cells}), "budget_usd": "15.00",
              "maximum_planned_cost_usd": f"{Decimal(cost) * count:.2f}", "purpose": "screening",
-             "claim_ceiling": "diagnostic_policy_execution", "recommendation_eligible": False, "candidates": rows,
+             "claim_ceiling": "diagnostic_policy_execution", "candidates": rows,
              "source": {"scene_intent_id": "scene-intent-1", "scene_intent_digest": digest("intent"),
                         "capture_id": "walkthrough-job-1", "task_id": "task-1",
                         "task_context_digest": digest("context"), "scene_revision_digest": scene_digest}}
@@ -170,7 +170,7 @@ def test_allocated_failure_charges_bound_and_cannot_claim_later_no_allocation(tm
     assert value["status"] == "blocked"
 
 
-def test_closed_native_result_counts_simulator_verdicts_and_is_diagnostic(tmp_path):
+def test_closed_native_result_within_budget_is_the_jobs_evaluation_result(tmp_path):
     value = plan()
     coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
     backend = Backend({"status": "completed", "provider_allocation_performed": True,
@@ -180,7 +180,13 @@ def test_closed_native_result_counts_simulator_verdicts_and_is_diagnostic(tmp_pa
     row = published["candidates"][0]
     assert published["status"] == "completed"
     assert (row["episodes_scored"], row["episodes_succeeded"], row["episodes_failed"], row["success_rate"]) == (10, 7, 3, 0.7)
-    assert published["claim_ceiling"] == "diagnostic_policy_execution" and published["recommendation_eligible"] is False
+    # One tier: the automatic run is the job's result, stated as an estimate.
+    assert published["schema_version"] == "beta_policy_screening_publication.v2"
+    assert published["purpose"] == "job_evaluation" and published["claim_ceiling"] == "simulation_estimate"
+    assert "recommendation_eligible" not in published
+    assert published["budget"]["spent_upper_bound_usd"] == "4" and published["budget"]["limit_usd"] == "15"
+    # ADP separation: the runtime session stays below qualified evidence.
+    assert value["claim_ceiling"] == "diagnostic_policy_execution"
     assert published["source"]["capture_id"] != published["site_id"]
     assert published["publication_digest"] == cross_runtime_canonical_digest(published, digest_field="publication_digest")
     assert coordinator.acknowledge_publication(value["campaign_id"], published["publication_digest"], queue_root=tmp_path)
@@ -221,6 +227,21 @@ def test_other_campaign_budget_change_gets_new_revision_and_old_ack_cannot_hide_
     assert new["budget"]["reserved_usd"] == "4"
     assert not coordinator.acknowledge_publication("campaign-2", old["publication_digest"], queue_root=tmp_path)
     assert publication(tmp_path, "campaign-2") == new
+
+
+def test_acknowledged_bytes_from_an_older_contract_republish_as_a_new_revision(tmp_path):
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    current = publication(tmp_path)
+    assert coordinator.acknowledge_publication("campaign-1", current["publication_digest"], queue_root=tmp_path)
+    with coordinator._lock(tmp_path):
+        ledger = coordinator._ledger(tmp_path)
+        ledger["campaigns"]["campaign-1"]["published_digest"] = digest("acknowledged-v1-bytes")
+        ledger["ledger_digest"] = canonical_digest(ledger, digest_field="ledger_digest")
+        coordinator._write(tmp_path / coordinator.LEDGER_FILENAME, ledger)
+    resent = publication(tmp_path)
+    assert resent["revision"] == current["revision"] + 1
+    assert coordinator.acknowledge_publication("campaign-1", resent["publication_digest"], queue_root=tmp_path)
+    assert coordinator.pending_publications(queue_root=tmp_path) == []
 
 
 def test_replay_is_idempotent_and_changed_plan_cannot_reset_budget(tmp_path):
@@ -311,11 +332,13 @@ def test_default_executor_is_the_canonical_allocator_bridge(tmp_path, monkeypatc
     assert backend.preparations == backend.launches == 1
 
 
-def test_shared_wire_fixture_is_valid_and_its_nonterminating_fraction_digest_is_stable():
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_shared_wire_fixture_is_valid_and_its_nonterminating_fraction_digest_is_stable(version):
+    # v2 is emitted; retained v1 records stay readable by the website.
     from jsonschema import Draft202012Validator, FormatChecker
     repository = Path(__file__).parents[1]
-    value = json.loads((repository / "tests/fixtures/beta_policy_screening_publication.v1.json").read_text())
-    schema = json.loads((repository / "docs/schemas/beta_policy_screening_publication.v1.schema.json").read_text())
+    value = json.loads((repository / f"tests/fixtures/beta_policy_screening_publication.{version}.json").read_text())
+    schema = json.loads((repository / f"docs/schemas/beta_policy_screening_publication.{version}.schema.json").read_text())
     Draft202012Validator(schema, format_checker=FormatChecker()).validate(value)
     assert value["candidates"][0]["success_rate"] == 2 / 3
     assert value["publication_digest"] == cross_runtime_canonical_digest(value, digest_field="publication_digest")

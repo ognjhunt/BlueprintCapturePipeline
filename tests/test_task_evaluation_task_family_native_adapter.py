@@ -130,6 +130,8 @@ def test_episode_scores_native_state_retains_exact_media_and_closes(tmp_path):
     assert receipt["status"] == "completed" and receipt["task_succeeded"]
     assert receipt["runtime_closed"] and runtime.closed and len(runtime.actions) == 2
     assert receipt["scoring"]["scoring_source"] == "deterministic_native_state"
+    assert receipt["polygon_validation_version"] == "simple_convex_polygon.v2"
+    assert receipt["telemetry"]["polygon_validation_version"] == receipt["polygon_validation_version"]
     provenance = adapter.native_runtime_provenance(runtime.native_runtime_contract)
     assert receipt["native_provenance"] == receipt["telemetry"]["native_provenance"] == provenance
     assert all(sample["native_provenance"] == provenance for sample in receipt["telemetry"]["samples"])

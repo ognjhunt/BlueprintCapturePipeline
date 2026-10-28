@@ -1,9 +1,11 @@
-"""Freeze a bounded, data-selected beta screening campaign for one site job.
+"""Freeze a bounded, data-selected beta evaluation campaign for one site job.
 
 The catalog describes candidates; trusted runtime capabilities and fresh cost
 quotes determine what can be scheduled. This pure planner performs no launch.
 It reuses the existing bounded scenario draws under a separate screening seed
-domain and never consumes the private finalist matrix or grants a recommendation.
+domain and never consumes the private scored matrix. The completed campaign is
+the job's evaluation result; only spend beyond the site allowance needs the
+owner's approval, and no plan can exceed it.
 """
 
 from __future__ import annotations
@@ -27,6 +29,9 @@ from .task_family_policy_execution import FAMILY_BACKEND, family_policy_executio
 PLAN_SCHEMA_VERSION = "beta_policy_screening_plan.v1"
 EXECUTION_SCHEMA_VERSION = "blueprint.beta_policy_screening_execution.v1"
 QUOTE_SCHEMA_VERSION = "beta_policy_screening_cost_quote.v1"
+# Runtime ceiling shared with the native session: beta runs never become Arm
+# Decision Proof qualified or physical evidence. It does not limit the job's
+# use of its own result, which is published as a simulation estimate.
 CLAIM_CEILING = "diagnostic_policy_execution"
 SITE_BUDGET_USD = Decimal("15.00")
 DEFAULT_EPISODES = 10
@@ -439,7 +444,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         "scene_inputs": deepcopy(scene["scene_inputs"]), "catalog_digest": catalog["catalog_digest"],
         "scenario_plan_digest": canonical_digest({"cells": cells}), "scenario_cells": cells,
         "budget_usd": budget_usd, "maximum_planned_cost_usd": f"{budget - remaining:.2f}",
-        "purpose": "screening", "claim_ceiling": CLAIM_CEILING, "recommendation_eligible": False,
+        "purpose": "screening", "claim_ceiling": CLAIM_CEILING,
         "candidates": candidates, "plan_digest": "",
     }
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
@@ -453,13 +458,14 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     required = {"schema_version", "campaign_id", "site_id", "scene_id", "capture_id", "task_id",
                 "scene_revision_digest", "task_success_contract_digest", "source",
                 "scene_inputs", "catalog_digest", "scenario_plan_digest", "scenario_cells", "budget_usd",
-                "maximum_planned_cost_usd", "purpose", "claim_ceiling", "recommendation_eligible",
-                "candidates", "plan_digest"}
+                "maximum_planned_cost_usd", "purpose", "claim_ceiling", "candidates", "plan_digest"}
     required |= ({"evaluation_backend", "pre_policy_site_qualification_required",
                   "family_static_readiness_digest", "scenario_scope"} if family else {"robot_free_probe_digest"})
-    if (set(plan) != required or plan["schema_version"] != PLAN_SCHEMA_VERSION
+    # Plans enqueued before the single-tier change carry a digest-bound
+    # ``recommendation_eligible: false``; they stay valid and publish alike.
+    if (set(plan) - {"recommendation_eligible"} != required or plan["schema_version"] != PLAN_SCHEMA_VERSION
             or plan["purpose"] != "screening" or plan["claim_ceiling"] != CLAIM_CEILING
-            or plan["recommendation_eligible"] is not False):
+            or plan.get("recommendation_eligible", False) is not False):
         raise BetaPolicyScreeningPlanError("beta_screening_plan_schema_invalid")
     for key in ("campaign_id", "site_id", "scene_id", "capture_id", "task_id"):
         _id(plan[key], "beta_screening_plan_identity_invalid")
