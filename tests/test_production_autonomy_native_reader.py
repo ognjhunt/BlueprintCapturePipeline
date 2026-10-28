@@ -4,6 +4,8 @@ Optional SDK regeneration uses real installed DocumentSnapshot/Reference,
 Timestamp and Serializer objects. It constructs no Firestore Client, strips the
 child environment and forbids auth/network. Ordinary tests use the resulting
 native protocol fixture; no SDK installation or credential fallback is allowed.
+CI binds the exact SDK from tools/autonomy_native_reader/package.json and
+tools/autonomy_native_reader/package-lock.json before running these tests.
 """
 
 from __future__ import annotations
