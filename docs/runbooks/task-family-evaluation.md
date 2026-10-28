@@ -178,6 +178,10 @@ completed bytes across restarts and version changed inputs. A supplied internal
 contract is retained without asserting new owner confirmation. Missing or
 expired runtime qualification may retain static native inputs, but it prevents
 intake creation and remains an explicit dispatch blocker.
+Family preparation promotes its shared `preparation.json` under the existing
+handoff lease guard. Ownership loss at authoring boundaries stops continuation;
+loss immediately before promotion refuses the current write. Completed private
+immutable authoring stages remain available for later adoption.
 
 Source-produced native inputs pin an immutable `evidence-inputs` stage under
 `task_state_binding.source_authoring_evidence`. The packet pins the exact

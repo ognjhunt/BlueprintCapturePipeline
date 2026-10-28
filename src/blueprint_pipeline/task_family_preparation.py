@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
+from .core.handoff_lease import guarded_handoff_write_json as write_json, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .task_family_native_contracts import family_source_blockers
@@ -31,6 +31,7 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
                         spend: Mapping[str, Any] | None = None, now: float | None = None,
                         task_semantics: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Retain the whole job, including multiple subjects and deformable state."""
+    handoff_lease_checkpoint("website_task_family_preparation_start")
     from .website_task_semantics import effective_task_profile
     source_video_digest = (source_geometry.get("binding") or {}).get("source_video_digest")
     family = canonical_task_family(effective_task_profile(task_context=task_context,
@@ -48,6 +49,7 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         from .task_family_layout_authoring import emit_registered_task_layout
         task_masks = emit_registered_task_layout(task_context=task_context, task_masks=task_masks,
             source_geometry=source_geometry, base_scene=base_scene, output_root=output_root)
+        handoff_lease_checkpoint("website_task_family_preparation_after_layout")
     blockers: list[str] = []
     if (task_context.get("capture_rights") or {}).get("derived_scene_generation_allowed") is not True:
         blockers.append("website_scene_processing_rights_required")
@@ -63,6 +65,7 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         produced = author_button_family_inputs(family=family, task_context=task_context,
             task_masks=task_masks, source_geometry=source_geometry, base_scene=base_scene,
             source_bindings=source_bindings, output_root=output_root, task_semantics=task_semantics, now=now)
+        handoff_lease_checkpoint("website_task_family_preparation_after_authoring")
         if produced is not None and produced["status"] == "authored":
             inputs.update(produced["outputs"])
     contract = inputs.get("task_success_contract")

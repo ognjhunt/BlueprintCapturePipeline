@@ -413,3 +413,75 @@ def test_packet_read_reopens_original_metric_records(tmp_path, monkeypatch):
     path.write_bytes(path.read_bytes() + b" ")
     with pytest.raises(ValueError, match="authoring_evidence_bytes_changed:metric_layout_robot_registration"):
         verify_native_task_arena_packet(packet["packet_root"])
+
+
+@pytest.mark.parametrize("loss_at", ["after_authoring", "before_promotion"])
+def test_family_authoring_cannot_replace_new_owner_shared_preparation(tmp_path, monkeypatch, loss_at):
+    from datetime import datetime, timedelta, timezone
+
+    from blueprint_pipeline import native_task_runtime_contract as native
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import task_family_authoring as authoring
+    from blueprint_pipeline import task_family_button_authoring as producer
+    from blueprint_pipeline.core.handoff_lease import HandoffLeaseError, bind_handoff_lease
+
+    args, _ = _fixture(tmp_path, monkeypatch)
+    context = args["task_context"]
+    capture_root = tmp_path / "capture"
+    capture_root.mkdir()
+    args["output_root"] = capture_root / "pipeline" / "website_scene_preparation"
+
+    def claim(owner):
+        status, ledger = listener._claim_job_lease(capture_root, scene_id=context["scene_id"],
+            capture_id=context["capture_id"], owner=owner, lease_seconds=60)
+        assert status == "claimed"
+        return ledger
+
+    lease = claim("family-a")
+    heartbeat = listener._JobLeaseHeartbeat(capture_root=capture_root, owner="family-a",
+        token=lease["lease_token"], lease_seconds=60)
+    preparation = args["output_root"] / "preparation.json"
+    newer = b'{"owner":"family-b","current":true}\n'
+    original = producer.author_button_family_inputs
+    materialize = native.materialize_native_task_runtime_contract
+    retain = authoring.retain_family_authoring_requirements
+    native_calls = []
+    calls_at_loss = []
+    completed_prefix = []
+
+    def tracked_native(**kwargs):
+        native_calls.append(True)
+        return materialize(**kwargs)
+
+    def reclaim():
+        with listener._locked_job_ledger(capture_root) as ledger:
+            listener.write_json(capture_root / listener.JOB_LEDGER_FILENAME, {
+                **ledger, "lease_expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()})
+        claim("family-b")
+        preparation.parent.mkdir(parents=True, exist_ok=True)
+        preparation.write_bytes(newer)
+        calls_at_loss.append(len(native_calls))
+
+    def author_then_reclaim(**kwargs):
+        value = original(**kwargs)
+        assert value["status"] == "authored"
+        completed_prefix.extend((Path(row["path"]), Path(row["path"]).read_bytes()) for row in value["stages"])
+        if loss_at == "after_authoring":
+            reclaim()
+        return value
+
+    def retain_then_reclaim(**kwargs):
+        value = retain(**kwargs)
+        if loss_at == "before_promotion":
+            reclaim()
+        return value
+
+    monkeypatch.setattr(native, "materialize_native_task_runtime_contract", tracked_native)
+    monkeypatch.setattr(producer, "author_button_family_inputs", author_then_reclaim)
+    monkeypatch.setattr(authoring, "retain_family_authoring_requirements", retain_then_reclaim)
+    with bind_handoff_lease(heartbeat.checkpoint, heartbeat.effect):
+        with pytest.raises(HandoffLeaseError, match="lost"):
+            compile_website_scene_preparation(**args)
+    assert preparation.read_bytes() == newer
+    assert calls_at_loss == [len(native_calls)]  # No new native materialization after ownership loss.
+    assert completed_prefix and all(path.read_bytes() == data for path, data in completed_prefix)
