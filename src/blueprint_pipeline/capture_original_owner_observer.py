@@ -13,6 +13,7 @@ import re
 import time
 from datetime import datetime
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import quote, urlsplit
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
@@ -56,6 +57,7 @@ OWNER_OBSERVATION_REASON_CODES = frozenset({
     'capture_owner_response_duplicate_key',
     'capture_owner_response_nonfinite',
     'capture_owner_response_unavailable',
+    'capture_owner_response_denied',
     'capture_owner_rights_not_admitted',
     'capture_owner_shape_invalid',
     'capture_owner_source_document_invalid',
@@ -347,6 +349,8 @@ def load_original_owner_observation(
             policy=pinned_api_policy(origin, max_response_bytes=MAX_RESPONSE_BYTES),
             max_response_bytes=MAX_RESPONSE_BYTES,
         )
+        if 400 <= response.status < 500 and response.status not in {408, 429}:
+            _refuse("capture_owner_response_denied")
         if response.status != 200 or len(response.body) > MAX_RESPONSE_BYTES:
             _refuse("capture_owner_response_unavailable")
         value = json.loads(response.body.decode("utf-8", errors="strict"),
@@ -357,5 +361,11 @@ def load_original_owner_observation(
         return (validated, len(response.body)) if include_response_bytes else validated
     except CaptureOwnerObservationError:
         raise
+    except HTTPError as exc:
+        status = exc.code
+        exc.close()
+        if 400 <= status < 500 and status not in {408, 429}:
+            _refuse("capture_owner_response_denied")
+        raise CaptureOwnerObservationError("capture_owner_response_unavailable") from None
     except Exception as exc:
         raise CaptureOwnerObservationError("capture_owner_response_unavailable") from exc

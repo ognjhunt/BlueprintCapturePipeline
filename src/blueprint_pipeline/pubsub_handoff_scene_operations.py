@@ -113,7 +113,9 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             try:
                 observation = observe(expected_preparation_purpose)
             except Exception as plain_refusal:
-                if expected_preparation_purpose is not None:
+                if expected_preparation_purpose is not None or (
+                        isinstance(plain_refusal, CaptureOwnerObservationError)
+                        and str(plain_refusal) == 'capture_owner_response_denied'):
                     raise
                 # An unclaimed site is admitted only for Blueprint-funded scene
                 # preparation, so the plain read refuses it by design. Continue
