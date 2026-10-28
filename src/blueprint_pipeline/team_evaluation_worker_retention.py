@@ -237,6 +237,14 @@ def seal_beta_control_stop(*, output_root: Path, inputs: Mapping[str, Any], auth
             "artifact_inventory": [], "scene_promotion_performed": False, "official_ranking_performed": False,
             "session_closeout": {"runtime_closed": True, "provider_closeout_pending": True},
             **beta_result_binding(inputs)})
+    # An interrupted cell cannot supply an accepted score, but a query already
+    # observed in its retained result must not become a false no-query claim.
+    if any(child.get("candidate_policy_queried") is True for child in children):
+        result["candidate_policy_queried"] = True
+    elif partial:
+        result["candidate_policy_queried"] = None
+    if partial and not result.get("policy_loads"):
+        result["policy_loads"] = None
     result.update(status="blocked", blockers=[receipt["reason"]], planned_episodes_per_policy=len(inputs["cells"]),
                   execution_stopped_after_cell=len(children), stopped_before_next_cell=True,
                   execution_control_stop=dict(receipt), applicability="historical_only",

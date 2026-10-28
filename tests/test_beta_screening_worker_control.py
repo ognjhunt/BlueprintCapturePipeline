@@ -84,6 +84,8 @@ def test_actual_parent_stops_before_next_cell_and_retains_historical_prefix(tmp_
         partial = retained["retained_partial_cell_results"][0]
         assert (output / partial["relative_path"]).is_file()
         assert json.loads((output / partial["relative_path"]).read_text())["episodes"][0]["fixture"] == "interrupted_query"
+        assert retained["candidate_policy_queried"] is True
+        assert retained["policy_loads"] is None
     else:
         assert retained["isolated_cell_failures"][0]["raw_child_result"]["fixture"] == "unaccepted_raw_prefix"
     assert retained["episodes"] == []
