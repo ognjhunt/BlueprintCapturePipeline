@@ -1560,6 +1560,7 @@ def create_app() -> FastAPI:
             }
         return JSONResponse(status_code=200 if payload["commit_proven"] else 503, content=payload)
 
+    @app.get("/api/live-pipeline/health")
     @app.get("/health")
     def health() -> Dict[str, Any]:
         manifest_path = _manifest_path()
@@ -1586,8 +1587,10 @@ def create_app() -> FastAPI:
             "bounded_admission_enabled": True,
             "capture_upload_transfer_configured": bool(
                 _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
-                and _string(os.getenv(CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV))
                 and _string(os.getenv(CAPTURE_MALWARE_SCANNER_ARGV_ENV))
+            ),
+            "capture_upload_backblaze_hosts_configured": bool(
+                _string(os.getenv(CAPTURE_UPLOAD_ALLOWED_HOSTS_ENV))
             ),
             "task_evaluation_supervisor": capture_supervisor_health_status(),
             "task_evaluation_launch_queue": {
@@ -2230,6 +2233,11 @@ def create_app() -> FastAPI:
                 status_code=503,
                 detail="capture supervisor execution configuration is invalid",
             ) from exc
+        constraints = _mapping(_mapping(_mapping(payload.get('request')).get('governance')).get('provider_constraints'))
+        if (constraints.get('external_processing_allowed') is False
+                or constraints.get('automatic_model_inference_allowed') is False):
+            supervisor_options = {**supervisor_options, 'allow_live_agents_sdk': False,
+                                  'agent_inference_budget_usd': 0.0}
         store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
         if not store_root_text:
             raise HTTPException(
