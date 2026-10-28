@@ -103,7 +103,32 @@ Offline fault tests and existing handoff regression checks pass. Real permitted
 non-customer source→DLQ→recovery acknowledgement proof remains pending; AUT-02
 must not be marked acceptance verified from code/IAM evidence.
 
-AUT-09 site-local unspent plan refresh is not implemented by these checkpoints.
+AUT-09 implements immutable site-local generations in the existing screening
+ledger and source workers. It reopens current website consent and the canonical
+scene intent, compares pinned scientific/runtime/configuration identities,
+rebuilds admitted quotes, transfers unspent reservations in one ledger replace,
+adopts completed summaries and leaves uncertain attempts with their original
+operations. Historical plan bytes and site commitments survive generations;
+no catalog revision, grant, credential or site budget is renewed. Originally
+pinned hosted credential availability is supported; missing legacy runtime
+identity remains an explicit configuration requirement. Five-minute backoff
+retains authority and price failures without hot-looping.
+
+Offline regressions cover a 25-hour capacity outage (including a canonical
+pre-create slot-race refusal), one refreshed generation/one allocation, duplicate
+timers, completed/unknown histories across two generations, lost ledger commits,
+fresh website acknowledgment, real canonical expiry/revocation refusal, price
+increases, changed runtime/source bytes, and one privately delivered hosted
+credential affecting only its pinned candidate. These fixtures do not establish
+production acceptance or new runtime qualification.
+
+Default AUT-08 funding readback remains disabled until the release owner deploys
+and verifies WebApp's read-only observation contract and explicitly enables
+`BLUEPRINT_PREPARATION_SPEND_OBSERVATION_ENABLED=true`. An older server could
+ignore `create:false`; the Pipeline must not send that compatibility probe by
+default. Unknown reservations remain held while it is disabled. No observation
+permits dispatch, even after the server reports `not_reserved`.
+
 Root owns verification of the subsequently authorized existing Mac
 production route and coordinates all production changes; no production operation
 has been assigned to this lane. This lane made no production calls, paid/model/GPU calls, deployment, hold release,

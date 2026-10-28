@@ -185,7 +185,8 @@ def _plan(root: Path, campaign_id: str, expected_digest: str | None = None) -> d
     return plan
 
 
-def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Path | None = None) -> dict[str, Any]:
+def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Path | None = None,
+                               _transition=None) -> dict[str, Any]:
     """Idempotently retain one immutable plan; no allocation or budget reset."""
     from .beta_policy_screening_plan import validate_screening_plan
 
@@ -218,6 +219,8 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
                              if candidate["blockers"] else []),
             } for candidate in value["candidates"]},
         }
+        if _transition is not None:
+            _transition(ledger, ledger["campaigns"][campaign_id])
         _save(root, ledger)
     return {"campaign_id": campaign_id, "status": "enqueued", "plan_digest": value["plan_digest"]}
 
@@ -475,6 +478,14 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
     attempt = row["attempt"]
     if row["status"] == "preparing" and not _capacity_retry_ready(attempt):
         return False
+    if row["status"] == "preparing":
+        from .beta_policy_screening_refresh import _pre_effect
+        if not _pre_effect(root, row):
+            # A retained invocation/process is not made unspent by a stale
+            # preparing label or an expired quote. Preserve its commitment.
+            _update(root, plan["campaign_id"], candidate["candidate_id"], lambda item:
+                item.update(status="reconciliation_required", blockers=["beta_screening_preparing_effect_state_unproven"]))
+            return False
     attempt_dir = _attempt_root(root, attempt)
     if row["status"] != "preparing":
         if attempt.get("reconcile_not_before") and datetime.fromisoformat(
