@@ -516,7 +516,10 @@ def _nonce_retention_health() -> dict[str, Any]:
     return {"status": "observed", **{key: value.get(key) for key in (
         "observed_at_epoch", "mode", "inspection_limit", "canonical_filenames_discovered",
         "record_inspection_truncated", "free_bytes", "free_inodes", "observation_scope",
-        "inspected", "expired", "fresh", "unproven", "reclaimed", "inspected_bytes", "expired_bytes")}}
+        "inspected", "expired", "fresh", "unproven", "reclaimed", "inspected_bytes", "expired_bytes",
+        "discovery_entries_examined", "discovery_entry_limit", "discovery_time_budget_seconds",
+        "discovery_elapsed_seconds", "discovery_time_budget_reached", "discovery_continuation_scope",
+        "directory_pass_completed", "inventory_complete")}}
 
 
 def _build_intake_signature(

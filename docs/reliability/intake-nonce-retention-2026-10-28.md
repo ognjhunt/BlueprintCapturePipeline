@@ -24,24 +24,44 @@ All nonce claim and reclamation processes must be upgraded to the common-lock
 implementation before cleanup is enabled; an older uncoordinated expired-key
 writer cannot participate in the new race guarantee.
 
-Each pass inspects at most 64 canonical claim records in the intake path (the
-standalone helper supports a cap up to 1,000), with a persistent round-robin
-cursor. Filename discovery still enumerates the existing flat directory. The
-inspection budget bounds content reads, validation and deletion, rather than
-the total cost of enumerating an arbitrarily large historical directory. That
-remaining scaling boundary must be measured before claiming an unbounded-volume
-maintenance guarantee; partitioning/indexing is appropriate if actual volume
-requires it.
+Each intake pass examines at most 136 directory entries and reads at most 64
+canonical records, each limited to 4,096 bytes. Unknown filenames consume the
+same directory-entry budget. The standalone helper caps inspection at 1,000
+records and discovery at 2,048 entries. A 50 ms monotonic scan deadline stops the
+pass before starting another entry; one entry's bounded validation/reclaim work
+already in progress can finish after that deadline. Lock acquisition,
+constant-size metadata writes and filesystem latency are not a hard wall-clock
+promise for the entire HTTP request. There is no sorted listing or
+full-directory enumeration before those limits apply.
+
+An opened nofollow directory FD and its device/inode identity anchor a retained
+`scandir` stream. Healthy ticks resume that stream despite new claims. A replaced
+root refuses the old stream; record reads and expiry unlinks use its anchored FD
+and fresh identity checks. At most four streams are cached per process, and both
+stream and FD close on completion, error, eviction or fork. This adds no queue
+or alternate nonce authority; existing flat files remain canonical.
+
+Portable directory streams cannot be durably resumed after process restart.
+Restart or cache eviction begins another bounded survey, so frequent restarts
+can delay cleanup progress. Canonical nonce claims and the clock high-water
+remain durable and preserve replay rejection. Unvisited legacy entries stay
+unknown. Neither a partial window nor reaching the end of a changing directory
+establishes a complete census.
 
 The private `.nonce_retention_report` records the inspected byte/record window,
 fresh/expired/unproven counts, observed free bytes/inodes, truncation, applied
-reclamation and policy mode. It is not a claim that all root bytes or all nonce
-records were measured. Existing `/health` exposes only these safe bounded
-counts; no nonce, client identity, path or secret value is returned.
+reclamation and policy mode. Discovery counters and the monotonic deadline
+describe this window, with `discovery_continuation_scope: process_lifetime` and
+`inventory_complete: false`. `canonical_filenames_discovered` counts only this
+window. It is not a claim that all root bytes or all nonce records were measured.
+Existing `/health` exposes only these safe bounded counts; no nonce, client
+identity, path or secret value is returned.
 
 Local acceptance covers two process claimants racing a sweeper, restart and
 clock rollback, malformed/symlink/permission state, injected full-disk fsync
-failure, incremental expiry, and a bounded-rate traffic soak stabilizing within
-the TTL, grace and inspection-lag envelope. Production starts with observation
-only and still requires measured-volume retention evidence before cleanup is
-enabled by the existing policy owner.
+failure, incremental expiry, a 10,000-entry legacy inventory under continuing
+claims, discovery deadline/entry limits, fair continuation, root replacement,
+cursor closure/restart, and a bounded-rate traffic soak stabilizing within the
+TTL, grace and inspection-lag envelope. Production starts with observation only
+and still requires measured-volume retention evidence before cleanup is enabled
+by the existing policy owner.
