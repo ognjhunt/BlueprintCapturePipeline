@@ -635,8 +635,11 @@ def _join_observations(observed: Mapping[str, TrustedObservation], *, attempt: M
             or facts["site_budget"].get("budget_ledger_id") != authority.get("budget_ledger_id")):
         blockers.append("screening_budget_binding_invalid")
     for execution in execution_facts.values():
-        maximum_end = (_epoch_stamp(execution["issued_deadline_epoch"]) if execution.get("issued_deadline_epoch") is not None
-                       else _stamp(execution["started_at"]) + timedelta(seconds=execution["issued_ttl_seconds"]))
+        maximum_end = _stamp(execution["started_at"]) + timedelta(seconds=execution["issued_ttl_seconds"])
+        if execution.get("issued_deadline_epoch") is not None:
+            maximum_end = min(maximum_end, _epoch_stamp(execution["issued_deadline_epoch"]))
+        if _stamp(execution["completed_at"]) > maximum_end:
+            blockers.append("observed_execution_exceeds_issued_runtime")
         if maximum_end > _stamp(authority.get("expires_at")):
             blockers.append("issued_session_runtime_exceeds_capture_authority")
     for role in ("task_confirmation", "intake_qa", "metric_scene", "compiled_scene"):

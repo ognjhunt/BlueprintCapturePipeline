@@ -193,7 +193,8 @@ def retained(tmp_path, monkeypatch, request):
             "adapter_result": record(output / "raw_adapter.json", {"vast_instance_ids": [7001]}),
             "teardown_manifest": record(output / "teardown.json", {"vast_instance_ids": [7001]})}}
     adapter_path = output / "allocator_result.json"
-    closeout_epoch = datetime.fromisoformat(stamp(options.get("closeout_seconds", 42))).timestamp()
+    completed_seconds = options.get("completed_seconds", 40)
+    closeout_epoch = datetime.fromisoformat(stamp(options.get("closeout_seconds", completed_seconds + 2))).timestamp()
     monkeypatch.setattr(closeout, "time", SimpleNamespace(time=lambda: closeout_epoch))
     class AtTimeProvider(Provider):
         def billable_inventory(self, **kwargs):
@@ -213,7 +214,7 @@ def retained(tmp_path, monkeypatch, request):
             "max_policy_queries": options.get("frozen_max_policy_queries", 10), "open_loop_horizon": 8,
             "policy_execution_spec_digest": policy_spec["execution_spec_digest"],
             "worker_image_digest": "sha256:" + "3" * 64}}}, "attempt_digest")
-    publication = screening_publication(plan=value, state={"revision": 2, "updated_at": stamp(50),
+    publication = screening_publication(plan=value, state={"revision": 2, "updated_at": stamp(completed_seconds + 10),
         "candidates": {result["candidate_ids"][0]: {"status": "completed", "summary": candidate_result_summary(
             result, plan=value, candidate=value["candidates"][0])}}}, budget={})
     rows = {role: {"schema_version": "test.retained_observation.v1"} for role in acceptance.ROLES}
@@ -246,9 +247,10 @@ def retained(tmp_path, monkeypatch, request):
         customer_readback={"publication_digest": publication["publication_digest"], "revision": 2, "current_source": True,
             "persisted": True, "displayed": True, "result_digests": {result["candidate_ids"][0]: result["result_digest"]},
             "webapp_commit": attempt["releases"]["webapp_commit"]},
-        event_history={"coverage_complete": True, "coverage_started_at": stamp(0), "coverage_ended_at": stamp(90),
+        event_history={"coverage_complete": True, "coverage_started_at": stamp(0), "coverage_ended_at": stamp(completed_seconds + 50),
             "events": [{"kind": "upload_start", "at": stamp(10), "attempt_id": "attempt-1"}]})
-    times = dict(zip(acceptance.ROLES, (1, 10, 12, 14, 16, 18, 20, 22, 24, 26, 50, 55, 60, 70, 80, 90)))
+    times = dict(zip(acceptance.ROLES, (1, 10, 12, 14, 16, 18, 20, 22, 24, 26,
+        *(completed_seconds + offset for offset in (10, 15, 20, 30, 40, 50)))))
     def acquire(role, rec, content, at, role_facts):
         acquisitions.rows[role, rec["sha256"]] = acceptance.TrustedObservation(
             rec["sha256"], content["schema_version"], acceptance._PRODUCERS.get(role, "pipeline"),
@@ -260,8 +262,8 @@ def retained(tmp_path, monkeypatch, request):
     for role in ("result", "authority", "closeout"):
         rec = manifest["executions"][0][role]
         content = json.loads(open(rec["path"]).read())
-        acquire("execution_" + role, rec, content, 45 if role == "closeout" else 40,
-            {"started_at": stamp(30), "completed_at": stamp(40), "worker_image_digest": "sha256:" + "3" * 64,
+        acquire("execution_" + role, rec, content, completed_seconds + 5 if role == "closeout" else completed_seconds,
+            {"started_at": stamp(30), "completed_at": stamp(completed_seconds), "worker_image_digest": "sha256:" + "3" * 64,
              "worker_image_binding_kind": "provider_container_image_digest"})
     manifest_path = root / "acceptance.json"
     manifest_path.write_text(json.dumps(manifest))
@@ -519,6 +521,19 @@ def test_capture_authority_and_actual_budget_ledger_are_both_required(retained):
     assert "issued_session_runtime_exceeds_capture_authority" in report(retained)["blockers"]
     change_acquisition(retained, "site_budget", facts={"budget_ledger_id": "other-site-budget"})
     assert "screening_budget_binding_invalid" in report(retained)["blockers"]
+
+
+@pytest.mark.parametrize("retained,within_issued_runtime", [
+    ({"completed_seconds": 1830}, True),
+    ({"completed_seconds": 3640}, False),
+], indirect=["retained"])
+def test_observed_completion_must_fit_actual_issued_runtime_even_with_later_valid_closeout(retained, within_issued_runtime):
+    result = report(retained)
+    assert (result["status"] == "verified") is within_issued_runtime
+    assert result["milestones"]["unattended_completion_within_authorized_stages"] is within_issued_runtime
+    assert result["milestones"]["resource_reconciliation"] is within_issued_runtime
+    if not within_issued_runtime:
+        assert "observed_execution_exceeds_issued_runtime" in result["blockers"]
 
 
 def test_deleted_sealed_bundle_bytes_cannot_prove_runtime_or_query_authority(retained):
