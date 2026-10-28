@@ -13,7 +13,7 @@ import pytest
 
 from blueprint_pipeline import production_autonomy_acquisition as acquisition
 from blueprint_pipeline import production_autonomy_acceptance as acceptance
-from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from tests.test_production_autonomy_acceptance import retained, record, stamp  # noqa: F401
 
 
@@ -120,6 +120,19 @@ def test_frozen_tenant_must_be_the_actual_native_webapp_namespace(sources):
             scene_intake_id="intake-1", webapp_service_identity="webapp-service",
             pipeline_service_identity="pipeline-service", evidence_root=sources.retained["root"],
             reader=lambda _: None)
+
+
+@pytest.mark.parametrize("job_id", [".", ".."])
+def test_job_identifier_is_validated_before_any_native_read_selector(sources, job_id):
+    sources.attempt["source"].update(job_id=job_id, site_id="site-" + job_id)
+    sources.attempt["attempt_digest"] = canonical_digest(sources.attempt, digest_field="attempt_digest")
+    sources.plan["site_id"] = "site-" + job_id
+    sources.plan["plan_digest"] = canonical_digest(sources.plan, digest_field="plan_digest")
+    sources.publication.update(site_id="site-" + job_id, plan_digest=sources.plan["plan_digest"])
+    sources.publication["publication_digest"] = cross_runtime_canonical_digest(sources.publication, digest_field="publication_digest")
+    with pytest.raises(acceptance.AcceptanceEvidenceError, match="acquisition_pin_invalid"):
+        sources.collector()
+    assert sources.calls == []
 
 
 def test_persisted_completed_ack_uses_actual_native_result_record(sources):

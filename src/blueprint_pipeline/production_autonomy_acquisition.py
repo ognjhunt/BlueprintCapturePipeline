@@ -176,6 +176,7 @@ class AuthenticatedAcceptanceCollector:
                 or not _ID.fullmatch(str(self._attempt.get("attempt_id") or ""))
                 or any(not isinstance(source.get(key), str) or not source[key] for key in SOURCE_KEYS)
                 or any(not _DIGEST.fullmatch(source[key]) for key in SOURCE_KEYS if key.endswith("digest"))
+                or not _ID.fullmatch(source["job_id"])
                 or source["site_id"] != "site-" + source["job_id"]
                 or source["tenant_id"] != team_namespace
                 or any(source.get(key) != self._plan["source"].get(key) for key in self._plan["source"])
