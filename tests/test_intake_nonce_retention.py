@@ -140,7 +140,7 @@ def test_read_permission_failure_is_typed_and_preserves_record(tmp_path, monkeyp
     path = _path(root, "permission")
     original = store.os.open
     def denied(candidate, *args, **kwargs):
-        if candidate == path:
+        if candidate == path or (str(candidate) == path.name and kwargs.get("dir_fd") is not None):
             raise PermissionError("private diagnostic")
         return original(candidate, *args, **kwargs)
     monkeypatch.setattr(store.os, "open", denied)
@@ -473,3 +473,71 @@ def test_restart_starts_bounded_discovery_without_changing_durable_replay_protec
     assert report["inspected"] <= 1 and report["discovery_entries_examined"] <= 10
     assert report["discovery_continuation_scope"] == "process_lifetime"
     assert report["inventory_complete"] is False
+
+
+@pytest.mark.parametrize("phase", ["final_state", "report"])
+def test_final_metadata_commit_never_follows_replaced_root_or_lowers_other_clock(tmp_path, monkeypatch, phase):
+    root = _root(tmp_path)
+    _legacy_record(root, 1)
+    outside = tmp_path / "replacement"
+    outside.mkdir(mode=0o700)
+    assert store.claim(outside, client_id="client", nonce="replacement-fresh", now=2000,
+                       max_age_seconds=300)
+    with pytest.raises(store.NonceStoreError, match="intake_nonce_clock_rollback"):
+        store.claim(outside, client_id="client", nonce="older-clock-request", now=1000,
+                    max_age_seconds=300)
+    before = {path.name: path.read_bytes() for path in outside.iterdir()}
+    original_open = store.os.open
+    state_writes = 0
+    replaced = False
+
+    def open_metadata(target, flags, *args, **kwargs):
+        nonlocal state_writes, replaced
+        name = os.path.basename(target)
+        state_temporary = name.startswith(f".{store.STATE_FILE}.") and name.endswith(".tmp")
+        report_temporary = name.startswith(f".{store.REPORT_FILE}.") and name.endswith(".tmp")
+        if state_temporary and flags & os.O_CREAT:
+            state_writes += 1
+        boundary = state_temporary and state_writes == 2 if phase == "final_state" else report_temporary
+        if boundary and not replaced:
+            root.rename(tmp_path / "retained-original-store")
+            root.symlink_to(outside, target_is_directory=True)
+            replaced = True
+        return original_open(target, flags, *args, **kwargs)
+
+    monkeypatch.setattr(store.os, "open", open_metadata)
+    with pytest.raises(store.NonceStoreError, match="intake_nonce_discovery_root_changed"):
+        store.sweep(root, now=1000, limit=8)
+    assert replaced
+    assert before == {path.name: path.read_bytes() for path in outside.iterdir()}
+    with pytest.raises(store.NonceStoreError, match="intake_nonce_clock_rollback"):
+        store.claim(outside, client_id="client", nonce="older-clock-request", now=1000,
+                    max_age_seconds=300)
+    assert not store._DISCOVERY_CURSORS
+
+
+def test_claim_creation_never_follows_root_replacement_after_clock_check(tmp_path, monkeypatch):
+    root = _root(tmp_path)
+    outside = tmp_path / "replacement"
+    outside.mkdir(mode=0o700)
+    assert store.claim(outside, client_id="client", nonce="replacement-fresh", now=2000,
+                       max_age_seconds=300)
+    before = {path.name: path.read_bytes() for path in outside.iterdir()}
+    target = _path(root, "older-clock-request")
+    original_open = store.os.open
+    replaced = False
+
+    def open_file(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if os.fspath(path) in (str(target), target.name) and flags & os.O_CREAT and not replaced:
+            root.rename(tmp_path / "retained-original-store")
+            root.symlink_to(outside, target_is_directory=True)
+            replaced = True
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(store.os, "open", open_file)
+    with pytest.raises(store.NonceStoreError, match="intake_nonce_discovery_root_changed"):
+        store.claim(root, client_id="client", nonce="older-clock-request", now=1000,
+                    max_age_seconds=300)
+    assert replaced
+    assert before == {path.name: path.read_bytes() for path in outside.iterdir()}

@@ -41,6 +41,14 @@ and fresh identity checks. At most four streams are cached per process, and both
 stream and FD close on completion, error, eviction or fork. This adds no queue
 or alternate nonce authority; existing flat files remain canonical.
 
+The claim/reclaim lock itself is opened relative to a nofollow directory FD held
+through the whole operation. Clock reads, metadata temporary-file creation,
+atomic replacement, fsync, nonce creation and expiry unlink all use that same
+locked directory identity. A root swap before the final state/report commit
+cannot redirect writes into the replacement store or lower its clock high-water.
+The operation refuses its result if the configured pathname changed during the
+commit; it preserves any claim already retained in the original store.
+
 Portable directory streams cannot be durably resumed after process restart.
 Restart or cache eviction begins another bounded survey, so frequent restarts
 can delay cleanup progress. Canonical nonce claims and the clock high-water

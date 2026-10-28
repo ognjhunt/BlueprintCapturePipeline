@@ -15,12 +15,11 @@ import re
 import stat
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
-
-from .common import write_json
 
 SCHEMA_VERSION = "blueprint_intake_nonce_claim.v1"
 REPORT_FILE = ".nonce_retention_report"
@@ -39,9 +38,8 @@ class NonceStoreError(RuntimeError):
 class _DirectoryCursor:
     """One bounded-memory, process-local continuation over the existing store."""
 
-    def __init__(self, root: Path):
-        self.descriptor = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
-                                  | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    def __init__(self, root: Path, *, directory_fd: int):
+        self.descriptor = os.dup(directory_fd)
         self.iterator = None
         try:
             metadata = os.fstat(self.descriptor)
@@ -56,10 +54,14 @@ class _DirectoryCursor:
             self.close()
             raise
 
-    def validate(self, root: Path) -> None:
+    def validate(self, root: Path, *, directory_fd: int | None = None) -> None:
         metadata = root.stat(follow_symlinks=False)
         if not stat.S_ISDIR(metadata.st_mode) or (metadata.st_dev, metadata.st_ino) != self.identity:
             raise NonceStoreError("intake_nonce_discovery_root_changed")
+        if directory_fd is not None:
+            locked = os.fstat(directory_fd)
+            if (locked.st_dev, locked.st_ino) != self.identity:
+                raise NonceStoreError("intake_nonce_discovery_root_changed")
 
     def close(self) -> None:
         iterator, self.iterator = self.iterator, None
@@ -89,7 +91,7 @@ os.register_at_fork(after_in_child=_reset_discovery_cursors)
 
 
 @contextmanager
-def _directory_cursor(root: Path):
+def _directory_cursor(root: Path, *, directory_fd: int):
     if not _DISCOVERY_LOCK.acquire(timeout=SWEEP_TIME_BUDGET_SECONDS):
         raise NonceStoreError("intake_nonce_discovery_busy")
     key = os.path.abspath(root)
@@ -97,7 +99,7 @@ def _directory_cursor(root: Path):
         cursor = _DISCOVERY_CURSORS.pop(key, None)
         if cursor is not None:
             try:
-                cursor.validate(root)
+                cursor.validate(root, directory_fd=directory_fd)
             except BaseException:
                 cursor.close()
                 raise
@@ -105,7 +107,7 @@ def _directory_cursor(root: Path):
             while len(_DISCOVERY_CURSORS) >= DISCOVERY_CACHE_LIMIT:
                 _, evicted = _DISCOVERY_CURSORS.popitem(last=False)
                 evicted.close()
-            cursor = _DirectoryCursor(root)
+            cursor = _DirectoryCursor(root, directory_fd=directory_fd)
         _DISCOVERY_CURSORS[key] = cursor
         try:
             yield cursor
@@ -122,21 +124,70 @@ def _directory_cursor(root: Path):
 @contextmanager
 def _locked(root: Path):
     descriptor = -1
+    directory = -1
     try:
         if root.is_symlink() or not root.is_dir():
             raise NonceStoreError("intake_nonce_store_unsafe")
-        descriptor = os.open(root / ".nonce_retention.lock", os.O_CREAT | os.O_RDWR
-                             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0), 0o600)
+        directory = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+                            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+        _validate_locked_root(root, directory)
+        descriptor = os.open(".nonce_retention.lock", os.O_CREAT | os.O_RDWR
+                             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                             | getattr(os, "O_CLOEXEC", 0), 0o600, dir_fd=directory)
         metadata = os.fstat(descriptor)
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
             raise NonceStoreError("intake_nonce_store_unsafe")
         fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
+        _validate_locked_root(root, directory)
+        yield directory
+        # All writes have committed to this FD while its own lock was held.
+        # A renamed/replaced pathname must still refuse the operation's result.
+        _validate_locked_root(root, directory)
     except OSError as exc:
         raise NonceStoreError("intake_nonce_store_unavailable") from exc
     finally:
-        if descriptor >= 0:
-            os.close(descriptor)
+        try:
+            if descriptor >= 0:
+                os.close(descriptor)
+        finally:
+            if directory >= 0:
+                os.close(directory)
+
+
+def _validate_locked_root(root: Path, directory_fd: int) -> None:
+    locked = os.fstat(directory_fd)
+    current = root.stat(follow_symlinks=False)
+    if (not stat.S_ISDIR(locked.st_mode) or not stat.S_ISDIR(current.st_mode)
+            or (locked.st_dev, locked.st_ino) != (current.st_dev, current.st_ino)):
+        raise NonceStoreError("intake_nonce_discovery_root_changed")
+
+
+def _write_metadata(directory_fd: int, name: str, value: dict[str, Any]) -> None:
+    """Atomically replace only private metadata in the directory being locked."""
+    if name not in (STATE_FILE, REPORT_FILE):
+        raise NonceStoreError("intake_nonce_metadata_invalid")
+    try:
+        payload = (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode()
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise NonceStoreError("intake_nonce_metadata_invalid") from exc
+    if len(payload) > 4096:
+        raise NonceStoreError("intake_nonce_metadata_invalid")
+    temporary = f".{name}.{uuid.uuid4().hex}.tmp"
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                         | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                         0o600, dir_fd=directory_fd)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
 
 
 def _read_private_json(path: Path, *, error_prefix: str,
@@ -185,12 +236,13 @@ def _read_record(path: Path, *, directory_fd: int | None = None) -> tuple[dict[s
     return value, metadata
 
 
-def _clock(root: Path, now: float) -> dict[str, Any]:
+def _clock(directory_fd: int, now: float) -> dict[str, Any]:
     if not math.isfinite(now) or now < 0:
         raise NonceStoreError("intake_nonce_clock_invalid")
-    path = root / STATE_FILE
+    path = Path(STATE_FILE)
     try:
-        state, _ = _read_private_json(path, error_prefix="intake_nonce_clock_state")
+        state, _ = _read_private_json(path, error_prefix="intake_nonce_clock_state",
+                                     directory_fd=directory_fd)
     except FileNotFoundError:
         state, previous = {}, now
     else:
@@ -205,7 +257,7 @@ def _clock(root: Path, now: float) -> dict[str, Any]:
             raise NonceStoreError("intake_nonce_clock_state_unavailable") from exc
     state = {**state, "schema_version": "blueprint_intake_nonce_retention_state.v1",
              "high_water_epoch": max(now, previous)}
-    write_json(path, state)
+    _write_metadata(directory_fd, STATE_FILE, state)
     return state
 
 
@@ -231,13 +283,13 @@ def claim(root: Path, *, client_id: str, nonce: str, now: float, max_age_seconds
             or max_age_seconds <= 0):
         raise NonceStoreError("intake_nonce_expiry_invalid")
     digest = hashlib.sha256(f"{client_id}\0{nonce}".encode()).hexdigest()
-    path = root / (digest + ".json")
+    path = Path(digest + ".json")
     client_digest = hashlib.sha256(client_id.encode()).hexdigest()
     nonce_digest = hashlib.sha256(nonce.encode()).hexdigest()
-    with _locked(root):
-        _clock(root, now)
+    with _locked(root) as directory:
+        _clock(directory, now)
         try:
-            existing, metadata = _read_record(path)
+            existing, metadata = _read_record(path, directory_fd=directory)
         except FileNotFoundError:
             pass
         else:
@@ -245,7 +297,7 @@ def claim(root: Path, *, client_id: str, nonce: str, now: float, max_age_seconds
                 raise NonceStoreError("intake_nonce_record_binding_mismatch")
             if existing["expires_at_epoch"] + GRACE_SECONDS >= now:
                 return False
-            if not _unlink_same(path, metadata):
+            if not _unlink_same(path, metadata, directory_fd=directory):
                 raise NonceStoreError("intake_nonce_record_changed")
         expires = now + max(max_age_seconds * 2, max_age_seconds + 60)
         if not math.isfinite(expires) or expires <= now:
@@ -255,18 +307,16 @@ def claim(root: Path, *, client_id: str, nonce: str, now: float, max_age_seconds
         # Refuse unexpected same-name creation even under the common lock.
         # All claim/reclaim writers must use that lock. Partial writes stay held.
         try:
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                                 0o600, dir_fd=directory)
         except FileExistsError:
             return False
         with os.fdopen(descriptor, "wb") as stream:
             stream.write((json.dumps(payload, sort_keys=True) + "\n").encode())
             stream.flush()
             os.fsync(stream.fileno())
-        directory = os.open(root, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        os.fsync(directory)
         return True
 
 
@@ -293,8 +343,8 @@ def sweep(root: Path, *, now: float, limit: int = 128, apply: bool = False) -> d
 def _sweep_window(root: Path, *, now: float, limit: int, apply: bool) -> dict[str, Any]:
     maximum = max(0, min(int(limit), 1000))
     entry_limit = min(maximum * 2 + 8, DISCOVERY_ENTRY_LIMIT) if maximum else 0
-    with _locked(root):
-        state = _clock(root, now)
+    with _locked(root) as directory:
+        state = _clock(directory, now)
         counts = {"inspected": 0, "expired": 0, "fresh": 0, "unproven": 0,
                   "reclaimed": 0, "inspected_bytes": 0, "expired_bytes": 0}
         started = time.monotonic()
@@ -302,7 +352,7 @@ def _sweep_window(root: Path, *, now: float, limit: int, apply: bool) -> dict[st
         examined = 0
         pass_completed = False
         if maximum:
-            with _directory_cursor(root) as cursor:
+            with _directory_cursor(root, directory_fd=directory) as cursor:
                 while examined < entry_limit and counts["inspected"] < maximum:
                     if time.monotonic() >= deadline:
                         break
@@ -337,8 +387,8 @@ def _sweep_window(root: Path, *, now: float, limit: int, apply: bool) -> dict[st
         elapsed = time.monotonic() - started
         state.pop("last_filename", None)  # The old sorted-list cursor cannot resume a stream.
         state["discovery_continuation_scope"] = "process_lifetime"
-        write_json(root / STATE_FILE, state)
-        capacity = os.statvfs(root)
+        _write_metadata(directory, STATE_FILE, state)
+        capacity = os.fstatvfs(directory)
         result = {"schema_version": "blueprint_intake_nonce_retention_report.v1", "observed_at_epoch": now,
                   "mode": "apply" if apply else "report_only", "grace_seconds": GRACE_SECONDS,
                   "inspection_limit": maximum, "canonical_filenames_discovered": counts["inspected"],
@@ -351,5 +401,5 @@ def _sweep_window(root: Path, *, now: float, limit: int, apply: bool) -> dict[st
                   "record_inspection_truncated": not pass_completed,
                   "free_bytes": capacity.f_bavail * capacity.f_frsize, "free_inodes": capacity.f_favail,
                   "observation_scope": "bounded_discovery_and_record_window", **counts}
-        write_json(root / REPORT_FILE, result)
+        _write_metadata(directory, REPORT_FILE, result)
         return result
