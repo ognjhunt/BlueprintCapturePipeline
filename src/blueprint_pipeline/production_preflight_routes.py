@@ -6,7 +6,11 @@ required access. This is plumbing coverage, never runtime qualification.
 
 from __future__ import annotations
 
+import os
+import stat
 from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 ROOT = "/var/lib/blueprint/pipeline-control-plane"
 BETA_RIGID_ENTRIES = {
@@ -64,3 +68,27 @@ def access_contract(unit: str, entry: str, environment: Mapping[str, str], *, wo
             "boundary_version": 1, "required_path_count": len(rows),
             "scope": "maintained_path_requirements_only",
             "proof_boundary": "plumbing_only_not_runtime_qualification"}, rows
+
+
+def read_probe(path_text: str, *, executable: bool = False) -> dict[str, Any]:
+    """Observe read/execute access without asking for or testing write permission."""
+    path = Path(path_text)
+    try:
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            return {"status": "symlink_unproven", "exists": True}
+        if path.is_dir():
+            with os.scandir(path) as entries:
+                next(entries, None)
+            readable = os.access(path, os.R_OK | os.X_OK)
+        else:
+            with path.open("rb") as stream:
+                stream.read(1)
+            readable = True
+        if executable and not os.access(path, os.X_OK):
+            return {"status": "not_executable", "exists": True}
+        return {"status": "readable" if readable else "unreadable", "exists": True}
+    except FileNotFoundError:
+        return {"status": "missing", "exists": False}
+    except OSError as error:
+        return {"status": "unreadable", "exists": None, "errno": error.errno}

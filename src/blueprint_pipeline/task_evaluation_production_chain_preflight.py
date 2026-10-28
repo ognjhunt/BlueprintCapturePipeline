@@ -57,7 +57,7 @@ from typing import Any
 # Sandbox probes also run this file directly, without a package context.
 if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from blueprint_pipeline.production_preflight_routes import BETA_RIGID_UNITS, access_contract
+from blueprint_pipeline.production_preflight_routes import BETA_RIGID_UNITS, access_contract, read_probe
 from blueprint_pipeline.production_preflight_summary import PreflightSummaryError, build_safe_summary, write_safe_summary
 
 SCHEMA_VERSION = "task_evaluation_production_chain_preflight.v1"
@@ -340,30 +340,6 @@ def path_probe(path_text: str) -> dict[str, Any]:
         return verdict
     verdict["status"] = "readable"
     return verdict
-
-
-def read_probe(path_text: str, *, executable: bool = False) -> dict[str, Any]:
-    """Observe read/execute access without asking for or testing write permission."""
-    path = Path(path_text)
-    try:
-        info = path.lstat()
-        if stat.S_ISLNK(info.st_mode):
-            return {"status": "symlink_unproven", "exists": True}
-        if path.is_dir():
-            with os.scandir(path) as entries:
-                next(entries, None)
-            readable = os.access(path, os.R_OK | os.X_OK)
-        else:
-            with path.open("rb") as stream:
-                stream.read(1)
-            readable = True
-        if executable and not os.access(path, os.X_OK):
-            return {"status": "not_executable", "exists": True}
-        return {"status": "readable" if readable else "unreadable", "exists": True}
-    except FileNotFoundError:
-        return {"status": "missing", "exists": False}
-    except OSError as error:
-        return {"status": "unreadable", "exists": None, "errno": error.errno}
 
 
 # --------------------------------------------------------------------------- #
