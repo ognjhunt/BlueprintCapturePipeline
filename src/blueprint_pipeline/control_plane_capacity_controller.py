@@ -568,7 +568,13 @@ def _refresh_usage(
     except OSError as exc:
         return latest, f"usage_survey_attempt_unwritten:{type(exc).__name__}"
     try:
-        result = survey(mounts=survey_mounts(mounts))
+        kwargs: dict[str, Any] = {"mounts": survey_mounts(mounts)}
+        if survey is survey_usage:
+            # Each hourly observation gets a bounded, identity-checked next
+            # partition. Historical first trees cannot consume every pass.
+            # These are partial snapshots, never cumulative reclaimable bytes.
+            kwargs.update(continuation=(latest or {}).get("continuation"), partitions_per_mount=4)
+        result = survey(**kwargs)
     except Exception as exc:  # noqa: BLE001 - a failed survey must never stop the capacity tick
         error = f"usage_survey_failed:{type(exc).__name__}"
         try:
@@ -628,6 +634,14 @@ def usage_projection(
             "container_runtime_bytes": survey.get("container_runtime_bytes"),
             "container_runtime_complete": survey.get("container_runtime_complete"),
             "container_runtime_roots": list(survey.get("container_runtime_roots") or []),
+            "scope": survey.get("scope", "bounded_walk_snapshot"),
+            "byte_accounting": survey.get("byte_accounting", "current_snapshot"),
+            "unreadable_bytes": survey.get("unreadable_bytes"),
+            "inventory_complete": survey.get("inventory_complete"),
+            "selected_partitions": survey.get("selected_partitions"),
+            "candidate_partitions": survey.get("candidate_partitions"),
+            "partition_entries_examined": survey.get("partition_entries_examined"),
+            "continuation_status": list(survey.get("continuation_status") or []),
         }
     if error:
         projection["error"] = error

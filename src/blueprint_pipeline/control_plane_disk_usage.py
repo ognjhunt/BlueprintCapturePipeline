@@ -614,6 +614,11 @@ def _mount_row(mount: str, used: int | None, surveyed: int, classified: int) -> 
         "used_bytes": used,
         "surveyed_bytes": surveyed,
         "classified_bytes": classified,
+        "survey_coverage_fraction": fraction,
+        "classified_fraction": None if used is None else (1.0 if used == 0 else round(min(1.0, classified / used), 4)),
+        "unvisited_bytes": None if used is None else max(0, used - surveyed),
+        # Compatibility alias: historically this meant surveyed / used, not
+        # classified / used. Do not silently change its denominator.
         "attributed_fraction": fraction,
     }
 
@@ -675,6 +680,9 @@ def survey_usage(
     max_seconds: float = DEFAULT_SURVEY_MAX_SECONDS,
     clock: Callable[[], float] = time.time,
     mountinfo: str | os.PathLike[str] = MOUNTINFO_PATH,
+    continuation: Mapping[str, Any] | None = None,
+    partitions_per_mount: int | None = None,
+    scratch_census: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Attribute every byte on ``mounts`` to a storage class, a root and an owner.
 
@@ -727,6 +735,17 @@ def survey_usage(
         if key not in seen:
             seen.add(key)
             walks.append((path, metadata))
+    original_walks = list(walks)
+    partition = None
+    if partitions_per_mount is not None:
+        from .control_plane_disk_usage_cursor import select_partitions
+
+        walks, partition = select_partitions(original_walks, continuation=continuation,
+            partitions_per_mount=partitions_per_mount, mount_points=walk.mount_points,
+            deadline=started + max_seconds / 4, clock=clock)
+        # A listed nested mount remains excluded from its parent's traversal,
+        # even when this pass visits only some children of that nested root.
+        seen.update((metadata.st_dev, metadata.st_ino) for _path, metadata in walks)
     walk.walk_roots = frozenset(seen)
     root_count = max(1, len(walks))
     entry_share, extra_entries = divmod(max_entries, root_count)
@@ -744,7 +763,7 @@ def survey_usage(
     walk.finish()
 
     filesystems: dict[int, list[str]] = {}
-    for path, metadata in walks:
+    for path, metadata in original_walks:
         filesystems.setdefault(metadata.st_dev, []).append(path)
     rows = []
     for device, paths in filesystems.items():
@@ -772,11 +791,13 @@ def survey_usage(
                     key=lambda item: (-item[1][0], item[0][2], item[0][1], item[0][0]))
     survey: dict[str, Any] = {
         "schema_version": SURVEY_SCHEMA_VERSION,
-        "status": "truncated" if walk.truncated else "complete",
+        "status": "truncated" if walk.truncated or partition is not None else "complete",
         "observed_at_epoch": started,
         "duration_seconds": round(max(0.0, clock() - started), 3),
         "entries_visited": walk.entries,
         "unreadable": walk.unreadable,
+        "unreadable_bytes": None if walk.unreadable or partition is not None and not partition["inventory_complete"] else 0,
+        "byte_accounting": "current_snapshot_lower_bound" if walk.truncated or partition is not None or walk.unreadable else "current_snapshot",
         "mounts": rows,
         "by_class": [
             {"storage_class": storage_class, "allocated_bytes": allocated,
@@ -804,7 +825,8 @@ def survey_usage(
         "orphan_scratch_largest_bytes": max((allocated for _root, allocated in orphan_scratch), default=0),
         "orphan_scratch_roots": [
             {"root": root, "allocated_bytes": allocated,
-             "newest_mtime_epoch": walk.unclassified_mtime.get(root)}
+             "newest_mtime_epoch": walk.unclassified_mtime.get(root),
+             **scratch_lifecycle_disposition(root, scratch_census, now=started)}
             for root, allocated in orphan_scratch[:SURVEY_ORPHAN_ROOT_ROWS]
         ],
         "container_runtime_roots": [
@@ -813,7 +835,7 @@ def survey_usage(
         "container_runtime_bytes": sum(allocated for _root, allocated in container_runtime),
         # A truncated walk may stop before these stores: their totals are then
         # lower bounds, and an absent store is unknown rather than empty.
-        "container_runtime_complete": not walk.truncated,
+        "container_runtime_complete": not walk.truncated and partition is None and not walk.unreadable,
         "hardlinks": {
             "shared_inodes": len(walk.shared),
             "shared_bytes": sum(held[2] for held in walk.shared.values()),
@@ -821,9 +843,36 @@ def survey_usage(
         },
         "survey_digest": "",
     }
+    if partition is not None:
+        survey.update(partition)
+        survey["snapshot_observed_at_epoch"] = started
     survey = sanitize_public_survey(_report_safe(survey))
     survey["survey_digest"] = canonical_digest(survey, digest_field="survey_digest")
     return survey
+
+
+def scratch_lifecycle_disposition(root: str, census: Mapping[str, Any] | None, *, now: float) -> dict[str, Any]:
+    """Join existing reference evidence; a survey heuristic never grants cleanup."""
+    disposition = {"lifecycle_disposition": "unknown", "retirement_eligible": False,
+                   "lifecycle_reason": "fresh_complete_reference_census_required"}
+    if not isinstance(census, Mapping) or census.get("schema_version") != "control_plane_lane_scratch_census.v1":
+        return disposition
+    observed = census.get("observed_at_epoch")
+    if type(observed) not in (int, float) or not 0 <= now - observed <= 300 or census.get("status") != "complete" or census.get("scan_errors") != []:
+        return disposition
+    rows = census.get("rows")
+    if not isinstance(rows, list):
+        return disposition
+    for row in rows:
+        if not isinstance(row, Mapping) or row.get("path") != root:
+            continue
+        references = row.get("references")
+        if isinstance(references, list) and references:
+            return {**disposition, "lifecycle_disposition": "active_or_referenced", "lifecycle_reason": "existing_census_reference"}
+        # Owner guesses, age, empty references and an incomplete restore proof
+        # are never promoted to an approved retirement disposition here.
+        return {**disposition, "lifecycle_reason": "owner_retention_and_restore_proof_required"}
+    return disposition
 
 
 __all__ = [
