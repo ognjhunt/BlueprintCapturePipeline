@@ -492,8 +492,12 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
                 if projection_diagnostics:
                     updated["last_optional_projection_failure"] = {"code": projection_diagnostics[-1],
                                                                   "observed_at_epoch": now}
-                if projection_diagnostics or delivery.get("last_optional_projection_failure"):
-                    updated["optional_projection_state"] = "pending" if projection_diagnostics else "current"
+                if projection_diagnostics:
+                    updated["optional_projection_state"] = "pending"
+                elif (delivery.get("last_optional_projection_failure") and error is None
+                        and current_status is not None and current_status.get("schema_version") == STATUS_V4
+                        and current_status.get("family_authoring") is not None):
+                    updated["optional_projection_state"] = "current"
                 write_json(path, updated)
                 update_index(root, updated)
             counts["delivered"] += int(error is None)

@@ -260,6 +260,64 @@ def test_optional_projection_retry_uses_existing_outbox_without_provider_or_ledg
     assert len(observed) == 2 and listener._read_job_ledger(fixture['root']) == before
 
 
+@pytest.mark.parametrize('version', [status.STATUS_V1, status.STATUS_V2, status.STATUS_V3])
+@pytest.mark.parametrize('feature_enabled', [True, False])
+def test_legacy_base_acceptance_preserves_pending_optional_proof(family_source, monkeypatch, version, feature_enabled):
+    fixture = family_source
+    fixture['identity']['state'] = 'unproven'
+    status.retain_preparation_wakeup(fixture['root'])
+    monkeypatch.setattr(context_reader, 'website_webapp_request', lambda **_: _acceptance(fixture))
+    storage = fixture['root'].parents[4]
+    before = listener._read_job_ledger(fixture['root'])
+    assert status.reconcile_preparation_wakeups(storage, limit=1)['delivered'] == 0
+    path = fixture['root'] / status.DELIVERY_FILE
+    pending = json.loads(path.read_bytes())
+    assert pending['optional_projection_state'] == 'pending'
+    if not feature_enabled:
+        monkeypatch.delenv(status.FAMILY_STATUS_ENV)
+    def legacy(**_):
+        observed = status.read_preparation_status(capture_root=fixture['root'],
+            selectors=fixture['selected'], schema_version=version)
+        return {'schema_version': 'website_preparation_status_acceptance.' + version.rsplit('.', 1)[-1],
+            **fixture['selected'], 'accepted': True, 'state': observed['state'],
+            'status_digest': observed['status_digest'], 'native_execution_complete': False,
+            'correlation_id': 'bp-prep-' + observed['status_digest'][7:23]}
+    monkeypatch.setattr(context_reader, 'website_webapp_request', legacy)
+    delivered = status.reconcile_preparation_wakeups(storage, limit=1, now_epoch=pending['next_attempt_at_epoch'])
+    after = json.loads(path.read_bytes())
+    assert delivered['delivered'] == 1 and after['state'] == 'delivered'
+    assert after['acceptance']['schema_version'].endswith(version.rsplit('.', 1)[-1])
+    assert after['last_optional_projection_failure'] == pending['last_optional_projection_failure']
+    assert after['optional_projection_state'] == 'pending' and fixture['identity']['state'] == 'unproven'
+    assert listener._read_job_ledger(fixture['root']) == before
+
+
+def test_artifact_open_is_nonblocking_and_rechecks_the_actual_descriptor(tmp_path, monkeypatch):
+    path = tmp_path / 'preparation.json'
+    path.write_text('{"receipt":"fixed"}')
+    opened_flags = []
+    real_open = family_status.os.open
+    def tracked_open(value, flags, *args, **kwargs):
+        if Path(value) == path:
+            opened_flags.append(flags)
+        return real_open(value, flags, *args, **kwargs)
+    monkeypatch.setattr(family_status.os, 'open', tracked_open)
+    assert family_status._read(path)[0] == {'receipt': 'fixed'}
+    assert len(opened_flags) == 1 and opened_flags[0] & os.O_NONBLOCK
+    original_fstat = family_status.os.fstat
+    def replaced_descriptor(descriptor):
+        observed = original_fstat(descriptor)
+        # The already-open FD is independently sized; the earlier named stat
+        # cannot authorize consuming another regular inode or an oversized FD.
+        from types import SimpleNamespace
+        return SimpleNamespace(**{name: getattr(observed, name) for name in
+            ('st_dev', 'st_ino', 'st_mode', 'st_mtime_ns', 'st_ctime_ns')},
+            st_size=family_status._MAX_RECEIPT_BYTES + 1, st_nlink=1)
+    monkeypatch.setattr(family_status.os, 'fstat', replaced_descriptor)
+    with pytest.raises(family_status.FamilyProjectionUnavailable):
+        family_status._read(path)
+
+
 def test_export_actual_pipeline_receipts_for_independent_web_consumer(family_source):
     fixture = family_source
     known = _receipt(fixture)

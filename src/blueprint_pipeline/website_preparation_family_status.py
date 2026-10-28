@@ -40,9 +40,11 @@ def _read(path):
     _require(".." not in path.parts and not any(item.is_symlink() for item in (path, *path.parents)))
     before = path.stat()
     _require(stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and 0 < before.st_size <= _MAX_RECEIPT_BYTES)
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     with os.fdopen(descriptor, "rb") as stream:
-        _require(_version(os.fstat(stream.fileno())) == _version(before))
+        opened = os.fstat(stream.fileno())
+        _require(stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1
+            and 0 < opened.st_size <= _MAX_RECEIPT_BYTES and _version(opened) == _version(before))
         raw = stream.read(_MAX_RECEIPT_BYTES + 1)
         _require(_version(os.fstat(stream.fileno())) == _version(before))
     _require(len(raw) == before.st_size and _version(path.stat()) == _version(before))
