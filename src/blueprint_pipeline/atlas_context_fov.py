@@ -6,6 +6,8 @@ the exact source; it never changes the native camera, depth or source bytes.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from pathlib import Path
 
@@ -15,6 +17,26 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 
 MIN_SOURCE_AREA_RETAINED = .99
+
+
+def _audit_input_binding(inputs, sources, frames):
+    """Exact pixels and implementation behind a reusable, passed CPU audit."""
+    import cv2
+    from PIL import __version__ as pillow_version
+
+    if any(not isinstance(frame.get("rgb"), np.ndarray) or frame["rgb"].ndim != 3
+           or frame["rgb"].shape[2] != 3 for frame in frames):
+        raise ValueError("atlas_context_rgb_grid_invalid")
+    return {"schema_version": "atlas_context_fov_inputs.v1",
+            "source_pose_inputs_digest": inputs["digest"],
+            "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "dependencies": {"opencv": cv2.__version__, "numpy": np.__version__, "pillow": pillow_version},
+            "minimum_retained_source_area_fraction": MIN_SOURCE_AREA_RETAINED,
+            "sources": [{"frame_id": row["frame_id"], "image_digest": row["image_digest"]} for row in sources],
+            "returned": [{"frame_id": frame["frame_id"], "shape": list(frame["rgb"].shape),
+                          "dtype": frame["rgb"].dtype.str,
+                          "pixel_sha256": hashlib.sha256(np.ascontiguousarray(frame["rgb"]).tobytes()).hexdigest()}
+                         for frame in frames]}
 
 
 def square_pad(source: np.ndarray) -> tuple[np.ndarray, dict]:
@@ -123,11 +145,42 @@ def verify_pose_context_fov(*, pose_root: Path, frames: list, output_root: Path)
     from .website_atlas_pose import load_pending_atlas_pose_inputs
 
     inputs = load_pending_atlas_pose_inputs(pose_root)
-    by_id = {row["frame_id"]: row for row in full_view_sources(inputs, pose_root)}
+    # The canonical loader already verifies every input/source byte and padding
+    # transform. Do not decode and compare the same padded images a second time.
+    sources = inputs.get("full_view_sources") or inputs["frames"]
+    by_id = {row["frame_id"]: row for row in sources}
+    path = output_root / "context-fov-audit.json"
+    previous, previous_bytes = None, None
+    if path.is_symlink():
+        raise ValueError("atlas_context_audit_invalid")
+    if path.is_file():
+        previous_bytes = path.read_bytes()
+        previous = json.loads(previous_bytes)
+        if (not isinstance(previous, dict)
+                or previous.get("schema_version") != "atlas_context_fov_audit.v1"
+                or previous.get("digest") != canonical_digest(previous, digest_field="digest")):
+            raise ValueError("atlas_context_audit_invalid")
     rows = []
+    binding = None
     try:
         if [frame["frame_id"] for frame in frames] != list(by_id):
             raise ValueError("atlas_context_source_binding_invalid")
+        binding = _audit_input_binding(inputs, sources, frames)
+        if previous and previous.get("status") == "passed" and previous.get("input_binding") == binding:
+            prior_rows = previous.get("frames") or []
+            if (previous.get("source_pose_inputs_digest") != inputs["digest"]
+                    or type(previous.get("provider_calls")) is not int
+                    or previous.get("provider_calls") != 0
+                    or previous.get("minimum_retained_source_area_fraction") != MIN_SOURCE_AREA_RETAINED
+                    or [row.get("frame_id") for row in prior_rows] != list(by_id)
+                    or any(row.get("source_image_digest") != by_id[row["frame_id"]]["image_digest"]
+                           or row.get("full_source_field_of_view_preserved") is not True
+                           or type(row.get("retained_source_area_fraction")) not in (int, float)
+                           or not math.isfinite(row["retained_source_area_fraction"])
+                           or row["retained_source_area_fraction"] < MIN_SOURCE_AREA_RETAINED
+                           for row in prior_rows)):
+                raise ValueError("atlas_context_audit_invalid")
+            return previous
         for frame in frames:
             source = by_id[frame["frame_id"]]
             with Image.open(source["image_path"]) as image:
@@ -142,8 +195,16 @@ def verify_pose_context_fov(*, pose_root: Path, frames: list, output_root: Path)
     except ValueError as error:
         report = {"schema_version": "atlas_context_fov_audit.v1", "status": "refused", "reason": str(error),
                   "source_pose_inputs_digest": inputs["digest"], "frames": rows, "provider_calls": 0}
+    if binding is not None:
+        report["input_binding"] = binding
     report["digest"] = canonical_digest(report, digest_field="digest")
-    write_json(output_root / "context-fov-audit.json", report)
+    if previous_bytes is not None:
+        # A legacy audit has no posed-pixel binding: recompute it once, retaining
+        # its exact original bytes rather than retroactively asserting one.
+        from .launch_immutable_input_writer import write_exclusive_private_bytes
+        history = output_root / "context-fov-audit-history" / (hashlib.sha256(previous_bytes).hexdigest() + ".json")
+        write_exclusive_private_bytes(history, previous_bytes)
+    write_json(path, report)
     if report["status"] != "passed":
         raise ValueError("atlas_context_field_of_view_lost")
     return report
