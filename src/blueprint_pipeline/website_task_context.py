@@ -41,6 +41,10 @@ def load_current_website_task_context(
 
 def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
     """Use the existing signed transport for private preparation control data."""
+    if operation in {"prepared-scene", "preparation-spend", "task-item-evidence", "atlas-preview"} or (
+            operation in {"scene-sponsorship", "atlas-configuration"} and payload.get("create") is not False):
+        from .core.handoff_lease import handoff_lease_checkpoint
+        handoff_lease_checkpoint("website_control_effect:" + operation)
     if operation not in {"task-context", "scene-sponsorship", "prepared-scene",
                          "preparation-spend", "preparation-settlement", "atlas-configuration", "atlas-preview",
                          "agent-execution-offer", "task-item-evidence", "preparation-status"}:

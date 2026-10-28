@@ -1584,6 +1584,8 @@ def _run_reconstruction_gpu_canary(
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from .core.handoff_lease import handoff_lease_checkpoint
+    handoff_lease_checkpoint("canonical_allocator_entry")
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     add_teleport_provider_arguments(commands, root=ROOT)

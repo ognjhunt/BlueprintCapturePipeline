@@ -11,14 +11,14 @@ from typing import Any, Mapping
 from typing import List, Optional
 
 from .handoff_job_state import required_stage_result_blocker
-from .core.handoff_lease import handoff_lease_checkpoint
+from .core.handoff_lease import handoff_lease_checkpoint, guarded_handoff_write_json as write_json
 from .agent_runtime.orchestrator import run_agent_review
 from .agent_runtime.openai_phase2 import OpenAIPhase2Config
 from .capture_orchestrator import (
     PipelineConfig,
     run_capture_pipeline,
 )
-from .core.common import PipelineError, read_json_any, utc_now_iso, write_json
+from .core.common import PipelineError, read_json_any, utc_now_iso
 from .evaluation_prep_stage import run_evaluation_prep_stage
 from .core.lane_resume import (
     CAPTURE_INPUT_FINGERPRINT_SCHEMA_VERSION,

@@ -43,9 +43,9 @@ from .common import (
     resolve_gs_uri_to_path,
     to_pipeline_prefix,
     utc_now_iso,
-    write_json,
     write_text,
 )
+from .core.handoff_lease import guarded_handoff_write_json as write_json
 from .consent_normalization import resolve_consent_signals
 from .geometry_stage import build_geometry_stage_contract
 from .industrial_ontology import classify_industrial_entity, derive_capture_plan_tags, industrial_tags_for_label

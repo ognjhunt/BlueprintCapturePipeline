@@ -85,7 +85,8 @@ def require_paid_resource_admission(
     expected_schema_version: str,
 ) -> PaidResourceAdmissionGrant:
     """Return an in-process grant or raise before a provider mutation."""
-
+    from .core.handoff_lease import handoff_lease_checkpoint
+    handoff_lease_checkpoint("paid_resource_admission")
     blockers: list[str] = _monthly_budget_blockers(resource_class)
     if resource_class not in PAID_RESOURCE_CLASSES:
         blockers.append("paid_resource_class_invalid")

@@ -934,6 +934,14 @@ class _JobLeaseHeartbeat:
             self._failure = HandoffLeaseError("unproven", boundary)
             raise self._failure from exc
 
+    @contextmanager
+    def effect(self, boundary: str) -> Iterator[None]:
+        if self._failure is not None or (self._entered and not self._thread.is_alive()):
+            raise HandoffLeaseError(self._failure.state if self._failure else "unproven", boundary)
+        with _locked_job_ledger(self.capture_root, create=False) as ledger:
+            _require_job_lease(ledger, owner=self.owner, token=self.token)
+            yield
+
     def _run(self) -> None:
         interval = max(1.0, min(float(self.lease_seconds) / 3.0, 60.0))
         while not self._stop.wait(interval):
@@ -953,7 +961,7 @@ class _JobLeaseHeartbeat:
         self.checkpoint("handler_start")
         self._thread.start()
         self._entered = True
-        self._binding = bind_handoff_lease(self.checkpoint)
+        self._binding = bind_handoff_lease(self.checkpoint, self.effect)
         self._binding.__enter__()
         return self
 

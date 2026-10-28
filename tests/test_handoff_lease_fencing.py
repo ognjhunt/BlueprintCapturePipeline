@@ -1,6 +1,7 @@
 """AUT-01: actual ledger/output interleavings and failed heartbeat effects."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from blueprint_pipeline.core.handoff_lease import (
     handoff_lease_checkpoint,
 )
 from blueprint_pipeline.run_e2e import _write_run_e2e_stage_ledger
+from blueprint_pipeline.core.stage_graph import StageSpec, run_stage_graph
 
 
 def claim(root: Path, owner: str, *, now=None):
@@ -128,3 +130,68 @@ def test_dead_daemon_is_unproven_and_expired_lease_cannot_be_renewed(tmp_path):
 
 def test_unbound_standalone_checkpoint_is_compatible():
     handoff_lease_checkpoint("standalone_execution")
+
+
+def test_actual_long_stage_publication_and_fresh_admission_are_fenced(tmp_path, monkeypatch):
+    from blueprint_pipeline import paid_resource_admission, site_package_orchestrator, website_task_preparation
+    from blueprint_pipeline import website_task_context
+    from blueprint_pipeline.paid_resource_allocator import main as allocator_main
+
+    def lost(boundary):
+        raise HandoffLeaseError("lost", boundary)
+
+    monkeypatch.setattr(website_task_context, "safe_request", lambda *a, **kw: pytest.fail("remote effect"))
+    with bind_handoff_lease(lost):
+        for writer in (site_package_orchestrator.write_json, website_task_preparation.write_json):
+            with pytest.raises(HandoffLeaseError):
+                writer(tmp_path / "live.json", {"status": "stale"})
+        with pytest.raises(HandoffLeaseError):
+            paid_resource_admission.require_paid_resource_admission({}, resource_class="gpu_render",
+                                                                    expected_schema_version="paid_lane_admission.v1")
+        with pytest.raises(HandoffLeaseError):
+            allocator_main(["gpu-canary"])
+        with pytest.raises(HandoffLeaseError):
+            website_task_context.website_webapp_request(capture_id="capture", operation="prepared-scene", payload={})
+    assert not (tmp_path / "live.json").exists()
+
+
+def test_parallel_stage_graph_keeps_each_handoff_context_without_site_leakage():
+    observed = []
+
+    def site_run(site):
+        def check(boundary):
+            observed.append((site, boundary))
+            if site == "revoked":
+                raise HandoffLeaseError("lost", boundary)
+
+        def effect():
+            handoff_lease_checkpoint("provider_create")
+            return {"status": "completed", "site": site}
+
+        with bind_handoff_lease(check):
+            result = run_stage_graph([StageSpec("one", effect), StageSpec("two", effect)], max_concurrency=2)
+        return result
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        revoked, healthy = list(pool.map(site_run, ["revoked", "healthy"]))
+    assert all(row.status == "failed" for row in revoked.executions)
+    assert all(row.status == "completed" for row in healthy.executions)
+    assert observed.count(("revoked", "provider_create")) == 2
+    assert observed.count(("healthy", "provider_create")) == 2
+
+
+def test_lost_lease_cannot_reset_or_promote_shared_output_transaction(tmp_path):
+    from blueprint_pipeline.core.output_run_transaction import OutputRunTransaction
+    output = tmp_path / "shared"
+    output.mkdir()
+    artifact = output / "current.json"
+    artifact.write_text("newer evidence")
+
+    def lost(boundary):
+        raise HandoffLeaseError("lost", boundary)
+
+    with bind_handoff_lease(lost):
+        with pytest.raises(HandoffLeaseError):
+            with OutputRunTransaction(output, lane="construction", request_fingerprint="same-request"):
+                pytest.fail("stale transaction entered")
+    assert artifact.read_text() == "newer evidence"
