@@ -105,3 +105,25 @@ Final AUT-19 source-only review checks: 162 passed in 24.85 seconds across
 Changed-file Ruff and whitespace checks pass. A separate broader run including
 the lane-scratch contract tests passed 176 tests before the final root-file
 error classification change; the final 162-test run includes that change.
+
+The first PR3031 hosted run exposed two preflight fixtures that supplied no
+release identity while expecting successful safe-summary publication. Both
+failures reproduced locally. The fixtures now supply an exact synthetic
+release, publish through the real summary writer for the local fixture reader,
+and assert the raw-report digest and release join. Empty and absent release
+identities still refuse. Simulated root permission is local to the preflight
+module; it does not replace the writer's actual filesystem ownership checks.
+
+The disposable Linux legacy-owner fixture also copied a fixed module closure
+without the newly required `control_plane_usage_paths` helper. That exact
+closure failed in an isolated interpreter with `ModuleNotFoundError`; adding
+the helper made it import. The fixture now copies that dependency, and a fast
+isolated import test exercises its installed closure before the Linux-only
+privilege proof. All process-census and privilege assertions remain intact.
+
+After these test-fixture repairs, 107 offline checks pass in 94.00 seconds,
+including preflight, summary races, remote-CPU/unit compatibility, the isolated
+closure and release governance. Changed-file Ruff and whitespace checks pass.
+The required disposable Linux privilege/census run remains pending; its local
+deselection is not acceptance. No production release, storage mutation or
+provider call was performed by this repair lane.

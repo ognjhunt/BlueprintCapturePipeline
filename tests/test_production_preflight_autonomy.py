@@ -53,7 +53,8 @@ def test_summary_projects_only_fixed_safe_fields_and_groups_causes() -> None:
     assert summary["proof_boundary"] == "selected_route_plumbing_only"
 
 
-@pytest.mark.parametrize("field,value", [("active_sha", "unknown"), ("generated_at", "tomorrow"),
+@pytest.mark.parametrize("field,value", [("active_sha", "unknown"), ("active_sha", ""), ("active_sha", None),
+                                        ("generated_at", "tomorrow"),
                                         ("units", []), ("host_findings", {})])
 def test_malformed_report_is_not_a_safe_summary(field: str, value: object) -> None:
     report = _report()
