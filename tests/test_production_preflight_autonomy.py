@@ -205,7 +205,8 @@ def test_route_health_separates_held_unused_and_broken_required_trigger(monkeypa
     props = {"ActiveState": ["inactive"], "Result": ["success"], "LoadState": ["loaded"], "TriggeredBy": ["blueprint-x.timer"]}
     unit = "blueprint-beta-policy-screening.service"
     assert preflight.unit_health_checks({unit: {"properties": props}}, lane="beta_rigid")[0]["code"] == "unit_trigger_inactive"
-    held = {**props, "ExecCondition": ["/usr/bin/false"]}
+    held = {**props, "Result": ["exec-condition"],
+            "ExecCondition": ["{ path=/usr/bin/false ; argv[]=/usr/bin/false ; ignore_errors=no ; code=exited ; status=1 }"]}
     findings = preflight.unit_health_checks({unit: {"properties": held}}, lane="beta_rigid")
     assert all(row["severity"] == "info" and row["code"] == "unit_intentionally_held" for row in findings)
     rows = _unit_health([{"Id": unit, "ActiveState": "inactive", "Type": "oneshot", "Result": "success"}], ["blueprint-old-diagnostic.service"])

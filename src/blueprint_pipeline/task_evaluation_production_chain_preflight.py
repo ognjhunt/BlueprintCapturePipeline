@@ -1695,6 +1695,30 @@ def disk_admission_check(units: Mapping[str, dict[str, Any]]) -> list[dict[str, 
     return findings
 
 
+def _verified_false_conditions(props: Mapping[str, list[str]]) -> set[int]:
+    """Only an observed failed direct false command establishes this hold.
+
+    ExecCondition arguments and successful/missing exit records cannot grant
+    an intentional-hold classification to an otherwise failed required unit.
+    """
+    if _first(props, "Result") != "exec-condition" or _first(props, "ActiveState") == "failed":
+        return set()
+    indices = set()
+    for index, condition in enumerate(props.get("ExecCondition", [])):
+        for record in re.findall(r"\{([^{}]*)\}", condition):
+            fields = {}
+            for name in ("path", "code", "status", "ignore_errors"):
+                match = re.search(r"(?:^|;)\s*" + name + r"=([^;]*?)(?=;|$)", record)
+                if match:
+                    fields[name] = match.group(1).strip()
+            status_text = fields.get("status", "")
+            if (fields.get("path") in {"/bin/false", "/usr/bin/false"}
+                    and fields.get("code") == "exited" and status_text.isdecimal()
+                    and 1 <= int(status_text) <= 254 and fields.get("ignore_errors") != "yes"):
+                indices.add(index)
+    return indices
+
+
 def unit_health_checks(units: Mapping[str, dict[str, Any]], *, lane: str = "diagnostic") -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     for unit_name, unit in units.items():
@@ -1702,13 +1726,14 @@ def unit_health_checks(units: Mapping[str, dict[str, Any]], *, lane: str = "diag
         state = _first(props, "ActiveState")
         result = _first(props, "Result")
         # A skipped ExecCondition (``exec-condition``) is a condition unit working as designed, not a failure.
-        held = any("/usr/bin/false" in condition or "/bin/false" in condition for condition in props.get("ExecCondition", []))
+        hold_conditions = _verified_false_conditions(props)
+        held = bool(hold_conditions)
         if state == "failed" or result not in {"success", "", "exec-condition"}:
             findings.append(_finding("blocker" if lane == "beta_rigid" and unit_name in BETA_RIGID_UNITS and not held else "warning", "unit_failed_state", unit=unit_name, active_state=state, result=result, exec_main_status=_first(props, "ExecMainStatus")))
         if _first(props, "LoadState") != "loaded":
             findings.append(_finding("blocker", "unit_not_loaded", unit=unit_name, load_state=_first(props, "LoadState")))
-        for condition in props.get("ExecCondition", []):
-            if "/usr/bin/false" in condition or "/bin/false" in condition:
+        for index, condition in enumerate(props.get("ExecCondition", [])):
+            if index in hold_conditions:
                 # An ExecCondition that always fails is an operator hold on the
                 # unit; the chain stalls there without any queue evidence.
                 drop_ins = [p for p in (_first(props, "DropInPaths") or "").split() if p]
