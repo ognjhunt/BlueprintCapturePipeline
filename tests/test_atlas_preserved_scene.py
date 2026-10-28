@@ -25,6 +25,8 @@ def test_automatic_controller_routes_the_typed_plan_without_a_scene_override(tmp
     video = tmp_path / "source.mov"
     video.write_bytes(b"fresh source")
     survey["source_video_digest"] = pipeline._sha256_file(video)
+    survey['schema_version'] = 'atlas_video_survey.v1'
+    survey['digest'] = pipeline.canonical_digest(survey, digest_field='digest')
     proposal.update(subject_origin=subject_origin, automation={
         "scale_references": [], "objects": [], "removal_instruction": "", "mask_margin_fraction": .01})
     proposal["coverage_requirements"][0]["role"] = "task_region"
@@ -164,3 +166,80 @@ def test_production_scene_handoff_accepts_preserved_geometry_without_fabricating
         assert value["base_scene"]["anchor"]["basis"] == "same_atlas_pose"
         assert value["base_scene"]["scale_authority"] == "atlas_reference_estimate"
         assert not (root / "automation/background/prepared_background.json").exists()
+
+
+@pytest.mark.parametrize('completion_state', ['completed', 'processing', 'source_recovery_required'])
+def test_controller_consumes_admitted_completion_and_stops_before_mesh_while_unresolved(
+        tmp_path, monkeypatch, completion_state):
+    pose_root = tmp_path / 'pose'
+    source_root = pose_root / 'full-view-source-v1'
+    source_root.mkdir(parents=True)
+    pose = {'digest': 'source-pose'}
+    write(source_root / 'atlas_posed_rgbd_result.json', pose)
+    write(tmp_path / 'atlas_scene_review.json', {})
+    write(source_root / 'scene_measurements.json', {})
+    baseline = {'digest': 'baseline', 'splat_kind': 'depth_fused_draft'}
+    write(tmp_path / 'splat/atlas_depth_splat_manifest.json', baseline)
+    completed_root = tmp_path / 'preserved_completion/splat-bound'
+    completed = {'digest': 'completed-export', 'splat_kind': 'depth_fused_draft'}
+    frames, calls, exports = ['source-depth'], [], []
+    monkeypatch.setattr(pipeline, '_source_pose', lambda **_: {'status': 'completed'})
+    monkeypatch.setattr(source_inputs, 'prepare_source_pose', lambda _: (source_root, {}))
+    monkeypatch.setattr(splats, 'load_posed_rgbd', lambda _: (pose, frames))
+    monkeypatch.setattr(pipeline, 'load_configuration', lambda *args: {'remaining_cost_usd': 3})
+    def complete(**options):
+        calls.append('completion')
+        assert options['preserved_capture'] is True and options['frames'] is frames
+        assert options['source_survey_path'] == tmp_path / 'source-survey.json'
+        assert options['configuration']['remaining_cost_usd'] == 3
+        if completion_state != 'completed':
+            return {'status': completion_state, 'stage': 'preserved_scene_completion', 'reason': 'source_view_available'}
+        return {'status': 'completed', 'generated_geometry_admitted': True,
+                'splat_root': str(completed_root), 'splat_manifest': completed,
+                'completion': {'generated_roots': [str(tmp_path / 'native')]},
+                'generated_roots': [str(tmp_path / 'native')], 'analysis_paths': [],
+                'admission': {'digest': 'admission'}, 'admission_path': str(tmp_path / 'admission.json')}
+    monkeypatch.setattr(allocator, 'run_sponsored_website_atlas_automation', complete)
+    def attempt(root, output):
+        assert root == completed_root
+        return {'request': {}, 'uploads': {}}, output
+    monkeypatch.setattr(splats, 'splats2mesh_attempt', attempt)
+    def mesh(**options):
+        calls.append('mesh')
+        write(options['output_root'] / 'result.json', {'outputs': [{'role': 'mesh', 'path': 'scene.glb'}]})
+        return {'status': 'completed'}
+    monkeypatch.setattr(allocator, 'run_sponsored_website_atlas_task', mesh)
+    monkeypatch.setattr(mesh_registration, 'register_atlas_mesh', lambda **_: None)
+    monkeypatch.setattr(bundles, 'export_pose_bundle', lambda **options: exports.append(options) or {'zip_path': 'scene.zip'})
+    result = pipeline._preserved_scene(pose_root=pose_root, output_root=tmp_path, inputs={},
+        review={'subject_origin': 'no_manipulated_subject', 'automation': {'objects': [], 'removal_instruction': ''},
+                'uncaptured_regions': ['behind books']}, policy={'mesh_export_cost_usd': .5, 'rgbd_view_cost_usd': .1,
+                    'rate_card_reference': 'test', 'reviewed_by': 'test', 'reviewed_on': 'test'},
+        task_context={'context_digest': 'task'}, source_digest='capture', configuration={}, check=lambda _: None,
+        experimental=False, max_polls=1, model='test', source_survey_path=tmp_path / 'source-survey.json')
+    assert json.loads((tmp_path / 'splat/atlas_depth_splat_manifest.json').read_text()) == baseline
+    if completion_state == 'completed':
+        assert calls == ['completion', 'mesh']
+        assert result['splat_manifest_digest'] == completed['digest']
+        assert result['generated_geometry_admitted'] and result['generated_completion_performed']
+        assert exports[0]['splat_root'] == completed_root
+        assert exports[0]['generated_roots'] == [tmp_path / 'native']
+        assert result['scene_completion']['admission_digest'] == 'admission'
+    elif completion_state == 'processing':
+        assert calls == ['completion'] and not exports
+        assert result['status'] == 'processing'
+    else:
+        assert calls == ['completion'] and not result['mesh_available']
+        assert not result['task_and_surrounding_scene_covered']
+
+
+def test_generated_scene_without_independent_geometry_admission_is_not_handed_off(tmp_path):
+    root = job_fixture(tmp_path, same_pose=True)
+    result = json.loads((root / 'result.json').read_text())
+    result.update(subject_origin='no_manipulated_subject', captured_scene_preserved=True,
+        object_removal_performed=False, image_inpainting_performed=False,
+        generated_completion_performed=True, generated_geometry_admitted=False)
+    write(root / 'result.json', digest(result))
+    write(root / 'preview_job.json', {'state': 'ready', 'result_digest': result['digest']})
+    outcome = scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / 'prep')
+    assert outcome == {'status': 'needs_input', 'reason': 'atlas_preserved_completion_not_admitted'}
