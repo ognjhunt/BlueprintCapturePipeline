@@ -195,3 +195,47 @@ def test_lost_lease_cannot_reset_or_promote_shared_output_transaction(tmp_path):
             with OutputRunTransaction(output, lane="construction", request_fingerprint="same-request"):
                 pytest.fail("stale transaction entered")
     assert artifact.read_text() == "newer evidence"
+
+
+def test_fencing_existing_grant_preserves_only_identity_checked_reconciliation():
+    from blueprint_pipeline.paid_resource_admission import (
+        require_paid_resource_admission, require_paid_resource_admission_grant, PaidResourceAdmissionBlocked,
+    )
+    grant = require_paid_resource_admission({"schema_version": "paid_lane_admission.v1",
+        "status": "admitted", "resource_class": "vast_provider_adapter", "blockers": [],
+        "allocation_binding_digest": "sha256:" + "a" * 64},
+        resource_class="vast_provider_adapter", expected_schema_version="paid_lane_admission.v1")
+
+    def lost(boundary):
+        raise HandoffLeaseError("lost", boundary)
+
+    with bind_handoff_lease(lost):
+        with pytest.raises(HandoffLeaseError):
+            require_paid_resource_admission_grant(grant, resource_class="vast_provider_adapter")
+        require_paid_resource_admission_grant(grant, resource_class="vast_provider_adapter",
+            allocation_binding_digest="sha256:" + "a" * 64, require_allocation_binding=True,
+            permit_reconciliation=True)
+        with pytest.raises(PaidResourceAdmissionBlocked, match="binding_mismatch"):
+            require_paid_resource_admission_grant(grant, resource_class="vast_provider_adapter",
+                allocation_binding_digest="sha256:" + "b" * 64, require_allocation_binding=True,
+                permit_reconciliation=True)
+
+
+def test_opaque_grant_keeps_origin_lease_in_a_nested_worker_without_context():
+    from blueprint_pipeline.paid_resource_admission import (
+        require_paid_resource_admission, require_paid_resource_admission_grant,
+    )
+    lost = False
+
+    def check(boundary):
+        if lost:
+            raise HandoffLeaseError("lost", boundary)
+
+    with bind_handoff_lease(check):
+        grant = require_paid_resource_admission({"schema_version": "example.v1", "status": "admitted"},
+            resource_class="evaluator_api", expected_schema_version="example.v1")
+    lost = True
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(require_paid_resource_admission_grant, grant, resource_class="evaluator_api")
+        with pytest.raises(HandoffLeaseError):
+            future.result()

@@ -35,6 +35,11 @@ def handoff_lease_checkpoint(boundary: str) -> None:
         check(boundary)
 
 
+def current_handoff_lease_check() -> Callable[[str], None] | None:
+    """Carry the originating lease with an in-process opaque paid capability."""
+    return _CHECKPOINT.get()
+
+
 @contextmanager
 def handoff_effect(boundary: str) -> Iterator[None]:
     """Hold the current generation through an atomic local promotion."""
