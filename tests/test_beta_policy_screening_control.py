@@ -1,6 +1,8 @@
 """AUT-10 current-source stop intent, bounded outage and exact-pid isolation."""
 
 import json
+import threading
+import time
 
 import pytest
 
@@ -92,3 +94,100 @@ def test_independent_monitor_stops_itself_after_bounded_outage(tmp_path, monkeyp
     monitor._run()
     assert stopped == ["exact-owned-process"]
     assert json.loads((tmp_path / "stop_requested.json").read_text())["new_processing_authorized"] is False
+
+
+def test_delayed_success_cannot_admit_create_after_other_observer_revoked(tmp_path, monkeypatch):
+    authority = {"authority_digest": "sha256:" + "d" * 64, "resource_name": "exact-resource"}
+    bundle = {"bundle_sha256": "sha256:" + "e" * 64}
+    value = binding(initial_observed_at_epoch=time.time())
+    path = jobs.retain_invocation(attempt_dir=tmp_path, binding={**authority, **bundle, "provider": "vast"},
+                                  argv=["gpu-canary"], control=value)
+    pending, resume = threading.Event(), threading.Event()
+    calls, outcomes = [], []
+
+    def current(*args, **kwargs):
+        calls.append(threading.current_thread().name)
+        if len(calls) == 2:
+            pending.set()
+            assert resume.wait(5)
+            return {}
+        if len(calls) == 3:
+            raise ValueError("beta_screening_current_capture_consent_required")
+        return {}
+
+    def allocate():
+        try:
+            jobs.run_invocation(path, allocator=lambda args: jobs.before_provider_create(
+                authority=authority, bundle=bundle))
+        except ValueError as exc:
+            outcomes.append(str(exc))
+
+    monkeypatch.setattr(worker, "require_current_source", current)
+    thread = threading.Thread(target=allocate, name="delayed-allocator")
+    thread.start()
+    try:
+        assert pending.wait(5)
+        stop = control.observe(control=value, root=path.parent)
+        assert stop["new_processing_authorized"] is False
+    finally:
+        resume.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    assert outcomes == ["beta_screening_current_source_unproven_before_create"]
+    assert not (path.parent / "provider_create_intent.json").exists()
+    assert control.observe(control=value, root=path.parent) == stop
+    assert json.loads((path.parent / "execution_control.json").read_text())["committed_generation"] == 1
+
+
+@pytest.mark.parametrize("latest", ["shortened", "unavailable"])
+def test_delayed_success_cannot_regress_newer_deadline_or_monitor_state(tmp_path, monkeypatch, latest):
+    pending, resume = threading.Event(), threading.Event()
+    outcomes = []
+
+    def current(*args, **kwargs):
+        if threading.current_thread().name == "old-success":
+            pending.set()
+            assert resume.wait(5)
+            return {"execution_deadline_at_ms": 1300_000}
+        if latest == "unavailable":
+            raise OSError("service unavailable")
+        return {"execution_deadline_at_ms": 1200_000}
+
+    monkeypatch.setattr(worker, "require_current_source", current)
+    value = binding(execution_deadline_epoch=1300)
+    thread = threading.Thread(name="old-success", target=lambda: outcomes.append(
+        control.observe(control=value, root=tmp_path, now=1100)))
+    thread.start()
+    try:
+        assert pending.wait(5)
+        newer = control.observe(control=value, root=tmp_path, now=1101)
+    finally:
+        resume.set()
+        thread.join(5)
+    assert not thread.is_alive() and len(outcomes) == 1
+    final = json.loads((tmp_path / "execution_control.json").read_text())
+    assert final == newer == outcomes[0]
+    assert final["committed_generation"] == 2
+    if latest == "shortened":
+        assert final["execution_deadline_epoch"] == 1200
+    else:
+        assert final["status"] == "monitor_unavailable" and final["last_success_at_epoch"] == 1000
+
+
+def test_stop_committed_after_read_before_create_admission_is_absorbing(tmp_path, monkeypatch):
+    value = binding(initial_observed_at_epoch=time.time())
+    real_observe = control.observe
+    monkeypatch.setattr(worker, "require_current_source", lambda *a, **k: {})
+
+    def read_then_revoke(**kwargs):
+        observed = real_observe(**kwargs)
+        def revoked(*a, **k):
+            raise ValueError("beta_screening_current_task_context_changed")
+        monkeypatch.setattr(worker, "require_current_source", revoked)
+        real_observe(**kwargs)
+        return observed
+
+    monkeypatch.setattr(control, "observe", read_then_revoke)
+    with pytest.raises(ValueError, match="unproven_before_create"):
+        with control.current_control_admission(control=value, root=tmp_path):
+            pytest.fail("stopped authority entered create-intent scope")
