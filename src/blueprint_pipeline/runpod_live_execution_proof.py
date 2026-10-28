@@ -410,9 +410,19 @@ def collect_runpod_live_execution_proof(
     )
     if provider_mutation_requested:
         try:
+            # This branch can only close an existing pod. Lost intake
+            # ownership must not strand that exact retained resource, while
+            # an unrelated explicit override keeps the normal lease fence.
+            retained_pod = _derive_pod_id(adapter_result, None)
+            retained_owned_closeout = bool(
+                retained_pod and retained_pod == resolved_pod_id
+                and _string(adapter_result.get("job_id"))
+                and adapter_result.get("job_id") == provider_request.get("job_id")
+            )
             require_paid_resource_admission_grant(
                 paid_resource_admission_grant,
                 resource_class="runpod_live_execution",
+                permit_reconciliation=retained_owned_closeout,
             )
         except PaidResourceAdmissionBlocked as exc:
             result.update(
