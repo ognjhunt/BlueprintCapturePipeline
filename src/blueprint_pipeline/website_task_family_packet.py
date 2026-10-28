@@ -35,7 +35,8 @@ def family_source_references(*, preparation, runtime_inputs_path, task_context=N
                 for key in ('task_context_digest', 'source_geometry_digest', 'task_masks_digest',
                             'splat_digest', 'collision_mesh_digest')), 'website_task_family_preparation_binding_changed')
     if task_context is None:
-        require(inputs.get('task_semantics') is None, 'website_task_family_semantics_context_required')
+        require(inputs.get('task_semantics') is None and native['task_family'] != 'multi_step',
+                'website_task_family_semantics_context_required')
     else:
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile, require_semantic_stage_order

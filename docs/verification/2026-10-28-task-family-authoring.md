@@ -85,6 +85,15 @@ Software verification checkpoint:
   functional set took 206.39 seconds on this shared Mac. The plan and JUnit
   evidence are retained in session scratch; no broad timeout is reported green.
 
+Independent review of `d18955d2d` found that explicit multi-step routing skipped
+source stage-order validation. Four retained attack regressions failed before
+repair: explicit/aliased stage reversal, omitted reading and omitted original
+context. Website multi-step contracts now validate the retained source reading
+regardless of the routing hint; packet staging requires its original context.
+The standalone manual native materializer remains separate. The bounded
+authoring/semantics/preparation/packet set passed 162 checks in 7.82 seconds after
+repair. Independent replay of the original review probe remains pending.
+
 ## PAUSED: proposed first existing-profile journey
 
 Selection, source admission and execution are paused for feasibility

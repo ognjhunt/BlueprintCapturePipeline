@@ -213,20 +213,30 @@ def effective_task_profile(*, task_context: Mapping[str, Any], task_semantics: M
 
 def require_semantic_stage_order(*, task_context: Mapping[str, Any], task_semantics: Mapping[str, Any] | None,
                                  source_video_digest: str | None, contract: Mapping[str, Any]) -> None:
-    """An ordered derived job cannot inherit another multi-step contract."""
-    if task_context.get("task_family") != "general_task" or contract.get("task_family") != "multi_step":
+    """Website multi-step contracts retain the source job's exact order.
+
+    An explicit routing hint does not replace the retained operation reading.
+    Standalone manually authored native contracts use their separate entrypoint.
+    """
+    if contract.get("task_family") != "multi_step":
         return
-    if resolved_task_profile(task_semantics, task_context=task_context,
-                             source_video_digest=source_video_digest) != "multi_step":
+    if task_semantics is None or source_video_digest is None:
         raise ValueError("website_task_family_semantic_stages_mismatch")
-    reading = ((task_semantics.get("operation_coverage_clarification") or {}).get("operation_coverage")
-               or task_semantics["semantics"])
+    verified = validate_task_semantics(task_semantics, task_context=task_context,
+                                      source_video_digest=source_video_digest)
+    reading = ((verified.get("operation_coverage_clarification") or {}).get("operation_coverage")
+               or verified["semantics"])
+    complete = reading.get("operation_coverage_complete", reading.get("covers_entire_job"))
+    unresolved = reading.get("unresolved_operations", reading.get("unresolved_aspects"))
+    identities = _button_stage_identities(task_context, source_video_digest, reading["steps"])
+    if not complete or unresolved or _operation_profile(reading["task_family"], reading["steps"],
+            source_stage_ids=identities) != "multi_step":
+        raise ValueError("website_task_family_semantic_stages_mismatch")
     proposed = [task_profile_for(step["operation"]).profile_id for step in reading["steps"]]
     if proposed != [stage["task_family"] for stage in contract["stages"]]:
         raise ValueError("website_task_family_semantic_stages_mismatch")
     if len(set(proposed)) != len(proposed):
-        expected = _button_stage_identities(task_context, source_video_digest, reading["steps"])
-        if expected is None or expected != [stage["stage_id"] for stage in contract["stages"]]:
+        if identities is None or identities != [stage["stage_id"] for stage in contract["stages"]]:
             raise ValueError("website_task_family_semantic_stages_mismatch")
 
 

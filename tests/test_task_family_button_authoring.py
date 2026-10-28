@@ -205,19 +205,71 @@ def test_repeated_family_route_requires_source_bound_operation_identity_and_orde
     assert not (args["output_root"] / "family_authoring" / "stages").exists()
 
 
-def test_repeated_family_packet_cannot_reverse_native_stage_identities(tmp_path, monkeypatch):
+@pytest.mark.parametrize("declared", ["general_task", "multi_step", "multi-step"])
+def test_repeated_family_packet_cannot_reverse_native_stage_identities(tmp_path, monkeypatch, declared):
+    from blueprint_pipeline.common import write_json
     from blueprint_pipeline.task_family_scoring import seal_task_family_contract
-    from blueprint_pipeline.website_task_semantics import require_semantic_stage_order
+    from blueprint_pipeline.website_task_family_packet import materialize_website_task_family_packet
 
-    args, _ = _fixture(tmp_path, monkeypatch, sequence=True, general=True)
+    args, _ = _fixture(tmp_path, monkeypatch, sequence=True, general=declared == "general_task")
+    args["task_context"]["task_family"] = declared
+    _seal(args["task_context"], "context_digest")
+    _rebind_semantics(args)
     result = preparation.compile_website_scene_preparation(**args)
-    original = result["task_evaluation_inputs"]["task_success_contract"]
+    inputs = result["task_evaluation_inputs"]
+    original = inputs["task_success_contract"]
     reversed_contract = seal_task_family_contract(task_family="multi_step", scope=original["scope"],
         stages=list(reversed(original["stages"])), reset=original["reset"],
         runtime_identity_digest=original["runtime_identity_digest"])
+    supplied = copy.deepcopy(inputs["authoring"]["request"]["producer_result"]["outputs"])
+    supplied["task_success_contract"] = reversed_contract
     with pytest.raises(ValueError, match="semantic_stages_mismatch"):
-        require_semantic_stage_order(task_context=args["task_context"], task_semantics=args["task_semantics"],
-            source_video_digest=args["source_geometry"]["binding"]["source_video_digest"], contract=reversed_contract)
+        preparation.compile_website_scene_preparation(**args, evaluation_inputs=supplied)
+    # A stored preparation cannot evade the same check by resealing both
+    # native/intake digests rather than re-entering the compiler.
+    inputs["task_success_contract"] = reversed_contract
+    native = inputs["native_runtime_contract"]
+    native["task_spec"]["task_success_contract"] = reversed_contract
+    _seal(native, "contract_digest")
+    result["intake_request"]["task"].update(task_success_contract_digest=reversed_contract["contract_digest"],
+        native_runtime_contract_digest=native["contract_digest"])
+    _seal(result, "digest")
+    runtime_path = tmp_path / "reversed-native.json"
+    write_json(runtime_path, native)
+    reference = file_record(runtime_path)
+    output = tmp_path / "reversed-packet"
+    with pytest.raises(ValueError, match="semantic_stages_mismatch"):
+        materialize_website_task_family_packet(preparation=result, runtime_inputs_path=runtime_path,
+            output_root=output, intent_reference=reference, attempt_reference=reference,
+            release_reference=reference, task_context=args["task_context"])
+    assert not output.exists()
+
+
+def test_explicit_multistep_cannot_drop_the_retained_operation_reading(tmp_path, monkeypatch):
+    args, _ = _fixture(tmp_path, monkeypatch, sequence=True)
+    result = preparation.compile_website_scene_preparation(**args)
+    supplied = result["task_evaluation_inputs"]["authoring"]["request"]["producer_result"]["outputs"]
+    args.pop("task_semantics")
+    with pytest.raises(ValueError, match="semantic_stages_mismatch"):
+        preparation.compile_website_scene_preparation(**args, evaluation_inputs=supplied)
+
+
+def test_multistep_packet_requires_original_context_even_if_semantics_field_is_dropped(tmp_path, monkeypatch):
+    from blueprint_pipeline.common import write_json
+    from blueprint_pipeline.website_task_family_packet import materialize_website_task_family_packet
+
+    args, _ = _fixture(tmp_path, monkeypatch, sequence=True)
+    result = preparation.compile_website_scene_preparation(**args)
+    result["task_evaluation_inputs"].pop("task_semantics")
+    _seal(result, "digest")
+    runtime_path = tmp_path / "native-without-context.json"
+    write_json(runtime_path, result["task_evaluation_inputs"]["native_runtime_contract"])
+    reference = file_record(runtime_path)
+    output = tmp_path / "packet-without-context"
+    with pytest.raises(ValueError, match="semantics_context_required"):
+        materialize_website_task_family_packet(preparation=result, runtime_inputs_path=runtime_path,
+            output_root=output, intent_reference=reference, attempt_reference=reference, release_reference=reference)
+    assert not output.exists()
 
 
 def test_missing_pass_mark_asks_one_normal_fact_and_adopts_completed_source_stage(tmp_path, monkeypatch):
