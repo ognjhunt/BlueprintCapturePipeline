@@ -72,6 +72,8 @@ def manifest(path: Path) -> dict[str, Any]:
         validate_binding(scope)
         if (scope["invocation_id"] != value["invocation_id"] or scope["source"] != control.get("source")
                 or scope["site_id"] != control.get("site_id")
+                or scope["prepared_digest"] != control.get("prepared_digest")
+                or scope["attempt_id"] != path.parent.parent.name
                 or any(scope[key] != value["binding"].get(key) for key in (
                     "prepared_digest", "plan_digest", "candidate_id", "configuration_digest",
                     "authority_digest", "resource_name", "attempt_id"))):

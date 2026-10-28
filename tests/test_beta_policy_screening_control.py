@@ -12,6 +12,9 @@ from blueprint_pipeline import beta_policy_screening_worker as worker
 
 
 def binding(**extra):
+    scoped = extra.get("source_control_binding")
+    if scoped is not None:
+        extra = {**{key: scoped[key] for key in ("source", "site_id", "prepared_digest")}, **extra}
     return {"site_id": "site-current", "source": {"capture_id": "capture"},
             "prepared_digest": "sha256:" + "a" * 64, "initial_observed_at_epoch": 1000,
             "execution_deadline_epoch": None, **extra}
@@ -264,6 +267,7 @@ def test_wrapper_rebinds_provider_cap_to_shorter_actual_expiry_and_exact_invocat
     from tests.test_beta_policy_screening_control_contracts import binding as scope, response
     monkeypatch.setattr(control.time, "time", lambda: 1001)
     scoped = scope()
+    scoped["attempt_id"] = tmp_path.name
     invocation_binding = {key: scoped[key] for key in ("prepared_digest", "plan_digest", "candidate_id",
         "configuration_digest", "authority_digest", "resource_name", "attempt_id")}
     invocation_binding.update(bundle_sha256="sha256:" + "f" * 64, provider="vast")
@@ -305,3 +309,23 @@ def test_runtime_control_delivery_failure_stops_exact_monitor_without_new_author
             control.require_runtime_control_monitor(authority_digest=scope()["authority_digest"],
                                                    resource_name=scope()["resource_name"])
         unsubscribe()
+
+
+def test_interrupted_initial_runtime_push_removes_sink_before_provider_teardown(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_control_transport as transport
+    from tests.test_beta_policy_screening_control_contracts import binding as scope, response
+    monkeypatch.setattr(control.time, "time", lambda: 1001)
+    monkeypatch.setattr(transport, "request_control", lambda **kwargs: response(now=1001))
+    monitor = control.CurrentSourceMonitor({"root": tmp_path, "control": binding(
+        source_control_binding=scope(), execution_deadline_epoch=2000)}, stop=lambda: None)
+    calls = []
+    def interrupted(binding, value):
+        calls.append("initial push")
+        raise KeyboardInterrupt("local SIGTERM while initial existing-SSH push runs")
+    with monitor:
+        with pytest.raises(KeyboardInterrupt):
+            control.subscribe_runtime_control(authority_digest=scope()["authority_digest"],
+                resource_name=scope()["resource_name"], sink=interrupted)
+        assert not monitor._sinks
+        monitor._publish(control.observe(control=monitor.control, root=monitor.root))
+        assert calls == ["initial push"]
