@@ -11,10 +11,13 @@ success.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
 
 from .common import ensure_dir, read_json_any, utc_now_iso, write_json
+from .arena_package_audit import ARENA_PACKAGE_AUDIT_SCHEMA_VERSION
 from .live_pipeline_control_plane import (
     LIVE_PIPELINE_CONTROL_PLANE_SCHEMA_VERSION,
     LIVE_PIPELINE_EXTERNAL_INPUT_PACKET_SCHEMA_VERSION,
@@ -192,6 +195,105 @@ def _setup_section(setup_manifest: Mapping[str, Any], name: str) -> Dict[str, An
     return _mapping(sections.get(name))
 
 
+_LOCAL_PACKAGE_REQUIREMENTS = {
+    "arena_result_ingest": ("arena_result_ingest_ledger.json", "arena_result_ingest_run_manifest.json"),
+    "500_scenario_scheduler": ("arena_eval_schedule.json", "arena_eval_retry_queue.json", "arena_eval_resume_manifest.json"),
+    "policy_adapters": ("policy_adapter_manifest.json",),
+    "clips": ("clips_manifest.json",),
+    "review_resolution": ("review_resolution_ledger.json",),
+    "dataset_packaging": ("package_index.json", "dataset_card.json"),
+    "customer_handoff_report": ("customer_handoff_report.json", "customer_handoff_report.md"),
+    "rerun_loop": ("arena_rerun_plan.json", "arena_rerun_lineage.json"),
+}
+
+
+def _file_digest(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _local_package_requirements(packet: Mapping[str, Any], setup_manifest: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Verify the accepted audit and the bytes for each bounded local capability.
+
+    The setup summary is a pointer, not evidence by itself. Its accepted status
+    must agree with the actual schema/source-bound audit. A package contract
+    never establishes a policy run, a delivered result, or production acceptance.
+    """
+    summary = _mapping(_setup_section(setup_manifest, "local_deterministic_lane").get("package_audit"))
+    configured = _mapping(packet.get("configured_paths"))
+    pointer = _mapping(summary.get("artifact"))
+    document: Dict[str, Any] = {}
+    audit_path = _path_from_value(pointer.get("path"))
+    package_path = _path_from_value(configured.get("package_dir"))
+    capture_path = _path_from_value(configured.get("capture_root"))
+    reason: str | None = None
+    evidence_digest: str | None = None
+    if not summary:
+        reason = "package_audit_missing_or_not_mapping"
+    elif summary.get("audit_status") != "passed":
+        reason = "package_audit_explicit_pass_required"
+    elif summary.get("blockers") != []:
+        reason = "package_audit_blockers_or_unknown_disposition"
+    elif audit_path is None or pointer.get("exists") is not True:
+        reason = "package_audit_artifact_required"
+    elif package_path is None or capture_path is None:
+        reason = "package_audit_source_binding_required"
+    else:
+        try:
+            if audit_path.is_symlink() or audit_path.resolve() != package_path.resolve() / "arena_package_proof_boundary_audit.json":
+                reason = "package_audit_artifact_binding_mismatch"
+            else:
+                raw = audit_path.read_bytes()
+                document = json.loads(raw)
+                if not isinstance(document, dict):
+                    raise ValueError("package_audit_not_mapping")
+                evidence_digest = hashlib.sha256(raw).hexdigest()
+                if pointer.get("sha256") not in (None, evidence_digest):
+                    reason = "package_audit_artifact_digest_mismatch"
+                elif document.get("schema_version") != ARENA_PACKAGE_AUDIT_SCHEMA_VERSION:
+                    reason = "package_audit_schema_mismatch"
+                elif document.get("status") != "passed" or document.get("blockers") != [] or document.get("proof_boundary_violations") != []:
+                    reason = "package_audit_evidence_not_passed"
+                elif _path_from_value(document.get("package_dir")) != package_path or _path_from_value(document.get("capture_root")) != capture_path:
+                    reason = "package_audit_source_binding_mismatch"
+        except (OSError, ValueError, TypeError):
+            reason = "package_audit_artifact_unreadable_or_invalid"
+    results: Dict[str, Dict[str, Any]] = {}
+    assertions = _mapping(document.get("artifact_assertions"))
+    for goal, names in _LOCAL_PACKAGE_REQUIREMENTS.items():
+        goal_reason = reason
+        checked: List[str] = []
+        if goal_reason is None:
+            for name in names:
+                assertion = _mapping(assertions.get(name))
+                path = package_path / name  # type: ignore[operator]  # checked above
+                try:
+                    if assertion.get("exists") is not True or assertion.get("path") != name or path.is_symlink() or not path.is_file():
+                        goal_reason = "package_capability_artifact_missing"
+                    elif assertion.get("sha256") != _file_digest(path) or assertion.get("size_bytes") != path.stat().st_size:
+                        goal_reason = "package_capability_artifact_digest_mismatch"
+                    else:
+                        checked.append(name)
+                except OSError:
+                    goal_reason = "package_capability_artifact_unreadable"
+                if goal_reason is not None:
+                    break
+        results[goal] = {
+            "status": "ready" if goal_reason is None else "not_proven_in_current_control_plane",
+            "reason": goal_reason or "source_bound_local_contract_verified",
+            "evidence": str(audit_path) if audit_path is not None else None,
+            "evidence_sha256": evidence_digest,
+            "validated_artifacts": checked,
+            "scope": "local_package_contract",
+            "execution_proven": False,
+            "proof_boundary": f"package artifacts prove the local {goal} contract only; no runtime or customer-delivery claim",
+        }
+    return results
+
+
 def _goal_requirement_audit(
     *,
     manifest: Mapping[str, Any],
@@ -201,10 +303,6 @@ def _goal_requirement_audit(
     required_inputs = set(_required_input_ids(packet))
     enablement_inputs = set(_enablement_input_ids(packet))
     arena_section = _setup_section(setup_manifest, "real_arena_execution")
-    package_dir = _mapping(packet.get("configured_paths")).get("package_dir")
-    package_audit = _mapping(_setup_section(setup_manifest, "local_deterministic_lane").get("package_audit"))
-    package_audit_status = package_audit.get("audit_status")
-    local_package_ready = package_audit_status == "passed" or not bool(package_audit.get("blockers"))
     webapp_ready = bool(manifest.get("effective_webapp_upstream_truth_ready")) and (
         "webapp_upstream_truth" not in required_inputs
     )
@@ -230,20 +328,8 @@ def _goal_requirement_audit(
     live_closure_evidence_ready = "live_robot_eval_closure_evidence" not in required_inputs
     policy_package_ready = "robot_team_policy_package" not in required_inputs
 
-    package_lane = {
-        "status": "ready" if local_package_ready else "not_proven_in_current_control_plane",
-        "evidence": package_dir or package_audit.get("artifact", {}).get("path"),
-        "proof_boundary": "package artifacts prove local ingest/package surfaces only",
-    }
     return {
-        "arena_result_ingest": dict(package_lane),
-        "500_scenario_scheduler": dict(package_lane),
-        "policy_adapters": dict(package_lane),
-        "clips": dict(package_lane),
-        "review_resolution": dict(package_lane),
-        "dataset_packaging": dict(package_lane),
-        "customer_handoff_report": dict(package_lane),
-        "rerun_loop": dict(package_lane),
+        **_local_package_requirements(packet, setup_manifest),
         "vision_labeling": {
             "status": "ready" if vision_ready else "enablement_missing_or_not_configured",
             "proof_boundary": "model labels remain review-required support evidence",
