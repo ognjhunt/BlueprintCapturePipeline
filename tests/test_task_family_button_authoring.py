@@ -162,6 +162,35 @@ def _reseal_facts(args):
     _seal(args["task_context"], "context_digest")
 
 
+def test_explicit_webapp_canonicalization_preserves_small_numeric_task_facts(tmp_path, monkeypatch):
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+
+    args, _ = _fixture(tmp_path, monkeypatch)
+    context = args["task_context"]
+    context["success_criteria"] = {"successRate": 1e-7, "successDefinition": "Press the red button.\U0001f7e5"}
+    facts = context["operator_answers"]["family_task_facts"]
+    facts["canonicalization"] = "rfc8785"
+    facts["operations"][0]["minimum_hold_seconds"] = 1e-7
+    facts["task_description_digest"] = cross_runtime_canonical_digest({"description": context["description"]})
+    facts["task_success_criteria_digest"] = cross_runtime_canonical_digest({"success_criteria": context["success_criteria"]})
+    facts["facts_digest"] = cross_runtime_canonical_digest(facts, digest_field="facts_digest")
+    assert facts["facts_digest"] != canonical_digest(facts, digest_field="facts_digest")
+    assert producer._facts(context, args["source_geometry"]["binding"]["source_video_digest"])["operation-001"][
+        "minimum_hold_seconds"] == 1e-7
+    context["success_criteria"]["successRate"] = 2e-7
+    with pytest.raises(ValueError, match="owner_facts_source_changed"):
+        producer._facts(context, args["source_geometry"]["binding"]["source_video_digest"])
+
+
+@pytest.mark.parametrize("mode", ["unknown", [], {}])
+def test_explicit_unknown_fact_canonicalizer_cannot_fall_back_to_legacy(tmp_path, monkeypatch, mode):
+    args, _ = _fixture(tmp_path, monkeypatch)
+    args["task_context"]["operator_answers"]["family_task_facts"]["canonicalization"] = mode
+    _reseal_facts(args)
+    with pytest.raises(ValueError, match="owner_facts_canonicalization_invalid"):
+        producer._facts(args["task_context"], args["source_geometry"]["binding"]["source_video_digest"])
+
+
 def _rebind_semantics(args, *, steps=None):
     receipt = copy.deepcopy(args["task_semantics"]["planner_receipt"])
     receipt["binding"]["task_context_digest"] = args["task_context"]["context_digest"]

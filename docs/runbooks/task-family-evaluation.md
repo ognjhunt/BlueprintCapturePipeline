@@ -86,6 +86,9 @@ The bounded input is factual layout, not another finished native profile:
   converted to numbers. Missing joint-travel or force thresholds stay
   engineering/source dependencies; a missing job hold duration remains a normal
   task-fact request.
+  New WebApp records declare `canonicalization: "rfc8785"`; their fact,
+  description and success-criteria digests use the existing RFC8785 boundary.
+  Unflagged retained records preserve their original Python canonicalization.
 
 Repeated-family routing additionally requires exact operation
 IDs/count/order and ordered, nonoverlapping verbatim source quotes. Missing IDs

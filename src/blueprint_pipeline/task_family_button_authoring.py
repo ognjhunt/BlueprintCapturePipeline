@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 from trimesh.transformations import quaternion_from_matrix
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .launch_immutable_input_writer import write_exclusive_private_bytes
 from .task_family_authoring import _operations, _QUESTIONS
 from .task_family_native_contracts import _pose, family_source_blockers
@@ -124,12 +124,15 @@ def _facts(context, video):
     value = (context.get("operator_answers") or {}).get("family_task_facts")
     if value is None:
         return {}
+    _require(isinstance(value, Mapping), "owner_facts_source_changed")
+    _require(value.get("canonicalization") in (None, "rfc8785"), "owner_facts_canonicalization_invalid")
+    digest = cross_runtime_canonical_digest if value.get("canonicalization") == "rfc8785" else canonical_digest
     _require(isinstance(value, Mapping) and value.get("schema_version") == FACTS_SCHEMA
-             and value.get("facts_digest") == canonical_digest(value, digest_field="facts_digest")
+             and value.get("facts_digest") == digest(value, digest_field="facts_digest")
              and value.get("capture_id") == context["capture_id"]
              and value.get("source_video_digest") == video
-             and value.get("task_description_digest") == canonical_digest({"description": context["description"]})
-             and value.get("task_success_criteria_digest") == canonical_digest({"success_criteria": context.get("success_criteria")}),
+             and value.get("task_description_digest") == digest({"description": context["description"]})
+             and value.get("task_success_criteria_digest") == digest({"success_criteria": context.get("success_criteria")}),
              "owner_facts_source_changed")
     if context.get("confirmed") is not True or value.get("confirmed") is not True:
         return {}
