@@ -164,7 +164,11 @@ def retained(tmp_path, monkeypatch):
         "source": source, "envelope": {"task_family": "rigid_pick_place", "backend": "robolab.v1",
             "robot_id": "franka", "policy_interface": "droid", "camera_ids": ["external", "wrist", "overview"]},
         "releases": {"pipeline_commit": "a" * 40, "webapp_commit": "b" * 40,
-            "pipeline_image_digest": "sha256:" + "1" * 64, "webapp_image_digest": "sha256:" + "2" * 64}}, "attempt_digest")
+            "pipeline_image_digest": "sha256:" + "1" * 64, "webapp_image_digest": "sha256:" + "2" * 64},
+        "candidate_runtime_identities": {result["candidate_ids"][0]: {
+            "configuration_digest": result["configuration_digest"],
+            "runtime_identity_digest": result["episodes"][0]["runtime_identity_digest"],
+            "worker_image_digest": "sha256:" + "3" * 64}}}, "attempt_digest")
     publication = screening_publication(plan=value, state={"revision": 2, "updated_at": stamp(50),
         "candidates": {result["candidate_ids"][0]: {"status": "completed", "summary": candidate_result_summary(
             result, plan=value, candidate=value["candidates"][0])}}}, budget={})
@@ -204,7 +208,8 @@ def retained(tmp_path, monkeypatch):
         rec = manifest["executions"][0][role]
         content = json.loads(open(rec["path"]).read())
         acquire("execution_" + role, rec, content, 45 if role == "closeout" else 40,
-            {"started_at": stamp(30), "completed_at": stamp(40), "runtime_image_digest": attempt["releases"]["pipeline_image_digest"]})
+            {"started_at": stamp(30), "completed_at": stamp(40), "worker_image_digest": "sha256:" + "3" * 64,
+             "worker_image_binding_kind": "provider_container_image_digest"})
     manifest_path = root / "acceptance.json"
     manifest_path.write_text(json.dumps(manifest))
     return {"root": root, "manifest": manifest, "manifest_path": manifest_path,
@@ -223,6 +228,17 @@ def change_acquisition(retained, role, *, facts=None, **changes):
             if facts:
                 changes["facts"] = {**observation.facts, **facts}
             retained["acquisitions"].rows[key] = replace(observation, **changes)
+
+
+def replace_attempt(retained, attempt):
+    seal(attempt, "attempt_digest")
+    previous = retained["manifest"]["attempt"]
+    replacement = record(retained["root"] / "frozen.json", attempt)
+    observed = retained["acquisitions"].rows.pop(("attempt", previous["sha256"]))
+    retained["acquisitions"].rows["attempt", replacement["sha256"]] = replace(
+        observed, artifact_sha256=replacement["sha256"])
+    retained["manifest"]["attempt"] = replacement
+    retained["attempt"] = attempt
 
 
 def test_joined_contract_keeps_screening_finalists_physical_and_concurrency_separate(retained):
@@ -345,6 +361,54 @@ def test_wrong_acquisition_digest_and_missing_native_bytes_refuse(retained):
     assert "customer_readback:acquisition_binding_invalid" in report(retained)["blockers"]
     retained["manifest"]["executions"][0]["result"]["path"] = "../foreign.json"
     assert "artifact_path_invalid" in report(retained)["blockers"]
+
+
+@pytest.mark.parametrize("kind", ["source_revocation", "consent_revocation", "run_cancellation", "technical_source_changed", "authority_expired"])
+def test_source_revocation_inside_execution_never_completes_the_frozen_attempt(retained, kind):
+    change_acquisition(retained, "event_history", facts={"events": [
+        {"kind": "upload_start", "at": stamp(10), "attempt_id": "attempt-1"},
+        {"kind": kind, "at": stamp(35), "attempt_id": "attempt-1"}]})
+    result = report(retained)
+    assert "authority_ended_during_frozen_attempt" in result["blockers"]
+    assert result["milestones"]["supported_production_completion"] is False
+    assert result["milestones"]["unattended_completion_within_authorized_stages"] is False
+
+
+def test_worker_image_is_frozen_separately_from_the_service_image(retained):
+    worker_image = "sha256:" + "3" * 64
+    attempt = deepcopy(retained["attempt"])
+    candidate_id = retained["manifest"]["executions"][0]["candidate_id"]
+    attempt["candidate_runtime_identities"] = {candidate_id: {
+        "configuration_digest": retained["result"]["configuration_digest"],
+        "runtime_identity_digest": retained["result"]["episodes"][0]["runtime_identity_digest"],
+        "worker_image_digest": worker_image}}
+    replace_attempt(retained, attempt)
+    change_acquisition(retained, "execution_result", facts={"runtime_image_digest": worker_image,
+        "worker_image_digest": worker_image, "worker_image_binding_kind": "provider_container_image_digest"})
+    result = report(retained)
+    assert result["status"] == "verified", result["blockers"]
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("expected_missing", "candidate_worker_image_expected_not_proven"),
+    ("acquisition_missing", "worker_image_acquisition_not_proven"),
+    ("wrong_image", "execution_worker_image_mismatch"),
+    ("runtime_digest_relabelled", "worker_image_acquisition_not_proven"),
+])
+def test_worker_image_unknown_mismatched_or_runtime_label_never_proves_image(retained, fault, reason):
+    if fault == "expected_missing":
+        attempt = deepcopy(retained["attempt"])
+        attempt.pop("candidate_runtime_identities")
+        replace_attempt(retained, attempt)
+    elif fault == "acquisition_missing":
+        change_acquisition(retained, "execution_result", facts={"worker_image_digest": None})
+    elif fault == "wrong_image":
+        change_acquisition(retained, "execution_result", facts={"worker_image_digest": "sha256:" + "4" * 64})
+    else:
+        change_acquisition(retained, "execution_result", facts={"worker_image_binding_kind": "native_container_identity_digest"})
+    result = report(retained)
+    assert reason in result["blockers"]
+    assert result["milestones"]["supported_production_completion"] is False
 
 
 def test_release_report_option_preserves_legacy_scope_and_requires_trust(retained):

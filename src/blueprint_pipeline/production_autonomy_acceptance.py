@@ -15,6 +15,11 @@ job-controlled projection descriptors.  With no such adapter, evidence stays
 The first executable envelope is the existing rigid/DROID screening route.
 Native plan, probe, session, independent scoring, media and scoped closeout
 contracts are rechecked; screening cannot prove a finalist recommendation.
+Service images and candidate worker images are distinct frozen identities.
+The native episode's ``container_identity_digest`` currently identifies the
+policy runtime; it is not an OCI image readback.  Only an authenticated
+provider/container acquisition may supply a worker-image fact.  Missing image
+provenance remains unknown.
 """
 from __future__ import annotations
 
@@ -62,8 +67,11 @@ _UNPLANNED = frozenset({
 })
 _AUTOMATIC = frozenset({
     "upload_start", "stage_progress", "automatic_retry", "process_restart",
-    "delivery_outage", "delivery_recovered", "source_revocation", "provider_outage",
+    "delivery_outage", "delivery_recovered", "provider_outage",
     "capacity_wait", "capacity_recovered",
+})
+_AUTHORITY_ENDED = frozenset({
+    "source_revocation", "consent_revocation", "run_cancellation", "technical_source_changed", "authority_expired",
 })
 
 
@@ -447,8 +455,25 @@ def _join_observations(observed: Mapping[str, TrustedObservation], *, attempt: M
                                     ("started_at", "completed_at", "closeout_observed_at"))
         if not stamps["queued_ack"] <= started <= finished <= stamps["publication"] or not finished <= closed <= stamps["event_history"]:
             blockers.append("execution_started_before_current_ack_or_after_publication")
-        if facts_for_execution.get("runtime_image_digest") != attempt["releases"]["pipeline_image_digest"]:
-            blockers.append("execution_runtime_image_mismatch")
+    expected_runtimes = attempt.get("candidate_runtime_identities")
+    if not isinstance(expected_runtimes, Mapping):
+        expected_runtimes = {}
+    candidates = {row["candidate_id"]: row for row in plan["candidates"]}
+    for candidate_id, facts_for_execution in execution_facts.items():
+        expected = expected_runtimes.get(candidate_id)
+        expected = dict(expected) if isinstance(expected, Mapping) else {}
+        configured = candidates[candidate_id]
+        worker_image = expected.get("worker_image_digest")
+        if (expected.get("configuration_digest") != configured["configuration_digest"]
+                or expected.get("runtime_identity_digest") != configured["execution_spec"]["runtime_digest"]
+                or not isinstance(worker_image, str) or not _DIGEST.fullmatch(worker_image)):
+            blockers.append("candidate_worker_image_expected_not_proven")
+        observed_image = facts_for_execution.get("worker_image_digest")
+        if (facts_for_execution.get("worker_image_binding_kind") != "provider_container_image_digest"
+                or not isinstance(observed_image, str) or not _DIGEST.fullmatch(observed_image)):
+            blockers.append("worker_image_acquisition_not_proven")
+        elif worker_image is not None and observed_image != worker_image:
+            blockers.append("execution_worker_image_mismatch")
     if observed["upload"].event_id != attempt.get("start_event_id") or facts["upload"].get("natural_upload") is not True:
         blockers.append("natural_start_not_proven")
     for role in ("service_identity_before", "service_identity_after"):
@@ -497,7 +522,11 @@ def _join_observations(observed: Mapping[str, TrustedObservation], *, attempt: M
         starts += kind == "upload_start"
         retries += kind == "automatic_retry"
         restarts += kind == "process_restart"
-        if kind in _UNPLANNED:
+        if kind in _AUTHORITY_ENDED:
+            # Reauthorization cannot retrospectively repair this frozen attempt.
+            # Its stopped/partial evidence remains useful, but is no completion pass.
+            blockers.append("authority_ended_during_frozen_attempt")
+        elif kind in _UNPLANNED:
             interventions += 1
         elif kind not in _AUTOMATIC and kind not in attempt["declared_human_boundaries"]:
             blockers.append("event_intervention_classification_unknown")
