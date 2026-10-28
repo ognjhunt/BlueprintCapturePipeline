@@ -23,6 +23,7 @@ from .policy_interface_binding import INTERFACES
 
 SCHEMA = "blueprint.site_task_simulation_qualification.v1"
 DIMENSIONS = {"scale", "registration", "collision", "task_state", "observation", "task_dynamics"}
+DEFAULT_ROBOT_INTERFACES = frozenset({"openpi_droid.v1", "groot_n17_droid.v1", "openpi_droid_https.v1"})
 ROLES = {"capture", "testbed", "scene", "task_spec", "success_contract", "robot_model", "measurement", "simulator_measurement"}
 BINDING_FIELDS = {"scene_request_id", "site_id", "task_id", "capture_id", "source_capture_digest",
                   "testbed_digest_sha256", "scene_revision_digest", "task_spec_digest", "success_contract_digest",
@@ -229,8 +230,10 @@ def qualify_from_profile(operator_profile: Mapping[str, Any], *, now: datetime |
     _require(canonical_digest(documents["task_spec"]) == binding.get("task_spec_digest")
              and contract["contract_digest"] == binding.get("success_contract_digest"), "task_binding_mismatch")
     source_map = {item["role"]: item for item in portable}
-    if (operator_profile.get("default_robot_model") is not None
-            and binding.get("policy_interface_id") in {"openpi_droid.v1", "groot_n17_droid.v1", "openpi_droid_https.v1"}):
+    if binding.get("policy_interface_id") in DEFAULT_ROBOT_INTERFACES:
+        _require(operator_profile.get("default_robot_model") is not None, "default_robot_model_unbound")
+        _require(_DIGEST.fullmatch(str(authority.get("default_robot_model_closure_digest"))),
+                 "default_robot_model_closure_unbound")
         from .blueprint_robot_model_delivery import require_default_robot_model
         require_default_robot_model(profile=operator_profile, model_path=role_paths["robot_model"],
             expected_model_sha256=binding["robot_model_digest"],

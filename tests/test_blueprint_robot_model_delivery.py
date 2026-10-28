@@ -111,3 +111,23 @@ def test_an_explicit_team_robot_does_not_inherit_default_asset_selection(tmp_pat
     original = qualify_from_profile(profile, now=NOW)
     profile["default_robot_model"] = {"unrelated": "operator default for Blueprint DROID runs"}
     assert qualify_from_profile(profile, now=NOW) == original
+
+
+@pytest.mark.parametrize("interface", ["openpi_droid.v1", "groot_n17_droid.v1", "openpi_droid_https.v1"])
+def test_default_interface_cannot_qualify_without_operator_model_and_closure(tmp_path, interface):
+    from blueprint_pipeline.site_task_simulation_qualification import SiteTaskQualificationError, qualify_from_profile
+    from tests.test_site_task_simulation_qualification import NOW, fixture as qualification
+
+    profile = qualification(tmp_path, binding={"policy_interface_id": interface})
+    with pytest.raises(SiteTaskQualificationError, match="default_robot_model_unbound"):
+        qualify_from_profile(profile, now=NOW)
+
+
+def test_default_model_configuration_without_reviewed_closure_pin_cannot_qualify(tmp_path):
+    from blueprint_pipeline.site_task_simulation_qualification import SiteTaskQualificationError, qualify_from_profile
+    from tests.test_site_task_simulation_qualification import NOW, fixture as qualification
+
+    profile = qualification(tmp_path, binding={"policy_interface_id": "openpi_droid.v1"})
+    profile["default_robot_model"] = {"schema_version": CONFIG_SCHEMA}
+    with pytest.raises(SiteTaskQualificationError, match="default_robot_model_closure_unbound"):
+        qualify_from_profile(profile, now=NOW)
