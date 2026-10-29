@@ -841,17 +841,17 @@ def _completed_legacy_scene_review(output_root: Path, binding: dict, schema):
 
 
 def _review_attempt(*, configuration, **attempt):
-    """Price under the job's admitted cap first; a raised cap serves only a review it refuses.
+    """Price under each earlier cap the job ran under, lowest first, then the current one.
 
-    Each receipt binds the cap it was priced under, so a review bought before the raise is
+    Each receipt binds the cap it was priced under, so a review bought before a raise is
     found again rather than bought twice. Pricing refuses before any spend is reserved.
     """
-    from .website_atlas_pipeline import ADMITTED_REVIEW_CAP
-    admitted = configuration.get(ADMITTED_REVIEW_CAP)
-    if admitted is not None and admitted < configuration["policy"]["maximum_review_cost_usd"]:
+    from .website_atlas_pipeline import REVIEW_CAPS
+    cap = configuration["policy"]["maximum_review_cost_usd"]
+    for earlier in (value for value in configuration.get(REVIEW_CAPS, ()) if value < cap):
         try:
             return _bound_review_attempt(configuration={**configuration, "policy": {
-                **configuration["policy"], "maximum_review_cost_usd": admitted}}, **attempt)
+                **configuration["policy"], "maximum_review_cost_usd": earlier}}, **attempt)
         except ValueError as error:
             if str(error) != "atlas_scene_planner_token_budget_exceeded":
                 raise
