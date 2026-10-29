@@ -197,6 +197,9 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
     result = _read(job_dir / "result.json")
     if result.get("digest") != canonical_digest(result, digest_field="digest") or result["digest"] != job.get("result_digest"):
         raise ValueError("website_atlas_scene_result_changed")
+    if result.get('observed_scene_only') is True:
+        return {'status': 'needs_input', 'reason': 'website_atlas_task_evidence_incomplete',
+                'observed_scene_available': True, 'simulation_qualified': False}
     if retained_result_path is not None or retained_result_digest is not None:
         if retained_result_path is None or not retained_result_digest:
             raise ValueError("website_atlas_scene_retained_selection_incomplete")
@@ -210,6 +213,9 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         # Read a completed background revision without changing the capture's
         # controller state, original observations, scale evidence or publication.
         result = retained
+        if result.get('observed_scene_only') is True:
+            return {'status': 'needs_input', 'reason': 'website_atlas_task_evidence_incomplete',
+                    'observed_scene_available': True, 'simulation_qualified': False}
     preserved = result.get("subject_origin") in PRESERVED_SCENE_ORIGINS
     completion_admission = None
     if preserved:

@@ -243,8 +243,10 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             from .website_task_context_contracts import holds_native_task_preparation, retains_task_family_preparation
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
             from .website_target_background_correction import retains_rejected_selection
+            from .observed_room_contracts import retains_observed_room_limit
             native_profile_held = (holds_native_task_preparation(handoff, current)
-                                   or retains_rejected_selection(handoff, current))
+                                   or retains_rejected_selection(handoff, current)
+                                   or retains_observed_room_limit(handoff, current))
             family_prepared = retains_task_family_preparation(handoff, current)
             _require(handoff.get("schema_version") == "website_scene_handoff.v1"
                      and handoff.get("scene_id") == selected["scene_id"]
