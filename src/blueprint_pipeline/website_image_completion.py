@@ -519,6 +519,9 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             else:
                 if spent + cap > budget:
                     raise ValueError("website_image_completion_budget_exhausted")
+                from .atlas_preparation_context import preparation_disclosure_opener
+                request_opener = (preparation_disclosure_opener(task_context, opener)
+                                  if task_context is not None else opener)
                 canvas, box = _canvas(source, native_aspect=native_aspect)
                 # Retain intent before the paid call, including its reference.
                 with receipt_path.open("x") as stream:
@@ -548,7 +551,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                 "guide_image_digest": _sha256_file(guide_path)}
                 response = _execute_frame_request(execution=execution, prompt=binding["prompt"], request_digest=request_digest,
                                                   image_bytes=_png(canvas), mask_bytes=None,
-                                                  expected_size=canvas.size, token=token, opener=opener,
+                                                  expected_size=canvas.size, token=token, opener=request_opener,
                                                   reference_images=references)
                 if not response["succeeded"]:
                     # Keep the adapter's sanitized provider evidence before

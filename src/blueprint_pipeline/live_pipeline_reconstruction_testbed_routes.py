@@ -87,6 +87,17 @@ def register_reconstruction_testbed_routes(
             / "maintained_site_task_testbeds"
         )
 
+    from .owned_capture_atlas_http import register_owned_capture_atlas_routes
+
+    def owned_atlas_roots() -> tuple[Path, Path]:
+        manifest = manifest_path_provider().resolve()
+        configured = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not manifest.is_file() or not configured:
+            raise HTTPException(status_code=503, detail="reconstruction control plane is not configured")
+        return reconstruction_root(manifest), Path(configured).expanduser().resolve()
+
+    register_owned_capture_atlas_routes(app, require_admission=require_admission, roots=owned_atlas_roots)
+
     async def refresh_reconstruction_readiness(
         *, manifest_path: Path, capture_store_root: Path, plan_id: str
     ) -> dict[str, Any]:

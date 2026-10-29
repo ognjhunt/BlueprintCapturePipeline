@@ -276,6 +276,7 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
     """One exact, reserved task. Ambiguous submissions hold; reruns reuse intent."""
     from .website_task_context import reserve_website_preparation_spend
     from .atlas_preparation_context import preparation_source_checkpoint, validate_preparation_task_context
+    from .owned_capture_atlas_project import owned_atlas_project_checkpoint
     validate_task_request(task, request)
     validate_preparation_task_context(task_context)
     uploads = dict(uploads or {})
@@ -319,7 +320,8 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
     state_path = root / "atlas_pose" / "submission.json"
     base, key = pose.atlas_api_config()
     client = pose.AtlasClient(base_url=base, api_key=key, transport=transport,
-                             source_checkpoint=preparation_source_checkpoint(task_context))
+                             source_checkpoint=preparation_source_checkpoint(task_context),
+                             project_checkpoint=owned_atlas_project_checkpoint(task_context))
     with pose._locked(root):
         state = json.loads(state_path.read_text()) if state_path.is_file() else None
         if state and state.get("request_digest") != request_digest:
