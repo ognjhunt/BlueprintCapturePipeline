@@ -34,6 +34,7 @@ from .core.handoff_lease import (
 from .local_capture import resolve_local_capture_context
 from .website_scene_geometry import prepare_website_source_frames
 from .website_task_masks import run_website_task_masks
+from .website_task_target_choice import load_target_choices, retain_question
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
@@ -391,14 +392,19 @@ def run_clean_plate_stage(
                                                 meta_admission=meta_sam_admission,
                                                 meta_admission_grant=meta_sam_admission_grant,
                                                 task_context=task_context,
-                                                source_video=website_source_video)
+                                                source_video=website_source_video,
+                                                target_choices=load_target_choices(ctx.pipeline_root))
             handoff_lease_checkpoint("clean_plate_after_task_masks")
         except HandoffLeaseError:
             raise
         except Exception as exc:
             status, mode = "blocked", "task_masks_blocked"
             reason = "website_task_masks_unavailable"
-            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
+            # Several instances of the object the robot moves: ask the site
+            # which one, instead of failing the same way on every retry.
+            asked = retain_question(ctx.pipeline_root, exc=exc, plan=task_plan, source_geometry=source_geometry,
+                                    scene_id=ctx.scene_id, capture_id=ctx.capture_id)
+            blockers.append(asked or (str(exc) if isinstance(exc, ValueError) else type(exc).__name__))
 
     if task_masks is not None and not blockers:
         # Scene preparation needs the plan, the source frames and the task

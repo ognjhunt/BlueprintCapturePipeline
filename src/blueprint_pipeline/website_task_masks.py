@@ -20,6 +20,7 @@ from .meta_sam31 import PROFILE as META_PROFILE, prepare_continuous_video, run_m
 from .sam31_source_track_provider_stage import run_sam31_source_track_stage
 from .scene_placement.sam31_source_track_provider import RUN_REQUEST_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
+from .website_task_target_choice import TaskTargetAmbiguous, chosen_track
 
 
 def decode_track_mask(observation: Mapping[str, Any]) -> np.ndarray:
@@ -93,8 +94,13 @@ def track_at_geometry_resolution(track: Mapping[str, Any], frames: list[Mapping[
 
 
 def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
-                      frames: list[Mapping[str, Any]]) -> Mapping[str, Any]:
-    """A text match alone must not remove every instance of the same object class."""
+                      frames: list[Mapping[str, Any]],
+                      site_choice: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    """A text match alone must not remove every instance of the same object class.
+
+    When the anchors cannot pick one instance, the site's own choice can, but
+    only an answer bound to exactly these candidate instances.
+    """
     evidence = [row for row in target.get("spatial_evidence", [])
                 if isinstance(row, Mapping) and row.get("box_xywh_normalized") is not None]
     if not evidence:
@@ -133,7 +139,12 @@ def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, An
         scores.append((sum(overlaps) / len(overlaps) if overlaps else 0.0, track))
     scores.sort(key=lambda item: item[0], reverse=True)
     if not scores or scores[0][0] < 0.25 or (len(scores) > 1 and scores[0][0] - scores[1][0] < 0.1):
-        raise ValueError(f"task_target_track_ambiguous:{target['target_id']}")
+        candidates = [track for _, track in scores]
+        chosen = chosen_track(target["target_id"], candidates, site_choice)
+        if chosen is not None:
+            return {**chosen, "selection_basis": "site_choice",
+                    "site_choice_question_digest": site_choice["question_digest"]}
+        raise TaskTargetAmbiguous(target["target_id"], candidates=candidates, frames=frames)
     return scores[0][1]
 
 
@@ -275,7 +286,8 @@ def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: lis
         if outcome == CONCEPT_RESOLVED:
             return grounded
         rejected.append(concept)
-    raise ValueError(f"task_target_track_ambiguous:{target['target_id']}")
+    raise TaskTargetAmbiguous(target["target_id"], candidates=[
+        track for track in tracks if track.get("label") == target["target_id"]])
 
 
 def segment_grounded_static_target(*, target: Mapping[str, Any], registry: list[Mapping[str, Any]],
@@ -412,7 +424,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                           source_video: Path | None = None, defer_kept_static: bool = False,
                           view_plan: Mapping[str, Any] | None = None,
                           retained_static_masks: Mapping[str, Any] | None = None,
-                          recovery_geometry: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                          recovery_geometry: Mapping[str, Any] | None = None,
+                          target_choices: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     targets = tracked_task_targets(plan)
     if not [target for target in targets if not is_person_removal(target)]:
         raise ValueError("website_task_targets_missing")
@@ -618,8 +631,12 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         if target["target_id"] in grounded_targets:
             target = grounded_targets[target["target_id"]]
             grounding = target["grounding"]
+        # Only the object the robot moves is asked about; the answer names exact instances.
+        site_choice = ((target_choices or {}).get(target["target_id"])
+                       if target.get("task_effect") == "manipulated" else None)
         try:
-            identity = select_task_track(target=target, tracks=candidates, frames=identity_frames)
+            identity = select_task_track(target=target, tracks=candidates, frames=identity_frames,
+                                         site_choice=site_choice)
         except ValueError as exc:
             static_contact = target.get("task_effect") == "static_contact" and target.get("disposition") == "keep"
             if (str(exc) != f"task_target_track_ambiguous:{target['target_id']}"
@@ -632,7 +649,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                 video=video_artifact, task_context=task_context, output_root=root / "grounding")
             grounding = grounded["grounding"]
             try:
-                identity = select_task_track(target=grounded, tracks=candidates, frames=identity_frames)
+                identity = select_task_track(target=grounded, tracks=candidates, frames=identity_frames,
+                                             site_choice=site_choice)
             except ValueError as grounded_exc:
                 if str(grounded_exc) != f"task_target_track_ambiguous:{target['target_id']}":
                     raise
@@ -670,7 +688,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                                       "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
                             admission={}, task_context=task_context, video_artifact=video_artifact)
                         try:
-                            identity = select_task_track(target=grounded, tracks=refined["tracks"], frames=identity_frames)
+                            identity = select_task_track(target=grounded, tracks=refined["tracks"],
+                                                         frames=identity_frames, site_choice=site_choice)
                         except ValueError as refined_exc:
                             if str(refined_exc) != ambiguous or not single_frame_rescue:
                                 raise

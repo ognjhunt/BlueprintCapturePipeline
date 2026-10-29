@@ -47,7 +47,8 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
         handoff_lease_checkpoint("website_control_effect:" + operation)
     if operation not in {"task-context", "scene-sponsorship", "prepared-scene",
                          "preparation-spend", "preparation-settlement", "atlas-configuration", "atlas-preview",
-                         "agent-execution-offer", "task-item-evidence", "preparation-status"}:
+                         "agent-execution-offer", "task-item-evidence", "preparation-status",
+                         "task-target-choice"}:
         raise ValueError("website_control_operation_invalid")
     configured = os.getenv("PIPELINE_SYNC_WEBAPP_URL", "").strip()
     if not configured:

@@ -692,6 +692,7 @@ def _claim_job_lease(
     expected_assessment_resume: Mapping[str, Any] | None = None,
     expected_reconstruction_resume: Mapping[str, Any] | None = None,
     require_unattempted_delivery: bool = False,
+    expected_target_choice_resume: Mapping[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     if producer_delivery_key is not None and re.fullmatch(r"sha256:[0-9a-f]{64}", producer_delivery_key) is None:
         raise PipelineError('capture_delivery_key_invalid')
@@ -720,6 +721,11 @@ def _claim_job_lease(
             if not claim_matches(ledger, expected_reconstruction_resume, payload_sha256=payload_sha256,
                                  producer_delivery_key=producer_delivery_key):
                 return "reconstruction_resume_changed", dict(ledger)
+        from . import website_task_target_choice as target_choice
+        if expected_target_choice_resume is not None and not target_choice.claim_matches(
+                ledger, expected_target_choice_resume, payload_sha256=payload_sha256,
+                producer_delivery_key=producer_delivery_key):
+            return "target_choice_resume_changed", dict(ledger)
         if status == "corrupt":
             return "corrupt", dict(ledger)
         if producer_delivery_key is not None and ledger and ledger.get('producer_delivery_key') != producer_delivery_key:
@@ -771,6 +777,10 @@ def _claim_job_lease(
             live_receipt = capture_root / JOB_TERMINAL_RECEIPT_FILENAME
             if live_receipt.exists() or live_receipt.is_symlink():
                 _set_aside(live_receipt, "superseded")
+        # Parked on the site's choice: only the drain's replay of that answer
+        # runs it again. A redelivery or retry request spends nothing.
+        if expected_target_choice_resume is None and target_choice.armed(ledger):
+            return "awaiting_site_choice", dict(ledger)
         if status == "completed":
             if not _retained_required_stage_blockers(capture_root):
                 retained = _output_commit(capture_root, scene_id=scene_id, capture_id=capture_id)
@@ -1631,7 +1641,7 @@ def _finish_terminal_authority_ending(
 
 
 @scene_participant('storage_root')
-def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None, expected_assessment_resume: Mapping[str, Any] | None=None, require_unattempted_delivery: bool=False, expected_preparation_purpose: str | None=None, expected_reconstruction_resume: Mapping[str, Any] | None=None) -> dict[str, Any]:
+def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage_root: Path, provider: str, run_e2e: Callable[..., dict[str, Any]]=run_end_to_end, storage_client: storage.Client | None=None, run_evaluation_prep: bool=True, run_e2e_enabled: bool=True, stage_control_plane: bool=False, control_plane_manifest_path: str | Path | None=None, control_plane_work_dir: str | Path | None=None, control_plane_staged_inputs_path: str | Path | None=None, overwrite_control_plane_input: bool=False, lease_owner: str | None=None, lease_seconds: int=DEFAULT_JOB_LEASE_SECONDS, payload_digest: str | None=None, expected_assessment_resume: Mapping[str, Any] | None=None, require_unattempted_delivery: bool=False, expected_preparation_purpose: str | None=None, expected_reconstruction_resume: Mapping[str, Any] | None=None, expected_target_choice_resume: Mapping[str, Any] | None=None) -> dict[str, Any]:
     import sys
     from contextlib import ExitStack
     from .pubsub_handoff_scene_operations import _process_handoff_payload_body
@@ -1651,7 +1661,7 @@ def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage
                         'capture_root': str(root), 'staging_reason': 'capture_original_birth_refused',
                         'blockers': ['capture_source_membership_unavailable']}
         try:
-            return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest, expected_assessment_resume=expected_assessment_resume, **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}), **({"expected_preparation_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}), **({"expected_reconstruction_resume": expected_reconstruction_resume} if expected_reconstruction_resume is not None else {}))
+            return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest, expected_assessment_resume=expected_assessment_resume, **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}), **({"expected_preparation_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}), **({"expected_reconstruction_resume": expected_reconstruction_resume} if expected_reconstruction_resume is not None else {}), **({"expected_target_choice_resume": expected_target_choice_resume} if expected_target_choice_resume is not None else {}))
         finally:
             # Separate durable wake-up only; never let delivery reopen or fail processing.
             try:

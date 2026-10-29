@@ -36,13 +36,17 @@ _UNAVAILABLE = "website_preparation_status_unavailable"
 STATUS_V1 = "website_preparation_status.v1"
 STATUS_V2 = "website_preparation_status.v2"
 STATUS_V3 = "website_preparation_status.v3"
+# v4 adds the one question the site can answer inside this job (which object
+# the robot moves), only while its preparation is parked on that answer.
+STATUS_V4 = "website_preparation_status.v4"
 # The WebApp opts in per read; an absent or unknown value is answered with v1.
 VERSION_HEADER = "x-blueprint-preparation-status-version"
 _STATES_V1 = frozenset({"preparing", "awaiting_inputs", "failed_retryable", "authority_ended", "handed_off"})
 _STATES_V2 = _STATES_V1 | {"capacity_delayed", "failed_terminal"}
 _ACCEPTANCE = {"website_preparation_status_acceptance.v1": (STATUS_V1, _STATES_V1),
                "website_preparation_status_acceptance.v2": (STATUS_V2, _STATES_V2),
-               "website_preparation_status_acceptance.v3": (STATUS_V3, _STATES_V2)}
+               "website_preparation_status_acceptance.v3": (STATUS_V3, _STATES_V2),
+               "website_preparation_status_acceptance.v4": (STATUS_V4, _STATES_V2)}
 _CODES = {"preparing": "preparation_in_progress", "awaiting_inputs": "preparation_inputs_pending",
           "capacity_delayed": "preparation_capacity_delayed", "failed_retryable": "preparation_retryable_failure",
           "failed_terminal": "preparation_failed_terminal", "authority_ended": "preparation_authority_ended",
@@ -58,7 +62,8 @@ def requested_status_version(value: Any) -> str:
     """The newest receipt schema this Pipeline has at or below what the reader asked for."""
     text = value.strip() if type(value) is str else ""
     if re.fullmatch(r"[1-9][0-9]{0,2}", text):
-        return STATUS_V3 if int(text) >= 3 else STATUS_V2 if int(text) == 2 else STATUS_V1
+        number = int(text)
+        return STATUS_V4 if number >= 4 else STATUS_V3 if number == 3 else STATUS_V2 if number == 2 else STATUS_V1
     return STATUS_V1
 
 
@@ -152,8 +157,11 @@ def _current_context(*, request_id: str, scene_id: str, capture_id: str,
 def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
     """Typed v2 meaning of a ledger that is not handed off."""
     from .website_preparation_terminal import capacity_only, current_terminal, current_overdue
+    from .website_task_target_choice import armed as waits_on_site_choice
     status = ledger.get("status")
     _require(status in _LEDGER_STATES)
+    if waits_on_site_choice(ledger):
+        return "awaiting_inputs", None
     terminal = current_terminal(ledger) if status != "terminal_authority_ended" else None
     if terminal is not None:
         return "failed_terminal", terminal["reason"]
@@ -175,7 +183,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
     from .website_task_context import validate_website_task_context
 
     try:
-        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3})
+        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4})
         selected = validate_selectors(dict(selectors))
         root = _root(capture_root)
         _require(root.name == selected["capture_id"] and root.parent.name == "captures"
@@ -248,24 +256,29 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             _require(bool(_output_commit(root, scene_id=selected["scene_id"], capture_id=selected["capture_id"])))
             state = ("awaiting_inputs" if native_profile_held or (family_prepared and handoff["status"] == "needs_input")
                      else "handed_off")
-        elif schema_version in {STATUS_V2, STATUS_V3}:
+        elif schema_version in {STATUS_V2, STATUS_V3, STATUS_V4}:
             state, terminal_reason = _v2_state(before)
         else:
+            from .website_task_target_choice import armed as waits_on_site_choice
             _require(before.get("status") in _LEDGER_STATES)
-            state = _LEDGER_STATES[before["status"]]
-        outcome = None
-        if schema_version == STATUS_V3:
+            state = "awaiting_inputs" if waits_on_site_choice(before) else _LEDGER_STATES[before["status"]]
+        outcome = question = None
+        if schema_version in {STATUS_V3, STATUS_V4}:
             from .website_preparation_outcome import read_preparation_outcome
             outcome = read_preparation_outcome(capture_root=root,
                 task_context_digest=selected["task_context_digest"], state=state)
+        if schema_version == STATUS_V4 and state == "awaiting_inputs":
+            from .website_task_target_choice import public_question
+            question = public_question(root, before)
         after = _read_job_ledger(root)
         _require(before == after)
         _require(read_consent_state(root)["state"] != "revoked")
         result = {"schema_version": schema_version, **selected,
                   "attempt_count": before["attempt_count"], "revision": before["revision"],
                   "state": state, "code": _CODES[state],
-                  **({"terminal_reason": terminal_reason} if schema_version in {STATUS_V2, STATUS_V3} else {}),
-                  **({"outcome": outcome} if schema_version == STATUS_V3 else {}),
+                  **({"terminal_reason": terminal_reason} if schema_version != STATUS_V1 else {}),
+                  **({"outcome": outcome} if schema_version in {STATUS_V3, STATUS_V4} else {}),
+                  **({"question": question} if schema_version == STATUS_V4 else {}),
                   "correlation_id": cross_runtime_canonical_digest({**selected,
                       "attempt_count": before["attempt_count"], "revision": before["revision"]})}
         result["status_digest"] = cross_runtime_canonical_digest(result)

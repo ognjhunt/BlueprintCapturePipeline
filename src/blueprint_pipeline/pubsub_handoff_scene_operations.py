@@ -89,7 +89,7 @@ def __synthesize_pipeline_handoff_body(_listener, /, handoff, *, capture_root):
     return destination
 
 
-def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None):
+def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provider, run_e2e, storage_client, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, lease_owner, lease_seconds, payload_digest, expected_assessment_resume=None, require_unattempted_delivery=False, expected_preparation_purpose=None, expected_reconstruction_resume=None, expected_target_choice_resume=None):
     handoff = _listener.parse_handoff_payload(payload)
     digest = payload_digest or _listener.payload_sha256(payload)
     capture_root = _listener._handoff_capture_root(handoff, storage_root=storage_root)
@@ -227,13 +227,18 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}),
             **({'expected_assessment_resume': expected_assessment_resume} if expected_assessment_resume is not None else {}),
             **({'expected_reconstruction_resume': expected_reconstruction_resume}
-               if expected_reconstruction_resume is not None else {}))
+               if expected_reconstruction_resume is not None else {}),
+            **({'expected_target_choice_resume': expected_target_choice_resume}
+               if expected_target_choice_resume is not None else {}))
     except _listener.HandoffCaptureRetired:
         return retired_terminal() or {'schema_version': 'v1', 'status': 'capture_retired_retryable', 'queue_disposition': 'retryable', 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'blockers': ['handoff_capture_retired_while_claiming']}
     if claim_status == 'prior_delivery_effects_unresolved':
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'blockers': ['selected_handoff_existing_state_requires_reconciliation']}
-    if claim_status in {'assessment_resume_changed', 'reconstruction_resume_changed'}:
+    if claim_status == 'awaiting_site_choice':
+        # Acknowledged: the ledger keeps the exact bytes for the drain's replay.
+        return _awaiting_site_choice(handoff, capture_root)
+    if claim_status in {'assessment_resume_changed', 'reconstruction_resume_changed', 'target_choice_resume_changed'}:
         return {'schema_version': 'v1', 'status': claim_status, 'queue_disposition': 'retryable',
                 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                 'blockers': ['website_' + claim_status]}
@@ -330,7 +335,16 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
             previous_history=previous_history, recovered_expired_lease=ledger.get('recovered_expired_lease'))
         if reconstruction is not None:
             failure_record[RECONSTRUCTION_FIELD] = reconstruction
-        _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'failed_retryable', 'updated_at': failed_at, 'last_failed_at': failed_at, 'last_error_type': type(exc).__name__, 'last_error': str(exc), 'attempt_history': [*previous_history, failure_record], **({'assessment_resume': resume_record} if resume_record else {}), **({RECONSTRUCTION_FIELD: reconstruction} if reconstruction else {})})
+        # A run that stopped only to ask the site which object the robot moves
+        # is parked until the answer arrives, not retried until exhaustion.
+        from .website_task_target_choice import FIELD as CHOICE_FIELD, resume_record as choice_record
+        choice = choice_record(_listener, exc=exc, payload=payload, payload_digest=digest,
+            producer_delivery_key=producer_delivery_key, capture_root=capture_root)
+        if choice is not None:
+            failure_record[CHOICE_FIELD] = choice
+        _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'failed_retryable', 'updated_at': failed_at, 'last_failed_at': failed_at, 'last_error_type': type(exc).__name__, 'last_error': str(exc), 'attempt_history': [*previous_history, failure_record], **({'assessment_resume': resume_record} if resume_record else {}), **({RECONSTRUCTION_FIELD: reconstruction} if reconstruction else {}), **({CHOICE_FIELD: choice} if choice else {})})
+        if choice is not None:
+            return _awaiting_site_choice(handoff, capture_root)
         raise
     completed_at = _listener.utc_now_iso()
     control_plane_staging_status = str(control_plane_staging.get('status') or '') or None if control_plane_staging else None
@@ -352,6 +366,13 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     else:
         _listener._finish_job_lease(capture_root, owner=owner, token=token, update=ledger_update)
     return {'schema_version': 'v1', 'status': 'processed' if terminal_success else 'retryable_blocked', 'queue_disposition': 'terminal_success' if terminal_success else 'retryable', 'blockers': result_blockers, 'bucket': handoff.bucket, 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'capture_root': str(capture_root), 'run_e2e': result, 'control_plane_staging': control_plane_staging, 'reconstruction_enqueue': reconstruction_enqueue, 'output_commit': output_commit}
+
+
+def _awaiting_site_choice(handoff, capture_root):
+    return {'schema_version': 'v1', 'status': 'awaiting_site_target_choice',
+            'queue_disposition': 'parked_for_site_answer', 'bucket': handoff.bucket,
+            'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+            'capture_root': str(capture_root), 'blockers': ['website_task_target_choice_pending']}
 
 
 def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider, max_messages, run_evaluation_prep, run_e2e_enabled, stage_control_plane, control_plane_manifest_path, control_plane_work_dir, control_plane_staged_inputs_path, overwrite_control_plane_input, ack_deadline_seconds, max_delivery_attempts):
@@ -376,6 +397,11 @@ def _pull_and_process_body(_listener, /, *, subscription, storage_root, provider
         reconcile_waiting_reconstructions(_listener, storage_root=storage_root, limit=1, process_args=process_args)
     except Exception:
         _listener.logger.debug("pubsub_handoff.reconstruction_resume_unavailable")
+    from .website_task_target_choice import reconcile_waiting_target_choices
+    try:
+        reconcile_waiting_target_choices(_listener, storage_root=storage_root, limit=1, process_args=process_args)
+    except Exception:
+        _listener.logger.debug("pubsub_handoff.target_choice_resume_unavailable")
     from google.cloud import pubsub_v1
     from .pubsub_retry_deferrals import clear_deferral, record_deferral, wake_older_release_deferrals
     subscriber = pubsub_v1.SubscriberClient()
