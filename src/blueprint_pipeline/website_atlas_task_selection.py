@@ -171,6 +171,17 @@ def resolve_retained_target_selection(
             raise ValueError("website_atlas_target_selection_observation_missing")
         evidence.append({"timestamp_seconds": timestamp,
                          "box_xywh_normalized": region["box_xywh_normalized"]})
+    source_pose = result.get("source_pose") or {}
+    if source_pose.get("status") != "completed" or not isinstance(source_pose.get("pose_relative_path"), str):
+        raise ValueError("website_atlas_target_selection_pose_changed")
+    pose = _read(root, source_pose["pose_relative_path"] + "/atlas_posed_rgbd_result.json")
+    pose_binding = pose.get("binding") or {}
+    if (pose.get("digest") != canonical_digest(pose, digest_field="digest")
+            or pose.get("digest") != source_pose.get("result_digest")
+            or pose_binding.get("source_video_digest") != source_digest
+            or pose_binding.get("survey_digest") != survey["digest"]
+            or pose_binding.get("scene_state_review_digest") != canonical_digest(review)):
+        raise ValueError("website_atlas_target_selection_pose_changed")
     derived_target = {**target, "segmentation_prompt": chosen["segmentation_prompt"],
                       "task_effect": "manipulated", "disposition": "remove",
                       "rebuild_intent": "rebuild_and_compose", "collision_required": True,
@@ -186,10 +197,12 @@ def resolve_retained_target_selection(
                   "original_analysis_digest": canonical_digest(original), "atlas_result_digest": result_digest,
                   "planner_receipt_digest": canonical_digest(receipt), "planner_binding_digest": receipt["binding_digest"],
                   "planner_proposal_digest": receipt["proposal_digest"], "atlas_target_id": chosen["target_id"],
+                  "source_pose_digest": pose["digest"],
                   "owner_confirmation": False, "metric_authority": False, "physical_evidence": False}
     provenance["digest"] = canonical_digest(provenance, digest_field="digest")
     derived["retained_task_selection"] = provenance
     if (_read(root, "preview_job.json") != job or _read(root, "selection_binding.json") != selection
-            or _read(root, "result.json") != result):
+            or _read(root, "result.json") != result
+            or _read(root, source_pose["pose_relative_path"] + "/atlas_posed_rgbd_result.json") != pose):
         raise ValueError("website_atlas_target_selection_snapshot_changed")
     return derived

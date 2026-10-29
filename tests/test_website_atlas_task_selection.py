@@ -64,13 +64,18 @@ def retained(tmp_path):
                "proposal_digest": canonical_digest(proposal)}
     selection = {"survey_relative_path": "survey/atlas_video_survey.json", "planner_receipt": receipt,
                  "review": {"automation": automation, "survey_digest": survey["digest"], "subject_origin": "captured"}}
+    pose = {"binding": {"source_video_digest": "sha256:" + video_hash, "survey_digest": survey["digest"],
+                         "scene_state_review_digest": canonical_digest(selection["review"])}}
+    pose["digest"] = canonical_digest(pose)
     result = {"schema_version": "website_atlas_pipeline_result.v1", "source_video_digest": "sha256:" + video_hash,
-              "task_context_digest": context["context_digest"], "physical_evidence": False}
+              "task_context_digest": context["context_digest"], "physical_evidence": False,
+              "source_pose": {"status": "completed", "result_digest": pose["digest"], "pose_relative_path": "pose/source"}}
     result["digest"] = canonical_digest(result)
     job = {"schema_version": SCHEMA, "state": "ready", "source_video": "raw/walkthrough.mp4",
            **{key: context[key] for key in ("request_id", "scene_id", "capture_id")}, "result_digest": result["digest"]}
     for name, value in [("survey/atlas_video_survey.json", survey), ("selection_binding.json", selection),
-                        ("result.json", result), ("preview_job.json", job)]:
+                        ("result.json", result), ("preview_job.json", job),
+                        ("pose/source/atlas_posed_rgbd_result.json", pose)]:
         _save(root, name, value)
     return SimpleNamespace(capture=capture, source=source, context=context, plan=plan, root=root,
                            job=job, selection=selection, survey=survey, result=result)
@@ -258,4 +263,14 @@ def test_reuse_retains_the_existing_task_context_validation(retained, fault):
     retained.plan["task_context_sha256"] = hashlib.sha256(json.dumps(retained.context, sort_keys=True,
                                                                    separators=(",", ":")).encode()).hexdigest()
     with pytest.raises(ValueError, match="purpose_mismatch|confirmation_invalid"):
+        _resolve(retained)
+
+
+def test_finished_geometry_cannot_be_joined_to_another_same_source_selection(retained):
+    selection = deepcopy(retained.selection)
+    proposal = selection["planner_receipt"]["proposal"]
+    proposal["automation"]["objects"][0]["regions"][0]["box_xywh_normalized"] = [0.6, 0.2, 0.2, 0.4]
+    selection["planner_receipt"]["proposal_digest"] = canonical_digest(proposal)
+    _save(retained.root, "selection_binding.json", selection)
+    with pytest.raises(ValueError, match="pose_changed"):
         _resolve(retained)
