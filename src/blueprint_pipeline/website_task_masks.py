@@ -7,8 +7,9 @@ import json
 import math
 import os
 import re
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -16,24 +17,13 @@ from PIL import Image
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-from .meta_sam31 import PROFILE as META_PROFILE, prepare_continuous_video, run_meta_sam31
+from .meta_sam31 import PROFILE as META_PROFILE
+from .meta_sam31 import prepare_continuous_video, run_meta_sam31
 from .sam31_source_track_provider_stage import run_sam31_source_track_stage
 from .scene_placement.sam31_source_track_provider import RUN_REQUEST_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
 from .website_task_target_choice import TaskTargetAmbiguous, best_supported_guess, chosen_track
-
-
-def decode_track_mask(observation: Mapping[str, Any]) -> np.ndarray:
-    height, width = int(observation["height"]), int(observation["width"])
-    if height <= 0 or width <= 0 or height * width > 100_000_000:
-        raise ValueError("website_track_mask_dimensions_invalid")
-    mask = np.zeros(height * width, dtype=bool)
-    for run in observation["runs"]:
-        start, length = int(run["start"]), int(run["length"])
-        if start < 0 or length <= 0 or start + length > mask.size:
-            raise ValueError("website_track_mask_run_invalid")
-        mask[start:start + length] = True
-    return mask.reshape(height, width)
+from .website_track_mask_codec import decode_track_mask
 
 
 def is_person_removal(target: Mapping[str, Any]) -> bool:
@@ -984,7 +974,11 @@ def retained_task_surfaces(*, pipeline_root: Path, source_video_digest: str | No
     ambiguous or from another video is ``unavailable`` with the reason, never an
     error: such a capture casts no surface vote.
     """
-    from .clean_plate_stage import CLEAN_PLATE_DIRNAME, REMOVAL_PLAN_FILENAME, STAGE_MANIFEST_FILENAME
+    from .clean_plate_stage import (
+        CLEAN_PLATE_DIRNAME,
+        REMOVAL_PLAN_FILENAME,
+        STAGE_MANIFEST_FILENAME,
+    )
 
     root = pipeline_root / CLEAN_PLATE_DIRNAME
     try:
