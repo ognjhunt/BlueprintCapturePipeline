@@ -781,6 +781,25 @@ def run_background(
             anchor_review = verify_completed_background(
                 frames=[anchor], original_frames=[anchor_source], plan=plan,
                 output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
+        findings = anchor_review.get("review") or {}
+        if (anchor_review["status"] != "passed" and findings.get("unrelated_objects_preserved") is False
+                and findings.get("unrelated_object_loss_frame_ids")):
+            # 2026-10-29 capture-4b60431e: the anchor edit removed the tray but also
+            # erased a dishwasher across the room, and the whole job stopped. One
+            # re-edit names what to keep; the independent review still decides.
+            from .website_image_repair_agent import CAMERA_CHANGED_INSTRUCTION, unrelated_objects_kept_instruction
+
+            check("automation_anchor_content_reedit")
+            anchor = complete_background_images(
+                frames=[anchor_source], task_digest=task_digest, output_root=root / "anchor",
+                admission={}, token="", targets=targets, task_context=context,
+                source_video_digest=source_digest, mask_guidance=True,
+                repair_instruction=" ".join((automation["removal_instruction"], CAMERA_CHANGED_INSTRUCTION,
+                                             unrelated_objects_kept_instruction(findings))),
+            )[0]
+            anchor_review = verify_completed_background(
+                frames=[anchor], original_frames=[anchor_source], plan=plan,
+                output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
     if anchor_review["status"] != "passed":
         return {
             "status": "quality_rejected",

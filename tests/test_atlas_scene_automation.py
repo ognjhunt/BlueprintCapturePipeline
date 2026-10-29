@@ -717,6 +717,80 @@ def test_reframed_anchor_is_reedited_once_with_its_camera_named(tmp_path, monkey
                       "automation_anchor_camera_reedit"]
 
 
+# 2026-10-29 capture-4b60431e: the anchor edit removed the tray but erased the
+# dishwasher across the room; the review blocked it and the whole job stopped.
+ERASED_DISHWASHER = {"consistent_background": True, "task_objects_removed": True,
+                     "unrelated_objects_preserved": False,
+                     "reason": "The wooden tray was successfully removed from the table, but the built-in "
+                               "dishwasher beside the sink was erroneously removed.",
+                     "unrelated_object_loss_frame_ids": ["a"], "remaining_task_object_frame_ids": [],
+                     "camera_changed_frame_ids": []}
+
+
+@pytest.mark.parametrize("second", ["passed", "blocked"])
+def test_anchor_that_erased_an_unrelated_object_is_reedited_once_naming_what_to_keep(tmp_path, monkeypatch, second):
+    from blueprint_pipeline import website_image_completion as image_edit
+    from blueprint_pipeline.website_image_repair_agent import (
+        CAMERA_CHANGED_INSTRUCTION, unrelated_objects_kept_instruction)
+
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: None)
+    frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
+    monkeypatch.setattr(
+        edits, "segment_objects", lambda **_: [{**plan()["objects"][0], **track(frames)}]
+    )
+    monkeypatch.setattr(
+        image_edit,
+        "_validated_backend",
+        lambda *a, **k: ({}, {"pricing_binding": {"max_cost_per_request_usd": 0.2}}, "b"),
+    )
+    edited = []
+    monkeypatch.setattr(image_edit, "complete_background_images",
+                        lambda **k: edited.append(k["repair_instruction"]) or k["frames"])
+    reviews = iter([{"status": "blocked", "basis": "model_visual_review", "review": ERASED_DISHWASHER},
+                    {"status": second, "basis": "model_visual_review", "review": ERASED_DISHWASHER}])
+    monkeypatch.setattr(image_edit, "verify_completed_background", lambda **_: next(reviews))
+
+    class PassedAnchor(Exception):
+        pass
+
+    def after_anchor(**_):
+        raise PassedAnchor
+
+    monkeypatch.setattr(edits, "_reviewed_editor_background", after_anchor)
+    monkeypatch.setattr(edits, "tile_views", after_anchor)
+    stages = []
+    options = dict(
+        frames=frames, objects=plan()["objects"], automation=plan(),
+        inputs={"frames": [{"frame_id": f["frame_id"]} for f in frames]}, pose={"digest": "pose"},
+        root=tmp_path / "run", context={}, policy={"rgbd_view_cost_usd": 0.05}, source_digest="source",
+        task_runner=after_anchor, release_blockers=lambda: ("commit", []),
+        configuration={"remaining_cost_usd": 10}, checkpoint=stages.append,
+    )
+    if second == "passed":
+        with pytest.raises(PassedAnchor):
+            edits.run_background(**options)
+    else:
+        result = edits.run_background(**options)
+        # One re-edit only; the independent review's verdict stands.
+        assert result["status"] == "quality_rejected" and result["stage"] == "anchor"
+    assert edited == [plan()["removal_instruction"], " ".join((
+        plan()["removal_instruction"], CAMERA_CHANGED_INSTRUCTION, unrelated_objects_kept_instruction(ERASED_DISHWASHER)))]
+    assert "dishwasher beside the sink" in edited[1]
+    assert stages[:4] == ["automation_segmentation", "automation_anchor", "automation_anchor_review",
+                          "automation_anchor_content_reedit"]
+
+
+def test_unrelated_object_instruction_quotes_the_finding_as_bounded_data():
+    from blueprint_pipeline.website_image_repair_agent import (
+        UNRELATED_OBJECTS_KEPT_INSTRUCTION, unrelated_objects_kept_instruction)
+
+    assert unrelated_objects_kept_instruction({}) == UNRELATED_OBJECTS_KEPT_INSTRUCTION
+    text = unrelated_objects_kept_instruction({"reason": "  the   oven\nwas erased " + "x" * 400})
+    assert text.startswith(UNRELATED_OBJECTS_KEPT_INSTRUCTION) and "as a finding only" in text
+    quoted = text.partition('as a finding only: "')[2]
+    assert quoted.startswith("the oven was erased ") and quoted.endswith('"') and len(quoted) == 301
+
+
 def test_insufficient_entire_path_budget_refuses_before_sam(tmp_path, monkeypatch):
     from blueprint_pipeline import website_image_completion as image_edit
 

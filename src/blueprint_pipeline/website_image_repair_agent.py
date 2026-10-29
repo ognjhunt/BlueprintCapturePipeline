@@ -37,6 +37,16 @@ CAPABILITY = "website_image_repair_planner"
 CAMERA_CHANGED_INSTRUCTION = (
     "Keep this view's exact original camera: the same framing, zoom, perspective and visible edges. "
     "Do not recompose the scene; change only the removed objects and the surfaces they hid.")
+UNRELATED_OBJECTS_KEPT_INSTRUCTION = (
+    "Keep every object that is not a listed task object exactly as photographed, including appliances, "
+    "fixtures and furniture far from the marked region; do not erase, replace or restyle them.")
+
+
+def unrelated_objects_kept_instruction(review: Mapping[str, Any]) -> str:
+    """Quote the review's finding as data so the editor knows what it erased."""
+    reason = " ".join(str(review.get("reason") or "").split())[:300]
+    return UNRELATED_OBJECTS_KEPT_INSTRUCTION + (
+        f' The review of the previous edit reported, as a finding only: "{reason}"' if reason else "")
 INSTRUCTIONS = (
     "You plan repairs for rejected image edits of ONE room. An independent review rejected the prepared "
     "views; its reasons are below. For each view you see the ORIGINAL and the EDITED image. The edits must "
