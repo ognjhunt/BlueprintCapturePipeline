@@ -105,7 +105,8 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
              "issuer_not_authorized")
     moment = datetime.now(timezone.utc).timestamp() if now is None else now
     request = validate_request(value, now=moment)
-    if request["consent"]["task_confirmed"] is False:
+    from .website_preparation_revision_identity import requires_retained_authority
+    if requires_retained_authority(request):
         from .website_preparation_authority import require_retained_preparation_authority
         try:
             moment = require_retained_preparation_authority(request=request, queue_root=queue_root, now=moment)
@@ -156,7 +157,8 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         directory = root / intent_id
         _require(not directory.is_symlink(), "record_unsafe")
         intent = _read(directory / "intent.json", "intent_digest")
-        if intent["request"]["consent"]["task_confirmed"] is False:
+        from .website_preparation_revision_identity import requires_retained_authority
+        if requires_retained_authority(intent["request"]):
             trusted = {item.strip() for item in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if item.strip()}
             _require(intent.get("authenticated_issuer") in trusted, "issuer_not_authorized")
             from .website_preparation_authority import require_retained_preparation_authority
@@ -259,8 +261,8 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         # paid-attempt count (2026-09-13 audit). Never-started cancellations
         # release everything.
         from .task_evaluation_terminal_scene_attempt_settlement import budget_retained_hold
-        settled_exposure = Decimal(0)
-        settled_attempts = 0
+        from .website_preparation_revision import shared_reserved_budget
+        settled_exposure, settled_attempts = shared_reserved_budget(root, directory, intent)
         live_rows = []
         for row in rows:
             cancellation = validated_cancellation(directory, row)

@@ -1,0 +1,109 @@
+{
+  "description": "Synthetic offline correction identity; no runtime or spending evidence.",
+  "original": {
+    "schema_version": "task_evaluation_scene_intake_request.v1",
+    "submission_id": "upload-1",
+    "owner": {
+      "user_id": "u1",
+      "organization_id": "org1"
+    },
+    "source": {
+      "kind": "mesh",
+      "binding_id": "mesh-1",
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "task": {
+      "task_id": "website-test-task",
+      "strategy": "pick_and_place",
+      "subject": {
+        "id": "book"
+      },
+      "support": {
+        "id": "table"
+      },
+      "destination": {
+        "id": "tray"
+      },
+      "success": {
+        "inside": true
+      }
+    },
+    "execution": {
+      "max_total_spend_usd": 4,
+      "max_paid_attempts": 2,
+      "max_retries": 0,
+      "expires_at_epoch": 1000,
+      "allowed_providers": [
+        "vast"
+      ],
+      "claim_scope": "development_only",
+      "policy_candidates": [],
+      "purpose": "scene_preparation"
+    },
+    "consent": {
+      "accepted_by": "u1",
+      "accepted_at_epoch": 99,
+      "rights_reference": "rights-v1",
+      "provider_terms_reference": "terms-v1",
+      "private_processing_authorized": true,
+      "provider_training_authorized": false,
+      "task_confirmed": false,
+      "spend_authorized": true
+    }
+  },
+  "corrected": {
+    "schema_version": "task_evaluation_scene_intake_request.v1",
+    "submission_id": "website-correction-2c9500975e34d15f8c465cb8acfec2b4e54f75414e600cda387a31227d0987ce",
+    "owner": {
+      "user_id": "u1",
+      "organization_id": "org1"
+    },
+    "source": {
+      "kind": "mesh",
+      "binding_id": "mesh-1",
+      "content_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "task": {
+      "task_id": "website-test-task",
+      "strategy": "pick_and_place",
+      "subject": {
+        "id": "book",
+        "website_preparation_revision": {
+          "capture_id": "upload-1",
+          "corrections_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "support": {
+        "id": "table"
+      },
+      "destination": {
+        "id": "tray"
+      },
+      "success": {
+        "inside": true
+      }
+    },
+    "execution": {
+      "max_total_spend_usd": 4,
+      "max_paid_attempts": 2,
+      "max_retries": 0,
+      "expires_at_epoch": 1000,
+      "allowed_providers": [
+        "vast"
+      ],
+      "claim_scope": "development_only",
+      "policy_candidates": [],
+      "purpose": "scene_preparation"
+    },
+    "consent": {
+      "accepted_by": "u1",
+      "accepted_at_epoch": 99,
+      "rights_reference": "rights-v1",
+      "provider_terms_reference": "terms-v1",
+      "private_processing_authorized": true,
+      "provider_training_authorized": false,
+      "task_confirmed": false,
+      "spend_authorized": true
+    }
+  }
+}

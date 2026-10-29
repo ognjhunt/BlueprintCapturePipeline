@@ -49,11 +49,13 @@ def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
     if (handoff.get("schema_version") != "website_scene_handoff.v1"
             or handoff.get("capture_id") != root.name or handoff.get("scene_id") != root.parent.parent.name):
         raise ValueError("preparation_outcome_capture_mismatch")
+    from .website_target_background_correction import retains_rejected_selection
     from .observed_room_contracts import retains_observed_room_limit
-    if retains_observed_room_limit(handoff, {'scene_id': root.parent.parent.name, 'capture_id': root.name,
-                                          'context_digest': task_context_digest}):
-        return {'category': 'insufficient_evidence', 'reason': 'task_evidence_incomplete', 'basis': 'missing_evidence',
-                'robot_id': None, 'evidence_digest': handoff['digest']}
+    context = {"capture_id": root.name, "scene_id": root.parent.parent.name,
+               "context_digest": task_context_digest}
+    if retains_rejected_selection(handoff, context) or retains_observed_room_limit(handoff, context):
+        return {"category": "insufficient_evidence", "reason": "task_evidence_incomplete",
+                "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
     ref = handoff.get("capability_verdict")
     if isinstance(ref, dict) and ref.get("status") == "abstained":
         preparation = _load(Path(handoff["preparation_path"]), root, "digest")

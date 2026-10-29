@@ -206,9 +206,10 @@ def enqueue_team_scene_request(*, intent: Mapping[str, Any], run_root: str | Pat
         # A decided failure is sealed for this revision: no team can ever be admitted to it.
         return {"status": "not_enqueued", "reason": "robot_free_probe_failed"}
     try:
+        from .website_preparation_revision_identity import capture_id
         request = validated_request(_seal({
             "schema_version": REQUEST_SCHEMA, "intent_id": str(intent["intent_id"]),
-            "intent_digest": str(intent["intent_digest"]), "capture_id": str(intent["request"]["submission_id"]),
+            "intent_digest": str(intent["intent_digest"]), "capture_id": str(capture_id(intent["request"])),
             "task_id": task_id, "source_launch_root": str(Path(run_root).resolve()),
             "launch_receipt_digest": str(receipt.get("receipt_digest") or ""),
             "scene_revision_digest": str(result.get("configured_scene_revision_digest") or ""),

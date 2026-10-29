@@ -38,6 +38,18 @@ def run_website_capture_preparation(
         sponsors_scene_preparation,
     )
 
+    from .website_target_background_correction import retain_rejected_selection
+    handoff_lease_checkpoint("website_preparation_before_target_rejection")
+    rejection = (retain_rejected_selection(capture_root=capture_root,
+        task_context=descriptor.metadata.get("site_task_context") or {}, source_video=source_video)
+        if derived_scene_generation_allowed else None)
+    if rejection is not None:
+        write_json(pipeline_dir / "provider_run_manifest.json", {
+            "schema_version": "v1", "provider_name": None, "status": "not_requested",
+            "website_scene_preparation": rejection})
+        return {"status": "completed", "lane": "qualification", "website_scene_preparation": rejection,
+                "native_execution_complete": False}
+
     from .website_observed_room_limit import retain_observed_room_limit
     handoff_lease_checkpoint('website_preparation_observed_room_limit')
     room_limit = (retain_observed_room_limit(capture_root=capture_root,
