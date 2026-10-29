@@ -30,6 +30,7 @@ from .local_reconstruction_adapters import (
 )
 from .reconstruction_capability import (
     ReconstructionContractError,
+    aggregate_reconstruction_costs,
     normalize_reconstruction_result,
     plan_reconstruction_methods,
 )
@@ -588,7 +589,7 @@ def execute_reconstruction_plan(
             }
             - {""}
         ),
-        "cost_usd": round(sum(float(row.get("cost_usd") or 0.0) for row in results), 6),
+        **aggregate_reconstruction_costs(results),
         "proof_boundary": {
             "execution_was_local_and_explicitly_authorized": True,
             "derived_reconstruction_upgrades_raw_capture": False,
@@ -706,6 +707,12 @@ def load_reconstruction_compilation_inputs(
 ) -> dict[str, Any]:
     """Load exact Pipeline-owned inputs for immutable testbed compilation."""
 
+    identifier = strict_identifier(plan_id, field="plan_id", max_length=192)
+    if (_run_root(state_root, identifier) / "artifacts" / "owned_atlas_preparation_plan.json").is_file():
+        from .owned_capture_atlas_reconstruction import adopt_owned_atlas_reconstruction
+        return adopt_owned_atlas_reconstruction(state_root=Path(state_root),
+            capture_store_root=Path(capture_store_root), plan_id=identifier,
+            expected_execution_result_digest=execution_result_digest)
     inspection = inspect_reconstruction_plan(state_root=state_root, plan_id=plan_id)
     execution = inspection.get("execution_result")
     if not isinstance(execution, Mapping):
