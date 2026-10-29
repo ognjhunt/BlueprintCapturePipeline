@@ -7,14 +7,24 @@ import hashlib
 import os
 import shlex
 import stat
+import sys
 import textwrap
 from collections import namedtuple
 from pathlib import Path
+
+import pytest
 
 from blueprint_pipeline import task_evaluation_production_chain_preflight as preflight
 
 GIB = 1024**3
 Usage = namedtuple("Usage", "total used free")
+
+
+@pytest.fixture(autouse=True)
+def isolate_probe_import_path(monkeypatch):
+    # The script probe intentionally selects its release's source tree. Its
+    # temporary fake package must not reach another test's fresh interpreter.
+    monkeypatch.setattr(sys, "path", list(sys.path))
 
 
 def _package(tmp_path: Path) -> Path:
