@@ -16,7 +16,26 @@ PROVIDER_STATUS_FILENAME = "native_task_arena_policy_canary_status.v1.json"
 PROVIDER_STATUS_SCHEMA = "native_task_arena_policy_canary_status.v1"
 
 
+# Both the native environment and robot registry lazily call this metrology
+# leaf. Ship its complete existing model-byte verification closure wherever
+# either caller ships; optional use must not make an ordinary bundle unclosed.
+NATIVE_METROLOGY_RUNTIME_MODULE_NAMES = (
+    "blueprint_robot_model_delivery.py",
+    "deployment_embodiment_asset_import.py",
+    "deployment_embodiment_assets.py",
+    "deployment_embodiment_station.py",
+    "immutable_directory_publication.py",
+    "site_task_native_metrology.py",
+    "team_robot_model_delivery.py",
+)
+NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES = (
+    "core/__init__.py", "core/security_controls.py",
+)
+
+
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (
+    *NATIVE_METROLOGY_RUNTIME_MODULE_NAMES,
+    "droid_policy_canary_embodiment.py", "team_embodiment.py", "native_task_robot_contact_topology.py",
     "native_task_camera_start_configuration.py",
     "franka_kinematics.py",
     "articulation_graph_contract.py",
@@ -107,6 +126,8 @@ DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES = tuple(
 )
 
 CONTROLS_RUNTIME_MODULE_NAMES = (
+    *NATIVE_METROLOGY_RUNTIME_MODULE_NAMES,
+    "droid_policy_canary_embodiment.py", "team_embodiment.py", "native_task_robot_contact_topology.py",
     "native_task_camera_start_configuration.py",
     "franka_kinematics.py",
     "policy_scientific_reset.py",
@@ -285,6 +306,7 @@ POLICY_RUNTIME_MODULE_NAMES = tuple(
 # dependency downloader the entrypoint runs, plus the modules every native
 # bundle carries; tests/test_rigid_robot_free_probe_lane.py pins the closure.
 RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES = (
+    *NATIVE_METROLOGY_RUNTIME_MODULE_NAMES,
     "adp_articulated_task_success_contract.py",
     "adp009d_contact_envelope.py", "adp009d_droid_action_execution.py", "adp009d_droid_observation.py", "adp009d_groot_worker_identity.py",
     "adp009d_isaac_episode_adapter.py", "adp009d_newton_gripper_drive.py",

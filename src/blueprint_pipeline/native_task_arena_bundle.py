@@ -29,6 +29,7 @@ from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE as DEFAULT_IMAG
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import RECEIPT_SCHEMA_VERSION
+from .native_task_arena_execution_contract import NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -729,6 +730,10 @@ def build_native_task_arena_bundle(
         )
     runtime_root_rows: list[dict[str, Any]] = []
     extra_files = dict(runtime_extra_files or {})
+    if "site_task_native_metrology.py" in module_names:
+        package_source = Path(__file__).resolve().parent
+        extra_files.update({"blueprint_pipeline/" + name: package_source / name
+                            for name in NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES})
     if is_policy_mode:
         package_source = Path(__file__).resolve().parent
         extra_files.update({"blueprint_pipeline/" + name: package_source / name

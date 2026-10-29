@@ -3012,6 +3012,17 @@ def _blueprint_bundle_preflight(
                                 f"provider_runtime/blueprint_pipeline/{name}"
                                 for name in expected_modules
                             }
+                            if "site_task_native_metrology.py" in expected_modules:
+                                from .native_task_arena_execution_contract import NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES
+                                metrology_package_paths = {
+                                    "provider_runtime/blueprint_pipeline/" + name
+                                    for name in NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES
+                                }
+                                required_entries.update(metrology_package_paths)
+                                expected_module_paths.update(
+                                    path for path in metrology_package_paths
+                                    if not path.endswith("/__init__.py")
+                                )
                             if execution_mode == "controlled_policy":
                                 expected_module_paths.add(
                                     "provider_runtime/blueprint_pipeline/core/security_controls.py"
