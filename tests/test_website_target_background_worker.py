@@ -68,7 +68,7 @@ def correction_job(tmp_path, monkeypatch):
         'transient_failures': 0, 'archive': {'digest': 'sha256:' + '8' * 64},
         'provider_cleanup': {'state': 'complete', 'attempts': 1, 'deleted': ['old-A-asset']}}
     config = {'authority': {'provider_retention': 'existing-owner-policy', 'authorization_id': 'original',
-        'maximum_cost_usd': '15', 'expires_at': 'unchanged'}, 'policy': {'edit_cost_usd': '1'}}
+        'maximum_cost_usd': '15', 'expires_at': 'unchanged'}, 'policy': {'edit_cost_usd': '1', 'maximum_review_cost_usd': 1}}
     for name, value in [('result.json', parent), ('preview_job.json', job), ('configuration.json', config),
                          ('selection_binding.json', {'review': data['review']})]:
         write_json(job_dir / name, value)
