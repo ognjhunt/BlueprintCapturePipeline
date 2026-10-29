@@ -162,3 +162,24 @@ def test_both_registrations_resolve_after_same_capture_correction(tmp_path, monk
                 'factory_output_root': str(tmp_path / 'factory'),
                 'website_source_machinery_path': str(tmp_path / 'machinery.json')})
         assert result.status == 'resolved'
+
+
+def test_cross_runtime_revision_vector():
+    from pathlib import Path
+    vector = json.loads((Path(__file__).parent / 'fixtures/website-preparation-revision.v1.json').read_text())
+    assert revisions.revision(vector['original']) is None
+    assert revisions.capture_id(vector['corrected']) == vector['original']['submission_id']
+    assert vector['corrected']['execution'] == vector['original']['execution']
+    assert vector['corrected']['consent'] == vector['original']['consent']
+
+
+def test_confirmed_revision_still_reopens_current_preparation_grant(tmp_path, monkeypatch):
+    value = preparation_request()
+    value['consent']['task_confirmed'] = True
+    corrected = bind(tmp_path, monkeypatch, value)['intake_request']
+    calls = []
+    monkeypatch.setattr(authority, 'require_retained_preparation_authority',
+                        lambda **kw: calls.append(kw['request']) or kw['now'])
+    receipt = stage(tmp_path / 'queue', corrected)
+    attempt(tmp_path / 'queue', receipt, cost=1)
+    assert len(calls) == 2 and all(item == corrected for item in calls)
