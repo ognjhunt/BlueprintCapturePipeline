@@ -235,7 +235,8 @@ def test_exact_request_persisted_before_send_and_reset_clears_action_buffer():
     client.reset()
     client.infer(observation())
     assert backend.step == 1 and backend.resets == 2
-    assert client.evidence_summary()["catalog_registered"] is False
+    assert client.evidence_summary()["catalog_registered"] is None
+    assert client.evidence_summary()["execution_binding_digest"] is None
     client.close()
 
 

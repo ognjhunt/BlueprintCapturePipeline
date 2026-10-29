@@ -2,7 +2,7 @@
 
 The separate policy interpreter owns Torch/OpenWAM; Isaac imports only the thin
 NumPy/Pillow/WebSocket client. One connection owns one temporal policy session.
-This entrypoint is intentionally not wired into a paid bundle or beta catalog.
+The local runtime bundle uses this entrypoint after bounded artifact staging.
 """
 from __future__ import annotations
 
@@ -97,14 +97,20 @@ class OpenWAMPiperServer:
 
 
 def build_server(*, checkpoint: str | Path, source_root: str | Path,
-                 binding: OpenWAMPiperBinding) -> OpenWAMPiperServer:
+                 binding: OpenWAMPiperBinding, source_manifest: str | Path | None = None) -> OpenWAMPiperServer:
     """Load exact local bytes through the upstream supported checkpoint builder."""
     binding.validate()
-    source = verify_source_checkout(source_root)
-    receipt = verify_checkpoint_directory(checkpoint)
+    if source_manifest is None:
+        source = verify_source_checkout(source_root)
+    else:
+        from .openwam_piper_source import verify_source_directory
+        source = verify_source_directory(source_root, source_manifest)
+    deadline = os.environ.get("BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH")
+    receipt = verify_checkpoint_directory(checkpoint, **({"deadline_epoch": float(deadline)} if deadline else {}))
     # A self-contained checkpoint requires no hub/network/credential discovery.
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    os.environ["DIFFSYNTH_SKIP_DOWNLOAD"] = "true"
     sys.path.insert(0, str(source))
     from openwam.deploy import server as upstream
     from omegaconf import OmegaConf
@@ -126,6 +132,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--source-root", required=True)
+    parser.add_argument("--source-manifest")
     parser.add_argument("--binding", required=True)
     parser.add_argument("--port", type=int, default=8848)
     parser.add_argument("--verify-only", action="store_true")
@@ -137,10 +144,15 @@ def main(argv: list[str] | None = None) -> None:
     binding = OpenWAMPiperBinding(**data)
     binding.validate()
     if args.verify_only:
-        verify_source_checkout(args.source_root)
+        if args.source_manifest:
+            from .openwam_piper_source import verify_source_directory
+            verify_source_directory(args.source_root, args.source_manifest)
+        else:
+            verify_source_checkout(args.source_root)
         print(_json(verify_checkpoint_directory(args.checkpoint)))
         return
-    runtime = build_server(checkpoint=args.checkpoint, source_root=args.source_root, binding=binding)
+    runtime = build_server(checkpoint=args.checkpoint, source_root=args.source_root, binding=binding,
+                           source_manifest=args.source_manifest)
     from websockets.sync.server import serve
 
     try:

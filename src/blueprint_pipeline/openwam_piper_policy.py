@@ -1,6 +1,6 @@
 """Local OpenWAM real-PiPER EEF20 transport for the beta named-arm runtime.
 
-This is an adapter, not a runnable catalog registration. The released checkpoint
+This transport does not itself register a candidate. The released checkpoint
 uses recorded per-arm base/TCP poses; callers must bind those frames explicitly.
 Neither a PiPER robot name nor the unrelated RoboDojo dual-X5 simulator fixes
 that calibration. Physics, scene cameras and policy cadence remain in the
@@ -235,6 +235,7 @@ class OpenWAMPiperPolicyClient:
         self._request_sink = None
         self._request_evidence = self._inference_evidence = None
         self.candidate_policy_queried = False
+        self.execution_binding_digest = None
         self.required_policy_views = tuple(binding.camera_names)
         self.action_hz = float(binding.control_hz)
 
@@ -353,7 +354,9 @@ class OpenWAMPiperPolicyClient:
         return {"policy_id": MODEL_ID, "policy_interface_id": INTERFACE_ID,
                 "candidate_policy_queried": self.candidate_policy_queried,
                 "last_inference_evidence": self.last_inference_evidence() if self._inference_evidence else None,
-                "native_execution_validated": False, "catalog_registered": False}
+                "native_execution_validated": False, "catalog_registered": None,
+                "catalog_registration_evidence": "owned_by_screening_admission",
+                "execution_binding_digest": self.execution_binding_digest}
 
     def close(self) -> None:
         sock, self._socket = self._socket, None

@@ -7,8 +7,10 @@ the publisher's Hugging Face LFS digest; only its safetensors header was read.
 from __future__ import annotations
 
 import hashlib
+import math
 from pathlib import Path
 import subprocess
+import time
 from typing import Any
 
 from .openwam_piper_policy import MODEL_ID, MODEL_REVISION, SOURCE_REVISION, WEIGHT_SHA256
@@ -25,9 +27,11 @@ EXPECTED_FILES = {
 }
 
 
-def verify_checkpoint_directory(directory: str | Path) -> dict[str, Any]:
+def verify_checkpoint_directory(directory: str | Path, *, deadline_epoch: float | None = None) -> dict[str, Any]:
     """Verify exactly the deployed inputs before upstream's NumPy/checkpoint load."""
     root = Path(directory).resolve(strict=True)
+    if deadline_epoch is not None and (not math.isfinite(deadline_epoch) or deadline_epoch <= time.time()):
+        raise ValueError("openwam_checkpoint_verification_deadline_exceeded")
     for name, (size, expected) in EXPECTED_FILES.items():
         path = root / name
         if (not path.is_file() or path.is_symlink() or root not in path.resolve().parents
@@ -36,6 +40,8 @@ def verify_checkpoint_directory(directory: str | Path) -> dict[str, Any]:
         digest = hashlib.sha256()
         with path.open("rb") as handle:
             for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+                if deadline_epoch is not None and time.time() >= deadline_epoch:
+                    raise ValueError("openwam_checkpoint_verification_deadline_exceeded")
                 digest.update(block)
         if digest.hexdigest() != expected:
             raise ValueError(f"openwam_checkpoint_digest_mismatch:{name}")

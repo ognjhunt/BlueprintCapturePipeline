@@ -44,7 +44,7 @@ POLICY_IDENTITY_SCHEMA = _object({
     "revision": {"type": ["string", "null"], "maxLength": 2048},
     "digest": _OPTIONAL_DIGEST,
     "digest_kind": {"enum": ["downloaded_snapshot_inventory", "hub_tree_listing",
-                               "provider_metadata", "unverified"]},
+                               "provider_metadata", "unverified", "pinned_runtime_file_inventory"]},
 })
 INTERFACE_SCHEMA = _object({
     "policy_interface_id": _ID,

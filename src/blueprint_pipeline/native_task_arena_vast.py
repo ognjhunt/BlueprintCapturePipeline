@@ -653,6 +653,11 @@ def run_native_task_arena_policy_canary_session_vast(
 
         pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
         groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
+        openwam = prepared_bundle.get("team_policy_interface_id") == "openwam_piper_eef20.v1"
+        download_bytes, upload_bytes = pi_download + groot_download + witness_capacity, 8_000_000_000 + witness_capacity
+        if openwam:
+            from .openwam_piper_bundle import transfer_byte_budget
+            download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
         result = run_arena_native_control_vast(
             pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
             approval_path=".",
@@ -679,8 +684,8 @@ def run_native_task_arena_policy_canary_session_vast(
             ),
             vast_launch_lock_file=None,
             candidate_policy_query_expected=True,
-            forward_hf_token=True,
-            preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"),
+            forward_hf_token=not openwam,
+            preferred_gpu_keywords=(("A100", "H100", "H200") if openwam else ("L40S", "RTX 6000 Ada", "RTX A6000")),
             minimum_driver_version=MINIMUM_DRIVER_VERSION,
             require_independent_watchdog=True,
             allowed_geolocation_country_codes=(
@@ -688,8 +693,8 @@ def run_native_task_arena_policy_canary_session_vast(
             ),
             authorization_consumption=consumption,
             stale_offer_create_retry_limit=0,
-            expected_provider_download_bytes=pi_download + groot_download + witness_capacity,
-            expected_provider_upload_bytes=8_000_000_000 + witness_capacity,
+            expected_provider_download_bytes=download_bytes,
+            expected_provider_upload_bytes=upload_bytes,
             provider_runtime_environment=validated_environment,
             paired_witness_binding=witness_binding,
             provider_output_delivery=delivery,
