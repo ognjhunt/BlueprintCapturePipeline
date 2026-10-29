@@ -24,6 +24,7 @@ from .reconstruction_control_plane import (
     inspect_reconstruction_plan,
     load_reconstruction_compilation_inputs,
     prepare_reconstruction_plan,
+    prepare_owned_capture_atlas_plan,
     resolve_reconstruction_capture_build,
 )
 from .site_task_testbed_compilation_contract import (
@@ -113,6 +114,36 @@ def register_reconstruction_testbed_routes(
                 status_code=503,
                 detail="reconstruction supervisor readiness refresh failed closed",
             ) from exc
+
+    @app.post(
+        "/api/live-pipeline/reconstructions/atlas-plan",
+        dependencies=[Depends(require_admission)],
+    )
+    async def plan_owned_capture_atlas(request: Request) -> Dict[str, Any]:
+        try:
+            payload = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        fields = {"schema_version", "capture_session_id", "intake_id", "requested_claim_types", "idempotency_key"}
+        if (not isinstance(payload, Mapping) or set(payload) != fields
+                or payload.get("schema_version") != "owned_capture_atlas_plan_submission.v1"
+                or not isinstance(payload.get("requested_claim_types"), list)
+                or any(not isinstance(claim, str) for claim in payload["requested_claim_types"])):
+            raise HTTPException(status_code=422, detail="owned Atlas plan submission invalid")
+        manifest_path = manifest_path_provider().resolve()
+        store_root_text = _string(os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV))
+        if not manifest_path.is_file() or not store_root_text:
+            raise HTTPException(status_code=503, detail="reconstruction control plane is not configured")
+        try:
+            return await run_in_threadpool(
+                prepare_owned_capture_atlas_plan,
+                state_root=reconstruction_root(manifest_path),
+                capture_store_root=Path(store_root_text).expanduser().resolve(),
+                capture_session_id=payload["capture_session_id"], intake_id=payload["intake_id"],
+                requested_claim_types=payload["requested_claim_types"], idempotency_key=payload["idempotency_key"],
+            )
+        except ReconstructionControlPlaneError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.code) from exc
 
     @app.post(
         "/api/live-pipeline/reconstructions/plan",
