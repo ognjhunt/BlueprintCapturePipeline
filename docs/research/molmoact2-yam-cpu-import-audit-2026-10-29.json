@@ -1,0 +1,99 @@
+{
+  "checkpoint_transformers_metadata": "5.3.0",
+  "claim_ceiling": "cpu_import_config_tokenizer_preprocessing_api_only",
+  "cuda_inference_performed": false,
+  "independent_gripper_channels_preserved": true,
+  "input_shapes": {
+    "attention_mask": [
+      1,
+      694
+    ],
+    "image_grids": [
+      3,
+      4
+    ],
+    "image_num_crops": [
+      3
+    ],
+    "image_token_pooling": [
+      588,
+      4
+    ],
+    "input_ids": [
+      1,
+      694
+    ],
+    "pixel_values": [
+      3,
+      729,
+      588
+    ],
+    "token_type_ids": [
+      1,
+      694
+    ]
+  },
+  "installed_packages": {
+    "Jinja2": "3.1.6",
+    "MarkupSafe": "3.0.3",
+    "PyYAML": "6.0.3",
+    "certifi": "2026.7.22",
+    "charset-normalizer": "3.5.1",
+    "einops": "0.8.2",
+    "filelock": "3.32.6",
+    "fsspec": "2026.7.0",
+    "hf-xet": "1.6.0",
+    "huggingface-hub": "0.36.0",
+    "idna": "3.19",
+    "mpmath": "1.3.0",
+    "networkx": "3.6.1",
+    "numpy": "2.5.3",
+    "packaging": "26.3",
+    "pillow": "12.3.0",
+    "pip": "26.2.1",
+    "protobuf": "7.36.1",
+    "regex": "2026.9.10",
+    "requests": "2.34.2",
+    "safetensors": "0.8.0",
+    "sentencepiece": "0.2.2",
+    "setuptools": "81.0.0",
+    "sympy": "1.14.0",
+    "tokenizers": "0.22.2",
+    "torch": "2.11.0+cpu",
+    "torchvision": "0.26.0+cpu",
+    "tqdm": "4.70.0",
+    "transformers": "4.57.6",
+    "typing_extensions": "4.16.0",
+    "urllib3": "2.7.0"
+  },
+  "model_class_imported": "MolmoAct2ForConditionalGeneration",
+  "model_constructed": false,
+  "model_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+  "model_weights_loaded": false,
+  "network_attempts": 0,
+  "normalized_state_shape": [
+    14
+  ],
+  "physical_action_shape": [
+    30,
+    14
+  ],
+  "policy_queried": false,
+  "predict_action_signature": "(self, *, processor: Any, images: Any, task: str, state: Any, norm_tag: str, inference_action_mode: Optional[str] = None, enable_depth_reasoning: bool = False, enable_adaptive_depth: bool = True, depth_cache: Optional[Mapping[str, Any]] = None, action_tokenizer: Any = None, num_steps: Optional[int] = None, n_action_steps: Optional[int] = None, generator: Optional[torch._C.Generator] = None, normalize_language: bool = True, enable_cuda_graph: bool = True, return_dict: bool = True) -> Union[transformers_modules.checkpoint.modeling_molmoact2.MolmoAct2ActionOutput, torch.Tensor]",
+  "processor_class": "MolmoAct2Processor",
+  "python_version": "3.12.12",
+  "schema": "molmoact2_yam_cpu_dependency_audit.v1",
+  "source_files": {
+    "configuration_molmoact2.py": "ccc1b24db7ab42b30705414b14de9601b1d82fba6f6d85393b0e9cbe1052fac4",
+    "image_processing_molmoact2.py": "bb623a013e7f897ffb938990bd02374b61dabcabd87f9f19d59111ec88ecf675",
+    "inference.py": "14a328aa9c8094fe5bf6d99aa98d49d0337485ff48f828cc1944bb66318cc67d",
+    "modeling_molmoact2.py": "3e0090b8cc045d59911c0a579815ebd17ce0423f9fdd03be887412df5c7b8b49",
+    "processing_molmoact2.py": "61ec88c04cf70844dc98ab518d332911ec32cf5f24f052b7413ddd5d61483109",
+    "video_processing_molmoact2.py": "8da721aa638da65aaa35e458920037c16b81dca344a623bb08db2b73f9ce9992"
+  },
+  "status": "passed",
+  "task_executed": false,
+  "torch_version": "2.11.0+cpu",
+  "transformers_version": "4.57.6",
+  "vram_requirement_measured": false
+}
