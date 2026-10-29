@@ -5,6 +5,9 @@ import base64
 import hashlib
 import json
 import os
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -127,8 +130,10 @@ def test_directory_replacement_never_changes_the_replacement_permissions(tmp_pat
     assert list(replacement.iterdir()) == []
 
 
-def test_privileged_directory_creation_runs_with_only_the_service_identity(monkeypatch):
+@pytest.mark.parametrize("parent_uid,parent_mode", [(995, 0o40750), (0, 0o40777), (0, 0o40775)])
+def test_mutable_parent_creation_runs_with_only_the_service_identity(monkeypatch, parent_uid, parent_mode):
     monkeypatch.setattr(prerequisites.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(prerequisites.os, "fstat", lambda _: SimpleNamespace(st_uid=parent_uid, st_mode=parent_mode))
     calls = []
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -141,6 +146,104 @@ def test_privileged_directory_creation_runs_with_only_the_service_identity(monke
     assert (options["user"], options["group"], options["extra_groups"]) == (995, 986, [])
     assert options["pass_fds"] == (17,)
     assert not any("KEY" in key or "TOKEN" in key for key in options["env"])
+
+
+def test_root_owned_parent_creates_only_the_new_service_directory(tmp_path, monkeypatch):
+    parent = tmp_path / "root-owned-parent"
+    parent.mkdir(mode=0o755)
+    descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+    real_fstat, real_mkdir, real_stat = os.fstat, os.mkdir, os.stat
+    root_owned = {parent.stat().st_ino}
+    configured = []
+
+    def root_metadata(value):
+        if value.st_ino in root_owned:
+            fields = list(value)
+            fields[4:6] = [0, 0]
+            return os.stat_result(fields)
+        return value
+
+    def create(name, mode=0o777, *, dir_fd=None):
+        real_mkdir(name, mode=mode, dir_fd=dir_fd)
+        root_owned.add(real_stat(name, dir_fd=dir_fd, follow_symlinks=False).st_ino)
+
+    def configure(fd, uid, gid):
+        info = real_fstat(fd)
+        assert info.st_ino != parent.stat().st_ino
+        assert (uid, gid) == (os.getuid(), os.getgid())
+        configured.append(info.st_ino)
+        root_owned.remove(info.st_ino)
+
+    monkeypatch.setattr(prerequisites.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(prerequisites.os, "fstat", lambda fd: root_metadata(real_fstat(fd)))
+    monkeypatch.setattr(prerequisites.os, "stat", lambda *a, **kw: root_metadata(real_stat(*a, **kw)))
+    monkeypatch.setattr(prerequisites.os, "mkdir", create)
+    monkeypatch.setattr(prerequisites.os, "fchown", configure)
+    monkeypatch.setattr(prerequisites.os, "chown", lambda *a, **kw: pytest.fail("pathname chown"))
+    monkeypatch.setattr(prerequisites.subprocess, "run", lambda *a, **kw:
+                        pytest.fail("service identity cannot write the root-owned 0755 parent"))
+    try:
+        assert prerequisites._mkdir_as_owner(descriptor, "capture-intake", mode=0o750,
+                                             owner_ids=(os.getuid(), os.getgid()))
+        child = parent / "capture-intake"
+        assert child.stat().st_mode & 0o777 == 0o750
+        assert configured == [child.stat().st_ino]
+        assert not prerequisites._mkdir_as_owner(descriptor, "capture-intake", mode=0o750,
+                                                 owner_ids=(os.getuid(), os.getgid()))
+        assert configured == [child.stat().st_ino]
+        assert parent.stat().st_mode & 0o777 == 0o755
+    finally:
+        os.close(descriptor)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(sys.platform != "linux", reason="Actual Linux root/service identity boundary")
+def test_actual_root_parent_and_service_owned_descendants():
+    prefix = [] if os.geteuid() == 0 else ["sudo", "-n", "--"]
+    if prefix:
+        try:
+            available = subprocess.run([*prefix, "/usr/bin/true"], capture_output=True, timeout=5)
+        except FileNotFoundError:
+            available = None
+        if available is None or available.returncode:
+            if os.environ.get("GITHUB_ACTIONS") == "true":
+                pytest.fail("Linux qualification requires the root/service permission rehearsal")
+            pytest.skip("Noninteractive fixture-only root permission unavailable")
+    source = Path(prerequisites.__file__).resolve().parents[1]
+    program = '''
+import json, os, pathlib, shutil, sys, tempfile
+sys.path.insert(0, sys.argv[1])
+from blueprint_pipeline.capture_upload_prerequisites import ensure_store, _record_process
+root = pathlib.Path(tempfile.mkdtemp(prefix="blueprint-capture-root-fixture-"))
+try:
+    root.chmod(0o755)
+    parent = root / "var/lib/blueprint"
+    parent.mkdir(parents=True)
+    before = parent.stat()
+    ids = (60000, 60000)
+    result = ensure_store("/var/lib/blueprint/capture-intake/nested", owner_ids=ids, root_prefix=root)
+    store = parent / "capture-intake/nested"
+    for directory in (store.parent, store):
+        info = directory.stat()
+        assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (*ids, 0o750)
+    diagnostic = _record_process(store, {"phase": "fixture", "exit_code": 0}, ids)
+    evidence = store / diagnostic["evidence_relative_path"]
+    info = evidence.stat()
+    assert (info.st_uid, info.st_gid, info.st_mode & 0o777) == (*ids, 0o600)
+    assert json.loads(evidence.read_text())["phase"] == "fixture"
+    again = ensure_store("/var/lib/blueprint/capture-intake/nested", owner_ids=ids, root_prefix=root)
+    assert again["created"] == []
+    after = parent.stat()
+    assert (after.st_uid, after.st_gid, after.st_mode) == (before.st_uid, before.st_gid, before.st_mode)
+    print(json.dumps({"status": "passed", "root_parent": "0755", "created": result["created"],
+                      "service_uid": ids[0], "service_gid": ids[1]}))
+finally:
+    shutil.rmtree(root)
+'''
+    result = subprocess.run([*prefix, sys.executable, "-I", "-c", program, str(source)],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["status"] == "passed"
 
 
 def test_existing_environment_override_provisions_the_effective_store(host):

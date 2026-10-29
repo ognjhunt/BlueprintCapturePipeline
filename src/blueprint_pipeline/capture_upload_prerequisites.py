@@ -141,7 +141,7 @@ def _open_directory(path: Path) -> int:
 
 
 def _mkdir_as_owner(parent_fd: int, name: str, *, mode: int, owner_ids: tuple[int, int]) -> bool:
-    """Create as the service user; root never chmods/chowns a looked-up directory."""
+    """Create under protected root parents, or use the service identity elsewhere."""
     if (os.geteuid(), os.getegid()) == owner_ids:
         try:
             os.mkdir(name, mode=mode, dir_fd=parent_fd)
@@ -150,6 +150,9 @@ def _mkdir_as_owner(parent_fd: int, name: str, *, mode: int, owner_ids: tuple[in
         return True
     if os.geteuid() != 0:
         raise CaptureUploadRuntimeError("capture_transfer_store_owner_unavailable")
+    parent = os.fstat(parent_fd)
+    if parent.st_uid == 0 and not stat.S_IMODE(parent.st_mode) & 0o022:
+        return _mkdir_in_protected_parent(parent_fd, name, mode=mode, owner_ids=owner_ids)
     code = ("import os,sys\nos.umask(0)\ntry:\n"
             " os.mkdir(sys.argv[2], int(sys.argv[3], 8), dir_fd=int(sys.argv[1]))\n"
             "except FileExistsError:\n print('exists')\nelse:\n print('created')\n")
@@ -161,6 +164,42 @@ def _mkdir_as_owner(parent_fd: int, name: str, *, mode: int, owner_ids: tuple[in
     if result.returncode or result.stdout not in {b"created\n", b"exists\n"}:
         raise CaptureUploadRuntimeError("capture_transfer_store_owner_creation_failed")
     return result.stdout == b"created\n"
+
+
+def _mkdir_in_protected_parent(parent_fd, name, *, mode, owner_ids):
+    """Only root can replace children here; configure only a newly created inode."""
+    def identity(info):
+        return info.st_dev, info.st_ino, info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode)
+
+    parent = os.fstat(parent_fd)
+    if parent.st_uid != 0 or stat.S_IMODE(parent.st_mode) & 0o022:
+        raise CaptureUploadRuntimeError("capture_transfer_store_parent_unsafe")
+    try:
+        os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+    except FileExistsError:
+        return False  # Existing entries are never reowned or repaired.
+    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=parent_fd)
+    try:
+        created = os.fstat(child)
+        if (created.st_uid != 0 or stat.S_IMODE(created.st_mode) != 0o700
+                or identity(os.fstat(parent_fd)) != identity(parent)
+                or identity(os.stat(name, dir_fd=parent_fd, follow_symlinks=False)) != identity(created)):
+            raise CaptureUploadRuntimeError("capture_transfer_store_parent_unsafe")
+        os.fchown(child, *owner_ids)
+        os.fchmod(child, mode)
+        current = os.fstat(child)
+        named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if ((current.st_dev, current.st_ino) != (created.st_dev, created.st_ino)
+                or identity(named) != identity(current)
+                or identity(os.fstat(parent_fd)) != identity(parent)
+                or (current.st_uid, current.st_gid, stat.S_IMODE(current.st_mode)) != (*owner_ids, mode)):
+            raise CaptureUploadRuntimeError("capture_transfer_store_parent_unsafe")
+        os.fsync(child)
+        os.fsync(parent_fd)
+    finally:
+        os.close(child)
+    return True
 
 
 def _record_process(root: Path, record: dict, owner_ids: tuple[int, int]) -> dict:
