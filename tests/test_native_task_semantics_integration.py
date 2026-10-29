@@ -202,11 +202,7 @@ def test_derived_registered_family_crosses_handoff_and_compiler_to_specific_prep
     from tests.test_task_semantics_catalog_composition import _family_arguments
     args = _family_arguments(tmp_path, family)
     context = args["task_context"]
-    context.update(confirmed=True, confirmed_at="2026-10-27T00:00:00Z")
-    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
     receipt = args["task_semantics"]["planner_receipt"]
-    receipt["binding"]["task_context_digest"] = context["context_digest"]
-    receipt["binding_digest"] = canonical_digest(receipt["binding"])
     geometry = args["source_geometry"]
     geometry["geometry_backend"] = "world_labs_atlas"
     geometry["digest"] = canonical_digest(geometry, digest_field="digest")
@@ -224,12 +220,17 @@ def test_derived_registered_family_crosses_handoff_and_compiler_to_specific_prep
     monkeypatch.setattr("blueprint_pipeline.website_task_masks.bind_task_masks_to_geometry", lambda **kw: kw["task_masks"])
     original = deepcopy(context)
     result = handoff.prepare_website_scene_handoff(descriptor={"scene_id": context["scene_id"],
-        "capture_id": context["capture_id"], "metadata": {"site_task_context": context}},
+        "capture_id": context["capture_id"], "metadata": {"site_task_context": context,
+            "website_scene_execution_authority": args["spend"]}},
         clean_plate={"privacy_verified": True, "status": "noop", "task_masks": args["task_masks"],
-                     "removal_manifest_path": str(removal)}, capture_root=tmp_path, now=1800000000)
+                     "removal_manifest_path": str(removal)}, capture_root=tmp_path, now=args["now"])
     assert result["status"] == "needs_input"
     assert result["blockers"] == ["website_task_family_success_contract_required",
                                   "website_task_family_native_runtime_inputs_required"]
     assert result["task_evaluation_inputs"]["task_family"] == family
+    assert result["task_evaluation_inputs"]["source_bindings"]["source_geometry_digest"] == geometry["digest"]
+    assert result["task_evaluation_inputs"]["automatic_paid_execution_authorized"] is False
+    assert result["provider_mutation_performed"] is False and result["simulator_ready"] is False
     assert retains_task_family_preparation(result, context)
     assert context == original and context["task_family"] == "general_task"
+    assert context["confirmed"] is False and context["confirmed_at"] is None
