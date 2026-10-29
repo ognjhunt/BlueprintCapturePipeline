@@ -849,9 +849,11 @@ def select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometr
             or {row["target_id"] for row in task_masks.get("targets", [])} !=
                 {row["target_id"] for row in targets} - set(deferred)):
         raise ValueError("website_retained_static_masks_binding_invalid")
+    # The paid cache is keyed without the owner's selection; a corrected
+    # derivative's manifest lives under its own selection-bound root.
     request_key = canonical_digest({key: value for key, value in binding.items() if key != "target_choices_digest"})
     root = output_root.resolve() / request_key[7:23]
-    first_manifest = root / "task_masks.object_removal.json"
+    first_manifest = output_root.resolve() / canonical_digest(binding)[7:23] / "task_masks.object_removal.json"
     if not first_manifest.is_file() or json.loads(first_manifest.read_text()) != task_masks:
         raise ValueError("website_retained_static_masks_manifest_changed")
     if binding["mask_input_pixels"] == "selected_original_views_v1":

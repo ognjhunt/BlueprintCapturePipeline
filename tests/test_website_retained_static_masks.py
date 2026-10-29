@@ -119,6 +119,23 @@ def test_spatially_selected_static_tracks_reuse_exact_retained_receipts(tmp_path
     assert json.loads(next(kwargs["output_root"].glob("*/task_masks.json")).read_text()) == complete
 
 
+def test_a_corrected_selection_reuses_the_shared_paid_cache_from_its_own_manifest(tmp_path):
+    kwargs, _ = _fixture(tmp_path)
+    original = kwargs["task_masks"]
+    corrected = {**copy.deepcopy(original),
+                 "binding": {**original["binding"], "target_choices_digest": "sha256:" + "c" * 64}}
+    corrected["digest"] = canonical_digest(corrected, digest_field="digest")
+    corrected_root = kwargs["output_root"] / canonical_digest(corrected["binding"])[7:23]
+    write_json(corrected_root / "task_masks.object_removal.json", corrected)
+    complete = complete_retained_static_task_masks(**{**kwargs, "task_masks": corrected})
+    assert complete["status"] == "completed"
+    assert complete["binding"]["target_choices_digest"] == "sha256:" + "c" * 64
+    assert json.loads((corrected_root / "task_masks.json").read_text()) == complete
+    original_root = kwargs["output_root"] / canonical_digest(original["binding"])[7:23]
+    assert not (original_root / "task_masks.json").exists()
+    assert json.loads((original_root / "task_masks.object_removal.json").read_text()) == original
+
+
 def test_continuous_video_response_is_reused_without_a_new_provider_request(tmp_path):
     kwargs, _ = _fixture(tmp_path, continuous=True)
     complete = complete_retained_static_task_masks(**kwargs)
