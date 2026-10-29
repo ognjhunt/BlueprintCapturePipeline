@@ -13,6 +13,7 @@ from typing import Any, Mapping
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .website_task_context_contracts import website_task_context_digest
 from .website_object_observations import REFERENCE_ROLE, _record, validate_observation_handoff
 
 SCHEMA = "website_prepared_collision.v1"
@@ -395,7 +396,7 @@ def construction_rights_admission(*, preparation: Mapping[str, Any], task_contex
     from .task_evaluation_scene_intake import validate_request
 
     if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
-            or task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
+            or task_context.get("context_digest") != website_task_context_digest(task_context)
             or preparation["binding"]["task_context_digest"] != task_context["context_digest"]
             or task_context.get("capture_rights", {}).get("derived_scene_generation_allowed") is not True):
         raise ValueError("website_construction_rights_context_invalid")

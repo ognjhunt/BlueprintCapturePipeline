@@ -600,10 +600,11 @@ def _partial_tree(path, rows, sources, deadline, prefix=Path('.'), depth=0, _dir
         os.close(fd)
 
 
-def _intent(rows, boot_row, deadline):
+def _intent(rows, boot_row, deadline, source_release=None):
     """An exact copy plan is installation evidence, never deletion authority."""
-    raw = json.dumps({'schema': 'scene-retirement-runtime-install.v1',
+    raw = json.dumps({'schema': 'scene-retirement-runtime-install.v2' if source_release else 'scene-retirement-runtime-install.v1',
                       'runtime': str(_RUNTIME_ROOT), 'rows': rows,
+                      **({'source_identity': source_release['identity']} if source_release else {}),
                       'bootstrap': boot_row}, sort_keys=True, separators=(',', ':')).encode()
     _require(len(raw) <= 16 * 1024**2)
     record = _BOOT_ROOT / 'installation.json'
@@ -707,7 +708,7 @@ def _installation_lock():
         os.close(fd)
 
 
-def prepare(source, dependencies, *, _deadline=None):
+def prepare(source, dependencies, *, _deadline=None, _source_release=None):
     """Copy exact protected inputs; no policy, consent, generation or flag writes."""
     try:
         source, dependencies = Path(source), Path(dependencies)
@@ -717,6 +718,7 @@ def prepare(source, dependencies, *, _deadline=None):
         _tree(source / 'deploy/systemd', Path('deploy/systemd'), rows, sources, deadline)
         # Worker entrypoints can import repository scripts after the UID drop.
         _tree(source / 'scripts', Path('scripts'), rows, sources, deadline)
+        _require(_source_release is None or rows == _source_release['rows'])
         _tree(dependencies, Path('dependencies'), rows, sources, deadline)
         boot_source = source / 'scripts/scene_retirement_continuous_bootstrap.py'
         boot_row = _read(boot_source, deadline)
@@ -724,23 +726,24 @@ def prepare(source, dependencies, *, _deadline=None):
         with _installation_lock():
             record = _BOOT_ROOT / 'installation.json'
             if boot.exists() or boot.is_symlink():
+                _intent(rows, boot_row, deadline, _source_release)
                 _verify(_RUNTIME_ROOT, rows, boot, boot_row, deadline)
                 return {'status': 'already_prepared', 'authority_issued': False, 'cleanup_enabled': False}
             if _RUNTIME_ROOT.exists() or _RUNTIME_ROOT.is_symlink():
                 _require(record.exists() and not record.is_symlink())
-                _intent(rows, boot_row, deadline)
+                _intent(rows, boot_row, deadline, _source_release)
                 _partial_tree(_RUNTIME_ROOT, rows, sources, deadline)
             temporary_boot = _BOOT_ROOT / 'continuous_bootstrap.pending.py'
             if temporary_boot.exists() or temporary_boot.is_symlink():
                 _require(record.exists() and not record.is_symlink())
-                _intent(rows, boot_row, deadline)
+                _intent(rows, boot_row, deadline, _source_release)
                 _prefix(boot_source, temporary_boot, boot_row, deadline)
             total = sum(row['size'] for row in rows.values()) + boot_row['size']
             available = os.statvfs(_nearest(_RUNTIME_ROOT.parent))
             _require(available.f_bavail * available.f_frsize >= total + _FREE_FLOOR)
             boot_available = os.statvfs(_nearest(_BOOT_ROOT.parent))
             _require(boot_available.f_bavail * boot_available.f_frsize >= boot_row['size'] + _FREE_FLOOR)
-            _intent(rows, boot_row, deadline)
+            _intent(rows, boot_row, deadline, _source_release)
             _mkdir(_RUNTIME_ROOT)
             for name, row in rows.items():
                 _copy(sources[name], _RUNTIME_ROOT / name, row, deadline)
@@ -854,13 +857,15 @@ def _refresh_inputs(source, dependencies, deadline):
     return rows, sources, sdk_rows, sdk_sources
 
 
-def _generation(kind, rows, sources, deadline):
-    digest = hashlib.sha256(_encoded(rows)).hexdigest()
+def _generation(kind, rows, sources, deadline, source_release=None):
+    _require(source_release is None or kind == 'source' and rows == source_release['rows'])
+    identity = {'source_identity': source_release['identity']} if source_release else {}
+    digest = hashlib.sha256(_encoded({'rows': rows, **identity} if identity else rows)).hexdigest()
     parent = _RUNTIME_ROOT / ('generations' if kind == 'source' else 'sdk-generations')
     generation = parent / digest
     manifest = _RUNTIME_ROOT / 'manifests' / (kind + '-' + digest + '.json')
-    raw = _encoded({'schema': 'scene-retirement-runtime-generation.v1', 'kind': kind,
-                    'generation': digest, 'rows': rows})
+    raw = _encoded({'schema': 'scene-retirement-runtime-generation.v2' if identity else 'scene-retirement-runtime-generation.v1',
+                    'kind': kind, 'generation': digest, 'rows': rows, **identity})
     if generation.exists() or generation.is_symlink():
         _require(manifest.exists() and not manifest.is_symlink())
         _require(_record_bytes(manifest, deadline)[0] == raw)
@@ -882,7 +887,7 @@ def _generation(kind, rows, sources, deadline):
     return generation, digest
 
 
-def refresh(source, dependencies, *, expected_current, _deadline=None):
+def refresh(source, dependencies, *, expected_current, _deadline=None, _source_release=None):
     """Select one verified source/SDK cohort; old generations remain immutable."""
     try:
         _require(type(expected_current) is dict and set(expected_current) == {'sha256', 'size_bytes'}
@@ -892,6 +897,7 @@ def refresh(source, dependencies, *, expected_current, _deadline=None):
         deadline = _installation_deadline(_deadline)
         source, dependencies = Path(source), Path(dependencies)
         rows, sources, sdk_rows, sdk_sources = _refresh_inputs(source, dependencies, deadline)
+        _require(_source_release is None or rows == _source_release['rows'])
         boot_source = source / 'scripts/scene_retirement_continuous_bootstrap.py'
         boot_row = _read(boot_source, deadline)
         with _installation_lock():
@@ -909,7 +915,7 @@ def refresh(source, dependencies, *, expected_current, _deadline=None):
                          or old_sdk.parent == _RUNTIME_ROOT / 'sdk-generations'
                          and re.fullmatch('[0-9a-f]{64}', old_sdk.name))
             else:
-                _require(type(old) is dict and old.get('schema') == 'scene-retirement-runtime-install.v1'
+                _require(type(old) is dict and old.get('schema') in {'scene-retirement-runtime-install.v1', 'scene-retirement-runtime-install.v2'}
                          and old.get('runtime') == str(_RUNTIME_ROOT))
             # Only identical protected SDK bytes can be reused, with no relink or
             # copied GB for each new source generation. Unknown SDKs refuse.
@@ -920,7 +926,7 @@ def refresh(source, dependencies, *, expected_current, _deadline=None):
                 required += sum(row['size'] for row in sdk_rows.values())
             available = os.statvfs(_nearest(_RUNTIME_ROOT.parent))
             _require(available.f_bavail * available.f_frsize >= required + _FREE_FLOOR)
-            runtime, source_digest = _generation('source', rows, sources, deadline)
+            runtime, source_digest = _generation('source', rows, sources, deadline, _source_release)
             if installed_sdk == sdk_rows:
                 sdk = old_sdk
                 dependency_digest = hashlib.sha256(_encoded(sdk_rows)).hexdigest()
@@ -1679,6 +1685,27 @@ def _signed_release(source, commit, deadline, source_manifest=None):
     return root
 
 
+def _runtime_source_release(source, commit, manifest, deadline, *, checkout):
+    """Bind normalized runtime rows to the already admitted signed Git inventory."""
+    _require(source == _sdk_root() / 'release-inputs' / commit)
+    wanted = ('src/blueprint_pipeline', 'scripts', 'deploy/systemd', 'uv.lock', 'pyproject.toml')
+    items = _authenticated_git_entries(checkout, commit, wanted, deadline, source_manifest=manifest)
+    tree = hashlib.sha256(_encoded(items)).hexdigest()
+    claim, _ = _record_bytes(source.parent / (commit + '.claim.json'), deadline, cap=4096)
+    _require(claim == _encoded({'schema': 'scene-retirement-signed-release.v1', 'commit': commit, 'tree_sha256': tree}))
+    expected = {name: {'size': size, 'sha256': sha256, 'mode': 0o644}
+                for _, _, name, size, sha256 in items
+                if any(name.startswith(root + '/') for root in wanted[:3])}
+    observed = {}
+    for root in wanted[:3]:
+        _tree(source / root, Path(root), observed, {}, deadline)
+    _require(observed == expected)
+    identity = {'schema': 'scene-retirement-runtime-source-identity.v1', 'commit': commit,
+                'signed_tree_sha256': tree, 'signed_claim_sha256': hashlib.sha256(claim).hexdigest(),
+                'signed_entries': items}
+    return {'identity': identity, 'rows': observed}
+
+
 def _publish_installer(source, deadline):
     raw, _ = _record_bytes(source / 'scripts/install_scene_retirement_runtime.py', deadline, cap=1024*1024)
     row = _selector(raw)
@@ -1713,11 +1740,20 @@ def _resume_initial_intent(dependencies, deadline):
     """Finish the original protected copy plan; historical source is only data."""
     raw, _ = _record_bytes(_BOOT_ROOT / 'installation.json', deadline)
     plan = json.loads(raw)
-    _require(type(plan) is dict and set(plan) == {'schema', 'runtime', 'rows', 'bootstrap'}
-             and plan['schema'] == 'scene-retirement-runtime-install.v1'
+    admitted = type(plan) is dict and plan.get('schema') == 'scene-retirement-runtime-install.v2'
+    _require(type(plan) is dict and set(plan) == {'schema', 'runtime', 'rows', 'bootstrap'} | ({'source_identity'} if admitted else set())
+             and plan['schema'] in {'scene-retirement-runtime-install.v1', 'scene-retirement-runtime-install.v2'}
              and plan['runtime'] == str(_RUNTIME_ROOT) and type(plan['rows']) is dict
              and all(type(name) is str for name in plan['rows']) and _encoded(plan) == raw)
     source_rows = {name: row for name, row in plan['rows'].items() if not name.startswith('dependencies/')}
+    source_release = {'identity': plan['source_identity'], 'rows': source_rows} if admitted else None
+    if admitted:
+        _require(type(plan['source_identity']) is dict
+                 and set(plan['source_identity']) == {'schema', 'commit', 'signed_tree_sha256', 'signed_claim_sha256', 'signed_entries'}
+                 and plan['source_identity']['schema'] == 'scene-retirement-runtime-source-identity.v1'
+                 and type(plan['source_identity']['commit']) is str
+                 and re.fullmatch('[0-9a-f]{40}', plan['source_identity']['commit'])
+                 and hashlib.sha256(_encoded(plan['source_identity']['signed_entries'])).hexdigest() == plan['source_identity']['signed_tree_sha256'])
     sdk_rows = {name.removeprefix('dependencies/'): row for name, row in plan['rows'].items()
                 if name.startswith('dependencies/')}
     helper = 'scripts/install_scene_retirement_runtime.py'
@@ -1734,6 +1770,8 @@ def _resume_initial_intent(dependencies, deadline):
     for name in names:
         _require(time.monotonic() <= deadline)
         if not re.fullmatch('[0-9a-f]{40}', name):
+            continue
+        if admitted and name != plan['source_identity']['commit']:
             continue
         candidate = source_parent / name
         try:
@@ -1778,7 +1816,7 @@ def _resume_initial_intent(dependencies, deadline):
     _require(original_sdk is not None)
     # prepare hashes the entire source/SDK/bootstrap set and compares canonical
     # intent bytes under its lock before validating/appending any partial file.
-    prepare(original_source, original_sdk, _deadline=deadline)
+    prepare(original_source, original_sdk, _deadline=deadline, _source_release=source_release)
 
 
 def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_checkout=None, _deadline=None,
@@ -1792,6 +1830,7 @@ def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_chec
     manifest = _admitted_source_manifest(source_manifest, source_attestation, manifest_verifier, source_commit, deadline)
     phase('signed_release')
     protected_source = _signed_release(source, source_commit, deadline, manifest)
+    source_release = _runtime_source_release(protected_source, source_commit, manifest, deadline, checkout=source)
     phase('build_sdk')
     sdk = build_sdk(protected_source, wheelhouse=wheelhouse, contracts_checkout=contracts_checkout, _deadline=deadline, _source_manifest=manifest)
     _require(time.monotonic() <= deadline)
@@ -1807,10 +1846,11 @@ def prepare_deployment(source, *, source_commit, wheelhouse=None, contracts_chec
         selected = current if current.exists() or current.is_symlink() else installed
         raw, _ = _record_bytes(selected, deadline)
         phase('refresh')
-        result = refresh(protected_source, Path(sdk['dependencies_root']), expected_current=_selector(raw), _deadline=deadline)
+        result = refresh(protected_source, Path(sdk['dependencies_root']), expected_current=_selector(raw), _deadline=deadline,
+                         _source_release=source_release)
     else:
         phase('prepare')
-        result = prepare(protected_source, Path(sdk['dependencies_root']), _deadline=deadline)
+        result = prepare(protected_source, Path(sdk['dependencies_root']), _deadline=deadline, _source_release=source_release)
     _require(time.monotonic() <= deadline)
     phase('publish_installer')
     _publish_installer(protected_source, deadline)

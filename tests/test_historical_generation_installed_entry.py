@@ -56,7 +56,48 @@ def test_staged_runtime_uses_actual_bounded_production_import_closure(tmp_path):
         root / 'src/blueprint_pipeline/control_plane_lane_historical_action.py').read_bytes()
     assert (package / 'control_plane_lane_historical_restore_worker.py').is_file()
     assert (package / 'control_plane_lane_historical_gc.py').is_file()
+    assert (package / 'task_family_metric_registration.py').is_file()
+    assert not (package / 'task_family_layout_authoring.py').exists()
+    assert not (package / 'task_family_button_authoring.py').exists()
     assert not (package / 'live_pipeline_intake_service.py').exists()
+    assert sum(path.stat().st_size for path in package.iterdir()) <= 8 * 1024**2
+
+
+def test_native_fixture_source_stage_preserves_aggregate_overflow_refusal(tmp_path, monkeypatch):
+    from tests import historical_generation_native_acceptance as fixture
+
+    source = tmp_path / 'native-source'
+    origin = source / 'src/blueprint_pipeline'
+    origin.mkdir(parents=True)
+    monkeypatch.setattr(fixture, '__file__', str(source / 'tests/historical_generation_native_acceptance.py'))
+    for name in ('__init__', 'control_plane_lane_historical_action',
+                 'control_plane_lane_scratch_census', 'control_plane_lane_experiment_archive'):
+        (origin / (name + '.py')).write_text('pass\n')
+    names = ['control_plane_lane_historical_restore_authority', *(f'part_{index}' for index in range(8))]
+    for index, name in enumerate(names):
+        following = f'from . import {names[index + 1]}\n' if index + 1 < len(names) else 'pass\n'
+        raw = b'#' + b'x' * 950_000 + b'\n' + following.encode()
+        assert len(raw) < 1024**2
+        (origin / (name + '.py')).write_bytes(raw)
+    with pytest.raises(AssertionError):
+        fixture._stage(tmp_path / 'native-install')
+    package = tmp_path / 'native-install/python/blueprint_pipeline'
+    assert (package / (names[-2] + '.py')).is_file()
+    assert not (package / (names[-1] + '.py')).exists()
+    assert sum(path.stat().st_size for path in package.iterdir()) <= 8 * 1024**2
+
+
+def test_native_fixture_source_stage_keeps_verifier_without_producer_tree(tmp_path):
+    from tests.historical_generation_native_acceptance import _stage
+
+    _stage(tmp_path)
+    package = tmp_path / 'python/blueprint_pipeline'
+    verifier = 'task_family_metric_registration.py'
+    assert (package / verifier).read_bytes() == (
+        Path(__file__).parents[1] / 'src/blueprint_pipeline' / verifier).read_bytes()
+    assert (package / 'control_plane_lane_historical_action.py').is_file()
+    assert not (package / 'task_family_layout_authoring.py').exists()
+    assert not (package / 'task_family_button_authoring.py').exists()
     assert sum(path.stat().st_size for path in package.iterdir()) <= 8 * 1024**2
 
 

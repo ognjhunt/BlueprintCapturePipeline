@@ -13,7 +13,8 @@ from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .website_task_context_contracts import website_task_context_digest
 from .task_profile_contracts import TASK_PROFILES, task_profile_for
 
 
@@ -72,7 +73,7 @@ def task_semantics_from_receipt(*, receipt: Mapping[str, Any], task_context: Map
     proposal = receipt.get("proposal") or {}
     if "task_semantics" not in proposal:
         return None
-    if (task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
+    if (task_context.get("context_digest") != website_task_context_digest(task_context)
             or not isinstance(source_video_digest, str) or not _SHA.fullmatch(source_video_digest)
             or receipt.get("status") != "completed"
             or receipt.get("binding_digest") != canonical_digest(binding)
@@ -133,14 +134,56 @@ def resolved_task_profile(value: Mapping[str, Any] | None, *, task_context: Mapp
         coverage = clarification["operation_coverage"]
         if not coverage["operation_coverage_complete"] or coverage["unresolved_operations"]:
             return None
-        return _operation_profile(coverage["task_family"], coverage["steps"])
+        return _operation_profile(coverage["task_family"], coverage["steps"],
+            source_stage_ids=_button_stage_identities(task_context, source_video_digest, coverage["steps"]))
     semantics = verified["semantics"]
     if not semantics["covers_entire_job"] or semantics["unresolved_aspects"]:
         return None
-    return _operation_profile(semantics["task_family"], semantics["steps"])
+    return _operation_profile(semantics["task_family"], semantics["steps"],
+        source_stage_ids=_button_stage_identities(task_context, source_video_digest, semantics["steps"]))
 
 
-def _operation_profile(task_family, steps):
+def _button_stage_identities(context, video, steps):
+    """Only retained normal fact confirmations resolve repeated button stages.
+
+    The original quotes must occur in their retained order, not be copied to
+    manufacture repetitions. IDs/count/order must match the exact source steps.
+    This describes a job; it grants no asset/runtime or execution authority.
+    """
+    if not 2 <= len(steps) <= 8 or any(task_profile_for(step["operation"]) is None
+            or task_profile_for(step["operation"]).profile_id != "button_press" for step in steps):
+        return None
+    facts = (context.get("operator_answers") or {}).get("family_task_facts")
+    if not isinstance(facts, Mapping):
+        return None
+    if "canonicalization" in facts and facts["canonicalization"] != "rfc8785":
+        raise ValueError("website_button_authoring_owner_facts_canonicalization_invalid")
+    digest = cross_runtime_canonical_digest if facts.get("canonicalization") == "rfc8785" else canonical_digest
+    if (not isinstance(facts, Mapping) or facts.get("schema_version") != "website_family_task_facts.v1"
+            or facts.get("facts_digest") != digest(facts, digest_field="facts_digest")
+            or context.get("confirmed") is not True or facts.get("confirmed") is not True
+            or not isinstance(facts.get("confirmation_reference"), str) or not facts["confirmation_reference"].strip()
+            or facts.get("capture_id") != context.get("capture_id") or facts.get("source_video_digest") != video
+            or facts.get("task_description_digest") != digest({"description": context.get("description")})
+            or facts.get("task_success_criteria_digest") != digest({"success_criteria": context.get("success_criteria")})):
+        return None
+    expected = ["operation-" + str(index).zfill(3) + "-" + canonical_digest(step)[7:15]
+                for index, step in enumerate(steps, 1)]
+    answers = facts.get("operations")
+    if (not isinstance(answers, list) or len(answers) != len(expected)
+            or [answer.get("operation_id") if isinstance(answer, Mapping) else None for answer in answers] != expected):
+        return None
+    position = 0
+    for step in steps:
+        quote = step["task_quote"]
+        found = str(context.get("description", "")).find(quote, position)
+        if not quote or found < 0:
+            return None
+        position = found + len(quote)
+    return expected
+
+
+def _operation_profile(task_family, steps, *, source_stage_ids=None):
     """Routing metadata only; every requested operation must fit one native route."""
     profile = task_profile_for(task_family)
     if profile is None:
@@ -156,7 +199,11 @@ def _operation_profile(task_family, steps):
         # from the reversed target order. Keep that sequence held until a
         # source-bound semantic step→native stage identity is available.
         if len({operation.profile_id for operation in operations}) != len(operations):
-            return None
+            expected = ["operation-" + str(index).zfill(3) + "-" + canonical_digest(step)[7:15]
+                        for index, step in enumerate(steps, 1)]
+            if (any(operation.profile_id != "button_press" for operation in operations)
+                    or source_stage_ids != expected):
+                return None
     elif len(steps) != 1 or operations[0] is None or operations[0].profile_id != profile.profile_id:
         return None
     return profile.profile_id
@@ -172,17 +219,31 @@ def effective_task_profile(*, task_context: Mapping[str, Any], task_semantics: M
 
 def require_semantic_stage_order(*, task_context: Mapping[str, Any], task_semantics: Mapping[str, Any] | None,
                                  source_video_digest: str | None, contract: Mapping[str, Any]) -> None:
-    """An ordered derived job cannot inherit another multi-step contract."""
-    if task_context.get("task_family") != "general_task" or contract.get("task_family") != "multi_step":
+    """Website multi-step contracts retain the source job's exact order.
+
+    An explicit routing hint does not replace the retained operation reading.
+    Standalone manually authored native contracts use their separate entrypoint.
+    """
+    if contract.get("task_family") != "multi_step":
         return
-    if resolved_task_profile(task_semantics, task_context=task_context,
-                             source_video_digest=source_video_digest) != "multi_step":
+    if task_semantics is None or source_video_digest is None:
         raise ValueError("website_task_family_semantic_stages_mismatch")
-    reading = ((task_semantics.get("operation_coverage_clarification") or {}).get("operation_coverage")
-               or task_semantics["semantics"])
+    verified = validate_task_semantics(task_semantics, task_context=task_context,
+                                      source_video_digest=source_video_digest)
+    reading = ((verified.get("operation_coverage_clarification") or {}).get("operation_coverage")
+               or verified["semantics"])
+    complete = reading.get("operation_coverage_complete", reading.get("covers_entire_job"))
+    unresolved = reading.get("unresolved_operations", reading.get("unresolved_aspects"))
+    identities = _button_stage_identities(task_context, source_video_digest, reading["steps"])
+    if not complete or unresolved or _operation_profile(reading["task_family"], reading["steps"],
+            source_stage_ids=identities) != "multi_step":
+        raise ValueError("website_task_family_semantic_stages_mismatch")
     proposed = [task_profile_for(step["operation"]).profile_id for step in reading["steps"]]
     if proposed != [stage["task_family"] for stage in contract["stages"]]:
         raise ValueError("website_task_family_semantic_stages_mismatch")
+    if len(set(proposed)) != len(proposed):
+        if identities is None or identities != [stage["stage_id"] for stage in contract["stages"]]:
+            raise ValueError("website_task_family_semantic_stages_mismatch")
 
 
 def retain_task_semantics(*, job_dir: Path, receipt: Mapping[str, Any], task_context: Mapping[str, Any],
