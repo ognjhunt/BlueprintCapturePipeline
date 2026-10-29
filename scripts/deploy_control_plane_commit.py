@@ -43,7 +43,6 @@ import json
 import math
 import os
 import re
-import shlex
 import signal
 import stat
 import subprocess  # nosec B404 - fixed git/systemctl argv over validated paths
@@ -1814,59 +1813,48 @@ def _install_scene_retirement_stores(*, root_prefix: str | Path | None = None) -
 def _capture_transfer_configuration(
     unit_text: str, *, read_file: Callable[[Path], str] | None = None,
 ) -> dict[str, Any] | None:
-    """Read only the two intake settings, honoring systemd EnvironmentFile order."""
-    names = {"PIPELINE_CAPTURE_INTAKE_STORE_ROOT", "PIPELINE_CAPTURE_MALWARE_SCANNER_ARGV_JSON"}
-    values: dict[str, str] = {}
-    files: list[str] = []
-    for raw in unit_text.splitlines():
-        line = raw.strip()
-        if line.startswith("Environment="):
-            for assignment in shlex.split(line.partition("=")[2]):
-                key, separator, value = assignment.partition("=")
-                if separator and key in names:
-                    values[key] = value
-        elif line.startswith("EnvironmentFile="):
-            files.extend(shlex.split(line.partition("=")[2]))
-    if not names.intersection(values):
-        return None  # Rollbacks to units without capture-transfer defaults remain supported.
-    for item in files:
-        path = Path(item.removeprefix("-"))
-        if not path.is_absolute():
-            raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid")
-        try:
-            if read_file is not None:
-                text = read_file(path)
-            else:
-                descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-                with os.fdopen(descriptor, "r", encoding="utf-8") as stream:
-                    info = os.fstat(stream.fileno())
-                    if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
-                        raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid")
-                    text = stream.read(1024 * 1024 + 1)
-        except FileNotFoundError:
-            if item.startswith("-"):
-                continue
-            raise ControlPlaneDeployError("deploy_capture_transfer_environment_missing") from None
-        for raw in text.splitlines():
-            key, separator, value = raw.strip().partition("=")
-            key = key.strip()
-            if not separator or key not in names:
-                continue
-            value = value.strip()
-            if value.endswith("\\"):
-                raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid")
-            if value.startswith(("'", '"')):
-                parsed = shlex.split(value)
-                if len(parsed) != 1:
-                    raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid")
-                value = parsed[0]
-            values[key] = value
+    from blueprint_pipeline.capture_upload_prerequisites import load_configuration
+    from blueprint_pipeline.capture_upload_runtime import CaptureUploadRuntimeError
     try:
-        result = {"store_root": values["PIPELINE_CAPTURE_INTAKE_STORE_ROOT"],
-                  "scanner_argv": json.loads(values["PIPELINE_CAPTURE_MALWARE_SCANNER_ARGV_JSON"])}
-    except (KeyError, json.JSONDecodeError) as exc:
+        return load_configuration(unit_text, read_file=read_file)
+    except CaptureUploadRuntimeError as exc:
+        raise ControlPlaneDeployError("deploy_" + str(exc)) from exc
+    except ValueError as exc:
         raise ControlPlaneDeployError("deploy_capture_transfer_environment_invalid") from exc
-    return result
+
+
+def _prepare_capture_transfer_runtime(*, release: Path, unit_text: str, account: str) -> dict[str, Any] | None:
+    from blueprint_pipeline.capture_upload_prerequisites import provision_runtime
+    from blueprint_pipeline.capture_upload_runtime import CaptureUploadRuntimeError
+    configuration = _capture_transfer_configuration(unit_text)
+    if configuration is None:
+        return None
+    ids = _service_account_ids(account)
+    if ids is None:
+        raise ControlPlaneDeployError("deploy_capture_transfer_service_account_missing")
+    try:
+        prerequisites = provision_runtime(configuration, owner_ids=ids, install_system_scanner=True)
+    except CaptureUploadRuntimeError as exc:
+        failure = ControlPlaneDeployError("deploy_" + str(exc))
+        if exc.diagnostic:
+            setattr(failure, "capture_upload_runtime_diagnostic", exc.diagnostic)
+        raise failure from exc
+    if _capture_transfer_configuration(unit_text) != configuration:
+        raise ControlPlaneDeployError("deploy_capture_transfer_configuration_changed")
+    controls = _verify_capture_transfer_runtime(release=release, unit_text=unit_text, account=account)
+    return {"prerequisites": prerequisites, "controls": controls}
+
+
+def _prepare_capture_transfer_from_source(source: Path, source_commit: str) -> dict[str, Any] | None:
+    code, unit_text = _git(
+        source, "show", f"{source_commit}:deploy/systemd/blueprint-pipeline-intake.service"
+    )
+    if code != 0:
+        raise ControlPlaneDeployError("deploy_capture_transfer_unit_unavailable")
+    return _prepare_capture_transfer_runtime(
+        release=Path(__file__).resolve().parents[1], unit_text=unit_text,
+        account=DEFAULT_SERVICE_ACCOUNT,
+    )
 
 
 def _verify_capture_transfer_runtime(*, release: Path, unit_text: str, account: str) -> dict[str, Any] | None:
@@ -5069,6 +5057,7 @@ def deploy_control_plane_commit(
     # Where a deploy's minutes go is otherwise invisible; the receipt records
     # each stage so a slow deploy is a measurement, not a feeling.
     stage_timings: dict[str, float] = {}
+    capture_transfer_prerequisites = None
     stage_clock = [time.monotonic()]
 
     def _mark_stage(name: str) -> None:
@@ -5101,6 +5090,8 @@ def deploy_control_plane_commit(
     ):
         if Path(controls_autoprovision_bootstrap_file).expanduser().exists():
             _require_terminal_controls_quiescence(wait_seconds=600)
+        capture_transfer_prerequisites = _prepare_capture_transfer_from_source(source, source_commit)
+        _mark_stage("capture_transfer_prerequisites")
         installed_provenance = _install_release_provenance(
             payload=provenance_payload,
             state_root=state,
@@ -5360,6 +5351,7 @@ def deploy_control_plane_commit(
         "preserve_configured_controls_state": preserve_configured_controls_state,
         "release_retirement": release_retirement,
         "unit_sandbox_paths": unit_sandbox_paths,
+        "capture_transfer_prerequisites": capture_transfer_prerequisites,
         "stage_timings_seconds": stage_timings,
         "drained_units": drained_units,
         "source_commit": commit,
@@ -5872,6 +5864,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             capture_diagnostic = getattr(exc, "capture_upload_runtime_diagnostic", None)
             if isinstance(capture_diagnostic, dict):
                 blocked["capture_upload_runtime_diagnostic"] = capture_diagnostic
+        if not isinstance(exc, UntrustedDeploySourceError):
+            try:
+                _write_receipt_and_return(blocked, args.receipt_out)
+            except OSError as write_error:
+                blocked["blockers"].append("deploy_failure_receipt_write_failed:" + type(write_error).__name__)
         print(json.dumps(blocked, indent=1, sort_keys=True))
         return 2
 
