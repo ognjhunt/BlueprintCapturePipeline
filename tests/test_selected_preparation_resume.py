@@ -1,6 +1,7 @@
 """Resume retained website preparation without resetting delivery or spending history."""
 import hashlib
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -43,9 +44,12 @@ def resume(site, reviewed, process):
         listener=SimpleNamespace(process_handoff_payload=process))
 
 
-def test_resume_uses_same_payload_native_claim_and_keeps_all_prior_attempts(site, monkeypatch):
+@pytest.mark.parametrize("age_seconds", [60, recovery.MAXIMUM_JOB_SECONDS + 1])
+def test_resume_uses_same_payload_native_claim_and_keeps_all_prior_attempts(site, monkeypatch, age_seconds):
     before = retained_native(site)
-    write_job(site, state="ready")
+    write_job(site, state="ready", enqueued_at_epoch=int(time.time()) - age_seconds)
+    atlas_before, source_before, receipt_before = (path.read_bytes() for path in
+        (site.job_path, site.video, site.retained))
     snapshot = recover(site)["atlas"]
     assert snapshot["native_preparation"]["ledger_digest"] == canonical_digest(before)
     assert snapshot["native_preparation"]["attempt_count"] == 5
@@ -67,10 +71,41 @@ def test_resume_uses_same_payload_native_claim_and_keeps_all_prior_attempts(site
     assert seen[0][0] == b"original selected envelope"
     assert seen[0][1]["expected_preparation_purpose"] == "scene_preparation"
     assert seen[0][1]["storage_root"] == site.storage
-    assert json.loads(site.job_path.read_text())["state"] == "ready"  # no reconstruction repurchase
+    assert site.job_path.read_bytes() == atlas_before  # no reconstruction repurchase or deadline reset
+    assert site.video.read_bytes() == source_before and site.retained.read_bytes() == receipt_before
     with pytest.raises(ValueError, match="selected_handoff_atlas_status_changed"):
         resume(site, snapshot["atlas_status_digest"],
                lambda *_, **__: pytest.fail("same review started a second native attempt"))
+
+
+@pytest.mark.parametrize("state", ["processing", "failed", "needs_input", "withdrawn"])
+def test_old_processing_deadline_does_not_make_unfinished_atlas_usable(site, monkeypatch, state):
+    retained_native(site)
+    write_job(site, state=state, enqueued_at_epoch=int(time.time()) - recovery.MAXIMUM_JOB_SECONDS - 1)
+    snapshot = recover(site)["atlas"]
+    assert "atlas_preview_expired" in snapshot["preflight_blockers"]
+    before = atlas_tests.tree_bytes(site)
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    with pytest.raises(ValueError, match="selected_handoff_atlas_"):
+        resume(site, snapshot["atlas_status_digest"], lambda *_, **__: pytest.fail("unfinished Atlas reused"))
+    assert atlas_tests.tree_bytes(site) == before
+
+
+@pytest.mark.parametrize("refusal", ["source_revoked", "website_atlas_source_owner_mismatch",
+                                     "provider_terms_not_configured_or_changed", "website_atlas_consent_expired"])
+def test_aged_ready_reuse_keeps_current_permission_refusals(site, monkeypatch, refusal):
+    retained_native(site)
+    write_job(site, state="ready", enqueued_at_epoch=int(time.time()) - recovery.MAXIMUM_JOB_SECONDS - 1)
+    def refuse(*_args, **_kwargs):
+        raise ValueError("website_atlas_configuration:" + refusal)
+    monkeypatch.setattr(recovery, "_configuration", refuse)
+    snapshot = recover(site)["atlas"]
+    assert refusal in snapshot["preflight_blockers"]
+    before = atlas_tests.tree_bytes(site)
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    with pytest.raises(ValueError, match="selected_handoff_atlas_preflight_blocked"):
+        resume(site, snapshot["atlas_status_digest"], lambda *_, **__: pytest.fail("current permission bypassed"))
+    assert atlas_tests.tree_bytes(site) == before
 
 
 @pytest.mark.parametrize("change", ["history", "revision", "source", "owner", "not_ready", "completed"])
@@ -168,10 +203,11 @@ def test_finished_atlas_limits_do_not_become_a_second_native_budget(site, monkey
     assert result["native_handler_invoked"] and len(calls) == 1
 
 
-def test_global_paid_admission_still_blocks_native_resume(site, monkeypatch):
+@pytest.mark.parametrize("age_seconds", [60, recovery.MAXIMUM_JOB_SECONDS + 1])
+def test_global_paid_admission_still_blocks_native_resume(site, monkeypatch, age_seconds):
     from blueprint_pipeline import paid_resource_admission as budget
     retained_native(site)
-    write_job(site, state="ready")
+    write_job(site, state="ready", enqueued_at_epoch=int(time.time()) - age_seconds)
     def refuse(**_):
         raise ValueError("shared spending stop")
     monkeypatch.setattr(budget, "require_paid_resource_budget", refuse)

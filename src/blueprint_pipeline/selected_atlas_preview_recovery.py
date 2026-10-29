@@ -356,10 +356,11 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                 snapshot = _snapshot(selection, observation, membership, capture_root, storage_root, job)
             if selection["mode"] == "preparation-resume":
                 # Atlas has finished and will not be repurchased. Its remaining
-                # call quota and price-review date cannot block native work;
-                # native allocation still checks its own current authority.
+                # processing deadline, call quota and price-review date cannot
+                # block reuse; native allocation checks its current authority.
                 blockers = set(snapshot["preflight_blockers"]) - {
-                    "website_scene_preparation_budget_exhausted", "atlas_runtime_price_review_expired"}
+                    "atlas_preview_expired", "website_scene_preparation_budget_exhausted",
+                    "atlas_runtime_price_review_expired"}
                 _require(not blockers, "preflight_blocked")
                 _require(snapshot["atlas_status_digest"] == selection["atlas_status_digest"], "status_changed")
                 _require(job["state"] == "ready", "reconstruction_not_ready")
