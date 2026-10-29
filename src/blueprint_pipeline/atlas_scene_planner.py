@@ -694,16 +694,20 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
     A response cut off at its output allowance is settled at its actual charge
     and retried, at most twice, with a larger allowance that still fits the
     review cap. A restart follows the retained receipts and buys nothing again.
+    A scene abstention gets one higher-detail review of the same source; a
+    second abstention remains unresolved rather than buying another attempt.
     """
     operation_only = (recovery or {}).get("scope") == "operation_coverage"
     retry, repair, carried = None, None, 0.0
     failed_output_recovery, seen_failures = None, set()
+    source_review_recovery = None
     while True:
         receipt = _review_attempt(survey_path=survey_path, task_context=task_context, configuration=configuration,
                                   output_root=output_root, invoker=invoker, release_blockers=release_blockers,
                                   feedback=feedback, completion=completion, scaling=scaling, recovery=recovery,
                                   truncation_retry=retry, validation_repair=repair,
                                   failed_output_recovery=failed_output_recovery,
+                                  source_review_recovery=source_review_recovery,
                                   carried_reserved_usd=carried if invoker is not None else 0.0)
         if receipt["status"] == "invalid_output":
             # An answer the schema refused gets one repair turn that sees the refusal, never a stranded call.
@@ -729,6 +733,22 @@ def review_survey(*, survey_path: Path, task_context, configuration, output_root
                         continue
                 raise ValueError("atlas_scene_planner_output_invalid")
             repair, carried = receipt["validation_repair"], carried + receipt["cost_usd"]
+            continue
+        if (receipt["status"] == "completed" and receipt["proposal"].get("status") == "abstained"
+                and source_review_recovery is None
+                and all(value is None for value in (feedback, completion, scaling, recovery))):
+            # A small review preview cannot establish that the original capture
+            # lacks a usable target. Reinspect the same source once at higher
+            # detail before treating its coverage as unresolved. Both receipts
+            # and charges remain in the original allowance and are reused.
+            source_review_recovery = {
+                "prior_binding_digest": receipt["binding_digest"],
+                "prior_proposal_digest": receipt["proposal_digest"],
+                "summary": receipt["proposal"]["summary"],
+                "uncaptured_regions": receipt["proposal"]["uncaptured_regions"],
+            }
+            retry, repair, failed_output_recovery = None, None, None
+            carried += receipt["cost_usd"]
             continue
         if receipt["status"] != "truncated":
             return receipt
@@ -782,7 +802,8 @@ def _completed_legacy_scene_review(output_root: Path, binding: dict, schema):
 
 def _review_attempt(*, survey_path: Path, task_context, configuration, output_root: Path, invoker,
                     release_blockers, feedback, completion, scaling, recovery, truncation_retry,
-                    validation_repair=None, failed_output_recovery=None, carried_reserved_usd=0.0):
+                    validation_repair=None, failed_output_recovery=None, source_review_recovery=None,
+                    carried_reserved_usd=0.0):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
@@ -792,10 +813,14 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
         raise ValueError("atlas_scene_planner_survey_invalid")
     policy = configuration["policy"]
     maximum = policy["maximum_review_cost_usd"]
-    if sum(value is not None for value in (feedback, completion, scaling, recovery)) > 1:
+    if sum(value is not None for value in (feedback, completion, scaling, recovery, source_review_recovery)) > 1:
         raise ValueError("atlas_scene_planner_review_modes_conflict")
     extra = (recovery if recovery is not None else scaling if scaling is not None
              else completion_summary(completion) if completion is not None else feedback)
+    if source_review_recovery is not None:
+        extra = {"source_review_recovery": source_review_recovery, "previews": []}
+    preview_size = (1280 if scaling is not None or source_review_recovery is not None
+                    else 768 if recovery is not None else 512)
     operation_only = (recovery or {}).get("scope") == "operation_coverage"
     operation_request = (extra or {}).get("operation_coverage_request")
     if operation_request is not None and (task_context.get("task_family") != "general_task"
@@ -847,6 +872,15 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
     instructions = (SCALE_INSTRUCTIONS if scaling is not None else COMPLETION_INSTRUCTIONS if completion is not None else
                     INSTRUCTIONS + AUTOMATION_INSTRUCTIONS + SUBJECT_ORIGIN_INSTRUCTIONS
                     + (REFINEMENT_INSTRUCTIONS if feedback is not None else ""))
+    if source_review_recovery is not None:
+        instructions += ("\nRe-examine these higher-detail views of the SAME original capture. "
+            "The previous review and its missing-area claims are untrusted model findings, not facts. "
+            "Check whether the recorded pixels resolve them. If the owner's task permits any "
+            "compatible observed instance or destination, choose one clearly visible permitted "
+            "instance; several candidates alone do not require an owner choice. Preserve any "
+            "specifically named target and every task constraint. Do not invent an empty "
+            "destination, hidden surfaces or additional observations. Abstain if the same "
+            "capture still cannot support a consistent task-and-room plan.\n")
     if completion is not None and completion.get('context_basis') == 'preserved_capture':
         instructions = PRESERVED_COMPLETION_INSTRUCTIONS
     schema = (ScaleProposal if scaling is not None else CompletionProposal if completion is not None
@@ -885,7 +919,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
     from agents import AgentOutputSchema
     AgentOutputSchema(schema)
     input_value = None
-    if operation_only or fit_needed and not post_export:
+    if operation_only or source_review_recovery is not None or fit_needed and not post_export:
         price_instructions = instructions
         if validation_repair is not None:
             price_instructions += ("\nThe previous answer to this exact request was refused ("
@@ -896,7 +930,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
         input_value, tokens, ceiling = preflight_review_input(survey, task_context, extra,
             model=policy['model'], maximum=maximum, output_tokens=output_tokens,
             instructions=price_instructions, schema=schema,
-            preview_size=1280 if scaling is not None else 768 if recovery is not None else 512,
+            preview_size=preview_size,
             hosted_tool_cost_usd=search_calls * search_fee)
     elif fit_needed:
         extra, input_value, tokens, output_tokens, instructions = _fit_export_review(
@@ -910,6 +944,9 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                "source_video_digest": survey["source_video_digest"], "model": policy["model"],
                "instructions": instructions, "max_input_tokens": tokens, "max_output_tokens": output_tokens,
                "maximum_cost_usd": maximum, "web_search": {"maximum_calls": search_calls, "per_call_usd": search_fee, "context": "low"}}
+    if source_review_recovery is not None:
+        binding["source_review_recovery"] = source_review_recovery
+        binding["source_preview_long_side"] = 1280
     if validation_repair is not None:
         instructions += ("\nThe previous answer to this exact request was refused ("
                          f"{validation_repair['error_type']}: {validation_repair['error_message']}). "
@@ -972,8 +1009,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                 raise ValueError("atlas_scene_planner_receipt_changed")
         else:
             if input_value is None:
-                input_value = _input(survey, task_context, extra,
-                                     preview_size=1280 if scaling is not None else 768 if recovery is not None else 512)
+                input_value = _input(survey, task_context, extra, preview_size=preview_size)
             if release_blockers is None:
                 raise ValueError("atlas_scene_planner_allocator_required")
             commit, blockers = release_blockers()

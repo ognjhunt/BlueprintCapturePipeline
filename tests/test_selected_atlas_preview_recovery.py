@@ -162,7 +162,11 @@ def test_status_is_read_only_source_bound_and_uses_only_current_existing_grant(s
     assert "private-owner" not in encoded and "private-reviewer" not in encoded and "private-api-secret" not in encoded
 
 
-def test_retry_calls_existing_controller_under_its_lock_preserving_source_expiry_and_receipts(site, monkeypatch):
+@pytest.mark.parametrize("reason", ["atlas_scene_planner_transients_invalid", "atlas_scene_planner_abstained"])
+def test_retry_calls_existing_controller_under_its_lock_preserving_source_expiry_and_receipts(site, monkeypatch, reason):
+    site.job["reason"] = reason
+    site.job["state"] = "needs_input" if reason == "atlas_scene_planner_abstained" else "failed"
+    site.job_path.write_text(json.dumps(site.job))
     reviewed = recover(site)["atlas"]["atlas_status_digest"]
     original_retry = preview.retry_failed_job
     entered = []
@@ -439,14 +443,25 @@ def test_configuration_must_attest_read_only_existing_grant(site, creation_allow
     assert all(call[2]["create"] is False for call in site.calls)
 
 
-@pytest.mark.parametrize("state", ["processing", "ready", "withdrawn", "needs_input"])
-def test_selected_retry_never_requeues_a_nonfailed_job(site, state):
+@pytest.mark.parametrize("state", ["processing", "ready", "withdrawn"])
+def test_selected_retry_never_requeues_a_running_ready_or_withdrawn_job(site, state):
     write_job(site, state=state)
     reviewed = recover(site)["atlas"]["atlas_status_digest"]
     before = site.job_path.read_bytes()
-    with pytest.raises(ValueError, match="retry_requires_failed_job|retry_requires_recoverable_failure"):
+    with pytest.raises(ValueError, match="retry_requires_recoverable_failure"):
         recover(site, retry_digest=reviewed)
     assert site.job_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("reason", ["atlas_task_and_scene_coverage_gap", "atlas_preview_expired",
+                                  "atlas_preview_source_video_unavailable"])
+def test_selected_retry_preserves_nonrecoverable_stopped_jobs(site, reason):
+    write_job(site, state="needs_input", reason=reason)
+    reviewed = recover(site)["atlas"]["atlas_status_digest"]
+    before = tree_bytes(site)
+    with pytest.raises(ValueError, match="retry_requires_recoverable_failure"):
+        recover(site, retry_digest=reviewed)
+    assert tree_bytes(site) == before
 
 
 def test_raw_configuration_exception_is_not_exposed_in_status(site, monkeypatch):

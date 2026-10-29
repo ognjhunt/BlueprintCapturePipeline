@@ -55,8 +55,10 @@ _AWAITING_AUTHORITY = frozenset({
     "website_atlas_runtime_policy_required", "website_atlas_authorization_invalid", "task_brief_missing",
     "website_atlas_api_key_missing", "website_atlas_api_base_url_missing",
     "website_atlas_provider_retention_decision_required", "atlas_runtime_price_review_expired"})
-# Coverage concerns in the current plan do not prove that a new recording is required.
-_NEEDS_NEW_CAPTURE = frozenset({"atlas_scene_planner_abstained", "atlas_task_and_scene_coverage_gap",
+# A planner abstention can be re-examined after a source-review fix. It is not
+# proof that the recording must be replaced. Other selection failures keep
+# their existing non-retryable boundary.
+_NEEDS_NEW_CAPTURE = frozenset({"atlas_task_and_scene_coverage_gap",
                                 "atlas_insufficient_overlapping_distinct_views",
                                 "atlas_coverage_anchor_quality_insufficient"})
 _NEEDS_TASK_INPUT = frozenset({"atlas_scene_subject_origin_uncertain", "atlas_scene_subject_origin_changed",
@@ -185,7 +187,7 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
         return _transition(job, current, "withdrawn", "website_capture_withdrawn")
     if code in _AWAITING_AUTHORITY:
         return _transition(job, current, "needs_input", code, retry_at_epoch=current + AUTHORITY_RECHECK_SECONDS)
-    if code in _NEEDS_NEW_CAPTURE or code in _NEEDS_TASK_INPUT:
+    if code in _NEEDS_NEW_CAPTURE or code in _NEEDS_TASK_INPUT or code == "atlas_scene_planner_abstained":
         return _transition(job, current, "needs_input", code)
     if _transient(error):
         failures = job["transient_failures"] + 1
