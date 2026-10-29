@@ -604,14 +604,14 @@ def _export_image_token_ceiling(survey, previews, layout=None):
     layout = layout or {}
     originals = [row for row in previews if row.get('kind') == 'original_capture_source_check_only']
     tiled = layout.get('derived_contact_sheets')
-    images = [*((row['source_image_path'], 512) for row in survey['frames']),
-              *((row['path'], layout.get('original_long_side', 1024)) for row in originals),
-              *((row['path'], 1024) for row in previews if row not in originals and not tiled)]
+    images = [*((row['source_image_path'], 512, survey.get('display_rotation_degrees', 0)) for row in survey['frames']),
+              *((row['path'], layout.get('original_long_side', 1024), 0) for row in originals),
+              *((row['path'], 1024, 0) for row in previews if row not in originals and not tiled)]
     if tiled:
         ceiling += math.ceil((len(previews) - len(originals)) / 4) * (3 * 16 * 11 + 256)
-    for path, size in images:
+    for path, size, rotation in images:
         with Image.open(path) as source:
-            width, height = source.size
+            width, height = source.rotate(rotation, expand=True).size if rotation else source.size
         scale = min(1., size / max(width, height))
         # Ceil is conservative relative to PIL thumbnail's integer rounding.
         width, height = math.ceil(width * scale), math.ceil(height * scale)
@@ -661,7 +661,7 @@ SDK_MAX_OUTPUT_TOKENS = 32_000  # OpenAIAgentsSDKConfig's accepted ceiling.
 
 
 def _fit_export_review(survey, context, extra, *, model, maximum, output_tokens, instructions, schema,
-                       minimum_output_tokens=4000):
+                       minimum_output_tokens=4000, input_reserve_tokens=4096):
     """Fit a large survey without dropping a camera, source view or gap."""
     from copy import deepcopy
     from .openai_prompt_cache import worst_case_reservation_usd
@@ -683,9 +683,10 @@ def _fit_export_review(survey, context, extra, *, model, maximum, output_tokens,
     instructions += ('\nBudget-fitted planning uses candidate_camera_columns for candidate_camera_ids rows '
                      'and gap_survey.view_columns for its views rows. Every camera and gap is retained. '
                      'Contact-sheet tiles have their exact camera identities; answer with the original full IDs.\n')
-    system_bytes = len(instructions.encode()) + len(json.dumps(schema.model_json_schema()).encode()) + 4096
+    system_bytes = (len(instructions.encode()) + len(json.dumps(schema.model_json_schema()).encode())
+                    + max(4096, input_reserve_tokens))
     choices = []
-    for size in (1024, 768, 512):
+    for size in (1024, 768, 512, 384):
         value = {**compact, 'planning_preview_layout': {
             'revision': 'all_views_budget_fitted_v1', 'derived_contact_sheets': True, 'original_long_side': size}}
         payload = _input(survey, context, value)
@@ -963,7 +964,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
     # ambiguous submission. Plain JSON Schema validity is insufficient here.
     from agents import AgentOutputSchema
     AgentOutputSchema(schema)
-    input_value = None
+    input_value, repair_instructions_included = None, False
     if operation_only or source_review_recovery is not None or fit_needed and not post_export:
         price_instructions = instructions
         if validation_repair is not None:
@@ -972,11 +973,28 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                 "Return one answer that satisfies the output schema exactly.\n")
         if operation_only and len(json.dumps(_input(survey, task_context, extra)).encode()) > 65536:
             raise ValueError("website_task_operation_coverage_input_too_large")
-        input_value, tokens, ceiling = preflight_review_input(survey, task_context, extra,
-            model=policy['model'], maximum=maximum, output_tokens=output_tokens,
-            instructions=price_instructions, schema=schema,
-            preview_size=preview_size,
-            hosted_tool_cost_usd=search_calls * search_fee)
+        try:
+            input_value, tokens, ceiling = preflight_review_input(survey, task_context, extra,
+                model=policy['model'], maximum=maximum, output_tokens=output_tokens,
+                instructions=price_instructions, schema=schema,
+                preview_size=preview_size,
+                hosted_tool_cost_usd=search_calls * search_fee)
+        except ValueError as exc:
+            if completion is None or not policy['model'].startswith('gpt-6') or str(exc) not in {
+                    'atlas_scene_planner_token_budget_exceeded', 'atlas_scene_planner_context_budget_exceeded'}:
+                raise
+            # Initial completion may include every source frame as well as the
+            # derived gap survey. Fit that same evidence as the export review
+            # already does: lossless ID/coordinate tables and smaller complete
+            # image canvases, never a view quota or a larger spend allowance.
+            extra, input_value, tokens, output_tokens, instructions = _fit_export_review(
+                survey, task_context, extra, model=policy['model'], maximum=maximum,
+                output_tokens=output_tokens, instructions=price_instructions, schema=schema,
+                minimum_output_tokens=output_tokens if truncation_retry is not None else 4000,
+                input_reserve_tokens=24_000)
+            repair_instructions_included = validation_repair is not None
+            ceiling = worst_case_reservation_usd(model=policy['model'], input_token_ceiling=tokens,
+                                                 max_output_tokens=output_tokens, cache_policy=None)
     elif fit_needed:
         extra, input_value, tokens, output_tokens, instructions = _fit_export_review(
             survey, task_context, extra, model=policy['model'], maximum=maximum,
@@ -993,9 +1011,10 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
         binding["source_review_recovery"] = source_review_recovery
         binding["source_preview_long_side"] = 1280
     if validation_repair is not None:
-        instructions += ("\nThe previous answer to this exact request was refused ("
-                         f"{validation_repair['error_type']}: {validation_repair['error_message']}). "
-                         "Return one answer that satisfies the output schema exactly.\n")
+        if not repair_instructions_included:
+            instructions += ("\nThe previous answer to this exact request was refused ("
+                             f"{validation_repair['error_type']}: {validation_repair['error_message']}). "
+                             "Return one answer that satisfies the output schema exactly.\n")
         binding["instructions"] = instructions
         binding["validation_repair"] = dict(validation_repair)
     if failed_output_recovery is not None:
