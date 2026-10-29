@@ -24,7 +24,7 @@ import xml.etree.ElementTree as XML
 from defusedxml import ElementTree as SafeXML
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
-from .deployment_embodiment_assets import AssetPreparationError, recipe_for, verify_source_bundle
+from .deployment_embodiment_assets import AssetPreparationError, recipe_for, verify_source_bundle, source_description
 from .immutable_directory_publication import publish_staged_immutable_directory
 
 SCHEMA = "embodiment_station_source.v1"
@@ -262,7 +262,7 @@ def prepare_station_source(source_bundle_root: str | Path, output_dir: str | Pat
     _require(isinstance(parameters, Mapping), "parameters_invalid")
     source_receipt = verify_source_bundle(bundle)
     recipe = recipe_for(source_receipt["embodiment_id"])
-    description = recipe["source"]
+    description = source_description(recipe, source_receipt)
     _require(parameters.get("embodiment_id") == source_receipt["embodiment_id"], "embodiment_identity_mismatch")
     expected_count = 1 if parameters.get("composition_mode") == "two_instances" else 2
     _require(source_receipt["source_arm_count"] == expected_count and recipe["arm_count"] == 2,

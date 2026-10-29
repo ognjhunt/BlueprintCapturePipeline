@@ -11,6 +11,7 @@ import io
 import json
 import sys
 import threading
+import time
 from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Iterator
@@ -81,6 +82,67 @@ def _run(*argv: str) -> tuple[int, str]:
     with redirect_stdout(out):
         code = client.main(list(argv))
     return code, out.getvalue()
+
+
+def _asset_grant(**changes):
+    value = {"schema_version": "embodiment_asset_preparation_request.v1", "authorization_id": "development-only-fixture",
+             "release_commit": "a" * 40, "embodiment_ids": ["universal_robots_ur5e", "fanuc_crx_10ia"],
+             "max_spend_usd": 4.0, "max_hourly_rate_usd": .8, "ttl_seconds": 14_400,
+             "expires_at_epoch": int(time.time()) + 86400, "authorization_reference": "development_only fixture"}
+    value.update(changes)
+    value["request_digest"] = "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True,
+        separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    return value
+
+
+def test_public_asset_batch_cli_api_preserves_authority_and_retry_identity(door, tmp_path):
+    grant = _asset_grant()
+    path = tmp_path / "grant.json"
+    path.write_text(json.dumps(grant))
+    arguments = ("public-embodiment-preparation", "--request-file", str(path))
+    code, output = _run(*arguments)
+    assert code == 0
+    request_id = json.loads(output)["id"]
+    retry_code, retry = _run(*arguments)
+    assert retry_code == 0 and json.loads(retry)["id"] == request_id
+    saved = json.loads((door["state"] / "requests" / "pending" / (request_id + ".json")).read_text())
+    assert saved["request"] == {"kind": "public-embodiment-preparation", "request": grant}
+    path.write_text(json.dumps(_asset_grant(embodiment_ids=["fanuc_crx_10ia"])))
+    assert _run(*arguments)[0] == 2
+
+
+def test_public_asset_batch_requires_operate_scope(door, tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
+    path = tmp_path / "grant.json"
+    path.write_text(json.dumps(_asset_grant()))
+    assert _run("public-embodiment-preparation", "--request-file", str(path))[0] == 3
+    assert not list((door["state"] / "requests" / "pending").glob("*.json"))
+
+
+@pytest.mark.parametrize("malformation", ["duplicate", "nonfinite", "digest", "large", "symlink", "missing", "extra"])
+def test_public_asset_client_rejects_ambiguous_files_before_http(tmp_path, monkeypatch, malformation):
+    monkeypatch.setattr(client, "_json", lambda *a, **kw: pytest.fail("invalid file reached API"))
+    value = _asset_grant()
+    path = tmp_path / "grant.json"
+    raw = json.dumps(value)
+    if malformation == "duplicate":
+        raw = raw.replace('"max_spend_usd": 4.0', '"max_spend_usd": 400, "max_spend_usd": 4.0')
+    elif malformation == "nonfinite":
+        raw = raw.replace('"max_spend_usd": 4.0', '"max_spend_usd": NaN')
+    elif malformation == "digest":
+        raw = raw.replace('"max_spend_usd": 4.0', '"max_spend_usd": 3.0')
+    elif malformation == "large":
+        raw = raw + " " * 16384
+    elif malformation == "extra":
+        value["command"] = "run-queue"
+        raw = json.dumps(value)
+    if malformation == "symlink":
+        source = tmp_path / "source.json"
+        source.write_text(raw)
+        path.symlink_to(source)
+    elif malformation != "missing":
+        path.write_text(raw)
+    assert _run("public-embodiment-preparation", "--request-file", str(path))[0] == 2
 
 
 def test_whoami_prints_identity_json(door: dict[str, Any]) -> None:

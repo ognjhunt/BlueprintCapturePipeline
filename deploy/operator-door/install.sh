@@ -95,7 +95,7 @@ if [ "$dispatcher_hold_only" -eq 1 ]; then
 fi
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
   "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-selected-handoff.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh "$source_dir"/door-repair-notifier-binding.sh \
-  "$source_dir"/install.sh "$stage/"
+  "$source_dir"/door-public-embodiment-preparation.sh "$source_dir"/install.sh "$stage/"
 if [ "$dispatcher_hold_only" -eq 0 ]; then
   python3 -I -S "$source_dir/stage-historical-runtime.py" "$repo_root/src/blueprint_pipeline" "$stage/historical-python"
   install -m 0644 "$source_dir/historical-generation-entry.py" "$stage/historical-generation-entry.py"

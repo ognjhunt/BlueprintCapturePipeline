@@ -1,0 +1,13 @@
+[Unit]
+After=blueprint-operator-door-hold-sweep.service
+Wants=blueprint-operator-door-hold-sweep.service
+Description=Reconcile retained public robot asset preparation jobs without replaying a grant
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-embodiment-preparation.timer.json
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+Unit=blueprint-embodiment-preparation.service
+
+[Install]
+WantedBy=timers.target

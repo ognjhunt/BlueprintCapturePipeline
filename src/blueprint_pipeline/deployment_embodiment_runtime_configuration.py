@@ -23,7 +23,7 @@ import xml.etree.ElementTree as XML
 from defusedxml import ElementTree as SafeXML
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
-from .deployment_embodiment_assets import AssetPreparationError, asset_recipes, recipe_for, verify_source_bundle
+from .deployment_embodiment_assets import AssetPreparationError, asset_recipes, recipe_for, verify_source_bundle, source_description
 from .deployment_embodiment_asset_import import (
     _expand_xacro, _package_roots, _precheck_input_closure,
     import_source_asset, verify_prepared_asset_directory,
@@ -50,6 +50,9 @@ _PROFILES = {
         contacts=["gripper_link1", "gripper_link2"], width=.1)],
     "franka_research_3_bimanual": [_arm("fr3_link0", "fr3_hand", 7, tcp="fr3_hand_tcp",
         fingers={"fr3_finger_joint1": [.04, 0.0]}, contacts=["fr3_leftfinger", "fr3_rightfinger"], width=.08)],
+    "universal_robots_ur5e_bimanual": [_arm("base_link_inertia", "robotiq_85_base_link", 6, tcp="grasp_link",
+        fingers={"robotiq_85_left_knuckle_joint": [0.0, .7929]},
+        contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)],
     "kinova_gen3": [_arm("base_link", "robotiq_arg2f_base_link", 7, tcp="tool_frame",
         fingers={"finger_joint": [0.0, .8]}, contacts=["left_inner_finger_pad", "right_inner_finger_pad"], width=.085)],
     "ufactory_xarm7": [_arm("link_base", "xarm_gripper_base_link", 7, tcp="link_tcp",
@@ -70,6 +73,7 @@ for _identity in ("fanuc_crx_10ia", "fanuc_crx_10ia_l", "fanuc_m710ic_45m"):
     _PROFILES[_identity] = [_arm("base_link", "J6_link", 6)]
 for _identity in ("yaskawa_gp12", "yaskawa_gp20"):
     _PROFILES[_identity] = [_arm("base_link", "link_6_t", 6)]
+_PROFILES["kuka_lbr_iiwa_14"] = [_arm("base", "link7", 7)]
 
 
 def runtime_profiles() -> dict[str, Any]:
@@ -270,7 +274,7 @@ def prepare_runtime_configuration(source_bundle: str | Path, output_dir: str | P
     _require(destination.parent.is_dir() and not any(p.is_symlink() for p in (destination, *destination.parents)),
              "destination_invalid")
     recipe = recipe_for(identity)
-    description = recipe["source"]
+    description = source_description(recipe, source_receipt)
     with tempfile.TemporaryDirectory(prefix=".runtime-configuration-", dir=destination.parent) as temporary:
         staged = Path(temporary)
         shutil.copytree(bundle / "source", staged / "source")
@@ -286,28 +290,37 @@ def prepare_runtime_configuration(source_bundle: str | Path, output_dir: str | P
                                   roots=packages, source_files=files)
             packages = {name: work / path.relative_to(source) for name, path in packages.items()}
             files = {(work / path.relative_to(source)).resolve() for path in files} | {entry.resolve()}
-        _require(description["format"] in {"xacro", "urdf"}, "urdf_source_required")
-        root = SafeXML.fromstring(entry.read_bytes())
-        source_root, _ = _tree(root)
-        arms = [_prefix_arm(arm, arm.get("source_prefix", "")) for arm in _PROFILES[identity]]
-        parameters = None
-        if recipe["arm_count"] == 2 and source_receipt["source_arm_count"] == 1:
-            parameters = {"schema_version": "embodiment_station_parameters.v1", "embodiment_id": identity,
-                          "composition_mode": "two_instances", "station_root_link": "blueprint_station",
-                          "arms": [{"name": side, "prefix": side + "_", "source_base_link": source_root,
-                                    "source_mount_joint": None,
-                                    "station_from_base": {"translation_m": [0.0, y, 0.0], "quaternion_wxyz": [1, 0, 0, 0]}}
-                                   for side, y in (("left", .35), ("right", -.35))]}
-            text, _ = gen_urdf(entry, parameters, output_anchor=staged, packages=packages, allowed_files=files)
-            root = SafeXML.fromstring(text)
-            arms = [_prefix_arm(arms[0], side + "_") for side in ("left", "right")]
+        if description["format"] == "mjcf":
+            from . import deployment_embodiment_mjcf_configuration as mjcf
+            _require(recipe["arm_count"] == source_receipt["source_arm_count"] == 1
+                     and len(_PROFILES[identity]) == 1, "mjcf_single_arm_required")
+            _precheck_input_closure(entry, allowed=files, packages=packages)
+            result = mjcf.configuration_from_mjcf(entry, identity, _PROFILES[identity][0], source_receipt)
+            result["source_model"] = {"format": "mjcf", "path": entry.relative_to(staged).as_posix(), "sha256": _sha(entry)}
+            result["metadata_generator_module_sha256"] = _sha(Path(mjcf.__file__))
         else:
-            _mesh_paths(root, entry=entry, output_anchor=staged, packages=packages, allowed=files)
-        model = staged / "robot.urdf"
-        model.write_text(XML.tostring(root, encoding="unicode"), encoding="utf-8")
-        _precheck_input_closure(model, allowed={p.resolve() for p in staged.rglob("*") if p.is_file()}, packages={})
-        result = _configuration(root, identity, arms, source_receipt, parameters)
-        result["source_urdf_sha256"] = _sha(model)
+            _require(description["format"] in {"xacro", "urdf"}, "urdf_source_required")
+            root = SafeXML.fromstring(entry.read_bytes())
+            source_root, _ = _tree(root)
+            arms = [_prefix_arm(arm, arm.get("source_prefix", "")) for arm in _PROFILES[identity]]
+            parameters = None
+            if recipe["arm_count"] == 2 and source_receipt["source_arm_count"] == 1:
+                parameters = {"schema_version": "embodiment_station_parameters.v1", "embodiment_id": identity,
+                              "composition_mode": "two_instances", "station_root_link": "blueprint_station",
+                              "arms": [{"name": side, "prefix": side + "_", "source_base_link": source_root,
+                                        "source_mount_joint": None,
+                                        "station_from_base": {"translation_m": [0.0, y, 0.0], "quaternion_wxyz": [1, 0, 0, 0]}}
+                                       for side, y in (("left", .35), ("right", -.35))]}
+                text, _ = gen_urdf(entry, parameters, output_anchor=staged, packages=packages, allowed_files=files)
+                root = SafeXML.fromstring(text)
+                arms = [_prefix_arm(arms[0], side + "_") for side in ("left", "right")]
+            else:
+                _mesh_paths(root, entry=entry, output_anchor=staged, packages=packages, allowed=files)
+            model = staged / "robot.urdf"
+            model.write_text(XML.tostring(root, encoding="unicode"), encoding="utf-8")
+            _precheck_input_closure(model, allowed={p.resolve() for p in staged.rglob("*") if p.is_file()}, packages={})
+            result = _configuration(root, identity, arms, source_receipt, parameters)
+            result["source_urdf_sha256"] = _sha(model)
         result["generator_module_sha256"] = _sha(Path(__file__))
         result["generated_files"] = [{"path": path.relative_to(staged).as_posix(), "sha256": _sha(path),
                                       "size_bytes": path.stat().st_size}
@@ -326,11 +339,20 @@ def verify_runtime_configuration(directory: str | Path) -> dict[str, Any]:
     source = verify_source_bundle(root)
     _require((root / RECEIPT).stat().st_size <= 8 * 1024 * 1024, "receipt_bound_exceeded")
     record = json.loads((root / RECEIPT).read_text())
+    if source["format"] == "mjcf":
+        from . import deployment_embodiment_mjcf_configuration as mjcf
+        model_identity_matches = (record.get("source_model") == {
+            "format": "mjcf", "path": "source/" + source["entry_path"],
+            "sha256": _sha(root / "source" / source["entry_path"])}
+            and record.get("metadata_generator_module_sha256") == _sha(Path(mjcf.__file__))
+            and "source_urdf_sha256" not in record)
+    else:
+        model_identity_matches = record.get("source_urdf_sha256") == _sha(root / "robot.urdf")
     _require(record.get("schema_version") == SCHEMA and record.get("claim_ceiling") == "configuration_only"
              and record.get("execution_authorized") is False
              and record.get("source_bundle_digest") == source["bundle_digest"]
              and record.get("embodiment_id") == source["embodiment_id"]
-             and record.get("source_urdf_sha256") == _sha(root / "robot.urdf")
+             and model_identity_matches
              and record.get("generator_module_sha256") == _sha(Path(__file__))
              and record.get("configuration_digest") == cross_runtime_canonical_digest(record, digest_field="configuration_digest"),
              "receipt_changed")

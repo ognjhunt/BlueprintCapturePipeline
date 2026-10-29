@@ -264,10 +264,34 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                     "license_id": "operator-scoped-policy-license", "license_note": "Scoped run license: " + rights["rights_digest"],
                     "requires_credentials": ["DREAM_API_KEY" if interface["policy_interface_id"] == "dreamlabs_dream1.v1"
                                              else "BLUEPRINT_TEAM_POLICY_BEARER_FILE"], "blockers": blockers}}
-            deployment = (rows.get(key) or {}).get("deployment")
+            deployment = (rows.get(key) or {}).get("deployment") or registration.get("deployment")
             if deployment is not None:
+                if not isinstance(deployment, Mapping):
+                    raise ValueError("beta_screening_policy_route_binding_mismatch")
                 if deployment["configuration_id"] != manifest["embodiment_id"]:
                     raise ValueError("beta_screening_company_embodiment_binding_mismatch")
+                route = deployment.get("policy_route_id")
+                if route is not None:
+                    # A shared robot or HTTPS transport does not identify a
+                    # policy family. Retain explicit operator route provenance
+                    # for checkpoint/planner/API variants; legacy generic
+                    # controllers and the validated Dream contract remain valid.
+                    declared = registration.get("policy_route_id")
+                    supplied = registration.get("deployment")
+                    if supplied is not None:
+                        if not isinstance(supplied, Mapping):
+                            raise ValueError("beta_screening_policy_route_binding_mismatch")
+                        if (supplied.get("configuration_id"), supplied.get("policy_route_id")) != (
+                                deployment["configuration_id"], route):
+                            raise ValueError("beta_screening_policy_route_binding_mismatch")
+                        declared = declared or supplied.get("policy_route_id")
+                    dream = interface["policy_interface_id"] == "dreamlabs_dream1.v1"
+                    if dream != (route == "dreamlabs_dream1"):
+                        raise ValueError("beta_screening_policy_route_interface_mismatch")
+                    if declared is None and route in {"customer_controller", "dreamlabs_dream1"}:
+                        declared = route
+                    if declared != route:
+                        raise ValueError("beta_screening_policy_route_binding_mismatch")
                 row["deployment"] = deployment
             # A malformed optional display/memory/revision field is this
             # registration's failure, not a reason to discard the catalog.

@@ -428,6 +428,16 @@ def _extract_provider_output(
     hold = None
     try:
         with zipfile.ZipFile(path) as archive:
+            if result_name == "embodiment_asset_preparation_result.v1.json":
+                from .deployment_embodiment_preparation_contract import MAX_OUTPUT_BYTES
+                members = archive.infolist()
+                if (sum(member.file_size for member in members) > MAX_OUTPUT_BYTES
+                        or archive.getinfo(result_name).file_size > 8 * 1024**2):
+                    blockers.append(f"{blocker_prefix}_output_read_budget_exceeded")
+                if (len(archive.namelist()) != len(set(archive.namelist()))
+                        or any((member.external_attr >> 16) & 0o170000 == 0o120000
+                               for member in members)):
+                    blockers.append(f"{blocker_prefix}_output_inventory_invalid")
             for name in required_members:
                 if name not in archive.namelist():
                     blockers.append(f"{blocker_prefix}_required_output_missing:{name}")
@@ -474,6 +484,31 @@ def _extract_provider_output(
         "extraction_disk_reservation": extraction_capacity,
         "blockers": sorted(set(blockers)),
     }
+
+
+def _provider_execution_transport_completed(
+    execution: Mapping[str, Any], *, provider_bundle_kind: str,
+    expected_output_filename: str, bundle: Mapping[str, Any], result_path: str | None,
+) -> bool:
+    """Keep robot asset import completion separate from task/policy results."""
+    if provider_bundle_kind == "embodiment_asset_preparation":
+        from .deployment_embodiment_preparation_contract import (
+            RESULT_FILENAME, validate_preparation_result,
+        )
+        if expected_output_filename != RESULT_FILENAME or not result_path:
+            return False
+        try:
+            validate_preparation_result(
+                execution, expected_inputs_digest=bundle["inputs_digest"],
+                expected_ids=bundle["inputs"]["request"]["embodiment_ids"],
+                output_root=Path(result_path).parent,
+            )
+        except (KeyError, TypeError, ValueError, OSError):
+            return False
+        return True
+    return native_task_arena_execution_transport_completed(
+        execution, expected_output_filename=expected_output_filename,
+    )
 
 
 def _candidate_policy_query_blocker(
@@ -1102,9 +1137,12 @@ def run_arena_native_control_vast(
     execution = dict(extracted.get("execution") or {})
     teardown = _read_json(provider_run / "vast_teardown_manifest.json")
     blockers = list(adapter.get("blockers") or []) + list(extracted.get("blockers") or [])
-    if not native_task_arena_execution_transport_completed(
+    if not _provider_execution_transport_completed(
         execution,
+        provider_bundle_kind=provider_bundle_kind,
         expected_output_filename=expected_output_filename,
+        bundle=bundle,
+        result_path=extracted.get("result_path"),
     ):
         blockers.extend(execution.get("blockers") or [f"{blocker_prefix}_runtime_not_completed"])
     policy_query_blocker = _candidate_policy_query_blocker(

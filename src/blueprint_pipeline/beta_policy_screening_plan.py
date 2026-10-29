@@ -343,7 +343,8 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
     if not candidate["policy"]["digest"] or not candidate["policy"]["revision"]:
         blockers.append("policy_identity_not_pinned")
     if scene["task_kind"] not in candidate["supported_task_kinds"]:
-        blockers.append("task_kind_not_supported_by_candidate")
+        blockers.append("task_kind_not_supported_by_candidate" if candidate["supported_task_kinds"]
+                        else "task_kind_support_unverified")
     for credential in candidate["eligibility"]["requires_credentials"]:
         if credential not in credentials:
             blockers.append("credential_unavailable:" + credential)

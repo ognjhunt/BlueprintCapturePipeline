@@ -25,6 +25,7 @@ DEFAULT_RESERVATION_ROOT = Path(
 # checks before accepting a submission, and the ceiling a measured footprint
 # can never exceed.
 ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
+    "embodiment_preparation": 24 * GIB,
     "control_plane_deploy": 2 * GIB,
     "handoff_staging": 4 * GIB,
     "launch_preparation": 2 * GIB,

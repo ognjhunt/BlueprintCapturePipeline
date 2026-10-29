@@ -124,6 +124,50 @@ root and outside every hidden path.
 
 Request kinds:
 
+`public-embodiment-preparation` (`operate`) submits one explicitly funded batch
+of public robot asset imports. It accepts only `kind` and a nested `request`
+using `embodiment_asset_preparation_request.v1`. The sealed request includes:
+
+- A stable `authorization_id`, exact installed 40-character `release_commit`,
+  and ordered, unique `embodiment_ids` from the public runtime-profile allowlist.
+- `max_spend_usd` at most $4, `max_hourly_rate_usd` at most $0.80, and
+  `ttl_seconds` from 1,800 to 14,400. The hourly ceiling times the full TTL must
+  fit the spend cap.
+- `expires_at_epoch` between now plus TTL plus five minutes and now plus seven
+  days, and a printable `authorization_reference` describing the authorization.
+- `request_digest`, computed by the pipeline's `canonical_digest(request,
+  digest_field="request_digest")`. The ordered candidate list and every grant
+  field are bound to this digest.
+
+Submit the reviewed, sealed JSON file explicitly:
+
+```bash
+python3 scripts/operator_door.py public-embodiment-preparation --request-file grant.json --wait
+```
+
+The client derives a stable operation key from the authorization ID. Retry the
+same file after a lost response; do not create a new authorization ID to recover
+an uncertain allocation. Different request bytes under an existing ID are
+refused. The door transient has no network, reads no provider credentials, and
+invokes only the installed controller's `enqueue` as `blueprint`. The fixed
+`blueprint-embodiment-preparation.path` activates its allocator-backed service
+after durable publication under
+`/var/lib/blueprint/pipeline-control-plane/embodiment-preparation`.
+`--wait` confirms the enqueue receipt, not successful asset imports or policy
+episodes; inspect the retained batch results and service journal for those
+outcomes. Installing the lane creates no grant. This request cannot select
+paths, URLs, images, executable code, policy runs, or task execution.
+
+The existing `/var/lib/blueprint` read root includes `latest.json`,
+`authorizations/<authorization_id>.json`, and `jobs/<authorization_id>/` below
+that preparation directory. Published model receipts are at
+`/var/lib/blueprint/robot-models/batches/<authorization_id>.json`; each retained
+model has `binding-inputs.json` and `body-result.json` beneath its embodiment
+and version directory. Use the ordinary `cat`, `ls`, or checked `pull` commands.
+Both the door and preparation service run as `blueprint`, so private owner-only
+records remain readable without granting broader filesystem permissions.
+Existing secret-path and credential-content refusals still apply.
+
 Deploys bind fallback `TMPDIR` to `/mnt/blueprint-work/control-plane-deploy-staging`.
 The installer creates only an absent root-owned0755 leaf and then runs the
 launcher's same guard before swapping code. Every path component must be a real

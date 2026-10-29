@@ -1,7 +1,8 @@
 # Registering a prepared robot and policy for automatic screening
 
-The default catalog now considers 26 named candidates, including 16 company–robot
-configurations. The local pi0.5 DROID, GR00T N1.7 DROID and Cosmos Edge DROID
+The default catalog considers 84 named candidates: 74 deployment robot–policy
+route combinations across 16 robot configurations, plus 10 existing policy
+candidates. The local pi0.5 DROID, GR00T N1.7 DROID and Cosmos Edge DROID
 paths are enabled; actual scene compatibility and budget still determine which
 ones execute. Cosmos requires the third, real `exterior_right` policy camera.
 Missing cameras produce an individual reason while other candidates continue.
@@ -10,6 +11,62 @@ Robot source preparation and imported USD are different states. A reusable
 registration needs the imported model and its actual manifest, an exact served
 policy identity, scoped run rights, private credential delivery and bounded
 compute/API charges. A URDF download alone does not satisfy those inputs.
+
+The deployment catalog's nine route definitions describe planning possibilities.
+Each robot–route pair retains its own result or reason; a shared robot does not
+collapse different policy routes into one result. The public source preparation
+layer has 18 runtime profiles, covering 14 of the 16 configurations. The four
+additional profiles are UR10e, FANUC CRX-10iA (without the /L suffix), single
+Kinova Gen3 and single xArm7. Standard Bots RO1/Core still lack a complete,
+licensed source closure. These counts do not establish imported models,
+compatible trained policies or measured task results.
+
+## Import public robot assets on the production worker
+
+The `public-embodiment-preparation` operator-door request prepares the configured
+public bodies on the existing Isaac GPU infrastructure. It accepts a sealed,
+explicit batch grant with ordered embodiment IDs, the installed release commit,
+one stable authorization ID and a total spend ceiling of at most $4. The existing
+paid allocator prices compute, setup, transfers and storage before allocation.
+See [the operator-door contract](../OPERATOR_DOOR.md) for the request fields.
+
+```bash
+python3 scripts/operator_door.py public-embodiment-preparation --request-file grant.json --wait
+python3 scripts/operator_door.py journal blueprint-embodiment-preparation.service -n 80
+python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/embodiment-preparation/latest.json
+```
+
+The first command confirms that the grant was queued. After execution and
+verification, the batch receipt is
+`/var/lib/blueprint/robot-models/batches/<authorization_id>.json`. Preparation or
+allocation failures remain in `latest.json`. Each requested body has a retained
+import or its own failure, source, time, output or allocation reason. Bulk
+preparation uses `/mnt/blueprint-work/embodiment-preparation` with
+disk reservations; verified models are published under the operator model store.
+Keep the same authorization ID when recovering a lost response. A restarted
+controller reconciles retained execution state without allocating another GPU.
+
+To rebuild only the sealed preparation bundle from an existing grant and native
+runtime source receipt, use the artifact CLI. This command allocates no compute:
+
+```bash
+python -m blueprint_pipeline.deployment_embodiment_preparation_bundle \
+  --request grant.json --runtime-source-receipt native_task_runtime_source_packet.v1.json \
+  --source-root ./public-source-cache --output ./preparation-bundle
+```
+
+For a retained body, the receipt supplies `binding_inputs_path`, its byte digest
+and the prepared asset directory. Load those exact bytes into the registration
+helper below and provide an actual matching policy identity and rights record.
+The internal model URL identifies the verified operator-owned asset; the
+screening bundle stages its dependency closure directly.
+
+An asset import establishes simulator model preparation. A separate native
+controller diagnostic records bounded reset and arm/gripper motion with gravity
+and self-collisions disabled. Its failure or timeout retains the verified import
+and a diagnostic reason. A policy registration adds a compatible executable
+policy. A scored simulation adds measured task results. Preserve these states
+separately in agent answers and candidate results.
 
 ## One registration, every compatible task
 
@@ -115,8 +172,11 @@ the execution environment and the production private delivery lane.
 
 Dream's published body demonstrations map to dual YAM, PiPER, UR5e, FR3, Gen3 and
 xArm7. Axol and TRLC retain independent controller candidates; the catalog does
-not claim Dream publisher compatibility for them. Bare UR5e models still need a
-real tool integration. Private GMR-AI/LUNA/other vendor policies remain explicit
+not claim Dream publisher compatibility for them. The public dual UR5e profile
+now composes two actuated Robotiq 2F-85 tools from pinned sources; its generic
+simulation assembly does not establish Dream's exact tools, calibration or
+action contract. Bare single-arm profiles still need task-appropriate tooling.
+Private GMR-AI/LUNA/other vendor policies remain explicit
 unavailable candidates until access and a matching adapter exist.
 
 ## Verification and result semantics

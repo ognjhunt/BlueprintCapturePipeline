@@ -2,10 +2,28 @@
 
 For the free beta, a completed customer scene can run a configurable set of
 candidate policies under one persistent **$15 per site** screening allowance.
-The initial catalog describes ten researched candidates. Only pi05-DROID and
-GR00T N1.7-DROID have default executable bindings; the others report their
-specific availability, licensing, adapter or credential blockers. Catalog
-entries alone never authorize a run.
+The default catalog contains 84 candidate rows: ten original policy candidates
+and one for each of the 74 recorded embodiment–policy routes. The latter span
+16 robot configurations and remain individual planning candidates until their
+exact policy identity, rights, robot, interface and runtime are bound. pi05-DROID,
+GR00T N1.7-DROID and Cosmos 3 Edge DROID have default runtime implementations;
+that does not establish a completed simulation on the current task. Every other
+row reports its specific availability, licensing, adapter or credential reason.
+Catalog entries alone never authorize a run.
+
+`deployment.configuration_id` identifies the exact body and
+`deployment.policy_route_id` identifies its recorded policy route. Existing
+candidate IDs are retained. Several checkpoint or endpoint versions on the same
+body/route use distinct candidate IDs and remain distinct evaluations. A generic
+HTTPS transport does not establish a policy family: registrations replacing a
+named checkpoint, planner or API route explicitly bind `policy_route_id` (or
+matching `deployment` metadata) alongside their exact identity and rights.
+Legacy generic controllers and the validated Dream contract retain their
+existing registration path. The Dream wire contract cannot activate another
+policy route. Public assets or a catalogued pair never imply compatibility.
+The packaged body/route inventory is not an allowlist: operator registrations
+may declare additional bodies, policy routes and checkpoint variants with their
+own exact manifests, interfaces, identities and rights.
 
 ## What RoboLab does
 

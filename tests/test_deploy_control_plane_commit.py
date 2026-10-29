@@ -576,6 +576,11 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     team_runner_path = unit_dir / "blueprint-team-evaluation-runner.path"
     team_runner_path.write_text(
         "[Path]\nPathExistsGlob=/team-evaluations/pending/*.json\n", encoding="utf-8")
+    embodiment_units = []
+    for suffix in ("service", "path", "timer"):
+        source = unit_dir / f"blueprint-embodiment-preparation.{suffix}"
+        source.write_text("[Unit]\nDescription=Exact asset preparation fixture\n")
+        embodiment_units.append(source)
     probe_runner_service = unit_dir / "blueprint-rigid-robot-free-probe-runner.service"
     probe_runner_service.write_text(
         "[Service]\nKillMode=process\nExecStart=/usr/bin/blueprint-rigid-robot-free-probe-runner\n",
@@ -745,6 +750,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         canary_path,
         team_runner_service,
         team_runner_path,
+        *embodiment_units,
         probe_runner_service,
         probe_runner_path,
         probe_runner_timer,
@@ -826,6 +832,9 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
         "blueprint-team-evaluation-runner.service",
         "blueprint-team-evaluation-runner.path",
+        "blueprint-embodiment-preparation.service",
+        "blueprint-embodiment-preparation.path",
+        "blueprint-embodiment-preparation.timer",
         "blueprint-rigid-robot-free-probe-runner.service",
         "blueprint-rigid-robot-free-probe-runner.path",
         "blueprint-rigid-robot-free-probe-runner.timer",
@@ -876,6 +885,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-team-scene-packet.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS == (
+        "blueprint-embodiment-preparation.timer",
         "blueprint-rigid-robot-free-probe-runner.timer",
         "blueprint-task-evaluation-launch-preparation.timer",
         "blueprint-beta-policy-screening.timer",
@@ -896,6 +906,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-website-atlas-preview.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (
+        "blueprint-embodiment-preparation.path",
         "blueprint-task-evaluation-sam31-preparation-execution.path",
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
         "blueprint-team-evaluation-runner.path",

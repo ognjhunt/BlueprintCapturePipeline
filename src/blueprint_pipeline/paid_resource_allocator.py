@@ -1667,6 +1667,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
             NATIVE_G1_TEAM_POLICY_PROBE_KIND,
             policy_canary_lane.PROBE_KIND, RIGID_ROBOT_FREE_PROBE_KIND,
+            "embodiment-asset-preparation",
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
             ADP009D_AURA_NATIVE_LIVE_CAMERA_PROBE_KIND,
             ADP_SIMREADY_ISAAC_PROBE_KIND,
@@ -1686,6 +1687,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         default="strict-policy-smoke",
     )
     gpu.add_argument("--carrier-volume-admission")
+    for option in ("request", "bundle", "job-dir"):
+        gpu.add_argument("--embodiment-preparation-" + option)
     gpu.add_argument("--policy-observation")
     gpu.add_argument("--persistent-job-dir")
     gpu.add_argument("--task-prompt")
@@ -2268,6 +2271,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "remote-cpu-job":
         success = run_remote_cpu_job(args)["success"] is True
     elif args.command == "gpu-canary":
+        if args.probe_kind == "embodiment-asset-preparation":
+            from .deployment_embodiment_preparation_lane import dispatch
+            return dispatch(args, _control_plane_checkout_blockers())
         if args.terminal_resource_release:
             output = Path(args.terminal_resource_release_output).expanduser().resolve()
             result = dispatch_terminal_resource_release(

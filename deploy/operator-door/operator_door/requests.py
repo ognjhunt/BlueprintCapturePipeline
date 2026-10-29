@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DoorConfig
+from .embodiment_preparation import validate_request as validate_embodiment_preparation
 from .admitted_controls import DISPATCHER_HOLD_ONLY
 from .hostinfo import UNIT_NAME
 from .secrets_guard import redact_lines
@@ -67,6 +68,7 @@ _SCOPES = {
     # Resumes one streamed canary attempt's promotion/ingestion with the active release's module.
     "provider-output-resume": "operate",
     "selected-handoff": "operate",
+    "public-embodiment-preparation": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -75,7 +77,8 @@ if DISPATCHER_HOLD_ONLY:
     # approved receipt-bound single-handoff dispatch and bounded existing Atlas
     # job status/requeue; the legacy inspect mode stays refused.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
-               if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}}
+               if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
+                           "public-embodiment-preparation"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -191,6 +194,13 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
     required_scope(kind)
+    if kind == "public-embodiment-preparation":
+        _only(body, ("kind", "request"))
+        try:
+            request = validate_embodiment_preparation(body.get("request"))
+        except ValueError as error:
+            raise RequestRefused(str(error)) from error
+        return {"kind": kind, "request": request}
     if kind in ("retire-scene", "restore-scene"):
         fields = {"kind", "intent_id", "consent_id", "expected_sha256", "expected_size_bytes"}
         if kind == "retire-scene":

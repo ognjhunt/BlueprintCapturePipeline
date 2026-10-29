@@ -35,7 +35,9 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation"}
+assert r.required_scope("public-embodiment-preparation") == "operate"
+assert r.validate_request_id("20261029T000000Z-public-embodiment-preparation-0123abcd")
 commit = "a" * 40
 payload = json.dumps({"schema_version":"blueprint.deploy_release_provenance.v1",
     "status":"verified", "git_sha":commit, "workflow_name":"Full Test Lane",

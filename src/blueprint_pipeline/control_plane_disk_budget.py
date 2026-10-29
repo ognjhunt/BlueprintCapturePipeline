@@ -69,6 +69,7 @@ DEFAULT_TTL_SECONDS = 2 * 60 * 60
 # reservation as stale.  The canary and launch dispatchers hold theirs through a
 # paid run under a 5 h start timeout.
 ROLE_TTL_SECONDS: Mapping[str, int] = {
+    "embodiment_preparation": 6 * 3600,
     "g1_checkpoint_cache": 4 * 3600,
     "experiment_restore": 4 * 3600,
     "cpu_prestage": 12 * 3600,

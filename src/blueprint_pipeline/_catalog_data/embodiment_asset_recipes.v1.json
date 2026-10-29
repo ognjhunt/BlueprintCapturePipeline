@@ -75,11 +75,45 @@
         "head_and_two_wrist_camera_rig"
       ],
       "missing": [
-        "tool_asset_and_license",
-        "independent_tool_action_mapping",
-        "controller_reset_and_runtime_receipt"
+        "native_import_and_episode_receipts",
+        "dream_hardware_and_policy_match_not_established",
+        "site_mount_and_camera_calibration"
       ],
-      "reason": "Pinned public source only; imported model, controller, camera, reset and independently graded episode remain to be verified."
+      "reason": "Public UR5e plus pinned PickNik Robotiq2F85 with actual UR adapter and explicit grasp frame; two independently prefixed assemblies. This generic simulation configuration does not establish Dream hardware or policy compatibility.",
+      "composition": {
+        "schema_version": "ur5e_robotiq2f85_composition.v1",
+        "arm_embodiment_id": "universal_robots_ur5e",
+        "tool_component_id": "robotiq_2f85_ur_adapter",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "UR tool0 to public UR adapter at zero yaw; source adapter adds 11mmZ; tool macro at zero transform; no physical camera spacer.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "dream_hardware_match_established": false
+      }
     },
     {
       "embodiment_id": "trlc_dk1_bimanual",

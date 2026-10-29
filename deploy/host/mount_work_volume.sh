@@ -110,6 +110,8 @@ WORKER_UNITS=(
   blueprint-scene-object-discovery.path
   blueprint-team-scene-packet.path
   blueprint-beta-policy-screening.timer
+  blueprint-embodiment-preparation.path
+  blueprint-embodiment-preparation.timer
   blueprint-task-evaluation-launch-reconciler.timer
   blueprint-pipeline-control-plane.timer
   blueprint-agent-run-dispatcher.timer
@@ -138,6 +140,7 @@ WORKER_UNITS=(
   blueprint-scene-object-discovery.service
   blueprint-team-scene-packet.service
   blueprint-beta-policy-screening.service
+  blueprint-embodiment-preparation.service
   blueprint-task-evaluation-launch-reconciler.service
   blueprint-production-gpu-campaign-control-plane.service
   blueprint-pipeline-control-plane.service

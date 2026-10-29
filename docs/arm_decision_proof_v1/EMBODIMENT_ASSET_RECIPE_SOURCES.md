@@ -103,7 +103,7 @@ authority; prefix templates below must never be guessed into a runnable manifest
 | Configuration | Source and tool facts | Remaining asset/configuration work |
 | --- | --- | --- |
 | UR5e, one arm | Exact six-DOF manufacturer arm Xacro, BSD-3-Clause. | No application gripper in the arm source; bind a licensed tool, TCP, controller and site mount. |
-| UR5e, two arms | Same exact arm source for each instance. | Distinct joint/link prefixes, two actual tools, explicit mount transforms and independent tool commands. |
+| UR5e, two arms | Exact manufacturer arm source plus separately pinned BSD-3-Clause PickNik Robotiq2F85 tools and UR adapters; both publisher licenses are retained. | Generic composition has distinct prefixes, independent tools and explicit simulated mounts/TCPs; site calibration and Dream hardware/policy correspondence remain unestablished. |
 | TRLC-DK1, two followers | Apache-2.0 repository; follower `joint1` through `joint6`, `gripper_left` and `gripper_right` are independent prismatic joints; terminal frame `tool0`. | Compose two followers with recorded mounts; retain per-asset notices, both finger-pair mappings and camera calibration. Reserved external CAD is not automatically licensed by the repository. |
 | Almond Axol | MIT standalone torso, fourteen revolute arm joints, four prismatic finger joints and two mimic couplings; source collision geometry and optical camera frames. | Bind independent `left_finger_1_joint` / `right_finger_1_joint` commands and their mimics, read opening from actual geometry, apply custom drive gains and bind cameras/reset. Non-arm masses, inertia assumptions and some limits are publisher estimates, not measured robot validation. |
 | FANUC CRX-10iA/L | Official Apache-2.0 Xacro, `J1` through `J6`, inertials on seven physical links. | Example top-level mount is 0.75 m above `world`; replace it with the recorded mount. `ee_link` is a frame, not a gripper. |
@@ -117,7 +117,7 @@ authority; prefix templates below must never be guessed into a runnable manifest
 | FR3, two arms | Apache-2.0 manufacturer FR3 plus Franka Hand. Hand macro has `finger_joint1/2`, with the second mimicking the first, and a `hand_tcp` frame after prefix expansion. | Two explicit FR3 instances and exact mounts; preserve mimic behavior and independent hand commands. FR3-Duo example transforms are a separate mount. |
 | Gen3, two arms | BSD-3-Clause seven-DOF vision Gen3 plus complete bundled Robotiq 2F-85 in the pinned ROS1 source; retain the gripper's BSD-2-Clause notice. | Expand exact source and read back arm/gripper names, then mount two instances and bind both hands/TCPs. The bare NVIDIA seven-DOF arm and an ROS2 wrapper with missing external gripper meshes do not supply this complete source configuration. |
 | xArm7, two arms | BSD-3-Clause dual Xacro with both seven-DOF arms and grippers explicitly enabled, prefixes `L_` and `R_`. | Its default translations are `(0,0,0)` and `(0,1,0)` m; replace those example transforms with explicit configuration values and verify both grippers. |
-| iiwa14, one arm | Model-specific BSD-3-Clause Menagerie MJCF conversion. | A licensed application tool/TCP, actual MJCF-to-USD import and controller/reset validation remain required. |
+| iiwa14, one arm | Model-specific BSD-3-Clause Menagerie MJCF; registered bare-arm native joint/reset/controller/camera configuration. | Actual MJCF-to-USD import and native dynamics/episode evidence remain required. Grasping additionally needs a licensed application tool/TCP and compatible policy. |
 
 ## Relocatable prepared assets
 
@@ -221,3 +221,59 @@ command. Its `station_composition` receipt retains that full source assembly;
 different mounts refuses reuse of the old preparation. The resulting USD
 still needs the normal actual gripper/controller/IK/camera/reset bindings and
 independently scored simulator episode before it is runnable evidence.
+
+## KUKA iiwa14 native configuration
+
+`deployment_embodiment_runtime_configuration` now accepts the exact pinned
+`kuka_lbr_iiwa_14` MJCF source. It resolves nested MJCF default classes and
+retains the seven hinge names, radian limits, axes, body transforms, authored
+mass/inertia, affine PD values (2000/200), and publisher `home` keyframe.
+The original MJCF remains the input to Isaac's `MjcfConverter`; no replacement
+URDF or estimated inertia is generated. A source-model digest and metadata
+generator digest bind the configuration alongside the existing source bundle
+and generated-file inventory. Existing URDF configuration receipts keep their
+original model/hash fields.
+
+The manifest uses native joint-position control, `link7` as the bare body
+frame, no grippers, and no Cartesian arm/tool grouping. The source's
+`attachment_site` at 0.045 m remains source metadata, not a declared installed
+tool center point. The 1 rad/s velocity cap and overhead/wrist camera rig are
+explicit simulation settings; the source PD mapping is not measured dynamics.
+The configuration retains `execution_authorized:false` and
+`policy_compatibility_established:false`. Native imported-USD structure and
+dependency checks still run before the resulting binding can be retained.
+
+CPU verification against the retained MJCF and MuJoCo confirms the source
+joint/body/inertial/reset metadata. Development fixtures cover the existing
+MJCF converter boundary and real USD structure readback. These checks do not
+claim a GPU import, a policy execution, or task success.
+
+
+## Dual UR5e with public Robotiq2F85 tools
+
+`universal_robots_ur5e_bimanual` now combines the existing official UR5e source
+pin with PickNik's public Robotiq2F85 and actual UR adapter at
+[`a74d007d8f2f06dc6a503ad21038ba869d4999a6`](https://github.com/PickNikRobotics/ros2_robotiq_gripper/tree/a74d007d8f2f06dc6a503ad21038ba869d4999a6).
+Both original source bundles and their BSD-3-Clause notices are retained
+separately. A composite receipt binds both immutable pins, each source inventory,
+all notices, the generated assembly and its generator hash. It does not rewrite
+publisher bytes or relabel generated assembly XML as publisher source.
+
+The source UR adapter supplies its visual/collision geometry and 11 mm tool-side
+offset. The gripper retains its six moving joints, authored inertias, five signed
+mimic relationships, source 0.7929 rad close setting and finger-tip contact links.
+The explicit grasp frame is 134 mm along gripper-base Z with a pi yaw, following
+[PickNik's pinned UR example](https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro).
+This assembly omits that example's physical camera spacer; its cameras and dual
+base spacing are declared simulation settings. The two instances receive
+independent link/joint prefixes and gripper commands.
+
+The actual retained source closure contains 55 files (13,447,471 bytes). Xacro
+expansion and every referenced mesh/texture dependency verified locally. CPU
+MuJoCo controller isolation moved both arms and all twelve gripper joints with
+zero untargeted-tool movement and repeatable resets. It retained source
+inertias and collision geometry, omitted visuals, and disabled contacts and
+gravity. No Isaac import or policy/task result is claimed by these checks.
+This generic public assembly does not establish Dream's hardware, calibration
+or policy compatibility. PickNik maintains the tool package; its README says
+it is not maintained or sponsored by Robotiq.

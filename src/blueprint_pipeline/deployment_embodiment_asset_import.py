@@ -28,7 +28,7 @@ from urllib.parse import unquote, urlsplit
 from defusedxml import ElementTree as ET
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
-from .deployment_embodiment_assets import AssetPreparationError, recipe_for, verify_source_bundle
+from .deployment_embodiment_assets import AssetPreparationError, recipe_for, verify_source_bundle, source_description
 from .team_embodiment import read_model_structure
 from .immutable_directory_publication import (
     ImmutableDirectoryPublicationError,
@@ -534,7 +534,7 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
     source_receipt = verify_source_bundle(bundle, embodiment_id=embodiment_id)
     bundle = bundle.resolve()
     recipe = recipe_for(source_receipt["embodiment_id"])
-    description = recipe["source"]
+    description = source_description(recipe, source_receipt)
     destination = Path(output_dir)
     if any(path.is_symlink() for path in [destination, *destination.parents]):
         raise AssetPreparationError("asset_import_destination_symlink_refused")
