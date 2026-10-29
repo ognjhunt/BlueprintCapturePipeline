@@ -43,7 +43,7 @@ def valid_box(value: Any) -> list[float] | None:
 
 
 def locate_target(*, target: Mapping[str, Any], frame: Mapping[str, Any], task_context: Mapping[str, Any],
-                  output_root: Path) -> list[float] | None:
+                  output_root: Path, source_video_digest: str | None = None) -> list[float] | None:
     """A confident box in the frame's own normalized pixels, or None when it is not seen."""
     image = Path(frame["image_path"])
     if _sha256_file(image) != frame["image_digest"]:
@@ -74,9 +74,12 @@ def locate_target(*, target: Mapping[str, Any], frame: Mapping[str, Any], task_c
         # Retain an unsure answer too; a restart must not buy another one.
         return {"observation": json.loads(response.text)}
 
+    # Bound to the source video like segmentation and review, so it is charged to
+    # the same source-bound Atlas allowance.
     result = retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
         maximum_cost_usd=gemini_quote(model=DEFAULT_MODEL, input_tokens=len(prompt.encode()) + 3168,
-                                      max_output_tokens=2048), preflight=preflight, invoke=invoke)
+                                      max_output_tokens=2048), preflight=preflight, invoke=invoke,
+        source_video_digest=source_video_digest)
     observation = result.get("observation") if isinstance(result, Mapping) else None
     if not isinstance(observation, Mapping) or observation.get("visible") is not True:
         return None

@@ -1447,6 +1447,26 @@ def test_a_box_only_target_gets_its_missed_view_outlined_too(tmp_path, monkeypat
     assert all(row["runs"] for row in outlined["observations"]) and outlined["guide_only"] is True
 
 
+def test_a_sam_track_reporting_a_view_empty_still_gets_the_discovered_box(tmp_path, monkeypatch):
+    """Review on #3067: an explicit empty SAM observation must not swallow the new box."""
+    from blueprint_pipeline import atlas_removal_visibility as visibility
+    a, c = view(tmp_path), view(tmp_path, "c", 0.2)
+    seen = []
+    monkeypatch.setattr(visibility, "locate_target", lambda **kw: seen.append(kw["source_video_digest"]) or
+                        [0.25, 0.25, 0.5, 0.5])
+    sam = {"track_id": "meta-sam31-obj-0", "label": "obj", **track([a])["track"]}
+    sam["observations"] = [*sam["observations"], {"source_frame_id": "c", "width": 80, "height": 60, "runs": []}]
+    target = {**plan()["objects"][0], "regions": [{"frame_id": "a", "box_xywh_normalized": [0.2, 0.2, 0.6, 0.6]}],
+              "spatial_evidence": [{"timestamp_seconds": 0, "box_xywh_normalized": [0.2, 0.2, 0.6, 0.6]}]}
+    covered = edits.complete_track_coverage(track=sam, target=target, frames=[a, c])
+    outlined = edits.outline_missed_views(track=covered, sam_track=sam, target=target, frames=[a, c],
+        timestamps={"a": 0, "c": 1}, task_context=CONTEXT_WITH_CAPTURE, root=tmp_path / "visibility",
+        source_video_digest="sha256:" + "b" * 64)
+    observations = {row["source_frame_id"]: row for row in outlined["observations"]}
+    assert observations["a"] == sam["observations"][0] and observations["c"]["runs"]
+    assert outlined["guide_only"] is True and seen == ["sha256:" + "b" * 64]
+
+
 def test_the_visibility_answer_counts_only_when_confident_and_inside_the_frame(tmp_path, monkeypatch):
     from blueprint_pipeline import atlas_removal_visibility as visibility
     a = view(tmp_path)
@@ -1462,6 +1482,7 @@ def test_the_visibility_answer_counts_only_when_confident_and_inside_the_frame(t
     assert answer({"visible": True, "confidence": 0.95, "box_xywh_normalized": [0.8, 0.2, 0.3, 0.4]}) is None
     assert answer({"visible": False, "confidence": 0.99, "box_xywh_normalized": [0.1, 0.2, 0.3, 0.4]}) is None
     binding = calls[0]["binding"]
+    assert calls[0]["source_video_digest"] is None  # set by segmentation, which knows the source
     assert binding["kind"] == "removal_target_visibility" and binding["frame_id"] == "a"
     assert binding["image_digest"] == a["image_digest"] and "Move the task object" in binding["prompt"]
     Image.new("RGB", (80, 60), "white").save(a["image_path"])
