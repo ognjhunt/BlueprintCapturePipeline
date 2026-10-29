@@ -91,6 +91,113 @@ def test_actual_parent_stops_before_next_cell_and_retains_historical_prefix(tmp_
     assert retained["episodes"] == []
 
 
+def _completed_parent_fixture_child(inputs, index):
+    """A parent-retention contract fixture, never engine or policy evidence."""
+    child = {"schema_version": "native_task_arena_policy_canary_session_result.v1",
+             "selected_cell_index": index, "status": "runtime_selected_cell_completed_pending_aggregation",
+             "task_success_contract": inputs["task_success_contract"],
+             "task_success_contract_digest": inputs["task_success_contract_digest"],
+             "candidate_policy_queried": True,
+             "episodes": [{**inputs["cells"][index], "candidate_id": candidate,
+                           "candidate_policy_queried": True, "fixture": "retained_completed_prefix"}
+                          for candidate in inputs["candidate_ids"]]}
+    child["result_digest"] = canonical_digest(child, digest_field="result_digest")
+    return child
+
+
+@pytest.mark.parametrize("stop_kind", ["cancelled", "expired", "stale"])
+@pytest.mark.parametrize("final_cell_queried", [False, True])
+def test_final_isolated_child_stop_retains_queried_prefix_without_another_iteration(
+    tmp_path, monkeypatch, stop_kind, final_cell_queried,
+):
+    runtime, output, inputs, authority, scope, *_ = stage_beta_bundle(tmp_path, monkeypatch)
+    spawned, stop_receipts = [], []
+    final = len(inputs["cells"]) - 1
+
+    def spawn(**kwargs):
+        index = kwargs["index"]
+        spawned.append(index)
+        child = _completed_parent_fixture_child(inputs, index)
+        if index == final:
+            if stop_kind == "cancelled":
+                install(runtime, authority, scope, now=1001, revision=2, stopped=True)
+            elif stop_kind == "expired":
+                install(runtime, authority, scope, now=1001, deadline=1100, revision=2)
+                monkeypatch.setattr(control.time, "time", lambda: 1100.0)
+            else:
+                monkeypatch.setattr(control.time, "time", lambda: 1600.0)
+            guard = control.RuntimeControlGuard(runtime_root=runtime, inputs=inputs, authority=authority)
+            with pytest.raises(control.RuntimeControlStopped) as stopped:
+                guard.check("before_policy_query")
+            stop_receipts.append(stopped.value.receipt)
+            child.update(status="blocked", candidate_policy_queried=final_cell_queried,
+                         episodes=[{"fixture": "interrupted_final_query"}] if final_cell_queried else [],
+                         execution_control_stop=stopped.value.receipt, applicability="historical_only")
+            child["result_digest"] = canonical_digest(child, digest_field="result_digest")
+        (kwargs["child_root"] / worker.PROVIDER_RESULT_FILENAME).write_text(json.dumps(child))
+        return 1 if index == final else 0
+
+    assert worker._run_isolated_cell_processes(
+        runtime_root=runtime, output_root=output, run_cell_process=spawn,
+    ) == 1
+    assert spawned == list(range(len(inputs["cells"])))
+    retained = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
+    assert retained["status"] == "blocked" and retained["applicability"] == "historical_only"
+    assert retained["candidate_policy_queried"] is True  # Earlier returned queries stay true.
+    assert retained["new_processing_authorized"] is False and retained["read_only_closeout_allowed"] is True
+    assert retained["episodes_per_policy"] == final
+    assert len(retained["episodes"]) == final * len(inputs["candidate_ids"])
+    assert [row["cell_id"] for row in retained["episodes"]] == [row["cell_id"] for row in inputs["cells"][:-1]]
+    assert retained["learned_policy_rollout_count"] == len(retained["episodes"])
+    assert retained["execution_stopped_after_cell"] == len(inputs["cells"])
+    assert retained["planned_episodes_per_policy"] == len(inputs["cells"])
+    assert retained["execution_control_stop"] == stop_receipts[0]
+    assert retained["blockers"] == [stop_receipts[0]["reason"]]
+    partial, = retained["retained_partial_cell_results"]
+    path = output / partial["relative_path"]
+    assert path == output / "cell_runs" / f"{final:02d}" / worker.PROVIDER_RESULT_FILENAME
+    assert path.stat().st_size == partial["size_bytes"] and worker._sha256(path) == partial["sha256"]
+    raw = json.loads(path.read_text())
+    assert raw["result_digest"] == partial["result_digest"]
+    assert raw["candidate_policy_queried"] is final_cell_queried
+    assert retained["result_digest"] == canonical_digest(retained, digest_field="result_digest")
+
+
+def test_final_isolated_child_without_stop_keeps_healthy_aggregation(tmp_path, monkeypatch):
+    runtime, output, inputs, _authority, _scope, *_ = stage_beta_bundle(tmp_path, monkeypatch)
+    spawned = []
+
+    def spawn(**kwargs):
+        spawned.append(kwargs["index"])
+        child = _completed_parent_fixture_child(inputs, kwargs["index"])
+        (kwargs["child_root"] / worker.PROVIDER_RESULT_FILENAME).write_text(json.dumps(child))
+        return 0
+
+    assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=spawn) == 0
+    retained = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
+    assert spawned == list(range(len(inputs["cells"])))
+    assert retained["status"] == "runtime_completed_unqualified_pending_closeout"
+    assert retained["candidate_policy_queried"] is True
+    assert len(retained["episodes"]) == len(inputs["cells"]) * len(inputs["candidate_ids"])
+    assert "execution_control_stop" not in retained and "retained_partial_cell_results" not in retained
+
+
+def test_final_invalid_child_without_retained_stop_still_refuses_aggregation(tmp_path, monkeypatch):
+    runtime, output, inputs, _authority, _scope, *_ = stage_beta_bundle(tmp_path, monkeypatch)
+
+    def spawn(**kwargs):
+        child = _completed_parent_fixture_child(inputs, kwargs["index"])
+        if kwargs["index"] == len(inputs["cells"]) - 1:
+            child["status"] = "blocked"
+            child["result_digest"] = canonical_digest(child, digest_field="result_digest")
+        (kwargs["child_root"] / worker.PROVIDER_RESULT_FILENAME).write_text(json.dumps(child))
+        return 1
+
+    with pytest.raises(RuntimeError, match="policy_canary_isolated_cell_result_invalid"):
+        worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=spawn)
+    assert not (output / worker.PROVIDER_RESULT_FILENAME).exists()
+
+
 def test_actual_selected_cell_refuses_before_engine_creation(tmp_path, monkeypatch):
     runtime, output, _inputs, authority, scope, *_ = stage_beta_bundle(tmp_path, monkeypatch)
     install(runtime, authority, scope, now=1001, revision=2, stopped=True)
