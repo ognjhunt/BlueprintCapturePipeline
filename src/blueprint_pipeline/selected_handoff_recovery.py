@@ -34,16 +34,16 @@ FIELDS = {
 def validate_selection(value):
     if type(value) is not dict or set(value) != (
         IDENTITY_FIELDS if value.get("mode") == "discover-selector" else
-        FIELDS | ({"atlas_status_digest"} if value.get("mode") == "atlas-retry" else set())
+        FIELDS | ({"atlas_status_digest"} if value.get("mode") in ("atlas-retry", "preparation-resume") else set())
     ):
         raise ValueError("selected_handoff_fields_invalid")
     if (
         value["kind"] != "selected-handoff"
         or type(value["mode"]) is not str
-        or value["mode"] not in {"inspect", "dispatch", "atlas-status", "atlas-retry", "discover-selector"}
+        or value["mode"] not in {"inspect", "dispatch", "atlas-status", "atlas-retry", "preparation-resume", "discover-selector"}
     ):
         raise ValueError("selected_handoff_mode_invalid")
-    if value["mode"] == "atlas-retry" and (
+    if value["mode"] in {"atlas-retry", "preparation-resume"} and (
         type(value["atlas_status_digest"]) is not str
         or not re.fullmatch(r"sha256:[a-f0-9]{64}", value["atlas_status_digest"])
     ):
@@ -275,12 +275,16 @@ def recover_selected_handoff(
             )
             return result
         capture_root = listener._handoff_capture_root(parsed, storage_root=Path(storage_root))
-        if selection["mode"] in {"atlas-status", "atlas-retry"}:
+        if selection["mode"] in {"atlas-status", "atlas-retry", "preparation-resume"}:
             from .selected_atlas_preview_recovery import recover_selected_atlas_preview
 
+            resume = selection["mode"] == "preparation-resume"
+            if resume:
+                result["provider_dispatch_performed"] = "unknown; consult native receipts"
             return {**result, **recover_selected_atlas_preview(
                 selection, observation=observation, membership=membership,
                 capture_root=capture_root, storage_root=Path(storage_root),
+                **({"handoff_payload": raw, "listener": listener} if resume else {}),
             )}
         # Missing local history is not proof of absent provider effects. Current
         # sponsorship controls must separately authorize the bounded operation.
