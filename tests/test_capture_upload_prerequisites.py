@@ -149,34 +149,38 @@ def test_mutable_parent_creation_runs_with_only_the_service_identity(monkeypatch
 
 
 def test_root_owned_parent_creates_only_the_new_service_directory(tmp_path, monkeypatch):
+    service_ids = (60000, 60000)
     parent = tmp_path / "root-owned-parent"
     parent.mkdir(mode=0o755)
     descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
     real_fstat, real_mkdir, real_stat = os.fstat, os.mkdir, os.stat
-    root_owned = {parent.stat().st_ino}
+    parent_before = real_stat(parent)
+    ownership = {parent_before.st_ino: (0, 0)}
     configured = []
 
-    def root_metadata(value):
-        if value.st_ino in root_owned:
+    def ownership_metadata(value):
+        if value.st_ino in ownership:
             fields = list(value)
-            fields[4:6] = [0, 0]
+            fields[4:6] = ownership[value.st_ino]
             return os.stat_result(fields)
         return value
 
     def create(name, mode=0o777, *, dir_fd=None):
         real_mkdir(name, mode=mode, dir_fd=dir_fd)
-        root_owned.add(real_stat(name, dir_fd=dir_fd, follow_symlinks=False).st_ino)
+        ownership[real_stat(name, dir_fd=dir_fd, follow_symlinks=False).st_ino] = (0, 0)
 
     def configure(fd, uid, gid):
         info = real_fstat(fd)
-        assert info.st_ino != parent.stat().st_ino
-        assert (uid, gid) == (os.getuid(), os.getgid())
+        assert info.st_ino != parent_before.st_ino
+        assert ownership[info.st_ino] == (0, 0)
+        assert (uid, gid) == service_ids
         configured.append(info.st_ino)
-        root_owned.remove(info.st_ino)
+        ownership[info.st_ino] = service_ids
 
     monkeypatch.setattr(prerequisites.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(prerequisites.os, "fstat", lambda fd: root_metadata(real_fstat(fd)))
-    monkeypatch.setattr(prerequisites.os, "stat", lambda *a, **kw: root_metadata(real_stat(*a, **kw)))
+    monkeypatch.setattr(prerequisites.os, "getegid", lambda: 0)
+    monkeypatch.setattr(prerequisites.os, "fstat", lambda fd: ownership_metadata(real_fstat(fd)))
+    monkeypatch.setattr(prerequisites.os, "stat", lambda *a, **kw: ownership_metadata(real_stat(*a, **kw)))
     monkeypatch.setattr(prerequisites.os, "mkdir", create)
     monkeypatch.setattr(prerequisites.os, "fchown", configure)
     monkeypatch.setattr(prerequisites.os, "chown", lambda *a, **kw: pytest.fail("pathname chown"))
@@ -184,14 +188,19 @@ def test_root_owned_parent_creates_only_the_new_service_directory(tmp_path, monk
                         pytest.fail("service identity cannot write the root-owned 0755 parent"))
     try:
         assert prerequisites._mkdir_as_owner(descriptor, "capture-intake", mode=0o750,
-                                             owner_ids=(os.getuid(), os.getgid()))
+                                             owner_ids=service_ids)
         child = parent / "capture-intake"
-        assert child.stat().st_mode & 0o777 == 0o750
-        assert configured == [child.stat().st_ino]
+        child_before = child.stat()
+        assert (child_before.st_uid, child_before.st_gid, child_before.st_mode & 0o777) == (*service_ids, 0o750)
+        assert configured == [child_before.st_ino]
         assert not prerequisites._mkdir_as_owner(descriptor, "capture-intake", mode=0o750,
-                                                 owner_ids=(os.getuid(), os.getgid()))
-        assert configured == [child.stat().st_ino]
+                                                 owner_ids=service_ids)
+        assert child.stat() == child_before
+        assert configured == [child_before.st_ino]
         assert parent.stat().st_mode & 0o777 == 0o755
+        parent_after = real_stat(parent)
+        assert (parent_after.st_ino, parent_after.st_uid, parent_after.st_gid, parent_after.st_mode) == (
+            parent_before.st_ino, parent_before.st_uid, parent_before.st_gid, parent_before.st_mode)
     finally:
         os.close(descriptor)
 
