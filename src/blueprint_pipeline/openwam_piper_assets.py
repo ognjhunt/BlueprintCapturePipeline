@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import math
 from pathlib import Path
+import stat
 import subprocess
 import time
 from typing import Any
@@ -27,11 +28,41 @@ EXPECTED_FILES = {
 }
 
 
+def _verify_checkpoint_file_closure(root: Path) -> None:
+    """Bound all loader-visible files, including optional tokenizer sidecars.
+
+    Only parent directories of the fixed inventory are traversed. Symlinks,
+    special files and extra directories cannot hide unverified model inputs.
+    Runtime/download receipts belong outside this checkpoint directory.
+    """
+    expected = set(EXPECTED_FILES)
+    directories = {str(parent) for name in expected for parent in Path(name).parents
+                   if parent != Path(".")}
+    if not root.is_dir():
+        raise ValueError("openwam_checkpoint_inventory_changed")
+    pending, observed = [root], set()
+    while pending:
+        for path in pending.pop().iterdir():
+            name = path.relative_to(root).as_posix()
+            mode = path.lstat().st_mode
+            if stat.S_ISDIR(mode) and name in directories:
+                pending.append(path)
+            elif stat.S_ISREG(mode) and name in expected:
+                observed.add(name)
+            else:
+                if path.parent == root and path.match("checkpoint_step_*.safetensors") and name not in expected:
+                    raise ValueError("openwam_checkpoint_selection_ambiguous")
+                raise ValueError("openwam_checkpoint_inventory_changed")
+    if observed != expected:
+        raise ValueError("openwam_checkpoint_inventory_changed")
+
+
 def verify_checkpoint_directory(directory: str | Path, *, deadline_epoch: float | None = None) -> dict[str, Any]:
     """Verify exactly the deployed inputs before upstream's NumPy/checkpoint load."""
     root = Path(directory).resolve(strict=True)
     if deadline_epoch is not None and (not math.isfinite(deadline_epoch) or deadline_epoch <= time.time()):
         raise ValueError("openwam_checkpoint_verification_deadline_exceeded")
+    _verify_checkpoint_file_closure(root)
     for name, (size, expected) in EXPECTED_FILES.items():
         path = root / name
         if (not path.is_file() or path.is_symlink() or root not in path.resolve().parents
@@ -45,9 +76,7 @@ def verify_checkpoint_directory(directory: str | Path, *, deadline_epoch: float 
                 digest.update(block)
         if digest.hexdigest() != expected:
             raise ValueError(f"openwam_checkpoint_digest_mismatch:{name}")
-    # Other numbered checkpoints must not be picked by an accidental 'latest'.
-    if set(p.name for p in root.glob("checkpoint_step_*.safetensors")) != {"checkpoint_step_30000.safetensors"}:
-        raise ValueError("openwam_checkpoint_selection_ambiguous")
+    _verify_checkpoint_file_closure(root)
     return {"model_id": MODEL_ID, "model_revision": MODEL_REVISION, "weight_sha256": WEIGHT_SHA256,
             "checkpoint_bytes_verified": True, "files_verified": len(EXPECTED_FILES),
             "license_basis": "pinned_model_card_apache_2.0", "inference_performed": False}

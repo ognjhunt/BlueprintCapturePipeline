@@ -383,6 +383,64 @@ def test_checkpoint_verification_hashes_bytes_and_refuses_ambiguous_or_tampered_
         assets.verify_checkpoint_directory(tmp_path)
 
 
+@pytest.fixture
+def complete_checkpoint_files(tmp_path, monkeypatch):
+    """All eight real input paths, tiny development-only bytes, no model load."""
+    root = tmp_path / "checkpoint"
+    files = {}
+    for name in assets.EXPECTED_FILES:
+        payload = ("development-only input " + name).encode()
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        files[name] = (len(payload), hashlib.sha256(payload).hexdigest())
+    monkeypatch.setattr(assets, "EXPECTED_FILES", files)
+    return root
+
+
+def test_complete_checkpoint_accepts_exact_eight_files_with_runtime_receipt_outside(complete_checkpoint_files):
+    root = complete_checkpoint_files
+    (root.parent / "runtime-receipt.json").write_text('{"claim_ceiling":"development_only"}')
+    result = assets.verify_checkpoint_directory(root)
+    assert result["checkpoint_bytes_verified"] is True
+    assert result["files_verified"] == 8 and result["inference_performed"] is False
+
+
+@pytest.mark.parametrize("name", [
+    "tokenizer/google/umt5-xxl/added_tokens.json",
+    "tokenizer/google/umt5-xxl/generation_config.json",
+    "generation_config.json",
+    "runtime-receipt.json",
+])
+def test_unlisted_loader_sidecars_invalidate_entire_checkpoint_identity(complete_checkpoint_files, name, monkeypatch):
+    root = complete_checkpoint_files
+    (root / name).write_text('{"unexpected":"development_only"}')
+    monkeypatch.setattr(assets.hashlib, "sha256", lambda: pytest.fail("unlisted files must fail before hashing weights"))
+    with pytest.raises(ValueError, match="checkpoint_inventory_changed"):
+        assets.verify_checkpoint_directory(root)
+
+
+@pytest.mark.parametrize("kind", ["extra_file_link", "expected_file_link", "directory_link", "fifo", "extra_directory"])
+def test_checkpoint_closure_rejects_links_and_nonregular_files(complete_checkpoint_files, kind):
+    root = complete_checkpoint_files
+    if kind == "extra_file_link":
+        (root / "added_tokens.json").symlink_to(root / "README.md")
+    elif kind == "expected_file_link":
+        expected = root / "README.md"
+        expected.rename(root.parent / "original-card.md")
+        expected.symlink_to(root.parent / "original-card.md")
+    elif kind == "directory_link":
+        tokenizer = root / "tokenizer"
+        tokenizer.rename(root.parent / "original-tokenizer")
+        tokenizer.symlink_to(root.parent / "original-tokenizer", target_is_directory=True)
+    elif kind == "extra_directory":
+        (root / ".cache").mkdir()
+    else:
+        __import__("os").mkfifo(root / "unlisted-pipe")
+    with pytest.raises(ValueError, match="checkpoint_inventory_changed"):
+        assets.verify_checkpoint_directory(root)
+
+
 def test_actual_team_episode_consumes_pose_response_and_retains_request(tmp_path, monkeypatch):
     from blueprint_pipeline import (
         adp_task_scoring,

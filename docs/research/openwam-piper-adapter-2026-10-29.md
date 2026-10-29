@@ -19,8 +19,11 @@ register a runnable candidate, launch compute, or claim native/GPU execution.
 Only the small deployment inputs and safetensors header were fetched during this
 investigation. The weight hash above is publisher metadata, not a claim that we
 downloaded and verified all weights. `verify_checkpoint_directory` streams and
-checks every required file before NumPy deserialization or model loading. It
-refuses ambiguous additional numbered checkpoints. The standalone source path
+checks every required file before NumPy deserialization or model loading. The
+entire directory must contain exactly those eight regular files and their parent
+directories: optional tokenizer/generation sidecars, symlinks, special files and
+additional checkpoints are refused. Runtime receipts stay outside the model
+directory. The standalone source path
 requires the exact clean upstream Git checkout.
 
 The safetensors header contains 2,089 BF16 tensors, including the video backbone,
