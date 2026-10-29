@@ -287,7 +287,7 @@ def test_negative_answer_replays_original_job_once_to_a_truthful_evidence_limit(
     from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
     from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-    root, raw, question, selectors, runs, _ = guessed
+    root, raw, question, selectors, runs, guessing_run = guessed
     source = root / "raw/retained-selection-source.mp4"
     source.write_bytes(b"synthetic retained source for negative-answer recovery")
     question = {**question, "source_video_digest": _sha256_file(source)}
@@ -295,7 +295,8 @@ def test_negative_answer_replays_original_job_once_to_a_truthful_evidence_limit(
     write_json(choice._path(root / "pipeline", question["target_id"], "question"), question)
     write_json(root / "pipeline" / choice.QUESTION_DIR / choice.INDEX_FILE, {
         "schema_version": choice.INDEX_SCHEMA, "questions": {question["target_id"]: question["question_digest"]}})
-    _webapp(monkeypatch, {question["question_digest"]: _answer(question, selectors, {"kind": "none_of_these"})})
+    answers = {question["question_digest"]: _answer(question, selectors, {"kind": "none_of_these"})}
+    _webapp(monkeypatch, answers)
     before = listener._read_job_ledger(root)
     def no_provider(*_args, **_kwargs):
         pytest.fail("a rejected guessed target must not buy or run another model/native scene")
@@ -319,6 +320,25 @@ def test_negative_answer_replays_original_job_once_to_a_truthful_evidence_limit(
     assert choice.reconcile_target_choices(listener, storage_root=root.parents[4],
                                           process_args=process_args)["replayed"] == 0
     assert len(runs) == 2  # Original attempt and one no-spend rejection outcome.
+    answers[question['question_digest']] = _answer(question, selectors, {
+        'kind': 'confirm_guess', 'candidate_id': question['guessed_candidate_id']})
+    original = guessing_run(guesses=(), error=None)
+    def restore_original(**kwargs):
+        from blueprint_pipeline.website_preparation_revision import workspace
+        assert workspace(root) == root / 'pipeline/website_scene_preparation'
+        value = {'schema_version': 'website_scene_handoff.v1', 'scene_id': selectors['scene_id'],
+            'capture_id': selectors['capture_id'], 'status': 'intake_ready',
+            'website_intake_outbox': {'state': 'forward_pending', 'submission_id': selectors['capture_id']}}
+        value['digest'] = canonical_digest(value, digest_field='digest')
+        write_json(root / 'pipeline/website_scene_preparation/handoff.json', value)
+        return original(**kwargs)
+    import time
+    restored = choice.reconcile_target_choices(listener, storage_root=root.parents[4],
+        process_args={'provider': 'openai', 'run_e2e': restore_original}, now=time.time() + 120)
+    assert restored['confirmed'] == 1 and restored['replayed'] == 1
+    assert choice.correction_binding_digest(root / 'pipeline') is None
+    assert choice.correction_pending(listener._read_job_ledger(root), root / 'pipeline') is None
+    assert len(runs) == 3
 
 
 def test_a_correction_reruns_the_same_job_from_retained_work_once(guessed, monkeypatch):

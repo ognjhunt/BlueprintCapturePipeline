@@ -427,6 +427,27 @@ def correction_pending(ledger: Mapping[str, Any], pipeline_root: Path) -> str | 
     """
     fixes = corrections(pipeline_root)
     if not fixes:
+        # Reaffirming the original guess normally does no work. After a
+        # negative answer stopped preparation, it must release that evidence
+        # limit. Keep the ordinary no-correction workspace/submission identity
+        # so retained completed native work is reused rather than repurchased.
+        handoff = _read(pipeline_root / 'website_scene_preparation/handoff.json') or {}
+        rejection = handoff.get('selection_rejection') or {}
+        restored = []
+        for row in rejection.get('rejections') or []:
+            if not isinstance(row, Mapping):
+                return None
+            question = row.get('question') or {}
+            answer = read_answer(pipeline_root, question) if question.get('target_id') else None
+            if (answer and answer['choice']['kind'] == 'confirm_guess'
+                    and row.get('answer', {}).get('choice', {}).get('kind') == 'none_of_these'
+                    and answer['task_context_digest'] == rejection.get('task_context_digest')):
+                restored.append({'target_id': answer['target_id'], 'question_digest': answer['question_digest'],
+                                 'candidate_id': answer['choice']['candidate_id']})
+        if (restored and len(restored) == len(rejection['rejections'])
+                and handoff.get('digest') == canonical_digest(handoff, digest_field='digest')
+                and rejection.get('digest') == canonical_digest(rejection, digest_field='digest')):
+            return canonical_digest({'restored_rejected_guesses': sorted(restored, key=lambda row: row['target_id'])})
         return None
     digest = canonical_digest({"corrections": fixes})
     history = ledger.get("attempt_history")

@@ -207,3 +207,28 @@ def test_negative_answer_can_be_clarified_without_losing_its_retained_fact(corre
     assert json.loads(retained.read_text()) == no
     rejected = f['capture'] / 'pipeline/website_scene_preparation/rejections' / handoff['selection_rejection']['digest'][7:] / 'handoff.json'
     assert json.loads(rejected.read_text()) == handoff
+
+
+def test_reaffirming_the_original_guess_releases_only_its_rejected_outcome(correction_job):
+    from blueprint_pipeline.website_target_background_correction import retain_rejected_selection
+    from blueprint_pipeline.website_preparation_revision import workspace
+    f = correction_job
+    ledger = {'producer_delivery_key': f['selectors']['producer_delivery_key'],
+              'source_payload_sha256': f['selectors']['source_payload_sha256']}
+    f['answer'].update(_answer(f['question'], f['selectors'], {'kind': 'none_of_these'}))
+    choice.fetch_answer(f['capture'], ledger, f['question'], now=30)
+    retain_rejected_selection(capture_root=f['capture'], task_context=f['context'], source_video=f['video'])
+    rejection_digest = choice.correction_binding_digest(f['capture'] / 'pipeline')
+    completed = {'status': 'completed', 'attempt_history': [{choice.CORRECTION_MARK: rejection_digest}]}
+    assert choice.correction_pending(completed, f['capture'] / 'pipeline') is None
+    f['answer'].update(_answer(f['question'], f['selectors'], {'kind': 'confirm_guess',
+        'candidate_id': f['question']['guessed_candidate_id']}))
+    choice.fetch_answer(f['capture'], ledger, f['question'], now=95)
+    assert choice.correction_pending(completed, f['capture'] / 'pipeline') is not None
+    assert choice.correction_binding_digest(f['capture'] / 'pipeline') is None
+    assert workspace(f['capture']) == f['capture'] / 'pipeline/website_scene_preparation'
+    assert worker.queue_correction(capture_root=f['capture'], task_context=f['context'], task_masks=f['masks'], now=96) == {'status': 'ready'}
+    # Completion replaces only the current projection; the immutable rejection
+    # remains retained. No correction revision or new allowance is created.
+    write_json(f['capture'] / 'pipeline/website_scene_preparation/handoff.json', {'status': 'intake_ready'})
+    assert choice.correction_pending(completed, f['capture'] / 'pipeline') is None
