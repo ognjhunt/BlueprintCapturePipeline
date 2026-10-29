@@ -807,21 +807,25 @@ def run_background(
             anchor_review = verify_completed_background(
                 frames=[anchor], original_frames=[anchor_source], plan=plan,
                 output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
-        findings = anchor_review.get("review") or {}
-        traced = anchor_review["status"] != "passed" and (
-            findings.get("task_objects_removed") is False or bool(findings.get("remaining_task_object_frame_ids")))
-        [full_anchor], swapped = full_frames_for_traces(
-            [anchor], {"review": {"remaining_task_object_frame_ids": [anchor["frame_id"]] if traced else []}})
-        if swapped:
+
+        def full_frame_if_traced(anchor, anchor_review):
             # A shadow or reflection reaching past the kept removal zone stays in
             # the composite (the 2026-09-24 ghost). The editor's full frame was
             # already bought: review it once instead of stopping the job.
-            check("automation_anchor_full_frame_review")
-            anchor = full_anchor
-            anchor_review = verify_completed_background(
-                frames=[anchor], original_frames=[anchor_source], plan=plan,
-                output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
             findings = anchor_review.get("review") or {}
+            traced = anchor_review["status"] != "passed" and (
+                findings.get("task_objects_removed") is False or bool(findings.get("remaining_task_object_frame_ids")))
+            [full_anchor], swapped = full_frames_for_traces(
+                [anchor], {"review": {"remaining_task_object_frame_ids": [anchor["frame_id"]] if traced else []}})
+            if not swapped:
+                return anchor, anchor_review
+            check("automation_anchor_full_frame_review")
+            return full_anchor, verify_completed_background(
+                frames=[full_anchor], original_frames=[anchor_source], plan=plan,
+                output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
+
+        anchor, anchor_review = full_frame_if_traced(anchor, anchor_review)
+        findings = anchor_review.get("review") or {}
         if (anchor_review["status"] != "passed" and findings.get("unrelated_objects_preserved") is False
                 and findings.get("unrelated_object_loss_frame_ids")):
             # 2026-10-29 capture-4b60431e: the anchor edit removed the tray but also
@@ -840,6 +844,8 @@ def run_background(
             anchor_review = verify_completed_background(
                 frames=[anchor], original_frames=[anchor_source], plan=plan,
                 output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
+            # The correction is composited too, so its trace gets the same fallback.
+            anchor, anchor_review = full_frame_if_traced(anchor, anchor_review)
     if anchor_review["status"] != "passed":
         return {
             "status": "quality_rejected",

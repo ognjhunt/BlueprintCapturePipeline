@@ -826,6 +826,58 @@ def test_composited_anchor_with_a_remaining_trace_is_reviewed_once_as_its_full_f
                       "automation_anchor_full_frame_review"]
 
 
+def test_a_composited_anchor_correction_with_a_trace_also_gets_its_full_frame_review(tmp_path, monkeypatch):
+    # The unrelated-object correction is composited too; a trace in it must not
+    # stop the job when its already-bought full frame would pass (#3065 review).
+    from blueprint_pipeline import website_image_completion as image_edit
+
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: None)
+    frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
+    monkeypatch.setattr(
+        edits, "segment_objects", lambda **_: [{**plan()["objects"][0], **track(frames)}]
+    )
+    monkeypatch.setattr(
+        image_edit,
+        "_validated_backend",
+        lambda *a, **k: ({}, {"pricing_binding": {"max_cost_per_request_usd": 0.2}}, "b"),
+    )
+    edited = []
+    monkeypatch.setattr(image_edit, "complete_background_images", lambda **k: edited.append(1) or [
+        {**frame, "full_frame_image_path": f"full-{len(edited)}.png", "full_frame_image_digest": "sha256:full",
+         "generated_region": "removal_zone"} for frame in k["frames"]])
+    trace = {"task_objects_removed": False, "unrelated_objects_preserved": True,
+             "remaining_task_object_frame_ids": ["a"], "unrelated_object_loss_frame_ids": []}
+    reviewed = []
+    reviews = iter([{"status": "blocked", "basis": "model_visual_review", "review": ERASED_DISHWASHER},
+                    {"status": "blocked", "basis": "model_visual_review", "review": trace},
+                    {"status": "passed"}])
+    monkeypatch.setattr(image_edit, "verify_completed_background",
+                        lambda **k: reviewed.append(k["frames"][0]) or next(reviews))
+
+    class PassedAnchor(Exception):
+        pass
+
+    def after_anchor(**_):
+        raise PassedAnchor
+
+    monkeypatch.setattr(edits, "_reviewed_editor_background", after_anchor)
+    monkeypatch.setattr(edits, "tile_views", after_anchor)
+    stages = []
+    with pytest.raises(PassedAnchor):
+        edits.run_background(
+            frames=frames, objects=plan()["objects"], automation=plan(),
+            inputs={"frames": [{"frame_id": f["frame_id"]} for f in frames]}, pose={"digest": "pose"},
+            root=tmp_path / "run", context={}, policy={"rgbd_view_cost_usd": 0.05}, source_digest="source",
+            task_runner=after_anchor, release_blockers=lambda: ("commit", []),
+            configuration={"remaining_cost_usd": 10}, checkpoint=stages.append,
+        )
+    assert len(edited) == 2
+    assert [frame["generated_region"] for frame in reviewed] == ["removal_zone", "removal_zone", "full_frame"]
+    assert reviewed[2]["image_path"] == "full-2.png"
+    assert stages[2:5] == ["automation_anchor_review", "automation_anchor_content_reedit",
+                           "automation_anchor_full_frame_review"]
+
+
 def test_only_views_the_review_traced_switch_to_their_already_bought_full_frame():
     composited = {"frame_id": "a", "image_path": "a.png", "image_digest": "sha256:a", "generated_region": "removal_zone",
                   "full_frame_image_path": "a-full.png", "full_frame_image_digest": "sha256:a-full"}
