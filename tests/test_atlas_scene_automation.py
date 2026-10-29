@@ -780,6 +780,161 @@ def test_anchor_that_erased_an_unrelated_object_is_reedited_once_naming_what_to_
                           "automation_anchor_content_reedit"]
 
 
+def test_composited_anchor_with_a_remaining_trace_is_reviewed_once_as_its_full_frame(tmp_path, monkeypatch):
+    # A shadow or reflection past the kept removal zone stays in the composite
+    # (2026-09-24). The editor's whole frame was already bought; review it once.
+    from blueprint_pipeline import website_image_completion as image_edit
+
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: None)
+    frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
+    monkeypatch.setattr(
+        edits, "segment_objects", lambda **_: [{**plan()["objects"][0], **track(frames)}]
+    )
+    monkeypatch.setattr(
+        image_edit,
+        "_validated_backend",
+        lambda *a, **k: ({}, {"pricing_binding": {"max_cost_per_request_usd": 0.2}}, "b"),
+    )
+    edited = []
+    monkeypatch.setattr(image_edit, "complete_background_images", lambda **k: edited.append(1) or [
+        {**frame, "full_frame_image_path": "full.png", "full_frame_image_digest": "sha256:full",
+         "generated_region": "removal_zone"} for frame in k["frames"]])
+    trace = {"task_objects_removed": False, "unrelated_objects_preserved": True,
+             "remaining_task_object_frame_ids": ["a"], "unrelated_object_loss_frame_ids": []}
+    reviewed = []
+    reviews = iter([{"status": "blocked", "basis": "model_visual_review", "review": trace},
+                    {"status": "blocked", "basis": "model_visual_review", "review": trace}])
+    monkeypatch.setattr(image_edit, "verify_completed_background",
+                        lambda **k: reviewed.append(k["frames"][0]) or next(reviews))
+
+    def forbidden(**_):
+        raise AssertionError("Rejected pixels reached Atlas")
+
+    stages = []
+    result = edits.run_background(
+        frames=frames, objects=plan()["objects"], automation=plan(),
+        inputs={"frames": [{"frame_id": f["frame_id"]} for f in frames]}, pose={"digest": "pose"},
+        root=tmp_path / "run", context={}, policy={"rgbd_view_cost_usd": 0.05}, source_digest="source",
+        task_runner=forbidden, release_blockers=lambda: ("commit", []),
+        configuration={"remaining_cost_usd": 10}, checkpoint=stages.append,
+    )
+    # No new edit is bought for the fallback, and its verdict stands.
+    assert len(edited) == 1 and result["status"] == "quality_rejected" and result["stage"] == "anchor"
+    assert [frame["generated_region"] for frame in reviewed] == ["removal_zone", "full_frame"]
+    assert reviewed[1]["image_path"] == "full.png" and reviewed[1]["image_digest"] == "sha256:full"
+    assert stages == ["automation_segmentation", "automation_anchor", "automation_anchor_review",
+                      "automation_anchor_full_frame_review"]
+
+
+def test_a_composited_anchor_correction_with_a_trace_also_gets_its_full_frame_review(tmp_path, monkeypatch):
+    # The unrelated-object correction is composited too; a trace in it must not
+    # stop the job when its already-bought full frame would pass (#3065 review).
+    from blueprint_pipeline import website_image_completion as image_edit
+
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: None)
+    frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
+    monkeypatch.setattr(
+        edits, "segment_objects", lambda **_: [{**plan()["objects"][0], **track(frames)}]
+    )
+    monkeypatch.setattr(
+        image_edit,
+        "_validated_backend",
+        lambda *a, **k: ({}, {"pricing_binding": {"max_cost_per_request_usd": 0.2}}, "b"),
+    )
+    edited = []
+    monkeypatch.setattr(image_edit, "complete_background_images", lambda **k: edited.append(1) or [
+        {**frame, "full_frame_image_path": f"full-{len(edited)}.png", "full_frame_image_digest": "sha256:full",
+         "generated_region": "removal_zone"} for frame in k["frames"]])
+    trace = {"task_objects_removed": False, "unrelated_objects_preserved": True,
+             "remaining_task_object_frame_ids": ["a"], "unrelated_object_loss_frame_ids": []}
+    reviewed = []
+    reviews = iter([{"status": "blocked", "basis": "model_visual_review", "review": ERASED_DISHWASHER},
+                    {"status": "blocked", "basis": "model_visual_review", "review": trace},
+                    {"status": "passed"}])
+    monkeypatch.setattr(image_edit, "verify_completed_background",
+                        lambda **k: reviewed.append(k["frames"][0]) or next(reviews))
+
+    class PassedAnchor(Exception):
+        pass
+
+    def after_anchor(**_):
+        raise PassedAnchor
+
+    monkeypatch.setattr(edits, "_reviewed_editor_background", after_anchor)
+    monkeypatch.setattr(edits, "tile_views", after_anchor)
+    stages = []
+    with pytest.raises(PassedAnchor):
+        edits.run_background(
+            frames=frames, objects=plan()["objects"], automation=plan(),
+            inputs={"frames": [{"frame_id": f["frame_id"]} for f in frames]}, pose={"digest": "pose"},
+            root=tmp_path / "run", context={}, policy={"rgbd_view_cost_usd": 0.05}, source_digest="source",
+            task_runner=after_anchor, release_blockers=lambda: ("commit", []),
+            configuration={"remaining_cost_usd": 10}, checkpoint=stages.append,
+        )
+    assert len(edited) == 2
+    assert [frame["generated_region"] for frame in reviewed] == ["removal_zone", "removal_zone", "full_frame"]
+    assert reviewed[2]["image_path"] == "full-2.png"
+    assert stages[2:5] == ["automation_anchor_review", "automation_anchor_content_reedit",
+                           "automation_anchor_full_frame_review"]
+
+
+def test_only_views_the_review_traced_switch_to_their_already_bought_full_frame():
+    composited = {"frame_id": "a", "image_path": "a.png", "image_digest": "sha256:a", "generated_region": "removal_zone",
+                  "full_frame_image_path": "a-full.png", "full_frame_image_digest": "sha256:a-full"}
+    clean = {**composited, "frame_id": "b", "image_path": "b.png", "full_frame_image_path": "b-full.png"}
+    whole = {"frame_id": "c", "image_path": "c.png", "image_digest": "sha256:c", "generated_region": "full_frame"}
+    review = {"status": "blocked", "review": {"remaining_task_object_frame_ids": ["a", "c"]}}
+    swapped, changed = edits.full_frames_for_traces([composited, clean, whole], review)
+    assert changed and swapped[1:] == [clean, whole]
+    assert swapped[0] == {**composited, "image_path": "a-full.png", "image_digest": "sha256:a-full",
+                          "generated_region": "full_frame"}
+    # A second pass finds nothing left to switch, so the repair loop ends as before.
+    assert edits.full_frames_for_traces(swapped, review) == (swapped, False)
+    assert edits.full_frames_for_traces([composited], {"review": {}}) == ([composited], False)
+
+
+def test_a_set_swap_keeps_the_failed_review_chain_the_repair_planner_walks(tmp_path, monkeypatch):
+    # Review on #3065: the planner keeps views whose camera moved in an earlier
+    # round free of the anchor reference by walking prior_failed_review.
+    from blueprint_pipeline import website_image_completion as image_edit
+    from blueprint_pipeline import website_image_repair_agent as repair_agent
+
+    rows = [{"frame_id": key, "image_path": f"{key}.png", "image_digest": f"sha256:{key}"} for key in ("a", "b")]
+    composite = lambda row, tag="": {**row, "image_path": f"{row['frame_id']}{tag}-zone.png",  # noqa: E731
+                                     "image_digest": f"sha256:{row['frame_id']}{tag}-zone",
+                                     "generated_region": "removal_zone",
+                                     "full_frame_image_path": f"{row['frame_id']}{tag}-full.png",
+                                     "full_frame_image_digest": f"sha256:{row['frame_id']}{tag}-full"}
+    monkeypatch.setattr(image_edit, "complete_background_images", lambda **k: (
+        _ for _ in ()).throw(ValueError("website_image_completion_cached_batch_missing")) if k.get("require_cached")
+        else [composite(row) for row in k["frames"]])
+    moved = {"status": "blocked", "review": {"camera_changed_frame_ids": ["a"]}}
+    traced = {"status": "blocked", "review": {"remaining_task_object_frame_ids": ["b"]}}
+    reviews = iter([moved, {"status": "blocked", "review": {}}])
+    monkeypatch.setattr(image_edit, "verify_completed_background", lambda **_: next(reviews))
+    monkeypatch.setattr(repair_agent, "image_repair_enabled", lambda: True)
+    failed = []
+
+    def repair(*, selected, failed_review, **_):
+        failed.append(failed_review)
+        if len(failed) == 1:     # round 1 re-edits "a"; its review traces "b"
+            return [composite(selected[0], "-r1"), selected[1]], {**traced, "prior_failed_review": failed_review}
+        return selected, {**failed_review, "status": "blocked"}
+
+    monkeypatch.setattr(repair_agent, "repair_rejected_views", repair)
+    result = edits._reviewed_editor_background(
+        prepared=rows, anchor={"image_path": "anchor.png"}, plan={"task_context_sha256": "t", "targets": []},
+        automation={"removal_instruction": "remove"}, root=tmp_path, context={}, source_digest="s",
+        measurements={}, selected_frame_ids=["a", "b"], check=lambda _: None, prepared_binding={})
+    # Round 2 received the swap review, and the chain still reaches round 1's moved camera.
+    chain, seen = failed[1], []
+    while isinstance(chain, dict):
+        seen += (chain.get("review") or {}).get("camera_changed_frame_ids", [])
+        chain = chain.get("prior_failed_review")
+    assert "a" in seen and result["status"] == "quality_rejected"
+    assert [row["generated_region"] for row in result["frames"]] == ["removal_zone", "full_frame"]
+
+
 def test_unrelated_object_instruction_quotes_the_finding_as_bounded_data():
     from blueprint_pipeline.website_image_repair_agent import (
         UNRELATED_OBJECTS_KEPT_INSTRUCTION, unrelated_objects_kept_instruction)

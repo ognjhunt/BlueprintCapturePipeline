@@ -207,7 +207,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
         'Photorealistic continuation of this exact captured room. Existing geometry, materials, lighting, '
         'fixtures and visible objects remain in their photographed positions. '
         'Newly revealed gaps contain only bare continuous architectural and support surfaces matching '
-        'their visible edges: floor, walls, ceiling and empty counter or shelf surfaces where applicable. '
+        'their visible edges: floor, walls, ceiling and empty work or storage surfaces where applicable. '
         'Cleared openings remain open, unobstructed space. Newly revealed areas are empty of movable objects. '
         'The scene stays inside the captured room, without additional rooms, objects or fixtures.')
     policy = configuration['policy']

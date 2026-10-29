@@ -38,8 +38,8 @@ CAMERA_CHANGED_INSTRUCTION = (
     "Keep this view's exact original camera: the same framing, zoom, perspective and visible edges. "
     "Do not recompose the scene; change only the removed objects and the surfaces they hid.")
 UNRELATED_OBJECTS_KEPT_INSTRUCTION = (
-    "Keep every object that is not a listed task object exactly as photographed, including appliances, "
-    "fixtures and furniture far from the marked region; do not erase, replace or restyle them.")
+    "Keep every object that is not a listed task object exactly as photographed, including fixtures "
+    "and furniture far from the marked region; do not erase, replace or restyle them.")
 
 
 def unrelated_objects_kept_instruction(review: Mapping[str, Any]) -> str:

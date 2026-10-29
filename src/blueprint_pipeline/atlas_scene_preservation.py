@@ -403,7 +403,7 @@ def generate_masked_completion(*, frames, selected, candidates, root, pose, cont
     caption = ('The exact environment shown in the context photographs, with the same architecture, materials, '
                'lighting, layout, fixtures and existing objects. Observed surfaces and objects retain their '
                'original appearance and positions. Previously unseen space continues the existing surfaces '
-               'naturally, without additional objects, appliances, furniture, clutter or decorations. '
+               'naturally, without additional objects, furniture, clutter or decorations. '
                'Existing empty installation openings remain empty. '
                'The following task objects are absent: ' + json.dumps(list(removed_objects)) + '.')
     remaining = 0.

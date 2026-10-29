@@ -827,7 +827,7 @@ def run_task_evaluation_robot_placement_agent(
         "Select one exact candidate_id from the deterministic feasible inventory and copy its "
         "position, orientation, and support surface byte-for-byte. Do not interpolate, invent, "
         "or mutate a pose. The robot base must sit on the declared "
-        "support surface, never inside a table/counter/floor; its body must not visibly clip site "
+        "support surface, never inside it or any other geometry; its body must not visibly clip site "
         "geometry; and the task workspace must be reachable. Do not claim success or modify any "
         "threshold. Return only the declared structured proposal."
     )

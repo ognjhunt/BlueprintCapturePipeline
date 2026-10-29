@@ -81,6 +81,9 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
         return {"succeeded": True, "generated": stream.getvalue(), "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
 
     monkeypatch.setattr(completion, "_execute_frame_request", edit)
+    # An edit whose camera cannot be verified stays whole (see the removal-zone test).
+    from blueprint_pipeline import edited_view_camera as camera_check
+    monkeypatch.setattr(camera_check, "edited_view_camera", lambda *_: {"status": "unverifiable"})
     args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission,
                 admission_grant=_grant(admission), token="test", mask_guidance=mask_guidance)
     outputs = completion.complete_background_images(**args)
@@ -105,7 +108,7 @@ def test_completion_sends_plain_frame_keeps_whole_edit_references_first_edit_and
     assert "anything inside them or resting on them" in calls[0]["prompt"]
     for original, output in zip(frames, outputs):
         image = np.asarray(Image.open(output["image_path"]))
-        # The whole edited frame is kept: no silhouette paste-back.
+        # An unverifiable camera keeps the whole edited frame: no paste-back.
         assert np.all(image == [0, 0, 255])
         assert _sha256_file(Path(original["image_path"])) == original["image_digest"]
         assert output["generated_pixel_count"] == 10 * 20
@@ -281,10 +284,13 @@ def test_largest_removal_view_is_the_edited_anchor_for_every_other_view(tmp_path
     anchor = Path(outputs[1]["image_path"]).read_bytes()
     assert [call["reference_images"] for call in calls[1:]] == [[anchor], [anchor]]
     assert [output["frame_id"] for output in outputs] == ["0", "1", "2"]
-    # The rules name the open bay for built-in objects, in the edit and in the review.
-    assert "leave the empty bay it occupied open to its full depth" in calls[0]["prompt"]
-    assert "never fill that space with cabinets, doors, drawers, panels" in calls[0]["prompt"]
-    assert "not new cabinets, doors, drawers or panels" in completion.REVIEW_PROMPT
+    # The rules name the open bay only for a built-in task object, in the edit and
+    # in the review, and never let the editor touch anything else.
+    assert "Only where a listed task object was itself built" in calls[0]["prompt"]
+    assert "leave the opening it occupied open to its full depth" in calls[0]["prompt"]
+    assert "never fill that opening with new fronts, panels or other objects" in calls[0]["prompt"]
+    assert "and people, never remove, open or replace anything" in calls[0]["prompt"]
+    assert "not new fronts, panels or other fill" in completion.REVIEW_PROMPT
     # Objects next to the removed one stay, and a covered rug or mat continues underneath.
     assert "even where they touch or sit next to the removed object" in calls[0]["prompt"]
     assert "continue it underneath" in calls[0]["prompt"]
@@ -849,3 +855,85 @@ def test_only_a_scene_with_transients_extends_the_bound_edit_and_review_prompts(
     assert completion.TRANSIENT_REVIEW_PROMPT in review and review.endswith("Targets: ")
     # A person is not one of several task objects; the single-object prompts stay.
     assert completion.MULTI_OBJECT_PROMPT not in edit
+
+
+def test_removal_zone_reaches_a_quarter_of_the_object_size_past_the_mask_with_a_soft_edge():
+    editable = np.zeros((600, 900), dtype=bool)
+    editable[200:400, 300:500] = True                      # 200 x 200: reach 50 px
+    row = completion.removal_zone_alpha(editable)[300]
+    assert row[400] == 1 and row[499 + 50] == 1            # mask and its reach
+    assert 0 < row[499 + 58] < 1                           # the 16 px soft edge
+    assert row[499 + 66] == 0 and row[0] == 0              # photographed pixels beyond
+    small = np.zeros((600, 900), dtype=bool)
+    small[300, 450] = True
+    row = completion.removal_zone_alpha(small)[300]
+    assert row[450 + 16] == 1 and row[450 + 32] == 0       # at least 16 px
+    assert completion.removal_zone_alpha(np.ones((600, 900), dtype=bool)).min() == 1
+
+
+def _zone_inputs(tmp_path):
+    image, mask = tmp_path / "source.png", tmp_path / "mask.png"
+    Image.new("RGB", (240, 160), "red").save(image)
+    pixels = np.zeros((160, 240), dtype=np.uint8)
+    pixels[70:90, 110:130] = 255
+    Image.fromarray(pixels).save(mask)
+    frames = [{"frame_id": "0", "image_path": str(image), "image_digest": _sha256_file(image),
+               "remaining_mask_path": str(mask), "remaining_mask_digest": _sha256_file(mask),
+               "remaining_pixel_count": 400}]
+    digest = completion._validated_backend(completion.REGISTRY_PATH, backend_id=completion.BACKEND_ID)[2]
+    admission = {"schema_version": "paid_lane_admission.v1", "status": "admitted", "blockers": [],
+                 "resource_class": "openai_api_candidate", "external_disclosure_allowed": True,
+                 "allocation_binding_digest": canonical_digest(completion.completion_binding(
+                     frames, task_digest="task", backend_digest=digest)),
+                 "maximum_cost_usd": 1.0}
+    return frames, admission
+
+
+@pytest.mark.parametrize("camera", ["unchanged_features", "aligned_shared_features", "moved"])
+def test_edit_keeps_editor_pixels_only_in_the_removal_zone_when_its_camera_held(tmp_path, monkeypatch, camera):
+    # 2026-10-29 capture-4b60431e: the full-frame edit removed the tray and also
+    # erased an unrelated object. Photographed pixels now stay outside the zone.
+    from blueprint_pipeline import edited_view_camera as camera_check
+    frames, admission = _zone_inputs(tmp_path)
+
+    def edit(**kwargs):
+        stream = BytesIO()
+        Image.new("RGB", kwargs["expected_size"], "blue").save(stream, format="PNG")
+        return {"succeeded": True, "generated": stream.getvalue(),
+                "usage": _normalized_usage({"output_tokens_details": {"image_tokens": 100}})}
+
+    checked = []
+    monkeypatch.setattr(completion, "_execute_frame_request", edit)
+    # A shift the camera check still accepts as "kept" would misalign the zone.
+    monkeypatch.setattr(camera_check, "edited_view_camera", lambda *paths: checked.append(paths) or (
+        {"status": "kept", "reason": camera} if camera != "moved" else {"status": "moved", "reason": "camera_shift"}))
+    args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission,
+                admission_grant=_grant(admission), token="test")
+    [output] = completion.complete_background_images(**args)
+    image = np.asarray(Image.open(output["image_path"]).convert("RGB"))
+    receipt = json.loads(Path(output["completion_receipt"]).read_text())
+    full_frame = Path(output["completion_receipt"]).with_name("0-full-frame.png")
+    # The camera check sees the editor's raw frame, never the composite.
+    assert checked == [(Path(frames[0]["image_path"]), full_frame, Path(frames[0]["remaining_mask_path"]))]
+    assert np.all(np.asarray(Image.open(full_frame).convert("RGB")) == [0, 0, 255])
+    assert receipt["full_frame_image_digest"] == _sha256_file(full_frame) and receipt["edited_view_camera"] == camera
+    policy = completion.completion_binding(frames, task_digest="task", backend_digest=receipt["backend_digest"])
+    assert policy["output_policy"] == completion.REMOVAL_ZONE_BINDING
+    assert policy["output_policy"]["name"] == "removal_zone_composite_v1"
+    if camera == "unchanged_features":
+        assert np.all(image[70:90, 110:130] == [0, 0, 255])        # the removal itself
+        assert np.all(image[:10] == [255, 0, 0]) and np.all(image[:, :40] == [255, 0, 0])
+        zone = completion.removal_zone_alpha(np.asarray(Image.open(frames[0]["remaining_mask_path"])) == 255)
+        assert output["generated_region"] == receipt["generated_region"] == "removal_zone"
+        assert output["generated_pixel_count"] == int(np.count_nonzero(zone)) < 240 * 160
+        assert output["full_frame_image_path"] == str(full_frame)
+        assert output["full_frame_image_digest"] == receipt["full_frame_image_digest"]
+    else:
+        # A shifted or reframed edit stays whole so the camera review still judges it.
+        assert np.all(image == [0, 0, 255])
+        assert output["generated_region"] == "full_frame" and "full_frame_image_path" not in output
+        assert output["generated_pixel_count"] == 240 * 160
+    assert completion.complete_background_images(**args) == [output]
+    full_frame.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="website_image_completion_output_changed"):
+        completion.complete_background_images(**args)

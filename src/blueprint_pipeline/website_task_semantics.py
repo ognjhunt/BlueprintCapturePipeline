@@ -51,7 +51,7 @@ Pick-up plus placement is one rigid_pick_place operation; a different subsequent
 operation is another step. Report every operative step, including unknown ones.
 Use the registered profile IDs below when their complete operation matches the
 job. rigid_pick_place lifts one rigid object and places it on its qualified
-destination; articulated_open_close opens one door, drawer or lid, not closing.
+destination; articulated_open_close opens one hinged, sliding or lifting part, not closing.
 The other registered families have their own independent state predicates.
 For several operations propose multi_step and retain ALL ordered steps; never
 collapse them into one atomic pick/place, folding or other operation. Use an

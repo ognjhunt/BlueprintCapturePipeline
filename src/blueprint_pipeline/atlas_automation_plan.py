@@ -102,14 +102,14 @@ reason/assumption. Scenes may be homes, offices, shops, warehouses, factories,
 labs or outdoor sites. When visible, give at least two independent references
 on different fixed objects that stay in the scene, preferring standardized
 building elements and fixtures over the object being removed: for example a
-doorway or door leaf, a stair riser, a ceiling tile, a work surface height
-(counter, desk or bench), a standard pallet, a rack or shelving upright, a
+doorway or door leaf, a stair riser, a ceiling tile, a work surface height,
+a standard pallet, a rack or shelving upright, a
 parking bay, or a built-in appliance. Several views of one object count as one,
 under one label. Put both endpoints on the named object itself, never on
 anything in front of or beside it, in a view where the dimension is large and
 seen nearly face-on. Give each reference a short segmentation_prompt naming
 only that object as SAM 3.1 should find it in that view (for example
-"freestanding range" or "doorway"): a reference whose endpoints fall off that
+"doorway"): a reference whose endpoints fall off that
 object's mask is set aside. References are cross-checked: an object whose range
 excludes the others' consensus is set aside, and without a majority no scale is
 given. These are approximate class/visual priors, never measurements. Do not

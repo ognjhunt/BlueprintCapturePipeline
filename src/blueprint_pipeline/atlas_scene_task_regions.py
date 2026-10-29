@@ -62,7 +62,7 @@ The feedback identifies source context and native generated frame IDs. Assess
 EVERY native frame exactly once; source context frames do not need output entries.
 A single image can contain both useful and unrelated regions. Give each included
 surface a short segmentation_prompt naming a concrete visible object or material
-surface for SAM3.1 (for example, a floor, worktop, wall or storage unit).
+surface for SAM3.1 (for example, a floor, wall or the top of a supporting unit).
 Name whole surfaces and separate concepts when necessary, not a long relational
 instruction. Leave polygon_normalized empty: this legacy field is not used in
 SAM surface selection. Do not spend output on drawing coordinates. Use broad,

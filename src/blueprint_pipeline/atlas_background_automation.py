@@ -481,6 +481,21 @@ def reusable_background(path, *, source_digest, context, frames, objects):
     return result, saved['digest']
 
 
+def full_frames_for_traces(candidates, review):
+    """Views the review says still show the removed object use their full edit.
+
+    The editor removes shadows and reflections across the whole frame; the
+    composite keeps only its pixels near the object. That full frame was already
+    bought, so switching to it costs one review, never another edit.
+    """
+    traced = set((review.get("review") or {}).get("remaining_task_object_frame_ids") or [])
+    swapped = [{**row, "image_path": row["full_frame_image_path"], "image_digest": row["full_frame_image_digest"],
+                "generated_region": "full_frame"}
+               if row["frame_id"] in traced and row.get("full_frame_image_path")
+               and row.get("generated_region") == "removal_zone" else row for row in candidates]
+    return swapped, swapped != list(candidates)
+
+
 def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, context,
                                 source_digest, measurements, selected_frame_ids, check,
                                 prepared_binding, atlas_review=None, reused_frames=(), prior_digest=None):
@@ -518,6 +533,13 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
     check("automation_editor_review")
     review = verify_completed_background(frames=candidates, original_frames=chosen, plan=plan,
         output_root=root / "selected_editor_review", task_context=context, source_video_digest=source_digest)
+    candidates, swapped = full_frames_for_traces(candidates, review)
+    if swapped:
+        # The failed review stays in the chain the repair planner walks.
+        check("automation_editor_full_frame_review")
+        review = {**verify_completed_background(frames=candidates, original_frames=chosen, plan=plan,
+            output_root=root / "selected_editor_review", task_context=context, source_video_digest=source_digest),
+            "prior_failed_review": review}
     seen = {tuple(row["image_digest"] for row in candidates)}
     repair_round = 0
     while review["status"] != "passed" and image_repair_enabled():
@@ -535,6 +557,14 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
             source_video_digest=source_digest, max_repairs=len(chosen),
             repair_reference_path=Path(anchor["image_path"]))
         repair_round += 1
+        candidates, swapped = full_frames_for_traces(candidates, review)
+        if swapped:
+            # Keep the round's repair history: the planner walks it to keep
+            # views whose camera moved earlier free of the anchor reference.
+            check("automation_editor_full_frame_review")
+            review = {**verify_completed_background(frames=candidates, original_frames=chosen, plan=plan,
+                output_root=repair_root / "full_frame_review", task_context=context,
+                source_video_digest=source_digest), "prior_failed_review": review}
         signature = tuple(row["image_digest"] for row in candidates)
         if review["status"] != "passed" and signature in seen:
             break
@@ -781,6 +811,24 @@ def run_background(
             anchor_review = verify_completed_background(
                 frames=[anchor], original_frames=[anchor_source], plan=plan,
                 output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
+
+        def full_frame_if_traced(anchor, anchor_review):
+            # A shadow or reflection reaching past the kept removal zone stays in
+            # the composite (the 2026-09-24 ghost). The editor's full frame was
+            # already bought: review it once instead of stopping the job.
+            findings = anchor_review.get("review") or {}
+            traced = anchor_review["status"] != "passed" and (
+                findings.get("task_objects_removed") is False or bool(findings.get("remaining_task_object_frame_ids")))
+            [full_anchor], swapped = full_frames_for_traces(
+                [anchor], {"review": {"remaining_task_object_frame_ids": [anchor["frame_id"]] if traced else []}})
+            if not swapped:
+                return anchor, anchor_review
+            check("automation_anchor_full_frame_review")
+            return full_anchor, verify_completed_background(
+                frames=[full_anchor], original_frames=[anchor_source], plan=plan,
+                output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
+
+        anchor, anchor_review = full_frame_if_traced(anchor, anchor_review)
         findings = anchor_review.get("review") or {}
         if (anchor_review["status"] != "passed" and findings.get("unrelated_objects_preserved") is False
                 and findings.get("unrelated_object_loss_frame_ids")):
@@ -800,6 +848,8 @@ def run_background(
             anchor_review = verify_completed_background(
                 frames=[anchor], original_frames=[anchor_source], plan=plan,
                 output_root=root / "anchor_review", task_context=context, source_video_digest=source_digest)
+            # The correction is composited too, so its trace gets the same fallback.
+            anchor, anchor_review = full_frame_if_traced(anchor, anchor_review)
     if anchor_review["status"] != "passed":
         return {
             "status": "quality_rejected",
