@@ -275,7 +275,8 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
                             poll_interval_seconds=15, retry_lineage=None) -> dict[str, Any]:
     """One exact, reserved task. Ambiguous submissions hold; reruns reuse intent."""
     from .website_task_context import reserve_website_preparation_spend
-    from .atlas_preparation_context import preparation_source_checkpoint, validate_preparation_task_context
+    from .atlas_preparation_runtime import preparation_source_checkpoint
+    from .atlas_preparation_context import validate_preparation_task_context
     from .owned_capture_atlas_project import owned_atlas_project_checkpoint
     validate_task_request(task, request)
     validate_preparation_task_context(task_context)

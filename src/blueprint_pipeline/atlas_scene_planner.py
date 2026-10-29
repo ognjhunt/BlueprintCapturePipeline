@@ -812,7 +812,8 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                     carried_reserved_usd=0.0):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, preparation_webapp_request
-    from .atlas_preparation_context import preparation_source_checkpoint, requires_task_semantic_analysis
+    from .atlas_preparation_runtime import preparation_source_checkpoint
+    from .atlas_preparation_context import requires_task_semantic_analysis
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
     source_checkpoint = preparation_source_checkpoint(task_context)

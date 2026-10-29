@@ -146,7 +146,7 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
     import time
 
     from .paid_resource_admission import require_paid_resource_admission, require_paid_resource_budget
-    from .atlas_preparation_context import preparation_source_checkpoint
+    from .atlas_preparation_runtime import preparation_source_checkpoint
     source_checkpoint = preparation_source_checkpoint(task_context)
     if source_checkpoint is not None:
         source_checkpoint("owned_atlas_spend_reservation")
@@ -325,4 +325,23 @@ def enqueue_website_prepared_scene(*, task_context: Mapping[str, Any], request: 
     if (value.get("request_digest") != cross_runtime_canonical_digest(request) or value.get("state") != "forward_pending"
             or not isinstance(value.get("id"), str) or not value["id"].startswith("scene-")):
         raise ValueError("website_scene_outbox_receipt_invalid")
+    return value
+
+
+def load_atlas_configuration(context, source_digest, *, create=True):
+    from .website_task_context import preparation_webapp_request
+    from .owned_capture_atlas_context import SCHEMA
+    if type(create) is not bool:
+        raise ValueError("atlas_runtime_configuration_create_invalid")
+    value = preparation_webapp_request(task_context=context, operation="atlas-configuration", payload={
+        "request_id": context["request_id"], "scene_id": context["scene_id"],
+        "task_context_digest": context["context_digest"], "source_video_digest": source_digest,
+        **({"create": False} if not create else {})})
+    schema = "owned_capture_atlas_configuration.v1" if context.get("schema_version") == SCHEMA else "website_atlas_configuration.v1"
+    if (value.get("schema_version") != schema
+            or value.get("source_video_digest") != source_digest
+            or value.get("task_context_digest") != context["context_digest"]
+            or value.get("dispatch_authorized") is not False
+            or not create and value.get("grant_creation_allowed") is not False):
+        raise ValueError("atlas_runtime_configuration_invalid")
     return value

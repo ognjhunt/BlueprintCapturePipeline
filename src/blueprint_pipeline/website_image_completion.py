@@ -519,7 +519,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             else:
                 if spent + cap > budget:
                     raise ValueError("website_image_completion_budget_exhausted")
-                from .atlas_preparation_context import preparation_disclosure_opener
+                from .atlas_preparation_runtime import preparation_disclosure_opener
                 request_opener = (preparation_disclosure_opener(task_context, opener)
                                   if task_context is not None else opener)
                 canvas, box = _canvas(source, native_aspect=native_aspect)

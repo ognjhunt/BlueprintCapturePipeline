@@ -726,7 +726,7 @@ def test_owned_provider_plan_reports_missing_complete_task_as_input_gap(tmp_path
 
 @pytest.mark.parametrize('change', ['bytes', 'revocation'])
 def test_owned_atlas_transport_reopens_source_for_each_disclosure_but_can_reconcile_and_cleanup(tmp_path, change):
-    from blueprint_pipeline.atlas_preparation_context import preparation_source_checkpoint
+    from blueprint_pipeline.atlas_preparation_runtime import preparation_source_checkpoint
     from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
     from blueprint_pipeline.website_atlas_pose import AtlasClient
 
@@ -773,7 +773,7 @@ def test_owned_atlas_transport_reopens_source_for_each_disclosure_but_can_reconc
 
 
 def test_owned_source_context_never_supplies_its_own_runtime_fence(tmp_path):
-    from blueprint_pipeline.atlas_preparation_context import preparation_source_checkpoint
+    from blueprint_pipeline.atlas_preparation_runtime import preparation_source_checkpoint
     from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
 
     store, state = tmp_path / 'store', tmp_path / 'state'
@@ -811,7 +811,7 @@ def test_owned_runtime_refuses_a_modified_retained_plan(tmp_path):
 
 def test_mutating_yielded_context_cannot_retarget_a_captured_source_fence(tmp_path):
     from copy import deepcopy
-    from blueprint_pipeline.atlas_preparation_context import preparation_source_checkpoint
+    from blueprint_pipeline.atlas_preparation_runtime import preparation_source_checkpoint
     from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
     from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
     from blueprint_pipeline.website_atlas_pose import AtlasClient

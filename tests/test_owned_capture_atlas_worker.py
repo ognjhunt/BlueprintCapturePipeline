@@ -28,6 +28,15 @@ from tests.test_reconstruction_control_plane import _seed_owned_atlas_source
 from tests.test_owned_capture_atlas_project import configuration as configuration
 
 
+@pytest.fixture(autouse=True)
+def configuration_transport(monkeypatch):
+    from blueprint_pipeline import owned_capture_atlas_control
+    # Both worker execution and CPU queue admission use the same signed loader;
+    # existing controller test doubles must also cover the extracted CPU seam.
+    monkeypatch.setattr(owned_capture_atlas_control, "load_configuration",
+                        lambda *args, **kwargs: controller.load_configuration(*args, **kwargs))
+
+
 @pytest.fixture
 def owned(tmp_path):
     state, store = tmp_path / "work" / "reconstruction_control_plane", tmp_path / "store"
@@ -254,7 +263,7 @@ def test_existing_timer_discovers_explicit_owned_job_from_same_server_roots(owne
 def test_image_network_boundary_keeps_original_source_fence_across_threads(owned):
     from concurrent.futures import ThreadPoolExecutor
     from urllib.request import Request
-    from blueprint_pipeline.atlas_preparation_context import preparation_disclosure_opener
+    from blueprint_pipeline.atlas_preparation_runtime import preparation_disclosure_opener
     from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
     calls = []
     def opener(request, **_):

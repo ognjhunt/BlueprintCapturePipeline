@@ -20,6 +20,15 @@ from tests.test_owned_capture_atlas_project import configuration as configuratio
 from tests.test_reconstruction_control_plane import _seed_owned_atlas_source
 
 
+@pytest.fixture(autouse=True)
+def configuration_transport(monkeypatch):
+    from blueprint_pipeline import owned_capture_atlas_control
+    # Both worker execution and CPU queue admission use the same signed loader;
+    # existing controller test doubles must also cover the extracted CPU seam.
+    monkeypatch.setattr(owned_capture_atlas_control, "load_configuration",
+                        lambda *args, **kwargs: controller.load_configuration(*args, **kwargs))
+
+
 @pytest.fixture
 def owned(tmp_path):
     state, store = tmp_path / "state", tmp_path / "store"

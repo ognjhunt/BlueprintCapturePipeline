@@ -19,30 +19,12 @@ import os
 from pathlib import Path
 import time
 
+from .website_task_context import load_atlas_configuration as load_configuration
 from .common import write_json
 from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .atlas_preparation_context import requires_task_semantic_analysis
-
-
-def load_configuration(context, source_digest, *, create=True):
-    from .website_task_context import preparation_webapp_request
-    from .owned_capture_atlas_context import SCHEMA
-    if type(create) is not bool:
-        raise ValueError("atlas_runtime_configuration_create_invalid")
-    value = preparation_webapp_request(task_context=context, operation="atlas-configuration", payload={
-        "request_id": context["request_id"], "scene_id": context["scene_id"],
-        "task_context_digest": context["context_digest"], "source_video_digest": source_digest,
-        **({"create": False} if not create else {})})
-    schema = "owned_capture_atlas_configuration.v1" if context.get("schema_version") == SCHEMA else "website_atlas_configuration.v1"
-    if (value.get("schema_version") != schema
-            or value.get("source_video_digest") != source_digest
-            or value.get("task_context_digest") != context["context_digest"]
-            or value.get("dispatch_authorized") is not False
-            or not create and value.get("grant_creation_allowed") is not False):
-        raise ValueError("atlas_runtime_configuration_invalid")
-    return value
 
 
 #: Who read the rate card, and when. Renewing it re-confirms the same prices.

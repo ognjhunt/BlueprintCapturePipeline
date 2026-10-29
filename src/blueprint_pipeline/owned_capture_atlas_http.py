@@ -15,7 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-from .owned_capture_atlas_worker import enqueue_owned_atlas, inspect_owned_atlas, open_owned_bundle, retry_owned_atlas
+from .owned_capture_atlas_control import enqueue_owned_atlas, inspect_owned_atlas, open_owned_bundle, retry_owned_atlas
 from .website_atlas_preview_store import PreviewUnavailable
 
 logger = logging.getLogger(__name__)

@@ -165,9 +165,9 @@ def adopt_owned_atlas_reconstruction(*, state_root: Path, capture_store_root: Pa
                                     expected_owner_user_id: str | None = None) -> dict[str, Any]:
     """Verify local retained bytes and immutable source; never dispatch a provider."""
     from .owned_capture_atlas_runtime import bind_owned_atlas_source, owned_atlas_source_checkpoint
-    from .owned_capture_atlas_worker import _job_path, _check_job_source, read_job
+    from .owned_capture_atlas_control import _job_path, _check_job_source, read_job
     from .reconstruction_control_plane import _source_binding, _write_immutable
-    from .website_atlas_preview import preparation_job_lock
+    from .atlas_preparation_job_control import preparation_job_lock
     path = _job_path(state_root, plan_id)
 
     def read(file):

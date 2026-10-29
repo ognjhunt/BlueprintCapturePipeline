@@ -282,7 +282,7 @@ def test_expiry_during_metadata_refuses_before_mutation(context, configuration, 
 def test_shared_adapter_factories_install_the_owned_project_fence(context, configuration, tmp_path, monkeypatch,
                                                                  factory, installed):
     """Stop after construction: exercise factory wiring without admission or spend."""
-    from blueprint_pipeline import atlas_preparation_context as preparation
+    from blueprint_pipeline import atlas_preparation_runtime as preparation
     from blueprint_pipeline import website_atlas_pose as pose
     from blueprint_pipeline import website_atlas_tasks as tasks
 

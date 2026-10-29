@@ -1052,7 +1052,8 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
     new, separately reserved attempt follows, at most ``MAX_POSE_ATTEMPTS``.
     """
     from .website_task_context import reserve_website_preparation_spend
-    from .atlas_preparation_context import preparation_source_checkpoint, validate_preparation_task_context
+    from .atlas_preparation_runtime import preparation_source_checkpoint
+    from .atlas_preparation_context import validate_preparation_task_context
     from .owned_capture_atlas_project import owned_atlas_project_checkpoint
 
     if task_context.get("capture_id") != capture_id:
