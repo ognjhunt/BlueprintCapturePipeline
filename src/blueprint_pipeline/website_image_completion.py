@@ -239,6 +239,37 @@ def _anchor_rank(frame: Mapping[str, Any]) -> tuple[int, int]:
     return -len(frame.get("removed_task_object_ids") or ()), -frame["remaining_pixel_count"]
 
 
+# Owner decision 2026-10-29: the editor redraws the whole frame, and on
+# capture-4b60431e it also erased an unrelated object behind the removed one.
+# Keep its pixels only within reach of the removed objects and the photographed
+# pixels everywhere else. Pasting back through the bare silhouette left the
+# object's outline, shadow and reflections (2026-09-24), so the zone reaches one
+# removed-region size beyond the mask, with a soft edge.
+REMOVAL_ZONE_POLICY = "removal_zone_composite_v1"
+REMOVAL_ZONE_MIN_REACH_PIXELS = 32
+REMOVAL_ZONE_MAX_REACH_PIXELS = 240
+REMOVAL_ZONE_FEATHER_PIXELS = 24
+
+
+def removal_zone_alpha(editable: np.ndarray) -> np.ndarray:
+    """1 over the mask and its reach, 0 beyond, and a linear edge between."""
+    from scipy.ndimage import distance_transform_edt
+
+    reach = min(REMOVAL_ZONE_MAX_REACH_PIXELS,
+                max(REMOVAL_ZONE_MIN_REACH_PIXELS, math.sqrt(int(np.count_nonzero(editable)))))
+    distance = distance_transform_edt(~editable)
+    return np.clip((reach + REMOVAL_ZONE_FEATHER_PIXELS - distance) / REMOVAL_ZONE_FEATHER_PIXELS, 0.0, 1.0)
+
+
+def composite_removal_zone(source: Image.Image, generated: Image.Image,
+                           editable: np.ndarray) -> tuple[Image.Image, int]:
+    alpha = removal_zone_alpha(editable)[..., None]
+    blended = (np.asarray(source, dtype=np.float32) * (1.0 - alpha)
+               + np.asarray(generated, dtype=np.float32) * alpha)
+    return (Image.fromarray(np.rint(blended).clip(0, 255).astype(np.uint8)),
+            int(np.count_nonzero(alpha)))
+
+
 def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str, backend_digest: str,
                        targets: Sequence[Mapping[str, Any]] = (), repair_instruction: str | None = None,
                        reference_digest: str | None = None, mask_guidance: bool = False) -> dict[str, Any]:
@@ -259,6 +290,7 @@ def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str,
     per_object = any("removed_task_object_ids" in frame for frame in frames)
     binding = {"schema_version": "website_image_completion_request.v2", "task_digest": task_digest,
                "backend_digest": backend_digest, "prompt": prompt, "edit_region": "full_frame",
+               "output_policy": REMOVAL_ZONE_POLICY,
                "reference_policy": ("fixed_repair_reference" if repair_instruction is not None
                                     else "edited_anchor_most_task_objects" if per_object
                                     else "edited_anchor_largest_removal"),
@@ -570,12 +602,25 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 cost = _usage_cost(response["usage"], execution["pricing_binding"])
                 spent += cost
                 generated = Image.open(BytesIO(response["generated"])).convert("RGB").crop(box).resize(source.size, Image.Resampling.LANCZOS)
-                # Keep the whole edited frame. Pasting the fill back through the
-                # object's silhouette leaves its outline, shadow and reflections.
-                generated.save(destination)
+                # The editor sees the plain frame and removes shadows and
+                # reflections too; only its pixels near the removal are kept.
+                # A reframed or unverifiable edit stays whole, so the camera
+                # review still sends it back for a re-edit.
+                full_frame = root / f"{index}-full-frame.png"
+                generated.save(full_frame)
+                from .edited_view_camera import edited_view_camera
+                camera = edited_view_camera(source_path, full_frame, mask_path)["status"]
+                if camera == "kept":
+                    output, generated_pixels = composite_removal_zone(source, generated, editable)
+                    region = "removal_zone"
+                else:
+                    output, generated_pixels, region = generated, source.width * source.height, "full_frame"
+                output.save(destination)
                 receipt = {"status": "completed", "request_digest": request_digest, "frame_id": frame["frame_id"],
                            "image_digest": _sha256_file(destination), "cost_usd": cost, "usage": response["usage"],
-                           "backend_digest": backend_digest, "generated_pixel_count": source.width * source.height,
+                           "backend_digest": backend_digest, "generated_pixel_count": generated_pixels,
+                           "generated_region": region, "edited_view_camera": camera,
+                           "full_frame_image_digest": _sha256_file(full_frame),
                            "canvas_policy": execution.get("website_canvas_policy", "legacy_letterbox"),
                            "canvas_size": list(canvas.size),
                            **guidance}
@@ -588,9 +633,12 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 raise ValueError("website_image_completion_budget_exceeded")
             if index == order[0] and fixed_reference is None:
                 reference = destination.read_bytes()
+            full_frame_fields = ({"full_frame_image_path": str(root / f"{index}-full-frame.png"),
+                                  "full_frame_image_digest": receipt["full_frame_image_digest"]}
+                                 if receipt.get("generated_region") == "removal_zone" else {})
             results[index] = ({**frame, "image_path": str(destination), "image_digest": receipt["image_digest"],
                             "generated_pixels_present": True, "generated_pixel_count": receipt["generated_pixel_count"],
-                            "generated_region": "full_frame",
+                            "generated_region": receipt.get("generated_region", "full_frame"), **full_frame_fields,
                             "remaining_pixel_count": 0, "completion_receipt": str(receipt_path),
                             "view_consistency": "requires_review", "physical_evidence": False,
                             **{key: receipt[key] for key in ("target_guidance", "guide_image_path", "guide_image_digest")

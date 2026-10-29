@@ -780,6 +780,52 @@ def test_anchor_that_erased_an_unrelated_object_is_reedited_once_naming_what_to_
                           "automation_anchor_content_reedit"]
 
 
+def test_composited_anchor_with_a_remaining_trace_is_reviewed_once_as_its_full_frame(tmp_path, monkeypatch):
+    # A shadow or reflection past the kept removal zone stays in the composite
+    # (2026-09-24). The editor's whole frame was already bought; review it once.
+    from blueprint_pipeline import website_image_completion as image_edit
+
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: None)
+    frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
+    monkeypatch.setattr(
+        edits, "segment_objects", lambda **_: [{**plan()["objects"][0], **track(frames)}]
+    )
+    monkeypatch.setattr(
+        image_edit,
+        "_validated_backend",
+        lambda *a, **k: ({}, {"pricing_binding": {"max_cost_per_request_usd": 0.2}}, "b"),
+    )
+    edited = []
+    monkeypatch.setattr(image_edit, "complete_background_images", lambda **k: edited.append(1) or [
+        {**frame, "full_frame_image_path": "full.png", "full_frame_image_digest": "sha256:full",
+         "generated_region": "removal_zone"} for frame in k["frames"]])
+    trace = {"task_objects_removed": False, "unrelated_objects_preserved": True,
+             "remaining_task_object_frame_ids": ["a"], "unrelated_object_loss_frame_ids": []}
+    reviewed = []
+    reviews = iter([{"status": "blocked", "basis": "model_visual_review", "review": trace},
+                    {"status": "blocked", "basis": "model_visual_review", "review": trace}])
+    monkeypatch.setattr(image_edit, "verify_completed_background",
+                        lambda **k: reviewed.append(k["frames"][0]) or next(reviews))
+
+    def forbidden(**_):
+        raise AssertionError("Rejected pixels reached Atlas")
+
+    stages = []
+    result = edits.run_background(
+        frames=frames, objects=plan()["objects"], automation=plan(),
+        inputs={"frames": [{"frame_id": f["frame_id"]} for f in frames]}, pose={"digest": "pose"},
+        root=tmp_path / "run", context={}, policy={"rgbd_view_cost_usd": 0.05}, source_digest="source",
+        task_runner=forbidden, release_blockers=lambda: ("commit", []),
+        configuration={"remaining_cost_usd": 10}, checkpoint=stages.append,
+    )
+    # No new edit is bought for the fallback, and its verdict stands.
+    assert len(edited) == 1 and result["status"] == "quality_rejected" and result["stage"] == "anchor"
+    assert [frame["generated_region"] for frame in reviewed] == ["removal_zone", "full_frame"]
+    assert reviewed[1]["image_path"] == "full.png" and reviewed[1]["image_digest"] == "sha256:full"
+    assert stages == ["automation_segmentation", "automation_anchor", "automation_anchor_review",
+                      "automation_anchor_full_frame_review"]
+
+
 def test_unrelated_object_instruction_quotes_the_finding_as_bounded_data():
     from blueprint_pipeline.website_image_repair_agent import (
         UNRELATED_OBJECTS_KEPT_INSTRUCTION, unrelated_objects_kept_instruction)
