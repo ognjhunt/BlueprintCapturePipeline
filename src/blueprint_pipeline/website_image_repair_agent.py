@@ -298,6 +298,19 @@ def _buy_plan(*, path: Path, root: Path, digest: str, binding: Mapping[str, Any]
     return receipt
 
 
+def _whole_frame_mask(source: Mapping[str, Any], root: Path) -> dict[str, Any]:
+    """The source view with a mask covering its whole frame, written once and reused."""
+    import hashlib
+
+    with Image.open(source["image_path"]) as image:
+        size = image.size
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / (hashlib.sha256(str(source["frame_id"]).encode()).hexdigest()[:24] + ".png")
+    Image.new("L", size, 255).save(path)
+    return {**source, "remaining_mask_path": str(path), "remaining_mask_digest": _sha256_file(path),
+            "remaining_pixel_count": size[0] * size[1]}
+
+
 def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_removal_frames: Sequence[Mapping[str, Any]],
                           original_frames: Sequence[Mapping[str, Any]], plan: Mapping[str, Any],
                           failed_review: Mapping[str, Any], output_root: Path, task_context: Mapping[str, Any],
@@ -348,8 +361,14 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
     for row in repairs:
         index = next(i for i, frame in enumerate(result) if frame["frame_id"] == row["frame_id"])
         source = sources[row["frame_id"]]
-        if not source["remaining_pixel_count"]:
-            raise ValueError("website_image_repair_mask_empty")
+        whole_frame = not source["remaining_pixel_count"]
+        if whole_frame:
+            # 2026-10-29 capture-4b60431e: neither segmentation nor the planner's
+            # regions found the tray in the wide overview view, yet the review saw
+            # it there, and refusing stopped the whole preview. Edit that view as
+            # a whole frame, with no target guide or kept zone, as every edit
+            # worked before them; the independent review still decides.
+            source = _whole_frame_mask(source, output_root / "whole_frame_masks")
         edited = complete_background_images(
             frames=[source], task_digest=plan["task_context_sha256"], output_root=output_root / "repairs",
             admission={}, token=os.getenv("OPENAI_API_KEY", ""), targets=plan["targets"],
@@ -357,7 +376,7 @@ def repair_rejected_views(*, selected: Sequence[Mapping[str, Any]], object_remov
             repair_reference_path=(None if row["frame_id"] in camera_changed
                                    else repair_reference_path if repair_reference_path is not None
                                    else Path(anchor["image_path"]) if anchor is not None else None),
-            source_video_digest=source_video_digest, mask_guidance=True,
+            source_video_digest=source_video_digest, mask_guidance=not whole_frame,
             require_original_camera=row["frame_id"] in camera_changed)[0]
         result[index] = {**edited, "repair_instruction": row["instruction"]}
     same_images = all((before["frame_id"], before["image_digest"]) == (after["frame_id"], after["image_digest"])

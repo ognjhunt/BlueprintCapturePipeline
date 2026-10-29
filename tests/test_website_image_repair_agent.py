@@ -151,6 +151,37 @@ def test_planned_repair_reedits_from_original_and_the_independent_review_decides
     assert receipt["status"] == "completed" and receipt["approves_views"] is False
 
 
+def test_a_flagged_view_without_a_removal_mask_is_reedited_as_a_whole_frame(tmp_path, website):
+    # 2026-10-29 capture-4b60431e: the tray in the wide overview view had no mask, the
+    # repair refused (website_image_repair_mask_empty) and the whole preview stopped.
+    selected, sources = _views(tmp_path)
+    empty = tmp_path / "mask-empty.png"
+    Image.new("L", (40, 20)).save(empty)
+    sources[0] = {**sources[0], "remaining_pixel_count": 0, "remaining_mask_path": str(empty),
+                  "remaining_mask_digest": _sha256_file(empty)}
+    invoker = _Invoker({"repairs": [{"frame_id": "f0", "instruction": "Remove the tray from the table"}],
+                        "summary": "tray left in f0"})
+    failed = {**FAILED, "review": {**FAILED["review"], "task_objects_removed": False,
+                                   "remaining_task_object_frame_ids": ["f0"]}}
+    args = dict(selected=selected, object_removal_frames=sources, original_frames=[], plan=PLAN,
+                failed_review=failed, output_root=tmp_path / "image_completion", task_context=CONTEXT,
+                invoker=invoker)
+    frames, review = repair.repair_rejected_views(**args)
+    (edit,) = website["edit"]
+    source = edit["frames"][0]
+    # The whole frame is editable and the editor gets no target guide to misread.
+    assert edit["mask_guidance"] is False and source["image_path"].endswith("original-0.png")
+    with Image.open(source["remaining_mask_path"]) as mask:
+        assert mask.size == (40, 20) and set(mask.getdata()) == {255}
+    assert source["remaining_pixel_count"] == 40 * 20
+    assert source["remaining_mask_digest"] == _sha256_file(Path(source["remaining_mask_path"]))
+    assert frames[0]["image_path"] == "repaired.png" and review["repaired_frame_ids"] == ["f0"]
+    # The same mask bytes come back on a restart, so a retained edit is reused.
+    digest = source["remaining_mask_digest"]
+    repair.repair_rejected_views(**args)
+    assert website["edit"][1]["frames"][0]["remaining_mask_digest"] == digest
+
+
 def test_restart_reuses_the_retained_plan_without_buying_again(tmp_path, website):
     invoker = _Invoker({"repairs": [{"frame_id": "f1", "instruction": "Keep the floor mat"}], "summary": "mat"})
     _run(tmp_path, invoker)
