@@ -195,10 +195,10 @@ def test_edit_prompt_names_every_object_and_the_view_showing_most_objects_anchor
 # Retained paid edits and reviews are content addressed, so a prompt change is
 # deliberate. 2026-10-29: the prompts name roles, never a kind of object (owner
 # rule), and edits keep only the removal zone; earlier receipts are not reused.
-SINGLE_BINDING_DIGEST = "sha256:442f9b2b8447fdf2746d788b204e2970283875c819675079bed370318c6823dc"
-SINGLE_REPAIR_BINDING_DIGEST = "sha256:0779c76832766b43e94e4da7247d01d20b91d8fdac9cb94f67acfeb030a0d59a"
+SINGLE_BINDING_DIGEST = "sha256:245a78a0958bbeded2208c0c50d67cd70382c44e2b551ca1f8521d032c780193"
+SINGLE_REPAIR_BINDING_DIGEST = "sha256:914d6283367ff4485d9a870a694e83d36e842cb7be0a5ff0ad4dd69d1f486191"
 REVIEW_PROMPT_SHA256 = "5ff92c802eeb52156f7220512861e255435f9e77d3d0d08697507a8f92103b20"
-PROMPT_SHA256 = "34d6df26da128e25d7f3e4f7d599e77075bebf8b9d6b36ee6bdebe924ce10960"
+PROMPT_SHA256 = "b097d4151e62cf690386c603cd534d53a2c71177d123a200b94607265e2fef48"
 
 
 def test_single_object_edit_and_review_requests_are_byte_identical_to_before(tmp_path):

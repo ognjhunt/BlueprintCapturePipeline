@@ -289,7 +289,7 @@ def test_largest_removal_view_is_the_edited_anchor_for_every_other_view(tmp_path
     assert "Only where a listed task object was itself built" in calls[0]["prompt"]
     assert "leave the opening it occupied open to its full depth" in calls[0]["prompt"]
     assert "never fill that opening with new fronts, panels or other objects" in calls[0]["prompt"]
-    assert "Never remove, open or replace anything that is not a listed task object" in calls[0]["prompt"]
+    assert "and people, never remove, open or replace anything" in calls[0]["prompt"]
     assert "not new fronts, panels or other fill" in completion.REVIEW_PROMPT
     # Objects next to the removed one stay, and a covered rug or mat continues underneath.
     assert "even where they touch or sit next to the removed object" in calls[0]["prompt"]
@@ -889,7 +889,7 @@ def _zone_inputs(tmp_path):
     return frames, admission
 
 
-@pytest.mark.parametrize("camera", ["kept", "moved"])
+@pytest.mark.parametrize("camera", ["unchanged_features", "aligned_shared_features", "moved"])
 def test_edit_keeps_editor_pixels_only_in_the_removal_zone_when_its_camera_held(tmp_path, monkeypatch, camera):
     # 2026-10-29 capture-4b60431e: the full-frame edit removed the tray and also
     # erased an unrelated object. Photographed pixels now stay outside the zone.
@@ -904,8 +904,9 @@ def test_edit_keeps_editor_pixels_only_in_the_removal_zone_when_its_camera_held(
 
     checked = []
     monkeypatch.setattr(completion, "_execute_frame_request", edit)
-    monkeypatch.setattr(camera_check, "edited_view_camera",
-                        lambda *paths: checked.append(paths) or {"status": camera})
+    # A shift the camera check still accepts as "kept" would misalign the zone.
+    monkeypatch.setattr(camera_check, "edited_view_camera", lambda *paths: checked.append(paths) or (
+        {"status": "kept", "reason": camera} if camera != "moved" else {"status": "moved", "reason": "camera_shift"}))
     args = dict(frames=frames, task_digest="task", output_root=tmp_path / "edits", admission=admission,
                 admission_grant=_grant(admission), token="test")
     [output] = completion.complete_background_images(**args)
@@ -916,9 +917,10 @@ def test_edit_keeps_editor_pixels_only_in_the_removal_zone_when_its_camera_held(
     assert checked == [(Path(frames[0]["image_path"]), full_frame, Path(frames[0]["remaining_mask_path"]))]
     assert np.all(np.asarray(Image.open(full_frame).convert("RGB")) == [0, 0, 255])
     assert receipt["full_frame_image_digest"] == _sha256_file(full_frame) and receipt["edited_view_camera"] == camera
-    assert "removal_zone_composite_v1" == completion.completion_binding(
-        frames, task_digest="task", backend_digest=receipt["backend_digest"])["output_policy"]
-    if camera == "kept":
+    policy = completion.completion_binding(frames, task_digest="task", backend_digest=receipt["backend_digest"])
+    assert policy["output_policy"] == completion.REMOVAL_ZONE_BINDING
+    assert policy["output_policy"]["name"] == "removal_zone_composite_v1"
+    if camera == "unchanged_features":
         assert np.all(image[70:90, 110:130] == [0, 0, 255])        # the removal itself
         assert np.all(image[:10] == [255, 0, 0]) and np.all(image[:, :40] == [255, 0, 0])
         zone = completion.removal_zone_alpha(np.asarray(Image.open(frames[0]["remaining_mask_path"])) == 255)
@@ -927,8 +929,11 @@ def test_edit_keeps_editor_pixels_only_in_the_removal_zone_when_its_camera_held(
         assert output["full_frame_image_path"] == str(full_frame)
         assert output["full_frame_image_digest"] == receipt["full_frame_image_digest"]
     else:
-        # A reframed edit stays whole so the camera review still re-edits it.
+        # A shifted or reframed edit stays whole so the camera review still judges it.
         assert np.all(image == [0, 0, 255])
         assert output["generated_region"] == "full_frame" and "full_frame_image_path" not in output
         assert output["generated_pixel_count"] == 240 * 160
     assert completion.complete_background_images(**args) == [output]
+    full_frame.write_bytes(b"changed")
+    with pytest.raises(ValueError, match="website_image_completion_output_changed"):
+        completion.complete_background_images(**args)

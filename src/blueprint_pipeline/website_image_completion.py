@@ -91,8 +91,9 @@ PROMPT = (
     "as a realistic continuation of the surrounding room. Only where a listed task object was itself built "
     "into surrounding furniture or a wall, leave the opening it occupied open to its full depth, showing the "
     "surfaces that bound it (the floor running back to the rear wall, the side faces of its neighbours and the "
-    "structure above it); never fill that opening with new fronts, panels or other objects. Never remove, "
-    "open or replace anything that is not a listed task object. The first additional image, when it is an edited view, shows the agreed empty space: match it. "
+    "structure above it); never fill that opening with new fronts, panels or other objects. Apart from the "
+    "listed task objects, what is inside or resting on them, and people, never remove, open or replace "
+    "anything. The first additional image, when it is an edited view, shows the agreed empty space: match it. "
     "Also remove every person and every part of a person (hands, arms, legs, feet), filling in what was behind "
     "them realistically. "
     "Change nothing else. Keep every other object exactly where and as it is, including items on nearby "
@@ -248,9 +249,16 @@ def _anchor_rank(frame: Mapping[str, Any]) -> tuple[int, int]:
 # quarter of the removed region's size past the mask, with a soft edge. A trace
 # beyond it is the review's to find: that view then uses its full edited frame.
 REMOVAL_ZONE_POLICY = "removal_zone_composite_v1"
+REMOVAL_ZONE_REACH_FRACTION = 0.25
 REMOVAL_ZONE_MIN_REACH_PIXELS = 16
 REMOVAL_ZONE_MAX_REACH_PIXELS = 120
 REMOVAL_ZONE_FEATHER_PIXELS = 16
+# Bound into every request, so a changed zone never reuses an earlier composite.
+REMOVAL_ZONE_BINDING = {"name": REMOVAL_ZONE_POLICY, "reach_fraction_of_mask_size": REMOVAL_ZONE_REACH_FRACTION,
+                        "min_reach_pixels": REMOVAL_ZONE_MIN_REACH_PIXELS,
+                        "max_reach_pixels": REMOVAL_ZONE_MAX_REACH_PIXELS,
+                        "feather_pixels": REMOVAL_ZONE_FEATHER_PIXELS,
+                        "composite_when": "edited_view_camera_unchanged_features"}
 
 
 def removal_zone_alpha(editable: np.ndarray) -> np.ndarray:
@@ -258,7 +266,8 @@ def removal_zone_alpha(editable: np.ndarray) -> np.ndarray:
     from scipy.ndimage import distance_transform_edt
 
     reach = min(REMOVAL_ZONE_MAX_REACH_PIXELS,
-                max(REMOVAL_ZONE_MIN_REACH_PIXELS, 0.25 * math.sqrt(int(np.count_nonzero(editable)))))
+                max(REMOVAL_ZONE_MIN_REACH_PIXELS,
+                    REMOVAL_ZONE_REACH_FRACTION * math.sqrt(int(np.count_nonzero(editable)))))
     distance = distance_transform_edt(~editable)
     return np.clip((reach + REMOVAL_ZONE_FEATHER_PIXELS - distance) / REMOVAL_ZONE_FEATHER_PIXELS, 0.0, 1.0)
 
@@ -292,7 +301,7 @@ def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str,
     per_object = any("removed_task_object_ids" in frame for frame in frames)
     binding = {"schema_version": "website_image_completion_request.v2", "task_digest": task_digest,
                "backend_digest": backend_digest, "prompt": prompt, "edit_region": "full_frame",
-               "output_policy": REMOVAL_ZONE_POLICY,
+               "output_policy": REMOVAL_ZONE_BINDING,
                "reference_policy": ("fixed_repair_reference" if repair_instruction is not None
                                     else "edited_anchor_most_task_objects" if per_object
                                     else "edited_anchor_largest_removal"),
@@ -549,6 +558,10 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                     raise ValueError("website_image_completion_requires_reconciliation")
                 if _sha256_file(destination) != receipt["image_digest"]:
                     raise ValueError("website_image_completion_output_changed")
+                full_frame = root / f"{index}-full-frame.png"
+                if "full_frame_image_digest" in receipt and (
+                        not full_frame.is_file() or _sha256_file(full_frame) != receipt["full_frame_image_digest"]):
+                    raise ValueError("website_image_completion_output_changed")
                 spent += receipt["cost_usd"]
             else:
                 if spent + cap > budget:
@@ -606,13 +619,18 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 generated = Image.open(BytesIO(response["generated"])).convert("RGB").crop(box).resize(source.size, Image.Resampling.LANCZOS)
                 # The editor sees the plain frame and removes shadows and
                 # reflections too; only its pixels near the removal are kept.
-                # A reframed or unverifiable edit stays whole, so the camera
-                # review still sends it back for a re-edit.
+                # Only an edit whose features stayed put (within the camera
+                # check's 3 px match tolerance) is composited: a small accepted
+                # shift would misalign the pasted zone, and the composite would
+                # then pass that check unseen. Any other edit stays whole, so
+                # the camera review still judges it.
                 full_frame = root / f"{index}-full-frame.png"
                 generated.save(full_frame)
                 from .edited_view_camera import edited_view_camera
-                camera = edited_view_camera(source_path, full_frame, mask_path)["status"]
-                if camera == "kept":
+                camera_check = edited_view_camera(source_path, full_frame, mask_path)
+                camera = (camera_check.get("reason", "kept") if camera_check["status"] == "kept"
+                          else camera_check["status"])
+                if camera == "unchanged_features":
                     output, generated_pixels = composite_removal_zone(source, generated, editable)
                     region = "removal_zone"
                 else:

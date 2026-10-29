@@ -535,9 +535,11 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
         output_root=root / "selected_editor_review", task_context=context, source_video_digest=source_digest)
     candidates, swapped = full_frames_for_traces(candidates, review)
     if swapped:
+        # The failed review stays in the chain the repair planner walks.
         check("automation_editor_full_frame_review")
-        review = verify_completed_background(frames=candidates, original_frames=chosen, plan=plan,
-            output_root=root / "selected_editor_review", task_context=context, source_video_digest=source_digest)
+        review = {**verify_completed_background(frames=candidates, original_frames=chosen, plan=plan,
+            output_root=root / "selected_editor_review", task_context=context, source_video_digest=source_digest),
+            "prior_failed_review": review}
     seen = {tuple(row["image_digest"] for row in candidates)}
     repair_round = 0
     while review["status"] != "passed" and image_repair_enabled():
@@ -557,10 +559,12 @@ def _reviewed_editor_background(*, prepared, anchor, plan, automation, root, con
         repair_round += 1
         candidates, swapped = full_frames_for_traces(candidates, review)
         if swapped:
+            # Keep the round's repair history: the planner walks it to keep
+            # views whose camera moved earlier free of the anchor reference.
             check("automation_editor_full_frame_review")
-            review = verify_completed_background(frames=candidates, original_frames=chosen, plan=plan,
+            review = {**verify_completed_background(frames=candidates, original_frames=chosen, plan=plan,
                 output_root=repair_root / "full_frame_review", task_context=context,
-                source_video_digest=source_digest)
+                source_video_digest=source_digest), "prior_failed_review": review}
         signature = tuple(row["image_digest"] for row in candidates)
         if review["status"] != "passed" and signature in seen:
             break

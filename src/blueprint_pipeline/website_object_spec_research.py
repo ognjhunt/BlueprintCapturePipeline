@@ -112,7 +112,7 @@ INSTRUCTIONS = (
     "Give every figure about the identified product (or comparable) basis=identified_product. When no exact-model, "
     "model-family or brand figures give the overall width, height and depth, including when the make is unknown, "
     "also research the published standard or typical overall and cutout dimensions for the object's category "
-    "(for example the standard size of a built-in appliance or fixture of that category in the "
+    "(for example the standard size of a built-in unit or fixture of that category in the "
     "market the footage suggests) from authoritative sources: manufacturer installation guides, "
     "standards bodies, or major retailers' category buying guides. Give those basis=category_standard, only "
     "overall_* and cutout_* sizes, and a published range as [low, high]; they describe the category, never "

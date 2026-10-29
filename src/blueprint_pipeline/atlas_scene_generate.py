@@ -105,7 +105,7 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
         'The exact photographed room with the same layout, materials, lighting, fixed fixtures '
         'and existing possessions in their photographed positions. Missing areas continue only '
         'the bare surfaces at their visible boundaries. Cleared openings remain open and empty. '
-        'No additional rooms, fixtures, appliances, furniture, possessions or decorations.')
+        'No additional rooms, fixtures, furniture, possessions or decorations.')
     policy, specs, needed = configuration['policy'], [], 0.
     for index, group in enumerate(groups):
         request = {'contextFrames': contexts, 'targetCameras': [row['camera'] for row in group],
