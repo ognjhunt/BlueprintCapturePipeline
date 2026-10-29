@@ -23,6 +23,7 @@ from .common import write_json
 from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+from .atlas_preparation_context import requires_task_semantic_analysis
 
 
 def load_configuration(context, source_digest, *, create=True):
@@ -213,7 +214,7 @@ def run_atlas_pipeline(*, output_root: Path, **options):
     with (output_root / "controller.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = _run_atlas_pipeline(output_root=output_root, **options)
-        if result.get("mesh_available") and options.get("task_context", {}).get("task_family") == "general_task":
+        if result.get("mesh_available") and requires_task_semantic_analysis(options.get("task_context", {})):
             from .website_operation_coverage_review import clarify_operation_coverage
             clarify_operation_coverage(job_dir=output_root, task_context=options["task_context"],
                 source_video_digest=result["source_video_digest"], experimental=options.get("experimental", False),

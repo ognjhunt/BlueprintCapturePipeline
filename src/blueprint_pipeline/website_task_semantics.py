@@ -14,7 +14,11 @@ from typing import Any, Mapping
 from pydantic import BaseModel, ConfigDict, Field
 
 from .decision_evidence_contracts import canonical_digest
+from .atlas_preparation_context import (
+    preparation_context_digest_matches, requires_task_semantic_analysis, task_text_sources,
+)
 from .task_profile_contracts import TASK_PROFILES, task_profile_for
+from .owned_capture_atlas_context import SCHEMA as OWNED_CONTEXT_SCHEMA
 
 
 class OperativeStep(BaseModel):
@@ -35,7 +39,7 @@ class TaskSemantics(BaseModel):
 
 
 TASK_SEMANTICS_INSTRUCTIONS = """
-The website task_family is an ambiguous text-screen hint. Also return
+The declared task_family is routing data, not proof of complete task coverage. Also return
 task_semantics: operative_job, task_family, steps, covers_entire_job,
 unresolved_aspects and preparation_notes. Read the ENTIRE original task and
 success requirements. Describe the actual robot job without rewriting owner
@@ -72,7 +76,7 @@ def task_semantics_from_receipt(*, receipt: Mapping[str, Any], task_context: Map
     proposal = receipt.get("proposal") or {}
     if "task_semantics" not in proposal:
         return None
-    if (task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
+    if (not preparation_context_digest_matches(task_context)
             or not isinstance(source_video_digest, str) or not _SHA.fullmatch(source_video_digest)
             or receipt.get("status") != "completed"
             or receipt.get("binding_digest") != canonical_digest(binding)
@@ -81,14 +85,7 @@ def task_semantics_from_receipt(*, receipt: Mapping[str, Any], task_context: Map
             or binding.get("source_video_digest") != source_video_digest):
         raise ValueError("website_task_semantics_planner_binding_invalid")
     semantics = TaskSemantics.model_validate(proposal["task_semantics"]).model_dump(mode="json")
-    def strings(value):
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, Mapping):
-            return [text for child in value.values() for text in strings(child)]
-        return []
-    sources = strings({key: task_context.get(key) for key in (
-        "description", "success_criteria", "operator_answers", "operator_task_details")})
+    sources = task_text_sources(task_context)
     if (proposal.get("status") != "proposed" or any(
             not step["task_quote"].strip() or not any(step["task_quote"] in text for text in sources)
             for step in semantics["steps"])):
@@ -122,8 +119,8 @@ def validate_task_semantics(value: Mapping[str, Any], *, task_context: Mapping[s
 
 def resolved_task_profile(value: Mapping[str, Any] | None, *, task_context: Mapping[str, Any],
                           source_video_digest: str | None) -> str | None:
-    """Only general_task gains a derived routing hint; explicit families win."""
-    if value is None or task_context.get("task_family") != "general_task":
+    """Derive routing for unclassified website jobs and complete owned tasks."""
+    if value is None or not requires_task_semantic_analysis(task_context):
         return None
     if source_video_digest is None:
         raise ValueError("website_task_semantics_source_video_missing")
@@ -166,6 +163,10 @@ def effective_task_profile(*, task_context: Mapping[str, Any], task_semantics: M
                            source_video_digest: str | None = None) -> str | None:
     """Canonical derived routing selection, separate from unchanged owner facts."""
     declared = task_profile_for(task_context.get("task_family"))
+    if task_context.get("schema_version") == OWNED_CONTEXT_SCHEMA:
+        resolved = resolved_task_profile(task_semantics, task_context=task_context,
+                                         source_video_digest=source_video_digest)
+        return resolved if declared is None or declared.profile_id == resolved else None
     return (declared.profile_id if declared is not None else
             resolved_task_profile(task_semantics, task_context=task_context, source_video_digest=source_video_digest))
 
@@ -173,7 +174,7 @@ def effective_task_profile(*, task_context: Mapping[str, Any], task_semantics: M
 def require_semantic_stage_order(*, task_context: Mapping[str, Any], task_semantics: Mapping[str, Any] | None,
                                  source_video_digest: str | None, contract: Mapping[str, Any]) -> None:
     """An ordered derived job cannot inherit another multi-step contract."""
-    if task_context.get("task_family") != "general_task" or contract.get("task_family") != "multi_step":
+    if not requires_task_semantic_analysis(task_context) or contract.get("task_family") != "multi_step":
         return
     if resolved_task_profile(task_semantics, task_context=task_context,
                              source_video_digest=source_video_digest) != "multi_step":

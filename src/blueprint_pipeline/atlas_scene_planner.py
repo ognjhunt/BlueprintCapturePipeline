@@ -440,6 +440,8 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
 
 
 def _input(survey, context, feedback=None, *, preview_size=512):
+    from .atlas_preparation_context import requires_task_semantic_analysis
+    from .owned_capture_atlas_context import SCHEMA as OWNED_CONTEXT_SCHEMA
     layout = (feedback or {}).get('planning_preview_layout', {})
     def dump(value, *, sort_keys=False):
         return json.dumps(value, sort_keys=bool(layout) or sort_keys, separators=(',', ':') if layout else None)
@@ -447,7 +449,11 @@ def _input(survey, context, feedback=None, *, preview_size=512):
         "task_items": context.get("task_items"), "frame_count": len(survey["frames"]),
         **({"task_requirements": {key: context.get(key) for key in (
             "success_criteria", "operator_answers", "operator_task_details")}}
-           if context.get("task_family") == "general_task" else {}),
+           if requires_task_semantic_analysis(context) else {}),
+        **({"task_specification": context["task_specification"],
+            "task_confirmation_status": context["task_confirmation_status"],
+            "declared_task_family": context["task_family"]}
+           if context.get("schema_version") == OWNED_CONTEXT_SCHEMA else {}),
         "hidden_pixels_included": False}, sort_keys=True)}]
     for row in survey["frames"]:
         source = Path(row["source_image_path"])
@@ -806,6 +812,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                     carried_reserved_usd=0.0):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
+    from .atlas_preparation_context import requires_task_semantic_analysis
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
     survey = json.loads(survey_path.read_text())
@@ -823,7 +830,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                     else 768 if recovery is not None else 512)
     operation_only = (recovery or {}).get("scope") == "operation_coverage"
     operation_request = (extra or {}).get("operation_coverage_request")
-    if operation_request is not None and (task_context.get("task_family") != "general_task"
+    if operation_request is not None and (not requires_task_semantic_analysis(task_context)
             or not (operation_only or scaling is not None)):
         raise ValueError("website_task_operation_coverage_review_scope_invalid")
     if operation_only:
@@ -885,7 +892,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
         instructions = PRESERVED_COMPLETION_INSTRUCTIONS
     schema = (ScaleProposal if scaling is not None else CompletionProposal if completion is not None
               else CurrentRefinementProposal if feedback is not None else CurrentSceneProposal)
-    semantic_review = (task_context.get("task_family") == "general_task"
+    semantic_review = (requires_task_semantic_analysis(task_context)
                        and all(value is None for value in (completion, scaling, recovery)))
     if completion is not None and 'post_export_coverage' in completion:
         instructions += POST_EXPORT_COMPLETION_INSTRUCTIONS
