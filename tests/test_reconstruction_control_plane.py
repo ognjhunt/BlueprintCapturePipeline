@@ -843,6 +843,83 @@ def test_mutating_yielded_context_cannot_retarget_a_captured_source_fence(tmp_pa
         assert sent == []
 
 
+def test_owned_atlas_configuration_uses_existing_signed_transport_without_website_identity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import website_task_context as transport
+    from blueprint_pipeline.website_atlas_pipeline import load_configuration
+
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    context = plan['source_context']
+    monkeypatch.setenv('PIPELINE_SYNC_WEBAPP_URL', 'https://tryblueprint.io/api/internal/pipeline/sync')
+    monkeypatch.setattr(transport, 'load_pipeline_sync_token', lambda: 'hermetic-sync-secret')
+    requests = []
+
+    def request(url, **options):
+        requests.append((url, options))
+        return SimpleNamespace(body=json.dumps({'schema_version': 'owned_capture_atlas_configuration.v1',
+            'source_video_digest': plan['source_video_digest'], 'task_context_digest': context['context_digest'],
+            'dispatch_authorized': False, 'grant_creation_allowed': False}).encode())
+
+    monkeypatch.setattr(transport, 'safe_request', request)
+    result = load_configuration(context, plan['source_video_digest'])
+    assert result['dispatch_authorized'] is False
+    url, options = requests[0]
+    assert url == f'https://tryblueprint.io/api/internal/pipeline/owned-captures/{session}/atlas-configuration'
+    assert options['method'] == 'POST' and options['headers']
+    assert json.loads(options['data']) == {'plan_id': plan['plan_id'], 'task_context_digest': context['context_digest'],
+        'source_video_digest': plan['source_video_digest'], 'create': False}
+    assert 'site-' not in url and 'walkthrough-' not in url
+    with pytest.raises(ValueError, match='source_video_binding_mismatch'):
+        load_configuration(context, 'sha256:' + 'f' * 64)
+    assert len(requests) == 1
+
+
+def test_owned_settlement_routes_without_reopening_revoked_processing_authority(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as transport
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    marker = hashlib.sha256(f'{session}\0{intake}'.encode()).hexdigest() + '.json'
+    _write(store / 'lifecycle_tombstones' / marker, {'revoked': True})
+    calls = []
+    monkeypatch.setattr(transport, 'website_webapp_request', lambda **kw: calls.append(kw) or {'status': 'settled'})
+    result = transport.preparation_webapp_request(task_context=plan['source_context'], operation='preparation-settlement',
+        payload={'request_id': plan['plan_id'], 'scene_id': plan['source_context']['scene_id'],
+                 'settlement': {'allocation_binding_digest': 'sha256:' + 'd' * 64}})
+    assert result == {'status': 'settled'}
+    assert calls == [{'capture_id': session, 'operation': 'preparation-settlement',
+        'payload': {'settlement': {'allocation_binding_digest': 'sha256:' + 'd' * 64}}, 'source_kind': 'owned_capture'}]
+
+
+def test_owned_paid_reservation_requires_current_runtime_source_before_budget_or_rpc(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as transport
+    from blueprint_pipeline import paid_resource_admission as admission
+    from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    monkeypatch.setattr(admission, 'require_paid_resource_budget', lambda **kw: pytest.fail('reached budget before source'))
+    monkeypatch.setattr(transport, 'website_webapp_request', lambda **kw: pytest.fail('reached RPC before source'))
+    options = dict(task_context=plan['source_context'], binding_digest='sha256:' + 'b' * 64,
+                   maximum_cost_usd=1, request_count=1, resource_class='provider_reconstruction_api',
+                   provider='world_labs_atlas', source_video_digest=plan['source_video_digest'])
+    with pytest.raises(ValueError, match='source_fence_required'):
+        transport.reserve_website_preparation_spend(**options)
+    with bind_owned_atlas_source(state_root=state, capture_store_root=store, plan_id=plan['plan_id']):
+        marker = hashlib.sha256(f'{session}\0{intake}'.encode()).hexdigest() + '.json'
+        _write(store / 'lifecycle_tombstones' / marker, {'revoked': True})
+        with pytest.raises(ReconstructionControlPlaneError, match='capture_revoked_or_expired'):
+            transport.reserve_website_preparation_spend(**options)
+
+
 def test_owned_atlas_http_plan_requires_authentication_and_never_accepts_authority_fields(tmp_path, monkeypatch):
     store = tmp_path / 'store'
     session, intake, _ = _seed_owned_atlas_source(store)

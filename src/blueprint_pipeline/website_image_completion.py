@@ -327,7 +327,7 @@ def settle_completed_image_batches(*, output_root: Path, task_context: Mapping[s
     requires the receipt count to equal the reserved request count, so a batch with
     an uncertain in-flight request keeps its full hold. Settlements are idempotent.
     """
-    from .website_task_context import website_webapp_request
+    from .website_task_context import preparation_webapp_request
     settled = []
     for root in sorted(output_root.iterdir()) if output_root.is_dir() else []:
         if not root.is_dir() or not re.fullmatch(r"[0-9a-f]{64}", root.name):
@@ -351,7 +351,7 @@ def settle_completed_image_batches(*, output_root: Path, task_context: Mapping[s
                    "provider_charge_amount_usd": round(sum(costs), 6),
                    "usage_receipt_digest": canonical_digest({"receipts": receipts})}
         try:
-            receipt = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-settlement",
+            receipt = preparation_webapp_request(task_context=task_context, operation="preparation-settlement",
                 payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"],
                          "settlement": command})
         except ValueError as exc:

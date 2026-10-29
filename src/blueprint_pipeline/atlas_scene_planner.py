@@ -811,7 +811,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                     validation_repair=None, failed_output_recovery=None, source_review_recovery=None,
                     carried_reserved_usd=0.0):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
-    from .website_task_context import reserve_website_preparation_spend, website_webapp_request
+    from .website_task_context import reserve_website_preparation_spend, preparation_webapp_request
     from .atlas_preparation_context import preparation_source_checkpoint, requires_task_semantic_analysis
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
@@ -1131,7 +1131,7 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
             os.replace(temporary, path)
     settlement_path = path.with_suffix(".settlement.json")
     if not settlement_path.exists():
-        settlement = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-settlement",
+        settlement = preparation_webapp_request(task_context=task_context, operation="preparation-settlement",
             payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "settlement": {
                 "task_context_digest": task_context["context_digest"], "allocation_binding_digest": digest,
                 "provider": "openai", "completed_request_count": 1, "provider_charge_amount_usd": receipt["cost_usd"],
