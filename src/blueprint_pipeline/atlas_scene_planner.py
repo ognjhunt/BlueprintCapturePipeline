@@ -40,13 +40,24 @@ work in it. Mark unsafe only frames that cannot be used: a transient hides most 
 the view or the task object, motion blur, or a different state of the room or an
 articulated object. Prefer unobstructed views for required coverage. Require views
 of each task object AND the surrounding room, supports, floor, approach/access space
-and nearby obstacles. Return static intervals and exact required frame IDs with roles
-task_object and surrounding_scene. Pick a task anchor. Include useful additional
-task/support anchors instead of arbitrary quotas. State missing/uncaptured areas.
-If a safe, consistent task-and-room set cannot be seen, abstain with reasons.
+and nearby obstacles that the capture shows. Return static intervals and exact required
+frame IDs with roles task_object and surrounding_scene. Pick a task anchor. Include
+useful additional task/support anchors instead of arbitrary quotas. Before anything is
+generated, list in uncaptured_regions every area the task needs that no frame shows,
+such as floor, approach/access space, clearances or the far side of a support. Atlas
+generates those views from the observed context after reconstruction; they stay
+labelled estimates, never capture truth. An unseen floor, access space, clearance or
+surrounding area is never by itself a reason to abstain. Abstain only for these
+causes, and name each one in abstention_reasons: no frame shows a task object or task
+region (task_object_or_region_not_visible) or the support or destination it uses
+(support_or_destination_not_visible), the frames show different scene states
+(scene_state_inconsistent), no usable frames remain (frames_unusable), or the subject
+origin cannot be established (subject_origin_uncertain). Leave abstention_reasons
+empty when proposing.
 Never claim metric scale, hidden surfaces, physical fidelity or permission.
 All supplied frames must be considered; identify every unsafe frame explicitly.
-Images may be low-resolution review previews; abstain if this prevents judgment.
+Images may be low-resolution review previews; abstain as frames_unusable if this
+prevents judgment.
 Quality/overlap thresholds may adapt to the scene, never below 8 overlap inliers.
 Keep a sharp view of the overall room as well as task close-ups. No pricing or
 provider actions are available to you. Return only the structured proposal."""
@@ -91,6 +102,13 @@ class SelectionPolicy(BaseModel):
     minimum_overlap_inliers: int = Field(ge=8)
 
 
+# Owner decision 2026-10-29: Atlas generates task-relevant areas the capture
+# never showed (floor, approach/access space, clearances), so their absence is
+# not one of these causes. Generated views stay labelled estimates.
+AbstentionReason = Literal["task_object_or_region_not_visible", "support_or_destination_not_visible",
+                           "scene_state_inconsistent", "frames_unusable", "subject_origin_uncertain"]
+
+
 class SceneProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     status: str = Field(pattern="^(proposed|abstained)$")
@@ -108,6 +126,14 @@ class SceneProposal(BaseModel):
     # None preserves retained pre-origin planner receipts. New scene reviews
     # explicitly classify origin; no synthetic geometry enters capture truth.
     subject_origin: SubjectOrigin | None = None
+    # None preserves retained receipts from before an abstention named its cause.
+    abstention_reasons: list[AbstentionReason] | None = None
+
+    @model_validator(mode="after")
+    def abstention_names_its_cause(self):
+        if self.abstention_reasons is not None and (self.status == "abstained") != bool(self.abstention_reasons):
+            raise ValueError("atlas_scene_planner_abstention_reasons_inconsistent")
+        return self
 
 
 class RefinementProposal(SceneProposal):
@@ -118,10 +144,12 @@ class RefinementProposal(SceneProposal):
 
 class CurrentSceneProposal(SceneProposal):
     subject_origin: SubjectOrigin
+    abstention_reasons: list[AbstentionReason]
 
 
 class CurrentRefinementProposal(RefinementProposal):
     subject_origin: SubjectOrigin
+    abstention_reasons: list[AbstentionReason]
 
 
 class SemanticSceneProposal(CurrentSceneProposal):
@@ -239,6 +267,10 @@ back to the originating gap overlays. Use other candidates when they show a gap
 better or the estimated gap target is unsupported; do not request redundant views.
 Survey the entire captured scene and select views that resolve specific missing
 surfaces, including surrounding floor, walls and counters, not just the task bay.
+uncaptured_regions names areas the scene review found the task needs but no source
+frame shows, such as floor or approach/access space around the task support. Treat
+each one as a completion target: select candidate views that expose it with known
+context, or name it in remaining_unknowns when no candidate does.
 Do not expand into unseen rooms or invent extra space or metric dimensions.
 The capture-derived generation_extent is a ceiling, not an area to fill.
 Every selected_camera_id needs an entry in view_gap_reasons, a list of objects
@@ -888,8 +920,10 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
             "compatible observed instance or destination, choose one clearly visible permitted "
             "instance; several candidates alone do not require an owner choice. Preserve any "
             "specifically named target and every task constraint. Do not invent an empty "
-            "destination, hidden surfaces or additional observations. Abstain if the same "
-            "capture still cannot support a consistent task-and-room plan.\n")
+            "destination, hidden surfaces or additional observations. Unseen floor, access "
+            "space, clearances and surroundings belong in uncaptured_regions for Atlas to "
+            "generate; they are not a reason to abstain. Abstain only if one of the "
+            "abstention_reasons causes remains in these views.\n")
     if completion is not None and completion.get('context_basis') == 'preserved_capture':
         instructions = PRESERVED_COMPLETION_INSTRUCTIONS
     schema = (ScaleProposal if scaling is not None else CompletionProposal if completion is not None

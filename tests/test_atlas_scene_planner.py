@@ -27,7 +27,7 @@ def fixture(tmp_path):
             {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["0"]}],
         "unsafe_frame_ids": ["2"], "uncaptured_regions": ["rear"],
         "selection_policy": {"minimum_sharpness": 20, "maximum_clipped_fraction": .5, "minimum_overlap_inliers": 24},
-        "summary": "room and object visible"}
+        "summary": "room and object visible", "abstention_reasons": []}
     policy = {"model": "gpt-6.1-sol", "maximum_review_cost_usd": .5, "pose_input_cost_usd": .01,
         "rgbd_view_cost_usd": .05,
         "rate_card_reference": "https://example.test/rates", "reviewed_by": "operator", "reviewed_on": "2026-10-21"}
@@ -194,6 +194,7 @@ def _abstained_source_review(tmp_path, monkeypatch, *, still_missing=False, chan
     path.write_text(json.dumps(survey))
     abstained = deepcopy(proposal)
     abstained.update(status="abstained", summary="Small overview previews do not establish a usable object/destination pair",
+                     abstention_reasons=["frames_unusable"],
                      uncaptured_regions=["A clear view of one permitted object and its destination"])
     abstained["coverage_requirements"] = abstained["coverage_requirements"][1:]
     calls = {"reserved": [], "settled": [], "inputs": [], "source": source,
@@ -278,6 +279,79 @@ def test_detail_review_keeps_the_supplied_invokers_existing_cumulative_budget(tm
     with pytest.raises(ValueError, match="atlas_scene_planner_invoker_budget_exhausted"):
         planner.review_survey(**options)
     assert len(calls["inputs"]) == len(calls["reserved"]) == len(calls["settled"]) == 1
+
+
+# 2026-10-29 capture-f88f1bd0: the planner saw the vase and its destination, then
+# abstained because floor and access clearances were never filmed, so Atlas never
+# generated them. The owner decided generated floor/access views may place the robot.
+FLOOR_ONLY_ABSTENTION = ("The higher-detail views resolve the vase and a compatible empty destination, "
+                         "but not the floor and access clearances needed for the task. Abstain.")
+
+
+def test_unseen_floor_and_access_are_named_for_atlas_completion_not_abstained_on():
+    from typing import get_args
+    text = " ".join(planner.INSTRUCTIONS.split())
+    assert "list in uncaptured_regions every area the task needs that no frame shows" in text
+    assert "floor, approach/access space, clearances" in text
+    assert "never by itself a reason to abstain" in text
+    assert "If a safe, consistent task-and-room set cannot be seen, abstain" not in text
+    causes = set(get_args(planner.AbstentionReason))
+    assert causes == {"task_object_or_region_not_visible", "support_or_destination_not_visible",
+                      "scene_state_inconsistent", "frames_unusable", "subject_origin_uncertain"}
+    assert all(cause in text for cause in causes)
+    assert not any(word in cause for cause in causes for word in ("floor", "access", "clearance", "surround"))
+    for prompt in (planner.COMPLETION_INSTRUCTIONS, planner.PRESERVED_COMPLETION_INSTRUCTIONS):
+        assert "Treat each one as a completion target" in " ".join(prompt.split())
+
+
+def test_an_abstention_must_name_a_blocking_cause_at_the_sdk_boundary(tmp_path):
+    from agents import AgentOutputSchema
+    from agents.exceptions import ModelBehaviorError
+    _, survey, proposal, policy = fixture(tmp_path)
+    floor_only = {**proposal, "status": "abstained", "summary": FLOOR_ONLY_ABSTENTION}
+    for schema in (planner.CurrentSceneProposal, planner.SemanticSceneProposal, planner.CurrentRefinementProposal):
+        assert "abstention_reasons" in AgentOutputSchema(schema).json_schema()["required"]
+    sdk = AgentOutputSchema(planner.CurrentSceneProposal)
+    for refused in (floor_only, {**proposal, "abstention_reasons": ["frames_unusable"]}):
+        with pytest.raises(ModelBehaviorError):
+            sdk.validate_json(json.dumps(refused))
+    named = {**floor_only, "abstention_reasons": ["support_or_destination_not_visible"]}
+    assert sdk.validate_json(json.dumps(named)).status == "abstained"
+    # A receipt retained before abstentions named a cause still reads, and still abstains.
+    legacy = {key: value for key, value in floor_only.items() if key != "abstention_reasons"}
+    assert planner.SceneProposal.model_validate(legacy).abstention_reasons is None
+    with pytest.raises(ValueError, match="atlas_scene_planner_abstained"):
+        planner.proposal_review(legacy, survey=survey, policy=policy, pose_budget=4)
+
+
+def test_a_floor_only_abstention_is_repaired_into_a_proposal_that_names_the_gap(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from agents import AgentOutputSchema
+    options, calls, survey, policy = _abstained_source_review(tmp_path, monkeypatch)
+    _, _, proposal, _ = fixture(tmp_path)
+    floor_only = {**proposal, "status": "abstained", "summary": FLOOR_ONLY_ABSTENTION}
+    repaired = deepcopy(proposal)
+    repaired["uncaptured_regions"] = ["floor and approach/access space around the dining table"]
+    answers = [floor_only, repaired]
+
+    class SDKInvoker:
+        """Parses each answer against the output type exactly as the Agents SDK does."""
+        def configure_reservation_audit(self, **_):
+            pass
+
+        def invoke(self, spec, value):
+            calls["inputs"].append({"instructions": spec.instructions})
+            output = AgentOutputSchema(spec.output_type).validate_json(json.dumps(answers.pop(0)))
+            return SimpleNamespace(output=output.model_dump(mode="json"), cost_usd=.03,
+                                   usage={"input_tokens": 100}, model=spec.model, sdk_version="test")
+
+    options["invoker"] = SDKInvoker()
+    result = planner.review_survey(**options)
+    # Refused at the SDK boundary, then one repair turn; never the observed-room fallback.
+    assert result["status"] == "completed" and result["binding"]["validation_repair"]["attempt"] == 1
+    assert "source_review_recovery" not in result["binding"] and len(calls["inputs"]) == 2
+    review = planner.proposal_review(result["proposal"], survey=survey, policy=policy, pose_budget=4)
+    assert review["uncaptured_regions"] == repaired["uncaptured_regions"]
 
 
 def test_full_frame_export_review_reserves_for_each_image_not_each_sheet(tmp_path, monkeypatch):
