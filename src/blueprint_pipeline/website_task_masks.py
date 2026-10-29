@@ -463,7 +463,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         if (provider != "meta" or not source_video or not task_context or defer_kept_static
                 or retained_static_masks.get("status") != "object_removal_ready"
                 or retained_static_masks.get("digest") != canonical_digest(retained_static_masks, digest_field="digest")
-                or retained_static_masks.get("binding") != binding
+                or {key: value for key, value in retained_static_masks.get("binding", {}).items()
+                    if key != "target_choices_digest"} != binding
                 or not recovery_geometry
                 or recovery_geometry.get("digest") != canonical_digest(recovery_geometry, digest_field="digest")
                 or recovery_geometry.get("binding", {}).get("source_video_digest") !=
@@ -634,6 +635,8 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         # Only the object the robot moves is asked about; the answer names exact instances.
         site_choice = ((target_choices or {}).get(target["target_id"])
                        if target.get("task_effect") == "manipulated" else None)
+        if site_choice and task_context and site_choice.get('task_context_digest', task_context['context_digest']) != task_context['context_digest']:
+            site_choice = None
         try:
             try:
                 identity = select_task_track(target=target, tracks=candidates, frames=identity_frames,
@@ -743,6 +746,16 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             selected[-1]["source_track"] = identity
             if grounding is not None:
                 selected[-1]["grounding"] = grounding
+    # Keep the paid segmentation cache independent of owner selection. Its
+    # selected derivative is immutable, so a correction cannot overwrite A's masks.
+    selection = {key: value for key, value in (target_choices or {}).items()
+                 if value.get("kind") != "confirm_guess"}
+    selection_digest = canonical_digest(selection) if selection else (
+        (retained_static_masks.get("binding") or {}).get("target_choices_digest") if recovering else None)
+    if selection_digest is not None:
+        binding = {**binding, "target_choices_digest": selection_digest}
+    manifest_root = output_root.resolve() / canonical_digest(binding)[7:23]
+    manifest_root.mkdir(parents=True, exist_ok=True)
     manifest = {"schema_version": "website_task_masks.v1", "status": "completed", "binding": binding,
                 "claim_ceiling": "development_only", "targets": selected,
                 "source_geometry_digest": source_geometry["digest"] if geometry_available else None}
@@ -756,7 +769,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             "reference_geometry_digest": recovery_geometry["digest"], "full_video_reused": True,
             "static_contact_only": True}
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
-    manifest_path = root / ("task_masks.object_removal.json" if deferred_target_ids else "task_masks.json")
+    manifest_path = manifest_root / ("task_masks.object_removal.json" if deferred_target_ids else "task_masks.json")
     if recovering and manifest_path.is_file():
         if json.loads(manifest_path.read_text()) != manifest:
             raise ValueError("website_retained_static_masks_manifest_changed")
@@ -836,7 +849,7 @@ def select_retained_static_task_masks(*, plan: Mapping[str, Any], source_geometr
             or {row["target_id"] for row in task_masks.get("targets", [])} !=
                 {row["target_id"] for row in targets} - set(deferred)):
         raise ValueError("website_retained_static_masks_binding_invalid")
-    request_key = canonical_digest(binding)
+    request_key = canonical_digest({key: value for key, value in binding.items() if key != "target_choices_digest"})
     root = output_root.resolve() / request_key[7:23]
     first_manifest = root / "task_masks.object_removal.json"
     if not first_manifest.is_file() or json.loads(first_manifest.read_text()) != task_masks:

@@ -14,8 +14,8 @@ WebApp control transport and refuses one bound to any other question, candidate
 set or source. Confirming the guess records it; nothing reruns. Another
 candidate reruns the same job from its retained stage outputs with that target,
 inside the existing grant and budget, and the drain keeps owning that rerun
-until it finishes or reaches a wait another drain owns. "None of these" leads to
-the existing same-job walkthrough update. Choices are kept per target, so two
+until it finishes or reaches a wait another drain owns. "None of these" retires
+the guessed result at an honest evidence limit; further recording is optional. Choices are kept per target, so two
 ambiguous objects never overwrite each other. No new queue, service or gate.
 """
 from __future__ import annotations
@@ -333,7 +333,11 @@ def read_answer(pipeline_root: Path, question: Mapping[str, Any]) -> dict[str, A
     """The retained answer to exactly this question; an answer to any other question is not one."""
     try:
         value = _read(_path(pipeline_root, question["target_id"], "answer"))
-        return None if value is None else validate_answer(value, question=question)
+        answer = None if value is None else validate_answer(value, question=question)
+        context = _read(pipeline_root / 'website_task_context.json')
+        if answer and context and context.get('context_digest') != answer['task_context_digest']:
+            return None
+        return answer
     except (OSError, ValueError):
         return None
 
@@ -346,16 +350,30 @@ def load_target_choices(pipeline_root: Path) -> dict[str, dict[str, Any]]:
         if answer is not None and answer["choice"]["kind"] in {"confirm_guess", "other_candidate"}:
             choices[question["target_id"]] = {"target_id": question["target_id"],
                 "candidate_set_digest": question["candidate_set_digest"],
-                "candidate_id": answer["choice"]["candidate_id"], "question_digest": question["question_digest"]}
+                "candidate_id": answer["choice"]["candidate_id"], "question_digest": question["question_digest"],
+                "kind": answer["choice"]["kind"], "task_context_digest": answer['task_context_digest']}
     return choices
 
 
+def rejected_questions(pipeline_root: Path) -> list[dict[str, Any]]:
+    """Explicit owner rejections are source facts, never another guess."""
+    rows = []
+    for question in _all_questions(pipeline_root):
+        answer = read_answer(pipeline_root, question)
+        if answer is not None and answer['choice']['kind'] == 'none_of_these':
+            rows.append({'question': question, 'answer': answer})
+    return rows
+
+
 def corrections(pipeline_root: Path) -> list[dict[str, str]]:
-    """The site's answers that differ from the guess: the only ones that rerun the job."""
-    return [{"target_id": choice["target_id"], "question_digest": choice["question_digest"],
-             "candidate_id": choice["candidate_id"]}
-            for target_id, choice in sorted(load_target_choices(pipeline_root).items())
-            if choice["candidate_id"] != (read_question(pipeline_root, target_id) or {}).get("guessed_candidate_id")]
+    """An explicit change or rejection invalidates the guessed preparation."""
+    values = [{"target_id": choice["target_id"], "question_digest": choice["question_digest"],
+               "candidate_id": choice["candidate_id"]}
+              for target_id, choice in sorted(load_target_choices(pipeline_root).items())
+              if choice["candidate_id"] != (read_question(pipeline_root, target_id) or {}).get("guessed_candidate_id")]
+    values.extend({'target_id': row['question']['target_id'], 'question_digest': row['question']['question_digest'],
+                   'kind': 'none_of_these'} for row in rejected_questions(pipeline_root))
+    return sorted(values, key=lambda row: row['target_id'])
 
 
 def correction_binding_digest(pipeline_root: Path) -> str | None:
@@ -367,8 +385,8 @@ def correction_binding_digest(pipeline_root: Path) -> str | None:
 def public_question(capture_root: Path) -> dict[str, Any] | None:
     """The one question a site sees: the first current guess it has not settled.
 
-    A "none of these" answer keeps its question on the page; the site's next
-    step there is the same-job walkthrough update.
+    A "none of these" answer keeps the optional correction available. It never
+    requires a replacement recording or leaves the rejected guess current.
     """
     pipeline = Path(capture_root) / "pipeline"
     for question in current_questions(pipeline):
@@ -411,6 +429,15 @@ def correction_pending(ledger: Mapping[str, Any], pipeline_root: Path) -> str | 
     if not fixes:
         return None
     digest = canonical_digest({"corrections": fixes})
+    history = ledger.get("attempt_history")
+    last = history[-1] if type(history) is list and history else None
+    handoff = _read(pipeline_root / 'website_scene_preparation' / 'handoff.json') or {}
+    rejection = handoff.get('selection_rejection') or {}
+    if (ledger.get('status') == 'completed' and isinstance(last, Mapping)
+            and last.get(CORRECTION_MARK) == digest and rejection.get('corrections_digest') == digest
+            and handoff.get('digest') == canonical_digest(handoff, digest_field='digest')
+            and rejection.get('digest') == canonical_digest(rejection, digest_field='digest')):
+        return None  # A truthful evidence limit is not a blind retry loop.
     current = {question["question_digest"] for question in current_questions(pipeline_root)}
     if any(fix["question_digest"] in current for fix in fixes):
         return digest
@@ -469,8 +496,19 @@ def fetch_answer(root: Path, ledger: Mapping[str, Any], question: Mapping[str, A
         write_json(poll, {"schema_version": "website_task_target_choice_poll.v1",
                           **_backoff(previous, "question_digest", question["question_digest"], now)})
         return None
-    # Only reached while no answer to this question is retained; one to an older question is replaced.
+    # Negative answers can be clarified later against the same current question.
+    # Retain both observations; unchanged reads never create a new replay.
+    previous = read_answer(pipeline, question)
+    for value in (previous, answer):
+        if value is not None:
+            path = pipeline / QUESTION_DIR / 'history' / (value['answer_digest'][7:] + '.json')
+            if path.exists() and _read(path) != value:
+                raise ValueError('website_task_target_choice_history_changed')
+            if not path.exists():
+                write_json(path, value)
     write_json(_path(pipeline, question["target_id"], "answer"), answer)
+    write_json(poll, {'schema_version': 'website_task_target_choice_poll.v1',
+                      'question_digest': question['question_digest'], 'next_poll_at_epoch': now + 60})
     return answer
 
 
@@ -525,7 +563,8 @@ def reconcile_target_choices(listener, *, storage_root: Path, process_args, limi
             if before.get("status") == listener.TERMINAL_AUTHORITY_STATUS:
                 continue
             for question in current_questions(pipeline):
-                if read_answer(pipeline, question) is not None:
+                retained = read_answer(pipeline, question)
+                if retained is not None and retained['choice']['kind'] != 'none_of_these':
                     continue
                 if polled >= max(0, poll_limit) or not _poll_due(pipeline, question["target_id"],
                                                                  question["question_digest"], current):

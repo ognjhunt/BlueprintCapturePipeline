@@ -153,7 +153,7 @@ def complete_track_coverage(*, track, target, frames):
                 'selection_basis': 'sam31_track_with_agent_grounded_regions'} if hints else {})}
 
 
-def segment_objects(*, frames, objects, inputs, task_context, source_digest, root, transients=()):
+def segment_objects(*, frames, objects, inputs, task_context, source_digest, root, transients=(), selected_tracks=None):
     """Segment reviewed objects; region fallbacks remain image-edit hints only.
 
     A transient (people, carried items, moving equipment) is never a single
@@ -162,6 +162,9 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
     from .meta_sam31 import run_meta_sam31
     from .website_task_masks import select_task_track, union_person_tracks
 
+    selected_tracks = selected_tracks or {}
+    if set(selected_tracks) - {row['target_id'] for row in objects}:
+        raise ValueError('atlas_selected_source_track_target_changed')
     spatial = object_evidence(frames=frames, objects=objects, inputs=inputs)
     registry = [
         {
@@ -181,7 +184,7 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
             "output_label": o["target_id"],
             "text": o["segmentation_prompt"],
         }
-        for o in [*objects, *transients]
+        for o in [*objects, *transients] if o["target_id"] not in selected_tracks
     ]
     tracks = run_meta_sam31(
         frame_registry=registry,
@@ -191,7 +194,7 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
         admission={},
         task_context=task_context,
         source_video_digest=source_digest,
-    )["tracks"]
+    )["tracks"] if prompts else []
     timestamps = {
         r["frame_id"]: r.get("timestamp_seconds", i) for i, r in enumerate(inputs["frames"])
     }
@@ -202,16 +205,28 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
     selected = []
     for obj in objects:
         target = {**obj, "spatial_evidence": spatial[obj["target_id"]]}
-        try:
-            track = select_task_track(target=target, tracks=tracks, frames=identity_frames)
-        except ValueError as exc:
-            if str(exc) != f"task_target_track_ambiguous:{obj['target_id']}":
-                raise
-            # The image editor needs a location hint, not a single physical
-            # instance. Keep strict track selection unchanged for geometry.
-            track = grounded_region_guide(target=target, frames=frames)
+        if obj['target_id'] in selected_tracks:
+            from .website_track_mask_codec import decode_track_mask
+            track = selected_tracks[obj['target_id']]
+            observations = track.get('observations') or []
+            if (track.get('guide_only') or len(observations) != len(by_id)
+                    or {row.get('source_frame_id') for row in observations} != set(by_id)):
+                raise ValueError('atlas_selected_source_track_coverage_changed')
+            for observation in observations:
+                frame = by_id[observation['source_frame_id']]
+                if decode_track_mask(observation).shape != frame['rgb'].shape[:2]:
+                    raise ValueError('atlas_selected_source_track_pixels_changed')
         else:
-            track = complete_track_coverage(track=track, target=target, frames=frames)
+            try:
+                track = select_task_track(target=target, tracks=tracks, frames=identity_frames)
+            except ValueError as exc:
+                if str(exc) != f"task_target_track_ambiguous:{obj['target_id']}":
+                    raise
+                # The image editor needs a location hint, not a single physical
+                # instance. Keep strict track selection unchanged for geometry.
+                track = grounded_region_guide(target=target, frames=frames)
+            else:
+                track = complete_track_coverage(track=track, target=target, frames=frames)
         # A track must explicitly report every selected view, even an empty mask.
         if {o["source_frame_id"] for o in track["observations"]} != set(by_id):
             raise ValueError("atlas_object_mask_view_coverage_incomplete")
@@ -561,6 +576,7 @@ def run_background(
     transients=(),
     prior_background_path=None,
     require_cached=False,
+    selected_tracks=None,
 ):
     from .website_image_completion import (
         complete_background_images,
@@ -589,7 +605,8 @@ def run_background(
                         "task_context_digest": canonical_digest(dict(context)),
                         "selected_frame_ids": selected_frame_ids,
                         "editor_first": editor_first,
-                        **({"transients": transients} if transients else {})}
+                        **({"transients": transients} if transients else {}),
+                        **({"selected_tracks_digest": canonical_digest(selected_tracks)} if selected_tracks else {})}
     retained = _prepared_background(prepared_path, prepared_binding)
     if retained is not None:
         check("automation_reuse_prepared_background")
@@ -655,6 +672,7 @@ def run_background(
         source_digest=source_digest,
         root=root / "sam",
         **({"transients": transients} if transients else {}),
+        **({"selected_tracks": selected_tracks} if selected_tracks is not None else {}),
     ) if edit_frames else []
     found = [r for r in selected if r.get("task_effect") == "transient"]
     selected = [r for r in selected if r.get("task_effect") != "transient"]

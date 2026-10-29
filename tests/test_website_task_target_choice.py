@@ -282,15 +282,43 @@ def test_a_stale_answer_is_refused_and_asked_again_later(guessed, monkeypatch):
     assert len(calls) == 1  # backed off
 
 
-def test_none_of_these_keeps_the_question_and_reruns_nothing(guessed, monkeypatch):
-    root, _, question, selectors, runs, _ = guessed
+def test_negative_answer_replays_original_job_once_to_a_truthful_evidence_limit(guessed, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    from blueprint_pipeline.website_capture_preparation import run_website_capture_preparation
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root, raw, question, selectors, runs, _ = guessed
+    source = root / "raw/retained-selection-source.mp4"
+    source.write_bytes(b"synthetic retained source for negative-answer recovery")
+    question = {**question, "source_video_digest": _sha256_file(source)}
+    question["question_digest"] = canonical_digest(question, digest_field="question_digest")
+    write_json(choice._path(root / "pipeline", question["target_id"], "question"), question)
+    write_json(root / "pipeline" / choice.QUESTION_DIR / choice.INDEX_FILE, {
+        "schema_version": choice.INDEX_SCHEMA, "questions": {question["target_id"]: question["question_digest"]}})
     _webapp(monkeypatch, {question["question_digest"]: _answer(question, selectors, {"kind": "none_of_these"})})
-    process_args = {"provider": "openai", "run_e2e": lambda **_: pytest.fail("declined question reran the job")}
+    before = listener._read_job_ledger(root)
+    def no_provider(*_args, **_kwargs):
+        pytest.fail("a rejected guessed target must not buy or run another model/native scene")
+    def process_negative(**kwargs):
+        runs.append(kwargs)
+        context = context_reader.load_current_website_task_context(request_id=selectors["request_id"],
+            scene_id=selectors["scene_id"], capture_id=selectors["capture_id"], purpose="scene_preparation")
+        return run_website_capture_preparation(descriptor=SimpleNamespace(metadata={"site_task_context": context}),
+            capture_root=root, pipeline_dir=root / "pipeline", source_video=source,
+            derived_scene_generation_allowed=True, gates=[], prepare_media=no_provider,
+            check_privacy=no_provider, make_gate=no_provider)
+    process_args = {"provider": "openai", "run_e2e": process_negative}
+    counts = choice.reconcile_target_choices(listener, storage_root=root.parents[4], process_args=process_args)
+    assert counts["declined"] == 1 and counts["replayed"] == 1
+    after = listener._read_job_ledger(root)
+    assert after["status"] == "completed" and after["attempt_count"] == before["attempt_count"] + 1
+    assert after["attempt_history"][0] == before["attempt_history"][0]
+    assert base64.b64decode(after[choice.REPLAY_FIELD]["payload_base64"], validate=True) == raw
+    status = read_preparation_status(capture_root=root, selectors=selectors, schema_version=STATUS_V4)
+    assert status["state"] == "awaiting_inputs" and status["outcome"]["category"] == "insufficient_evidence"
     assert choice.reconcile_target_choices(listener, storage_root=root.parents[4],
-                                           process_args=process_args)["declined"] == 1
-    # The WebApp shows the same-job walkthrough update for it.
-    assert choice.public_question(root)["question_digest"] == question["question_digest"]
-    assert choice.load_target_choices(root / "pipeline") == {}
+                                          process_args=process_args)["replayed"] == 0
+    assert len(runs) == 2  # Original attempt and one no-spend rejection outcome.
 
 
 def test_a_correction_reruns_the_same_job_from_retained_work_once(guessed, monkeypatch):

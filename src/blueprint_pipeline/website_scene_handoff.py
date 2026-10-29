@@ -177,6 +177,16 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         masks = bind_task_masks_to_geometry(task_masks=clean_plate["task_masks"], source_geometry=geometry)
         write_json(root / "task_masks.geometry.json", masks)
         clean_plate = {**clean_plate, "source_geometry": geometry, "task_masks": masks}
+        from .website_target_background_worker import queue_correction
+        correction = queue_correction(capture_root=capture_root, task_context=context, task_masks=masks, now=now)
+        if correction['status'] != 'ready':
+            result.update(status='awaiting_reconstruction' if correction['status'] == 'pending' else 'needs_input',
+                blockers=[correction['reason']], visual_reconstruction_ready=False,
+                atlas_scene_source={'status': correction['status'], 'reason': correction['reason'],
+                                    'stage': 'target_correction'})
+            result['digest'] = canonical_digest(result, digest_field='digest')
+            write_json(handoff_path, result)
+            return result
         if family is not None:
             # Family tasks compile all retained targets and their native
             # measurements. The single rigid-subject authoring path cannot
