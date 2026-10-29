@@ -138,7 +138,7 @@ def test_both_registrations_resolve_after_same_capture_correction(tmp_path, monk
     original = preparation_request()
     context = {'capture_id': original['submission_id']}
     context['context_digest'] = canonical_digest(context, digest_field='context_digest')
-    prepared = {'intake_request': original, 'binding': {'task_context_digest': context['context_digest']}}
+    prepared = {'status': 'intake_ready', 'intake_request': original, 'binding': {'task_context_digest': context['context_digest']}}
     prepared['digest'] = canonical_digest(prepared, digest_field='digest')
     (base / 'preparation.json').write_text(json.dumps(prepared))
     def register(root):

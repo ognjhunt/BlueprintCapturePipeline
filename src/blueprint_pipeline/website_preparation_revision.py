@@ -57,7 +57,7 @@ def bind_preparation(preparation, *, output_root, capture_root, authority=None):
     if authority is not None:
         value['website_preparation_authority'] = deepcopy(authority)
     request = value.get('intake_request')
-    if request is None:
+    if request is None or preparation.get('status') != 'intake_ready':
         return preparation
     request['task']['subject'][FIELD] = {'capture_id': request['submission_id'], 'corrections_digest': digest}
     request['submission_id'] = PREFIX + cross_runtime_canonical_digest(
