@@ -193,3 +193,47 @@ def test_expired_lease_cannot_recover_commit_with_required_failure(tmp_path):
     # invalid; remediation requires evidence and cannot replay arbitrary work.
     ledger_path.unlink()
     assert listener._output_commit(tmp_path, scene_id="s", capture_id="c")["attempt_count"] == 1
+
+
+# run_end_to_end skips the generic supervisor for website preparation, whose native
+# handoff owns execution admission. That typed skip is the stage's outcome: a retained
+# room with incomplete task evidence must end instead of retrying until exhausted.
+WEBSITE_NATIVE_HANDOFF_SKIP = {
+    "status": "skipped",
+    "reason": "website_scene_preparation_uses_native_handoff",
+    "native_execution_complete": False,
+    "proof_state_mutated_by_agent": False,
+}
+
+
+def test_website_native_handoff_skip_lets_a_retained_preparation_finish():
+    result = {
+        "pipeline_status": "completed",
+        "final_bundle_path": "retained.json",
+        "task_evaluation_supervisor": dict(WEBSITE_NATIVE_HANDOFF_SKIP),
+    }
+    assert listener._handoff_result_disposition(result) == ("terminal_success", [])
+    assert run_e2e.required_stage_result_blocker(
+        "task_evaluation_supervisor", dict(WEBSITE_NATIVE_HANDOFF_SKIP)) is None
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"reason": "operator_skipped"},
+        {"reason": None},
+        {"native_execution_complete": True},
+        {"proof_state_mutated_by_agent": True},
+        {"status": "skipped_with_failures"},
+    ],
+)
+def test_any_other_supervisor_skip_still_prevents_success_ack(change):
+    snapshot = {**WEBSITE_NATIVE_HANDOFF_SKIP, **change}
+    result = {
+        "pipeline_status": "completed",
+        "final_bundle_path": "retained.json",
+        "task_evaluation_supervisor": snapshot,
+    }
+    disposition, blockers = listener._handoff_result_disposition(result)
+    assert disposition == "retryable_blocked"
+    assert blockers == [f"required_stage_not_complete:task_evaluation_supervisor:{snapshot['status']}"]
