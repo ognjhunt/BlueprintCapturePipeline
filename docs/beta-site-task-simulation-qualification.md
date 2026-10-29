@@ -342,3 +342,47 @@ result. The existing worker inputs and session results retain their diagnostic
 claim ceiling; only the joined outer result can state `site_task_simulation`,
 and only for the full scored matrix with the existing void and scoring rules.
 Missing or stale evidence never upgrades a diagnostic result.
+
+## Native rigid/DROID readback leaf
+
+`site_task_native_metrology` adds an opt-in readback method on the existing
+`NativeTaskArenaEnvironment`. It never constructs an environment, advances
+physics, allocates a provider, or creates an evaluation stage. The selected
+model option changes only the existing DROID spawn asset after the existing
+operator import/closed-byte verifier runs. It preserves the DROID control,
+joint-reset and camera configuration. The approved journey still has one
+bounded evaluation path; no separate finalist tier is introduced.
+
+The selectors bind the exact sealed scene-plan digest. Readbacks keep authored
+world geometry, an actually loaded planar floor, loaded USD collision geometry,
+native PhysX closest-hit results, native rigid reset pose, native mass/material
+attributes and synchronized rendered RGB-D distinct. Loaded USD bounds are
+explicitly not described as cooked PhysX AABBs. Missing native mechanisms,
+ambiguous appearance features, changed render/reset generation or invalid
+source units return typed `unproven` states. Task-request dimensions or mass
+are never copied into observed values.
+
+The range-to-optical-axis conversion follows the pinned Isaac Lab source:
+[camera quantities](https://github.com/isaac-sim/IsaacLab/blob/ffff603eafc6b74264a5261cc0183d6a65390d78/source/isaaclab/isaaclab/sensors/camera/camera.py#L91)
+and [orthogonalization](https://github.com/isaac-sim/IsaacLab/blob/ffff603eafc6b74264a5261cc0183d6a65390d78/source/isaaclab/isaaclab/utils/math.py#L1087).
+The capture retains original depth values, actual intrinsics, converted optical
+depth and a validity mask. Missing depth uses an explicit zero sentinel in the
+derived array; a selected feature endpoint without measured depth refuses.
+RGB-band feature endpoints are extracted from actual RGB pixels independently
+of collider dimensions. This bounded extraction method is not a universal
+feature detector or an accepted appearance-alignment threshold.
+
+`retain_native_metrology` writes private, exclusive, fsynced raw capture/NPZ
+artifacts using an anchored directory descriptor. It does not overwrite or
+remove an interrupted attempt. These raw captures are not qualifier-ready
+site measurements, an independent site-measurement source, or a replacement
+for the existing review/receipt contract.
+
+The model readback compares the actual native spawn path, live robot view,
+observed loaded USD layer and reverified closed dependency bytes/import
+generation. It deliberately keeps `runtime_open_proven=false`: those checks
+do not prove the exact dependency asset streams consumed by the engine.
+Native byte-open evidence, the authenticated source/capture/testbed join,
+existing caller admission/closeout wiring, a permitted real native run,
+independent paired site measurements and reviewed thresholds remain required.
+Offline handle stubs establish adapter/refusal behavior only.

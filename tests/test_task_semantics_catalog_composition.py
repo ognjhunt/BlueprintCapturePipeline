@@ -7,12 +7,14 @@ from copy import deepcopy
 
 import pytest
 
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
 from blueprint_pipeline.task_family_preparation import prepare_task_family
 from blueprint_pipeline.task_family_scoring import FAMILY_ALIASES
 from blueprint_pipeline import website_task_semantics as semantics
 from blueprint_pipeline.website_task_context_contracts import retains_task_family_preparation
+from tests.test_website_preparation_contract_v2 import VECTOR
+from tests.test_website_task_preparation import NOW, _frame
 from tests.test_website_task_semantics import semantics_fixture
 
 
@@ -38,7 +40,8 @@ def catalog_semantics_fixture(family, *, operations=None, declared_family="gener
     phrases = [_FAMILY_OPERATIONS[operation] for operation in operations]
     context["description"] = " ".join(phrases) + " Preserve the captured environment."
     context["task_family"] = declared_family
-    context["capture_rights"] = {"derived_scene_generation_allowed": True}
+    context["purpose"] = "scene_preparation"
+    context["capture_rights"] = deepcopy(VECTOR["task_context_response_preparation"]["capture_rights"])
     context["context_digest"] = canonical_digest(context, digest_field="context_digest")
     receipt["binding"]["task_context_digest"] = context["context_digest"]
     receipt["proposal"]["task_semantics"] = {
@@ -55,12 +58,30 @@ def catalog_semantics_fixture(family, *, operations=None, declared_family="gener
     return context, source, artifact
 
 
+def _preparation_spend(context, source):
+    """Synthetic current preparation grant; no task confirmation or execution."""
+    authority = deepcopy(VECTOR["sponsorship_response"])
+    # This test has no assessment-proposal evidence; the optional advisory is
+    # not copied from an unrelated capture in the frozen contract vector.
+    authority.pop("assessment_preparation_proposal")
+    authority.update({key: context[key] for key in ("request_id", "scene_id", "capture_id")})
+    authority.update(task_context_digest=context["context_digest"], source_video_digest=source,
+                     expires_at_epoch=NOW + 3600)
+    authority["consent"].update(rights_reference=cross_runtime_canonical_digest(context["capture_rights"]),
+                                 accepted_at_epoch=NOW - 60)
+    authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
+    return authority
+
+
 def _family_arguments(tmp_path, family="cloth_folding", *, operations=None):
     context, source, artifact = catalog_semantics_fixture(family, operations=operations)
     splat, collision = tmp_path / "scene.ply", tmp_path / "collision.glb"
     splat.write_bytes(b"development-only-source-appearance")
     collision.write_bytes(b"development-only-source-collision")
-    geometry = {"binding": {"source_video_digest": source}, "frames": []}
+    geometry = {"binding": {"source_video_digest": source},
+        "frames": [_frame(tmp_path, index) for index in range(2)],
+        "geometry_backend": "world_labs_atlas", "unit": "estimated_meters",
+        "metric_measurement_proven": False, "scale_status": "model_estimated"}
     geometry["digest"] = canonical_digest(geometry, digest_field="digest")
     masks = {"source_geometry_digest": geometry["digest"], "targets": []}
     masks["digest"] = canonical_digest(masks, digest_field="digest")
@@ -68,7 +89,8 @@ def _family_arguments(tmp_path, family="cloth_folding", *, operations=None):
         source_geometry=geometry, base_scene={"splat_path": str(splat), "splat_digest": _sha256_file(splat),
             "collision_mesh_path": str(collision), "collision_mesh_digest": _sha256_file(collision),
             "up_axis": "Y", "meters_per_unit": 1.0},
-        output_root=tmp_path / "preparation", task_semantics=artifact)
+        output_root=tmp_path / "preparation", task_semantics=artifact,
+        spend=_preparation_spend(context, source), now=NOW)
 
 
 def _handoff(preparation, context, source_geometry):
@@ -100,7 +122,45 @@ def test_general_task_uses_current_catalog_and_requests_exact_missing_family_con
     assert inputs["source_bindings"]["task_context_digest"] == original["context_digest"]
     assert inputs["automatic_paid_execution_authorized"] is False
     assert arguments["task_context"] == original and original["task_family"] == "general_task"
+    assert original["confirmed"] is False and original["confirmed_at"] is None
+    assert original["purpose"] == "scene_preparation"
     assert retains_task_family_preparation(_handoff(result, original, arguments["source_geometry"]), original)
+
+
+@pytest.mark.parametrize("fault", ["missing", "expired", "context", "rights", "purpose"])
+def test_unconfirmed_family_requires_its_complete_current_preparation_authority(tmp_path, fault):
+    arguments = _family_arguments(tmp_path)
+    authority = arguments["spend"]
+    if fault == "missing":
+        arguments["spend"] = {}
+    else:
+        if fault == "expired":
+            authority["expires_at_epoch"] = arguments["now"]
+        elif fault == "context":
+            authority["task_context_digest"] = "sha256:" + "d" * 64
+        elif fault == "rights":
+            authority["consent"]["rights_reference"] = "sha256:" + "d" * 64
+        else:
+            authority["purpose"] = "task_evaluation"
+        authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
+    original = deepcopy(arguments)
+    with pytest.raises(ValueError, match="website_preparation_authority_invalid"):
+        prepare_task_family(**arguments)
+    assert arguments == original and arguments["task_context"]["confirmed"] is False
+    assert not arguments["output_root"].exists()
+
+
+def test_unconfirmed_multistep_requires_actual_source_frame_evidence(tmp_path):
+    arguments = _family_arguments(tmp_path, "multi_step")
+    geometry, masks = arguments["source_geometry"], arguments["task_masks"]
+    geometry["frames"] = []
+    geometry["digest"] = canonical_digest(geometry, digest_field="digest")
+    masks["source_geometry_digest"] = geometry["digest"]
+    masks["digest"] = canonical_digest(masks, digest_field="digest")
+    with pytest.raises(ValueError, match="website_family_authoring_evidence_frames_invalid"):
+        prepare_task_family(**arguments)
+    assert arguments["task_context"]["confirmed"] is False
+    assert not arguments["output_root"].exists()
 
 
 def test_synthetic_ball_still_resolves_to_its_existing_rigid_profile():

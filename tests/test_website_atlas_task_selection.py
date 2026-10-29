@@ -178,10 +178,32 @@ def test_changed_video_and_symlinked_survey_never_choose_a_target(retained):
         _resolve(retained)
 
 
-def test_real_stage_reuses_old_analysis_before_another_model_call(retained, monkeypatch):
+@pytest.mark.parametrize("canonicalization", [None, "rfc8785"])
+def test_real_stage_reuses_old_analysis_before_another_model_call(retained, monkeypatch, canonicalization):
     from blueprint_pipeline import clean_plate_stage as stage
+    from blueprint_pipeline.website_task_context_contracts import website_task_context_digest
+    context = retained.context
+    context["success_criteria"] = {"successDefinition": "Transfer one box.", "successRate": 1e-7,
+                                   "cycleTimeSeconds": 1.0, "unknown": False}
+    if canonicalization is not None:
+        context["canonicalization"] = canonicalization
+    context["context_digest"] = website_task_context_digest(context)
+    retained.plan["task_context_sha256"] = hashlib.sha256(json.dumps(
+        context, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    selection = deepcopy(retained.selection)
+    binding = selection["planner_receipt"]["binding"]
+    binding["task_context_digest"] = context["context_digest"]
+    selection["planner_receipt"]["binding_digest"] = canonical_digest(binding)
+    _save(retained.root, "selection_binding.json", selection)
+    result = {**retained.result, "task_context_digest": context["context_digest"]}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    _save(retained.root, "result.json", result)
+    _save(retained.root, "preview_job.json", {**retained.job, "result_digest": result["digest"]})
     root = retained.capture / "pipeline/clean_plate"
     _save(root, "removal_plan.json", retained.plan)
+    assert load_retained_uncertain_analysis(capture_root=retained.capture, task_context=context,
+                                           source_video=retained.source) == retained.plan
+    assert _resolve(retained)["retained_task_selection"]["task_context_digest"] == context["context_digest"]
     monkeypatch.setattr(stage, "analyze_removal_targets", lambda **kw: pytest.fail("repeat model call"))
     monkeypatch.setattr(stage, "prepare_website_source_frames", lambda **kw: {"status": "completed"})
     selected = []

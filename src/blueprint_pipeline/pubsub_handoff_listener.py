@@ -1637,6 +1637,11 @@ def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage
     from .pubsub_handoff_scene_operations import _process_handoff_payload_body
     with ExitStack() as lifetime:
         handoff = parse_handoff_payload(payload)
+        from .handoff_recovery import retained_source_hold
+        held = retained_source_hold(sys.modules[__name__], storage_root=storage_root, handoff=handoff,
+                                    payload_digest=payload_sha256(payload))
+        if held is not None:
+            return held
         root = _handoff_capture_root(handoff, storage_root=storage_root)
         if handoff.source_membership_selector is not None:
             from .task_evaluation_scene_retirement_generations import _capture_admission
@@ -2020,12 +2025,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Only stage the capture/control-plane input; do not run run_e2e in the listener.",
     )
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--recovery-status", action="store_true")
     parser.add_argument("--bucket")
     parser.add_argument("--scene-id")
     parser.add_argument("--capture-id")
     args = parser.parse_args(argv)
 
     storage_root = args.storage_root or Path(tempfile.gettempdir()) / "blueprint-pubsub-handoffs"
+    if args.recovery_status:
+        from .handoff_recovery import status as recovery_status
+        print(json.dumps(recovery_status(storage_root=storage_root), sort_keys=True))
+        return 0
     if args.status:
         missing = [
             name

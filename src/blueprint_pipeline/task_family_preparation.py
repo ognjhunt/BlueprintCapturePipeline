@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .common import write_json
+from .core.handoff_lease import guarded_handoff_write_json as write_json, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .task_family_native_contracts import family_source_blockers
@@ -24,6 +24,37 @@ from .task_family_scoring import (
 )
 
 
+def _retain_processing_rights_gap(*, family, task_context, task_masks, source_geometry,
+                                 removal_manifest, base_scene, output_root, task_semantics):
+    """Retain the accepted job without opening or authoring denied source bytes."""
+    task_id = task_context.get("task_id") or "website-" + task_context["context_digest"][7:27]
+    source_bindings = {"task_context_digest": task_context["context_digest"],
+        "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
+        "splat_digest": base_scene.get("splat_digest"), "collision_mesh_digest": base_scene.get("collision_mesh_digest")}
+    value = {"schema_version": "website_scene_preparation.v1", "status": "needs_input",
+        "blockers": ["website_scene_processing_rights_required"], "dispatch_blockers": [],
+        "job_disposition": "accepted", "claim_ceiling": "development_only",
+        "binding": {**source_bindings, "removal_manifest_digest": canonical_digest(removal_manifest)},
+        "task_evaluation_inputs": {"task_family": family,
+            "scope": {"scene_id": task_context["scene_id"], "task_id": task_id,
+                "task_context_digest": task_context["context_digest"]},
+            **({"task_semantics": dict(task_semantics),
+                "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest")}
+               if task_semantics is not None else {}),
+            "runtime_adapter": "task_evaluation_task_family_native_adapter",
+            "task_success_contract": None, "native_runtime_contract": None,
+            "source_bindings": source_bindings,
+            "requirements": {family: {"criteria": list(FAMILY_CRITERIA.get(family, ())),
+                "native_observables": list(FAMILY_OBSERVABLES.get(family, ())),
+                **({"ordered_stages_required": True} if family == "multi_step" else {})}},
+            "source_targets": [], "automatic_paid_execution_authorized": False},
+        "intake_request": None, "thumbnail": None, "provider_mutation_performed": False}
+    value["digest"] = canonical_digest(value, digest_field="digest")
+    detached = json.loads(json.dumps(value, allow_nan=False))
+    write_json(output_root / "preparation.json", detached)
+    return detached
+
+
 def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[str, Any],
                         removal_manifest: Mapping[str, Any], source_geometry: Mapping[str, Any],
                         base_scene: Mapping[str, Any], output_root: Path,
@@ -31,24 +62,54 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
                         spend: Mapping[str, Any] | None = None, now: float | None = None,
                         task_semantics: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Retain the whole job, including multiple subjects and deformable state."""
+    handoff_lease_checkpoint("website_task_family_preparation_start")
+    if task_context.get("confirmed") is not True:
+        # The public compiler already applies this pure guard. Direct family
+        # callers must retain the same complete preparation grant validation.
+        from .website_preparation_contracts import validate_preparation_authority
+        validate_preparation_authority(task_context=task_context, authority=spend or {}, now=now)
     from .website_task_semantics import effective_task_profile
     source_video_digest = (source_geometry.get("binding") or {}).get("source_video_digest")
     family = canonical_task_family(effective_task_profile(task_context=task_context,
         task_semantics=task_semantics, source_video_digest=source_video_digest))
     if family is None:
         raise ValueError("website_task_family_unknown")
+    rights = task_context.get("capture_rights")
+    if (not isinstance(rights, Mapping) or rights.get("derived_scene_generation_allowed") is not True
+            or ("consent_revoked" in rights and rights["consent_revoked"] is not False)
+            or rights.get("consent_status") == "revoked"
+            or rights.get("future_processing_allowed") is False):
+        return _retain_processing_rights_gap(family=family, task_context=task_context, task_masks=task_masks,
+            source_geometry=source_geometry, removal_manifest=removal_manifest, base_scene=base_scene,
+            output_root=output_root, task_semantics=task_semantics)
     if task_masks.get("source_geometry_digest") != source_geometry.get("digest"):
         raise ValueError("website_preparation_geometry_binding_mismatch")
     for path_key, digest_key in (("splat_path", "splat_digest"), ("collision_mesh_path", "collision_mesh_digest")):
         if _sha256_file(Path(base_scene[path_key])) != base_scene[digest_key]:
             raise ValueError("website_base_scene_changed")
     inputs = dict(evaluation_inputs or {})
+    if (family in {"button_press", "multi_step"} and inputs.get("task_success_contract") is None
+            and inputs.get("native_runtime_inputs") is None):
+        from .task_family_layout_authoring import emit_registered_task_layout
+        task_masks = emit_registered_task_layout(task_context=task_context, task_masks=task_masks,
+            source_geometry=source_geometry, base_scene=base_scene, output_root=output_root)
+        handoff_lease_checkpoint("website_task_family_preparation_after_layout")
     blockers: list[str] = []
-    if (task_context.get("capture_rights") or {}).get("derived_scene_generation_allowed") is not True:
-        blockers.append("website_scene_processing_rights_required")
     task_id = task_context.get("task_id") or "website-" + task_context["context_digest"][7:27]
     scope = {"scene_id": task_context["scene_id"], "task_id": task_id,
              "task_context_digest": task_context["context_digest"]}
+    source_bindings = {"task_context_digest": task_context["context_digest"],
+        "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
+        "splat_digest": base_scene["splat_digest"], "collision_mesh_digest": base_scene["collision_mesh_digest"]}
+    produced = None
+    if inputs.get("task_success_contract") is None and inputs.get("native_runtime_inputs") is None:
+        from .task_family_button_authoring import author_button_family_inputs
+        produced = author_button_family_inputs(family=family, task_context=task_context,
+            task_masks=task_masks, source_geometry=source_geometry, base_scene=base_scene,
+            source_bindings=source_bindings, output_root=output_root, task_semantics=task_semantics, now=now)
+        handoff_lease_checkpoint("website_task_family_preparation_after_authoring")
+        if produced is not None and produced["status"] == "authored":
+            inputs.update(produced["outputs"])
     contract = inputs.get("task_success_contract")
     if contract is None:
         blockers.append("website_task_family_success_contract_required")
@@ -62,9 +123,6 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
     # Runtime inputs are data from the configured native scene, not model
     # executable code. The existing native contract entrypoint validates them.
     native = None
-    source_bindings = {"task_context_digest": task_context["context_digest"],
-        "source_geometry_digest": source_geometry["digest"], "task_masks_digest": task_masks["digest"],
-        "splat_digest": base_scene["splat_digest"], "collision_mesh_digest": base_scene["collision_mesh_digest"]}
     runtime_inputs = inputs.get("native_runtime_inputs")
     if runtime_inputs is None:
         blockers.append("website_task_family_native_runtime_inputs_required")
@@ -75,12 +133,13 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         kwargs = dict(runtime_inputs)
         if set(kwargs) & {"scene_id", "task_id", "task_spec", "destination"}:
             raise ValueError("website_task_family_native_runtime_scope_override")
+        handoff_lease_checkpoint("website_task_family_native_materialization")
         native = materialize_native_task_runtime_contract(scene_id=scope["scene_id"], task_id=task_id,
             task_spec={"task_kind": family, "task_success_contract": contract}, **kwargs)
         blockers.extend(family_source_blockers(native=native, source_bindings=source_bindings, source_scene=base_scene))
     # Source/task readiness and dispatch authority are separate facts. Missing
     # dispatch inputs retain the prepared job and cannot mint a paid grant.
-    dispatch_blockers = []
+    dispatch_blockers = list(inputs.get("authoring_dispatch_blockers", []))
     request = None
     selection = inputs.get("task_family_runtime_selection")
     policy_selection = inputs.get("policy_selection")
@@ -126,6 +185,11 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
         if stages else {family: {"criteria": list(FAMILY_CRITERIA.get(family, ())),
             "native_observables": list(FAMILY_OBSERVABLES.get(family, ())),
             **({"ordered_stages_required": True} if family == "multi_step" else {})}})
+    from .task_family_authoring import retain_family_authoring_requirements
+    authoring = retain_family_authoring_requirements(family=family, task_context=task_context,
+        task_masks=task_masks, source_geometry=source_geometry, source_bindings=source_bindings,
+        output_root=output_root, task_semantics=task_semantics, contract=contract, native=native,
+        producer_result=produced)
     value = {
         "schema_version": "website_scene_preparation.v1",
         "status": "needs_input" if blockers else "intake_ready" if request else "task_evaluation_ready",
@@ -144,6 +208,7 @@ def prepare_task_family(*, task_context: Mapping[str, Any], task_masks: Mapping[
             "asset_sources": inputs.get("asset_sources", {}),
             "runtime_source": inputs.get("runtime_source"),
             "requirements": requirements,
+            "authoring": authoring,
             "source_targets": [dict(row) for row in task_masks.get("targets", ())],
             "source_scene": {key: base_scene.get(key) for key in ("splat_path", "splat_digest", "collision_mesh_path",
                 "collision_mesh_digest", "up_axis", "meters_per_unit")},

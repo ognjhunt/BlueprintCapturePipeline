@@ -486,11 +486,14 @@ def _policy_client(
 class _PolicyQueryTracker:
     """Remember a completed server query even if later action handling fails."""
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, *, before_query=None) -> None:
         self._client = client
+        self._before_query = before_query
         self.candidate_policy_queried = False
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
+        if self._before_query is not None:
+            self._before_query()
         try:
             response = self._client.infer(observation)
         except BaseException:  # noqa: BLE001 - preserve paid-run query truth

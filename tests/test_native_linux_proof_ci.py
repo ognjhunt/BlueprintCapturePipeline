@@ -15,6 +15,20 @@ import yaml
 from blueprint_pipeline import impacted_test_selection
 
 ROOT = Path(__file__).resolve().parents[1]
+_ORIGINAL_NATIVE_SELECTORS = (
+    'tests/test_registered_feature_linux.py::test_actual_registered_disk_diagnostic_delete_offload_and_restore',
+    'tests/test_historical_generation_linux.py::test_actual_connected_historical_interruption',
+    'tests/test_registered_feature_linux.py::test_actual_root_blueprint_uid_cache_lifetime_and_revoke',
+    'tests/test_registered_feature_linux.py::test_actual_contained_blueprint_native_pair_child_and_kernel_completion',
+    'tests/test_legacy_owner_linux.py::test_actual_legacy_owner_door_privilege_and_revocation',
+    'tests/test_historical_generation_linux.py::test_actual_historical_target_only_write_and_foreign_reference_visibility',
+    'tests/test_historical_generation_linux.py::test_actual_private_restore_member_permission_interruption',
+    'tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_default_off_delete_and_second_tick',
+    'tests/test_historical_generation_linux.py::test_actual_installed_historical_gc_offload_and_restore',
+)
+_SOURCE_IDENTITY_NATIVE_SELECTOR = (
+    'tests/test_runtime_source_identity_linux.py::test_actual_root_published_identity_is_readable_and_refuses_unsafe_evidence'
+)
 
 
 def _jobs(name: str) -> dict:
@@ -178,9 +192,11 @@ def test_diagnostic_native_failure_stops_before_unrelated_cases_without_reducing
                if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
     selected = re.findall(r'tests/[^\s]+\.py::[^\s]+', run)
     assert selected[0] == 'tests/test_registered_feature_linux.py::test_actual_registered_disk_diagnostic_delete_offload_and_restore'
-    assert len(selected) == len(set(selected)) == 9
+    assert len(selected) == len(set(selected)) == 10
+    assert _SOURCE_IDENTITY_NATIVE_SELECTOR in selected
+    assert tuple(row for row in selected if row != _SOURCE_IDENTITY_NATIVE_SELECTOR) == _ORIGINAL_NATIVE_SELECTORS
     assert '--maxfail=1' in run
-    assert 'assert len(cases) == 46' in run
+    assert 'assert len(cases) == 47' in run
     assert not any(flag in run for flag in ('--deselect', '--ignore', '-k '))
 
 
@@ -205,7 +221,9 @@ def test_expired_pending_absence_requires_its_own_native_acceptance_case() -> No
         absent_expiry=True, observation_expiry=True)
     run = next(step['run'] for step in _jobs('ci.yml')['native-feature-linux']['steps']
                if step['name'] == 'Prove actual root and ordinary-UID lifecycle')
-    assert 'assert len(cases) == 46' in run
+    selected = re.findall(r'tests/[^\s]+\.py::[^\s]+', run)
+    assert len(CONNECTED_CASES) + len(selected) - 1 == 47
+    assert 'assert len(cases) == 47' in run
     assert 'case.find(tag)' in run and 'for tag in ("skipped", "error", "failure")' in run
 
 

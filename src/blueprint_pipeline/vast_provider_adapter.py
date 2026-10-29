@@ -192,7 +192,8 @@ from .vast_provider_output_recovery import (
     MAX_RECOVERY_SECONDS,
     recover_provider_output_before_teardown,
 )
-from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress
+from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress, remote_progress_probe_for_bundle
+from .beta_screening_control_delivery import RuntimeControlRelay, runtime_control_probe
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script, VAST_ARGS_STR_SAFE_MAX_BYTES
 from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
@@ -3007,16 +3008,9 @@ def _blueprint_bundle_preflight(
                                 and entry.endswith(".py")
                                 and not entry.endswith("/__init__.py")
                             }
-                            expected_module_paths = {
-                                f"provider_runtime/blueprint_pipeline/{name}"
-                                for name in expected_modules
-                            }
-                            if execution_mode == "controlled_policy":
-                                expected_module_paths.add(
-                                    "provider_runtime/blueprint_pipeline/core/security_controls.py"
-                                )
-                            if execution_mode in {"policy", "policy_diagnostic"}:
-                                expected_module_paths.update("provider_runtime/blueprint_pipeline/core/" + name for name in ("common.py", "security_controls.py"))
+                            from .native_task_arena_execution_contract import native_task_arena_runtime_archive_paths
+                            expected_module_paths, package_paths = native_task_arena_runtime_archive_paths(execution_mode, expected_modules)
+                            required_entries.update(package_paths)
                             if (
                                 native_manifest.get("schema_version")
                                 != "native_task_arena_provider_bundle.v1"
@@ -5952,6 +5946,8 @@ def _instance_liveness_from_payload(
                 # a human to a host that is not there.
                 "ssh_host": connection["ssh_host"],
                 "ssh_port": connection["ssh_port"],
+                "instance_id": instance_id,
+                "resource_name": row.get("label") or None,
             }
             terminal_startup_error = _terminal_startup_error(row)
             if terminal_startup_error:
@@ -6388,18 +6384,13 @@ def _provider_output_probe(get_url: str) -> Callable[[], bool] | None:
     return _probe
 
 
-def _remote_progress_probe_for_bundle(
-    provider_bundle_kind: str, job_dir: Path, *, cell_count: int = 10
-) -> Callable[[Mapping[str, Any]], Mapping[str, Any]] | None:
-    """Only the policy canary has an SSH milestone probe."""
+_runtime_control_probe = runtime_control_probe  # Preserve the retained helper import surface.
 
-    if (provider_bundle_kind != "native_task_arena_policy_canary_session"
-            or type(cell_count) is not int or not 1 <= cell_count <= 200):
-        return None
-    return lambda connection: probe_policy_canary_remote_progress(
-        connection, attempt_dir=job_dir / "policy_remote_progress_ssh",
-        **({"maximum_cell_count": cell_count} if cell_count != 10 else {}),
-    )
+
+def _remote_progress_probe_for_bundle(provider_bundle_kind: str, job_dir: Path, *, cell_count: int = 10):
+    return remote_progress_probe_for_bundle(provider_bundle_kind, job_dir, cell_count=cell_count, probe=probe_policy_canary_remote_progress)
+
+
 
 
 def _request_logs_and_fetch(
@@ -7169,9 +7160,11 @@ def run_vast_provider_adapter(
     provider_output_collector: Callable[..., Mapping[str, Any]] | None = None,
     runtime_secret_file_paths: Mapping[str, str | Path] | None = None,
     provider_runtime_environment: Mapping[str, str] | None = None,
+    runtime_control_ready: Callable[[Mapping[str, Any]], Callable[[], None]] | None = None,
 ) -> dict[str, Any]:
     if provider_bundle_kind not in VAST_PROVIDER_BUNDLE_KINDS:
         raise ValueError(f"unsupported_provider_bundle_kind:{provider_bundle_kind}")
+    runtime_control_relay = RuntimeControlRelay(ready=runtime_control_ready, provider_bundle_kind=provider_bundle_kind, resource_name=instance_label_exact)
     if retain_native_task_arena_warm_session and provider_bundle_kind != "native_task_arena":
         raise ValueError("native_task_arena_warm_retention_bundle_kind_invalid")
     if (
@@ -8365,7 +8358,7 @@ def run_vast_provider_adapter(
 
     ignore_local_probe_signals = _env_truthy(
         "BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN"
-    )
+    ) and runtime_control_ready is None
     ignored_signal_counts: dict[str, int] = {}
 
     def _raise_probe_interrupt(signum: int, _frame: Any) -> None:
@@ -9016,6 +9009,9 @@ def run_vast_provider_adapter(
             startup_timeout_seconds=startup_timeout_seconds,
             max_live_minutes=max_live_minutes,
         )
+        progress_probe = _remote_progress_probe_for_bundle(provider_bundle_kind, resolved_job_dir,
+            cell_count=bundle_preflight.get("policy_cell_count") or 10)
+        progress_probe = runtime_control_relay.wrap(progress_probe, job_dir=resolved_job_dir, instance_id=instance_id)
         onstart_logs = _request_logs_and_fetch(
             instance_id=instance_id,
             api_key=api_key,
@@ -9035,10 +9031,7 @@ def run_vast_provider_adapter(
             ),
             no_progress_seconds=resolved_heartbeat_no_progress_seconds,
             output_probe=_provider_output_probe(_string(provider_output_get_url)),
-            remote_progress_probe=_remote_progress_probe_for_bundle(
-                provider_bundle_kind, resolved_job_dir,
-                cell_count=bundle_preflight.get("policy_cell_count") or 10,
-            ),
+            remote_progress_probe=progress_probe,
         )
         # Result and log transport are independent. Preserve an observed upload
         # before any startup classification can raise and trigger teardown.
@@ -9879,6 +9872,7 @@ def run_vast_provider_adapter(
             provider_reason=exception_blockers[0],
         )
     finally:
+        runtime_control_relay.close()  # Unsubscribe before exact owned provider teardown, including interrupted sinks.
         if provider_bundle_kind in {"native_task_arena", "native_task_arena_policy_canary_session"}:
             try:
                 from .company_policy_network_lease import close_policy_network  # noqa: PLC0415
