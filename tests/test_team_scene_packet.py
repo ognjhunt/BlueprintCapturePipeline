@@ -317,16 +317,26 @@ def test_a_drawer_task_whose_owner_contract_is_unconfirmed_is_refused(tmp_path) 
         _compile(tmp_path, scene)
 
 
-def test_a_right_exterior_is_compiled_in_only_where_the_scene_leaves_it_a_clear_view(tmp_path, monkeypatch) -> None:
+def test_right_exterior_keeps_authored_camera_and_distinguishes_estimated_from_measured_visibility(tmp_path, monkeypatch) -> None:
     from blueprint_pipeline import scene_camera_visibility
 
     scene = _scene(tmp_path)
-    # The fixture room has no Gaussian splat to measure through: no right exterior, and the record says why.
+    # Without measurable splats, keep the actual authored sensor and record the unknown visibility.
     compiled, request = _compile(tmp_path, scene)
     layout = json.loads(Path(compiled["path"]).read_text())["camera_layout"]
-    assert layout["exterior_right"]["status"] == "unavailable" and "measured_on_packet" not in layout
+    assert layout["exterior_right"]["status"] == "estimated" and "measured_on_packet" not in layout
+    assert layout["exterior_right"]["visibility_measured"] is False
+    assert layout["exterior_right"]["simulation_estimate"] is True
+    assert "estimated_from_packet" in layout
     assert layout["exterior_right"]["reason"].startswith("droid_exterior_right_unmeasured:")
     assert {camera["role"] for camera in request["cameras"]} == {"external", "wrist", "overview"}
+    # The returned helper request is the original measurement packet; execution
+    # is bound to the newly materialized packet with the independent third view.
+    estimated = json.loads(Path(compiled["path"]).read_text())
+    estimated_packet = Path(estimated["base_native_packet"]["path"]).parent
+    estimated_plan = json.loads((estimated_packet / "native_task_arena_scene_plan.v1.json").read_text())
+    assert {camera["role"] for camera in estimated_plan["cameras"]} == {
+        "external", "wrist", "overview", "exterior_right"}
     # Where Arena's own mount sees the task clear of the scene, the packet is compiled once more with it.
     measured: list[Path] = []
     monkeypatch.setattr(scene_camera_visibility, "packet_view_evaluator",
@@ -352,6 +362,19 @@ def test_a_right_exterior_is_compiled_in_only_where_the_scene_leaves_it_a_clear_
     # The station and the scene's own task are the same either way; the team registry reads it the same.
     assert three["robot_station"] == compiled["robot_station"]
     assert read_team_scene_inputs(three["path"])["base_native_packet"] == record["base_native_packet"]
+    # A poor view is an evaluation limitation, not a reason to remove a
+    # supported policy's sensor before the task can be attempted.
+    monkeypatch.setattr(scene_camera_visibility, "packet_view_evaluator",
+                        lambda packet: lambda row: ["scene_camera_contact_occluded_by_scene:exterior_right:100%"])
+    limited = materialize_team_scene(**inputs, output_root=tmp_path / "limited-view")
+    limited_record = json.loads(Path(limited["path"]).read_text())
+    limitation = limited_record["camera_layout"]["exterior_right"]
+    assert limitation["status"] == "limited" and limitation["visibility_measured"] is True
+    assert limitation["clear_view_found"] is False and limitation["camera_available"] is True
+    assert limitation["reason"] == "droid_exterior_right_no_clear_view"
+    limited_packet = Path(limited_record["base_native_packet"]["path"]).parent
+    limited_plan = json.loads((limited_packet / "native_task_arena_scene_plan.v1.json").read_text())
+    assert {camera["role"] for camera in limited_plan["cameras"]} == set(cameras)
 
 
 @pytest.mark.parametrize("rise", [-SUPPORT_TOP_Z, 0.3])

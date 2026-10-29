@@ -69,6 +69,11 @@ def test_close_names_never_select_an_unverified_variant_or_collapse_existing_dro
     assert "GP20HL is a different variant" in rows["yaskawa_gp20"]["reason"]
     for identity in ("standard_bots_ro1", "standard_bots_core", "abb_gofa_crb15000", "boston_dynamics_atlas"):
         assert rows[identity]["source"] is None
+    for identity in ("standard_bots_ro1", "standard_bots_core"):
+        assert rows[identity]["status"] == "source_unavailable"
+        assert "referenced_standard_bots_description_mesh_closure" in rows[identity]["missing"]
+        assert "explicit_asset_reuse_license" in rows[identity]["missing"]
+        assert "8a2164e041d3a4e75b2eeffe6351f3c89b292f5c" in rows[identity]["reason"]
     assert "/crx10ia_l." in rows["fanuc_crx_10ia_l"]["source"]["entry_path"]
     assert "/crx10ia." in rows["fanuc_crx_10ia"]["source"]["entry_path"]
     assert rows["universal_robots_ur5e"]["source"]["import_arguments"]["ur_type"] == "ur5e"
@@ -80,7 +85,16 @@ def test_source_specific_physics_tools_and_camera_gaps_remain_visible():
     assert "inertial_parameters_not_present_in_gp12_macro" in rows["yaskawa_gp12"]["missing"]
     assert "inertial_parameters_not_present_in_gp25_20_macro" in rows["yaskawa_gp20"]["missing"]
     assert "confirm_exact_gp25_20_variant_YR_1_06VX25_20_A0" in rows["yaskawa_gp20"]["composition_required"]
-    assert "left_and_right_gripper_urdf_joints_are_fixed" in rows["almond_axol"]["missing"]
+    axol = rows["almond_axol"]
+    assert axol["source"]["entry_path"].endswith("/axol_standalone.urdf")
+    assert axol["source"]["revision"] == "3ccc69cf3adaea09845456148d6a4f16ef059f27"
+    assert axol["source"]["package_roots"] == {}
+    for mesh_directory in ("jelly", "standalone"):
+        assert f"almond_axol/kinematics/urdf/meshes/{mesh_directory}" in axol["source"]["include_paths"]
+    assert "left_and_right_gripper_urdf_joints_are_fixed" not in axol["missing"]
+    assert "source_estimated_non_arm_masses_and_inertias" in axol["missing"]
+    assert "independent_finger_pair_commands_and_mimic_mapping" in axol["composition_required"]
+    assert "apply_source_custom_drive_gains_after_import" in axol["composition_required"]
     yam = rows["i2rt_yam_bimanual"]
     assert yam["source"]["source_arm_count"] == 2
     assert rows["trlc_dk1_bimanual"]["source"]["source_arm_count"] == 1

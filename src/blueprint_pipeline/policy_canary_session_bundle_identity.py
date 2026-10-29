@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import hashlib
+import math
 from collections.abc import Mapping
 from pathlib import PurePosixPath
 from typing import Any
@@ -93,6 +94,7 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
 
     if not isinstance(payload, Mapping):
         raise TypeError("native_task_arena_policy_canary_manifest_not_mapping")
+    minimum_gpu_ram_mb(payload)
     shape = _shape(payload)
     candidates = payload.get("candidate_ids")
     if shape is BETA_SHAPE:
@@ -107,8 +109,10 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
             and payload.get("pre_policy_site_qualification_required") is True
             and _SHA.fullmatch(str(payload.get("family_static_readiness_digest") or "")) is not None
         ) if family else (
-            (("team_credential_env" not in payload and isinstance(candidates, list) and candidates and candidates[0] in PAIR)
-             or (payload.get("team_policy_interface_id") == "openpi_droid_https.v1"
+            (("team_credential_env" not in payload and isinstance(candidates, list) and candidates
+              and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid"])
+             or (payload.get("team_policy_interface_id") in {
+                     "openpi_droid_https.v1", "blueprint_policy_https.v1", "dreamlabs_dream1.v1"}
                  and _SECRET_FILE_ENV.fullmatch(str(payload.get("team_credential_env") or "")) is not None
                  and payload.get("secret_material_bundled") is False))
             and payload.get("evaluation_backend") == "robolab.v1"
@@ -151,12 +155,26 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
     return readiness
 
 
+def minimum_gpu_ram_mb(payload: Mapping[str, Any]) -> int:
+    """Respect the sealed candidate memory floor without lowering legacy bounds."""
+    memory = payload.get("minimum_gpu_memory_gb", 46)
+    if type(memory) not in (int, float) or not 0 < memory <= 1024:
+        raise ValueError("beta_screening_gpu_memory_bound_invalid")
+    return max(46_000, math.ceil(memory * 1000))
+
+
 def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
     """Archive members this run kind needs beyond the shared session runtime."""
 
     if _shape(manifest) is BETA_SHAPE:
         candidate = str((manifest.get("candidate_ids") or [""])[0])
         required = {f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json"}
+        if candidate == "cosmos3_edge_policy_droid":
+            required.update({"provider_runtime/cosmos_edge_policy_snapshot_manifest.json",
+                             "provider_runtime/adp009d_policy_provisioning.cosmos3_edge_policy_droid.sh",
+                             "provider_runtime/blueprint_pipeline/cosmos_edge_beta_runtime.py",
+                             "provider_runtime/blueprint_pipeline/cosmos_edge_droid_policy_server.py",
+                             "provider_runtime/blueprint_pipeline/cosmos_edge_droid_policy_runtime.py"})
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             required.update("provider_runtime/blueprint_pipeline/" + name for name in (
                 "task_family_native_runtime.py", "task_family_native_contracts.py", "task_family_native_controls.py",

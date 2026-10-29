@@ -42,6 +42,65 @@ mock transport tests and a CPU controller smoke are separate evidence.
    simulator state. Policy input PNGs decode the exact sent JPEG bytes; source
    renders and derived review normalization retain separate provenance.
 
+## Public-source runtime configurations
+
+`deployment_embodiment_runtime_configuration` registers 16 exact source profiles:
+nine include source-authored grippers (YAM, PiPER, FR3, Kinova single/dual,
+xArm7 single/dual, Axol and TRLC-DK1); seven are bare arms (UR5e, UR10e,
+three FANUC variants and Yaskawa GP12/GP20). Bare arms do not acquire grasping
+capability from their registration. The remaining catalog rows retain an
+individual unavailable reason or the existing DROID runtime.
+
+Prepare every available source and its joint/tool configuration without Isaac:
+
+```bash
+python -m blueprint_pipeline.deployment_embodiment_assets \
+  --all-available --destination work/robot-sources
+python -m blueprint_pipeline.deployment_embodiment_runtime_configuration \
+  --all-available --source-bundle work/robot-sources --output work/robot-configurations
+```
+
+The generated `runtime-configuration.json` binds retained source bytes, serial
+joint order, source limits, mimic relations and authored TCP frames. PD gains,
+interior reset poses, camera rigs and duplicate-arm mount offsets are labeled
+simulation assumptions. `source_dynamics` reports moving links without positive
+authored mass/inertia; no estimates are silently added. GP12/GP20 currently lack
+those dynamics and must retain that reason until a usable explicit estimate or
+vendor model is integrated. Other source-authored inertias are not physical
+validation. Source configurations contain no invented USD hash or execution result.
+
+The second phase runs on an installed Isaac worker obtained through the existing
+paid allocator (or already authorized local Isaac runtime), before dispatching a
+policy episode. For example:
+
+```bash
+python -m blueprint_pipeline.deployment_embodiment_runtime_configuration \
+  --source-bundle work/robot-sources/i2rt_yam_bimanual \
+  --output work/robot-configurations/i2rt_yam_bimanual \
+  --import-prepared work/robot-usd/i2rt_yam_bimanual --initialize-isaac \
+  --model-url https://YOUR_ASSET_HOST/i2rt_yam_bimanual/robot.usda \
+  > work/yam-binding-inputs.json
+```
+
+This command allocates no cloud resource and uploads no asset. Publish the actual
+prepared USD plus its dependency closure at the supplied operator-owned location,
+then register the resulting manifest/model/provenance through the existing Team
+registration and `prepared_robot_models` flow. The adapter
+`beta_policy_screening_team.registration_from_prepared_inputs` creates the
+reusable registry row from those verified inputs, the actual model path and
+the operator's policy/rights settings. `bind_prepared_configuration`
+checks the actual imported USD names, bodies, world anchor, digest and composition
+before producing those inputs. The registration is task-independent; the beta
+runner subsequently seals the actual task station and execution budget. Import
+must precede that sealing because the worker requires the real USD digest.
+
+Existing source/configuration/import outputs are verified and reused on retry;
+changed bytes are never silently replaced. A different policy cadence can be
+bound with `--runtime-settings settings.json` containing supported `control_hz`
+and `action_chunk_rows`. The final manifest seals those values. Actual policy
+compatibility, successful Isaac import and scored task execution remain separate
+observed outcomes.
+
 ## Dream contract
 
 The direct client implements the published `dreamlabs-client==1.0.3` HTTP
@@ -85,8 +144,9 @@ The public single-file model preflight still rejects external dependencies.
 
 ## Availability and acceptance
 
-The 16 exact configurations remain enumerated in
-[source notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md). The same native manifest
+The exact source catalog remains enumerated in
+[source notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md), with 16 source-to-runtime
+configuration profiles described above. The same native manifest
 runtime executes configured OEM USDs; a separate hardcoded adapter per vendor
 is unnecessary. Exact tools, mounts, resets, cameras and licenses are execution
 inputs, and cannot be inferred from a robot-family name.
@@ -97,13 +157,19 @@ Blueprint motor-action endpoint contract; their trained weights and
 normalization must actually exist. The older skill-intent JSON is not a motor
 trajectory. Physical Intelligence's API and Praxis require their actual private
 robotics contracts and access; no public model metadata, generic Runway media API
-or generic serializer substitutes for them. Standard Bots assets and Axol's
-fixed-gripper source limitations remain explicit in the source matrix.
+or generic serializer substitutes for them. Standard Bots asset verification and
+Axol's controller binding and estimated-physics limitations remain explicit in
+the source matrix; the selected Axol standalone source includes actuated fingers.
 
 Acceptance recorded during implementation includes focused native, client,
-admission, asset, media and import-closure tests, plus a retained original YAM
-MuJoCo CPU dynamics smoke. That controller-isolation smoke uses zero gravity;
-it is neither an Isaac run nor a manipulation/task evaluation. Actual hosted
+admission, asset, media and import-closure tests. A retained MuJoCo 3.11.0 CPU
+controller smoke exercised the generated source models: 14 of 16 passed joint
+motion, separate tool commands and repeatable reset; GP12/GP20 reported missing
+moving-body mass/inertia. That smoke retains source inertias but disables gravity
+and contacts, omits visuals, and omits Kinova COLLADA collision surfaces because
+MuJoCo has no COLLADA decoder. It establishes controller isolation only, with no
+collision, camera-rendering, Isaac, manipulation-task or policy-execution claim.
+Actual hosted
 Dream execution and Isaac acceptance require admitted inputs and their own
 observed receipts. Deploying these adapters does not supply private access,
 release a founder hold or mark any candidate qualified.

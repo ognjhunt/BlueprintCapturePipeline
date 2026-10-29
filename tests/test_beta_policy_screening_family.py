@@ -150,7 +150,7 @@ def test_unmatched_native_interface_never_creates_capability(tmp_path, monkeypat
     assert not planning["cost_quotes"]
 
 
-def test_explicit_source_policy_selection_limits_the_plan_to_current_catalog_configuration(tmp_path, monkeypatch):
+def test_compilation_policy_selection_keeps_other_candidates_and_survives_catalog_growth(tmp_path, monkeypatch):
     _planning, catalog, profile, facts, spec, _written = family_planning_fixture(tmp_path, monkeypatch)
     another = deepcopy(catalog["candidates"][0])
     another.update(candidate_id="other-policy", display_name="Other qualified policy")
@@ -176,14 +176,17 @@ def test_explicit_source_policy_selection_limits_the_plan_to_current_catalog_con
     selected_profile["screening_candidates"] = {spec["candidate_id"]: settings}
     planning = build_planning_inputs(catalog=catalog, profile=selected_profile, capture_root=capture,
         source=selected_facts["inputs"]["source"], inputs_dir=tmp_path / "selected-planning")
-    assert planning["candidate_ids"] == [spec["candidate_id"]]
-    plan = build_screening_plan(catalog, planning["scene"], candidate_ids=planning["candidate_ids"],
+    assert "candidate_ids" not in planning
+    plan = build_screening_plan(catalog, planning["scene"],
         campaign_id="selected-family", capabilities=planning["capabilities"], cost_quotes=planning["cost_quotes"])
-    assert [row["candidate_id"] for row in plan["candidates"]] == [spec["candidate_id"]]
+    rows = {row["candidate_id"]: row for row in plan["candidates"]}
+    assert rows[spec["candidate_id"]]["status"] == "selected"
+    assert rows["other-policy"]["status"] == "unavailable"
+    assert rows["other-policy"]["blockers"] == ["runtime_candidate_binding_missing"]
     changed = seal_catalog({**catalog, "revision": "changed operator catalog"})
-    with pytest.raises(ValueError, match="policy_selection_changed"):
-        build_planning_inputs(catalog=changed, profile=selected_profile, capture_root=capture,
-            source=selected_facts["inputs"]["source"], inputs_dir=tmp_path / "changed-planning")
+    updated = build_planning_inputs(catalog=changed, profile=selected_profile, capture_root=capture,
+        source=selected_facts["inputs"]["source"], inputs_dir=tmp_path / "changed-planning")
+    assert set(updated["capabilities"]["candidate_bindings"]) == {spec["candidate_id"]}
 
 
 @pytest.mark.parametrize("source_state", ["current", "revoked", "expired"])

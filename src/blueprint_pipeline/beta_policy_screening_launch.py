@@ -170,15 +170,19 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
         validate_robolab_policy_execution_spec(raw_spec, candidate_id=candidate["candidate_id"]))
     if family:
         from .beta_policy_screening_family import validate_family_candidate_catalog
-        validate_family_candidate_catalog(plan, candidate, native_spec, static)
-    if native_spec.get("policy_interface_id") in {"openpi_droid_https.v1", "task_family_policy_https.v1"}:
+        validate_family_candidate_catalog(plan, candidate, native_spec, static, scene=scene)
+    from .policy_interface_binding import TEAM_HTTPS_INTERFACES, TEAM_ROBOT_INTERFACES
+    if native_spec.get("policy_interface_id") in TEAM_HTTPS_INTERFACES:
         from .beta_policy_screening_hosted import validate_hosted_delivery
         validate_hosted_delivery(native_spec, execution, episodes=candidate["episode_count"])
-    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid"}:
+    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}:
         raise ValueError("beta_screening_policy_provisioning_not_configured")
     if (native_spec["runtime_identity_digest"] != execution["runtime_digest"]
             or native_spec["task_success_contract_digest"] != scene["task_success_contract_digest"]):
         raise ValueError("beta_screening_policy_scene_binding_invalid")
+    if native_spec.get("policy_interface_id") in TEAM_ROBOT_INTERFACES:
+        from .beta_policy_screening_team import validate_team_candidate_catalog
+        validate_team_candidate_catalog(plan, candidate, native_spec, scene)
     control = ({"mode": "native_family_prepolicy_required", "typed_gap": "native_site_qualification_pending",
                 "policy_execution_blocked": True} if family else dict(scene["control_diagnostic"]))
     cells = [{**dict(cell), "control_diagnostic": control}
@@ -231,6 +235,8 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
         runtime_input_manifest_path=input_path, session_authority_path=authority_path,
         execution_spec_paths={candidate["candidate_id"]: spec_path},
         checkpoint_inventory_paths={candidate["candidate_id"]: _bound_path(inventory)} if inventory else {},
+        team_robot_model_path=_bound_path(execution["team_robot_model"]) if execution.get("team_robot_model") else None,
+        minimum_gpu_memory_gb=execution.get("minimum_gpu_memory_gb"),
         implementation_commit=execution["implementation_commit"]))
     bundle_path = _stage(root / "bundle_receipt.json", bundle)
     preflight = preflight_sealed_policy_canary_bundle(bundle)
@@ -297,13 +303,18 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         execution = candidate.get("execution_spec") or {}
         if execution.get("backend") == "task_family_native.v1":
             from .beta_policy_screening_family import reopen_family_planning_inputs, validate_family_candidate_catalog
-            static = reopen_family_planning_inputs(_read(_bound_path(plan["scene_inputs"])))
+            scene = _read(_bound_path(plan["scene_inputs"]))
+            static = reopen_family_planning_inputs(scene)
             validate_family_candidate_catalog(plan, candidate,
-                _read(_bound_path(execution["policy_execution_spec"])), static)
+                _read(_bound_path(execution["policy_execution_spec"])), static, scene=scene)
         if execution.get("credential_file"):
             from .beta_policy_screening_hosted import validate_hosted_delivery
-            validate_hosted_delivery(_read(_bound_path(execution["policy_execution_spec"])), execution,
-                                     episodes=candidate["episode_count"])
+            from .policy_interface_binding import TEAM_ROBOT_INTERFACES
+            native_spec = _read(_bound_path(execution["policy_execution_spec"]))
+            validate_hosted_delivery(native_spec, execution, episodes=candidate["episode_count"])
+            if native_spec.get("policy_interface_id") in TEAM_ROBOT_INTERFACES:
+                from .beta_policy_screening_team import validate_team_candidate_catalog
+                validate_team_candidate_catalog(plan, candidate, native_spec, _read(_bound_path(plan["scene_inputs"])))
         from .beta_policy_screening_worker import require_current_source
         require_current_source(plan["source"], site_id=plan["site_id"])
     except (ValueError, OSError, RuntimeError) as exc:

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_UP
 from pathlib import Path
 import subprocess
+import re
 from typing import Any
 
 from .beta_policy_screening_launch import EXECUTION_SCHEMA, _bound_path, _read, _record, _write
@@ -31,6 +32,16 @@ def _interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any]) -
     """
     from .beta_policy_candidate_catalog import load_catalog
     interface = spec["policy_interface_id"]
+    from .policy_interface_binding import TEAM_ROBOT_INTERFACES
+    if interface in TEAM_ROBOT_INTERFACES:
+        from .beta_policy_screening_team import team_interface_matches
+        return team_interface_matches(configured, spec)
+    if interface == "cosmos_edge_droid.v1":
+        from .cosmos_edge_beta_runtime import interface_contract, validate_execution_spec, MINIMUM_GPU_MEMORY_GB
+        validate_execution_spec(spec)
+        return (configured.get("interface") == interface_contract() and configured.get("runtime") == {
+            "backend": "robolab.v1", "runtime_id": "native_task_arena_policy_canary.v1",
+            "minimum_gpu_memory_gb": MINIMUM_GPU_MEMORY_GB})
     if interface not in {"openpi_droid.v1", "groot_n17_droid.v1", "openpi_droid_https.v1"}:
         return False
     family = "groot_n17_droid" if interface == "groot_n17_droid.v1" else "pi05_droid"
@@ -133,6 +144,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     normalized_inputs = ({**inputs, **family_fields} if family else
         {**inputs, "beta_robot_free_probe_receipt": receipt,
          "beta_probe_task_spec_digest": canonical_digest(task), "beta_task_kind": task["task_kind"]})
+    normalized_inputs["screening_capture_root"] = str(Path(capture_root).resolve())
     if family:
         normalized_inputs.update(schema_version="blueprint.beta_family_screening_scene_inputs.v1",
                                  source_family_inputs_digest=inputs["inputs_digest"])
@@ -152,102 +164,145 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     if scene_plan.get("plan_digest") != canonical_digest(scene_plan, digest_field="plan_digest"):
         raise ValueError("beta_screening_native_scene_plan_digest_invalid")
     scene["native_scene_plan"] = scene_plan
-    templates = {} if family else _native_templates(repo=repo, scene_plan={**scene_plan,
-        "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
-        contract=inputs["task_success_contract"], commit=commit)
-    bindings, quotes = {}, {}
+    template_failures = {}
+    templates = {}
+    if not family:
+        try:
+            templates = _native_templates(repo=repo, scene_plan={**scene_plan,
+                "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
+                contract=inputs["task_success_contract"], commit=commit)
+        except (ValueError, OSError, KeyError, TypeError):
+            template_failures.update({key: "beta_screening_baseline_runtime_template_unavailable"
+                                      for key in ("pi05_droid", "groot_n17_droid")})
+    if not family and any(row["candidate_id"] == "cosmos3_edge_policy_droid" for row in catalog["candidates"]):
+        from .cosmos_edge_beta_runtime import candidate_execution_spec
+        try:
+            templates["cosmos3_edge_policy_droid"] = (candidate_execution_spec(scene_plan={**scene_plan,
+                "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
+                contract=inputs["task_success_contract"], source_commit=commit), None)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            code = str(exc).split(":", 1)[0]
+            template_failures["cosmos3_edge_policy_droid"] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
+                                                            else "cosmos_edge_runtime_template_unavailable")
+    bindings, quotes, candidate_blockers = {}, {}, {}
     selection = scene_plan.get("policy_selection") if family else None
     if selection is not None:
         from .task_family_dispatch_contracts import validate_policy_selection
         selection = validate_policy_selection(selection)
-        matches = [row for row in catalog["candidates"] if row["candidate_id"] == selection["candidate_id"]]
-        if (selection["catalog_digest"] != catalog["catalog_digest"] or len(matches) != 1
-                or matches[0]["configuration_digest"] != selection["configuration_digest"]):
-            raise ValueError("beta_screening_family_policy_selection_changed")
+        # Compilation's seed policy is provenance, not the candidate universe.
+        # Each current candidate is independently matched to the frozen native
+        # robot/interface below. Adding a catalog entry must not retire scenes.
         scene["policy_selection"] = selection
     credentials = []
     # Credential presence is intentionally not guessed from a public endpoint.
     # Hosted policies need a separately configured private delivery lane.
     for configured in catalog["candidates"]:
         key = configured["candidate_id"]
-        if selection is not None and key != selection["candidate_id"]:
-            continue
-        override = (profile.get("screening_candidates") or {}).get(key)
-        if override:
-            spec = _read(_bound_path(override["policy_execution_spec"]))
-            inventory = _bound_path(override["checkpoint_inventory"]) if override.get("checkpoint_inventory") else None
-        elif key in templates:
-            spec, inventory = templates[key]
-        else:
-            continue
-        spec = (validate_task_family_policy_execution_spec(spec, candidate_id=key, scene_plan=scene_plan) if family
-                else validate_robolab_policy_execution_spec(spec, candidate_id=key))
-        if (key in templates and not override
-                and configured["policy"] != next(row["policy"] for row in
-                    load_catalog(repo / "config" / "beta_policy_candidates.v1.json")["candidates"]
-                    if row["candidate_id"] == key)):
-            continue
-        if family:
-            from .beta_policy_screening_family import family_interface_matches
-            interface_matches = family_interface_matches(configured, spec, static)
-        else:
-            interface_matches = _interface_matches(configured, spec)
-        if (spec["checkpoint_digest"] != configured["policy"]["digest"]
-                or spec["task_success_contract_digest"] != inputs["task_success_contract_digest"]
-                or not interface_matches):
-            continue
-        # These values come from the registry, never the customer or policy.
-        if profile.get("max_hourly_rate_usd") is None:
-            continue
-        rate = Decimal(str(profile["max_hourly_rate_usd"]))
-        ttl = profile.get("screening_hard_ttl_seconds", DEFAULT_HARD_TTL_SECONDS)
-        cap = Decimal(str(profile.get("screening_candidate_cap_usd", DEFAULT_CANDIDATE_CAP_USD)))
-        hosted = spec["policy_interface_id"] in {"openpi_droid_https.v1", "task_family_policy_https.v1"}
-        hosted_settings = {}
-        if hosted:
-            from .beta_policy_screening_hosted import HOSTED_FIELDS, request_limit, validate_hosted_delivery
-            if not override:
-                continue
-            hosted_settings = {name: override[name] for name in HOSTED_FIELDS if name in override}
-            hosted_settings["hosted_http_request_limit"] = request_limit(spec, 10)
-            try:
+        try:
+            override = (profile.get("screening_candidates") or {}).get(key)
+            model = None
+            if override:
+                if override.get("robot_policy") is not None:
+                    from .beta_policy_screening_team import build_registered_team_spec
+                    if family:
+                        raise ValueError("beta_screening_team_robot_requires_rigid_scene")
+                    spec, model = build_registered_team_spec(candidate_id=key, registration=override["robot_policy"],
+                        scene_plan=scene_plan, contract=inputs["task_success_contract"], prompt=facts["prompt"],
+                        scene_revision_digest=inputs["scene_revision_digest"])
+                    inventory = None
+                else:
+                    spec = _read(_bound_path(override["policy_execution_spec"]))
+                    inventory = _bound_path(override["checkpoint_inventory"]) if override.get("checkpoint_inventory") else None
+                    model = override.get("team_robot_model")
+            elif key in templates:
+                spec, inventory = templates[key]
+            else:
+                raise ValueError(template_failures.get(key, "runtime_candidate_binding_missing"))
+            spec = (validate_task_family_policy_execution_spec(spec, candidate_id=key, scene_plan=scene_plan) if family
+                    else validate_robolab_policy_execution_spec(spec, candidate_id=key))
+            if (key in templates and not override
+                    and configured["policy"] != next(row["policy"] for row in
+                        load_catalog(repo / "config" / "beta_policy_candidates.v1.json")["candidates"]
+                        if row["candidate_id"] == key)):
+                raise ValueError("beta_screening_policy_identity_changed")
+            if family:
+                from .beta_policy_screening_family import family_interface_matches
+                interface_matches = family_interface_matches(configured, spec, static)
+            else:
+                interface_matches = _interface_matches(configured, spec)
+            if (spec["checkpoint_digest"] != configured["policy"]["digest"]
+                    or spec["task_success_contract_digest"] != inputs["task_success_contract_digest"]
+                    or not interface_matches):
+                raise ValueError("beta_screening_policy_interface_or_scene_mismatch")
+            if spec.get("team_embodiment") is not None:
+                from .team_embodiment import apply_team_embodiment
+                apply_team_embodiment(scene_plan, spec["team_embodiment"])
+                if model is None:
+                    raise ValueError("beta_screening_team_robot_model_missing")
+                _bound_path(model)
+            # These values come from the registry, never the customer or policy.
+            if profile.get("max_hourly_rate_usd") is None:
+                raise ValueError("beta_screening_hourly_price_missing")
+            rate = Decimal(str(profile["max_hourly_rate_usd"]))
+            ttl = profile.get("screening_hard_ttl_seconds", DEFAULT_HARD_TTL_SECONDS)
+            cap = Decimal(str(profile.get("screening_candidate_cap_usd", DEFAULT_CANDIDATE_CAP_USD)))
+            from .policy_interface_binding import TEAM_HTTPS_INTERFACES
+            hosted = spec["policy_interface_id"] in TEAM_HTTPS_INTERFACES
+            hosted_settings = {}
+            if hosted:
+                from .beta_policy_screening_hosted import HOSTED_FIELDS, request_limit, validate_hosted_delivery
+                if not override:
+                    raise ValueError("beta_screening_hosted_delivery_missing")
+                hosted_settings = {name: override[name] for name in HOSTED_FIELDS if name in override}
+                hosted_settings["hosted_http_request_limit"] = request_limit(spec, 10)
                 validate_hosted_delivery(spec, hosted_settings, episodes=10)
                 cap = Decimal(hosted_settings["provider_hard_cap_usd"])
-            except (ValueError, OSError, KeyError, TypeError, ArithmeticError):
-                continue
 
-        if (not rate.is_finite() or rate <= 0 or type(ttl) is not int or not 1800 <= ttl <= DEFAULT_HARD_TTL_SECONDS
-                or not cap.is_finite() or not 0 < cap <= 15 or rate * Decimal(ttl) / Decimal(3600) > cap):
-            continue
-        path = _retain(root / (spec["execution_spec_digest"][7:] + ".execution_spec.json"), spec)
-        descriptor = {"schema_version": EXECUTION_SCHEMA, "candidate_id": key,
-                      "policy_execution_spec": _record(path), "checkpoint_inventory": _record(inventory) if inventory else None,
-                      "configuration_digest": configured["configuration_digest"],
-                      "runtime_digest": spec["runtime_identity_digest"], "backend": FAMILY_BACKEND if family else "robolab.v1",
-                      "task_success_contract_digest": spec["task_success_contract_digest"],
-                      "max_hourly_rate_usd": str(rate.quantize(Decimal("0.01"), rounding=ROUND_UP)),
-                      "hard_ttl_seconds": ttl, "implementation_commit": commit, **hosted_settings}
-        if profile.get("machine_avoidlist_path"):
-            descriptor["machine_avoidlist_path"] = profile["machine_avoidlist_path"]
-        descriptor = validate_execution_descriptor(descriptor, candidate_id=key,
-                                                    configuration_digest=configured["configuration_digest"])
-        if hosted:
-            credentials.extend(configured["eligibility"]["requires_credentials"])
-        total_cap = cap + Decimal(hosted_settings.get("hosted_inference_maximum_usd", "0"))
-        if total_cap > 15:
-            continue
-        bindings[key] = {"configuration_digest": configured["configuration_digest"],
-                         "runtime_digest": descriptor["runtime_digest"], "backend": descriptor["backend"],
-                         "admission_digest": canonical_digest(descriptor), "execution_spec": descriptor}
-        quote = {"schema_version": "beta_policy_screening_cost_quote.v1", "quote_id": "operator-cap-" + key,
-                 "price_source": ("canonical_gpu_hard_cap_plus_bounded_hosted_http_charges" if hosted else
-                                  "canonical_gpu_canary_hard_cap_including_startup_transfer_storage_teardown"),
-                 "valid_until": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
-                 "configuration_digest": configured["configuration_digest"],
-                 "scene_revision_digest": inputs["scene_revision_digest"], "episode_count": 10,
-                 "maximum_cost_usd": str(total_cap.quantize(Decimal("0.01"), rounding=ROUND_UP)), "quote_digest": ""}
-        quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
-        quotes[key] = quote
-    return {"scene": scene, **({"candidate_ids": [selection["candidate_id"]]} if selection is not None else {}),
-            "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials},
+            if (not rate.is_finite() or rate <= 0 or type(ttl) is not int or not 1800 <= ttl <= DEFAULT_HARD_TTL_SECONDS
+                    or not cap.is_finite() or not 0 < cap <= 15 or rate * Decimal(ttl) / Decimal(3600) > cap):
+                raise ValueError("beta_screening_resource_bounds_invalid")
+            path = _retain(root / (spec["execution_spec_digest"][7:] + ".execution_spec.json"), spec)
+            descriptor = {"schema_version": EXECUTION_SCHEMA, "candidate_id": key,
+                          "policy_execution_spec": _record(path), "checkpoint_inventory": _record(inventory) if inventory else None,
+                          "configuration_digest": configured["configuration_digest"],
+                          "runtime_digest": spec["runtime_identity_digest"], "backend": FAMILY_BACKEND if family else "robolab.v1",
+                          "task_success_contract_digest": spec["task_success_contract_digest"],
+                          "max_hourly_rate_usd": str(rate.quantize(Decimal("0.01"), rounding=ROUND_UP)),
+                          "hard_ttl_seconds": ttl, "implementation_commit": commit, **hosted_settings}
+            if model is not None:
+                descriptor["team_robot_model"] = model
+            minimum_memory = configured["runtime"]["minimum_gpu_memory_gb"]
+            if minimum_memory is not None:
+                descriptor["minimum_gpu_memory_gb"] = minimum_memory
+            if profile.get("machine_avoidlist_path"):
+                descriptor["machine_avoidlist_path"] = profile["machine_avoidlist_path"]
+            descriptor = validate_execution_descriptor(descriptor, candidate_id=key,
+                                                        configuration_digest=configured["configuration_digest"])
+            if hosted:
+                credentials.extend(configured["eligibility"]["requires_credentials"])
+            total_cap = cap + Decimal(hosted_settings.get("hosted_inference_maximum_usd", "0"))
+            if total_cap > 15:
+                raise ValueError("beta_screening_candidate_exceeds_site_budget")
+            bindings[key] = {"configuration_digest": configured["configuration_digest"],
+                             "runtime_digest": descriptor["runtime_digest"], "backend": descriptor["backend"],
+                             "admission_digest": canonical_digest(descriptor), "execution_spec": descriptor}
+            quote = {"schema_version": "beta_policy_screening_cost_quote.v1", "quote_id": "operator-cap-" + key,
+                     "price_source": ("canonical_gpu_hard_cap_plus_bounded_hosted_http_charges" if hosted else
+                                      "canonical_gpu_canary_hard_cap_including_startup_transfer_storage_teardown"),
+                     "valid_until": (datetime.now(timezone.utc) + timedelta(days=1)).isoformat(),
+                     "configuration_digest": configured["configuration_digest"],
+                     "scene_revision_digest": inputs["scene_revision_digest"], "episode_count": 10,
+                     "maximum_cost_usd": str(total_cap.quantize(Decimal("0.01"), rounding=ROUND_UP)), "quote_digest": ""}
+            quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
+            quotes[key] = quote
+        except (ValueError, OSError, KeyError, TypeError, ArithmeticError) as exc:
+            # An invalid robot/endpoint must not suppress every other candidate.
+            # Keep stable codes only; arbitrary provider errors may carry URLs
+            # or credentials and must never become public blocker text.
+            code = str(exc).split(":", 1)[0]
+            candidate_blockers[key] = [code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
+                                       else "beta_screening_candidate_configuration_invalid"]
+    return {"scene": scene,
+            "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials,
+                             "candidate_blockers": candidate_blockers},
             "cost_quotes": quotes}

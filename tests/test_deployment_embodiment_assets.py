@@ -75,12 +75,13 @@ def test_public_fetch_uses_required_user_agent_and_existing_https_boundary(monke
         calls.append((url, kwargs))
         return SimpleNamespace(body=b"{}")
 
-    monkeypatch.setattr(assets, "fetch_bounded_https", fetch)
+    monkeypatch.setattr(assets, "request", fetch)
     assert assets._get("https://api.github.com/repos/example/robot/git/trees/commit", maximum=1024) == b"{}"
     _, options = calls[0]
     assert options["headers"]["User-Agent"]
-    assert options["allowed_origins"] == ["https://api.github.com"]
-    assert options["max_redirects"] == 0 and options["max_bytes"] == 1024
+    assert options["policy"].allowed_hosts == frozenset({"api.github.com"})
+    assert options["policy"].follow_same_origin_redirects is False
+    assert options["max_response_bytes"] == options["policy"].max_response_bytes == 1024
 
 
 def test_materialize_exact_git_blobs_sha256_and_license_first_then_retry_without_fetch(source_case):

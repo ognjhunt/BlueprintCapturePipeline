@@ -77,6 +77,24 @@ def test_signed_delivery_requires_exact_publication_ack(monkeypatch):
         worker.publish_screening(publication)
 
 
+def test_worker_retains_operator_status_for_more_than_ten_candidates(tmp_path, monkeypatch, capsys):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from blueprint_pipeline.team_scene_packet_worker import QUEUE_ROOT_ENV as PACKET_QUEUE_ENV
+    from tests.test_beta_policy_screening_coordinator import plan
+
+    coordinator.enqueue_screening_campaign(plan(count=12, cost="1.00"), queue_root=tmp_path)
+    monkeypatch.delenv(PACKET_QUEUE_ENV, raising=False)
+    monkeypatch.setattr(worker, "publish_screening", lambda publication: None)
+    assert worker.main(["--queue-root", str(tmp_path), "--max-launches", "0"]) == 0
+    status = json.loads((tmp_path / "worker_status.json").read_text())
+    assert status["candidate_counts"]["pending"] == 12
+    assert status["campaign_count"] == 1
+    assert status["performs_live_actions"] is False
+    result = json.loads(capsys.readouterr().out)
+    assert result["worker_status"] == status
+    assert result["execution"]["launches_started"] == 0
+
+
 def test_failed_delivery_retains_durable_outbox_and_retry_acknowledges(tmp_path):
     from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
     from tests.test_beta_policy_screening_coordinator import plan
@@ -116,7 +134,7 @@ def prepared_source_queue(tmp_path, monkeypatch, *, revisions=1):
     from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as completed_scene
     from blueprint_pipeline import team_candidate_quick10_registry as registry
     from blueprint_pipeline import team_scene_packet_worker as packets
-    from tests.test_beta_policy_screening_plan import inputs, scene
+    from tests.test_beta_policy_screening_plan import admitted as admit_candidate, inputs, scene
 
     source, context = source_world(tmp_path / "partition", monkeypatch)
     capture = tmp_path / "partition/scenes/site-job1/captures/walkthrough-job1"
@@ -149,6 +167,12 @@ def prepared_source_queue(tmp_path, monkeypatch, *, revisions=1):
     def planning_inputs(**kwargs):
         planning_calls.append(deepcopy(kwargs))
         catalog, admitted, quotes = inputs()
+        # This worker fixture supplies every enabled runtime, including Cosmos;
+        # the shared pure-planner fixture deliberately supplies only two.
+        for candidate in catalog["candidates"]:
+            candidate_id = candidate["candidate_id"]
+            if candidate["eligibility"]["enabled"] and candidate_id not in admitted["candidate_bindings"]:
+                admitted["candidate_bindings"][candidate_id], quotes[candidate_id] = admit_candidate(candidate)
         assert kwargs["catalog"] == catalog
         assert kwargs["profile"] == profile and kwargs["capture_root"] == capture
         facts = {**scene(), **kwargs["source"], "site_id": context["scene_id"], "scene_id": context["scene_id"]}
@@ -179,7 +203,8 @@ def test_completed_scene_is_planned_and_durably_queued_once_across_timer_ticks(t
         "capture_id": request["capture_id"], "task_id": request["task_id"],
         "task_context_digest": world["context"]["context_digest"], "scene_revision_digest": request["scene_revision_digest"]}
     assert plan["site_id"] == "site-job1" and plan["campaign_id"] == adopted["campaign_id"]
-    assert len([row for row in plan["candidates"] if row["status"] == "selected"]) == 2
+    assert {row["candidate_id"] for row in plan["candidates"] if row["status"] == "selected"} == {
+        "pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}
     [publication] = coordinator.pending_publications(queue_root=world["screening_queue"])
     assert publication["source"] == plan["source"] and publication["status"] == "queued"
     assert publication["budget"]["committed_upper_bound_usd"] == "0"

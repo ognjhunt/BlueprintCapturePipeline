@@ -6,10 +6,11 @@ the right one as well, but a scene's DROID station carries one exterior, the
 wrist camera and a review-only overview. Arena's DROID rig mounts its exteriors
 at (0.05, +-0.57, 0.66) m on ``panda_link0`` (``DroidCameraCfg``), and in a
 kitchen the right mount can sit inside a base cabinet. The right exterior is
-therefore placed only where it sees the task clear of the captured scene:
-Arena's own mount first, then nearby DROID-like poses aimed at the task. With
-none, the scene has no right exterior and the candidates that read it are
-skipped with the recorded reason; the two-view candidates are unchanged.
+therefore placed where it sees the task clear of the captured scene:
+Arena's own mount first, then nearby DROID-like poses aimed at the task. If no
+clear view is found, the compiler retains the real authored camera with the
+measured limitation. If visibility cannot be measured, it records that
+uncertainty. The two-view candidates consume their same two declared images.
 """
 from __future__ import annotations
 
@@ -147,6 +148,20 @@ def unmeasured_receipt(code: str) -> dict[str, Any]:
     return receipt
 
 
+def estimated_arena_mount(*, base_pose_world: Mapping[str, Any], code: str) -> tuple[dict, dict]:
+    """Keep the authored third sensor when scene visibility cannot be measured.
+
+    This is an actual independent simulator camera with Arena's source optics,
+    not a copied view or a claim that its scene visibility was verified.
+    """
+    row = camera_row(arena_mount_world(base_pose_world), ARENA_EXTERIOR_INTRINSICS)
+    receipt = {**unmeasured_receipt(code), "status": "estimated", "placement": "arena_mount",
+               "visibility_measured": False, "calibration_source": "isaaclab_arena_droid_camera_config",
+               "simulation_estimate": True, "camera_available": True}
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    return row, receipt
+
+
 __all__ = [
     "ARENA_EXTERIOR_INTRINSICS",
     "ARENA_MOUNT_POSITION_M",
@@ -158,6 +173,7 @@ __all__ = [
     "arena_mount_world",
     "camera_row",
     "candidate_poses",
+    "estimated_arena_mount",
     "place_exterior_right",
     "unmeasured_receipt",
 ]

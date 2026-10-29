@@ -14,12 +14,13 @@ import re
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from http.client import HTTPException
 from pathlib import Path, PurePosixPath
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
-from .core.security_controls import fetch_bounded_https
 from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .safe_outbound_http import pinned_api_policy, request
 from .immutable_directory_publication import (
     ImmutableDirectoryPublicationError,
     publish_staged_immutable_directory,
@@ -101,14 +102,20 @@ def recipe_for(embodiment_id: str) -> dict[str, Any]:
 
 
 def _get(url: str, *, maximum: int) -> bytes:
-    origin = "https://api.github.com" if url.startswith("https://api.github.com/") else "https://raw.githubusercontent.com"
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc not in {"api.github.com", "raw.githubusercontent.com"}:
+        raise AssetPreparationError("asset_source_origin_not_allowed")
+    origin = "https://" + parsed.netloc
     # GitHub's REST API requires User-Agent even for public unauthenticated reads.
     headers = {"User-Agent": "Blueprint-Embodiment-Asset-Preparer/1"}
     if origin.endswith("api.github.com"):
         headers["Accept"] = "application/vnd.github+json"
-    return fetch_bounded_https(url, allowed_origins=[origin], max_bytes=maximum,
-                              max_redirects=0, timeout_seconds=60,
-                              headers=headers).body
+    # Public publisher URLs are fixed by the recipe, not customer input. Use
+    # the shared transport so cloud sessions retain their required HTTPS proxy;
+    # the direct-IP transport cannot reach GitHub from those environments.
+    return request(url, headers=headers, timeout_seconds=60,
+                   policy=pinned_api_policy(origin, max_response_bytes=maximum),
+                   max_response_bytes=maximum).body
 
 
 def _selected(path: str, prefixes: list[str]) -> bool:
@@ -298,23 +305,66 @@ def materialize_sources(embodiment_id: str, destination: str | Path, *, get=None
     return receipt
 
 
+def materialize_available_sources(destination: str | Path, *, get=None) -> dict[str, Any]:
+    """Prepare every public recipe independently and retain each outcome.
+
+    Complete bundles are verified and reused on retry. Missing public sources
+    and individual preparation failures remain visible without preventing other
+    robots from being prepared. This downloads sources only, never a paid job.
+    """
+    catalog = asset_recipes()
+    root = Path(destination)
+    _refuse_symlink_ancestors(root)
+    root.mkdir(exist_ok=True)
+    if not root.is_dir():
+        raise AssetPreparationError("asset_destination_parent_invalid")
+    results = []
+    for recipe in catalog["recipes"]:
+        identity = recipe["embodiment_id"]
+        row: dict[str, Any] = {"embodiment_id": identity}
+        if recipe["source"] is None:
+            row.update(status=recipe["status"], reason=recipe["reason"])
+        else:
+            try:
+                bundle = materialize_sources(identity, root / identity, get=get)
+                row.update(status="source_prepared", bundle_digest=bundle["bundle_digest"],
+                           file_count=len(bundle["files"]),
+                           size_bytes=sum(item["size_bytes"] for item in bundle["files"]),
+                           missing=bundle["missing"])
+            except (ValueError, OSError, KeyError, HTTPException) as exc:
+                row.update(status="preparation_failed", reason=str(exc)[:500])
+        results.append(row)
+    return {"schema_version": "embodiment_asset_source_batch.v1",
+            "claim_ceiling": "source_asset_not_qualified", "execution_authorized": False,
+            "recipes_digest": catalog["recipes_digest"], "results": results}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--embodiment", help="Exact catalog or compatibility embodiment ID")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--embodiment", help="Exact catalog or compatibility embodiment ID")
+    mode.add_argument("--all-available", action="store_true",
+                      help="Prepare all public sources; report each unavailable or failed recipe")
     parser.add_argument("--destination", type=Path, help="New source bundle directory, or a verified retry")
-    parser.add_argument("--list", action="store_true", help="Show exact asset availability and remaining work")
+    mode.add_argument("--list", action="store_true", help="Show exact asset availability and remaining work")
     args = parser.parse_args(argv)
     try:
         if args.list:
             result = asset_recipes()
+        elif args.all_available:
+            if not args.destination:
+                parser.error("--all-available requires --destination")
+            result = materialize_available_sources(args.destination)
         elif args.embodiment and args.destination:
             result = materialize_sources(args.embodiment, args.destination)
         elif args.embodiment:
             result = recipe_for(args.embodiment)
         else:
-            parser.error("supply --list or --embodiment (and --destination to retain sources)")
+            parser.error("supply --list, --embodiment, or --all-available --destination")
         print(json.dumps(result, indent=2))
-    except (ValueError, OSError, KeyError) as exc:
+        if args.all_available and any(row["status"] == "preparation_failed" for row in result["results"]):
+            return 1
+    except (ValueError, OSError, KeyError, HTTPException) as exc:
         parser.exit(2, f"Robot asset preparation refused: {exc}\n")
     return 0
 

@@ -485,20 +485,106 @@ def test_an_unbound_server_failure_does_not_prove_that_no_hosted_session_exists(
     assert policy.evidence_summary()["session_release_status"] == "outcome_unknown"
 
 
-def test_builtin_transport_uses_shared_dns_pin_bounds_and_zero_redirects(monkeypatch):
+def test_builtin_transport_uses_shared_proxy_aware_bounds_and_zero_redirects(monkeypatch):
     import blueprint_pipeline.dreamlabs_policy_client as module
     calls = []
 
     def bounded(url, **kwargs):
         calls.append((url, kwargs))
-        return type("Response", (), {"body": json.dumps([MODEL]).encode()})()
+        return type("Response", (), {"body": json.dumps([MODEL]).encode(),
+                                      "content_type": "application/json; charset=utf-8"})()
 
-    monkeypatch.setattr(module, "fetch_bounded_https", bounded)
+    monkeypatch.setattr(module, "request", bounded)
     ready = DreamLabsPolicyClient(spec=SPEC, bearer_token="token").preflight_readiness()
     assert ready["identity_verified"]
     assert len(calls) == 1 and calls[0][0] == METADATA_URL
-    assert calls[0][1]["allowed_origins"] == ("https://platform.dreamlabs.ai",)
-    assert calls[0][1]["max_redirects"] == 0
-    assert calls[0][1]["allowed_content_types"] == ("application/json",)
-    assert calls[0][1]["max_bytes"] == 1024 * 1024
+    assert calls[0][1]["policy"].allowed_hosts == frozenset({"platform.dreamlabs.ai"})
+    assert calls[0][1]["policy"].follow_same_origin_redirects is False
+    assert calls[0][1]["max_response_bytes"] == calls[0][1]["policy"].max_response_bytes == 1024 * 1024
     assert calls[0][1]["timeout_seconds"] == 15
+
+
+def test_builtin_discovery_uses_environment_https_proxy_without_live_io(monkeypatch):
+    import urllib.request
+    from blueprint_pipeline import safe_outbound_http as http
+    from tests.test_safe_outbound_http import _FakeResponse
+
+    monkeypatch.setenv("https_proxy", "http://proxy.example:3128")
+    calls = []
+
+    def open_fake(opener, request, timeout):
+        calls.append(request)
+        proxies = [handler for handler in opener.handlers if isinstance(handler, urllib.request.ProxyHandler)]
+        assert any(handler.proxies.get("https") == "http://proxy.example:3128" for handler in proxies)
+        assert any(isinstance(handler, http._PolicyRedirectHandler) for handler in opener.handlers)
+        response = _FakeResponse(body=json.dumps([MODEL]).encode(), final_url=request.full_url)
+        response.headers = {"Content-Type": "Application/JSON; charset=utf-8"}
+        return response
+
+    monkeypatch.setattr(urllib.request.OpenerDirector, "open", open_fake)
+    result = DreamLabsPolicyClient(spec=SPEC, bearer_token="test-token-never-retain").preflight_readiness()
+    assert result["identity_verified"] and len(calls) == 1
+    assert calls[0].full_url == METADATA_URL and calls[0].get_method() == "GET"
+
+
+@pytest.mark.parametrize("content_type", [None, "", "text/html", "text/plain", "application/jsonp"])
+def test_builtin_transport_rejects_non_json_media_type_without_leaking_headers(monkeypatch, content_type):
+    import blueprint_pipeline.dreamlabs_policy_client as module
+    from blueprint_pipeline.safe_outbound_http import SafeHttpResponse
+    calls = []
+
+    def respond(url, **kwargs):
+        calls.append(url)
+        return SafeHttpResponse(200, json.dumps([MODEL]).encode(), url, url, content_type)
+
+    monkeypatch.setattr(module, "request", respond)
+    with pytest.raises(ValueError, match="^dreamlabs_transport_failed$"):
+        DreamLabsPolicyClient(spec=SPEC, bearer_token="test-token-never-retain").preflight_readiness()
+    assert calls == [METADATA_URL]
+
+
+@pytest.mark.parametrize("url", [ENDPOINT_URL + "?key=secret", ENDPOINT_URL.replace("api.", "evil."),
+                               "http://api.dreamlabs.ai/v1/get_action",
+                               "https://token:secret@api.dreamlabs.ai/v1/get_action"])
+def test_builtin_transport_rejects_unapproved_url_before_token_can_leave(monkeypatch, url):
+    import blueprint_pipeline.dreamlabs_policy_client as module
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("unapproved endpoint reached transport")
+
+    monkeypatch.setattr(module, "request", unexpected)
+    with pytest.raises(ValueError, match="^dreamlabs_endpoint_not_approved$"):
+        module._bounded_https(url=url, method="POST", body=b"{}", headers={"Authorization": "Bearer test-token"})
+
+
+@pytest.mark.parametrize("fault", ["redirect", "oversize", "truncated"])
+def test_builtin_post_transport_fails_once_and_keeps_credentials_out_of_errors(monkeypatch, fault):
+    from http.client import IncompleteRead
+    from blueprint_pipeline import safe_outbound_http as http
+    import blueprint_pipeline.dreamlabs_policy_client as module
+    from tests.test_safe_outbound_http import _FakeResponse
+
+    calls = []
+
+    def open_wire(request, timeout, policy):
+        calls.append(request)
+        assert policy.allowed_hosts == frozenset({"api.dreamlabs.ai"})
+        assert not policy.follow_same_origin_redirects
+        if fault == "truncated":
+            raise IncompleteRead(b"test-token-never-retain", 100)
+        if fault == "redirect":
+            return http._PolicyRedirectHandler(policy).redirect_request(
+                request, None, 307, "redirect", {}, "https://credential-sink.example/collect")
+        response = _FakeResponse(body=b"x" * (module.MAX_RESPONSE_BYTES + 1), final_url=request.full_url)
+        response.headers = {"Content-Type": "application/json"}
+        return response
+
+    monkeypatch.setattr(http, "_open_with_policy", open_wire)
+    with pytest.raises(ValueError, match="^dreamlabs_transport_failed$") as failure:
+        module._call(module._bounded_https, url=ENDPOINT_URL, method="POST", body=b"{}",
+                     bearer_token="test-token-never-retain", user_agent="transport-test")
+    assert len(calls) == 1
+    assert calls[0].full_url == ENDPOINT_URL
+    assert calls[0].get_method() == "POST" and calls[0].data == b"{}"
+    assert calls[0].get_header("Authorization") == "Bearer test-token-never-retain"
+    assert "test-token-never-retain" not in str(failure.value)

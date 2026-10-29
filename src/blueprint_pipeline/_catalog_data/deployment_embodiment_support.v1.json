@@ -361,7 +361,7 @@
         7
       ],
       "base_mode": "fixed",
-      "tool_requirement": "Two independently controlled parallel grippers; the pinned URDF has fixed gripper joints and needs an independently validated actuation model.",
+      "tool_requirement": "Two independently controlled parallel grippers; the pinned standalone URDF supplies four prismatic finger joints with one mimic per hand. Bind open/closed positions from joint geometry and preserve source-estimated physics.",
       "related_teams": [
         "Almond Robotics"
       ],
@@ -369,11 +369,11 @@
         {
           "source_id": "almond_axol_urdf",
           "format": "urdf",
-          "url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf",
-          "relative_path": "almond_axol/kinematics/urdf/axol.urdf",
-          "revision": "cd199a2f4c847c3a10594c6c2ed2250b4b4be675",
+          "url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf",
+          "relative_path": "almond_axol/kinematics/urdf/axol_standalone.urdf",
+          "revision": "3ccc69cf3adaea09845456148d6a4f16ef059f27",
           "license_note": "Axol repository is MIT; retain notices with the exact asset.",
-          "preparation": "Retain the entire referenced mesh closure; validate Isaac import, physical parameters and separate gripper articulation. SDK browser visualization is not Isaac validation."
+          "preparation": "Retain the standalone URDF, jelly/standalone mesh closure and MIT notice; import both articulated finger pairs, preserve mimic coupling and apply the custom drive gains. Non-arm masses and inertia estimates remain explicit; bind optical camera frames and independent hand controls."
         }
       ],
       "policy_routes": [
@@ -385,22 +385,22 @@
         {
           "route_id": "customer_controller",
           "evidence": "customer_supplied",
-          "source_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf"
+          "source_url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf"
         },
         {
           "route_id": "planning_endpoint",
           "evidence": "customer_supplied",
-          "source_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf"
+          "source_url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf"
         },
         {
           "route_id": "skill_trace",
           "evidence": "customer_supplied",
-          "source_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf"
+          "source_url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf"
         },
         {
           "route_id": "pi05_custom_checkpoint",
           "evidence": "customer_supplied",
-          "source_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/almond_axol/kinematics/urdf/axol.urdf"
+          "source_url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf"
         }
       ],
       "required_artifacts": [
@@ -411,7 +411,7 @@
         "policy_artifact_or_endpoint_contract",
         "integration_readiness_receipt",
         "independent_bimanual_tool_channels_required",
-        "validated_actuated_gripper_model"
+        "independent_finger_pair_commands_and_mimic_mapping"
       ]
     },
     {
@@ -780,12 +780,12 @@
       "asset_sources": [
         {
           "source_id": "standard_bots_ro1_asset_reference",
-          "format": "documentation",
-          "url": "https://apihelp.standardbots.com/",
-          "relative_path": null,
-          "revision": null,
-          "license_note": "Manufacturer API manual links robot URDF files; exact artifact access and reuse terms remain unverified.",
-          "preparation": "Obtain the exact requested model description, mesh closure, version and license from the manufacturer. Do not treat the RO1 manual link as proof that a Core asset is equivalent."
+          "format": "urdf",
+          "url": "https://github.com/standardbots/ros2-realtime-api/blob/8a2164e041d3a4e75b2eeffe6351f3c89b292f5c/src/robot_urdfs/core.urdf",
+          "relative_path": "src/robot_urdfs/core.urdf",
+          "revision": "8a2164e041d3a4e75b2eeffe6351f3c89b292f5c",
+          "license_note": "Official Core URDF is public, but this repository has no explicit reuse license. The community pickNplace standard_bots_description package declares Proprietary; its root MIT notice does not establish rights to those meshes.",
+          "preparation": "Resolve the 16 missing package://standard_bots_description/meshes/sbot/ro1 mesh references and their reuse terms. The manufacturer's /ro1 page now names Core, but bind the exact requested RO1/Core generation, tool and controller before import. This partial source is not an enabled recipe or executed robot."
         }
       ],
       "policy_routes": [
@@ -822,7 +822,7 @@
         "deterministic_reset_contract",
         "policy_artifact_or_endpoint_contract",
         "integration_readiness_receipt",
-        "manufacturer_asset_access_and_license"
+        "referenced_mesh_closure_reuse_license_and_generation_binding"
       ]
     },
     {
@@ -842,12 +842,12 @@
       "asset_sources": [
         {
           "source_id": "standard_bots_core_asset_reference",
-          "format": "documentation",
-          "url": "https://apihelp.standardbots.com/",
-          "relative_path": null,
-          "revision": null,
-          "license_note": "Manufacturer API manual links robot URDF files; exact artifact access and reuse terms remain unverified.",
-          "preparation": "Obtain the exact requested model description, mesh closure, version and license from the manufacturer. Do not treat the RO1 manual link as proof that a Core asset is equivalent."
+          "format": "urdf",
+          "url": "https://github.com/standardbots/ros2-realtime-api/blob/8a2164e041d3a4e75b2eeffe6351f3c89b292f5c/src/robot_urdfs/core.urdf",
+          "relative_path": "src/robot_urdfs/core.urdf",
+          "revision": "8a2164e041d3a4e75b2eeffe6351f3c89b292f5c",
+          "license_note": "Official Core URDF is public, but this repository has no explicit reuse license. The community pickNplace standard_bots_description package declares Proprietary; its root MIT notice does not establish rights to those meshes.",
+          "preparation": "Resolve the 16 missing package://standard_bots_description/meshes/sbot/ro1 mesh references and their reuse terms. The manufacturer's /ro1 page now names Core, but bind the exact requested RO1/Core generation, tool and controller before import. This partial source is not an enabled recipe or executed robot."
         }
       ],
       "policy_routes": [
@@ -879,7 +879,7 @@
         "deterministic_reset_contract",
         "policy_artifact_or_endpoint_contract",
         "integration_readiness_receipt",
-        "manufacturer_asset_access_and_license"
+        "referenced_mesh_closure_reuse_license_and_generation_binding"
       ]
     },
     {
@@ -956,7 +956,7 @@
         7
       ],
       "base_mode": "fixed",
-      "tool_requirement": "Two independently controlled admitted parallel grippers; the NVIDIA Gen3 arm asset alone has seven DOFs.",
+      "tool_requirement": "Two independently controlled Robotiq 2F-85 grippers from the pinned manufacturer source, with finger mimic behavior and exact tool center points. The NVIDIA Gen3 arm asset alone does not supply this tool configuration.",
       "related_teams": [
         "Dream Labs"
       ],
@@ -973,11 +973,11 @@
         {
           "source_id": "kinova_gen3_robotiq",
           "format": "xacro",
-          "url": "https://github.com/Kinovarobotics/ros2_kortex/blob/b2aa46b29ae8fadd5b293c57e3500925c61eb8e8/kortex_description/robots/gen3_robotiq_2f_85.xacro",
+          "url": "https://github.com/Kinovarobotics/ros_kortex/blob/c3280d8a6a6b5d96590d51538e3f265710a6c77d/kortex_description/robots/gen3_robotiq_2f_85.xacro",
           "relative_path": "kortex_description/robots/gen3_robotiq_2f_85.xacro",
-          "revision": "b2aa46b29ae8fadd5b293c57e3500925c61eb8e8",
-          "license_note": "Kortex repository license is BSD-3-Clause; retain dependency and mesh licenses.",
-          "preparation": "Retain all references and validate the exact asset, collisions, joint limits, controller and gripper before an integration canary."
+          "revision": "c3280d8a6a6b5d96590d51538e3f265710a6c77d",
+          "license_note": "Kortex root license is BSD-3-Clause; bundled Robotiq 2F-85 source has its own BSD-2-Clause notice at kortex_description/grippers/robotiq_2f_85/LICENSE. Retain both with the mesh closure.",
+          "preparation": "Expand the pinned ROS1 description with dof=7, vision=true, gripper=robotiq_2f_85 and sim=false. It includes the arm and gripper macros/meshes; the previously selected ROS2 wrapper required external robotiq_description. Compose two exact instances and bind independent tools, cameras, controller and reset. Source preparation is not an executed integration."
         }
       ],
       "policy_routes": [

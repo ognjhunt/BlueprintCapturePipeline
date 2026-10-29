@@ -51,6 +51,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .beta_policy_screening_capabilities import build_planning_inputs
     from .beta_policy_screening_coordinator import _lock, _read, _root, _write, enqueue_screening_campaign
     from .beta_policy_screening_plan import build_screening_plan
+    from .beta_policy_screening_team import catalog_for_profile
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
     from .team_scene_packet_worker import _read_json, request_key, resolve_capture_root, validated_request
@@ -60,7 +61,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     if (not packet_root.is_absolute() or any(p.is_symlink() for p in (packet_root, *packet_root.parents))
             or not 1 <= max_sources <= 100):
         raise ValueError("beta_screening_source_queue_invalid")
-    catalog = load_default_catalog()
+    base_catalog = load_default_catalog()
     outcomes = []
     with _lock(root, ".source.lock"):
         states = root / "sources"
@@ -84,6 +85,10 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                           "capture_id": request["capture_id"], "task_id": request["task_id"],
                           "task_context_digest": retained["context_digest"],
                           "scene_revision_digest": request["scene_revision_digest"]}
+                profile = profile_for_capture(capture)
+                if not profile:
+                    raise ValueError("beta_screening_scene_profile_unavailable")
+                catalog = catalog_for_profile(profile, base_catalog)
                 campaign_id = "screening-" + canonical_digest({"source": source,
                     "catalog_digest": catalog["catalog_digest"], "protocol": "beta_policy_screening.v1"})[7:39]
                 existing = root / "plans" / f"{campaign_id}.json"
@@ -95,7 +100,6 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     if (result.get("configured_scene_revision_digest") != source["scene_revision_digest"]
                             or receipt.get("receipt_digest") != request["launch_receipt_digest"]):
                         raise ValueError("beta_screening_completed_scene_binding_changed")
-                    profile = profile_for_capture(capture)
                     if not profile or profile.get("scene_id") != context["scene_id"]:
                         raise ValueError("beta_screening_scene_profile_unavailable")
                     # Reconcile packets prepared before the probe lane was
@@ -169,6 +173,7 @@ def deliver_publications(*, queue_root: str | Path, transport=None,
 
 def main(argv: Sequence[str] | None = None) -> int:
     from .beta_policy_screening_coordinator import QUEUE_ROOT_ENV, _root, process_screening_queue
+    from .beta_policy_screening_status import write_worker_status
     from .team_scene_packet_worker import QUEUE_ROOT_ENV as PACKET_QUEUE_ENV
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--queue-root", default=os.getenv(QUEUE_ROOT_ENV))
@@ -182,10 +187,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_sources=args.max_sources) if args.packet_queue_root else {"status": "source_queue_not_configured"}
     # Publish queued rows before a potentially long allocator attempt.
     before = deliver_publications(queue_root=root, refresh_startable=True)
+    write_worker_status(root, publication_before=before)
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
         max_launches=args.max_launches)
+    after = deliver_publications(queue_root=root)
+    status = write_worker_status(root, publication_before=before, publication_after=after, execution=execution)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
-                      "publication_after": deliver_publications(queue_root=root)}, sort_keys=True))
+                      "publication_after": after, "worker_status": status}, sort_keys=True))
     return 0
 
 

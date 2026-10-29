@@ -152,10 +152,19 @@ def _precheck_input_closure(entry: Path, *, allowed: set[Path], packages: dict[s
             document = ET.fromstring(text)
         except ET.ParseError as exc:
             raise AssetPreparationError("asset_import_input_xml_invalid") from exc
+        # A URDF can carry a <mujoco><compiler .../></mujoco> extension for
+        # MuJoCo conversion. Its URDF mesh filenames still resolve relative to
+        # the URDF, not that extension's meshdir (e.g. G1's meshes/pelvis.STL).
+        is_urdf = document.tag.rsplit("}", 1)[-1] == "robot"
+        # This path targets the Isaac URDF importer. Gazebo extensions and
+        # their plugin filenames are not geometry or libraries it loads.
+        ignored = {node for extension in document.findall("gazebo") for node in extension.iter()} if is_urdf else set()
         # MuJoCo mesh/texture roots are explicit; never search alternative paths.
         for node in document.iter():
+            if node in ignored:
+                continue
             tag = node.tag.rsplit("}", 1)[-1]
-            if tag == "compiler":
+            if tag == "compiler" and not is_urdf:
                 for key in ("assetdir", "meshdir", "texturedir"):
                     if key in node.attrib:
                         directory = reference(node.attrib[key], anchor=entry.parent, directory=True)
@@ -163,14 +172,16 @@ def _precheck_input_closure(entry: Path, *, allowed: set[Path], packages: dict[s
                             raise AssetPreparationError("asset_import_input_compiler_roots_conflict")
                         mesh_dirs[key] = directory
         for node in document.iter():
+            if node in ignored:
+                continue
             tag = node.tag.rsplit("}", 1)[-1]
             for key in ("file", "filename"):
                 if key not in node.attrib:
                     continue
                 anchor = path.parent
-                if tag in {"mesh", "hfield", "skin"}:
+                if tag in {"mesh", "hfield", "skin"} and not is_urdf:
                     anchor = mesh_dirs.get("meshdir", mesh_dirs.get("assetdir", anchor))
-                elif tag == "texture":
+                elif tag == "texture" and not is_urdf:
                     anchor = mesh_dirs.get("texturedir", mesh_dirs.get("assetdir", anchor))
                 pending.append(reference(node.attrib[key], anchor=anchor))
             if tag == "image":  # COLLADA images can reference a separate texture.
@@ -196,6 +207,10 @@ def _expand_xacro(entry: Path, *, source: Path, work: Path, arguments: dict[str,
         text = path.read_text(encoding="utf-8")
         if "<!DOCTYPE" in text.upper() or "<!ENTITY" in text.upper():
             raise AssetPreparationError("asset_import_input_xml_entity_refused")
+        # Old publisher examples can name inactive packages in comments.
+        # Remove comments only from this disposable expansion copy; retained
+        # publisher bytes and license notices remain untouched in the bundle.
+        text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
 
         def resolve(match):
             if match[1] not in aliases:

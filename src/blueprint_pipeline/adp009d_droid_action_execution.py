@@ -53,11 +53,13 @@ SOURCE_PI05_POSITION = (
     "pi05_droid_jointpos_polaris_absolute_joint_position_plus_absolute_gripper"
 )
 SOURCE_GROOT_POSITION = "groot_decoded_absolute_joint_position_plus_absolute_gripper"
+SOURCE_COSMOS_POSITION = "cosmos_edge_absolute_joint_position_plus_absolute_gripper"
 
 _CANDIDATE_SOURCE_ACTION_SPACES = {
     ("pi05_droid", ACTION_SPACE_JOINT_VELOCITY): SOURCE_DROID_VELOCITY,
     ("pi05_droid", ACTION_SPACE_JOINT_POSITION): SOURCE_PI05_POSITION,
     ("groot_n17_droid", ACTION_SPACE_JOINT_POSITION): SOURCE_GROOT_POSITION,
+    ("cosmos3_edge_policy_droid", ACTION_SPACE_JOINT_POSITION): SOURCE_COSMOS_POSITION,
 }
 
 # DROID's published control contract.

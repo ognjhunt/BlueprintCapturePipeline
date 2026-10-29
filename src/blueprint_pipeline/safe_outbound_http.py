@@ -80,6 +80,7 @@ class SafeHttpResponse:
     body: bytes
     url: str
     final_url: str | None
+    content_type: str | None = None
 
 
 @dataclass(frozen=True)
@@ -304,7 +305,11 @@ def open_request(
         _enforce_redirect_policy(requested, final_url, policy=policy)
         body = _read_capped(response, cap)
         status = int(getattr(response, "status", 200) or 200)
-    return SafeHttpResponse(status=status, body=body, url=url, final_url=final_url)
+        response_headers = getattr(response, "headers", None)
+        header = response_headers.get("Content-Type") if hasattr(response_headers, "get") else None
+        content_type = header if isinstance(header, str) else None
+    return SafeHttpResponse(status=status, body=body, url=url, final_url=final_url,
+                            content_type=content_type)
 
 
 def request(
