@@ -44,10 +44,10 @@ mock transport tests and a CPU controller smoke are separate evidence.
 
 ## Public-source runtime configurations
 
-`deployment_embodiment_runtime_configuration` registers 16 exact source profiles:
-nine include source-authored grippers (YAM, PiPER, FR3, Kinova single/dual,
-xArm7 single/dual, Axol and TRLC-DK1); seven are bare arms (UR5e, UR10e,
-three FANUC variants and Yaskawa GP12/GP20). Bare arms do not acquire grasping
+`deployment_embodiment_runtime_configuration` registers 18 exact source profiles:
+ten include public source grippers (YAM, PiPER, FR3, Kinova single/dual,
+xArm7 single/dual, Axol, TRLC-DK1 and dual UR5e with Robotiq2F85); eight are bare arms
+(UR5e, UR10e, KUKA iiwa14, three FANUC variants and Yaskawa GP12/GP20). Bare arms do not acquire grasping
 capability from their registration. The remaining catalog rows retain an
 individual unavailable reason or the existing DROID runtime.
 
@@ -145,7 +145,7 @@ The public single-file model preflight still rejects external dependencies.
 ## Availability and acceptance
 
 The exact source catalog remains enumerated in
-[source notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md), with 16 source-to-runtime
+[source notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md), with 18 source-to-runtime
 configuration profiles described above. The same native manifest
 runtime executes configured OEM USDs; a separate hardcoded adapter per vendor
 is unnecessary. Exact tools, mounts, resets, cameras and licenses are execution
@@ -169,6 +169,10 @@ moving-body mass/inertia. That smoke retains source inertias but disables gravit
 and contacts, omits visuals, and omits Kinova COLLADA collision surfaces because
 MuJoCo has no COLLADA decoder. It establishes controller isolation only, with no
 collision, camera-rendering, Isaac, manipulation-task or policy-execution claim.
+The later dual-UR5e/Robotiq2F85 CPU isolation also passed: both arms, both
+independent tools and repeatable reset, with all 24 moving source joints and
+source inertias retained; it omitted visuals and disabled gravity/contacts.
+KUKA source metadata was separately compared against MuJoCo.
 Actual hosted
 Dream execution and Isaac acceptance require admitted inputs and their own
 observed receipts. Deploying these adapters does not supply private access,

@@ -302,6 +302,7 @@ dev = [
     { name = "trimesh" },
     { name = "usd-core" },
     { name = "warp-lang" },
+    { name = "xacro" },
 ]
 evaluation = [
     { name = "lpips" },
@@ -385,6 +386,7 @@ dev = [
     { name = "trimesh" },
     { name = "usd-core" },
     { name = "warp-lang" },
+    { name = "xacro" },
 ]
 
 [package.metadata]
@@ -487,6 +489,7 @@ requires-dist = [
     { name = "warp-lang", marker = "extra == 'dev'", specifier = "==1.15.0" },
     { name = "warp-lang", marker = "extra == 'geometry'", specifier = "==1.15.0" },
     { name = "websockets", specifier = ">=12.0" },
+    { name = "xacro", marker = "extra == 'dev'", specifier = "==2.1.1" },
 ]
 provides-extras = ["policy-model-cpu", "astra-asset-authoring", "cloud", "runtime", "geometry", "llm", "simulation-agents", "retrieval", "groot-libero-cpu", "validation", "evaluation", "dev", "sapien-development", "exact-geometry-development"]
 
@@ -513,6 +516,7 @@ dev = [
     { name = "trimesh", specifier = ">=4.4.0" },
     { name = "usd-core", specifier = ">=24.0" },
     { name = "warp-lang", specifier = "==1.15.0" },
+    { name = "xacro", specifier = "==2.1.1" },
 ]
 
 [[package]]
@@ -5509,6 +5513,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/da/09/0390e008a305360948fa9ce69507d041ac12cb2ee5d28e34467e2ee79391/wrapt-2.2.2-cp312-cp312-win_amd64.whl", hash = "sha256:abf8c20a2d72ee69e16328b3c91342c446e723bfe48bfcc4dded3b9722ac027f", size = 80585, upload-time = "2026-06-20T23:48:13.117Z" },
     { url = "https://files.pythonhosted.org/packages/d3/b3/84c445c66969f2d3457276b183a48c91097d59bbef9af6c075366b0f8c36/wrapt-2.2.2-cp312-cp312-win_arm64.whl", hash = "sha256:c6c64c5d02578bc4c4bca4f0aef1504de933c1d5b4ac2710b9131111459506c8", size = 79553, upload-time = "2026-06-20T23:48:14.5Z" },
     { url = "https://files.pythonhosted.org/packages/6e/d2/6317eb6d4554855bbf12d61857774af34747bf88a42c19bf306de67e2fa3/wrapt-2.2.2-py3-none-any.whl", hash = "sha256:5bad217350f19ce99ca5b5e71d406765ea86fe541628426772b657375ee1c048", size = 61460, upload-time = "2026-06-20T23:49:42.966Z" },
+]
+
+[[package]]
+name = "xacro"
+version = "2.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pyyaml" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/62/b2/12fc318d3563481fe01482dd8e925d38e83b62d64291ed16ab0b6d836a91/xacro-2.1.1.tar.gz", hash = "sha256:3e7adf33cdd90d9fbe8ca0d07d9118acf770a2ad8bf575977019a5c8a60d4d1b", size = 104752, upload-time = "2025-08-28T18:21:20.397Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/6b/3fcfd8589d0e319f5fb56f105acbe791198fd36bb54469a91fbe49d828c4/xacro-2.1.1-py3-none-any.whl", hash = "sha256:c3b330ebd984a3bce6d6482e0047eae5c5333fedd49b30b9b6df863a086b35f7", size = 27087, upload-time = "2025-08-28T18:21:19.165Z" },
 ]
 
 [[package]]

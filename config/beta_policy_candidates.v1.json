@@ -347,13 +347,14 @@
     },
     {
       "candidate_id": "dream1_i2rt_yam_bimanual",
-      "configuration_digest": "sha256:93ad7e6fdbc0a68f19ad30c51ea6f3b61acc665dd988a3fdda9b7065ff78c1c7",
+      "configuration_digest": "sha256:736c80faa54aca2ba0015e00cf8d2b49597e7ab3d1e6e54c197e36699efde7a3",
       "deployment": {
         "companies": [
           "Dream Labs"
         ],
         "configuration_id": "i2rt_yam_bimanual",
         "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "policy_route_id": "dreamlabs_dream1",
         "relationship": "publisher_demonstrated"
       },
       "display_name": "Dream Labs Dream-1 \u00b7 Dual YAM",
@@ -386,13 +387,14 @@
     },
     {
       "candidate_id": "dream1_agilex_piper_bimanual",
-      "configuration_digest": "sha256:a99491454acef3e22eca42fbd1009fe6a375ec7dbe4dfd671d3fa74339ba66f3",
+      "configuration_digest": "sha256:934adba55311d348ac90501d681cd9de5a522076b8a5ad5f205462177bc48d48",
       "deployment": {
         "companies": [
           "Dream Labs"
         ],
         "configuration_id": "agilex_piper_bimanual",
         "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "policy_route_id": "dreamlabs_dream1",
         "relationship": "publisher_demonstrated"
       },
       "display_name": "Dream Labs Dream-1 \u00b7 Dual PiPER",
@@ -425,13 +427,14 @@
     },
     {
       "candidate_id": "dream1_universal_robots_ur5e_bimanual",
-      "configuration_digest": "sha256:2d6d5c3ca18f14216a674e5f0a79bfd235faab607df5e524b13dda40860af166",
+      "configuration_digest": "sha256:6c3295731e459fb5cc0dc4a0c2d2ff4b68bf487fe716e252edd1266330343ee1",
       "deployment": {
         "companies": [
           "Dream Labs"
         ],
         "configuration_id": "universal_robots_ur5e_bimanual",
         "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "policy_route_id": "dreamlabs_dream1",
         "relationship": "publisher_demonstrated"
       },
       "display_name": "Dream Labs Dream-1 \u00b7 Dual UR5e",
@@ -464,13 +467,14 @@
     },
     {
       "candidate_id": "dream1_franka_research_3_bimanual",
-      "configuration_digest": "sha256:2e2b424edd5aa6354cd76308faf6d6031a542ff553808947bd817bc8056dfe87",
+      "configuration_digest": "sha256:ed4ddb7507d1df9a43a8141a5d75e3520cc6be7da03f2597039a4191f125b15c",
       "deployment": {
         "companies": [
           "Dream Labs"
         ],
         "configuration_id": "franka_research_3_bimanual",
         "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "policy_route_id": "dreamlabs_dream1",
         "relationship": "publisher_demonstrated"
       },
       "display_name": "Dream Labs Dream-1 \u00b7 Dual FR3",
@@ -503,13 +507,14 @@
     },
     {
       "candidate_id": "dream1_kinova_gen3_bimanual",
-      "configuration_digest": "sha256:2cc3c72e403e2be3faa43a8789eb1380eb47d095e2aa425b2e609bb40fab8f84",
+      "configuration_digest": "sha256:53f5f8e2d916108d1882360d6828090b294459935c286fe8c4f94ba1b65fc5fc",
       "deployment": {
         "companies": [
           "Dream Labs"
         ],
         "configuration_id": "kinova_gen3_bimanual",
         "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "policy_route_id": "dreamlabs_dream1",
         "relationship": "publisher_demonstrated"
       },
       "display_name": "Dream Labs Dream-1 \u00b7 Dual Kinova Gen3",
@@ -542,13 +547,14 @@
     },
     {
       "candidate_id": "dream1_ufactory_xarm7_bimanual",
-      "configuration_digest": "sha256:a0a1ed918810ae41fb85f04846ddc848e0b6722bb0c7e83df513fa1a449fc437",
+      "configuration_digest": "sha256:4d7b76ca5ee63b285f0a7b6d546297fde81009184b132a014c4814c87f6c6891",
       "deployment": {
         "companies": [
           "Dream Labs"
         ],
         "configuration_id": "ufactory_xarm7_bimanual",
         "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "policy_route_id": "dreamlabs_dream1",
         "relationship": "publisher_demonstrated"
       },
       "display_name": "Dream Labs Dream-1 \u00b7 Dual xArm7",
@@ -581,13 +587,14 @@
     },
     {
       "candidate_id": "almond_axol_pi_api",
-      "configuration_digest": "sha256:6f52039f7476af82c67a2c19b94f4374d0bf74d1e8d3afe5841115bd788bac1c",
+      "configuration_digest": "sha256:2f5302cf6ac306e979d9b30fd0105888558fab868a1ef5ca5b2251a014371e41",
       "deployment": {
         "companies": [
           "Almond Robotics"
         ],
         "configuration_id": "almond_axol",
         "evidence_url": "https://www.pi.website/blog/api-beta",
+        "policy_route_id": "pi_api",
         "relationship": "company_deployment"
       },
       "display_name": "Almond Robotics Axol \u00b7 Pi API",
@@ -618,13 +625,14 @@
     },
     {
       "candidate_id": "almond_axol_team_controller",
-      "configuration_digest": "sha256:fc669edf1fbd961f9ef5dc2a65b58fc2f04e32861790376008d04e310c083deb",
+      "configuration_digest": "sha256:ae172e569e3850a1acf6f335a7dcef5fe87ddebc67a0c565a6a194781ff3dacb",
       "deployment": {
         "companies": [
           "Almond Robotics"
         ],
         "configuration_id": "almond_axol",
         "evidence_url": "https://github.com/almond-bot/axol",
+        "policy_route_id": "customer_controller",
         "relationship": "public_controller_integration"
       },
       "display_name": "Almond Robotics Axol \u00b7 supplied controller",
@@ -654,13 +662,14 @@
     },
     {
       "candidate_id": "trlc_dk1_lerobot_controller",
-      "configuration_digest": "sha256:ca27c3cf34676f6547a0a2f86c66042d557b794b3c2b0da8dca1556edd66e193",
+      "configuration_digest": "sha256:e90cf7fad4283cca413e9f26989e3fb2472f2990aae88dca1d743996698ccf4e",
       "deployment": {
         "companies": [
           "The Robot Learning Company"
         ],
         "configuration_id": "trlc_dk1_bimanual",
         "evidence_url": "https://github.com/robot-learning-co/trlc-dk1",
+        "policy_route_id": "customer_controller",
         "relationship": "public_controller_integration"
       },
       "display_name": "Robot Learning Company dual TRLC-DK1 \u00b7 LeRobot controller",
@@ -690,16 +699,17 @@
     },
     {
       "candidate_id": "extend_ur5e_team_controller",
-      "configuration_digest": "sha256:c8d6a2514b5f545c50ca3e323571fd817a1b489f760efc70a573103d9971d335",
+      "configuration_digest": "sha256:8dbd407501c2678607c97e5088eb1571af9e10f7d6c65a7d4eaff0b3b8effeb7",
       "deployment": {
         "companies": [
           "Extend Robotics"
         ],
         "configuration_id": "universal_robots_ur5e",
         "evidence_url": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world",
+        "policy_route_id": "customer_controller",
         "relationship": "company_deployment"
       },
-      "display_name": "Extend Robotics UR5e \u00b7 supplied ACT/OpenPI/GR00T policy",
+      "display_name": "Extend Robotics UR5e \u00b7 supplied controller",
       "eligibility": {
         "blockers": [
           "ur5e_task_trained_checkpoint_or_policy_endpoint_missing",
@@ -726,7 +736,7 @@
     },
     {
       "candidate_id": "jacobi_fanuc_m710ic_45m",
-      "configuration_digest": "sha256:daf1846e54cc498002e5cde0e9c64b5d9e09365330c53252cad8994b918f9eac",
+      "configuration_digest": "sha256:d305fd2ecd3eba5ec163d4fda427e76c9b47a4f5d010a7e3d22bb47a0c5ebd42",
       "deployment": {
         "companies": [
           "Jacobi Robotics",
@@ -734,6 +744,7 @@
         ],
         "configuration_id": "fanuc_m710ic_45m",
         "evidence_url": "https://jacobirobotics.com/platform",
+        "policy_route_id": "planning_endpoint",
         "relationship": "company_deployment"
       },
       "display_name": "Jacobi / Delta Technology FANUC M-710iC/45M \u00b7 planner",
@@ -764,13 +775,14 @@
     },
     {
       "candidate_id": "graymatter_fanuc_crx_10ia_l",
-      "configuration_digest": "sha256:28f1f8654083bacc6e92671e9277b4e0f9934dfefba3a1f959d2ab84668496ca",
+      "configuration_digest": "sha256:cdb5155721a23fc16fce574da3a7ea9e3418f9e8f5e9c2a812fe1ce7a3ece0f8",
       "deployment": {
         "companies": [
           "GrayMatter Robotics"
         ],
         "configuration_id": "fanuc_crx_10ia_l",
         "evidence_url": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites",
+        "policy_route_id": "customer_controller",
         "relationship": "company_deployment"
       },
       "display_name": "GrayMatter Robotics FANUC CRX-10iA/L \u00b7 GMR-AI",
@@ -800,13 +812,14 @@
     },
     {
       "candidate_id": "unchained_yaskawa_gp12_luna",
-      "configuration_digest": "sha256:bb8418fc3242b983d64363e254021c7c0faca5c37c2ecd7feced820f96c00de1",
+      "configuration_digest": "sha256:38adf45fc136b71c633231e162c394ee5b4f122580e38696ce969c73f09f5124",
       "deployment": {
         "companies": [
           "Unchained Robotics"
         ],
         "configuration_id": "yaskawa_gp12",
         "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "policy_route_id": "customer_controller",
         "relationship": "company_deployment"
       },
       "display_name": "Unchained Robotics Yaskawa GP12 \u00b7 LUNA",
@@ -836,13 +849,14 @@
     },
     {
       "candidate_id": "unchained_yaskawa_gp20_luna",
-      "configuration_digest": "sha256:f4511f732f2c52a6ebfb97104329fbd130a51dab0c08fecc96d42e43df6674b5",
+      "configuration_digest": "sha256:de235d31464ce791c1de38bdb6bbc27993de0b89c9fbb722aa16b73d670c1a47",
       "deployment": {
         "companies": [
           "Unchained Robotics"
         ],
         "configuration_id": "yaskawa_gp20",
         "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "policy_route_id": "customer_controller",
         "relationship": "company_deployment"
       },
       "display_name": "Unchained Robotics Yaskawa GP20 \u00b7 LUNA",
@@ -872,13 +886,14 @@
     },
     {
       "candidate_id": "standard_bots_ro1_controller",
-      "configuration_digest": "sha256:72c6827963a53af2654cf55dc057692bf29e52289b15145ca902335334c9b5e7",
+      "configuration_digest": "sha256:a496000ae0f6798884478c62e4a4d34c070d6e420d793682f449002ebe8f6de0",
       "deployment": {
         "companies": [
           "Standard Bots"
         ],
         "configuration_id": "standard_bots_ro1",
         "evidence_url": "https://github.com/standardbots/ros2-realtime-api",
+        "policy_route_id": "customer_controller",
         "relationship": "company_deployment"
       },
       "display_name": "Standard Bots RO1 \u00b7 controller",
@@ -909,7 +924,7 @@
     },
     {
       "candidate_id": "standard_bots_core_controller",
-      "configuration_digest": "sha256:f7d1236d580e57a9d8bdbc4c73a5c70f62bbd80a33b38bbbb1ad4471a6adbb30",
+      "configuration_digest": "sha256:9ca6e9b1535f562c0e5850d8aa6567884adc602d8fcf8d4922fc528bcbf57c57",
       "deployment": {
         "companies": [
           "Standard Bots",
@@ -917,6 +932,7 @@
         ],
         "configuration_id": "standard_bots_core",
         "evidence_url": "https://github.com/standardbots/ros2-realtime-api",
+        "policy_route_id": "customer_controller",
         "relationship": "company_deployment"
       },
       "display_name": "Standard Bots / Path Machining Core \u00b7 controller",
@@ -944,10 +960,2095 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ]
+    },
+    {
+      "candidate_id": "universal_robots_ur5e__planning_endpoint",
+      "configuration_digest": "sha256:3d585bc5eeaf74f566249e8e01f02ca1166876ddc41cfe7da207681cf5da4165",
+      "deployment": {
+        "companies": [
+          "Extend Robotics"
+        ],
+        "configuration_id": "universal_robots_ur5e",
+        "evidence_url": "https://www.universal-robots.com/marketplace/products/01tP40000071NNNIA2/",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Universal Robots UR5e (one arm) \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "universal_robots_ur5e__skill_trace",
+      "configuration_digest": "sha256:1b3f9c8cc4bf7e139ddfc0773625c4380231b5d16777731ed835917ac75076e1",
+      "deployment": {
+        "companies": [
+          "Extend Robotics"
+        ],
+        "configuration_id": "universal_robots_ur5e",
+        "evidence_url": "https://www.universal-robots.com/marketplace/products/01tP40000071NNNIA2/",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Universal Robots UR5e (one arm) \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "universal_robots_ur5e__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:d8a60abba4a5fe82f662c691c636fd395bdbefd2116956d7f921a890ef5cd675",
+      "deployment": {
+        "companies": [
+          "Extend Robotics"
+        ],
+        "configuration_id": "universal_robots_ur5e",
+        "evidence_url": "https://www.universal-robots.com/marketplace/products/01tP40000071NNNIA2/",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Universal Robots UR5e (one arm) \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "universal_robots_ur5e__groot_custom_checkpoint",
+      "configuration_digest": "sha256:755ea8fd28fb6d4d7c0effd46208041909b5d4dec98f3823921397bfbc067260",
+      "deployment": {
+        "companies": [
+          "Extend Robotics"
+        ],
+        "configuration_id": "universal_robots_ur5e",
+        "evidence_url": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world",
+        "policy_route_id": "groot_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Universal Robots UR5e (one arm) \u00b7 Customer GR00T checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "universal_robots_ur5e__act_custom_checkpoint",
+      "configuration_digest": "sha256:97e818995ae650e4702f5911ae8b7a9cb196fab6b292be7c1f0e0cce3d759ea3",
+      "deployment": {
+        "companies": [
+          "Extend Robotics"
+        ],
+        "configuration_id": "universal_robots_ur5e",
+        "evidence_url": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world",
+        "policy_route_id": "act_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Universal Robots UR5e (one arm) \u00b7 Customer ACT checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "universal_robots_ur5e_bimanual__customer_controller",
+      "configuration_digest": "sha256:d3da067a16bf7debb88ac27d2b6be0c4bad89b1aba755d44f09f330c8e51a89a",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "universal_robots_ur5e_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "customer_controller",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Universal Robots UR5e (two arms) \u00b7 Customer controller",
+      "eligibility": {
+        "blockers": [
+          "robot_specific_controller_not_supplied",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://docs.standardbots.com/"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "universal_robots_ur5e_bimanual__planning_endpoint",
+      "configuration_digest": "sha256:44fe56808bc87049da4527f8283f0da4db637ad71e33288092c3e6f226e0ba90",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "universal_robots_ur5e_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Universal Robots UR5e (two arms) \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "universal_robots_ur5e_bimanual__skill_trace",
+      "configuration_digest": "sha256:05b23a6917a09cea4229f078d49a072d1a1f76f019c461ed1bcef1d3e44de1bc",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "universal_robots_ur5e_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Universal Robots UR5e (two arms) \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "universal_robots_ur5e_bimanual__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:498c9c9676e9ee55c452e362ec9b3b7ff3028a85c893b1a0d7e5268834d5f2fd",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "universal_robots_ur5e_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Universal Robots UR5e (two arms) \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "trlc_dk1_bimanual__planning_endpoint",
+      "configuration_digest": "sha256:ce2ea7f3021af0abe159e292c19ca4f257c234c065824cc3a4f53665278dda7a",
+      "deployment": {
+        "companies": [
+          "The Robot Learning Company"
+        ],
+        "configuration_id": "trlc_dk1_bimanual",
+        "evidence_url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "TRLC-DK1 follower (two arms) \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "trlc_dk1_bimanual__skill_trace",
+      "configuration_digest": "sha256:1c3bbcff3d89b83fa5dfaeee36b90576296d0c0f1d54af0f5d6f65cdcecd9f46",
+      "deployment": {
+        "companies": [
+          "The Robot Learning Company"
+        ],
+        "configuration_id": "trlc_dk1_bimanual",
+        "evidence_url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "TRLC-DK1 follower (two arms) \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "trlc_dk1_bimanual__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:7b0bf5e4063b91a30e792f4442ca085738dfd4eca0b9c51a0ce63213353cfb1f",
+      "deployment": {
+        "companies": [
+          "The Robot Learning Company"
+        ],
+        "configuration_id": "trlc_dk1_bimanual",
+        "evidence_url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "TRLC-DK1 follower (two arms) \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "almond_axol__planning_endpoint",
+      "configuration_digest": "sha256:6d1318199bce6522b6c54dd8b483854e36f91a3324b30105421b1395fcbcd024",
+      "deployment": {
+        "companies": [
+          "Almond Robotics"
+        ],
+        "configuration_id": "almond_axol",
+        "evidence_url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Almond Axol \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "almond_axol__skill_trace",
+      "configuration_digest": "sha256:b280bb2e51b0f231954f0392b8d9d5338635770f383882efd96920ff3cdfff32",
+      "deployment": {
+        "companies": [
+          "Almond Robotics"
+        ],
+        "configuration_id": "almond_axol",
+        "evidence_url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Almond Axol \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "almond_axol__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:7f2b140d47a8c891dc7f0ee0c868cba62aa66720915ca08936835e9bb6e7999e",
+      "deployment": {
+        "companies": [
+          "Almond Robotics"
+        ],
+        "configuration_id": "almond_axol",
+        "evidence_url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Almond Axol \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "fanuc_crx_10ia_l__planning_endpoint",
+      "configuration_digest": "sha256:f6cd4ff6144c216737f8aabd5ed2a64a5f303aa2d1bec759e07526ed25e42128",
+      "deployment": {
+        "companies": [
+          "GrayMatter Robotics"
+        ],
+        "configuration_id": "fanuc_crx_10ia_l",
+        "evidence_url": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "FANUC CRX-10iA/L \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "fanuc_crx_10ia_l__skill_trace",
+      "configuration_digest": "sha256:d0571608c567846b7167338ed3ffd4f47d32d0562c00e33eebf72ff46b7f22d4",
+      "deployment": {
+        "companies": [
+          "GrayMatter Robotics"
+        ],
+        "configuration_id": "fanuc_crx_10ia_l",
+        "evidence_url": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "FANUC CRX-10iA/L \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "fanuc_crx_10ia_l__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:f2d94c7bfb2de5bea8c3c97f9bbfaaf69a119ecc5f8bf7223575caf197512960",
+      "deployment": {
+        "companies": [
+          "GrayMatter Robotics"
+        ],
+        "configuration_id": "fanuc_crx_10ia_l",
+        "evidence_url": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "FANUC CRX-10iA/L \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "fanuc_m710ic_45m__customer_controller",
+      "configuration_digest": "sha256:d7fd1b87d3a963c28a1a27d321555a6b3ed4f1cc566400dac5fdf712b9460024",
+      "deployment": {
+        "companies": [
+          "Jacobi Robotics",
+          "Delta Technology"
+        ],
+        "configuration_id": "fanuc_m710ic_45m",
+        "evidence_url": "https://beta.jacobirobotics.com/case-study/deployment-with-delta-tech",
+        "policy_route_id": "customer_controller",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "FANUC M-710iC/45M \u00b7 Customer controller",
+      "eligibility": {
+        "blockers": [
+          "robot_specific_controller_not_supplied",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://docs.standardbots.com/"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "fanuc_m710ic_45m__skill_trace",
+      "configuration_digest": "sha256:d464f6029543522b5b9352aac92f1cdb6879669655e16a9291abaa5a3308606f",
+      "deployment": {
+        "companies": [
+          "Jacobi Robotics",
+          "Delta Technology"
+        ],
+        "configuration_id": "fanuc_m710ic_45m",
+        "evidence_url": "https://beta.jacobirobotics.com/case-study/deployment-with-delta-tech",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "FANUC M-710iC/45M \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "fanuc_m710ic_45m__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:bc7a5a769a6f937ccc24b24087586f74f60ffcc789556ba0be7bc8b79020d3c5",
+      "deployment": {
+        "companies": [
+          "Jacobi Robotics",
+          "Delta Technology"
+        ],
+        "configuration_id": "fanuc_m710ic_45m",
+        "evidence_url": "https://beta.jacobirobotics.com/case-study/deployment-with-delta-tech",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "FANUC M-710iC/45M \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "yaskawa_gp12__planning_endpoint",
+      "configuration_digest": "sha256:aa8f422776f13882d21ba6b83384e2e9dcb23921191992a117afa7a20764fc60",
+      "deployment": {
+        "companies": [
+          "Unchained Robotics"
+        ],
+        "configuration_id": "yaskawa_gp12",
+        "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Yaskawa GP12 \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "yaskawa_gp12__skill_trace",
+      "configuration_digest": "sha256:5d44af523216aee57e18c0ab4308161c68cc45ba2a7037a923a4bdde255384ff",
+      "deployment": {
+        "companies": [
+          "Unchained Robotics"
+        ],
+        "configuration_id": "yaskawa_gp12",
+        "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Yaskawa GP12 \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "yaskawa_gp12__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:485ccf7c6b1c70f1df2202686ae798aa69e326babea4041b1494d19f7919c615",
+      "deployment": {
+        "companies": [
+          "Unchained Robotics"
+        ],
+        "configuration_id": "yaskawa_gp12",
+        "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Yaskawa GP12 \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "yaskawa_gp20__planning_endpoint",
+      "configuration_digest": "sha256:a41301cb7c730fb048a37e456745ccd8c62fdd1b7a7223478b451d8c2319eeaa",
+      "deployment": {
+        "companies": [
+          "Unchained Robotics"
+        ],
+        "configuration_id": "yaskawa_gp20",
+        "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Yaskawa GP20 \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "yaskawa_gp20__skill_trace",
+      "configuration_digest": "sha256:46695270b82aeddb4b0b6bef3f09afa03eea5cc2e1195c7649c8d02a2f4e82cc",
+      "deployment": {
+        "companies": [
+          "Unchained Robotics"
+        ],
+        "configuration_id": "yaskawa_gp20",
+        "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Yaskawa GP20 \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "yaskawa_gp20__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:a5d04fc34036542cc7785da6aca4bf06af8cdbe1efb66be654c0ad2d262fff81",
+      "deployment": {
+        "companies": [
+          "Unchained Robotics"
+        ],
+        "configuration_id": "yaskawa_gp20",
+        "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Yaskawa GP20 \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "i2rt_yam_bimanual__customer_controller",
+      "configuration_digest": "sha256:2ac07fb4ccef99c30d6482bd15ac13a809e20c5edecb6ae56078c557224311d8",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "i2rt_yam_bimanual",
+        "evidence_url": "https://github.com/i2rt-robotics/i2rt/blob/main/i2rt/robot_models/arm/yam/v1/yam.urdf",
+        "policy_route_id": "customer_controller",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "I2RT YAM (two arms) \u00b7 Customer controller",
+      "eligibility": {
+        "blockers": [
+          "robot_specific_controller_not_supplied",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://docs.standardbots.com/"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "i2rt_yam_bimanual__planning_endpoint",
+      "configuration_digest": "sha256:eafeb99b15b6d6312524a8334560169ec336ba512db82ac47b2c88df2fc9c6f3",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "i2rt_yam_bimanual",
+        "evidence_url": "https://github.com/i2rt-robotics/i2rt/blob/main/i2rt/robot_models/arm/yam/v1/yam.urdf",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "I2RT YAM (two arms) \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "i2rt_yam_bimanual__skill_trace",
+      "configuration_digest": "sha256:7d7c0fe302c3999a7feb2ce2236ac2ccca0fee481db856e2a31fc12b6cd53f8d",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "i2rt_yam_bimanual",
+        "evidence_url": "https://github.com/i2rt-robotics/i2rt/blob/main/i2rt/robot_models/arm/yam/v1/yam.urdf",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "I2RT YAM (two arms) \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "i2rt_yam_bimanual__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:87d53cd94a0dfaf2c19232fab49c88e5f87bf6d7f490492322f31176b6e60168",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "i2rt_yam_bimanual",
+        "evidence_url": "https://github.com/i2rt-robotics/i2rt/blob/main/i2rt/robot_models/arm/yam/v1/yam.urdf",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "I2RT YAM (two arms) \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "agilex_piper_bimanual__customer_controller",
+      "configuration_digest": "sha256:5983104a823fab7427a77808016aa5385a296564cfc2215a71b9ffc9c2ad1a85",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "agilex_piper_bimanual",
+        "evidence_url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection",
+        "policy_route_id": "customer_controller",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "AgileX PiPER (two arms) \u00b7 Customer controller",
+      "eligibility": {
+        "blockers": [
+          "robot_specific_controller_not_supplied",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://docs.standardbots.com/"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "agilex_piper_bimanual__planning_endpoint",
+      "configuration_digest": "sha256:26f81011c228c379b39729bc6bcc07e9a641fbc7a2ca1f4d70067914c6293a3f",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "agilex_piper_bimanual",
+        "evidence_url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "AgileX PiPER (two arms) \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "agilex_piper_bimanual__skill_trace",
+      "configuration_digest": "sha256:3f79a609a0f28a333712ebf2595392c0fcf5551cc72a778cca1cd19f11d95b68",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "agilex_piper_bimanual",
+        "evidence_url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "AgileX PiPER (two arms) \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "agilex_piper_bimanual__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:bb1079186e985a580068dcd7050e0f74c3d189ed2ba1a0bcf2e6fdb38c42a2a8",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "agilex_piper_bimanual",
+        "evidence_url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "AgileX PiPER (two arms) \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "standard_bots_ro1__runway_praxis1",
+      "configuration_digest": "sha256:62251215ce73334e196ac64ee6f96e1aac34453c4dea4b37daba1efde7381205",
+      "deployment": {
+        "companies": [
+          "Standard Bots"
+        ],
+        "configuration_id": "standard_bots_ro1",
+        "evidence_url": "https://runway.com/research/introducing-praxis-1",
+        "policy_route_id": "runway_praxis1",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Standard Bots RO1 \u00b7 Praxis-1 early partner access",
+      "eligibility": {
+        "blockers": [
+          "praxis_partner_access_missing",
+          "praxis_model_version_and_wire_contract_unavailable",
+          "prepared_robot_policy_registration_missing",
+          "complete_licensed_robot_assets_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://runway.com/research/introducing-praxis-1"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "standard_bots_ro1__planning_endpoint",
+      "configuration_digest": "sha256:590a346845f5298e19c051da3dc1438f4658fac83b779ec827887bca6bbafe5d",
+      "deployment": {
+        "companies": [
+          "Standard Bots"
+        ],
+        "configuration_id": "standard_bots_ro1",
+        "evidence_url": "https://standardbots.com/ai",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Standard Bots RO1 \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing",
+          "complete_licensed_robot_assets_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "standard_bots_ro1__skill_trace",
+      "configuration_digest": "sha256:3f06e33a04dc456e03a6d10e32baf949b6187e77e10fa2e04067d39102f0c78d",
+      "deployment": {
+        "companies": [
+          "Standard Bots"
+        ],
+        "configuration_id": "standard_bots_ro1",
+        "evidence_url": "https://standardbots.com/ai",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Standard Bots RO1 \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing",
+          "complete_licensed_robot_assets_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "standard_bots_ro1__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:c127327384bab41fa8ad04314125dbb4243f5131c13782825968ad5e50310c71",
+      "deployment": {
+        "companies": [
+          "Standard Bots"
+        ],
+        "configuration_id": "standard_bots_ro1",
+        "evidence_url": "https://standardbots.com/ai",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Standard Bots RO1 \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing",
+          "complete_licensed_robot_assets_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "standard_bots_core__planning_endpoint",
+      "configuration_digest": "sha256:23f3cd8a71bfccdd3731fb413213b1f3a0d66462e3ba8850710f6168cc98a6be",
+      "deployment": {
+        "companies": [
+          "Standard Bots",
+          "Path Machining"
+        ],
+        "configuration_id": "standard_bots_core",
+        "evidence_url": "https://pathmachining.com/resources/capabilities-deep-dives/standard-bots-automated-machine-tending/",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Standard Bots Core \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing",
+          "complete_licensed_robot_assets_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "standard_bots_core__skill_trace",
+      "configuration_digest": "sha256:bae1c31d4dd4dd3aa0d0b541b5e4fbdfccf4f82f345a1c5c27ee70e1ba1faafb",
+      "deployment": {
+        "companies": [
+          "Standard Bots",
+          "Path Machining"
+        ],
+        "configuration_id": "standard_bots_core",
+        "evidence_url": "https://pathmachining.com/resources/capabilities-deep-dives/standard-bots-automated-machine-tending/",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Standard Bots Core \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing",
+          "complete_licensed_robot_assets_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "standard_bots_core__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:1038c00014462ec7f9493d499e6e334cdae4f0c3919e89393628fc603ab81787",
+      "deployment": {
+        "companies": [
+          "Standard Bots",
+          "Path Machining"
+        ],
+        "configuration_id": "standard_bots_core",
+        "evidence_url": "https://pathmachining.com/resources/capabilities-deep-dives/standard-bots-automated-machine-tending/",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Standard Bots Core \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing",
+          "complete_licensed_robot_assets_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "franka_research_3_bimanual__customer_controller",
+      "configuration_digest": "sha256:c0674d23cf1117b2b824566ba57a13e0f46cd2c64bc3f2afea0764ca0a6448f6",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "franka_research_3_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "customer_controller",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Franka Research 3 (two arms) \u00b7 Customer controller",
+      "eligibility": {
+        "blockers": [
+          "robot_specific_controller_not_supplied",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://docs.standardbots.com/"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "franka_research_3_bimanual__planning_endpoint",
+      "configuration_digest": "sha256:f8f9fc14e34b7575694b4c2120312d837d79e30afc61bc20f62bb5d167286552",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "franka_research_3_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Franka Research 3 (two arms) \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "franka_research_3_bimanual__skill_trace",
+      "configuration_digest": "sha256:e5acea1bd5e7ac12d2946554135f1bf707bc762f0725ece750504f90c52a26aa",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "franka_research_3_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Franka Research 3 (two arms) \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "franka_research_3_bimanual__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:017aed8cb5ac4f79019565af0b36c324d93d6b82cf5fa872ca85eb351401ab55",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "franka_research_3_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Franka Research 3 (two arms) \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "kinova_gen3_bimanual__customer_controller",
+      "configuration_digest": "sha256:2ec31f8a4a29f01cf50a17994faea0fbdcf1319aa3ed73d2b24c2e61f568a31b",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "kinova_gen3_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "customer_controller",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Kinova Gen3 (two arms) \u00b7 Customer controller",
+      "eligibility": {
+        "blockers": [
+          "robot_specific_controller_not_supplied",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://docs.standardbots.com/"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "kinova_gen3_bimanual__planning_endpoint",
+      "configuration_digest": "sha256:70f17e6b018c1705bd5c5ad341c88e904fbb0cc75aeaed4af7ab164de9bb33a7",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "kinova_gen3_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Kinova Gen3 (two arms) \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "kinova_gen3_bimanual__skill_trace",
+      "configuration_digest": "sha256:31b78b0f6b61713e86de0647fa11356434d479690d08c7893acea1b6cae23307",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "kinova_gen3_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Kinova Gen3 (two arms) \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "kinova_gen3_bimanual__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:285c2d01395434a67c870a185897c8ea54a03e3baeb2a57b06f3ce35f4b5014d",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "kinova_gen3_bimanual",
+        "evidence_url": "https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_robots_manipulator.html",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "Kinova Gen3 (two arms) \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "ufactory_xarm7_bimanual__customer_controller",
+      "configuration_digest": "sha256:38c499db96af636f26713f29345b3102824f1332be60cbc53c3ce28243467406",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "ufactory_xarm7_bimanual",
+        "evidence_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description/urdf/dual_xarm_device.urdf.xacro",
+        "policy_route_id": "customer_controller",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "UFACTORY xArm 7 (two arms) \u00b7 Customer controller",
+      "eligibility": {
+        "blockers": [
+          "robot_specific_controller_not_supplied",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://docs.standardbots.com/"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "ufactory_xarm7_bimanual__planning_endpoint",
+      "configuration_digest": "sha256:a94dbb1213dc3c48aa5739d88a5c581b9ac41bd6d5a46fcbb76e57d757e15d20",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "ufactory_xarm7_bimanual",
+        "evidence_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description/urdf/dual_xarm_device.urdf.xacro",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "UFACTORY xArm 7 (two arms) \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "ufactory_xarm7_bimanual__skill_trace",
+      "configuration_digest": "sha256:78becd23f99a7ffe60d9d26689c04a39f18646046a117470d4c549c51b0f52c5",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "ufactory_xarm7_bimanual",
+        "evidence_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description/urdf/dual_xarm_device.urdf.xacro",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "UFACTORY xArm 7 (two arms) \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "ufactory_xarm7_bimanual__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:4e64b7a37d8e2b211bf66e95df87ff2e85f5b61a28a7c07afbd847d880979975",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "ufactory_xarm7_bimanual",
+        "evidence_url": "https://github.com/xArm-Developer/xarm_ros2/blob/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description/urdf/dual_xarm_device.urdf.xacro",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "UFACTORY xArm 7 (two arms) \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "kuka_lbr_iiwa_14__customer_controller",
+      "configuration_digest": "sha256:14726f407569090ff85a3b9ea9d8e0ce4efb66d53d246ab730f2cad7f91963ae",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "kuka_lbr_iiwa_14",
+        "evidence_url": "https://github.com/lbr-stack/lbr_iiwa14_r820_description/blob/86ac0532841a90694afe6a65c300f08b55eb1296/urdf/lbr_iiwa14_r820.urdf.xacro",
+        "policy_route_id": "customer_controller",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "KUKA LBR iiwa 14 (one arm) \u00b7 Customer controller",
+      "eligibility": {
+        "blockers": [
+          "robot_specific_controller_not_supplied",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://docs.standardbots.com/"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "kuka_lbr_iiwa_14__planning_endpoint",
+      "configuration_digest": "sha256:47908191fe4b65cb8a5b6fa6c9b64f2b364dd0982f01ffbb298a30efdfe8bae7",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "kuka_lbr_iiwa_14",
+        "evidence_url": "https://github.com/lbr-stack/lbr_iiwa14_r820_description/blob/86ac0532841a90694afe6a65c300f08b55eb1296/urdf/lbr_iiwa14_r820.urdf.xacro",
+        "policy_route_id": "planning_endpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "KUKA LBR iiwa 14 (one arm) \u00b7 Customer planning endpoint",
+      "eligibility": {
+        "blockers": [
+          "planning_endpoint_contract_not_supplied",
+          "trajectory_execution_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/technology"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "kuka_lbr_iiwa_14__skill_trace",
+      "configuration_digest": "sha256:2e32876913f1755d8ef3ac404d3b95702cab2df92b7ed665a247a16794d40c93",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "kuka_lbr_iiwa_14",
+        "evidence_url": "https://github.com/lbr-stack/lbr_iiwa14_r820_description/blob/86ac0532841a90694afe6a65c300f08b55eb1296/urdf/lbr_iiwa14_r820.urdf.xacro",
+        "policy_route_id": "skill_trace",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "KUKA LBR iiwa 14 (one arm) \u00b7 Customer recorded skill trace",
+      "eligibility": {
+        "blockers": [
+          "skill_trace_artifact_not_supplied",
+          "skill_trace_replay_adapter_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "kuka_lbr_iiwa_14__pi05_custom_checkpoint",
+      "configuration_digest": "sha256:0e88b5ea32b5b89f78c8b61b320649d518c77a0385f97272ddf90058589bb917",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "kuka_lbr_iiwa_14",
+        "evidence_url": "https://github.com/lbr-stack/lbr_iiwa14_r820_description/blob/86ac0532841a90694afe6a65c300f08b55eb1296/urdf/lbr_iiwa14_r820.urdf.xacro",
+        "policy_route_id": "pi05_custom_checkpoint",
+        "relationship": "planning_candidate"
+      },
+      "display_name": "KUKA LBR iiwa 14 (one arm) \u00b7 Customer pi0.5 checkpoint for this embodiment",
+      "eligibility": {
+        "blockers": [
+          "embodiment_specific_checkpoint_not_supplied",
+          "checkpoint_normalization_and_action_mapping_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "exact-policy-rights-unverified",
+        "license_note": "Planning route only; exact policy/controller identity, usage rights and task interface are unverified.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "checkpoint",
+        "revision": null,
+        "source": "https://github.com/Physical-Intelligence/openpi"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
     }
   ],
-  "catalog_digest": "sha256:97a430d266a15dfbae16e858395da3d3b1a74ce2de6d56f7482567676bb55fc7",
+  "catalog_digest": "sha256:aba58daf7ece15fd42bd61fb65dda3d43a0ae7d4118081add73fb5ebe6793882",
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-29.1",
+  "revision": "2026-10-29.1-all-embodiment-policy-routes",
   "schema_version": "beta_policy_candidate_catalog.v1"
 }

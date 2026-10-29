@@ -24,7 +24,6 @@
                   "minLength": 1,
                   "type": "string"
                 },
-                "minItems": 1,
                 "type": "array",
                 "uniqueItems": true
               },
@@ -37,11 +36,16 @@
                 "minLength": 1,
                 "type": "string"
               },
+              "policy_route_id": {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+                "type": "string"
+              },
               "relationship": {
                 "enum": [
                   "publisher_demonstrated",
                   "company_deployment",
-                  "public_controller_integration"
+                  "public_controller_integration",
+                  "planning_candidate"
                 ]
               }
             },

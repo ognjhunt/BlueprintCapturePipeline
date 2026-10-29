@@ -58,6 +58,9 @@ def asset_recipes() -> dict[str, Any]:
         if row["embodiment_id"] in identities:
             raise AssetPreparationError("asset_recipe_duplicate_identity")
         identities.add(row["embodiment_id"])
+        if row.get("composition") is not None:
+            from .deployment_embodiment_tool_composition import component_recipe
+            component_recipe(row)
         source = row["source"]
         if source is None:
             if row["status"] not in {"existing_runtime", "source_unavailable"}:
@@ -138,6 +141,18 @@ def _refuse_symlink_ancestors(path: Path) -> None:
 
 
 def verify_source_bundle(directory: str | Path, *, embodiment_id: str | None = None) -> dict[str, Any]:
+    from .deployment_embodiment_tool_composition import COMPOSITE_SCHEMA, verify_composite
+    root = Path(directory)
+    _refuse_symlink_ancestors(root / RECEIPT)
+    if (root / RECEIPT).is_file() and (root / RECEIPT).stat().st_size <= MAX_RECEIPT_BYTES:
+        value = json.loads((root / RECEIPT).read_text())
+        if isinstance(value, dict) and value.get("schema_version") == COMPOSITE_SCHEMA:
+            return verify_composite(root, embodiment_id=embodiment_id)
+    return _verify_source_recipe(directory, embodiment_id=embodiment_id)
+
+
+def _verify_source_recipe(directory: str | Path, *, embodiment_id: str | None = None,
+                          _recipe: dict | None = None) -> dict[str, Any]:
     """A retry reuses exactly retained bytes; no overwrite, new download or grant."""
     root = Path(directory)
     _refuse_symlink_ancestors(root / RECEIPT)
@@ -154,7 +169,7 @@ def verify_source_bundle(directory: str | Path, *, embodiment_id: str | None = N
             or receipt["execution_authorized"] is not False
             or receipt.get("bundle_digest") != cross_runtime_canonical_digest(receipt, digest_field="bundle_digest")):
         raise AssetPreparationError("asset_bundle_receipt_changed")
-    recipe = recipe_for(embodiment_id or receipt["embodiment_id"])
+    recipe = _recipe or recipe_for(embodiment_id or receipt["embodiment_id"])
     expected = recipe["source"]
     if (receipt["embodiment_id"] != recipe["embodiment_id"]
             or receipt["recipe_digest"] != cross_runtime_canonical_digest(recipe)
@@ -221,12 +236,20 @@ def materialize_sources(embodiment_id: str, destination: str | Path, *, get=None
     remain local/operator storage; no private geometry is published by this tool.
     """
     recipe = recipe_for(embodiment_id)
+    if recipe.get("composition") is not None:
+        from .deployment_embodiment_tool_composition import materialize_composite
+        return materialize_composite(recipe, Path(destination), get=get)
+    return _materialize_source_recipe(recipe, Path(destination), get=get)
+
+
+def _materialize_source_recipe(recipe: dict, destination: Path, *, get=None) -> dict[str, Any]:
+    embodiment_id = recipe["embodiment_id"]
     source = recipe["source"]
     if source is None:
         raise AssetPreparationError(f'asset_source_{recipe["status"]}:{recipe["reason"]}')
     destination = Path(destination)
     if destination.exists() or destination.is_symlink():
-        return verify_source_bundle(destination, embodiment_id=embodiment_id)
+        return _verify_source_recipe(destination, embodiment_id=embodiment_id, _recipe=recipe)
     if not destination.parent.is_dir():
         raise AssetPreparationError("asset_destination_parent_invalid")
     _refuse_symlink_ancestors(destination.parent)
@@ -337,6 +360,13 @@ def materialize_available_sources(destination: str | Path, *, get=None) -> dict[
     return {"schema_version": "embodiment_asset_source_batch.v1",
             "claim_ceiling": "source_asset_not_qualified", "execution_authorized": False,
             "recipes_digest": catalog["recipes_digest"], "results": results}
+
+
+def source_description(recipe: dict, receipt: dict) -> dict:
+    if recipe.get("composition") is None:
+        return recipe["source"]
+    from .deployment_embodiment_tool_composition import effective_description
+    return effective_description(recipe, receipt)
 
 
 def main(argv=None) -> int:

@@ -529,6 +529,40 @@ def _add_wait(parser: argparse.ArgumentParser, timeout: float) -> None:
     parser.add_argument("--poll", type=float, default=15.0)
 
 
+def _embodiment_preparation_request(path: str) -> dict[str, Any]:
+    """Read an already reviewed sealed grant, with no implicit budget or identity."""
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 16 * 1024:
+                raise ValueError("invalid file")
+            raw = stream.read(16 * 1024 + 1)
+        request = json.loads(raw, object_pairs_hook=pairs, parse_constant=_invalid_json_constant)
+        fields = {"schema_version", "authorization_id", "release_commit", "embodiment_ids", "max_spend_usd",
+                  "max_hourly_rate_usd", "ttl_seconds", "expires_at_epoch", "authorization_reference", "request_digest"}
+        if (len(raw) > 16 * 1024 or not isinstance(request, dict) or set(request) != fields
+                or request["schema_version"] != "embodiment_asset_preparation_request.v1"
+                or not isinstance(request["authorization_id"], str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", request["authorization_id"]) is None):
+            raise ValueError("invalid grant")
+        payload = json.dumps({key: value for key, value in request.items() if key != "request_digest"},
+                             sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if request["request_digest"] != "sha256:" + hashlib.sha256(payload).hexdigest():
+            raise ValueError("invalid digest")
+        return request
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        raise DoorError(2, "embodiment_preparation_request_file_invalid") from None
+
+
 def _hold_duration(value: str) -> int:
     match = re.fullmatch(r"([0-9]+)([hms])", value)
     if match is None:
@@ -656,6 +690,12 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         elif action == "renew":
             sub.add_argument("--for", dest="ttl_seconds", type=_scratch_duration, required=True)
         _add_wait(sub, 120)
+    preparation = commands.add_parser("public-embodiment-preparation",
+        help="enqueue one explicitly funded public robot asset batch; its worker may spend within the sealed grant")
+    preparation.add_argument("--request-file", required=True,
+        help="JSON containing exact release, ordered public IDs, budget, expiry and stable authorization ID/digest")
+    _add_wait(preparation, 180)
+    preparation.description = "Wait observes durable grant enqueue only; inspect retained batch results for simulation preparation outcomes."
     selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
     selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
     selected_modes = selected.add_mutually_exclusive_group()
@@ -744,6 +784,11 @@ def run(args: argparse.Namespace) -> int:
         return _submit(body, args)
     elif command == "legacy-owner-census":
         return _submit({"kind": "legacy-owner-census"}, args)
+    elif command == "public-embodiment-preparation":
+        request = _embodiment_preparation_request(args.request_file)
+        if not args.operation_key:
+            args.operation_key = "public-embodiment-preparation-" + request["authorization_id"]
+        return _submit({"kind": command, "request": request}, args)
     elif command == "selected-handoff":
         with Path(args.selector_file).open("rb") as stream:
             raw = stream.read(4097)

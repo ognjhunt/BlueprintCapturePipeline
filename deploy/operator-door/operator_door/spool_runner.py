@@ -212,6 +212,22 @@ def _selected_handoff_environment(config: DoorConfig, request: dict[str, Any]) -
             "DOOR_SERVICE_USER": "blueprint", "DOOR_SELECTED_HANDOFF_REQUEST": json.dumps(selection, sort_keys=True)}
 
 
+def _embodiment_preparation_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_SERVICE_USER": "blueprint",
+            "DOOR_EMBODIMENT_PREPARATION_REQUEST": json.dumps(request["request"], sort_keys=True, allow_nan=False)}
+
+
+def _embodiment_preparation_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "PrivateNetwork=yes",
+            "RestrictAddressFamilies=AF_UNIX", "UMask=0077",
+            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
+            "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/embodiment-preparation "
+            + str(Path(config.spool_root) / "results"))
+
+
 def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
     writable = str(Path(config.spool_root) / "results")
     if request["mode"] in {"dispatch", "preparation-resume"}:
@@ -258,6 +274,10 @@ class _LaunchSpec:
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
+    "public-embodiment-preparation": _LaunchSpec(
+        "blueprint-operator-door-embodiment-preparation", "door-public-embodiment-preparation.sh", "2min",
+        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
+        _embodiment_preparation_environment, _embodiment_preparation_properties),
     "retire-scene": _LaunchSpec("blueprint-operator-door-scene-retire", "door-scene-lifecycle.sh", "2h",
                                 lambda request: request["consent_id"][:12],
                                 _lifecycle_environment, _lifecycle_properties),

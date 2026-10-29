@@ -1,0 +1,41 @@
+[Unit]
+Description=Import explicitly funded public robot sources and retain verified USD models
+Wants=network-online.target blueprint-gpu-spend-guard.service
+After=network-online.target blueprint-gpu-spend-guard.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5h
+KillMode=process
+User=blueprint
+Group=blueprint
+UMask=0077
+EnvironmentFile=/etc/blueprint/pipeline-control-plane.env
+Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process
+Environment=BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY=/etc/blueprint/team-evaluation-registry.json
+Environment=BLUEPRINT_SPEND_AUTHORITY_ROOT=/var/lib/blueprint/spend-authority
+Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.deployment_embodiment_preparation_controller run-queue'
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+ReadWritePaths=/mnt/blueprint-work/embodiment-preparation /var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/embodiment-preparation /var/lib/blueprint/robot-models
+TasksMax=512
+MemoryMax=8G
+CPUQuota=200%
+
+[Install]
+WantedBy=multi-user.target

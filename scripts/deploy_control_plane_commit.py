@@ -455,6 +455,9 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
     "blueprint-team-evaluation-runner.service",
     "blueprint-team-evaluation-runner.path",
+    "blueprint-embodiment-preparation.service",
+    "blueprint-embodiment-preparation.path",
+    "blueprint-embodiment-preparation.timer",
     "blueprint-rigid-robot-free-probe-runner.service",
     "blueprint-rigid-robot-free-probe-runner.path",
     "blueprint-rigid-robot-free-probe-runner.timer",
@@ -522,6 +525,8 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
 #: itself.  It is separated from the no-spend watchers so deploy receipts do
 #: not blur that distinction.
 DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
+    # Only an explicit, exact-release, single-use operator batch grant can spend.
+    "blueprint-embodiment-preparation.path",
     "blueprint-task-evaluation-sam31-preparation-execution.path",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
     # Runs only evaluations the agent-run dispatcher already staged under a
@@ -546,6 +551,7 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
 #: moment a no-spend canary compiles, so it carries the same progression
 #: authority rather than the no-spend watcher category.
 DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
+    "blueprint-embodiment-preparation.timer",
     "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-task-evaluation-launch-preparation.timer",
     # Owner-authorized beta screening has its own aggregate site allowance,
@@ -1962,7 +1968,8 @@ def _install_unit_sandbox_paths(
             if optional:
                 continue
             file_like = Path(path_text).suffix in _UNIT_FILE_SUFFIXES
-            if path_text.startswith(_UNIT_PROVISIONABLE_PREFIX) and not file_like:
+            if ((path_text.startswith(_UNIT_PROVISIONABLE_PREFIX) and not file_like)
+                    or (path_text == "/mnt/blueprint-work/embodiment-preparation" and host_path.parent.is_dir())):
                 pending.append((unit, path_text, host_path))
                 continue
             blockers.append(f"deploy_unit_sandbox_path_missing:{unit}:{path_text}")

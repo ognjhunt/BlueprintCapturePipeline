@@ -186,6 +186,7 @@ evaluation = [
     "lpips>=0.1.4",
 ]
 dev = [
+    "xacro==2.1.1",
     "bandit==1.8.6",
     "httpx>=0.28.0",
     "mypy==1.19.1",
@@ -246,6 +247,7 @@ exact-geometry-development = [
 # docs/archive/point-in-time/cpu-work-audit-2026-06-29.md). Mirrors the [project.optional-dependencies] `dev`
 # extra so `pip install -e '.[dev]'` stays equivalent for non-uv workflows.
 dev = [
+    "xacro==2.1.1",
     "bandit==1.8.6",
     "httpx>=0.28.0",
     "mypy==1.19.1",

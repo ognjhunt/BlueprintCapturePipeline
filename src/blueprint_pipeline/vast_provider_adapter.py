@@ -93,10 +93,10 @@ from .vast_provider_runtime_identity import (
 )
 from .provider_attempt_classification import classify_provider_attempt
 from .provider_worker_endpoint_manifest import write_provider_worker_endpoint_manifest
+from .vast_arena_output_packaging import arena_provider_output_packaging_script
 from .provider_runtime_bundle_contract import (
     PROVIDER_RUNTIME_BUNDLE_KINDS as VAST_PROVIDER_BUNDLE_KINDS,
     provider_runtime_contract_blockers,
-    g1_provider_output_contract,
     provider_command_execute_fallback_allowed,
     wam_registered_alternative_inputs_present,
 )
@@ -388,6 +388,7 @@ def _is_isaac_provider_bundle(provider_bundle_kind: str) -> bool:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "scene_configuration_native_continuation",
+        "embodiment_asset_preparation",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
@@ -404,6 +405,7 @@ def _provider_expected_video_count(provider_bundle_kind: str) -> int:
         "adp009d_isaac",
         "adp009d_articulated_native",
         "scene_configuration_native_continuation",
+        "embodiment_asset_preparation",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
@@ -2698,6 +2700,19 @@ def _blueprint_bundle_preflight(
         entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
         runner_member = "provider_runtime/adp009d_policy_runtime_smoke_worker.py"
         readiness_name = "adp009d_policy_runtime_smoke_manifest.json"
+    elif provider_bundle_kind == "embodiment_asset_preparation":
+        required_entries = {
+            "provider_runtime/run_adp_arena_provider_runtime.sh",
+            "provider_runtime/embodiment_asset_preparation_bundle.v1.json",
+            "provider_runtime/embodiment_asset_preparation_inputs.v1.json",
+            "provider_runtime/blueprint_pipeline/deployment_embodiment_preparation_worker.py",
+            "provider_runtime/blueprint_pipeline/deployment_embodiment_preparation_contract.py",
+            "provider_runtime/native_task_runtime_sources/native_task_runtime_source_packet.v1.json",
+            "provider_runtime/native_task_runtime_sources/native_task_runtime_sources.zip",
+        }
+        entrypoint_member = "provider_runtime/run_adp_arena_provider_runtime.sh"
+        runner_member = "provider_runtime/blueprint_pipeline/deployment_embodiment_preparation_worker.py"
+        readiness_name = "embodiment_asset_preparation_bundle.v1.json"
     elif provider_bundle_kind == "scene_configuration_native_continuation":
         required_entries = {
             "provider_runtime/run_adp_arena_provider_runtime.sh",
@@ -2855,6 +2870,7 @@ def _blueprint_bundle_preflight(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "scene_configuration_native_continuation",
+            "embodiment_asset_preparation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -2935,6 +2951,15 @@ def _blueprint_bundle_preflight(
                     if runner_member in zip_entries:
                         runner_text = archive.read(runner_member).decode("utf-8", errors="replace")
                     retained_render_manifest = read_render_manifest(archive, provider_bundle_kind)
+                    if provider_bundle_kind == "embodiment_asset_preparation":
+                        from .deployment_embodiment_preparation_bundle import MANIFEST_PATH, validate_archive
+                        readiness_member = MANIFEST_PATH
+                        readiness_source = "immutable_bundle_member"
+                        try:
+                            readiness = validate_archive(archive)
+                            readiness["local_bundle_ready_for_remote_staging"] = True
+                        except (KeyError, TypeError, ValueError, OSError):
+                            blockers.append("embodiment_asset_preparation_provider_manifest_invalid")
                     if provider_bundle_kind == "native_task_arena_policy_canary_session":
                         readiness_member = (
                             "provider_runtime/adp_arena_provider_manifest.json"
@@ -3528,6 +3553,7 @@ def _blueprint_bundle_preflight(
                             "provider_runtime_bundle_stale_prefixed_paths_without_resolver"
                         )
         if provider_bundle_kind in {
+            "embodiment_asset_preparation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -3939,6 +3965,7 @@ def _resolve_launch_mode(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "scene_configuration_native_continuation",
+            "embodiment_asset_preparation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -4010,6 +4037,7 @@ def _probe_env(
         "adp009d_isaac",
         "adp009d_articulated_native",
         "scene_configuration_native_continuation",
+        "embodiment_asset_preparation",
         "native_task_arena",
         "native_task_arena_policy_canary_session",
         "native_g1_development_campaign",
@@ -4789,6 +4817,7 @@ def _probe_shell_script(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "scene_configuration_native_continuation",
+            "embodiment_asset_preparation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -4873,72 +4902,8 @@ def _probe_shell_script(
                 )
                 + '"; provider_rc=$?; '
                 "echo BLUEPRINT_VAST_PROVIDER_ENTRYPOINT_EXIT_CODE:$provider_rc; "
-                "$RUNTIME_PY - <<'PY'\n"
-                "import json\n"
-                "import os\n"
-                "import zipfile\n"
-                "from pathlib import Path\n"
-                "output_dir = Path(os.environ.get('BLUEPRINT_ADP_ARENA_OUTPUT_DIR', '/workspace/adp_arena_provider_bundle/runtime_output'))\n"
-                "work_dir = Path(os.environ.get('BLUEPRINT_VAST_WORK_DIR', '/tmp/blueprint_vast_work'))\n"
-                "output_zip = work_dir / 'adp_arena_provider_runtime_output.zip'\n"
-                # The twenty-row policy canary aggregate exceeded the generic
-                # 100 MB cap in V25. Keep this required record with a bounded
-                # allowance; refusing retention must prevent a success upload.
-                "required_result_name = "
-                + repr(
-                    "native_task_arena_policy_canary_session_result.v1.json"
-                    if provider_bundle_kind == "native_task_arena_policy_canary_session"
-                    else g1_provider_output_contract(provider_bundle_kind)[0]
-                )
-                + "\n"
-                "preserve_all_output = "
-                + repr(g1_provider_output_contract(provider_bundle_kind)[1])
-                + "\n"
-                # The pinned checkpoint and SONIC receipts live directly under
-                # models/. Their downloaded weights are execution inputs, not
-                # review evidence, and exceed the bounded output PUT ceiling.
-                "g1_transient_runtime_prefixes = "
-                + repr(
-                    g1_provider_output_contract(provider_bundle_kind)[2]
-                )
-                + "\n"
-                "required_result_max_bytes = 512 * 1024 * 1024\n"
-                "required_evidence_names = "
-                + repr(("native_continuation_stage_output.zip",)
-                       if provider_bundle_kind == "scene_configuration_native_continuation" else ())
-                + "\n"
-                "for name in required_evidence_names:\n"
-                "    evidence = output_dir / name\n"
-                "    if evidence.is_symlink() or not evidence.is_file():\n"
-                "        raise SystemExit('provider_required_evidence_missing_or_not_regular:' + name)\n"
-                "    if not 0 < evidence.stat().st_size <= required_result_max_bytes:\n"
-                "        raise SystemExit('provider_required_evidence_size_invalid:' + name)\n"
-                "if required_result_name is not None:\n"
-                "    required_result = output_dir / required_result_name\n"
-                "    if required_result.is_symlink() or not required_result.is_file():\n"
-                "        raise SystemExit('policy_canary_required_terminal_result_missing_or_not_regular')\n"
-                "    required_result_size = required_result.stat().st_size\n"
-                "    if not 0 < required_result_size <= required_result_max_bytes:\n"
-                "        raise SystemExit('policy_canary_required_terminal_result_size_invalid:%d' % required_result_size)\n"
-                "with zipfile.ZipFile(output_zip, 'w', compression=zipfile.ZIP_DEFLATED) as archive:\n"
-                "    if output_dir.is_dir():\n"
-                "        for path in sorted(output_dir.rglob('*')):\n"
-                "            if path.is_file():\n"
-                "                size = path.stat().st_size\n"
-                "                relative_name = path.relative_to(output_dir).as_posix()\n"
-                "                if relative_name.startswith(g1_transient_runtime_prefixes):\n"
-                "                    continue\n"
-                "                size_limit = required_result_max_bytes if relative_name == required_result_name else 100_000_000\n"
-                "                if preserve_all_output or size <= size_limit:\n"
-                "                    archive.write(path, relative_name)\n"
-                "    else:\n"
-                "        archive.writestr('runtime_output_missing.json', json.dumps({'status': 'blocked', 'blockers': ['runtime_output_directory_missing']}, indent=2))\n"
-                "    if required_result_name is not None:\n"
-                "        if archive.getinfo(required_result_name).file_size != required_result_size:\n"
-                "            raise SystemExit('policy_canary_required_terminal_result_archive_size_mismatch')\n"
-                "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
-                "PY\n"
-                "zip_rc=$?; "
+                + arena_provider_output_packaging_script(provider_bundle_kind)
+                + "zip_rc=$?; "
                 "if [ $zip_rc -ne 0 ]; then echo BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:output_zip_failed:$zip_rc; "
                 'elif blueprint_upload_put "$OUTPUT_PUT_URL" "$WORK_DIR/adp_arena_provider_runtime_output.zip"; then '
                 "blueprint_upload_read_response || exit 86; blueprint_upload_cleanup || exit 86; echo BLUEPRINT_VAST_PROVIDER_OUTPUT_UPLOAD_OK; "
@@ -6826,6 +6791,7 @@ def _container_missing_max_seconds(provider_bundle_kind: str) -> int:
             "adp009d_isaac",
             "adp009d_articulated_native",
             "scene_configuration_native_continuation",
+            "embodiment_asset_preparation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -7429,6 +7395,7 @@ def run_vast_provider_adapter(
             "adp009d_isaac",
             "adp009d_articulated_native",
             "scene_configuration_native_continuation",
+            "embodiment_asset_preparation",
             "native_task_arena",
             "native_task_arena_policy_canary_session",
             "native_g1_development_campaign",
@@ -8684,7 +8651,8 @@ def run_vast_provider_adapter(
                 provider_runtime_environment=provider_runtime_environment,
                 provider_hard_deadline_epoch=(
                     (retention_watchdog_handoff or {}).get("watchdog_deadline_epoch")
-                    if provider_bundle_kind == "native_task_arena_policy_canary_session" else None
+                    if provider_bundle_kind in {"native_task_arena_policy_canary_session",
+                                                "embodiment_asset_preparation"} else None
                 ),
             )
             private_startup_env: dict[str, str] = {}

@@ -25,6 +25,7 @@ PROVIDER_RUNTIME_BUNDLE_KINDS = (
     "adp009d_isaac",
     "adp009d_articulated_native",
     "scene_configuration_native_continuation",
+    "embodiment_asset_preparation",
     "native_task_arena",
     "native_task_arena_policy_canary_session",
     "native_g1_development_campaign",
@@ -56,6 +57,8 @@ def provider_command_execute_fallback_allowed(kind: str, *, configured_override:
 
 def g1_provider_output_contract(kind: str) -> tuple[str | None, bool, tuple[str, ...]]:
     """Retain required review evidence while excluding downloaded execution inputs."""
+    if kind == "embodiment_asset_preparation":
+        return "embodiment_asset_preparation_result.v1.json", True, ()
     if kind == "scene_configuration_native_continuation":
         return "adp009d_native_microcheck.json", True, ()
     if kind == "native_g1_team_policy":
@@ -224,6 +227,17 @@ def provider_runtime_contract_blockers(
             )
         )
         runner_blocker = "provider_runner_missing_adp009d_isaac_runtime_contract"
+    elif provider_bundle_kind == "embodiment_asset_preparation":
+        entrypoint_valid = all(token in entrypoint_text for token in (
+            "/isaac-sim/python.sh", "blueprint_pipeline.deployment_embodiment_preparation_worker",
+            "embodiment_asset_preparation_result.v1.json", "asset_preparation_entrypoint_failed",
+        ))
+        runner_valid = all(token in runner_text for token in (
+            "verify_inputs", "import_source_asset", "bind_prepared_configuration",
+            "robot_asset_import_only", "candidate_policy_queried", "task_executed",
+            "BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH",
+        ))
+        runner_blocker = "provider_runner_missing_embodiment_asset_preparation_contract"
     elif provider_bundle_kind == "scene_configuration_native_continuation":
         entrypoint_valid = (
             "/isaac-sim/python.sh" in entrypoint_text

@@ -1,0 +1,12 @@
+[Unit]
+After=blueprint-operator-door-hold-sweep.service
+Wants=blueprint-operator-door-hold-sweep.service
+Description=Watch explicit public robot asset preparation grants
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-embodiment-preparation.path.json
+
+[Path]
+PathChanged=/var/lib/blueprint/pipeline-control-plane/embodiment-preparation/pending
+Unit=blueprint-embodiment-preparation.service
+
+[Install]
+WantedBy=multi-user.target

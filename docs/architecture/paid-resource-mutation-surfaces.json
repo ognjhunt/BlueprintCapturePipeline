@@ -2,6 +2,7 @@
   "schema_version": "paid_resource_mutation_surfaces.v1",
   "issuer_allowlist": {
     "build_paid_lane_admission": [
+      "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
       "src/blueprint_pipeline/groot_oscar_runpod_canary.py",
       "src/blueprint_pipeline/groot_oscar_runpod_persistent_carrier_campaign.py",
       "src/blueprint_pipeline/groot_oscar_runpod_serverless.py",
@@ -25,6 +26,7 @@
       "src/blueprint_pipeline/teleport_paid_allocator.py"
     ],
     "require_paid_resource_admission": [
+      "src/blueprint_pipeline/deployment_embodiment_preparation_lane.py",
       "src/blueprint_pipeline/g1_microwave_finetune_provider_job.py",
       "src/blueprint_pipeline/groot_oscar_digitalocean_builder.py",
       "src/blueprint_pipeline/groot_oscar_runpod_canary.py",

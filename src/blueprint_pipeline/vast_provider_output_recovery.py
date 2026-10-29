@@ -41,6 +41,7 @@ _REMOTE_ARCHIVE_BY_BUNDLE_KIND = {
     "adp009d_isaac": "/workspace/adp_arena_provider_runtime_output.zip",
     "adp009d_articulated_native": "/workspace/adp_arena_provider_runtime_output.zip",
     "scene_configuration_native_continuation": "/workspace/adp_arena_provider_runtime_output.zip",
+    "embodiment_asset_preparation": "/workspace/adp_arena_provider_runtime_output.zip",
     "native_task_arena": "/workspace/adp_arena_provider_runtime_output.zip",
     "native_task_arena_policy_canary_session": "/workspace/adp_arena_provider_runtime_output.zip",
     "native_g1_development_campaign": "/workspace/adp_arena_provider_runtime_output.zip",

@@ -17,11 +17,11 @@ from blueprint_pipeline.task_evaluation_policy_candidate_registry import validat
 
 def test_default_catalog_records_all_named_candidates_and_only_existing_initial_interfaces():
     value = load_default_catalog()
-    assert len(value["candidates"]) == 26
+    assert len(value["candidates"]) == 84
     enabled = {row["candidate_id"] for row in value["candidates"] if row["eligibility"]["enabled"]}
     assert enabled == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}
     company_rows = [row for row in value["candidates"] if row.get("deployment")]
-    assert len(company_rows) == 16
+    assert len(company_rows) == 74
     assert all(row["eligibility"]["blockers"] for row in company_rows)
     assert {row["deployment"]["configuration_id"] for row in company_rows
             if row["deployment"]["relationship"] == "publisher_demonstrated"} == {
