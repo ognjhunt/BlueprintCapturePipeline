@@ -24,6 +24,10 @@ from .website_preparation_contracts import validate_preparation_proposal as _pro
 PENDING_CODE = "website_control_scene-sponsorship_http_409:website_assessment_preparation_pending"
 SCHEMA = "website_assessment_resume.v1"
 MAX_BYTES = 65_536
+# WebApp's PLACEHOLDER_TASK_SUMMARY: the brief of an upload whose site has not named the job.
+UNNAMED_TASK_DESCRIPTION = "Your site task"
+# The fields a site's naming of its job may change in the same v1 projection.
+NAMED_TASK_FIELDS = frozenset({"context_digest", "description", "task_family", "unresolved", "confirmed", "confirmed_at"})
 
 
 class AssessmentPreparationPending(ValueError):
@@ -35,6 +39,28 @@ class AssessmentPreparationPending(ValueError):
 def _require(condition):
     if not condition:
         raise ValueError("website_assessment_resume_binding_invalid")
+
+
+def _context_upgrade_allowed(retained, context):
+    """Two transitions may replace a retained context; any other change refuses.
+
+    WebApp added task_family to the same v1 projection, which changes the digest
+    without changing any owner or source fact. And since 2026-10-29 a capture
+    prepared before its site named the job follows the brief once it is named
+    (WebApp #1148, #1149): only the task's own fields change. A brief that was
+    already named, or a changed identity, purpose or rights, still refuses.
+    """
+    def same(ignored):
+        return ({key: value for key, value in retained.items() if key not in ignored}
+                == {key: value for key, value in context.items() if key not in ignored})
+
+    def unnamed(value):
+        return str(value.get("description") or "").strip() in {"", UNNAMED_TASK_DESCRIPTION}
+    family_added = ("task_family" not in retained and isinstance(context.get("task_family"), str)
+                    and bool(context["task_family"].strip()) and same({"context_digest", "task_family"}))
+    task_named = (retained.get("confirmed") is False and unnamed(retained) and not unnamed(context)
+                  and same(NAMED_TASK_FIELDS))
+    return family_added or task_named
 
 
 def _unique(pairs):
@@ -138,14 +164,7 @@ def admit_browser_preparation(listener, *, payload, handoff, capture_root, obser
         retained = context_reader.validate_website_task_context(_read(path), request_id=observation["request_id"],
             scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
         if retained["context_digest"] != context["context_digest"]:
-            # WebApp added this routing field to the same v1 projection. It
-            # changes the digest without changing any owner/source fact. Only
-            # that additive transition may upgrade a retained context; a brief,
-            # rights, confirmation or existing-family change still refuses.
-            _require("task_family" not in retained and isinstance(context.get("task_family"), str)
-                and bool(context["task_family"].strip())
-                and {key: value for key, value in retained.items() if key != "context_digest"}
-                == {key: value for key, value in context.items() if key not in {"context_digest", "task_family"}})
+            _require(_context_upgrade_allowed(retained, context))
             context_reader.validate_website_task_context(context, request_id=observation["request_id"],
                 scene_id=handoff.scene_id, capture_id=handoff.capture_id, purpose="scene_preparation")
             from .launch_immutable_input_writer import write_exclusive_private_bytes
