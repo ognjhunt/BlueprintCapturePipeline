@@ -19,6 +19,7 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .task_profile_contracts import task_profile_for
 from .website_atlas_preview_store import SCHEMA as JOB_SCHEMA
+from .website_task_context_contracts import validate_website_task_context
 
 
 def _read(root: Path, relative: str) -> dict[str, Any]:
@@ -39,6 +40,8 @@ def _read(root: Path, relative: str) -> dict[str, Any]:
 
 
 def _source_binding(plan, task_context, source_video):
+    validate_website_task_context(task_context, request_id=task_context.get("request_id"),
+        scene_id=task_context.get("scene_id"), capture_id=task_context.get("capture_id"), purpose="scene_preparation")
     context_digest = canonical_digest(task_context, digest_field="context_digest")
     source_digest = _sha256_file(source_video)
     raw_context_hash = hashlib.sha256(json.dumps(dict(task_context), sort_keys=True,

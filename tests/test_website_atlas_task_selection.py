@@ -29,7 +29,8 @@ def retained(tmp_path):
     source.parent.mkdir(parents=True)
     source.write_bytes(b"retained-source-fixture")
     video_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-    context = {"request_id": "r1", "scene_id": "s1", "capture_id": "c1",
+    context = {"schema_version": "website_site_task_context.v1", "purpose": "scene_preparation",
+               "confirmed": False, "confirmed_at": None, "request_id": "r1", "scene_id": "s1", "capture_id": "c1",
                "task_family": "rigid_pick_and_place", "description": "Move one cardboard box on its shelf."}
     context["context_digest"] = canonical_digest(context)
     target = {"target_id": "cardboard_box_candidate", "semantic_label": "cardboard box on shelf",
@@ -244,4 +245,17 @@ def test_withdrawal_during_selection_refuses_before_dispatch(retained, monkeypat
         return value
     monkeypatch.setattr(module, "_read", read)
     with pytest.raises(ValueError, match="snapshot_changed"):
+        _resolve(retained)
+
+
+@pytest.mark.parametrize("fault", ["purpose", "confirmation"])
+def test_reuse_retains_the_existing_task_context_validation(retained, fault):
+    if fault == "purpose":
+        retained.context.pop("purpose")
+    else:
+        retained.context["confirmed_at"] = "2026-10-28T00:00:00Z"
+    retained.context["context_digest"] = canonical_digest(retained.context, digest_field="context_digest")
+    retained.plan["task_context_sha256"] = hashlib.sha256(json.dumps(retained.context, sort_keys=True,
+                                                                   separators=(",", ":")).encode()).hexdigest()
+    with pytest.raises(ValueError, match="purpose_mismatch|confirmation_invalid"):
         _resolve(retained)
