@@ -214,7 +214,7 @@ def _selected_handoff_environment(config: DoorConfig, request: dict[str, Any]) -
 
 def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
     writable = str(Path(config.spool_root) / "results")
-    if request["mode"] == "dispatch":
+    if request["mode"] in {"dispatch", "preparation-resume"}:
         writable += " /var/lib/blueprint"
     elif request["mode"] == "atlas-retry":
         # Only the existing selected capture's Atlas job may be requeued.
