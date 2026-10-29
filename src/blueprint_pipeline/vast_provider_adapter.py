@@ -3008,16 +3008,9 @@ def _blueprint_bundle_preflight(
                                 and entry.endswith(".py")
                                 and not entry.endswith("/__init__.py")
                             }
-                            expected_module_paths = {
-                                f"provider_runtime/blueprint_pipeline/{name}"
-                                for name in expected_modules
-                            }
-                            if execution_mode == "controlled_policy":
-                                expected_module_paths.add(
-                                    "provider_runtime/blueprint_pipeline/core/security_controls.py"
-                                )
-                            if execution_mode in {"policy", "policy_diagnostic"}:
-                                expected_module_paths.update("provider_runtime/blueprint_pipeline/core/" + name for name in ("common.py", "security_controls.py"))
+                            from .native_task_arena_execution_contract import native_task_arena_runtime_archive_paths
+                            expected_module_paths, package_paths = native_task_arena_runtime_archive_paths(execution_mode, expected_modules)
+                            required_entries.update(package_paths)
                             if (
                                 native_manifest.get("schema_version")
                                 != "native_task_arena_provider_bundle.v1"
