@@ -134,7 +134,7 @@ def prepared_source_queue(tmp_path, monkeypatch, *, revisions=1):
     from blueprint_pipeline import task_evaluation_configured_controls_progression_worker as completed_scene
     from blueprint_pipeline import team_candidate_quick10_registry as registry
     from blueprint_pipeline import team_scene_packet_worker as packets
-    from tests.test_beta_policy_screening_plan import inputs, scene
+    from tests.test_beta_policy_screening_plan import admitted as admit_candidate, inputs, scene
 
     source, context = source_world(tmp_path / "partition", monkeypatch)
     capture = tmp_path / "partition/scenes/site-job1/captures/walkthrough-job1"
@@ -167,6 +167,12 @@ def prepared_source_queue(tmp_path, monkeypatch, *, revisions=1):
     def planning_inputs(**kwargs):
         planning_calls.append(deepcopy(kwargs))
         catalog, admitted, quotes = inputs()
+        # This worker fixture supplies every enabled runtime, including Cosmos;
+        # the shared pure-planner fixture deliberately supplies only two.
+        for candidate in catalog["candidates"]:
+            candidate_id = candidate["candidate_id"]
+            if candidate["eligibility"]["enabled"] and candidate_id not in admitted["candidate_bindings"]:
+                admitted["candidate_bindings"][candidate_id], quotes[candidate_id] = admit_candidate(candidate)
         assert kwargs["catalog"] == catalog
         assert kwargs["profile"] == profile and kwargs["capture_root"] == capture
         facts = {**scene(), **kwargs["source"], "site_id": context["scene_id"], "scene_id": context["scene_id"]}

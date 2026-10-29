@@ -725,6 +725,10 @@ def main(argv: list[str] | None = None) -> int:
                         metavar="CANDIDATE=PATH", help="Repeat for each candidate needing a local checkpoint inventory.")
     parser.add_argument("--family-control-result", dest="family_control_result_path",
                         help="Optional retained native-family control result; existing receipt validation applies.")
+    parser.add_argument("--team-robot-model-path",
+                        help="Prepared robot model matching the sealed team binding; stages its verified USD closure.")
+    parser.add_argument("--minimum-gpu-memory-gb", type=float,
+                        help="Candidate runtime memory requirement, retained for allocator admission.")
     parser.add_argument("--implementation-commit", required=True)
     parser.add_argument("--hotfix-overlay")
     parser.add_argument("--generated-at")
@@ -764,6 +768,8 @@ def main(argv: list[str] | None = None) -> int:
         execution_spec_paths=args.execution_spec_paths,
         checkpoint_inventory_paths=args.checkpoint_inventory_paths,
         family_control_result_path=args.family_control_result_path,
+        team_robot_model_path=args.team_robot_model_path,
+        minimum_gpu_memory_gb=args.minimum_gpu_memory_gb,
         implementation_commit=args.implementation_commit,
         hotfix_overlay_path=args.hotfix_overlay,
         generated_at=args.generated_at,

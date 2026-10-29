@@ -135,7 +135,7 @@
     "status": "configured_not_executed",
     "embodiment_id": "universal_robots_ur5e",
     "request_digest": "sha256:96f1e3d7021fc9796a9b70cd85029de061ee8564888a5eab3f6a6e44c81756f1",
-    "catalog_digest": "sha256:59155484465c65490e0e7f7d4a1be00bed7bd1761934bffe78ba04547955b2bf",
+    "catalog_digest": "sha256:92d950fba8dedd06f0a59714f52a59802b33a5784570278a5a32594ba6af0f5e",
     "embodiment_digest": "sha256:f8e48b3313bb3ed16f46226f0905cf49bc19f961c0eca04aaef5ee5b1d426daa",
     "model": {
       "sha256": "sha256:78f8fd0d9a5bd747bd8c8d40886b45d0d0392e78147052ca4d220c9064ca8caf",
@@ -154,6 +154,6 @@
     ],
     "execution_authorized": false,
     "provider_mutation_performed": false,
-    "preflight_digest": "sha256:bdf6061cfa443d1e6fcaaca09e69c32d17395c35a95d5467da72a00b4d1bfc53"
+    "preflight_digest": "sha256:ba78bc3da78bfe3f14ac0a4986491005761453092f5833f37a59ce933fdd972f"
   }
 }
