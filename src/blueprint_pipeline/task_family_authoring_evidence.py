@@ -139,7 +139,7 @@ def _verify_inputs(manifest, native, outputs):
         "source_binding_changed")
     registration = _read(manifest["registration_evidence"], "registration", as_json=True)
     if registration.get("schema_version") == "website_metric_layout_registration.v1":
-        from .task_family_layout_authoring import verify_metric_layout_registration
+        from .task_family_metric_registration import verify_metric_layout_registration
         verify_metric_layout_registration(registration)
     _require(registration.get("frame_registration") == binding["frame_registration"]
              and registration.get("source_video_digest") == manifest.get("source_video_digest"), "registration_changed")

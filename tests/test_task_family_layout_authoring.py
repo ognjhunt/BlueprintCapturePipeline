@@ -1,5 +1,6 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/task_family_layout_authoring.py
+#   src/blueprint_pipeline/task_family_metric_registration.py
 #   src/blueprint_pipeline/task_family_preparation.py
 #   src/blueprint_pipeline/task_family_button_authoring.py
 #   src/blueprint_pipeline/task_family_authoring_evidence.py
@@ -9,6 +10,8 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pathlib import Path
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -275,6 +278,38 @@ def test_registration_replay_refuses_a_resealed_duplicate_source_frame_pool(tmp_
     receipt["registration_digest"] = canonical_digest(receipt, digest_field="registration_digest")
     with pytest.raises(ValueError, match="authoring_evidence_frames_invalid"):
         verify_metric_layout_registration(receipt)
+
+
+def test_metric_registration_readback_reopens_originals_without_authoring_entrypoints(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_family_layout_authoring import verify_metric_layout_registration
+    from blueprint_pipeline.task_family_metric_registration import verify_metric_layout_registration as shared_verify
+
+    assert verify_metric_layout_registration is shared_verify
+    args, _sources = _native_records(tmp_path, monkeypatch)
+    masks = emit_registered_task_layout(**{key: args[key] for key in (
+        'task_context', 'task_masks', 'source_geometry', 'base_scene', 'output_root')})
+    path = masks['registered_layout']['registration_evidence']['path']
+    script = '''
+import importlib.abc,json,socket,sys
+class ProducerForbidden(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        assert fullname not in {
+            'blueprint_pipeline.task_family_layout_authoring',
+            'blueprint_pipeline.task_family_button_authoring',
+            'blueprint_pipeline.task_object_authoring_contracts',
+            'blueprint_pipeline.website_task_masks',
+            'blueprint_pipeline.paid_resource_allocator',
+        }, 'readback attempted a producer import'
+sys.meta_path.insert(0,ProducerForbidden())
+def forbidden(*args,**kwargs):
+    raise AssertionError('readback attempted network')
+socket.socket.connect=forbidden
+from blueprint_pipeline.task_family_metric_registration import verify_metric_layout_registration
+with open(sys.argv[1]) as source:
+    verify_metric_layout_registration(json.load(source))
+'''
+    done = subprocess.run([sys.executable, '-c', script, path], capture_output=True, text=True, timeout=15)
+    assert done.returncode == 0, done.stderr
 
 
 def test_source_frame_pool_preserves_absolute_and_utf8_identity_boundaries():
