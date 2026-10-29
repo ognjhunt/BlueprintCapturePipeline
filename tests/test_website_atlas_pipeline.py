@@ -533,10 +533,24 @@ def test_a_job_stopped_by_a_lapsed_price_review_resumes_once_the_owner_renews_it
     with pytest.raises(RuntimeError, match="scene review bought"):
         pipeline.run_atlas_pipeline(**job)
     assert bought[-1]["reviewed_by"] == "second owner"
+    # A raised review cap is adopted, and the job keeps the cap it was admitted under
+    # so the planner prices every review under that first.
     live["policy"] = {**live["policy"], "maximum_review_cost_usd": .3}
-    with pytest.raises(ValueError, match="atlas_runtime_authority_or_policy_changed"):
+    with pytest.raises(RuntimeError, match="scene review bought"):
         pipeline.run_atlas_pipeline(**job)
-    assert len(bought) == 2
+    saved = json.loads((tmp_path / "job/configuration.json").read_text())
+    assert saved["policy"]["maximum_review_cost_usd"] == .3
+    assert saved[pipeline.REVIEW_CAPS] == [.2, .3]
+    # A second raise keeps every cap the job has run under.
+    live["policy"] = {**live["policy"], "maximum_review_cost_usd": .4}
+    with pytest.raises(RuntimeError, match="scene review bought"):
+        pipeline.run_atlas_pipeline(**job)
+    assert json.loads((tmp_path / "job/configuration.json").read_text())[pipeline.REVIEW_CAPS] == [.2, .3, .4]
+    for changed in ({"maximum_review_cost_usd": .3}, {"pose_input_cost_usd": .02}):
+        live["policy"] = {**live["policy"], "maximum_review_cost_usd": .4, **changed}
+        with pytest.raises(ValueError, match="atlas_runtime_authority_or_policy_changed"):
+            pipeline.run_atlas_pipeline(**job)
+    assert len(bought) == 4
 
 
 def test_every_first_run_densifies_the_still_interval_within_the_review_image_budget(tmp_path, monkeypatch):

@@ -841,10 +841,28 @@ def _completed_legacy_scene_review(output_root: Path, binding: dict, schema):
     return None
 
 
-def _review_attempt(*, survey_path: Path, task_context, configuration, output_root: Path, invoker,
-                    release_blockers, feedback, completion, scaling, recovery, truncation_retry,
-                    validation_repair=None, failed_output_recovery=None, source_review_recovery=None,
-                    carried_reserved_usd=0.0):
+def _review_attempt(*, configuration, **attempt):
+    """Price under each earlier cap the job ran under, lowest first, then the current one.
+
+    Each receipt binds the cap it was priced under, so a review bought before a raise is
+    found again rather than bought twice. Pricing refuses before any spend is reserved.
+    """
+    from .website_atlas_pipeline import REVIEW_CAPS
+    cap = configuration["policy"]["maximum_review_cost_usd"]
+    for earlier in (value for value in configuration.get(REVIEW_CAPS, ()) if value < cap):
+        try:
+            return _bound_review_attempt(configuration={**configuration, "policy": {
+                **configuration["policy"], "maximum_review_cost_usd": earlier}}, **attempt)
+        except ValueError as error:
+            if str(error) != "atlas_scene_planner_token_budget_exceeded":
+                raise
+    return _bound_review_attempt(configuration=configuration, **attempt)
+
+
+def _bound_review_attempt(*, survey_path: Path, task_context, configuration, output_root: Path, invoker,
+                          release_blockers, feedback, completion, scaling, recovery, truncation_retry,
+                          validation_repair=None, failed_output_recovery=None, source_review_recovery=None,
+                          carried_reserved_usd=0.0):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, preparation_webapp_request
     from .atlas_preparation_runtime import preparation_source_checkpoint

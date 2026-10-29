@@ -114,9 +114,7 @@ def run_observed_room(*, output_root, source_digest, task_context, max_polls, ch
         raise ValueError('atlas_observed_room_source_changed')
     current = pipeline.load_configuration(task_context, source_digest, create=False)
     original = _read(output_root / 'configuration.json')
-    if (current['authority'] != original['authority'] or any(current['policy'].get(key) != value
-            for key, value in original['policy'].items() if key not in pipeline._REVIEW_RECORD)):
-        raise ValueError('atlas_runtime_authority_or_policy_changed')
+    current = {**current, **pipeline.resumed_policy(original, current)}
     atlas_api_config()
     os.environ[ATLAS_PROVIDER_RETENTION_ENV] = current['authority']['provider_retention']
     check = checkpoint or (lambda _stage: None)
