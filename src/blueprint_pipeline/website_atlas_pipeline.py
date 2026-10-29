@@ -29,27 +29,26 @@ from .atlas_preparation_context import requires_task_semantic_analysis
 
 #: Who read the rate card, and when. Renewing it re-confirms the same prices.
 _REVIEW_RECORD = ("rate_card_reference", "reviewed_by", "reviewed_on")
-#: The per-review cap a job was admitted under. A cap raised later serves only the reviews this
-#: one refuses, so a review bought before the raise is found again under its own receipt.
-ADMITTED_REVIEW_CAP = "admitted_maximum_review_cost_usd"
+#: Every per-review cap a job has run under, lowest first. Each receipt binds the cap it was
+#: priced under, so a review bought under any of them is found again rather than bought twice.
+REVIEW_CAPS = "review_caps_usd"
 
 
 def resumed_policy(stored, current):
     """The policy fields a job that already bought work under ``stored`` takes from ``current``.
 
     The authority and every price must be unchanged; the review record may be renewed. The
-    per-review cap may rise but never fall below the admitted one: the authority's total still
-    bounds what the job can spend.
+    per-review cap may rise but never fall below one the job ran under: the authority's total
+    still bounds what the job can spend.
     """
-    admitted = stored.get(ADMITTED_REVIEW_CAP, stored["policy"]["maximum_review_cost_usd"])
-    if (stored["authority"] != current["authority"]
-            or current["policy"]["maximum_review_cost_usd"] < admitted
+    cap = current["policy"]["maximum_review_cost_usd"]
+    caps = stored.get(REVIEW_CAPS, [stored["policy"]["maximum_review_cost_usd"]])
+    if (stored["authority"] != current["authority"] or cap < caps[-1]
             or any(current["policy"].get(key) != value for key, value in stored["policy"].items()
                    if key not in (*_REVIEW_RECORD, "maximum_review_cost_usd"))):
         raise ValueError("atlas_runtime_authority_or_policy_changed")
-    if ADMITTED_REVIEW_CAP in stored or current["policy"]["maximum_review_cost_usd"] != admitted:
-        return {"policy": current["policy"], ADMITTED_REVIEW_CAP: admitted}
-    return {"policy": current["policy"]}
+    caps = [*caps, cap] if cap > caps[-1] else caps
+    return {"policy": current["policy"], REVIEW_CAPS: caps} if len(caps) > 1 else {"policy": current["policy"]}
 
 
 def _require_current_price_review(policy) -> None:
