@@ -84,17 +84,26 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                     raise ValueError('beta_screening_family_source_scene_mismatch')
                 campaign_id = 'screening-' + canonical_digest({'source': source,
                     'catalog_digest': catalog['catalog_digest'], 'protocol': 'beta_policy_screening.v1'})[7:39]
-                existing = root / 'plans' / (campaign_id + '.json')
-                if existing.exists():
-                    plan = _read(existing)
-                else:
+                from .beta_policy_screening_refresh import (
+                    active_campaign_id, maybe_refresh_campaign, retain_planning_bindings,
+                )
+                active_id = active_campaign_id(root, campaign_id)
+                existing = root / 'plans' / (active_id + '.json')
+
+                def current_plan(_previous, next_id, inputs_dir):
                     planning = build_planning_inputs(catalog=catalog, profile=profile,
                         capture_root=Path(profile['capture_root']), source=source,
-                        inputs_dir=root / 'inputs' / campaign_id)
-                    plan = build_screening_plan(catalog, planning['scene'], campaign_id=campaign_id,
+                        inputs_dir=inputs_dir)
+                    if _previous is None:
+                        retain_planning_bindings(root, next_id, capabilities=planning['capabilities'],
+                            expectations=planning.get('refresh_expectations'))
+                    return build_screening_plan(catalog, planning['scene'], campaign_id=next_id,
                         capabilities=planning['capabilities'], cost_quotes=planning['cost_quotes'],
                         candidate_ids=planning.get('candidate_ids'))
-                outcome.update(enqueue_screening_campaign(plan, queue_root=root))
+                if existing.exists():
+                    outcome.update(maybe_refresh_campaign(queue_root=root, base_campaign_id=campaign_id, build=current_plan))
+                else:
+                    outcome.update(enqueue_screening_campaign(current_plan(None, campaign_id, root / 'inputs' / campaign_id), queue_root=root))
             except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
                 code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else ''
                 outcome['blockers'] = [code if re.fullmatch(r'[a-z][a-z0-9_:,-]{0,199}', code)

@@ -155,7 +155,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     templates = {} if family else _native_templates(repo=repo, scene_plan={**scene_plan,
         "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
         contract=inputs["task_success_contract"], commit=commit)
-    bindings, quotes = {}, {}
+    bindings, quotes, expectations = {}, {}, {}
     selection = scene_plan.get("policy_selection") if family else None
     if selection is not None:
         from .task_family_dispatch_contracts import validate_policy_selection
@@ -211,7 +211,6 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             hosted_settings = {name: override[name] for name in HOSTED_FIELDS if name in override}
             hosted_settings["hosted_http_request_limit"] = request_limit(spec, 10)
             try:
-                validate_hosted_delivery(spec, hosted_settings, episodes=10)
                 cap = Decimal(hosted_settings["provider_hard_cap_usd"])
             except (ValueError, OSError, KeyError, TypeError, ArithmeticError):
                 continue
@@ -229,9 +228,20 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                       "hard_ttl_seconds": ttl, "implementation_commit": commit, **hosted_settings}
         if profile.get("machine_avoidlist_path"):
             descriptor["machine_avoidlist_path"] = profile["machine_avoidlist_path"]
-        descriptor = validate_execution_descriptor(descriptor, candidate_id=key,
-                                                    configuration_digest=configured["configuration_digest"])
+        try:
+            descriptor = validate_execution_descriptor(descriptor, candidate_id=key,
+                                                        configuration_digest=configured["configuration_digest"])
+        except (ValueError, TypeError, KeyError, ArithmeticError):
+            continue
+        # A missing credential is availability, never permission to substitute
+        # another runtime later. Retain the already pinned descriptor separately
+        # from executable capabilities; it carries no credential contents.
+        expectations[key] = descriptor
         if hosted:
+            try:
+                validate_hosted_delivery(spec, hosted_settings, episodes=10)
+            except (ValueError, OSError, KeyError, TypeError, ArithmeticError):
+                continue
             credentials.extend(configured["eligibility"]["requires_credentials"])
         total_cap = cap + Decimal(hosted_settings.get("hosted_inference_maximum_usd", "0"))
         if total_cap > 15:
@@ -250,4 +260,5 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         quotes[key] = quote
     return {"scene": scene, **({"candidate_ids": [selection["candidate_id"]]} if selection is not None else {}),
             "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials},
+            "refresh_expectations": expectations,
             "cost_quotes": quotes}

@@ -6,10 +6,16 @@ and sealed provider preflight without allocating or claiming GPU evidence.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
+import subprocess
+import time
+from types import SimpleNamespace
 import zipfile
+
+import pytest
 
 from blueprint_pipeline import beta_policy_screening_launch as launch
 from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog
@@ -33,7 +39,7 @@ from tests.test_team_scene_packet import _compile, _scene
 def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_probe(tmp_path, monkeypatch):
     from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
     from blueprint_pipeline import beta_policy_screening_worker as worker
-    from blueprint_pipeline import team_candidate_quick10_launch as process
+    from blueprint_pipeline import allocator_invocation
 
     scene = _scene(tmp_path, strategy="pick_and_place")
     # A top grasp clears the table; the generic relocation fixture's side
@@ -89,21 +95,61 @@ def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_pro
     assert plan["maximum_planned_cost_usd"] == "8.00"
     spawned = []
 
-    def spawn(argv, **_):
-        spawned.append(argv)
+    def spawn(invocation_path, **_):
+        invocation = allocator_invocation.manifest(invocation_path)
+        spawned.append(invocation["argv"])
         return os.getpid()  # Retained live identity without spawning a provider process.
 
     def capacity(**kwargs):
         launch._validate_prepared(kwargs["plan"], kwargs["candidate"], kwargs["attempt_dir"], kwargs["prepared"])
         return {"capacity_available": True, "blockers": []}
 
-    monkeypatch.setattr(process, "_start_allocator", spawn)
-    monkeypatch.setattr(worker, "require_current_source", lambda *_, **__: {})
+    monkeypatch.setattr(allocator_invocation, "start_invocation", spawn)
+    # Keep the actual control request signing and exact response validation.
+    # The service wire checks a fixture-only token and echoes only that
+    # invocation's binding; it grants no provider execution in this test.
+    from blueprint_pipeline import safe_outbound_http, beta_policy_screening_control_contracts
+    from tests.test_beta_policy_screening_control_contracts import response
+
+    now = int(time.time())
+    deadline = now + 3600
+    monkeypatch.setattr(beta_policy_screening_control_contracts.time, "time", lambda: now)
+    monkeypatch.setattr(worker, "require_current_source", lambda *_, **__: {"execution_deadline_at_ms": deadline * 1000})
+    fixture_token = "hermetic-rigid-controller-token"
+    token_file = tmp_path / "fixture-controller-token"
+    token_file.write_text(fixture_token)
+    token_file.chmod(0o600)
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN_FILE", str(token_file))
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://fixture.invalid/api/internal/pipeline/sync")
+    control_requests = []
+
+    def signed_control(url, **kwargs):
+        assert url == "https://fixture.invalid/api/internal/pipeline/beta-policy-screening-runs/rigid-campaign/execution-control"
+        assert kwargs["method"] == "POST"
+        body, headers = kwargs["data"], kwargs["headers"]
+        stamp = headers["X-Blueprint-Pipeline-Timestamp"]
+        expected = hmac.new(fixture_token.encode(), stamp.encode() + b"." + body, hashlib.sha256).hexdigest()
+        assert hmac.compare_digest(headers["X-Blueprint-Pipeline-Signature"], "sha256=" + expected)
+        payload = json.loads(body)
+        assert payload["schema_version"] == "blueprint.beta_policy_screening_execution_control_request.v1"
+        assert payload["execution_deadline_at_ms"] == deadline * 1000
+        scope = {key: payload[key] for key in beta_policy_screening_control_contracts.BINDING_FIELDS}
+        control_requests.append(scope)
+        return SimpleNamespace(body=json.dumps(response(scope=scope, now=now, deadline=deadline)).encode())
+
+    monkeypatch.setattr(safe_outbound_http, "request", signed_control)
     monkeypatch.setattr(launch, "preflight_candidate_capacity", capacity)
+    # Replace this module's subprocess binding, rather than the shared Python
+    # module: source-commit reads and sealed-bundle CPU preflight still run,
+    # while an obsolete spawn seam can never launch an allocator child.
+    monkeypatch.setattr(allocator_invocation, "subprocess", SimpleNamespace(
+        Popen=lambda *_, **__: pytest.fail("fixture attempted a real allocator subprocess"),
+        STDOUT=subprocess.STDOUT))
     queue = tmp_path / "screening-queue"
     coordinator.enqueue_screening_campaign(plan, queue_root=queue)
     progressed = coordinator.process_screening_queue(queue_root=queue, max_launches=2, require_publication_ack=False)
     assert progressed["launches_started"] == 2 and len(spawned) == 2
+    assert {request["candidate_id"] for request in control_requests} == {"pi05_droid", "groot_n17_droid"}
     ledger = coordinator._ledger(queue)
     state = ledger["campaigns"][plan["campaign_id"]]
     assert state["site_budget"]["reserved_usd"] == "8"
@@ -112,6 +158,12 @@ def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_pro
         assert row["status"] == "running"
         attempt = queue / "attempts" / row["attempt"]["attempt_id"]
         prepared = row["attempt"]["prepared"]
+        observed = next(request for request in control_requests if request["candidate_id"] == candidate["candidate_id"])
+        authority = launch._read(Path(prepared["authority"]["path"]))
+        assert observed["source"] == source and observed["site_id"] == plan["site_id"]
+        assert observed["plan_digest"] == plan["plan_digest"] and observed["configuration_digest"] == candidate["configuration_digest"]
+        assert observed["prepared_digest"] == prepared["prepared_digest"]
+        assert observed["authority_digest"] == authority["authority_digest"] and observed["resource_name"] == authority["resource_name"]
         assert prepared["argv"][:3] == ["gpu-canary", "--provider", "vast"]
         assert launch._read(attempt / "static_preflight.json")["status"] == "passed"
         bundle = launch._read(Path(prepared["bundle_receipt"]["path"]))

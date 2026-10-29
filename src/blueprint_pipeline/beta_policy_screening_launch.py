@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -287,10 +288,11 @@ def preflight_candidate_capacity(*, plan: Mapping[str, Any], candidate: Mapping[
 def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,
                      prepared: Mapping[str, Any]) -> dict[str, Any]:
     """Consume a durable local launch intent exactly once before spawning."""
-    from .team_candidate_quick10_launch import _process_start_ticks, _start_allocator
+    from .team_candidate_quick10_launch import _process_start_ticks
+    from .allocator_invocation import retain_invocation, start_invocation
     root = Path(attempt_dir).resolve()
     _validate_prepared(plan, candidate, root, prepared)
-    if (root / "allocator_launch_intent.json").exists():
+    if (root / "allocator_launch_intent.json").exists() or (root / "invocation/manifest.json").exists():
         return reconcile_candidate(plan=plan, candidate=candidate, attempt_dir=root, prepared=prepared)
     try:
         _check_quote(plan, candidate)
@@ -305,7 +307,29 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
             validate_hosted_delivery(_read(_bound_path(execution["policy_execution_spec"])), execution,
                                      episodes=candidate["episode_count"])
         from .beta_policy_screening_worker import require_current_source
-        require_current_source(plan["source"], site_id=plan["site_id"])
+        current_source = require_current_source(plan["source"], site_id=plan["site_id"])
+        authority = _read(_bound_path(prepared["authority"]))
+        bundle = _read(_bound_path(prepared["bundle_receipt"]))
+        invocation_binding = {
+            "prepared_digest": prepared["prepared_digest"], "plan_digest": plan["plan_digest"],
+            "candidate_id": candidate["candidate_id"], "configuration_digest": candidate["configuration_digest"],
+            "authority_digest": authority["authority_digest"], "resource_name": authority["resource_name"],
+            "bundle_sha256": bundle["bundle_sha256"], "provider": "vast", "attempt_id": root.name}
+        source_control_binding = {key: invocation_binding[key] for key in (
+            "prepared_digest", "plan_digest", "candidate_id", "configuration_digest", "authority_digest",
+            "resource_name", "attempt_id")}
+        source_control_binding.update(campaign_id=plan["campaign_id"], site_id=plan["site_id"],
+            source=dict(plan["source"]), invocation_id=canonical_digest(invocation_binding))
+        from .beta_policy_screening_control import _deadline
+        from .beta_policy_screening_control_transport import request_control
+        preflight_control = request_control(binding=source_control_binding,
+                                            execution_deadline_epoch=_deadline(current_source))
+        _write(root / "control_preflight" / (preflight_control["control_digest"][7:] + ".json"), preflight_control)
+        if preflight_control["status"] != "current":
+            raise ValueError("beta_screening_current_source_revoked_before_spawn")
+        # This authenticated existing-source contract supplies the actual
+        # intake expiry. A missing expiry can never become a four-hour default.
+        deadline = preflight_control["execution_deadline_at_ms"] / 1000
     except (ValueError, OSError, RuntimeError) as exc:
         # Claim the same exclusive intent slot as a launch, so a concurrent
         # caller cannot start after this refusal releases its reservation.
@@ -318,12 +342,21 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         return {"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
                 "no_allocation_proven": True, "blockers": [refusal["blocker"]]}
     try:
-        _write(root / "allocator_launch_intent.json", {"prepared_digest": prepared["prepared_digest"]})
+        argv = list(prepared["argv"])
+        if deadline is not None:
+            argv += ["--team-candidate-execution-deadline-epoch", str(deadline)]
+        invocation = retain_invocation(attempt_dir=root, argv=argv, control={
+            "site_id": plan["site_id"], "source": plan["source"],
+            "prepared_digest": prepared["prepared_digest"], "initial_observed_at_epoch": time.time(),
+            "execution_deadline_epoch": deadline, "source_control_binding": source_control_binding,
+        }, binding=invocation_binding)
+        _write(root / "allocator_launch_intent.json", {"prepared_digest": prepared["prepared_digest"],
+                                                     "invocation_manifest": str(invocation)})
     except FileExistsError:
         return reconcile_candidate(plan=plan, candidate=candidate, attempt_dir=root, prepared=prepared)
-    # A crash anywhere after intent remains uncertain. Neither a dead PID nor
-    # global provider zero proves that another create cannot still occur.
-    pid = _start_allocator(prepared["argv"], log_path=root / "allocator.log")
+    # The named invocation owns a durable lock through provider create. A
+    # delayed process must honor its no-create fence before it can allocate.
+    pid = start_invocation(invocation, log_path=root / "allocator.log")
     process = {"pid": pid, "start_ticks": _process_start_ticks(pid),
                "prepared_digest": prepared["prepared_digest"]}
     _write(root / "allocator_process.json", process)
@@ -343,13 +376,35 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
     root = Path(attempt_dir).resolve()
     _validate_prepared(plan, candidate, root, prepared)
     intent_path = root / "allocator_launch_intent.json"
+    intent: dict[str, Any] = {}
     if intent_path.exists():
         intent = _read(intent_path)
+        if intent.get("prepared_digest") != prepared.get("prepared_digest"):
+            raise ValueError("beta_screening_launch_intent_binding_changed")
         if (intent.get("status") == "refused_before_spawn"
                 and intent.get("prepared_digest") == prepared["prepared_digest"]):
             return {"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
                     "no_allocation_proven": True, "blockers": [intent["blocker"]]}
     result_path = root / "allocator_result.json"
+    stopped = None
+    invocation_path = root / "invocation/manifest.json"
+    if invocation_path.exists() and intent.get("invocation_manifest") in {None, str(invocation_path)}:
+        from .allocator_invocation import manifest, stop_invocation
+        from .beta_policy_screening_control import observe
+        value = manifest(invocation_path)
+        if value.get("control") is not None:
+            control_state = observe(control=value["control"], root=Path(value["root"]))
+            if control_state.get("new_processing_authorized") is False:
+                stopped = control_state
+                if not result_path.exists() and (Path(value["root"]) / "started.json").exists():
+                    signal_path = Path(value["root"]) / "stop_signalled.json"
+                    if not signal_path.exists():
+                        try:
+                            stop_invocation(invocation_path)
+                        except (OSError, ValueError):
+                            pass  # Never signal an unverified/reused pid; reconcile its durable job.
+                        else:
+                            _write(signal_path, {"reason": stopped["reason"], "prepared_digest": prepared["prepared_digest"]})
     if result_path.is_file():
         adapter = _read(result_path)
         if proves_no_provider_allocation(adapter):
@@ -376,6 +431,10 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             return {"status": "reconciliation_required", "provider_zero_verified": False,
                     "no_allocation_proven": False,
                     "blockers": absence.get("blockers") or ["beta_screening_scoped_closeout_unproven"]}
+        if stopped is not None:
+            return {"status": "blocked", "provider_allocation_performed": True,
+                    "provider_zero_verified": True, "no_allocation_proven": False,
+                    "applicability": "historical_only", "blockers": [stopped["reason"]]}
         try:
             native_path = Path(str(adapter.get("native_control_result_path") or ""))
             native = _read(native_path)
@@ -399,8 +458,27 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
         process = _read(process_path)
         if (process.get("prepared_digest") == prepared["prepared_digest"] and process.get("start_ticks")
                 and _process_start_ticks(process["pid"]) == process["start_ticks"] and _alive(process["pid"])):
-            return {"status": "running", "handle": process, "provider_zero_verified": False,
+            return {"status": "reconciliation_required" if stopped else "running", "handle": process,
+                    "provider_zero_verified": False, "no_allocation_proven": False,
+                    "blockers": ["beta_screening_stop_teardown_pending"] if stopped else []}
+    if invocation_path.exists() and intent.get("invocation_manifest") in {None, str(invocation_path)}:
+        from .allocator_invocation import fence_unstarted, manifest
+        value = manifest(invocation_path)
+        if value["binding"].get("prepared_digest") != prepared.get("prepared_digest"):
+            raise ValueError("beta_screening_invocation_binding_changed")
+        fenced = fence_unstarted(invocation_path)
+        if fenced["status"] == "fenced_unspent":
+            return {"status": "blocked", "provider_allocation_performed": False,
+                    "provider_zero_verified": True, "no_allocation_proven": True,
+                    "no_policy_api_calls_proven": True, "retryable_unstarted_refusal": stopped is None,
+                    "unstarted_refusal_receipt": _record(Path(fenced["proof_path"])),
+                    "blockers": ["beta_screening_allocator_fenced_before_create"]}
+        if fenced["status"] == "running":
+            return {"status": "running", "provider_zero_verified": False,
                     "no_allocation_proven": False, "blockers": []}
+        return {"status": "reconciliation_required", "provider_zero_verified": False,
+                "no_allocation_proven": False, "next_action": "reconcile_exact_provider_identity",
+                "blockers": ["beta_screening_provider_create_outcome_unknown"]}
     return {"status": "reconciliation_required", "provider_zero_verified": False,
             "no_allocation_proven": False, "blockers": ["beta_screening_allocator_identity_unresolved"]}
 

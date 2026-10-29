@@ -379,3 +379,26 @@ def test_invalid_remote_admission_cannot_be_retained_as_restart_authority(monkey
             request_count=1, provider=command["provider"], resource_class=command["resource_class"],
             retain_admission=retained.append)
     assert retained == []
+
+
+def test_exact_request_intent_is_retained_before_create_capable_funding_rpc(monkeypatch):
+    retained = []
+    def request(**kwargs):
+        assert retained == [kwargs]
+        raise OSError("response lost")
+    monkeypatch.setattr(module, "website_webapp_request", request)
+    with pytest.raises(OSError, match="response lost"):
+        module.reserve_website_preparation_spend(task_context=context(), binding_digest="sha256:" + "a" * 64,
+            maximum_cost_usd=1., request_count=1, provider="vast", resource_class="gpu_render",
+            retain_request_intent=retained.append)
+    assert retained[0]["payload"]["spend"]["maximum_cost_usd"] == 1.
+
+
+def test_failed_request_intent_persistence_prevents_remote_funding_call(monkeypatch):
+    monkeypatch.setattr(module, "website_webapp_request", lambda **kwargs: pytest.fail("funding RPC before fsync"))
+    def failed(value):
+        raise OSError("intent fsync failed")
+    with pytest.raises(OSError, match="intent fsync failed"):
+        module.reserve_website_preparation_spend(task_context=context(), binding_digest="sha256:" + "a" * 64,
+            maximum_cost_usd=1., request_count=1, provider="vast", resource_class="gpu_render",
+            retain_request_intent=failed)
