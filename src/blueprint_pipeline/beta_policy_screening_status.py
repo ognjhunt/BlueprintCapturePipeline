@@ -114,7 +114,11 @@ def build_worker_status(root: str | Path, *, publication_before: Any = None,
         for campaign in ledger["campaigns"].values():
             if not isinstance(campaign, dict) or not isinstance(campaign.get("candidates"), dict):
                 raise ValueError
-            publication_pending += int(campaign["revision"] != campaign["published_revision"])
+            revision, published = campaign["revision"], campaign["published_revision"]
+            if (type(revision) is not int or type(published) is not int
+                    or revision < 1 or not 0 <= published <= revision):
+                raise ValueError
+            publication_pending += int(revision != published)
             updated = _timestamp(campaign.get("updated_at"))
             if updated is not None:
                 updates.append(updated)
