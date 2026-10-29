@@ -136,7 +136,7 @@ def best_supported_guess(*, target_id: str, candidates: Sequence[Mapping[str, An
 def _centroid(observation: Mapping[str, Any]) -> tuple[float, float, float]:
     import numpy as np
 
-    from .website_task_masks import decode_track_mask
+    from .website_track_mask_codec import decode_track_mask
     mask = decode_track_mask(observation)
     ys, xs = np.nonzero(mask)
     return float(xs.mean() / mask.shape[1]), float(ys.mean() / mask.shape[0]), float(len(xs) / mask.size)
@@ -500,7 +500,12 @@ def reconcile_target_choices(listener, *, storage_root: Path, process_args, limi
     """Read the site's answers and rerun the same job for a correction; at most ``limit`` reruns per tick."""
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     from .website_assessment_resume import MAX_BYTES, _payload_bytes, _require
-    from .website_preparation_status import DELIVERY_FILE, _root, read_preparation_status, validate_selectors
+    from .website_preparation_status import (
+        DELIVERY_FILE,
+        _root,
+        read_preparation_status,
+        validate_selectors,
+    )
     current = time.time() if now is None else now
     counts = {"replayed": 0, "confirmed": 0, "corrected": 0, "declined": 0, "waiting": 0}
     polled = 0
