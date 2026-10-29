@@ -10,6 +10,7 @@ from __future__ import annotations
 import urllib.error
 import urllib.request
 import hashlib
+from email.message import Message
 from pathlib import Path
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -127,6 +128,24 @@ def test_https_request_to_pinned_api_host_passes(monkeypatch) -> None:
     assert sent.get_method() == "POST"
     assert sent.headers["Authorization"] == "Bearer k"
     assert timeout == 90.0
+
+
+def test_response_content_type_is_retained_without_other_headers(monkeypatch) -> None:
+    wire = _FakeResponse(body=b"{}")
+    wire.headers = Message()
+    wire.headers["content-type"] = "application/json; charset=utf-8"
+    wire.headers["Set-Cookie"] = "private-session-value"
+    monkeypatch.setattr(soh, "_open_with_policy", _Transport(wire))
+    response = soh.request("https://api.example/models", policy=soh.pinned_api_policy("https://api.example"))
+    assert response.content_type == "application/json; charset=utf-8"
+    assert "private-session-value" not in repr(response)
+
+
+def test_response_without_headers_and_existing_constructors_remain_compatible(monkeypatch) -> None:
+    monkeypatch.setattr(soh, "_open_with_policy", _Transport(_FakeResponse()))
+    response = soh.request("https://api.example/models", policy=soh.pinned_api_policy("https://api.example"))
+    assert response.content_type is None
+    assert soh.SafeHttpResponse(200, b"{}", "https://api.example", None).content_type is None
 
 
 @pytest.mark.parametrize(

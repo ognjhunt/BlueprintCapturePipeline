@@ -386,6 +386,8 @@ def build_policy_canary_session_bundle(
     execution_spec_paths: Mapping[str, str | Path] | None = None,
     checkpoint_inventory_paths: Mapping[str, str | Path] | None = None,
     family_control_result_path: str | Path | None = None,
+    team_robot_model_path: str | Path | None = None,
+    minimum_gpu_memory_gb: float | None = None,
     implementation_commit: str,
     hotfix_overlay_path: str | Path | None = None,
     generated_at: str | None = None,
@@ -466,8 +468,13 @@ def build_policy_canary_session_bundle(
     for candidate, spec in specs.items():
         interface = resolve_policy_interface(spec)
         if interface not in TEAM_HTTPS_INTERFACES:
-            if candidate not in ("pi05_droid", "groot_n17_droid"):
+            if candidate not in ("pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"):
                 raise ValueError("policy_canary_local_provisioning_identity_not_admitted")
+            if candidate == "cosmos3_edge_policy_droid":
+                from .cosmos_edge_beta_runtime import validate_execution_spec as validate_cosmos_spec
+                validate_cosmos_spec(spec)
+                if inputs.get("run_kind") != "blueprint_beta_screening":
+                    raise ValueError("cosmos_edge_native_execution_requires_beta_run")
             local_candidates.append(candidate)
         if inputs.get("run_kind") == "blueprint_beta_screening":
             if spec.get("evaluation_backend") == FAMILY_BACKEND:
@@ -566,12 +573,49 @@ def build_policy_canary_session_bundle(
         with zipfile.ZipFile(base["bundle_path"]) as archive:
             archive.extractall(root)
         runtime = root / "provider_runtime"
+        team_bindings = [spec["team_embodiment"] for spec in specs.values() if spec.get("team_embodiment") is not None]
+        if (bool(team_bindings) != (team_robot_model_path is not None)
+                or (team_bindings and len(specs) != 1)):
+            raise ValueError("beta_screening_team_robot_model_binding_mismatch")
+        if team_bindings:
+            from .team_embodiment import verify_model_file
+            from .team_robot_model_delivery import copy_prepared_closure
+
+            binding = team_bindings[0]
+            record = verify_model_file(binding["manifest"], team_robot_model_path)
+            if (record["sha256"] != binding["model"]["sha256"]
+                    or record["size_bytes"] != binding["model"]["size_bytes"]):
+                raise ValueError("beta_screening_team_robot_model_binding_mismatch")
+            relative = Path(binding["model"]["bundle_path"])
+            if relative.is_absolute() or ".." in relative.parts or relative.parts[0] != "team_embodiment":
+                raise ValueError("beta_screening_team_robot_bundle_path_invalid")
+            target = runtime / "native_task_packet" / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            closure = binding["model"].get("dependency_closure")
+            if closure is not None:
+                if Path(team_robot_model_path).name != closure["model_path"]:
+                    raise ValueError("beta_screening_team_robot_model_binding_mismatch")
+                copy_prepared_closure(source=Path(team_robot_model_path).parent,
+                                      destination=target.parent, closure=closure)
+            else:
+                shutil.copyfile(team_robot_model_path, target)
         contract_dependency = stage_policy_contract_dependencies(runtime)
         robolab_dependency = (stage_robolab_source(runtime)
                               if any(spec.get("evaluation_backend") == "robolab.v1" for spec in specs.values()) else None)
         for candidate in local_candidates:
             script = runtime / f"adp009d_policy_provisioning.{candidate}.sh"
-            script.write_text(build_provisioning_script(candidate), encoding="utf-8")
+            if candidate == "cosmos3_edge_policy_droid":
+                from .cosmos_edge_beta_provisioning import build_provisioning_script as build_cosmos_provisioning
+                from .cosmos_edge_beta_runtime import (
+                    SNAPSHOT_STAGED_NAME, snapshot_manifest_path, verified_snapshot_manifest,
+                )
+                snapshot_path = snapshot_manifest_path()
+                verified_snapshot_manifest(snapshot_path)
+                shutil.copy2(snapshot_path, runtime / SNAPSHOT_STAGED_NAME)
+                provisioning_script = build_cosmos_provisioning()
+            else:
+                provisioning_script = build_provisioning_script(candidate)
+            script.write_text(provisioning_script, encoding="utf-8")
             script.chmod(script.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         for name in POLICY_RUNTIME_ROOT_MODULE_NAMES:
             shutil.copy2(package / name, runtime / name)
@@ -592,6 +636,10 @@ def build_policy_canary_session_bundle(
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         manifest_path = runtime / "adp_arena_provider_manifest.json"
         manifest = _read(manifest_path)
+        if minimum_gpu_memory_gb is not None:
+            if type(minimum_gpu_memory_gb) not in (int, float) or not 0 < minimum_gpu_memory_gb <= 1024:
+                raise ValueError("beta_screening_gpu_memory_bound_invalid")
+            manifest["minimum_gpu_memory_gb"] = minimum_gpu_memory_gb
         manifest.update(
             {
                 "schema_version": PROVIDER_BUNDLE_SCHEMA_VERSION,

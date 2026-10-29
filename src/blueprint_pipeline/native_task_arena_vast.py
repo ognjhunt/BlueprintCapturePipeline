@@ -583,6 +583,8 @@ def run_native_task_arena_policy_canary_session_vast(
             raise ValueError("policy_canary_session_resource_bounds_mismatch")
     if authority is None:
         raise ValueError("policy_canary_session_authority_missing")
+    from .policy_canary_session_bundle_identity import minimum_gpu_ram_mb
+    memory_floor = minimum_gpu_ram_mb(prepared_bundle)
     validated_environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
     from .native_task_arena_paired_witness_staging import build_paired_witness_binding
     # A beta attempt contains one candidate. The paired intermediate-delivery
@@ -670,7 +672,7 @@ def run_native_task_arena_policy_canary_session_vast(
             instance_label_prefix="blueprint-native-task-policy-canary-",
             instance_label_exact=str(authority["resource_name"]),
             blocker_prefix="native_task_arena_policy_canary_session",
-            min_gpu_ram_mb=46_000,
+            min_gpu_ram_mb=memory_floor,
             min_compute_cap=POLICY_MIN_COMPUTE_CAP,
             allowed_active_instance_ids=tuple(
                 sorted({int(value) for value in allowed_active_instance_ids})

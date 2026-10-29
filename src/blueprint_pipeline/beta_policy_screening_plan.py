@@ -107,7 +107,7 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
     required = {"schema_version", "candidate_id", "policy_execution_spec", "checkpoint_inventory",
                 "configuration_digest", "runtime_digest", "backend", "max_hourly_rate_usd",
                 "hard_ttl_seconds", "implementation_commit", "task_success_contract_digest"}
-    if (set(result) - required - {"machine_avoidlist_path", "credential_file"} - _HOSTED_COST_FIELDS
+    if (set(result) - required - {"machine_avoidlist_path", "credential_file", "team_robot_model", "minimum_gpu_memory_gb"} - _HOSTED_COST_FIELDS
             or required - set(result)
             or result["schema_version"] != EXECUTION_SCHEMA_VERSION
             or result["backend"] not in {"robolab.v1", FAMILY_BACKEND}
@@ -119,6 +119,12 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
     _receipt(result["policy_execution_spec"])
     if result["checkpoint_inventory"] is not None:
         _receipt(result["checkpoint_inventory"])
+    if "team_robot_model" in result:
+        _receipt(result["team_robot_model"])
+    if "minimum_gpu_memory_gb" in result:
+        memory = result["minimum_gpu_memory_gb"]
+        if type(memory) not in (int, float) or not 0 < memory <= 1024:
+            raise BetaPolicyScreeningPlanError("beta_screening_gpu_memory_bound_invalid")
     if money(result["max_hourly_rate_usd"]) <= 0:
         raise BetaPolicyScreeningPlanError("beta_screening_execution_price_invalid")
     if type(result["hard_ttl_seconds"]) is not int or not 1 <= result["hard_ttl_seconds"] <= 86400:
@@ -377,6 +383,11 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     bindings = capabilities.get("candidate_bindings") or {}
     if not isinstance(bindings, dict):
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
+    failures = capabilities.get("candidate_blockers") or {}
+    if (not isinstance(failures, dict) or any(not isinstance(reasons, list)
+            or any(not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{1,127}", reason)
+                   for reason in reasons) for reasons in failures.values())):
+        raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
     available = capabilities.get("credentials_available", [])
     if not isinstance(available, list) or any(not isinstance(name, str) for name in available):
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
@@ -403,6 +414,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                                "status": "unavailable", "blockers": []}
         binding = bindings.get(candidate_id)
         row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials)
+        row["blockers"] = sorted(set(row["blockers"] + failures.get(candidate_id, [])))
         if row["blockers"]:
             candidates.append(row)
             continue

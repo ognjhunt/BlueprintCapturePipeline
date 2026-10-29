@@ -59,7 +59,10 @@ def inputs(count=2, maximum="2.00"):
     if count != 2:
         template = catalog_candidate(catalog, "pi05_droid")
         catalog = seal_catalog({**catalog, "candidates": [{**deepcopy(template), "candidate_id": f"policy_{n:02d}"} for n in range(count)]})
-    candidates = [row for row in catalog["candidates"] if row["eligibility"]["enabled"]]
+    # This pure-planner fixture requests two admitted runtimes. Runtime tests
+    # exercise all three enabled default policies against actual scene inputs.
+    candidates = [row for row in catalog["candidates"] if row["eligibility"]["enabled"]
+                  and (count != 2 or row["candidate_id"] in {"pi05_droid", "groot_n17_droid"})]
     bindings, quotes = {}, {}
     for candidate in candidates:
         bindings[candidate["candidate_id"]], quotes[candidate["candidate_id"]] = admitted(candidate, maximum=maximum)

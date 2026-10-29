@@ -451,6 +451,13 @@ def _policy_client(
     from .policy_interface_binding import resolve_policy_interface
     interface = resolve_policy_interface(spec)
     endpoint = spec["policy_endpoint"]
+    if interface == "cosmos_edge_droid.v1":
+        from blueprint_pipeline.cosmos_edge_beta_runtime import CosmosEdgeSimulatorClient, validate_execution_spec
+
+        validate_execution_spec(spec)
+        return CosmosEdgeSimulatorClient(
+            policy_spec=spec["policy_spec"], host=str(endpoint["host"]), port=int(endpoint["port"]),
+        )
     secret = os.environ.get(str(endpoint["credential_env"]))
     if interface == "openpi_droid.v1":
         from blueprint_pipeline.openpi_droid_policy_runtime import (

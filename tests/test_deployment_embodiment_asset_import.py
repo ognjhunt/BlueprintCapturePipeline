@@ -419,6 +419,46 @@ def test_cli_only_initializes_isaac_explicitly_and_closes_app(tmp_path, monkeypa
     assert calls == (["verify", "start", "close"] if initialize else ["verify"])
 
 
+def test_urdf_mujoco_extension_does_not_change_urdf_mesh_resolution(tmp_path):
+    entry = tmp_path / "g1.urdf"
+    mesh = tmp_path / "meshes" / "pelvis.STL"
+    mesh.parent.mkdir()
+    mesh.write_bytes(b"fixture mesh")
+    entry.write_text('<robot name="g1"><mujoco><compiler meshdir="meshes"/></mujoco>'
+                     '<link name="pelvis"><visual><geometry>'
+                     '<mesh filename="meshes/pelvis.STL"/>'
+                     '</geometry></visual></link></robot>')
+    allowed = {entry.resolve(), mesh.resolve()}
+    assert importer._precheck_input_closure(entry, allowed=allowed, packages={}) == allowed
+    with pytest.raises(assets.AssetPreparationError, match="input_reference_unbound"):
+        importer._precheck_input_closure(entry, allowed={entry.resolve()}, packages={})
+
+
+def test_mjcf_meshdir_still_resolves_assets_relative_to_compiler_directory(tmp_path):
+    entry = tmp_path / "robot.xml"
+    mesh = tmp_path / "meshes" / "pelvis.stl"
+    mesh.parent.mkdir()
+    mesh.write_bytes(b"fixture mesh")
+    entry.write_text('<mujoco><compiler meshdir="meshes"/>'
+                     '<asset><mesh name="pelvis" file="pelvis.stl"/></asset></mujoco>')
+    allowed = {entry.resolve(), mesh.resolve()}
+    assert importer._precheck_input_closure(entry, allowed=allowed, packages={}) == allowed
+
+
+def test_isaac_urdf_closure_does_not_treat_gazebo_plugin_as_mesh(tmp_path):
+    entry = tmp_path / "xarm.urdf"
+    mesh = tmp_path / "gripper.stl"
+    mesh.write_bytes(b"fixture mesh")
+    entry.write_text('<robot name="xarm"><link name="gripper"><visual><geometry>'
+                     '<mesh filename="gripper.stl"/></geometry></visual></link>'
+                     '<gazebo><plugin filename="libgazebo_mimic_joint_plugin.so" '
+                     'name="mimic"><joint>drive_joint</joint></plugin></gazebo></robot>')
+    allowed = {entry.resolve(), mesh.resolve()}
+    assert importer._precheck_input_closure(entry, allowed=allowed, packages={}) == allowed
+    with pytest.raises(assets.AssetPreparationError, match="input_reference_unbound"):
+        importer._precheck_input_closure(entry, allowed={entry.resolve()}, packages={})
+
+
 @pytest.mark.parametrize("format_name,content,extra", [
     ("urdf", b'<robot><mesh filename="/private/forbidden.stl"/></robot>', {}),
     ("urdf", b'<robot><mesh filename="file:///private/forbidden.stl"/></robot>', {}),
@@ -487,6 +527,24 @@ def test_dynamic_xacro_yaml_escape_is_refused_before_read_and_restores_opener(tm
     with pytest.raises(assets.AssetPreparationError, match="input_reference_unbound"):
         importer.import_source_asset(source, tmp_path / "prepared", fix_base=True)
     assert calls == [] and module.open is original
+
+
+@pytest.mark.parametrize("active", [False, True])
+def test_xacro_only_active_package_references_require_aliases(tmp_path, monkeypatch, active):
+    reference = '<xacro:include filename="$(find obsolete_visualization)/old.xacro"/>'
+    content = ('<robot xmlns:xacro="http://wiki.ros.org/xacro">'
+               + (reference if active else '<!-- ' + reference + ' -->') + '</robot>').encode()
+    source = _source(tmp_path, monkeypatch, "xacro", content=content)
+    calls = _sdk(monkeypatch)
+    _xacro_module(monkeypatch, lambda filename, args: None)
+    if active:
+        with pytest.raises(assets.AssetPreparationError, match="xacro_package_alias_missing"):
+            importer.import_source_asset(source, tmp_path / "prepared", fix_base=True)
+        assert not calls
+    else:
+        importer.import_source_asset(source, tmp_path / "prepared", fix_base=True)
+        assert len(calls) == 1
+        assert any(path.read_bytes() == content for path in (source / "source").glob("*.xacro"))
 
 
 def test_dynamic_xacro_yaml_within_inventory_preserves_arguments_and_package_alias(tmp_path, monkeypatch):

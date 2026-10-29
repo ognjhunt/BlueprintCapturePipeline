@@ -29,8 +29,8 @@ from typing import Any
 
 import numpy as np
 
-from .core.security_controls import fetch_bounded_https
 from .policy_request_evidence import capture_request
+from .safe_outbound_http import pinned_api_policy, request
 from .team_arm_kinematics import POSE_CHUNK_SCHEMA, quaternion_xyzw, rotation_xyzw
 
 INTERFACE_ID = "dreamlabs_dream1.v1"
@@ -145,15 +145,18 @@ def _token(value: str | None) -> str:
 def _bounded_https(*, url: str, method: str, body: bytes | None,
                    headers: Mapping[str, str], timeout_seconds: int = 15) -> bytes:
     # Separate fixed, credential-free URLs prevent token forwarding to an
-    # arbitrary caller origin; the shared transport pins public DNS addresses.
+    # arbitrary caller origin. The fixed-origin shared transport preserves the
+    # cloud environment's HTTPS proxy without following redirects or retrying.
     approved = {ENDPOINT_URL, GATEWAY_ORIGIN + "/v1/end_session", METADATA_URL}
     if url not in approved:
         raise ValueError("dreamlabs_endpoint_not_approved")
     origin = GATEWAY_ORIGIN if url != METADATA_URL else "https://platform.dreamlabs.ai"
-    return fetch_bounded_https(url, method=method, data=body, headers=dict(headers),
-                               timeout_seconds=timeout_seconds, max_bytes=MAX_RESPONSE_BYTES,
-                               allowed_origins=(origin,), allowed_content_types=("application/json",),
-                               max_redirects=0).body
+    response = request(url, method=method, data=body, headers=dict(headers),
+                       timeout_seconds=timeout_seconds, max_response_bytes=MAX_RESPONSE_BYTES,
+                       policy=pinned_api_policy(origin, max_response_bytes=MAX_RESPONSE_BYTES))
+    if (response.content_type or "").split(";", 1)[0].strip().lower() != "application/json":
+        raise ValueError("dreamlabs_response_content_type_invalid")
+    return response.body
 
 
 def _call(transport: Transport, *, url: str, method: str, body: bytes | None,

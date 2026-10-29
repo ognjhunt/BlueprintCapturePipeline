@@ -92,6 +92,13 @@ CANDIDATE_SCHEMA = _object({
     "eligibility": ELIGIBILITY_SCHEMA,
     "configuration_digest": _DIGEST,
 })
+# Company/task relevance is descriptive. Only runtime bindings grant execution.
+CANDIDATE_SCHEMA["properties"]["deployment"] = _object({
+    "configuration_id": _ID,
+    "companies": {"type": "array", "items": _TEXT, "minItems": 1, "uniqueItems": True},
+    "relationship": {"enum": ["publisher_demonstrated", "company_deployment", "public_controller_integration"]},
+    "evidence_url": _TEXT,
+})
 CATALOG_SCHEMA = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": CATALOG_SCHEMA_VERSION,

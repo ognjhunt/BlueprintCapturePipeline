@@ -15,6 +15,44 @@
             "pattern": "^sha256:[0-9a-f]{64}$",
             "type": "string"
           },
+          "deployment": {
+            "additionalProperties": false,
+            "properties": {
+              "companies": {
+                "items": {
+                  "maxLength": 2048,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "minItems": 1,
+                "type": "array",
+                "uniqueItems": true
+              },
+              "configuration_id": {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,191}$",
+                "type": "string"
+              },
+              "evidence_url": {
+                "maxLength": 2048,
+                "minLength": 1,
+                "type": "string"
+              },
+              "relationship": {
+                "enum": [
+                  "publisher_demonstrated",
+                  "company_deployment",
+                  "public_controller_integration"
+                ]
+              }
+            },
+            "required": [
+              "configuration_id",
+              "companies",
+              "relationship",
+              "evidence_url"
+            ],
+            "type": "object"
+          },
           "display_name": {
             "maxLength": 200,
             "minLength": 1,

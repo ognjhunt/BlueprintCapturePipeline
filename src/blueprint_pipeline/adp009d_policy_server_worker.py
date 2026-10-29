@@ -130,6 +130,14 @@ def build_serve_command(
     """
 
     transport = transport_for(candidate_id)
+    if candidate_id == "cosmos3_edge_policy_droid":
+        if not policy_spec_path or not checkpoint_inventory_path:
+            raise RuntimeError("cosmos_edge_policy_identity_inputs_missing")
+        return [python, "-m", "blueprint_pipeline.cosmos_edge_droid_policy_server",
+                "--checkpoint-path", checkpoint_root,
+                "--snapshot-manifest", str(checkpoint_inventory_path),
+                "--host", host, "--port", str(port), "--output-dir",
+                str(Path(os.environ.get("OUT_DIR", str(Path(checkpoint_root).parent))) / "cosmos_edge_policy_server")]
     if transport == TRANSPORT_OPENPI_WEBSOCKET:
         missing = sorted(
             name
@@ -240,6 +248,13 @@ def attempt_handshake(
                 host=host,
                 port=int(port),
             )
+            adapter_evidence = client.evidence_summary()
+        elif candidate_id == "cosmos3_edge_policy_droid":
+            if policy_spec is None:
+                raise RuntimeError("cosmos_edge_policy_spec_missing_for_handshake")
+            from blueprint_pipeline.cosmos_edge_beta_runtime import CosmosEdgeSimulatorClient
+
+            client = CosmosEdgeSimulatorClient(policy_spec=policy_spec, host=host, port=int(port))
             adapter_evidence = client.evidence_summary()
         else:
             if policy_spec is None:

@@ -109,10 +109,15 @@ def reopen_family_planning_inputs(scene: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def validate_family_candidate_catalog(plan: Mapping[str, Any], candidate: Mapping[str, Any],
-                                      spec: Mapping[str, Any], static: Mapping[str, Any]) -> None:
+                                      spec: Mapping[str, Any], static: Mapping[str, Any],
+                                      *, scene: Mapping[str, Any] | None = None) -> None:
     from .beta_policy_candidate_catalog import load_default_catalog
 
-    catalog = load_default_catalog()
+    if scene is not None:
+        from .beta_policy_screening_team import current_catalog_for_scene
+        catalog = current_catalog_for_scene(scene)
+    else:
+        catalog = load_default_catalog()
     configured = next((row for row in catalog["candidates"] if row["candidate_id"] == candidate["candidate_id"]), None)
     if (catalog["catalog_digest"] != plan["catalog_digest"] or configured is None
             or configured["configuration_digest"] != candidate["configuration_digest"]

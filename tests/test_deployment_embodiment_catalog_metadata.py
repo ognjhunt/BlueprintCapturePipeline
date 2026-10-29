@@ -88,8 +88,12 @@ def test_platform_evidence_does_not_fabricate_a_model_or_isaac_integration() -> 
         assert routes[route_id]["action_schema_id"] is None
     axol = _rows()["almond_axol"]
     assert axol["arm_dof"] == [7, 7]
-    assert "validated_actuated_gripper_model" in axol["required_artifacts"]
-    assert "fixed gripper joints" in axol["tool_requirement"]
+    assert "independent_finger_pair_commands_and_mimic_mapping" in axol["required_artifacts"]
+    assert "four prismatic finger joints" in axol["tool_requirement"]
+    assert "source-estimated physics" in axol["tool_requirement"]
+    source = axol["asset_sources"][0]
+    assert source["relative_path"].endswith("/axol_standalone.urdf")
+    assert source["revision"] == "3ccc69cf3adaea09845456148d6a4f16ef059f27"
     assert [(route["route_id"], route["evidence"]) for route in axol["policy_routes"]
             if route["route_id"] == "pi_api"] == [("pi_api", "publisher_demonstrated")]
     assert _rows()["trlc_dk1_bimanual"]["arm_dof"] == [6, 6]
@@ -143,7 +147,12 @@ def test_sources_preserve_exact_variants_pins_and_asset_gaps() -> None:
         assert rows[embodiment_id]["asset_sources"][0]["format"] == "documentation"
         assert "exact_robot_variant_and_licensed_asset" in rows[embodiment_id]["required_artifacts"]
     for embodiment_id in ("standard_bots_ro1", "standard_bots_core"):
-        assert "manufacturer_asset_access_and_license" in rows[embodiment_id]["required_artifacts"]
+        assert "referenced_mesh_closure_reuse_license_and_generation_binding" in rows[embodiment_id]["required_artifacts"]
+        source = rows[embodiment_id]["asset_sources"][0]
+        assert source["format"] == "urdf"
+        assert source["revision"] == "8a2164e041d3a4e75b2eeffe6351f3c89b292f5c"
+        assert source["relative_path"] == "src/robot_urdfs/core.urdf"
+        assert "Proprietary" in source["license_note"]
     assert rows["standard_bots_core"]["related_teams"] == ["Standard Bots", "Path Machining"]
     assert rows["fanuc_m710ic_45m"]["related_teams"] == ["Jacobi Robotics", "Delta Technology"]
 

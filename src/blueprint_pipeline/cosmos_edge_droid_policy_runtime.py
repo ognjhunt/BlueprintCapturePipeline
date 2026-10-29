@@ -22,7 +22,20 @@ from .droid_policy_bridge import (
     validate_droid_action_chunk,
     validate_droid_observation,
 )
-from .policy_ranking_thesis import canonical_sha256, file_sha256
+
+def canonical_sha256(value: Any) -> str:
+    # Keep this transport usable in the thin simulator runtime. The unrelated
+    # research thesis module imports YAML and is not part of a policy bundle.
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
+                                    ensure_ascii=False, allow_nan=False).encode("utf-8")).hexdigest()
+
+
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 MODEL_ID = "nvidia/Cosmos3-Edge-Policy-DROID"
@@ -334,6 +347,13 @@ class CosmosEdgeDroidPolicyClient:
             "request_count": len(self._receipts),
             "request_receipts": list(self._receipts),
         }
+
+    def close(self) -> None:
+        close = getattr(self._client, "close", None)
+        if not callable(close):
+            close = getattr(getattr(self._client, "_ws", None), "close", None)
+        if callable(close):
+            close()
 
 
 __all__ = [

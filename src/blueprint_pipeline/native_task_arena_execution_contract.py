@@ -260,6 +260,9 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "droid_policy_canary_embodiment.py",
     "groot_n17_wire_client.py",
     "openpi_droid_policy_runtime.py",
+    "cosmos_edge_beta_runtime.py",
+    "cosmos_edge_droid_policy_runtime.py",
+    "cosmos_edge_droid_policy_server.py",
     "policy_episode_trace_evidence.py",
     "policy_episode_lifecycle.py",
     # Policy sessions perform the same native camera-mount sweep as the

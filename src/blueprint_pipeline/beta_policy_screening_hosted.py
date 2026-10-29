@@ -37,6 +37,25 @@ def validate_hosted_delivery(spec: Mapping[str, Any], settings: Mapping[str, Any
         from .task_family_policy_https_client import TaskFamilyPolicySpec
 
         policy = TaskFamilyPolicySpec(**spec["policy_spec"])
+    elif interface == "blueprint_policy_https.v1":
+        from .team_policy_https_client import TeamPolicySpec
+
+        policy = TeamPolicySpec(**spec["policy_spec"])
+    elif interface == "dreamlabs_dream1.v1":
+        from .dreamlabs_policy_client import DreamLabsPolicySpec
+        from .team_candidate_quick10_admission import validate_candidate_rights, validate_provider_disclosure
+
+        policy = DreamLabsPolicySpec(**spec["policy_spec"])
+        disclosure = spec.get("provider_disclosure") or {}
+        validate_candidate_rights(spec.get("candidate_rights_binding") or {}, team_id=disclosure.get("team_id"),
+            checkpoint_id=disclosure.get("checkpoint_id"), candidate_id=spec["candidate_id"])
+        validate_provider_disclosure(spec, team_id=disclosure.get("team_id"),
+            checkpoint_id=disclosure.get("checkpoint_id"), candidate_id=spec["candidate_id"],
+            model_id=policy.model_id, scene_revision_digest=disclosure.get("scene_revision_digest"))
+        # The existing Dream authorization binds the team's account payer.
+        # It never authorizes unbounded Blueprint-paid provider usage.
+        if settings.get("hosted_inference_payment") != "caller_paid":
+            raise ValueError("beta_screening_dream_billing_authority_mismatch")
     else:
         raise ValueError("beta_screening_hosted_interface_not_supported")
     policy.validate()

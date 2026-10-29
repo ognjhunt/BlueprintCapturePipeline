@@ -200,8 +200,9 @@ request lacks calibrated per-tool grasp geometry: raw body origins cannot
 inherit the frozen Franka's physical-pad calibration. A structural preflight
 is not an executed episode, admitted provider, or physical performance claim.
 
-The pinned Axol URDF models fixed grippers, requiring an actuated gripper
-asset. Dream additionally requires a controlled-observation API bridge,
+The pinned Axol standalone URDF supplies actuated finger pairs; import its
+mimic couplings and map both tool channels, retaining its source-estimated
+physics limitations. Dream additionally requires a controlled-observation API bridge,
 confirmed tool calibration, reviewed account/data terms and model identity.
 The Dream SDK's license does not establish hosted-service rights or recording
 behavior. Its 20 Hz interface also cannot inherit the frozen task's 15 Hz

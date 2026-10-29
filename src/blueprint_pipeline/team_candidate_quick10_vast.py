@@ -123,6 +123,8 @@ def run_team_candidate_session_vast(
 
     authority = validate_session_authority(session_authority)
     bundle = validate_provider_bundle(prepared_bundle, authority=authority)
+    from .policy_canary_session_bundle_identity import minimum_gpu_ram_mb
+    memory_floor = minimum_gpu_ram_mb(bundle)
     if authority["run_kind"] not in (TEAM_RUN_KIND, BETA_RUN_KIND):
         raise ValueError("team_candidate_session_run_kind_invalid")
     if float(authority["hard_cap_usd"]) != float(hard_cap_usd) or int(authority["hard_ttl_seconds"]) != int(
@@ -152,7 +154,7 @@ def run_team_candidate_session_vast(
                                  else f"{DEFAULT_KEY_PREFIX}/team-candidate-session"),
         instance_label_prefix="blueprint-native-task-policy-canary-",
         instance_label_exact=str(authority["resource_name"]), blocker_prefix="native_task_arena_policy_canary_session",
-        min_gpu_ram_mb=46_000, min_compute_cap=POLICY_MIN_COMPUTE_CAP,
+        min_gpu_ram_mb=memory_floor, min_compute_cap=POLICY_MIN_COMPUTE_CAP,
         allowed_active_instance_ids=tuple(sorted({int(value) for value in allowed_active_instance_ids})),
         vast_launch_lock_file=None, candidate_policy_query_expected=True, forward_hf_token=False,
         preferred_gpu_keywords=("L40S", "RTX 6000 Ada", "RTX A6000"), minimum_driver_version=MINIMUM_DRIVER_VERSION,

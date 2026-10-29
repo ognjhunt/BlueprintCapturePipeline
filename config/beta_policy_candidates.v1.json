@@ -185,20 +185,36 @@
     },
     {
       "candidate_id": "cosmos3_edge_policy_droid",
-      "configuration_digest": "sha256:a4b0d6b14444d21678713419d7d3468dbfbd99e5a271e16c70e2f9cd8c096c94",
+      "configuration_digest": "sha256:2ef6b265d6a79187db6079230e6f9a9ac0b7477eeeb7fb1e561bf222518c4be7",
       "display_name": "Cosmos 3 Edge Policy DROID",
       "eligibility": {
-        "blockers": [
-          "beta_robolab_interface_not_admitted",
-          "three_camera_profile_not_verified"
-        ],
+        "blockers": [],
         "commercial_use": "allowed",
-        "enabled": false,
+        "enabled": true,
         "license_id": "openmdw-1.1",
         "license_note": "OpenMDW 1.1 model card; exact deployment artifacts and scene integration remain separately verified.",
         "requires_credentials": []
       },
-      "interface": null,
+      "interface": {
+        "action_horizon": 32,
+        "action_schema_id": "droid_absolute_joint_position_v1",
+        "camera_roles": [
+          "external",
+          "wrist",
+          "exterior_right"
+        ],
+        "control_hz": 15,
+        "execution_horizon": 8,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 224,
+        "image_preprocessing": "resize_with_padding",
+        "image_width": 224,
+        "normalization_digest": null,
+        "observation_profile_id": "droid_three_camera_robot_state_v1",
+        "policy_interface_id": "cosmos_edge_droid.v1",
+        "robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"
+      },
       "policy": {
         "digest": "sha256:f1da4f2c70e31b7c80c0069abdebf5d46d9a45a2e588b3aa84984a862f18568f",
         "digest_kind": "downloaded_snapshot_inventory",
@@ -206,8 +222,15 @@
         "revision": "3ea407af3e156c0af3b4bb6edd85842cc9a58777",
         "source": "https://huggingface.co/nvidia/Cosmos3-Edge-Policy-DROID"
       },
-      "runtime": null,
-      "supported_task_kinds": []
+      "runtime": {
+        "backend": "robolab.v1",
+        "minimum_gpu_memory_gb": 48,
+        "runtime_id": "native_task_arena_policy_canary.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place",
+        "articulated_open_close"
+      ]
     },
     {
       "candidate_id": "dreamlabs_dream1",
@@ -321,10 +344,610 @@
       },
       "runtime": null,
       "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "dream1_i2rt_yam_bimanual",
+      "configuration_digest": "sha256:93ad7e6fdbc0a68f19ad30c51ea6f3b61acc665dd988a3fdda9b7065ff78c1c7",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "i2rt_yam_bimanual",
+        "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "relationship": "publisher_demonstrated"
+      },
+      "display_name": "Dream Labs Dream-1 \u00b7 Dual YAM",
+      "eligibility": {
+        "blockers": [
+          "dream_account_model_identity_unverified",
+          "hosted_data_disclosure_and_billing_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": [
+          "DREAM_API_KEY"
+        ]
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://dreamlabs.ai/research/dream-1/"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "dream1_agilex_piper_bimanual",
+      "configuration_digest": "sha256:a99491454acef3e22eca42fbd1009fe6a375ec7dbe4dfd671d3fa74339ba66f3",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "agilex_piper_bimanual",
+        "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "relationship": "publisher_demonstrated"
+      },
+      "display_name": "Dream Labs Dream-1 \u00b7 Dual PiPER",
+      "eligibility": {
+        "blockers": [
+          "dream_account_model_identity_unverified",
+          "hosted_data_disclosure_and_billing_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": [
+          "DREAM_API_KEY"
+        ]
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://dreamlabs.ai/research/dream-1/"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "dream1_universal_robots_ur5e_bimanual",
+      "configuration_digest": "sha256:2d6d5c3ca18f14216a674e5f0a79bfd235faab607df5e524b13dda40860af166",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "universal_robots_ur5e_bimanual",
+        "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "relationship": "publisher_demonstrated"
+      },
+      "display_name": "Dream Labs Dream-1 \u00b7 Dual UR5e",
+      "eligibility": {
+        "blockers": [
+          "dream_account_model_identity_unverified",
+          "hosted_data_disclosure_and_billing_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": [
+          "DREAM_API_KEY"
+        ]
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://dreamlabs.ai/research/dream-1/"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "dream1_franka_research_3_bimanual",
+      "configuration_digest": "sha256:2e2b424edd5aa6354cd76308faf6d6031a542ff553808947bd817bc8056dfe87",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "franka_research_3_bimanual",
+        "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "relationship": "publisher_demonstrated"
+      },
+      "display_name": "Dream Labs Dream-1 \u00b7 Dual FR3",
+      "eligibility": {
+        "blockers": [
+          "dream_account_model_identity_unverified",
+          "hosted_data_disclosure_and_billing_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": [
+          "DREAM_API_KEY"
+        ]
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://dreamlabs.ai/research/dream-1/"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "dream1_kinova_gen3_bimanual",
+      "configuration_digest": "sha256:2cc3c72e403e2be3faa43a8789eb1380eb47d095e2aa425b2e609bb40fab8f84",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "kinova_gen3_bimanual",
+        "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "relationship": "publisher_demonstrated"
+      },
+      "display_name": "Dream Labs Dream-1 \u00b7 Dual Kinova Gen3",
+      "eligibility": {
+        "blockers": [
+          "dream_account_model_identity_unverified",
+          "hosted_data_disclosure_and_billing_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": [
+          "DREAM_API_KEY"
+        ]
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://dreamlabs.ai/research/dream-1/"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "dream1_ufactory_xarm7_bimanual",
+      "configuration_digest": "sha256:a0a1ed918810ae41fb85f04846ddc848e0b6722bb0c7e83df513fa1a449fc437",
+      "deployment": {
+        "companies": [
+          "Dream Labs"
+        ],
+        "configuration_id": "ufactory_xarm7_bimanual",
+        "evidence_url": "https://dreamlabs.ai/research/dream-1/",
+        "relationship": "publisher_demonstrated"
+      },
+      "display_name": "Dream Labs Dream-1 \u00b7 Dual xArm7",
+      "eligibility": {
+        "blockers": [
+          "dream_account_model_identity_unverified",
+          "hosted_data_disclosure_and_billing_not_bound",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": [
+          "DREAM_API_KEY"
+        ]
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://dreamlabs.ai/research/dream-1/"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "almond_axol_pi_api",
+      "configuration_digest": "sha256:6f52039f7476af82c67a2c19b94f4374d0bf74d1e8d3afe5841115bd788bac1c",
+      "deployment": {
+        "companies": [
+          "Almond Robotics"
+        ],
+        "configuration_id": "almond_axol",
+        "evidence_url": "https://www.pi.website/blog/api-beta",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Almond Robotics Axol \u00b7 Pi API",
+      "eligibility": {
+        "blockers": [
+          "pi_api_account_and_exact_checkpoint_access_missing",
+          "pi_api_wire_contract_unavailable",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.pi.website/blog/api-beta"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "almond_axol_team_controller",
+      "configuration_digest": "sha256:fc669edf1fbd961f9ef5dc2a65b58fc2f04e32861790376008d04e310c083deb",
+      "deployment": {
+        "companies": [
+          "Almond Robotics"
+        ],
+        "configuration_id": "almond_axol",
+        "evidence_url": "https://github.com/almond-bot/axol",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Almond Robotics Axol \u00b7 supplied controller",
+      "eligibility": {
+        "blockers": [
+          "robot_specific_policy_endpoint_or_checkpoint_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://github.com/almond-bot/axol"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "trlc_dk1_lerobot_controller",
+      "configuration_digest": "sha256:ca27c3cf34676f6547a0a2f86c66042d557b794b3c2b0da8dca1556edd66e193",
+      "deployment": {
+        "companies": [
+          "The Robot Learning Company"
+        ],
+        "configuration_id": "trlc_dk1_bimanual",
+        "evidence_url": "https://github.com/robot-learning-co/trlc-dk1",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Robot Learning Company dual TRLC-DK1 \u00b7 LeRobot controller",
+      "eligibility": {
+        "blockers": [
+          "task_trained_checkpoint_or_policy_endpoint_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://github.com/robot-learning-co/trlc-dk1"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "extend_ur5e_team_controller",
+      "configuration_digest": "sha256:c8d6a2514b5f545c50ca3e323571fd817a1b489f760efc70a573103d9971d335",
+      "deployment": {
+        "companies": [
+          "Extend Robotics"
+        ],
+        "configuration_id": "universal_robots_ur5e",
+        "evidence_url": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Extend Robotics UR5e \u00b7 supplied ACT/OpenPI/GR00T policy",
+      "eligibility": {
+        "blockers": [
+          "ur5e_task_trained_checkpoint_or_policy_endpoint_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.extendrobotics.com/post/extend-robotics-bridges-simulation-and-reality-with-intuitive-xr-interface-accelerating-real-world"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "jacobi_fanuc_m710ic_45m",
+      "configuration_digest": "sha256:daf1846e54cc498002e5cde0e9c64b5d9e09365330c53252cad8994b918f9eac",
+      "deployment": {
+        "companies": [
+          "Jacobi Robotics",
+          "Delta Technology"
+        ],
+        "configuration_id": "fanuc_m710ic_45m",
+        "evidence_url": "https://jacobirobotics.com/platform",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Jacobi / Delta Technology FANUC M-710iC/45M \u00b7 planner",
+      "eligibility": {
+        "blockers": [
+          "jacobi_planner_api_entitlement_missing",
+          "palletizing_controller_adapter_missing",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://jacobirobotics.com/platform"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "graymatter_fanuc_crx_10ia_l",
+      "configuration_digest": "sha256:28f1f8654083bacc6e92671e9277b4e0f9934dfefba3a1f959d2ab84668496ca",
+      "deployment": {
+        "companies": [
+          "GrayMatter Robotics"
+        ],
+        "configuration_id": "fanuc_crx_10ia_l",
+        "evidence_url": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites",
+        "relationship": "company_deployment"
+      },
+      "display_name": "GrayMatter Robotics FANUC CRX-10iA/L \u00b7 GMR-AI",
+      "eligibility": {
+        "blockers": [
+          "proprietary_gmr_ai_policy_access_missing",
+          "finishing_tool_and_controller_required"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.fanucamerica.com/case-studies/crx-cobot-ai-solve-sanding-challenges-for-performance-composites"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "unchained_yaskawa_gp12_luna",
+      "configuration_digest": "sha256:bb8418fc3242b983d64363e254021c7c0faca5c37c2ecd7feced820f96c00de1",
+      "deployment": {
+        "companies": [
+          "Unchained Robotics"
+        ],
+        "configuration_id": "yaskawa_gp12",
+        "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Unchained Robotics Yaskawa GP12 \u00b7 LUNA",
+      "eligibility": {
+        "blockers": [
+          "proprietary_luna_policy_access_missing",
+          "vacuum_tool_and_palletizing_controller_required"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "unchained_yaskawa_gp20_luna",
+      "configuration_digest": "sha256:f4511f732f2c52a6ebfb97104329fbd130a51dab0c08fecc96d42e43df6674b5",
+      "deployment": {
+        "companies": [
+          "Unchained Robotics"
+        ],
+        "configuration_id": "yaskawa_gp20",
+        "evidence_url": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Unchained Robotics Yaskawa GP20 \u00b7 LUNA",
+      "eligibility": {
+        "blockers": [
+          "proprietary_luna_policy_access_missing",
+          "vacuum_tool_and_palletizing_controller_required"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://unchainedrobotics.de/en/products/turnkey-solutions/unchained-robotics-malocherbot-palettieren"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "standard_bots_ro1_controller",
+      "configuration_digest": "sha256:72c6827963a53af2654cf55dc057692bf29e52289b15145ca902335334c9b5e7",
+      "deployment": {
+        "companies": [
+          "Standard Bots"
+        ],
+        "configuration_id": "standard_bots_ro1",
+        "evidence_url": "https://github.com/standardbots/ros2-realtime-api",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Standard Bots RO1 \u00b7 controller",
+      "eligibility": {
+        "blockers": [
+          "complete_licensed_robot_assets_missing",
+          "vendor_controller_access_missing",
+          "task_policy_required_beyond_control_api"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://github.com/standardbots/ros2-realtime-api"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "standard_bots_core_controller",
+      "configuration_digest": "sha256:f7d1236d580e57a9d8bdbc4c73a5c70f62bbd80a33b38bbbb1ad4471a6adbb30",
+      "deployment": {
+        "companies": [
+          "Standard Bots",
+          "Path Machining"
+        ],
+        "configuration_id": "standard_bots_core",
+        "evidence_url": "https://github.com/standardbots/ros2-realtime-api",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Standard Bots / Path Machining Core \u00b7 controller",
+      "eligibility": {
+        "blockers": [
+          "complete_licensed_robot_assets_missing",
+          "vendor_controller_access_missing",
+          "task_policy_required_beyond_control_api"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://github.com/standardbots/ros2-realtime-api"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
     }
   ],
-  "catalog_digest": "sha256:ce71fbd1bbe63c90052fb498ff89a3ec659aa7398f116bff2ab4780b97eca31b",
+  "catalog_digest": "sha256:97a430d266a15dfbae16e858395da3d3b1a74ce2de6d56f7482567676bb55fc7",
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-26.1",
+  "revision": "2026-10-29.1",
   "schema_version": "beta_policy_candidate_catalog.v1"
 }

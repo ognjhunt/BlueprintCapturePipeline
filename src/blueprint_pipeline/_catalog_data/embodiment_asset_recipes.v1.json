@@ -120,32 +120,34 @@
       "status": "source_available",
       "source": {
         "repository_url": "https://github.com/almond-bot/axol",
-        "revision": "cd199a2f4c847c3a10594c6c2ed2250b4b4be675",
-        "entry_path": "almond_axol/kinematics/urdf/axol.urdf",
+        "revision": "3ccc69cf3adaea09845456148d6a4f16ef059f27",
+        "entry_path": "almond_axol/kinematics/urdf/axol_standalone.urdf",
         "format": "urdf",
         "license_id": "MIT",
         "license_path": "LICENSE",
-        "license_url": "https://github.com/almond-bot/axol/blob/cd199a2f4c847c3a10594c6c2ed2250b4b4be675/LICENSE",
-        "license_note": "Retain the exact source license and notices. Source publication is not Blueprint rights admission, imported physics qualification or policy compatibility.",
+        "license_url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/LICENSE",
+        "license_note": "Manufacturer MIT source. Retain the root license with the standalone URDF and its jelly/standalone mesh closure. This recipe does not include the separate Mink IK model or its inherited YAM mesh notices. Source publication is not imported physics qualification or policy compatibility.",
         "include_paths": [
-          "almond_axol/kinematics/urdf",
+          "almond_axol/kinematics/urdf/axol_standalone.urdf",
+          "almond_axol/kinematics/urdf/meshes/jelly",
+          "almond_axol/kinematics/urdf/meshes/standalone",
           "LICENSE"
         ],
         "import_arguments": {},
-        "package_roots": {
-          "assembly": "almond_axol/kinematics/urdf"
-        },
+        "package_roots": {},
         "source_arm_count": 2
       },
       "composition_required": [
-        "validated_actuated_left_and_right_gripper_models",
+        "independent_finger_pair_commands_and_mimic_mapping",
+        "apply_source_custom_drive_gains_after_import",
         "calibrated_camera_rig"
       ],
       "missing": [
-        "left_and_right_gripper_urdf_joints_are_fixed",
+        "source_estimated_non_arm_masses_and_inertias",
+        "finger_open_closed_mapping_from_joint_geometry",
         "controller_reset_and_runtime_receipt"
       ],
-      "reason": "Exact 14 arm joints exist; both gripper joints in this pinned URDF are fixed. Do not invent finger dynamics or treat browser visualization as an actuated robot."
+      "reason": "Pinned standalone torso source has 14 revolute arm joints and four prismatic finger joints with one mimic per hand, inertials and collision meshes. The older axol.urdf still has fixed gripper meshes; jelly/owl/ox_cart and Mink IK models are distinct variants. Preserve source-estimated physics and read joint limits from XML, not the stale header's opening range. Bind independent tool channels, custom drive gains, cameras and reset before an executed episode."
     },
     {
       "embodiment_id": "fanuc_crx_10ia_l",
@@ -376,10 +378,11 @@
       "source": null,
       "composition_required": [],
       "missing": [
-        "exact_manufacturer_urdf_mesh_artifact",
-        "explicit_model_variant_and_reuse_terms"
+        "referenced_standard_bots_description_mesh_closure",
+        "explicit_asset_reuse_license",
+        "exact_ro1_core_generation_binding"
       ],
-      "reason": "Official API manual links URDF resources through Notion, but no exact immutable RO1 artifact and reuse license were verified. RO1 and Core are not interchangeable; real external control also requires enabled manufacturer beta access."
+      "reason": "Official public Core URDF found at https://github.com/standardbots/ros2-realtime-api/blob/8a2164e041d3a4e75b2eeffe6351f3c89b292f5c/src/robot_urdfs/core.urdf, with inertials and 16 RO1 mesh references. Referenced meshes and an explicit reuse license are absent from that repository. The community pickNplace description package declares Proprietary despite its repository's root MIT license. The manufacturer's RO1 product URL now names Core; bind the exact requested generation before using that model. No complete licensed source recipe is enabled."
     },
     {
       "embodiment_id": "standard_bots_core",
@@ -388,10 +391,11 @@
       "source": null,
       "composition_required": [],
       "missing": [
-        "exact_manufacturer_urdf_mesh_artifact",
-        "explicit_model_variant_and_reuse_terms"
+        "referenced_standard_bots_description_mesh_closure",
+        "explicit_asset_reuse_license",
+        "exact_ro1_core_generation_binding"
       ],
-      "reason": "Official API manual links URDF resources through Notion, but no exact immutable Core artifact and reuse license were verified. RO1 and Core are not interchangeable; real external control also requires enabled manufacturer beta access."
+      "reason": "Official public Core URDF found at https://github.com/standardbots/ros2-realtime-api/blob/8a2164e041d3a4e75b2eeffe6351f3c89b292f5c/src/robot_urdfs/core.urdf, with inertials and 16 RO1 mesh references. Referenced meshes and an explicit reuse license are absent from that repository. The community pickNplace description package declares Proprietary despite its repository's root MIT license. The manufacturer's RO1 product URL now names Core; bind the exact requested generation before using that model. No complete licensed source recipe is enabled."
     },
     {
       "embodiment_id": "franka_research_3_bimanual",
@@ -443,14 +447,14 @@
       "arm_count": 2,
       "status": "source_available",
       "source": {
-        "repository_url": "https://github.com/Kinovarobotics/ros2_kortex",
-        "revision": "b2aa46b29ae8fadd5b293c57e3500925c61eb8e8",
+        "repository_url": "https://github.com/Kinovarobotics/ros_kortex",
+        "revision": "c3280d8a6a6b5d96590d51538e3f265710a6c77d",
         "entry_path": "kortex_description/robots/gen3_robotiq_2f_85.xacro",
         "format": "xacro",
         "license_id": "BSD-3-Clause",
         "license_path": "LICENSE",
-        "license_url": "https://github.com/Kinovarobotics/ros2_kortex/blob/b2aa46b29ae8fadd5b293c57e3500925c61eb8e8/LICENSE",
-        "license_note": "Official Kortex and bundled Robotiq 2F-85 gripper have BSD-3-Clause notices; retain kortex_description/grippers/robotiq_2f_85/LICENSE as well. Seven-DOF Gen3 is distinct from six-DOF Gen3 and Gen3 Lite.",
+        "license_url": "https://github.com/Kinovarobotics/ros_kortex/blob/c3280d8a6a6b5d96590d51538e3f265710a6c77d/LICENSE",
+        "license_note": "Official ROS Kortex source is BSD-3-Clause; the bundled complete Robotiq 2F-85 model and meshes retain their BSD-2-Clause notice at kortex_description/grippers/robotiq_2f_85/LICENSE. Seven-DOF vision Gen3 is distinct from six-DOF Gen3 and Gen3 Lite. This pin includes the gripper closure; the former ROS2 pin required a separate robotiq_description package.",
         "include_paths": [
           "kortex_description",
           "LICENSE"
@@ -496,6 +500,7 @@
           "xarm_description/config",
           "xarm_description/meshes/xarm7",
           "xarm_description/meshes/xarm7_1305",
+          "xarm_description/meshes/end_tool",
           "xarm_description/meshes/gripper/xarm",
           "xarm_controller/config",
           "LICENSE"
@@ -649,14 +654,14 @@
       "arm_count": 1,
       "status": "source_available",
       "source": {
-        "repository_url": "https://github.com/Kinovarobotics/ros2_kortex",
-        "revision": "b2aa46b29ae8fadd5b293c57e3500925c61eb8e8",
+        "repository_url": "https://github.com/Kinovarobotics/ros_kortex",
+        "revision": "c3280d8a6a6b5d96590d51538e3f265710a6c77d",
         "entry_path": "kortex_description/robots/gen3_robotiq_2f_85.xacro",
         "format": "xacro",
         "license_id": "BSD-3-Clause",
         "license_path": "LICENSE",
-        "license_url": "https://github.com/Kinovarobotics/ros2_kortex/blob/b2aa46b29ae8fadd5b293c57e3500925c61eb8e8/LICENSE",
-        "license_note": "Official Kortex and bundled Robotiq 2F-85 gripper have BSD-3-Clause notices; retain kortex_description/grippers/robotiq_2f_85/LICENSE as well. Seven-DOF Gen3 is distinct from six-DOF Gen3 and Gen3 Lite.",
+        "license_url": "https://github.com/Kinovarobotics/ros_kortex/blob/c3280d8a6a6b5d96590d51538e3f265710a6c77d/LICENSE",
+        "license_note": "Official ROS Kortex source is BSD-3-Clause; the bundled complete Robotiq 2F-85 model and meshes retain their BSD-2-Clause notice at kortex_description/grippers/robotiq_2f_85/LICENSE. Seven-DOF vision Gen3 is distinct from six-DOF Gen3 and Gen3 Lite. This pin includes the gripper closure; the former ROS2 pin required a separate robotiq_description package.",
         "include_paths": [
           "kortex_description",
           "LICENSE"
@@ -701,6 +706,7 @@
           "xarm_description/config",
           "xarm_description/meshes/xarm7",
           "xarm_description/meshes/xarm7_1305",
+          "xarm_description/meshes/end_tool",
           "xarm_description/meshes/gripper/xarm",
           "xarm_controller/config",
           "LICENSE"

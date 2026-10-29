@@ -172,18 +172,30 @@ def _cameras(profile: Mapping[str, Any], *, base: list[float], start: list[float
 
 def _exterior_right(packet: Path, *, base: Mapping[str, Any],
                     aim: Sequence[float]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """The right exterior camera row the compiled packet's scene leaves a clear view for, and its receipt."""
-    from .droid_exterior_cameras import ARENA_EXTERIOR_INTRINSICS, place_exterior_right, unmeasured_receipt
+    """Prefer a clear third view; keep a real authored camera with any measured limitation."""
+    from .droid_exterior_cameras import (
+        ARENA_EXTERIOR_INTRINSICS, arena_mount_world, camera_row, estimated_arena_mount, place_exterior_right,
+    )
     from .scene_camera_visibility import SceneCameraVisibilityError, packet_view_evaluator
     from .scene_physics_preflight import ScenePhysicsPreflightError
 
     try:
-        return place_exterior_right(base_pose_world=base, aim_world=aim, intrinsics=ARENA_EXTERIOR_INTRINSICS,
-                                    evaluate=packet_view_evaluator(packet))
+        camera, receipt = place_exterior_right(base_pose_world=base, aim_world=aim, intrinsics=ARENA_EXTERIOR_INTRINSICS,
+                                              evaluate=packet_view_evaluator(packet))
+        if camera is None:
+            # An occluded RGB stream is still a valid policy input. Retain the
+            # actual sensor and the measured limitation; task execution records
+            # whether the policy succeeds with those observations.
+            camera = camera_row(arena_mount_world(base), ARENA_EXTERIOR_INTRINSICS)
+            receipt = {**receipt, "status": "limited", "placement": "arena_mount", "camera_available": True,
+                       "visibility_measured": True, "clear_view_found": False, "simulation_estimate": True}
+            receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+        return camera, receipt
     except (SceneCameraVisibilityError, ScenePhysicsPreflightError, ImportError, KeyError, TypeError,
             ValueError) as exc:
-        # An unmeasurable scene gets no right exterior; the two-view packet is unchanged.
-        return None, unmeasured_receipt(str(exc)[:160] or type(exc).__name__)
+        # Unknown visibility is a recorded simulation assumption. Keep Arena's
+        # real authored third camera so the budgeted candidate can be tested.
+        return estimated_arena_mount(base_pose_world=base, code=str(exc)[:160] or type(exc).__name__)
 
 
 def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, Any],
@@ -418,7 +430,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     exterior_right, placement = _exterior_right(packet, base=base, aim=start)
     camera_layout: dict[str, Any] = {"exterior_right": placement}
     if exterior_right is not None:
-        camera_layout["measured_on_packet"] = _record(packet / "native_task_arena_packet_receipt.v1.json")
+        packet_field = "measured_on_packet" if placement["status"] in {"placed", "limited"} else "estimated_from_packet"
+        camera_layout[packet_field] = _record(packet / "native_task_arena_packet_receipt.v1.json")
         request = {**request, "cameras": [*request["cameras"], exterior_right], "request_digest": ""}
         request["request_digest"] = canonical_digest(request, digest_field="request_digest")
         packet = root / THREE_VIEW_PACKET_DIRECTORY

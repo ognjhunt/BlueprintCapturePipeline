@@ -17,9 +17,16 @@ from blueprint_pipeline.task_evaluation_policy_candidate_registry import validat
 
 def test_default_catalog_records_all_named_candidates_and_only_existing_initial_interfaces():
     value = load_default_catalog()
-    assert len(value["candidates"]) == 10
+    assert len(value["candidates"]) == 26
     enabled = {row["candidate_id"] for row in value["candidates"] if row["eligibility"]["enabled"]}
-    assert enabled == {"pi05_droid", "groot_n17_droid"}
+    assert enabled == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}
+    company_rows = [row for row in value["candidates"] if row.get("deployment")]
+    assert len(company_rows) == 16
+    assert all(row["eligibility"]["blockers"] for row in company_rows)
+    assert {row["deployment"]["configuration_id"] for row in company_rows
+            if row["deployment"]["relationship"] == "publisher_demonstrated"} == {
+        "i2rt_yam_bimanual", "agilex_piper_bimanual", "universal_robots_ur5e_bimanual",
+        "franka_research_3_bimanual", "kinova_gen3_bimanual", "ufactory_xarm7_bimanual"}
     assert catalog_candidate(value, "dreamlabs_dream1")["policy"]["digest"] is None
     assert validate_selected_pair(["groot_n17_droid", "pi05_droid"]) == ("pi05_droid", "groot_n17_droid")
 
@@ -111,5 +118,5 @@ def test_operator_cli_requires_reseal_after_revision_change_and_never_overwrites
     assert load_catalog(target) == sealed
     assert main(["inspect", "--catalog", str(target)]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["candidate_count"] == 10
+    assert report["candidate_count"] == len(original["candidates"])
     assert report["candidates"][0]["interface"]["policy_interface_id"] == "openpi_droid.v1"

@@ -43,6 +43,7 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
     from .beta_policy_screening_capabilities import build_planning_inputs
     from .beta_policy_screening_coordinator import _lock, _read, _root, _write, enqueue_screening_campaign
     from .beta_policy_screening_plan import build_screening_plan
+    from .beta_policy_screening_team import catalog_for_profile
     from .beta_policy_screening_worker import require_current_source
     from .task_evaluation_scene_owner_authority import reopen_scene_intent
     from .task_evaluation_scene_configuration_submission_inputs import read
@@ -52,7 +53,7 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
     if type(max_sources) is not int or not 1 <= max_sources <= 100:
         raise ValueError('beta_screening_family_source_limit_invalid')
     root = _root(queue_root)
-    catalog = load_default_catalog()
+    base_catalog = load_default_catalog()
     outcomes = []
     with _lock(root, '.family-source.lock'):
         states = root / 'sources'
@@ -70,6 +71,7 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                 profile = profile_for_capture(capture)
                 if not profile or not profile.get('family_scene_inputs_path'):
                     raise ValueError('beta_screening_family_profile_unavailable')
+                catalog = catalog_for_profile(profile, base_catalog)
                 retained = read(profile['family_scene_inputs_path'], digest_field='inputs_digest')
                 intent = reopen_scene_intent(retained['references']['scene_intent'])
                 inputs = read_family_scene_inputs(profile['family_scene_inputs_path'])
