@@ -66,6 +66,14 @@ def required_stage_result_blocker(stage: str, value: Any) -> str | None:
     }
     if stage not in successful:
         return None
+    # Website preparation's native handoff owns execution admission, so
+    # run_end_to_end records this typed supervisor skip as the stage's outcome.
+    if (stage == "task_evaluation_supervisor" and isinstance(value, Mapping)
+            and value.get("status") == "skipped"
+            and value.get("reason") == "website_scene_preparation_uses_native_handoff"
+            and value.get("native_execution_complete") is False
+            and value.get("proof_state_mutated_by_agent") is False):
+        return None
     status = _stage_result_status(value) or "missing_status"
     if status not in successful[stage]:
         return f"required_stage_not_complete:{stage}:{status}"
