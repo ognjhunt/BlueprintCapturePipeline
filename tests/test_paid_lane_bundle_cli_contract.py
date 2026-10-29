@@ -244,6 +244,8 @@ def test_an_authority_can_be_minted_from_a_command_line(path: Path, function: st
 #: it to now is the intended behaviour, whereas a parameter that selects *what
 #: gets built* is never safe to fix at its default.
 CLI_PARAMETERS_DELIBERATELY_NOT_OFFERED: dict[str, str] = {
+    "deployment_embodiment_preparation_bundle.materialize": "test-injected callable; CLI uses the pinned public-source materializer",
+    "deployment_embodiment_preparation_bundle.wheel_get": "test-injected callable; CLI uses the protected HTTP client and SHA-pinned wheels",
     "ctrl_world_provider_bundle.generated_at": "receipt timestamp defaults to now",
     "oscar_wam_provider_bundle.generated_at": "receipt timestamp defaults to now",
     "public_scene_simready_isaac_bundle.generated_at": "receipt timestamp defaults to now",

@@ -181,6 +181,29 @@ def test_no_available_source_has_individual_reasons_and_no_bundle(tmp_path, monk
     assert not params["output"].exists()
 
 
+def test_bundle_cli_builds_verifiable_artifact_and_can_reuse_it(tmp_path, monkeypatch, capsys):
+    import json
+
+    params = _bundle_fixture(tmp_path, monkeypatch)
+    request_path = tmp_path / "request.json"
+    contract.write_once(request_path, params["request"])
+    build = bundle_module.build_bundle
+    monkeypatch.setattr(bundle_module, "build_bundle", lambda **kwargs: build(
+        **kwargs, materialize=params["materialize"], wheel_get=params["wheel_get"]))
+    argv = ["--request", str(request_path)]
+    for key in ("runtime_source_receipt", "source_root", "output"):
+        argv.extend(["--" + key.replace("_", "-"), str(params[key])])
+    for _ in range(2):
+        assert bundle_module.main(argv) == 0
+        summary = json.loads(capsys.readouterr().out)
+        verified = bundle_module.load_verified_bundle(params["output"] / bundle_module.RECEIPT,
+                                                       expected_implementation_commit=COMMIT)
+        assert summary["bundle_sha256"] == verified["bundle_sha256"]
+        assert summary["request_digest"] == params["request"]["request_digest"]
+        assert [row["status"] for row in verified["inputs"]["sources"]] == [
+            "source_ready", "source_unavailable", "source_ready"]
+
+
 def _queued(tmp_path):
     grant = request()
     controller.enqueue(grant, root=tmp_path, commit=COMMIT)

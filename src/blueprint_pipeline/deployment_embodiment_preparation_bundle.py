@@ -193,3 +193,27 @@ def validate_archive(archive: zipfile.ZipFile) -> dict:
     require(manifest["inputs"]["inputs_digest"] == canonical_digest(manifest["inputs"], digest_field="inputs_digest")
             and json.loads(archive.read("provider_runtime/" + INPUT_FILENAME)) == manifest["inputs"], "inputs_changed")
     return manifest
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Rebuild a sealed preparation artifact without allocating a provider."""
+    import argparse
+    import json
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--request", required=True, type=Path)
+    parser.add_argument("--runtime-source-receipt", required=True, type=Path)
+    parser.add_argument("--source-root", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args(argv)
+    result = build_bundle(request=read(args.request), runtime_source_receipt=args.runtime_source_receipt,
+                          source_root=args.source_root, output=args.output)
+    print(json.dumps({key: result[key] for key in (
+        "status", "implementation_commit", "request_digest", "inputs_digest",
+        "bundle_path", "bundle_sha256", "bundle_digest",
+    )}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

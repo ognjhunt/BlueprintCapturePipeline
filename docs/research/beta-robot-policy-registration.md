@@ -46,6 +46,15 @@ disk reservations; verified models are published under the operator model store.
 Keep the same authorization ID when recovering a lost response. A restarted
 controller reconciles retained execution state without allocating another GPU.
 
+To rebuild only the sealed preparation bundle from an existing grant and native
+runtime source receipt, use the artifact CLI. This command allocates no compute:
+
+```bash
+python -m blueprint_pipeline.deployment_embodiment_preparation_bundle \
+  --request grant.json --runtime-source-receipt native_task_runtime_source_packet.v1.json \
+  --source-root ./public-source-cache --output ./preparation-bundle
+```
+
 For a retained body, the receipt supplies `binding_inputs_path`, its byte digest
 and the prepared asset directory. Load those exact bytes into the registration
 helper below and provide an actual matching policy identity and rights record.
