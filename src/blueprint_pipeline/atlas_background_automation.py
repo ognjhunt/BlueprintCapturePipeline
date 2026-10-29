@@ -153,6 +153,42 @@ def complete_track_coverage(*, track, target, frames):
                 'selection_basis': 'sam31_track_with_agent_grounded_regions'} if hints else {})}
 
 
+def outline_missed_views(*, track, sam_track, target, frames, timestamps, task_context, root,
+                         source_video_digest=None):
+    """Look again, before any edit, at selected views still without an outline.
+
+    A confident exact-frame box becomes that view's outline through the planner-box
+    path, so the view is edited and composited like the rest. 2026-10-29
+    capture-4b60431e: the tray had no outline in the wide view, kept it, and the
+    review stopped the preview.
+    """
+    if not (task_context or {}).get("capture_id"):
+        return track
+    from .atlas_removal_visibility import MAXIMUM_VIEWS, locate_target
+    empty = {row["source_frame_id"] for row in track["observations"] if not row["runs"]}
+    regions, evidence = [], []
+    for frame in [frame for frame in frames if frame["frame_id"] in empty][:MAXIMUM_VIEWS]:
+        box = locate_target(target=target, frame=frame, task_context=task_context,
+                            output_root=root / target["target_id"], source_video_digest=source_video_digest)
+        if box is not None:
+            regions.append({"frame_id": frame["frame_id"], "box_xywh_normalized": box})
+            evidence.append({"timestamp_seconds": timestamps[frame["frame_id"]], "box_xywh_normalized": box})
+    if not regions:
+        return track
+    looked = {**target, "regions": [*target["regions"], *regions],
+              "spatial_evidence": [*target["spatial_evidence"], *evidence]}
+    guide = grounded_region_guide(target=looked, frames=frames)
+    if sam_track is None:
+        return guide
+    # A SAM track may report a view explicitly empty; its found views keep SAM's own mask.
+    found = {region["frame_id"] for region in regions}
+    hints = {row["source_frame_id"]: row for row in guide["observations"] if row["source_frame_id"] in found}
+    return {**track, "observations": [hints.get(row["source_frame_id"], row) if not row["runs"] else row
+                                      for row in track["observations"]],
+            "guide_only": True, "physical_evidence": False,
+            "selection_basis": "sam31_track_with_agent_grounded_regions"}
+
+
 def segment_objects(*, frames, objects, inputs, task_context, source_digest, root, transients=(), selected_tracks=None):
     """Segment reviewed objects; region fallbacks remain image-edit hints only.
 
@@ -217,8 +253,9 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
                 if decode_track_mask(observation).shape != frame['rgb'].shape[:2]:
                     raise ValueError('atlas_selected_source_track_pixels_changed')
         else:
+            sam_track = None
             try:
-                track = select_task_track(target=target, tracks=tracks, frames=identity_frames)
+                sam_track = select_task_track(target=target, tracks=tracks, frames=identity_frames)
             except ValueError as exc:
                 if str(exc) != f"task_target_track_ambiguous:{obj['target_id']}":
                     raise
@@ -226,7 +263,11 @@ def segment_objects(*, frames, objects, inputs, task_context, source_digest, roo
                 # instance. Keep strict track selection unchanged for geometry.
                 track = grounded_region_guide(target=target, frames=frames)
             else:
-                track = complete_track_coverage(track=track, target=target, frames=frames)
+                track = complete_track_coverage(track=sam_track, target=target, frames=frames)
+            if obj["disposition"] == "remove":
+                track = outline_missed_views(track=track, sam_track=sam_track, target=target, frames=frames,
+                    timestamps=timestamps, task_context=task_context, root=root / "visibility_checks",
+                    source_video_digest=source_digest)
         # A track must explicitly report every selected view, even an empty mask.
         if {o["source_frame_id"] for o in track["observations"]} != set(by_id):
             raise ValueError("atlas_object_mask_view_coverage_incomplete")

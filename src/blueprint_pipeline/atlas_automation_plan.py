@@ -71,6 +71,17 @@ class SceneObject(BaseModel):
     regions: list[ImageRegion] = Field(min_length=1)
 
 
+class CurrentSceneObject(SceneObject):
+    """New planner answers name a concept SAM 3.1 can find on its own (capture-4b60431e)."""
+
+    @model_validator(mode="after")
+    def short_segmentation_concept(self):
+        words = self.segmentation_prompt.split()
+        if len(words) > 5 or any(not word.replace("-", "").replace("'", "").isalnum() for word in words):
+            raise ValueError("atlas_automation_segmentation_prompt_not_a_short_concept")
+        return self
+
+
 class AutomationPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
     scale_references: list[ScaleReference]
@@ -89,10 +100,18 @@ class AutomationPlan(BaseModel):
         return self
 
 
+class CurrentAutomationPlan(AutomationPlan):
+    objects: list[CurrentSceneObject]
+
+
 AUTOMATION_INSTRUCTIONS = """
 Also supply automation for the selected scene: identify task objects and nearby
 supports/obstacles with exact candidate frame IDs and upright-image normalized
-boxes. Keep fixtures/supports; propose a separate object-absent background for
+boxes. Box each object in every required or additional frame where it is visible,
+not only in its clearest view. Give each object a segmentation_prompt that SAM 3.1
+can find on its own: one short visual concept, usually a colour or material and the
+common noun, at most five words, with no location, relation, contents or
+instruction; those belong in its label. Keep fixtures/supports; propose a separate object-absent background for
 manipulated task objects, including all their visible parts and contents. Raw
 capture and its reconstruction stay intact. A removal_instruction must describe
 only that removal and realistic revealed space; do not invent a plywood finish.

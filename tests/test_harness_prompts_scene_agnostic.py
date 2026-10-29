@@ -14,6 +14,7 @@
 #   src/blueprint_pipeline/atlas_scene_chisel.py
 #   src/blueprint_pipeline/atlas_scene_generate.py
 #   src/blueprint_pipeline/atlas_scene_preservation.py
+#   src/blueprint_pipeline/atlas_removal_visibility.py
 """Owner rule 2026-10-29: one general harness for every site, task and object.
 
 The model prompts on the website capture, Atlas and scene preparation path name
@@ -35,7 +36,7 @@ HARNESS_PROMPT_MODULES = (
     "clean_plate_removal_analysis_gemini", "website_task_semantics", "website_operation_coverage",
     "atlas_source_gap_evidence", "atlas_scene_task_regions", "atlas_scene_surface_masks",
     "atlas_recorded_source_recovery", "task_evaluation_robot_placement_agent", "atlas_scene_chisel",
-    "atlas_scene_generate", "atlas_scene_preservation",
+    "atlas_scene_generate", "atlas_scene_preservation", "atlas_removal_visibility",
 )
 # Not scanned yet, because their strings include lookup data or classifier
 # vocabulary rather than only instructions: atlas_scene_measurements (standard
