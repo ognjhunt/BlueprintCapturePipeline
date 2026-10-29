@@ -19,10 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest as digest
-from .policy_interface_binding import TEAM_HTTPS_INTERFACES
+from .policy_interface_binding import INTERFACES
 
 SCHEMA = "blueprint.site_task_simulation_qualification.v1"
 DIMENSIONS = {"scale", "registration", "collision", "task_state", "observation", "task_dynamics"}
+DEFAULT_ROBOT_INTERFACES = frozenset({"openpi_droid.v1", "groot_n17_droid.v1", "openpi_droid_https.v1"})
 ROLES = {"capture", "testbed", "scene", "task_spec", "success_contract", "robot_model", "measurement", "simulator_measurement"}
 BINDING_FIELDS = {"scene_request_id", "site_id", "task_id", "capture_id", "source_capture_digest",
                   "testbed_digest_sha256", "scene_revision_digest", "task_spec_digest", "success_contract_digest",
@@ -100,7 +101,7 @@ def validate_receipt(value: Any, *, now: datetime | None = None) -> dict[str, An
              and row.get("receipt_digest") == digest(row, digest_field="receipt_digest"), "receipt_invalid")
     binding = _object(row["binding"])
     _require(set(binding) == BINDING_FIELDS and all(isinstance(v, str) and v for v in binding.values())
-             and binding["policy_interface_id"] in TEAM_HTTPS_INTERFACES
+             and binding["policy_interface_id"] in INTERFACES
              and all(_DIGEST.fullmatch(binding[key]) for key in BINDING_FIELDS if "digest" in key), "binding_invalid")
     _require(all(_DIGEST.fullmatch(str(row[key])) for key in
                  ("request_digest", "profile_digest", "review_digest", "authority_digest")), "digest_invalid")
@@ -229,7 +230,24 @@ def qualify_from_profile(operator_profile: Mapping[str, Any], *, now: datetime |
     _require(canonical_digest(documents["task_spec"]) == binding.get("task_spec_digest")
              and contract["contract_digest"] == binding.get("success_contract_digest"), "task_binding_mismatch")
     source_map = {item["role"]: item for item in portable}
+    if binding.get("policy_interface_id") in DEFAULT_ROBOT_INTERFACES:
+        _require(operator_profile.get("default_robot_model") is not None, "default_robot_model_unbound")
+        _require(_DIGEST.fullmatch(str(authority.get("default_robot_model_closure_digest"))),
+                 "default_robot_model_closure_unbound")
+        from .blueprint_robot_model_delivery import require_default_robot_model
+        require_default_robot_model(profile=operator_profile, model_path=role_paths["robot_model"],
+            expected_model_sha256=binding["robot_model_digest"],
+            expected_closure_digest=authority.get("default_robot_model_closure_digest"))
     measured, simulated = documents["measurement"], documents["simulator_measurement"]
+    if simulated.get("extraction") is not None:
+        # A generated numeric document is not a substitute for its retained
+        # engine/render sources. Recompute those bytes at admission/closeout.
+        from .site_task_simulator_measurements import produce_from_operator_profile
+        _require(produce_from_operator_profile(operator_profile) == simulated, "simulator_extraction_changed")
+        metrology_scene = _object(_object(simulated["extraction"]).get("scene_artifact"))
+        _require(metrology_scene.get("sha256") == source_map["scene"]["sha256"]
+                 and metrology_scene.get("size_bytes") == source_map["scene"]["size_bytes"],
+                 "simulator_scene_bytes_mismatch")
     for doc, role in ((measured, "measurement"), (simulated, "simulator")):
         _require(doc.get("schema_version") == "blueprint.site_task_measurement_samples.v1"
                  and doc.get("binding") == binding and doc.get("producer_id") in authority.get("allowed_" + role + "_producers", [])
@@ -302,21 +320,28 @@ def require_current_qualification(*, receipt: Any, operator_profile: Mapping[str
     binding = frozen["binding"]
     scene = _object(facts.get("scene"))
     package = _object(request.get("policy_package"))
-    endpoint = _object(package.get("policy_api_endpoint"))
+    blueprint_owned = request.get("execution_operator") == {"kind": "blueprint"}
+    endpoint = package if blueprint_owned else _object(package.get("policy_api_endpoint"))
     _require(binding["scene_revision_digest"] == scene.get("scene_revision_digest")
              and binding["task_spec_digest"] == canonical_digest(_object(scene.get("task_spec")))
              and binding["success_contract_digest"] == _object(scene.get("task_success_contract")).get("contract_digest")
              and binding["policy_interface_id"] == endpoint.get("policy_interface_id")
              and binding["capture_id"] == _object(request.get("site_package")).get("capture_id"), "runtime_binding_mismatch")
-    # The team declaration stages a verified, self-contained model. The default
-    # provider DROID asset has no retained model-byte proof at this boundary yet.
+    # Team declarations retain their original path. Blueprint defaults must be
+    # selected by the operator and match the full closure pinned by this review.
     from .team_candidate_quick10_launch import request_embodiment
     manifest = request_embodiment(request)
-    _require(manifest is not None, "default_robot_model_unbound")
-    _require(manifest["model"]["sha256"] == binding["robot_model_digest"]
-             and robot_model_path.is_file() and not robot_model_path.is_symlink()
-             and _file_digest(robot_model_path) == binding["robot_model_digest"],
-             "robot_model_mismatch")
+    if manifest is None:
+        _require(operator_profile.get("default_robot_model") is not None, "default_robot_model_unbound")
+        from .blueprint_robot_model_delivery import require_default_robot_model
+        require_default_robot_model(profile=operator_profile, model_path=robot_model_path,
+            expected_model_sha256=binding["robot_model_digest"],
+            expected_closure_digest=authority.get("default_robot_model_closure_digest"))
+    else:
+        _require(manifest["model"]["sha256"] == binding["robot_model_digest"]
+                 and robot_model_path.is_file() and not robot_model_path.is_symlink()
+                 and _file_digest(robot_model_path) == binding["robot_model_digest"],
+                 "robot_model_mismatch")
     sources = {item["role"]: item for item in frozen["source_artifacts"]}
     scene_path = Path(facts["packet_dir"]) / "native_task_arena_scene_plan.v1.json"
     _require(_file_digest(scene_path) == sources["scene"]["sha256"], "scene_bytes_changed")
@@ -359,14 +384,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--publish", action="store_true", help="Publish the retained receipt via existing signed WebApp transport.")
     parser.add_argument("--webapp-url")
     parser.add_argument("--token-file", type=Path)
+    parser.add_argument("--prepare-simulator-measurements", action="store_true",
+                        help="Extract operator-pinned runtime readings only; no qualification or publication.")
     args = parser.parse_args(argv)
     if args.publish and not (args.webapp_url and args.token_file):
         parser.error("--publish requires --webapp-url and --token-file")
     if not args.publish and (args.webapp_url or args.token_file):
         parser.error("--webapp-url and --token-file require explicit --publish")
+    if args.prepare_simulator_measurements and args.publish:
+        parser.error("--prepare-simulator-measurements cannot publish a qualification")
     from .team_candidate_quick10_registry import profile_for_capture
     profile = profile_for_capture(args.capture_root)
     _require(profile is not None, "operator_profile_missing")
+    if args.prepare_simulator_measurements:
+        from .site_task_simulator_measurements import produce_from_operator_profile, retain_measurements
+        document = produce_from_operator_profile(profile)
+        retain_measurements(args.out, document)
+        print(json.dumps({"measurement_digest": digest(document), "path": str(args.out.resolve()),
+                          "evidence_scope": "simulator_readings_not_site_qualification"}))
+        return 0
     receipt = qualify_from_profile(profile)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     if args.out.exists() or args.out.is_symlink():

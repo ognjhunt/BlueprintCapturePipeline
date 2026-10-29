@@ -167,6 +167,19 @@ jobs:
           echo "renderer package install failed after two bounded attempts"
           exit 1
 
+      # The full collection includes actual SDK-object serialization and its
+      # collector join. Provision the pinned package before that collection;
+      # the tests forbid client construction, authentication and network I/O.
+      - name: Install pinned SDK for offline native reader proof
+        working-directory: tools/autonomy_native_reader
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          timeout --kill-after=10s 140s npm ci --ignore-scripts --no-audit --no-fund
+          node -e 'if (require("./node_modules/@google-cloud/firestore/package.json").version !== "7.11.6") process.exit(1)'
+          printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_SDK=$PWD/node_modules/@google-cloud/firestore" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_NODE=$(command -v node)" >> "${GITHUB_ENV}"
+
       - name: Install sealed-camera renderer dependencies
         working-directory: tools/splat_render
         # Root dependencies run in a bounded cgroup so an apt descendant cannot
