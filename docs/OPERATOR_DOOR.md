@@ -1,5 +1,10 @@
 # Operator door
 
+The fixed [`install-public-piper-policy` operation](research/openwam-piper-registration-2026-10-29.md)
+installs the public OpenWAM PiPER screening registration from retained prepared
+assets, with a registry digest check and scoped public-license evidence. It
+launches no compute and accepts no arbitrary paths, commands or endpoints.
+
 The operator door is a token-gated HTTPS window onto the control-plane host
 for agent sessions that cannot SSH to it. Claude Code cloud sessions send all
 egress through an HTTPS proxy, so `ssh root@<host>` has no path from them. The

@@ -529,7 +529,7 @@ def _add_wait(parser: argparse.ArgumentParser, timeout: float) -> None:
     parser.add_argument("--poll", type=float, default=15.0)
 
 
-def _embodiment_preparation_request(path: str) -> dict[str, Any]:
+def _embodiment_preparation_request(path: str, *, public_policy: bool = False) -> dict[str, Any]:
     """Read an already reviewed sealed grant, with no implicit budget or identity."""
     def pairs(items):
         result = {}
@@ -549,10 +549,16 @@ def _embodiment_preparation_request(path: str) -> dict[str, Any]:
         request = json.loads(raw, object_pairs_hook=pairs, parse_constant=_invalid_json_constant)
         fields = {"schema_version", "authorization_id", "release_commit", "embodiment_ids", "max_spend_usd",
                   "max_hourly_rate_usd", "ttl_seconds", "expires_at_epoch", "authorization_reference", "request_digest"}
+        schema, id_key = "embodiment_asset_preparation_request.v1", "authorization_id"
+        if public_policy:
+            fields = {"schema_version", "installation_id", "release_commit", "preparation_authorization_id",
+                "preparation_publication_digest", "candidate_id", "team_id", "checkpoint_id", "policy_profile",
+                "expected_registry_digest", "authorization_reference", "request_digest"}
+            schema, id_key = "openwam_piper_policy_install_request.v1", "installation_id"
         if (len(raw) > 16 * 1024 or not isinstance(request, dict) or set(request) != fields
-                or request["schema_version"] != "embodiment_asset_preparation_request.v1"
-                or not isinstance(request["authorization_id"], str)
-                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", request["authorization_id"]) is None):
+                or request["schema_version"] != schema
+                or not isinstance(request[id_key], str)
+                or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", request[id_key]) is None):
             raise ValueError("invalid grant")
         payload = json.dumps({key: value for key, value in request.items() if key != "request_digest"},
                              sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
@@ -560,7 +566,8 @@ def _embodiment_preparation_request(path: str) -> dict[str, Any]:
             raise ValueError("invalid digest")
         return request
     except (OSError, UnicodeError, ValueError, RecursionError):
-        raise DoorError(2, "embodiment_preparation_request_file_invalid") from None
+        code = "public_policy_install" if public_policy else "embodiment_preparation"
+        raise DoorError(2, code + "_request_file_invalid") from None
 
 
 def _hold_duration(value: str) -> int:
@@ -696,6 +703,11 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         help="JSON containing exact release, ordered public IDs, budget, expiry and stable authorization ID/digest")
     _add_wait(preparation, 180)
     preparation.description = "Wait observes durable grant enqueue only; inspect retained batch results for simulation preparation outcomes."
+    policy_install = commands.add_parser("install-public-piper-policy",
+        help="install the fixed public OpenWAM PiPER registration from retained assets; launches no compute")
+    policy_install.add_argument("--request-file", required=True,
+        help="sealed request binding retained preparation, exact release, public policy identity and registry digest")
+    _add_wait(policy_install, 360)
     selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
     selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
     selected_modes = selected.add_mutually_exclusive_group()
@@ -788,6 +800,11 @@ def run(args: argparse.Namespace) -> int:
         request = _embodiment_preparation_request(args.request_file)
         if not args.operation_key:
             args.operation_key = "public-embodiment-preparation-" + request["authorization_id"]
+        return _submit({"kind": command, "request": request}, args)
+    elif command == "install-public-piper-policy":
+        request = _embodiment_preparation_request(args.request_file, public_policy=True)
+        if not args.operation_key:
+            args.operation_key = "install-public-piper-policy-" + request["installation_id"]
         return _submit({"kind": command, "request": request}, args)
     elif command == "selected-handoff":
         with Path(args.selector_file).open("rb") as stream:

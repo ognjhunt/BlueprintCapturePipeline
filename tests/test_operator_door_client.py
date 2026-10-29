@@ -95,6 +95,45 @@ def _asset_grant(**changes):
     return value
 
 
+def _public_policy_request():
+    from operator_door.public_policy_registration_contract import digest
+    value = {"schema_version": "openwam_piper_policy_install_request.v1", "installation_id": "development-only",
+        "release_commit": "a" * 40, "preparation_authorization_id": "development-only-assets",
+        "preparation_publication_digest": "sha256:" + "b" * 64,
+        "candidate_id": "openwam_alpha_piper_bimanual", "team_id": "blueprint-public-models",
+        "checkpoint_id": "openwam-alpha-piper-12bfca6f", "policy_profile": "openwam_alpha_real_piper.v1",
+        "expected_registry_digest": "sha256:" + "c" * 64, "authorization_reference": "development_only public policy request"}
+    value["request_digest"] = digest(value)
+    return value
+
+
+def test_public_policy_install_cli_http_keeps_exact_request_and_retry_identity(door, tmp_path, monkeypatch):
+    request = _public_policy_request()
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(request))
+    args = ("install-public-piper-policy", "--request-file", str(path))
+    code, output = _run(*args)
+    assert code == 0
+    request_id = json.loads(output)["id"]
+    retry_code, retry = _run(*args)
+    assert retry_code == 0 and json.loads(retry)["id"] == request_id
+    saved = json.loads((door["state"] / "requests" / "pending" / (request_id + ".json")).read_text())
+    assert saved["request"] == {"kind": "install-public-piper-policy", "request": request}
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
+    assert _run(*args)[0] == 3
+
+
+def test_public_policy_install_cli_rejects_unsealed_or_duplicate_fields_without_network(tmp_path, monkeypatch):
+    path = tmp_path / "request.json"
+    request = _public_policy_request()
+    request["expected_registry_digest"] = "sha256:" + "d" * 64
+    path.write_text(json.dumps(request))
+    monkeypatch.setattr(client, "_request", lambda *_a, **_k: pytest.fail("malformed request reached network"))
+    assert _run("install-public-piper-policy", "--request-file", str(path))[0] == 2
+    path.write_text('{"installation_id":"first",' + json.dumps(_public_policy_request())[1:])
+    assert _run("install-public-piper-policy", "--request-file", str(path))[0] == 2
+
+
 def test_public_asset_batch_cli_api_preserves_authority_and_retry_identity(door, tmp_path):
     grant = _asset_grant()
     path = tmp_path / "grant.json"
