@@ -113,7 +113,8 @@ def test_reviewed_native_resume_goes_through_the_existing_processor(waiting):
     _job(root, "ready")
     calls = []
     result = listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
-        run_evaluation_prep=False, expected_preparation_resume_digest=canonical_digest(before),
+        run_evaluation_prep=False, expected_reconstruction_resume={"review_schema": resume.REVIEW_SCHEMA,
+            "ledger_digest": canonical_digest(before), "selected_payload_sha256": listener.payload_sha256(raw)},
         run_e2e=lambda **kw: calls.append(kw) or {"status": "completed"})
     assert result["status"] == "processed" and len(calls) == 1
     assert calls[0]["resume_completed_stages"] is True
@@ -130,9 +131,10 @@ def test_a_stale_native_review_never_enters_the_pipeline(waiting):
     before["revision"] += 1
     write_json(root / listener.JOB_LEDGER_FILENAME, before)
     result = listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
-        expected_preparation_resume_digest=reviewed,
+        expected_reconstruction_resume={"review_schema": resume.REVIEW_SCHEMA,
+            "ledger_digest": reviewed, "selected_payload_sha256": listener.payload_sha256(raw)},
         run_e2e=lambda **_: pytest.fail("stale operator review entered pipeline"))
-    assert result["status"] == "preparation_resume_changed"
+    assert result["status"] == "reconstruction_resume_changed"
     assert listener._read_job_ledger(root) == before
 
 

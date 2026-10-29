@@ -42,6 +42,10 @@ Source conflicts, withdrawals, retirement, changed snapshots and ended authority
 retain their refusal. There is no broker republish, counter reset, new grant,
 replacement job, fabricated wait record, timer or customer approval step.
 
+This uses the existing reconstruction-continuation claim interface with a typed
+operator review of the ledger and exact selected envelope. The native handler
+and its signature are unchanged; no additional handler argument is needed.
+
 Because Atlas is already finished, its unused request quota and price-review
 date confer no authority on native work and cannot prevent that work. Native
 spending remains separately admitted by the existing handler and allocator.
@@ -60,8 +64,10 @@ changed source/history/owner refusal, active/uncertain lease refusal, global
 spending holds, independent Atlas/native limits, and operator client/root-runner
 request and sandbox contracts. It does not make a live provider call.
 
-The eight focused recovery/operator suites passed 470 cases in 20.59 seconds.
-The paid-resource allocator bypass-verifier suite passed separately.
+The final eight focused recovery/operator suites passed 474 cases in 27.16
+seconds. The paid-resource allocator bypass-verifier suite passed 27 cases in
+60.96 seconds. The existing impact selector maps every changed code surface and
+does not require a repository-wide suite for this final change.
 Changed-file Ruff, whitespace and shell syntax checks passed. An initial run
 caught malformed-mode validation using an unhashable input; it was repaired and
 replayed. The final run reused the primary Python environment's installed

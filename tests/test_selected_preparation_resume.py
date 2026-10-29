@@ -1,4 +1,5 @@
 """Resume retained website preparation without resetting delivery or spending history."""
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -6,11 +7,17 @@ import pytest
 
 from blueprint_pipeline import pubsub_handoff_listener as native
 from blueprint_pipeline import selected_atlas_preview_recovery as recovery
+from blueprint_pipeline import website_reconstruction_resume as continuation
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests import test_selected_atlas_preview_recovery as atlas_tests
 from tests.test_selected_atlas_preview_recovery import recover, write_job
 
 site = atlas_tests.site
+
+
+def review(digest):
+    return {"review_schema": continuation.REVIEW_SCHEMA, "ledger_digest": digest,
+            "selected_payload_sha256": "b" * 64}
 
 
 def retained_native(site):
@@ -49,8 +56,8 @@ def test_resume_uses_same_payload_native_claim_and_keeps_all_prior_attempts(site
         seen.append((raw, kwargs))
         status, ledger = native._claim_job_lease(site.capture, scene_id="site-fixture",
             capture_id="walkthrough-fixture", owner="reviewed-recovery", lease_seconds=60,
-            payload_sha256="b" * 64, producer_delivery_key=before["producer_delivery_key"],
-            expected_preparation_resume_digest=kwargs["expected_preparation_resume_digest"])
+            payload_sha256=hashlib.sha256(raw).hexdigest(), producer_delivery_key=before["producer_delivery_key"],
+            expected_reconstruction_resume=kwargs["expected_reconstruction_resume"])
         assert status == "claimed" and ledger["attempt_count"] == 6
         assert ledger["attempt_history"] == before["attempt_history"]
         return {"status": "processed", "queue_disposition": "terminal_success"}
@@ -96,8 +103,9 @@ def test_native_resume_claim_refuses_other_states_even_with_matching_digest(site
     (site.capture / native.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
     status, retained = native._claim_job_lease(site.capture, scene_id="site-fixture",
         capture_id="walkthrough-fixture", owner="operator", lease_seconds=60,
-        expected_preparation_resume_digest=canonical_digest(ledger))
-    assert status == "preparation_resume_changed" and retained == ledger
+        payload_sha256="b" * 64, producer_delivery_key=ledger["producer_delivery_key"],
+        expected_reconstruction_resume=review(canonical_digest(ledger)))
+    assert status == "reconstruction_resume_changed" and retained == ledger
 
 
 @pytest.mark.parametrize("change", ["revision", "lease_owner", "lease_token", "lease_expires_at", "recovered_expired_lease"])
@@ -110,17 +118,32 @@ def test_native_claim_checks_review_under_its_own_lock(site, change):
         reviewed = canonical_digest(ledger)  # reviewing an unresolved lease never authorizes it
     status, retained = native._claim_job_lease(site.capture, scene_id="site-fixture",
         capture_id="walkthrough-fixture", owner="operator", lease_seconds=60,
-        expected_preparation_resume_digest=reviewed)
-    assert status == "preparation_resume_changed" and retained == ledger
+        payload_sha256="b" * 64, producer_delivery_key=ledger["producer_delivery_key"],
+        expected_reconstruction_resume=review(reviewed))
+    assert status == "reconstruction_resume_changed" and retained == ledger
 
 
 def test_source_conflict_still_refuses_a_reviewed_resume(site):
     ledger = retained_native(site)
     status, _ = native._claim_job_lease(site.capture, scene_id="site-fixture",
         capture_id="walkthrough-fixture", owner="operator", lease_seconds=60,
-        producer_delivery_key="sha256:" + "e" * 64,
-        expected_preparation_resume_digest=canonical_digest(ledger))
-    assert status == "source_conflict"
+        payload_sha256="b" * 64, producer_delivery_key="sha256:" + "e" * 64,
+        expected_reconstruction_resume=review(canonical_digest(ledger)))
+    assert status == "reconstruction_resume_changed"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("selected_payload_sha256", "c" * 64), ("ledger_digest", "invalid"),
+    ("review_schema", "unrecognized-review"), ("new_spend_authority", 999),
+])
+def test_review_cannot_authorize_another_envelope_or_expand_its_fields(site, field, value):
+    ledger = retained_native(site)
+    expected = {**review(canonical_digest(ledger)), field: value}
+    status, after = native._claim_job_lease(site.capture, scene_id="site-fixture",
+        capture_id="walkthrough-fixture", owner="operator", lease_seconds=60,
+        payload_sha256="b" * 64, producer_delivery_key=ledger["producer_delivery_key"],
+        expected_reconstruction_resume=expected)
+    assert status == "reconstruction_resume_changed" and after == ledger
 
 
 @pytest.mark.parametrize("atlas_only_limit", ["quota", "price_review"])

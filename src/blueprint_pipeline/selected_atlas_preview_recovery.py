@@ -375,9 +375,12 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                 # This is one explicit operator retry, not a broker reset or a
                 # new wait/grant. The native claim checks the reviewed ledger
                 # atomically, then increments its existing attempt history.
+                from .website_reconstruction_resume import REVIEW_SCHEMA
                 result = listener.process_handoff_payload(handoff_payload, storage_root=Path(storage_root),
                     provider=provider, expected_preparation_purpose="scene_preparation",
-                    expected_preparation_resume_digest=native["ledger_digest"])
+                    expected_reconstruction_resume={"review_schema": REVIEW_SCHEMA,
+                        "ledger_digest": native["ledger_digest"],
+                        "selected_payload_sha256": hashlib.sha256(handoff_payload).hexdigest()})
                 complete = result.get("status") == "processed" and result.get("queue_disposition") == "terminal_success"
                 return {"status": "native_preparation_resumed" if complete else "blocked", "atlas": snapshot,
                         "atlas_retry_performed": False, "native_handler_invoked": True,
