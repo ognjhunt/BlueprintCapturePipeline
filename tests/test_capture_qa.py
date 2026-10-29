@@ -12,6 +12,7 @@ import blueprint_pipeline.capture_qa as capture_qa
 import blueprint_pipeline.capture_quality_analyzer as capture_quality_analyzer
 from blueprint_pipeline.capture_intake import CaptureIntakeError
 from blueprint_pipeline.capture_qa import build_capture_qa_report
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, canonical_json
 from blueprint_pipeline.capture_qa_webapp_sync import (
     build_capture_qa_webapp_publication,
     sync_capture_qa_to_webapp,
@@ -281,10 +282,13 @@ def test_capture_qa_publication_is_exactly_bound_and_receipt_verified(
             }
             return json.dumps(receipt).encode("utf-8")
 
-    monkeypatch.setattr(
-        "blueprint_pipeline.capture_qa_webapp_sync.urllib_request.urlopen",
-        lambda *_args, **_kwargs: Response(),
-    )
+    def send(request, **_kwargs):
+        outgoing = json.loads(request.data)
+        assert outgoing["qa_report_canonical_json"] == publication["qa_report_canonical_json"]
+        assert _digest(outgoing["qa_report_canonical_json"].encode("utf-8")) == report["qa_report_digest"]
+        return Response()
+
+    monkeypatch.setattr("blueprint_pipeline.capture_qa_webapp_sync.urllib_request.urlopen", send)
     result = sync_capture_qa_to_webapp(
         capture_session_id="capture-session-qa-1",
         report=report,
@@ -301,6 +305,46 @@ def test_capture_qa_publication_is_exactly_bound_and_receipt_verified(
             capture_session_id="capture-session-qa-1",
             report=tampered,
         )
+
+
+def test_qa_publication_retains_producer_number_bytes_across_json_transport(tmp_path: Path) -> None:
+    payload = b"producer-owned-qa-numeric-boundary"
+    report = build_capture_qa_report(
+        _envelope(payload), upload_root=_upload(tmp_path, payload),
+        media_probe=_probe(payload, frame_rate=25.0, duration_seconds=5.0),
+        quality_observations=_observations(payload, sharp_frame_fraction=1.0),
+    )
+    original = canonical_json(report)
+    publication = build_capture_qa_webapp_publication(capture_session_id="capture-session-qa-1", report=report)
+    transported = json.loads(json.dumps(publication))
+    producer_json = transported["qa_report_canonical_json"]
+    assert producer_json == canonical_json({key: value for key, value in report.items() if key != "qa_report_digest"})
+    assert "qa_report_digest" not in json.loads(producer_json)
+    for number in ("1.0", "25.0", "5.0"):
+        assert f'"measurement":{number}' in producer_json
+    assert _digest(producer_json.encode("utf-8")) == report["qa_report_digest"]
+    assert canonical_json(transported["report"]) == original == canonical_json(report)
+    assert transported["qa_report_digest"] == report["qa_report_digest"]
+    # JavaScript parses these as Number and serializes integral values without
+    # '.0'. Its decoded report is equivalent; its new byte spelling is not the
+    # original scientific artifact's digest input.
+    js_projection = json.loads(json.dumps(report), parse_float=lambda value:
+        int(float(value)) if float(value).is_integer() else float(value))
+    assert js_projection == report
+    assert canonical_digest(js_projection, digest_field="qa_report_digest") != report["qa_report_digest"]
+    assert _digest(producer_json.encode("utf-8")) == transported["qa_report_digest"]
+
+
+@pytest.mark.parametrize("measurement", [25, 26.0])
+def test_qa_publication_refuses_report_value_or_numeric_spelling_tampering(tmp_path: Path, measurement) -> None:
+    payload = b"tampered-producer-qa-report"
+    report = build_capture_qa_report(
+        _envelope(payload), upload_root=_upload(tmp_path, payload),
+        media_probe=_probe(payload, frame_rate=25.0), quality_observations=_observations(payload),
+    )
+    _check(report, "frame_rate")["measurement"] = measurement
+    with pytest.raises(ValueError, match="qa_report_digest_mismatch"):
+        build_capture_qa_webapp_publication(capture_session_id="capture-session-qa-1", report=report)
 
 
 def test_pts_gap_fails_with_specific_export_or_recapture_instruction(tmp_path: Path) -> None:
