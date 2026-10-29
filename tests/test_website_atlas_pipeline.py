@@ -72,7 +72,7 @@ def test_refinement_reviews_extended_candidates_and_resumes_without_rebuying_rev
     policy = {"model": "gpt-6.1-sol", "maximum_review_cost_usd": .5, "pose_input_cost_usd": .01,
         "rgbd_view_cost_usd": .05, "mesh_export_cost_usd": .5, "rate_card_reference": "test", "reviewed_by": "test",
         "reviewed_on": _reviewed_today()}
-    monkeypatch.setattr(pipeline, "load_configuration", lambda *a: {"policy": policy, "remaining_cost_usd": 3.4,
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *a, **kw: {"policy": policy, "remaining_cost_usd": 3.4,
         "authority": {"provider_retention": "project_library_retention_approved"}})
     monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("url", "secret"))
     def extend(**kwargs):
@@ -120,7 +120,7 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
         policy["mesh_export_cost_usd"] = mesh_price
     config = {"authority": {"provider_retention": "project_library_retention_approved"},
         "policy": policy, "remaining_cost_usd": (1.14 if over_budget else 4.76) + (mesh_price or 0)}
-    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: config)
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: config)
     calls = {"review": 0, "pose": 0, "atlasGenerate": 0, "splat": 0, "splats2Mesh": 0}
     def survey(**kwargs):
         path = kwargs["output_root"]
@@ -255,7 +255,7 @@ def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatc
         "review": review, "planner_receipt": {"model": "agent"}}))
     config = {"authority": {"provider_retention": "approved"}, "remaining_cost_usd": 10,
               "policy": {"maximum_review_cost_usd": 1, "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05}}
-    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: config)
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: config)
     monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "non-secret"))
     monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **_: {"frames": []})
     for name in ("run_sponsored_website_atlas_pose", "run_sponsored_website_atlas_task"):
@@ -297,7 +297,7 @@ def test_a_completed_background_buys_the_original_views_pose_once_for_scene_prep
               "rate_card_reference": "https://example.test/rates", "reviewed_by": "test",
               "reviewed_on": _reviewed_today()}
     config = {"authority": {"provider_retention": "approved"}, "remaining_cost_usd": 10, "policy": policy}
-    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: config)
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: config)
     monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "non-secret"))
     monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **_: {"frames": [{"frame_id": "a"}, {"frame_id": "b"}]})
     monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", lambda **kw: {
@@ -376,7 +376,7 @@ def test_a_height_prior_guesstimate_continues_when_the_scale_review_finds_no_ref
     monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda root: (
         root, {"frames": [{"frame_id": "a"}], "binding": {"source_video_digest": "video"}, "digest": "inputs"}))
     monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", lambda **_: {"status": "completed"})
-    monkeypatch.setattr(measurements, "load_views", lambda *_: ({"digest": "sha256:pose", "operation": {"id": "op"}},
+    monkeypatch.setattr(measurements, "load_views", lambda *_, **kw: ({"digest": "sha256:pose", "operation": {"id": "op"}},
                                                                 ["views"]))
     monkeypatch.setattr(atlas_context_fov, "verify_pose_context_fov", lambda **_: None)
     monkeypatch.setattr(automation, "measurement_plan", lambda _: {"scale_references": []})
@@ -425,7 +425,7 @@ def test_the_source_pose_measures_with_the_task_surfaces_the_clean_plate_retaine
               "binding": {"source_video_digest": "video"}, "digest": "inputs"}
     monkeypatch.setattr(atlas_source_pose_inputs, "prepare_source_pose", lambda root: (root, inputs))
     monkeypatch.setattr(allocator, "run_sponsored_website_atlas_pose", lambda **_: {"status": "completed"})
-    monkeypatch.setattr(measurements, "load_views", lambda *_: ({"digest": "sha256:pose", "operation": {"id": "op"}},
+    monkeypatch.setattr(measurements, "load_views", lambda *_, **kw: ({"digest": "sha256:pose", "operation": {"id": "op"}},
                                                                 ["full views"]))
     monkeypatch.setattr(atlas_context_fov, "verify_pose_context_fov", lambda **_: None)
     monkeypatch.setattr(automation, "measurement_plan", lambda _: {"scale_references": []})
@@ -467,7 +467,7 @@ def test_a_checkpoint_refusal_stops_the_run_before_the_first_paid_review(tmp_pat
     video = tmp_path / "source.mov"
     video.write_bytes(b"capture")
     monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "test-non-secret"))
-    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: {"authority": {"provider_retention":
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: {"authority": {"provider_retention":
         "account_does_not_retain"}, "remaining_cost_usd": 2, "policy": {"maximum_review_cost_usd": .1,
         "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05}})
 
@@ -499,7 +499,7 @@ def test_a_job_stopped_by_a_lapsed_price_review_resumes_once_the_owner_renews_it
     live = {"authority": {"provider_retention": "account_does_not_retain"}, "remaining_cost_usd": 2,
             "policy": policy}
     monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("https://example.test", "test-non-secret"))
-    monkeypatch.setattr(pipeline, "load_configuration", lambda *_: deepcopy(live))
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: deepcopy(live))
 
     def survey(**kwargs):
         kwargs["output_root"].mkdir(parents=True)
@@ -594,7 +594,7 @@ def test_resume_checks_current_remaining_allowance_before_any_more_planning(tmp_
         "remaining_cost_usd":10.}
     (root / "configuration.json").write_text(json.dumps(saved))
     live={**saved,"remaining_cost_usd":.05}
-    monkeypatch.setattr(pipeline,"load_configuration",lambda *_:deepcopy(live))
+    monkeypatch.setattr(pipeline,"load_configuration",lambda *_, **kw:deepcopy(live))
     monkeypatch.setattr(pose_api,"atlas_api_config",lambda:("url","test-non-secret"))
     monkeypatch.setattr(allocator,"run_sponsored_website_atlas_plan",lambda **_:pytest.fail("stale balance authorized a review"))
     with pytest.raises(ValueError,match="atlas_runtime_budget_insufficient"):

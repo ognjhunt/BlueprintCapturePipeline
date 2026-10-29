@@ -100,7 +100,7 @@ def accuracy_survey(*, source_video: Path, base_root: Path, base_survey: Path, r
 
 
 def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check, experimental, max_polls,
-                 reference_inputs=None, configuration=None):
+                 reference_inputs=None, configuration=None, allow_scale_review=True):
     """The selected original views' own Atlas pose and the scale its reviewed references give.
 
     Retained receipts make a resume free. A refused purchase leaves the
@@ -178,7 +178,7 @@ def _source_pose(*, pose_root: Path, inputs, review, policy, task_context, check
         measurements = estimate_sizes(frames=frames, automation=plan, pose_digest=pose["digest"],
                                       output=measurement_path, reference_masks=reference_masks,
                                       camera_height=True, surfaces=surfaces, surface_source=surface_source)
-        if configuration is not None:
+        if configuration is not None and allow_scale_review:
             from .atlas_scale_review import needs_scale_review, repair_source_scale, rests_on_height_priors
             from .paid_resource_allocator import run_sponsored_website_atlas_plan
             if needs_scale_review(measurements):
@@ -216,7 +216,8 @@ def run_atlas_pipeline(*, output_root: Path, **options):
     with (output_root / "controller.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = _run_atlas_pipeline(output_root=output_root, **options)
-        if result.get("mesh_available") and requires_task_semantic_analysis(options.get("task_context", {})):
+        if (result.get("mesh_available") and not result.get('observed_scene_only')
+                and requires_task_semantic_analysis(options.get("task_context", {}))):
             from .website_operation_coverage_review import clarify_operation_coverage
             clarify_operation_coverage(job_dir=output_root, task_context=options["task_context"],
                 source_video_digest=result["source_video_digest"], experimental=options.get("experimental", False),
@@ -241,7 +242,7 @@ def _job_edit_scope(output_root: Path, requested: str | None) -> str:
 
 def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
                      source_digest, configuration, check, experimental, max_polls, model,
-                     source_survey_path=None):
+                     source_survey_path=None, reconstruction_only=False, task_evidence_limitation=None):
     """Reconstruct an environment-preserving task from full-view observations.
 
     Selection and scale still use the production agents and validators. Missing
@@ -254,7 +255,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     from .atlas_result_bundle import export_pose_bundle
     from .paid_resource_allocator import run_sponsored_website_atlas_task, run_sponsored_website_atlas_automation
 
-    if (review.get("subject_origin") not in PRESERVED_SCENE_ORIGINS
+    if ((not reconstruction_only and review.get("subject_origin") not in PRESERVED_SCENE_ORIGINS)
             or not review.get("automation")
             or any(row.get("disposition") != "keep" for row in review["automation"]["objects"])
             or review["automation"].get("removal_instruction", "").strip()
@@ -264,7 +265,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                          else "atlas_scene_requires_preserved_capture")
     source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
         task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
-        configuration=configuration)
+        configuration=configuration, **({'allow_scale_review': False} if reconstruction_only else {}))
     if source_pose["status"] == "processing":
         return source_pose
     source_root, _ = prepare_source_pose(pose_root)
@@ -287,9 +288,9 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     # Export those locally, but never continue purchasing after that refusal.
     if source_pose["status"] != "completed":
         blockers.append(source_pose.get("reason", "atlas_source_pose_unavailable"))
-    elif "mesh_export_cost_usd" not in policy:
+    elif not reconstruction_only and "mesh_export_cost_usd" not in policy:
         blockers.append("atlas_mesh_export_price_unreviewed")
-    elif 'rgbd_view_cost_usd' in policy:
+    elif 'rgbd_view_cost_usd' in policy and not reconstruction_only:
         if source_survey_path is None:
             completion_stopped = True
             blockers.append('atlas_original_capture_survey_required')
@@ -313,7 +314,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 splat_root, splat = Path(completion['splat_root']), completion['splat_manifest']
                 generated_roots = [Path(p) for p in completion['generated_roots']]
                 completion_paths = [Path(p) for p in completion['analysis_paths']]
-    if (source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
+    if (not reconstruction_only and source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
             and not completion_stopped):
         mesh_destination = (output_root / 'preserved_completion/mesh' / splat['digest'][7:23]
                             if admitted_completion else output_root / 'mesh')
@@ -333,6 +334,10 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 splat_root=splat_root, output_root=mesh_root / "registered", reference_frames=frames,
                 reference_pose_digest=pose["digest"])
     analysis = [output_root / "atlas_scene_review.json"]
+    if reconstruction_only and task_evidence_limitation is not None:
+        limitation_path = output_root / 'task_evidence_limitation.json'
+        write_json(limitation_path, task_evidence_limitation)
+        analysis.append(limitation_path)
     measurement_path = source_root / source_pose.get("measurements_relative_path", "scene_measurements.json")
     if not measurement_path.resolve().is_relative_to(source_root.resolve()) or measurement_path.is_symlink():
         raise ValueError("atlas_preserved_scene_measurement_path_invalid")
@@ -354,7 +359,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         "geometry_authority": ('captured_rgb_depth_with_bounded_generated_completion_estimates'
                                if admitted_completion else 'captured_rgb_derived_depth_and_reconstructed_mesh_estimates'),
         "source_pose": source_pose, "download": bundle, "model": model,
-        "task_and_surrounding_scene_covered": not completion_stopped, "blockers": blockers,
+        "task_and_surrounding_scene_covered": not reconstruction_only and not completion_stopped, "blockers": blockers,
         "splat_available": True, "splat_kind": splat["splat_kind"], "splat_manifest_digest": splat["digest"],
         "mesh_available": mesh_root is not None, "simulation_qualified": False,
         "claim_ceiling": "development_only", "physical_evidence": False,
@@ -368,6 +373,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             **({'admission_digest': completion['admission']['digest'],
                 'admission_relative_path': str(Path(completion['admission_path']).relative_to(output_root))}
                if admitted_completion else {})}
+    if reconstruction_only:
+        result.update(observed_scene_only=True, native_preparation_eligible=False, execution_authority_granted=False)
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result
@@ -390,9 +397,15 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
 
     output_root.mkdir(parents=True, exist_ok=True)
     source_digest = _sha256_file(source_video)
-    current = load_configuration(task_context, source_digest)
-    atlas_api_config()  # Refuse missing/unsafe production secrets before buying a review.
+    from .atlas_observed_room import SELECTION as ROOM_SELECTION, run_observed_room, retain_selection
+    if (output_root / ROOM_SELECTION).is_file():
+        return run_observed_room(output_root=output_root, source_digest=source_digest, task_context=task_context,
+            max_polls=max_polls, checkpoint=checkpoint, experimental=experimental)
     saved = output_root / "configuration.json"
+    # Retained work may read its original allowance, never issue a new one.
+    current = (load_configuration(task_context, source_digest, create=False) if saved.is_file()
+               else load_configuration(task_context, source_digest))
+    atlas_api_config()  # Refuse missing/unsafe production secrets before buying a review.
     reviews = output_root / "scene_planner"
     selection_path = output_root / "selection_binding.json"
     if saved.exists():
@@ -474,6 +487,24 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         plan_options = {"feedback": feedback} if feedback is not None else {}
         receipt = run_sponsored_website_atlas_plan(survey_path=survey_path, task_context=task_context,
             configuration=config, output_root=reviews, invoker=invoker, experimental=experimental, **plan_options)
+        if feedback is None and receipt.get('proposal', {}).get('status') == 'abstained':
+            # The review has settled or remains held against the original cap.
+            # Select source inputs against the current remaining allowance.
+            room_configuration = load_configuration(task_context, source_digest, create=False)
+            try:
+                retain_selection(output_root=output_root, survey_path=survey_path, survey=survey, receipt=receipt,
+                    task_context=task_context, configuration={**room_configuration, 'policy': config['policy']})
+            except ValueError as exc:
+                if str(exc).startswith(('atlas_runtime_', 'atlas_observed_room_planner_receipt_changed')):
+                    raise
+                # The room also lacks a usable source selection. Retain that
+                # limit and the original task abstention; buy no blind retry.
+                write_json(output_root / 'observed_room/selection_limit.json', {
+                    'status': 'needs_input', 'reason': str(exc),
+                    'task_planner_receipt_digest': canonical_digest(receipt), 'provider_mutation_performed': False})
+            else:
+                return run_observed_room(output_root=output_root, source_digest=source_digest, task_context=task_context,
+                    max_polls=max_polls, checkpoint=checkpoint, experimental=experimental)
         review = proposal_review(receipt["proposal"], survey=survey, policy=policy, pose_budget=budget, feedback=feedback, reference_sources=receipt.get("reference_sources", []))
         if feedback is None:
             subject_origin = review.get("subject_origin")

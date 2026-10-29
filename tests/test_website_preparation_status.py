@@ -318,6 +318,35 @@ def test_completed_native_profile_gap_stays_held_and_never_becomes_native_handof
     assert _post(prepared_source).json()["state"] == "awaiting_inputs"
 
 
+@pytest.mark.parametrize("schema", [status_reader.STATUS_V1, status_reader.STATUS_V2, status_reader.STATUS_V3])
+def test_completed_observed_room_is_an_honest_task_limit_in_signed_status(prepared_source, schema):
+    root, owner, context, selected, ledger, _ = prepared_source
+    limit = {"schema_version": "atlas_task_evidence_limitation.v1", "status": "abstained",
+             "reason": "atlas_scene_planner_abstained", "original_task_context_digest": context["context_digest"],
+             "source_video_digest": "sha256:" + "a" * 64, "planner_receipt_digest": "sha256:" + "b" * 64,
+             "summary": "The original task destination remains unresolved."}
+    limit["digest"] = canonical_digest(limit, digest_field="digest")
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+               **{key: owner[key] for key in ("scene_id", "capture_id")},
+               "simulator_ready": False, "visual_reconstruction_ready": True, "provider_mutation_performed": False,
+               "observed_room": {"source_result_digest": "sha256:" + "c" * 64,
+                   "archive_digest": "sha256:" + "d" * 64, "source_video_digest": limit["source_video_digest"],
+                   "task_evidence_limitation": limit}}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(root / "pipeline/website_scene_preparation/handoff.json", handoff)
+    listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
+        attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
+            "website_scene_preparation": handoff}, owner="synthetic-worker", token=ledger["lease_token"],
+        ledger_update={"status": "completed"})
+    result = status_reader.read_preparation_status(capture_root=root, selectors=selected, schema_version=schema)
+    assert result["state"] == "awaiting_inputs" and result["code"] == "preparation_inputs_pending"
+    assert result["attempt_count"] == ledger["attempt_count"]
+    if schema == status_reader.STATUS_V3:
+        assert result["outcome"] == {"category": "insufficient_evidence", "reason": "task_evidence_incomplete",
+            "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
+    assert _post(prepared_source).json()["state"] == "awaiting_inputs"
+
+
 @pytest.mark.parametrize("fault", ["digest", "source", "context", "family", "description", "code",
                                   "disposition", "simulator_ready", "runtime_inputs", "missing_output_commit"])
 def test_completed_native_gap_requires_exact_current_binding_and_output_commit(prepared_source, fault):
