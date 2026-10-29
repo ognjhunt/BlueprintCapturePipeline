@@ -101,6 +101,43 @@ def test_a_redelivery_while_still_waiting_arms_again(waiting):
     assert ledger["attempt_count"] == 2 and resume.armed(ledger)
 
 
+def test_reviewed_native_resume_goes_through_the_existing_processor(waiting):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root, _, _, raw, _ = waiting
+    before = listener._read_job_ledger(root)
+    before.pop(resume.FIELD)
+    before["last_error"] = "clean_plate: task_target_requires_clarification:cardboard_box_candidate"
+    before["attempt_history"][-1].pop(resume.FIELD)
+    before["attempt_history"][-1]["error"] = before["last_error"]
+    write_json(root / listener.JOB_LEDGER_FILENAME, before)
+    _job(root, "ready")
+    calls = []
+    result = listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
+        run_evaluation_prep=False, expected_reconstruction_resume={"review_schema": resume.REVIEW_SCHEMA,
+            "ledger_digest": canonical_digest(before), "selected_payload_sha256": listener.payload_sha256(raw)},
+        run_e2e=lambda **kw: calls.append(kw) or {"status": "completed"})
+    assert result["status"] == "processed" and len(calls) == 1
+    assert calls[0]["resume_completed_stages"] is True
+    after = listener._read_job_ledger(root)
+    assert after["attempt_count"] == before["attempt_count"] + 1
+    assert after["attempt_history"][0] == before["attempt_history"][0]
+
+
+def test_a_stale_native_review_never_enters_the_pipeline(waiting):
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    root, _, _, raw, _ = waiting
+    before = listener._read_job_ledger(root)
+    reviewed = canonical_digest(before)
+    before["revision"] += 1
+    write_json(root / listener.JOB_LEDGER_FILENAME, before)
+    result = listener.process_handoff_payload(raw, storage_root=root.parents[4], provider="openai",
+        expected_reconstruction_resume={"review_schema": resume.REVIEW_SCHEMA,
+            "ledger_digest": reviewed, "selected_payload_sha256": listener.payload_sha256(raw)},
+        run_e2e=lambda **_: pytest.fail("stale operator review entered pipeline"))
+    assert result["status"] == "reconstruction_resume_changed"
+    assert listener._read_job_ledger(root) == before
+
+
 @pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 @pytest.mark.parametrize("state", ["ready", "failed", "needs_input"])
 def test_a_final_atlas_job_replays_the_same_original_payload_once(waiting, state):

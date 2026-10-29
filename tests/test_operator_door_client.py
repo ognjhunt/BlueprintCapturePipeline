@@ -526,13 +526,15 @@ def test_selected_handoff_cli_links_explicit_recovery_and_keeps_selector_plain(d
     assert _run(*args, "--dispatch")[0] == 2
 
 
-@pytest.mark.parametrize("retry", [False, True])
-def test_selected_atlas_cli_requires_explicit_snapshot_review_and_excludes_native_dispatch(door, retry):
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume"])
+def test_selected_atlas_cli_requires_explicit_snapshot_review_and_excludes_native_dispatch(door, mode):
     from tests.test_operator_door_requests import _selected_request
     body = {key: value for key, value in _selected_request().items() if key not in {"kind", "mode"}}
     selector = door["base"] / "selected-atlas.json"
     selector.write_text(json.dumps(body))
-    args = ["selected-handoff", "--selector-file", str(selector), "--atlas-retry" if retry else "--atlas-status"]
+    args = ["selected-handoff", "--selector-file", str(selector),
+            "--resume-preparation" if mode == "preparation-resume" else "--" + mode]
+    retry = mode != "atlas-status"
     digest = "sha256:" + "c" * 64
     if retry:
         assert _run(*args)[0] == 2
@@ -543,7 +545,7 @@ def test_selected_atlas_cli_requires_explicit_snapshot_review_and_excludes_nativ
     assert code == 0
     request_id = json.loads(output)["id"]
     request = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())["request"]
-    assert request == {**body, "kind": "selected-handoff", "mode": "atlas-retry" if retry else "atlas-status",
+    assert request == {**body, "kind": "selected-handoff", "mode": mode,
                        **({"atlas_status_digest": digest} if retry else {})}
     with pytest.raises(SystemExit) as conflict:
         _run(*args, "--dispatch")

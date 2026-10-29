@@ -12,14 +12,17 @@ or job; the replay re-validates the same current source and authority.
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 
+from .decision_evidence_contracts import canonical_digest
 from .website_assessment_resume import MAX_BYTES, PENDING_CODE, SCHEMA as ASSESSMENT_SCHEMA, _payload_bytes, _require
 
 #: What the capture orchestrator raises while the capture's Atlas job is still processing.
 WAIT_ERROR = "website_scene_preparation: website_atlas_job_processing"
 SCHEMA = "website_reconstruction_resume.v1"
 FIELD = "reconstruction_resume"
+REVIEW_SCHEMA = "website_preparation_resume_review.v1"
 _RECORD_FIELDS = frozenset({"schema_version", "payload_base64", "source_payload_sha256",
                             "producer_delivery_key", "error"})
 _CHAIN_LIMIT = 16
@@ -100,7 +103,21 @@ def armed(ledger) -> bool:
 
 
 def claim_matches(ledger, expected, *, payload_sha256, producer_delivery_key) -> bool:
-    """Inside the claim lock: the ledger still waits on exactly the record the drain replays."""
+    """Inside the claim lock: match the retained wait or an explicit operator review.
+
+    A reviewed old failure remains a failure. No wait record, history or grant
+    is created to make it eligible for the normal native claim.
+    """
+    if expected.get("review_schema") == REVIEW_SCHEMA:
+        digest = expected.get("ledger_digest")
+        return (set(expected) == {"review_schema", "ledger_digest", "selected_payload_sha256"}
+                and type(digest) is str and re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is not None
+                and type(payload_sha256) is str and re.fullmatch(r"[0-9a-f]{64}", payload_sha256) is not None
+                and payload_sha256 == expected["selected_payload_sha256"]
+                and producer_delivery_key is not None and producer_delivery_key == ledger.get("producer_delivery_key")
+                and ledger.get("status") == "failed_retryable" and not ledger.get("recovered_expired_lease")
+                and all(ledger.get(key) is None for key in ("lease_owner", "lease_token", "lease_expires_at"))
+                and canonical_digest(ledger) == digest)
     record = expected.get("record")
     return (type(expected.get("revision")) is int and ledger.get("revision") == expected["revision"]
             and armed(ledger) and type(record) is dict and ledger.get(FIELD) == record
