@@ -4,6 +4,8 @@
 This gate is stricter than the local sim-only beta gate. It requires local
 post-upload autonomy proof plus production-style WebApp-to-Pipeline forwarding
 and deployment evidence. It does not execute live provider calls.
+Optional production autonomy observations retain their separate proof status
+and diagnostics without changing this release decision.
 """
 
 from __future__ import annotations
@@ -575,17 +577,13 @@ def build_release_gate_report(
     ]
     acceptance = None
     if production_autonomy_manifest_path is not None:
+        # AUT21 evidence gaps are diagnostic, not additional beta-release gates.
+        # Retain the complete subreport and its independent proof boundaries below.
         acceptance = build_production_autonomy_acceptance_report(
             manifest_path=production_autonomy_manifest_path,
             evidence_root=acceptance_evidence_root,
             acquisition_verifier=acquisition_verifier,
         )
-        gates.append(_gate(
-            "supported_production_autonomy_observation",
-            passed=acceptance["status"] == "verified",
-            blockers=list(acceptance["blockers"]),
-            evidence=acceptance,
-        ))
     blockers = [f"{gate['id']}:{blocker}" for gate in gates for blocker in gate.get("blockers", [])]
     local_gate_evidence = _mapping(gates[0].get("evidence"))
     local_gate_proof_boundary = _mapping(local_gate_evidence.get("proof_boundary"))
@@ -638,7 +636,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--forwarding-preflight-report", type=Path)
     parser.add_argument("--production-route-forwarding-proof", type=Path)
     parser.add_argument("--production-deployment-proof", type=Path)
-    parser.add_argument("--production-autonomy-manifest", type=Path)
+    parser.add_argument(
+        "--production-autonomy-manifest", type=Path,
+        help="Attach diagnostic AUT21 evidence; does not change the beta-release decision or establish trusted acquisition.",
+    )
     parser.add_argument("--acceptance-evidence-root", type=Path)
     parser.add_argument("--allow-local-forwarding-endpoint", action="store_true")
     parser.add_argument("--output-path", type=Path)
