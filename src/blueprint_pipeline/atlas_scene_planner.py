@@ -812,9 +812,10 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
                     carried_reserved_usd=0.0):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, website_webapp_request
-    from .atlas_preparation_context import requires_task_semantic_analysis
+    from .atlas_preparation_context import preparation_source_checkpoint, requires_task_semantic_analysis
     from .task_evaluation_supervisor.agents_sdk import AgentsSDKAgentSpec, OpenAIAgentsSDKConfig, OpenAIAgentsSDKInvoker
     from .task_evaluation_supervisor.inference_reservations import InferenceReservationAudit
+    source_checkpoint = preparation_source_checkpoint(task_context)
     survey = json.loads(survey_path.read_text())
     if survey.get("digest") != canonical_digest(survey, digest_field="digest") or survey.get("heldout_pixels_included") is not False:
         raise ValueError("atlas_scene_planner_survey_invalid")
@@ -1038,7 +1039,12 @@ def _review_attempt(*, survey_path: Path, task_context, configuration, output_ro
             def record_completion(value):
                 audit.record_completion(value)
                 recorded.append(value)
-            selected.configure_reservation_audit(record_reservation=audit.record_reservation,
+            def record_reservation(value):
+                if source_checkpoint is not None:
+                    source_checkpoint("atlas_planner_provider_disclosure")
+                audit.record_reservation(value)
+
+            selected.configure_reservation_audit(record_reservation=record_reservation,
                 record_completion=record_completion, restored_reserved_cost_usd=carried_reserved_usd)
             admission, grant = reserve_website_preparation_spend(task_context=task_context, binding_digest=digest,
                 maximum_cost_usd=maximum, request_count=1, resource_class="openai_api_candidate", provider="openai",

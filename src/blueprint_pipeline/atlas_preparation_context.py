@@ -12,6 +12,25 @@ from .decision_evidence_contracts import canonical_digest
 from .owned_capture_atlas_context import SCHEMA, validate_owned_capture_atlas_context
 
 
+def validate_preparation_task_context(context: Mapping[str, Any]) -> None:
+    """Dispatch existing source schemas without converting either source kind."""
+    if context.get("schema_version") == SCHEMA:
+        validate_owned_capture_atlas_context(context)
+        return
+    from .website_task_context_contracts import validate_website_task_context
+    validate_website_task_context(context, request_id=str(context.get("request_id") or ""),
+                                 scene_id=str(context.get("scene_id") or ""),
+                                 capture_id=str(context.get("capture_id") or ""), purpose="scene_preparation")
+
+
+def preparation_source_checkpoint(context: Mapping[str, Any]):
+    """Owned provider adapters require the worker's fresh byte/source fence."""
+    if context.get("schema_version") != SCHEMA:
+        return None
+    from .owned_capture_atlas_runtime import owned_atlas_source_checkpoint
+    return owned_atlas_source_checkpoint(context)
+
+
 def requires_task_semantic_analysis(context: Mapping[str, Any]) -> bool:
     """An owned task's declared family never bypasses reading its whole job."""
     return context.get("schema_version") == SCHEMA or context.get("task_family") == "general_task"

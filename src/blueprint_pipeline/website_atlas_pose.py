@@ -229,13 +229,20 @@ def _without_urls(value: Any) -> Any:
 class AtlasClient:
     """The documented Atlas beta task API and nothing more. Tests inject ``transport``."""
 
-    def __init__(self, *, base_url: str, api_key: str, transport: Transport | None = None) -> None:
+    def __init__(self, *, base_url: str, api_key: str, transport: Transport | None = None,
+                 source_checkpoint: Callable[[str], None] | None = None) -> None:
         self._base, self._key = base_url.rstrip("/"), api_key
         self._transport = transport or _safe_transport(self._base)
+        self._source_checkpoint = source_checkpoint
         self.retry_after: str | None = None
 
     def _send_transport(self, method: str, url: str, headers: Mapping[str, str],
                         data: bytes | None) -> tuple[int, bytes]:
+        # Reconciliation/output reads and teardown remain possible after a
+        # source is revoked. Every upload and processing mutation reopens it.
+        output_read = method == "POST" and url.startswith(self._base + "/assets/") and url.endswith(":createReadUrl")
+        if self._source_checkpoint is not None and method not in {"GET", "HEAD", "DELETE"} and not output_read:
+            self._source_checkpoint("atlas_provider_disclosure")
         self.retry_after = None
         response = self._transport(method, url, headers, data)
         if len(response) == 3:
@@ -1032,15 +1039,14 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
     new, separately reserved attempt follows, at most ``MAX_POSE_ATTEMPTS``.
     """
     from .website_task_context import reserve_website_preparation_spend
-    from .website_task_context_contracts import validate_website_task_context
+    from .atlas_preparation_context import preparation_source_checkpoint, validate_preparation_task_context
 
     if task_context.get("capture_id") != capture_id:
         raise ValueError("website_atlas_pose_task_capture_mismatch")
-    validate_website_task_context(task_context, request_id=str(task_context.get("request_id") or ""),
-                                  scene_id=str(task_context.get("scene_id") or ""), capture_id=capture_id,
-                                  purpose="scene_preparation")
+    validate_preparation_task_context(task_context)
     base_url, api_key = atlas_api_config()
-    client = AtlasClient(base_url=base_url, api_key=api_key, transport=transport)
+    client = AtlasClient(base_url=base_url, api_key=api_key, transport=transport,
+                         source_checkpoint=preparation_source_checkpoint(task_context))
 
     def resubmit_due() -> bool:
         # The archive itself refuses an attempt that could have bought more than its failed operation.
