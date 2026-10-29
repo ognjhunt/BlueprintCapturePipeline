@@ -66,9 +66,10 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                                  allow_operation_coverage_review: bool = False,
                                  allow_static_target_recovery: bool = False) -> dict[str, Any]:
     handoff_lease_checkpoint("website_scene_handoff_start")
-    root = capture_root / "pipeline" / "website_scene_preparation"
+    from .website_preparation_revision import workspace, bind_preparation
+    root = workspace(capture_root)
     root.mkdir(parents=True, exist_ok=True)
-    handoff_path = root / "handoff.json"
+    handoff_path = capture_root / "pipeline" / "website_scene_preparation" / "handoff.json"
     result: dict[str, Any] = {
         "schema_version": "website_scene_handoff.v1", "status": "awaiting_reconstruction",
         "blockers": [], "claim_ceiling": "development_only", "simulator_ready": False,
@@ -185,6 +186,8 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 spend=metadata.get("website_scene_execution_authority") or {}, now=now,
                 evaluation_inputs=metadata.get("native_task_evaluation"),
                 **({"task_semantics": semantics} if semantics is not None else {}))
+            preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root,
+                authority=metadata.get("website_scene_execution_authority") or {})
             result.update(status=preparation["status"], blockers=preparation["blockers"],
                 job_disposition="accepted", task_evaluation_inputs=preparation["task_evaluation_inputs"],
                 preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
@@ -260,6 +263,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             base_scene=base, output_root=root, spend=authority, now=now,
             **({"task_semantics": semantics} if semantics is not None else {}),
         )
+        preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
         result.update(status=preparation["status"], blockers=preparation["blockers"],
                       preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
                       thumbnail=preparation["thumbnail"], base_scene_path=str(root / "base_scene.json"))

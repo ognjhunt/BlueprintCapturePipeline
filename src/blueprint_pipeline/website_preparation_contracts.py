@@ -21,6 +21,7 @@ def _require(condition):
 
 def preparation_consent_valid(request):
     """Structural scope only; consequential consumers must reopen authority."""
+    from .website_preparation_revision import revision
     consent = request.get("consent") or {}
     task = request.get("task") or {}
     return (
@@ -28,7 +29,8 @@ def preparation_consent_valid(request):
         and request["execution"].get("policy_candidates") == []
         and "robot_binding_id" not in task
         and "evaluation_source" not in task
-        and consent.get("task_confirmed") is False
+        and (consent.get("task_confirmed") is False or (consent.get("task_confirmed") is True
+             and revision(request) is not None))
     )
 
 
@@ -121,6 +123,7 @@ def validate_preparation_authority(*, task_context, authority, now):
 
 
 def validate_preparation_request(*, request, task_context, authority, now):
+    from .website_preparation_revision import capture_id
     validate_preparation_authority(task_context=task_context, authority=authority, now=now)
     execution = request.get("execution") or {}
     source = request.get("source") or {}
@@ -140,7 +143,7 @@ def validate_preparation_request(*, request, task_context, authority, now):
         expected_providers.append("anthropic")
     if (
         not preparation_consent_valid(request)
-        or request.get("submission_id") != task_context["capture_id"]
+        or capture_id(request) != task_context["capture_id"]
         or request.get("owner") != authority["owner"]
         or request.get("consent") != authority["consent"]
         or source.get("kind") != "gaussian_splat"
