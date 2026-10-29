@@ -125,7 +125,7 @@ def reopen_scene_intent(reference, *, now=None):
     effective_execution_budget(path.parent, intent)
     require(request["consent"]["accepted_by"] == request["owner"]["user_id"],
             "scene_owner_actor_mismatch")
-    from .website_preparation_revision import requires_retained_authority
+    from .website_preparation_revision_identity import requires_retained_authority
     if requires_retained_authority(request):
         from .website_preparation_authority import require_retained_preparation_authority
         moment = require_retained_preparation_authority(request=request, queue_root=root, now=moment)

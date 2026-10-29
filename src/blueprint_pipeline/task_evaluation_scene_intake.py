@@ -105,7 +105,7 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
              "issuer_not_authorized")
     moment = datetime.now(timezone.utc).timestamp() if now is None else now
     request = validate_request(value, now=moment)
-    from .website_preparation_revision import requires_retained_authority
+    from .website_preparation_revision_identity import requires_retained_authority
     if requires_retained_authority(request):
         from .website_preparation_authority import require_retained_preparation_authority
         try:
@@ -157,7 +157,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         directory = root / intent_id
         _require(not directory.is_symlink(), "record_unsafe")
         intent = _read(directory / "intent.json", "intent_digest")
-        from .website_preparation_revision import requires_retained_authority
+        from .website_preparation_revision_identity import requires_retained_authority
         if requires_retained_authority(intent["request"]):
             trusted = {item.strip() for item in os.getenv(CLIENTS_ENV, "blueprint-webapp").split(",") if item.strip()}
             _require(intent.get("authenticated_issuer") in trusted, "issuer_not_authorized")

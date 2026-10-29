@@ -21,7 +21,7 @@ def _require(condition):
 
 def preparation_consent_valid(request):
     """Structural scope only; consequential consumers must reopen authority."""
-    from .website_preparation_revision import revision
+    from .website_preparation_revision_identity import revision
     consent = request.get("consent") or {}
     task = request.get("task") or {}
     return (
@@ -123,7 +123,7 @@ def validate_preparation_authority(*, task_context, authority, now):
 
 
 def validate_preparation_request(*, request, task_context, authority, now):
-    from .website_preparation_revision import capture_id
+    from .website_preparation_revision_identity import capture_id
     validate_preparation_authority(task_context=task_context, authority=authority, now=now)
     execution = request.get("execution") or {}
     source = request.get("source") or {}
