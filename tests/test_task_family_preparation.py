@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
@@ -17,6 +18,101 @@ from blueprint_pipeline.task_family_scoring import FAMILY_ALIASES, seal_task_fam
 from blueprint_pipeline.website_task_context_contracts import retains_task_family_preparation
 from tests.test_task_evaluation_task_family_native_adapter import Policy, Runtime, _runtime_contract
 from tests.test_website_task_preparation import _arguments
+
+
+def _family_lease_fixture(tmp_path):
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline.core.handoff_lease import bind_handoff_lease, guarded_handoff_write_json
+
+    args = _arguments_for_family(tmp_path)
+    args["evaluation_inputs"] = _evaluation_inputs(args)
+    capture_root = tmp_path / "lease-capture"
+    capture_root.mkdir()
+    args["output_root"] = capture_root / "pipeline/website_scene_preparation"
+    context = args["task_context"]
+
+    def claim(owner):
+        status, ledger = listener._claim_job_lease(capture_root, scene_id=context["scene_id"],
+            capture_id=context["capture_id"], owner=owner, lease_seconds=60)
+        assert status == "claimed"
+        return listener._JobLeaseHeartbeat(capture_root=capture_root, owner=owner,
+            token=ledger["lease_token"], lease_seconds=60)
+
+    first = claim("family-a")
+    retained = {}
+
+    def reclaim():
+        assert not retained
+        with listener._locked_job_ledger(capture_root) as ledger:
+            listener.write_json(capture_root / listener.JOB_LEDGER_FILENAME, {**ledger,
+                "lease_expires_at": (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()})
+        second = claim("family-b")
+        with bind_handoff_lease(second.checkpoint, second.effect):
+            guarded_handoff_write_json(args["output_root"] / "preparation.json",
+                {"owner": "family-b", "source": "newer-owner-preparation"})
+        retained.update({path: (path.read_bytes(), path.stat().st_mtime_ns) for path in (
+            capture_root / listener.JOB_LEDGER_FILENAME, args["output_root"] / "preparation.json")})
+
+    return args, first, reclaim, retained
+
+
+def test_already_lost_family_stops_before_source_read_or_derivation(tmp_path, monkeypatch):
+    from blueprint_pipeline import task_family_preparation as family
+    from blueprint_pipeline.core.handoff_lease import HandoffLeaseError, bind_handoff_lease
+
+    args, first, reclaim, retained = _family_lease_fixture(tmp_path)
+    reclaim()
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("already-lost family started source processing")
+
+    monkeypatch.setattr(family, "_sha256_file", forbidden)
+    monkeypatch.setattr(family, "canonical_task_family", forbidden)
+    with bind_handoff_lease(first.checkpoint, first.effect):
+        with pytest.raises(HandoffLeaseError, match="lost"):
+            family.prepare_task_family(**args)
+    assert all((path.read_bytes(), path.stat().st_mtime_ns) == before for path, before in retained.items())
+
+
+@pytest.mark.parametrize("loss_at", ["before_native", "before_promotion"])
+def test_family_reclaim_stops_new_materialization_and_preserves_b_preparation(tmp_path, monkeypatch, loss_at):
+    from blueprint_pipeline import task_family_preparation as family
+    from blueprint_pipeline.core.handoff_lease import HandoffLeaseError, bind_handoff_lease
+
+    args, first, reclaim, retained = _family_lease_fixture(tmp_path)
+    source_hash, digest, materialize = family._sha256_file, family.canonical_digest, native.materialize_native_task_runtime_contract
+    reads, materializations, calls_at_loss = [], [], []
+
+    def lose():
+        reclaim()
+        calls_at_loss.append(len(materializations))
+
+    def read_then_reclaim(path):
+        result = source_hash(path)
+        reads.append(path)
+        if loss_at == "before_native" and len(reads) == 2:
+            lose()
+        return result
+
+    def derive_then_reclaim(value, **kwargs):
+        result = digest(value, **kwargs)
+        if loss_at == "before_promotion" and value.get("schema_version") == "website_scene_preparation.v1":
+            lose()
+        return result
+
+    def tracked_native(**kwargs):
+        materializations.append(True)
+        return materialize(**kwargs)
+
+    monkeypatch.setattr(family, "_sha256_file", read_then_reclaim)
+    monkeypatch.setattr(family, "canonical_digest", derive_then_reclaim)
+    monkeypatch.setattr(native, "materialize_native_task_runtime_contract", tracked_native)
+    with bind_handoff_lease(first.checkpoint, first.effect):
+        with pytest.raises(HandoffLeaseError, match="lost"):
+            website.compile_website_scene_preparation(**args)
+    assert calls_at_loss == [len(materializations)]
+    assert len(materializations) == (0 if loss_at == "before_native" else 1)
+    assert all((path.read_bytes(), path.stat().st_mtime_ns) == before for path, before in retained.items())
 
 
 class CountedRuntime(Runtime):

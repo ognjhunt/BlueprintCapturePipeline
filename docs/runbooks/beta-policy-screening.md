@@ -92,12 +92,38 @@ sealed `screening_candidates` runtime entry in the existing operator scene
 profile. Existing adapters are reused; a genuinely different interface needs
 an adapter and its validation before the planner can select it.
 
-Plans are immutable. If a quote expires or a runtime, account or credential
-becomes available after planning, increment the catalog's `revision` and
-re-seal the catalog to request a fresh campaign. This is an intentional retry
-generation, not a fresh spending allowance. Completed and uncertain earlier
-attempts remain in the site's ledger. Merely restarting or deploying code
-does not rerun a site's candidates.
+Plans are immutable. The existing source worker can retain a site-local
+generation when a selected candidate's quote expires before any effects, or a
+credential becomes available for an originally pinned runtime. It reopens
+current website rights and the canonical scene intent, including its actual
+expiry and budget. Real admitted operator facts supply the new upper-bound
+quote. Catalog identity, scene/task/scenario bytes, policy/robot/interface,
+runtime bytes and implementation identity must match the original plan.
+
+The generation retains its superseded plan and reason in the existing ledger.
+Unspent reservations transfer atomically; completed results are adopted and
+uncertain or paid attempts keep their original identities and commitments.
+Every generation still shares the same $15 site limit across captures, scenes
+and catalog revisions. A fresh website acknowledgment is required before its
+new work can start. A cost increase above remaining commitment reports
+`beta_screening_refresh_budget_action_required`; no grant is renewed. Failed
+refresh checks wait five minutes before reopening dependencies.
+
+Uncommitted proposals retain their selected candidate/origin bindings separately
+from historical descriptors. If a crash leaves a proposal whose quote later
+expires, the next permitted pass retains a new proposal identity and a
+supersedes/reason link. The old proposal and plan bytes remain unchanged. A
+changed eligible origin set also receives a distinct proposal. These local
+proposal sequences grant no paid retries and do not replenish commitments.
+
+Private `planning_bindings` records retain the original scientific descriptor
+for a hosted candidate even when its credential is unavailable; they contain
+no credential contents and grant no capability. Availability refresh is bounded
+to those exact pinned interfaces. A legacy unavailable entry without an original
+runtime binding, or a changed implementation/runtime/scientific configuration,
+requires an explicit new configuration identity. A label cannot establish byte
+identity. Expired or revoked source authority remains stopped. Restarting or
+deploying code never gives a paid failure or uncertain launch retry authority.
 
 ### Configure another compatible hosted policy
 

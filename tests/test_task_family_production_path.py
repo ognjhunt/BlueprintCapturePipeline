@@ -303,6 +303,32 @@ def test_actual_family_capture_to_native_screening_publication(
     runtime = tmp_path / "extracted/provider_runtime"
     output = tmp_path / "native-session"
 
+    # The real beta worker also requires the controller's exact current-source
+    # observation. Deliver it through the production GPU-local receiver; the
+    # policy/engine transport doubles do not replace this authority check.
+    from blueprint_pipeline import beta_screening_runtime_control as control
+    from tests.test_beta_policy_screening_control_contracts import response
+
+    authority = json.loads(Path(prepared["authority"]["path"]).read_text())
+    invocation = {
+        "prepared_digest": prepared["prepared_digest"], "plan_digest": plan["plan_digest"],
+        "candidate_id": candidate["candidate_id"], "configuration_digest": candidate["configuration_digest"],
+        "authority_digest": authority["authority_digest"], "resource_name": authority["resource_name"],
+        "bundle_sha256": bundle["bundle_sha256"], "provider": "vast", "attempt_id": "attempt",
+    }
+    binding = {key: invocation[key] for key in (
+        "prepared_digest", "plan_digest", "candidate_id", "configuration_digest", "authority_digest",
+        "resource_name", "attempt_id",
+    )}
+    binding.update(campaign_id=plan["campaign_id"], site_id=plan["site_id"],
+        source=plan["source"], invocation_id=canonical_digest(invocation))
+    now = int(world.args["now"])
+    monkeypatch.setattr(control.time, "time", lambda: now)
+    observation = response(scope=binding, now=now,
+        deadline=min(now + authority["hard_ttl_seconds"], int(world.args["spend"]["expires_at_epoch"])))
+    delivery = control.make_delivery(authority=authority, binding=binding, control=observation)
+    assert control.install_runtime_control(runtime_root=runtime, delivery=delivery) == delivery
+
     def run_cpu_cell(*, index, runtime_root, output_root, child_root):
         # Process isolation itself is a transport seam: run the unchanged cell
         # worker in this CPU interpreter so the installed SDK double is shared.

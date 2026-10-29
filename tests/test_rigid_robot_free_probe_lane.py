@@ -612,7 +612,11 @@ def test_a_launched_allocator_without_a_result_is_never_followed_by_another(tmp_
     world = build_world(tmp_path, monkeypatch)
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
     hooks = runner_hooks(world)
-    hooks["allocator_runner"] = lambda argv, *, attempt: world["allocator_calls"].append(argv) or 0
+    def uncertain_create(argv, *, attempt):
+        world["allocator_calls"].append(argv)
+        runner._write_exclusive(attempt / "invocation/provider_create_intent.json", {"outcome": "unknown"})
+        return 0
+    hooks["allocator_runner"] = uncertain_create
     assert runner.run_queue(world["queue"], hooks=hooks)[0]["reason"] == "unknown"
     assert runner.run_queue(world["queue"], hooks=hooks)[0]["reason"] == "unknown"
     assert len(world["allocator_calls"]) == 1 and world["transport_calls"] == []
@@ -647,6 +651,176 @@ def test_an_allocator_that_cannot_start_allocates_nothing_and_defers(tmp_path, m
     (attempt,) = runner._attempts(job)
     assert json.loads((attempt / runner.INGEST_FILENAME).read_text())["state"] == "not_launched"
     assert world["webapp_calls"] == [] and world["transport_calls"] == []
+
+
+def test_default_preflight_honors_dry_argv_with_paid_manifest_present(tmp_path, monkeypatch) -> None:
+    """Exercise the default wrapper, not the test hook that calls allocator.main."""
+    from blueprint_pipeline import allocator_invocation as jobs
+
+    world = build_world(tmp_path, monkeypatch)
+    commands = []
+
+    class DryProcess:
+        pid = 12345
+
+        def __init__(self, command, **kwargs):
+            commands.append(command)
+            assert command[1:3] == ["-m", "blueprint_pipeline.paid_resource_allocator"]
+            assert "--execute" not in command
+            self.code = allocator.main(command[3:])
+
+        def wait(self):
+            return self.code
+
+    monkeypatch.setattr(runner.subprocess, "Popen", DryProcess)
+    monkeypatch.setattr(jobs, "start_invocation", lambda *a, **k: pytest.fail("dry preflight started paid wrapper"))
+    result = runner.preflight_capture(world["capture"], scratch_dir=tmp_path / "scratch",
+                                      hooks={"source_commit": lambda: COMMIT})
+    attempt = Path(result["attempt_root"])
+    assert result["status"] == "ready" and len(commands) == 1
+    assert "--execute" in jobs.manifest(attempt / "invocation/manifest.json")["argv"]
+    assert not (attempt / "invocation/provider_create_intent.json").exists()
+    assert not (attempt / "allocator" / lane.FUNDING_FILENAME).exists()
+    assert world["webapp_calls"] == []
+    assert world["transport_calls"] and all(call["execute"] is False for call in world["transport_calls"])
+
+
+def test_default_paid_wrapper_requires_exact_retained_argv(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline import allocator_invocation as jobs
+
+    world = build_world(tmp_path, monkeypatch)
+    staged = staged_attempt(world)
+    monkeypatch.setattr(jobs, "start_invocation", lambda *a, **k: pytest.fail("changed paid arguments started"))
+    with pytest.raises(ValueError, match="invocation_argv_mismatch"):
+        runner.run_allocator(_with(staged["argv"], "--adp-max-spend-usd", "0.01"), attempt=staged["root"])
+    assert world["webapp_calls"] == [] and world["transport_calls"] == []
+
+
+@pytest.mark.parametrize("remote_status", ["reserved", "not_reserved"])
+def test_funding_response_loss_retains_exact_request_and_never_opens_new_attempt(
+        tmp_path, monkeypatch, remote_status) -> None:
+    from blueprint_pipeline import allocator_invocation as jobs
+    from blueprint_pipeline import probe_funding_recovery as recovery
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    # This fake server implements the new read-only observation contract.
+    monkeypatch.setenv(recovery.READBACK_ENV, "true")
+
+    class SimulatedPowerLoss(BaseException):
+        pass
+
+    world = build_world(tmp_path, monkeypatch)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    staged = staged_attempt(world)
+    attempt, grants, reads = staged["root"], [], []
+    runner._write_exclusive(attempt / runner.INTENT_FILENAME, {"observed_at_iso": "test"})
+
+    def remote(*, capture_id, operation, payload):
+        request = recovery.request_intent(attempt / "allocator")
+        assert request["payload"] == {key: value for key, value in payload.items() if key != "create"}
+        assert request["capture_id"] == capture_id and operation == "preparation-spend"
+        if payload.get("create") is not False:
+            grants.append(payload["spend"])
+            raise SimulatedPowerLoss("remote transaction committed before response retention")
+        reads.append(payload)
+        command = payload["spend"]
+        return {"schema_version": "website_preparation_spend_observation.v1", "capture_id": capture_id,
+                "request_id": payload["request_id"], "scene_id": payload["scene_id"],
+                "allocation_binding_digest": command["allocation_binding_digest"],
+                "command_digest": cross_runtime_canonical_digest(command), "status": remote_status,
+                "dispatch_authorized": False, "observed_at_epoch": time.time(),
+                **({"admission": {**command, "schema_version": "paid_lane_admission.v1", "status": "admitted",
+                    "blockers": [], "external_disclosure_allowed": True, "expires_at_epoch": time.time() + 60}}
+                   if remote_status == "reserved" else {})}
+
+    monkeypatch.setattr(website_task_context, "website_webapp_request", remote)
+    with pytest.raises(SimulatedPowerLoss):
+        jobs.run_invocation(attempt / "invocation/manifest.json", allocator=allocator.main)
+    assert len(grants) == 1 and not (attempt / "allocator" / lane.FUNDING_FILENAME).exists()
+    assert not (attempt / "invocation/provider_create_intent.json").exists()
+    settled = runner.settle_attempt(attempt, state=current_probe_state(world["capture"]))
+    assert settled["state"] == "unknown" and settled["last_remote_status"] == remote_status
+    assert settled["allocation_binding_digest"] == grants[0]["allocation_binding_digest"]
+    assert not (attempt / runner.INGEST_FILENAME).exists()
+    assert runner._counts(attempt.parent.parent) == (1, 0)
+    assert len(reads) == 1 and reads[0]["create"] is False
+    _, blocked = lane.reserve_probe_funding(task_context=world["context"],
+        binding_digest=grants[0]["allocation_binding_digest"], hard_cap_usd=lane.HARD_CAP_USD,
+        job_dir=attempt / "allocator")
+    assert blocked == ["rigid_robot_free_probe_funding_request_reconciliation_required"]
+    assert jobs.run_invocation(attempt / "invocation/manifest.json", allocator=lambda argv: pytest.fail(
+        "fenced old allocator restarted")) == 2
+    monkeypatch.setattr(allocator, "main", lambda *a, **k: pytest.fail("response loss allowed another dispatch"))
+    row = runner.run_queue(world["queue"], hooks={"source_commit": lambda: COMMIT})[0]
+    assert row["status"] == "waiting" and row["next_action"].startswith("reconcile_exact_funding_")
+    assert len(runner._attempts(attempt.parent.parent)) == 1 and len(grants) == len(reads) == 1
+    assert world["transport_calls"] == []
+
+
+def test_old_unfunded_ingest_cannot_hide_legacy_unknown_funding(tmp_path):
+    from blueprint_pipeline import allocator_invocation as jobs
+    attempt = tmp_path / "attempts" / "00"
+    attempt.mkdir(parents=True)
+    path = jobs.retain_invocation(attempt_dir=attempt, binding={"provider": "vast"}, argv=["gpu-canary"])
+    (path.parent / "started.json").write_text("{}")
+    retained = runner._record_ingest(attempt, {"state": "not_launched", "funded": False, "allocated": False})
+    outcome = runner.settle_attempt(attempt, state={})
+    assert outcome["state"] == "unknown" and outcome["next_action"] == "recover_exact_legacy_funding_request"
+    assert runner._counts(tmp_path) == (1, 0)
+    assert json.loads((attempt / runner.INGEST_FILENAME).read_text()) == retained
+
+
+@pytest.mark.parametrize("pid_receipt_survives", [True, False])
+def test_frozen_pre_aut08_bare_allocator_response_loss_never_becomes_unfunded(
+        tmp_path, monkeypatch, pid_receipt_survives):
+    world = build_world(tmp_path, monkeypatch)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    staged = staged_attempt(world)
+    attempt = staged["root"]
+    # The historical runner never created a named invocation. Retain the
+    # unused modern staging bytes separately so this exercises its bare path.
+    (attempt / "invocation").rename(attempt / "modern_staging_unused")
+    runner._write_exclusive(attempt / runner.INTENT_FILENAME, {"observed_at_iso": "legacy"})
+    fixture = Path(__file__).parent / "fixtures/aut08_legacy_probe_funding.py.txt"
+    legacy_namespace = dict(vars(lane))
+    exec(compile(fixture.read_text(), str(fixture), "exec"), legacy_namespace)
+    monkeypatch.setattr(lane, "reserve_probe_funding", legacy_namespace["reserve_probe_funding"])
+    remote_admissions = []
+
+    def commit_then_lose_response(**kwargs):
+        remote_admissions.append(kwargs["payload"]["spend"])
+        raise OSError("legacy funding response lost after commit")
+
+    class BareProcess:
+        pid = 12346
+
+        def __init__(self, command, **kwargs):
+            assert command[1:3] == ["-m", "blueprint_pipeline.paid_resource_allocator"]
+            self.code = allocator.main(command[3:])
+
+        def wait(self):
+            return self.code
+
+    monkeypatch.setattr(website_task_context, "website_webapp_request", commit_then_lose_response)
+    monkeypatch.setattr(runner.subprocess, "Popen", BareProcess)
+    assert runner.run_allocator(staged["argv"], attempt=attempt) == 2
+    if not pid_receipt_survives:
+        (attempt / runner.PROCESS_FILENAME).rename(attempt / "lost_pid_receipt_unused.json")
+    assert len(remote_admissions) == 1 and not (attempt / "invocation").exists()
+    from blueprint_pipeline import probe_funding_recovery as recovery
+    assert not (attempt / "allocator" / lane.FUNDING_FILENAME).exists()
+    assert not (attempt / "allocator" / recovery.REQUEST_FILENAME).exists()
+    state = current_probe_state(world["capture"])
+    assert runner.settle_attempt(attempt, state=state)["state"] == "unknown"
+    assert not (attempt / runner.INGEST_FILENAME).exists()
+    retained_bad_ingest = runner._record_ingest(attempt, {"state": "unfunded_blocked", "funded": False,
+                                                       "allocated": False})
+    assert runner.settle_attempt(attempt, state=state)["state"] == "unknown"
+    assert json.loads((attempt / runner.INGEST_FILENAME).read_text()) == retained_bad_ingest
+    assert runner._counts(attempt.parent.parent) == (1, 0)
+    row = runner.run_queue(world["queue"], hooks={"source_commit": lambda: COMMIT})[0]
+    assert row["status"] == "waiting" and row["next_action"] == "recover_exact_legacy_funding_request"
+    assert len(remote_admissions) == 1 and len(runner._attempts(attempt.parent.parent)) == 1
+    assert world["transport_calls"] == []
 
 
 def test_ingest_refuses_a_trace_that_is_not_this_requests(tmp_path, monkeypatch) -> None:

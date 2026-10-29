@@ -102,7 +102,8 @@ def test_selected_delivery_refuses_before_lease_when_owner_api_missing(tmp_path:
     assert result["queue_disposition"] == "retryable"
     assert result["owner_observation_reason"] == ("capture_owner_purpose_mismatch" if error_kind == "typed"
                                                    else "capture_owner_response_unavailable")
-    assert "private" not in json.dumps(result) and "secret" not in json.dumps(result)
+    public_failure = {key: value for key, value in result.items() if key != "capture_root"}
+    assert "private" not in json.dumps(public_failure) and "secret" not in json.dumps(public_failure)
     assert calls[0].get("expected_purpose") == purpose
     assert not (tmp_path / "capture-bucket" / "scenes" / "site-req-1" / "captures" /
                 "walkthrough-req-1").exists()
@@ -385,3 +386,48 @@ def test_supplement_chain_cannot_stitch_different_intermediate_source_revisions(
     with pytest.raises(ValueError):
         validate_observation(value, bucket="capture-bucket", scene_id=value["scene_id"],
             capture_id=value["capture_id"], marker_generation=value["completion_marker"]["generation"])
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 409, 408, 429, 500, 503])
+@pytest.mark.parametrize("raised", [True, False])
+def test_explicit_access_refusal_stays_distinct_from_transient_owner_read_outage(monkeypatch, status, raised):
+    from io import BytesIO
+    from types import SimpleNamespace
+    from urllib.error import HTTPError
+    from blueprint_pipeline import capture_original_owner_observer as observer
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://example.com/api/internal/pipeline/sync")
+    monkeypatch.setattr(observer, "load_pipeline_sync_token", lambda: "fake-secret")
+    calls = []
+    def respond(*args, **kwargs):
+        calls.append("one bounded owner read")
+        if raised:
+            raise HTTPError("https://example.com/private?token=private", status, "private remote body", {},
+                            BytesIO(b'{"private":"body"}'))
+        return SimpleNamespace(status=status, body=b'{"private":"body"}')
+    monkeypatch.setattr(observer, "safe_request", respond)
+    expected = ("capture_owner_response_denied" if 400 <= status < 500 and status not in {408, 429}
+                else "capture_owner_response_unavailable")
+    with pytest.raises(observer.CaptureOwnerObservationError) as failure:
+        observer.load_original_owner_observation(bucket="capture-bucket", scene_id="site-req-1",
+            capture_id="walkthrough-req-1", marker_generation="17000000000000000001")
+    assert str(failure.value) == expected and calls == ["one bounded owner read"]
+    assert "private" not in str(failure.value) and "token" not in str(failure.value)
+
+
+def test_explicit_owner_read_denial_does_not_retry_in_another_purpose(tmp_path, monkeypatch):
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    calls = []
+    def denied(**kwargs):
+        calls.append(kwargs)
+        raise observer.CaptureOwnerObservationError("capture_owner_response_denied")
+    monkeypatch.setattr(observer, "load_original_owner_observation", denied)
+    value = observation()
+    event = {"bucket": value["bucket"], "scene_id": value["scene_id"], "capture_id": value["capture_id"],
+        "raw_prefix_uri": value["raw_prefix_uri"], "source_finalize": {
+            "bucket": value["bucket"], "object_name": value["completion_marker"]["object_name"],
+            "generation": value["completion_marker"]["generation"], "event_id": "event", "event_source": "storage"}}
+    result = listener.process_handoff_payload(event, storage_root=tmp_path, provider="local",
+                                              run_e2e=lambda **kw: pytest.fail("denial reached execution"))
+    assert result["owner_observation_reason"] == "capture_owner_response_denied" and len(calls) == 1

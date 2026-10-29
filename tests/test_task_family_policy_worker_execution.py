@@ -200,6 +200,26 @@ def _stage_family_worker(sdk, tmp_path, monkeypatch):
         "task_family_operator_inputs": operator_binding}
     manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
     _write(runtime / "adp_arena_provider_manifest.json", manifest)
+    # This development-only worker fixture supplies the same exact local
+    # controller observation as the provider receiver. Do not replace the
+    # runtime guard when testing policy failures later in an admitted cell.
+    from blueprint_pipeline import beta_screening_runtime_control as control
+    from tests.test_beta_policy_screening_control_contracts import binding, response
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    import time
+
+    scope = binding()
+    scope.update(site_id=scene["scene_id"], plan_digest=inputs["plan_digest"],
+        candidate_id=candidate, configuration_digest=inputs["configuration_digest"],
+        authority_digest=authority["authority_digest"], resource_name=authority["resource_name"],
+        prepared_digest=manifest["input_digest"],
+        invocation_id=cross_runtime_canonical_digest({"fixture": "selected-family-worker", "authority": authority["authority_digest"]}))
+    scope["source"].update(task_id=scene["task_id"], scene_revision_digest=inputs["scene_revision_digest"])
+    now = int(time.time())
+    monkeypatch.setattr(control.time, "time", lambda: now)
+    observation = response(scope=scope, now=now, deadline=now + authority["hard_ttl_seconds"])
+    delivered = control.make_delivery(authority=authority, binding=scope, control=observation)
+    assert control.install_runtime_control(runtime_root=runtime, delivery=delivered) == delivered
     return runtime, spec
 
 

@@ -261,26 +261,30 @@ def reserve_probe_funding(*, task_context: Mapping[str, Any], binding_digest: st
     """Reserve the cap once from the capture's website preparation grant, or say why not."""
 
     from .website_task_context import reserve_website_preparation_spend
+    from .probe_funding_recovery import REQUEST_FILENAME, retain_request, retain_refusal
+    from .beta_policy_screening_launch import _write
 
     path = Path(job_dir) / FUNDING_FILENAME
     if path.exists() or path.is_symlink():
         return None, ["rigid_robot_free_probe_website_grant_already_reserved"]
+    if (Path(job_dir) / REQUEST_FILENAME).exists() or (Path(job_dir) / REQUEST_FILENAME).is_symlink():
+        return None, ["rigid_robot_free_probe_funding_request_reconciliation_required"]
 
     def retain(value: Mapping[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps(dict(value), indent=2, sort_keys=True) + "\n")
+        _write(path, value)
 
     try:
         admission, _grant = reserve_website_preparation_spend(
             task_context=task_context, binding_digest=binding_digest, maximum_cost_usd=float(hard_cap_usd),
-            request_count=1, resource_class="gpu_render", provider="vast", retain_admission=retain)
+            request_count=1, resource_class="gpu_render", provider="vast", retain_admission=retain,
+            retain_request_intent=lambda request: retain_request(Path(job_dir), request))
     except PaidResourceAdmissionBlocked as exc:
         if "paid_resource_admission_not_admitted" in exc.blockers:
             # The WebApp already reserved this exact binding: one binding is never paid twice.
             return None, ["rigid_robot_free_probe_website_grant_already_reserved"]
         return None, ["rigid_robot_free_probe_paid_budget_blocked", *exc.blockers]
     except (OSError, RuntimeError, ValueError) as exc:
+        retain_refusal(Path(job_dir), str(exc))
         return None, [_grant_refusal(str(exc))]
     if not path.is_file():
         return None, ["rigid_robot_free_probe_website_grant_admission_not_retained"]
@@ -497,6 +501,9 @@ def run_rigid_robot_free_probe_allocator_lane(args: Any, control_context: tuple[
             from .adp_isaac_lab_arena_vast import run_arena_native_control_vast
 
             source = bundle.get("runtime_source_packet") or {}
+            if args.execute:
+                from .allocator_invocation import before_provider_create
+                before_provider_create(authority=authority, bundle=bundle)
             result = run_arena_native_control_vast(
                 approval_path=".", job_dir=args.adp_job_dir, paid_resource_admission_grant=grant,
                 execute=args.execute, prepared_bundle=bundle, machine_avoidlist_path=args.adp_machine_avoidlist,

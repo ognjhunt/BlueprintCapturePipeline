@@ -560,6 +560,7 @@ def run_native_task_arena_policy_canary_session_vast(
     session_authority: Mapping[str, Any] | None,
     paid_resource_admission_grant: PaidResourceAdmissionGrant | None,
     execute: bool,
+    execution_deadline_epoch: float | None = None,
     machine_avoidlist_path: str | Path | None = None,
     max_hourly_rate_usd: float = 0.80,
     hard_cap_usd: float = 4.00,
@@ -584,6 +585,8 @@ def run_native_task_arena_policy_canary_session_vast(
     if authority is None:
         raise ValueError("policy_canary_session_authority_missing")
     validated_environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
+    from .beta_screening_control_delivery import runtime_control_ready_for_authority
+    runtime_control_ready = runtime_control_ready_for_authority(authority=authority, execute=execute)
     from .native_task_arena_paired_witness_staging import build_paired_witness_binding
     # A beta attempt contains one candidate. The paired intermediate-delivery
     # slot reads both frozen specs and is only meaningful for the ADP pair.
@@ -652,6 +655,7 @@ def run_native_task_arena_policy_canary_session_vast(
         pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
         groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
         result = run_arena_native_control_vast(
+            **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
             pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
             approval_path=".",
             job_dir=job_dir,
@@ -662,6 +666,7 @@ def run_native_task_arena_policy_canary_session_vast(
             max_hourly_rate_usd=max_hourly_rate_usd,
             hard_cap_usd=hard_cap_usd,
             hard_ttl_seconds=hard_ttl_seconds,
+            **({"hard_deadline_epoch": execution_deadline_epoch} if execution_deadline_epoch is not None else {}),
             expected_output_filename=POLICY_CANARY_RESULT_FILENAME,
             container_image=str(prepared_bundle["container_image"]),
             provider_bundle_kind="native_task_arena_policy_canary_session",
