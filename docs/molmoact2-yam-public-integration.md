@@ -22,7 +22,9 @@ with SHA256. Weight and tokenizer digests are publisher LFS declarations, not
 claims that these bytes were downloaded or verified. The shard index references
 exactly the five listed shards. `verify_checkpoint_directory` verifies all 20
 required local inference files, including full weight bytes and custom Python,
-before the loader executes checkpoint code. It refuses unlisted Python files.
+before the loader executes checkpoint code. It refuses every unlisted file,
+including tokenizer/config sidecars, and verifies any supplied optional publisher
+files too. Runtime caches and other ephemeral state belong outside the snapshot.
 
 ## Publisher API and exact robot contract
 

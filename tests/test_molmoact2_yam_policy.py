@@ -271,7 +271,8 @@ def test_release_inventory_is_complete_and_rights_basis_is_explicit():
     assert cameras["current_cad_discrepancy"] == "overhead_D405_body_with_simulated_D435i_optics"
 
 
-def test_snapshot_verification_hashes_bytes_and_refuses_extra_code(tmp_path, monkeypatch):
+@pytest.fixture
+def small_checkpoint(tmp_path, monkeypatch):
     files = {"config.json": b"{}", "modeling_molmoact2.py": b"# development_only\n",
              "model-00001.safetensors": b"development_only_not_real_weights",
              "model.safetensors.index.json": b'{"weight_map":{"fixture":"model-00001.safetensors"}}'}
@@ -279,16 +280,53 @@ def test_snapshot_verification_hashes_bytes_and_refuses_extra_code(tmp_path, mon
     manifest["files"] = [{"path": name, "bytes": len(raw), "locally_verified_sha256": hashlib.sha256(raw).hexdigest(),
                           "publisher_lfs_sha256": None, "required_for_inference": True} for name, raw in files.items()]
     monkeypatch.setattr(assets, "release_inventory", lambda: manifest)
+    root = tmp_path / "model"
+    root.mkdir()
     for name, raw in files.items():
-        (tmp_path / name).write_bytes(raw)
-    assert assets.verify_checkpoint_directory(tmp_path)["files_verified"] == 4
-    (tmp_path / "config.json").write_bytes(b"[]")
+        (root / name).write_bytes(raw)
+    return root, manifest
+
+
+def test_snapshot_verification_hashes_bytes(small_checkpoint):
+    root, _ = small_checkpoint
+    assert assets.verify_checkpoint_directory(root)["files_verified"] == 4
+    (root / "config.json").write_bytes(b"[]")
     with pytest.raises(ValueError, match="digest_mismatch"):
-        assets.verify_checkpoint_directory(tmp_path)
-    (tmp_path / "config.json").write_bytes(b"{}")
-    (tmp_path / "unlisted.py").write_bytes(b"# development_only\n")
-    with pytest.raises(ValueError, match="extra_code"):
-        assets.verify_checkpoint_directory(tmp_path)
+        assets.verify_checkpoint_directory(root)
+
+
+@pytest.mark.parametrize("name", ["unlisted.py", "special_tokens_map.json", "added_tokens.json", "adapter_config.json"])
+def test_snapshot_refuses_every_unlisted_loader_sidecar(small_checkpoint, name):
+    root, _ = small_checkpoint
+    (root / name).write_bytes(b"{}")
+    with pytest.raises(ValueError, match="unlisted_file"):
+        assets.verify_checkpoint_directory(root)
+
+
+def test_snapshot_verifies_optional_publisher_files_and_keeps_runtime_state_outside(small_checkpoint):
+    root, manifest = small_checkpoint
+    raw = b"development_only_optional_publisher_asset"
+    manifest["files"].append({"path": "assets/example.svg", "bytes": len(raw), "required_for_inference": False,
+                              "publisher_lfs_sha256": None, "locally_verified_sha256": None,
+                              "git_blob_id": hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()})
+    # Omitted optional files are permitted; normal runtime state is not in the snapshot.
+    (root.parent / "runtime-state.json").write_bytes(b"{}")
+    assert assets.verify_checkpoint_directory(root)["files_verified"] == 4
+    (root / "assets").mkdir()
+    (root / "assets/example.svg").write_bytes(raw)
+    assert assets.verify_checkpoint_directory(root)["files_verified"] == 5
+    (root / "assets/example.svg").write_bytes(b"x" * len(raw))
+    with pytest.raises(ValueError, match="digest_mismatch"):
+        assets.verify_checkpoint_directory(root)
+
+
+def test_snapshot_refuses_symlink_directories(small_checkpoint):
+    root, _ = small_checkpoint
+    outside = root.parent / "cache"
+    outside.mkdir()
+    (root / "cache").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ValueError, match="file_invalid"):
+        assets.verify_checkpoint_directory(root)
 
 
 def test_loader_verifies_before_importing_any_checkpoint_code(tmp_path, monkeypatch):

@@ -23,28 +23,44 @@ def verify_checkpoint_directory(directory: str | Path) -> dict[str, Any]:
 
     Large weight hashes are publisher LFS declarations until this function has
     read their full local bytes. A model card alone is never an execution receipt.
-    The staged directory must contain real files, not mutable cache symlinks.
+    The staged directory must contain only declared publisher files, not mutable
+    cache symlinks or extra tokenizer sidecars. Runtime caches live outside it.
     """
     root = Path(directory).resolve(strict=True)
     manifest = release_inventory()
-    required = {row["path"]: row for row in manifest["files"] if row["required_for_inference"]}
-    for name, row in required.items():
+    allowed = {row["path"]: row for row in manifest["files"]}
+    required = {name: row for name, row in allowed.items() if row["required_for_inference"]}
+    present = set()
+    for path in root.rglob("*"):
+        name = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            raise ValueError(f"molmoact2_checkpoint_file_invalid:{name}")
+        if path.is_dir():
+            continue
+        if name not in allowed or not path.is_file():
+            raise ValueError(f"molmoact2_checkpoint_unlisted_file:{name}")
+        present.add(name)
+    # Transformers can consume unlisted tokenizer/config sidecars even when all
+    # Python and weight files match. Verify the entire permitted file closure,
+    # including optional publisher assets when the stager supplies them.
+    for name in sorted(set(required) | present):
+        row = allowed[name]
         path = root / name
         if (not path.is_file() or path.is_symlink() or root not in path.resolve().parents
                 or path.stat().st_size != row["bytes"]):
             raise ValueError(f"molmoact2_checkpoint_file_invalid:{name}")
         expected = row["publisher_lfs_sha256"] or row["locally_verified_sha256"]
+        digest = hashlib.sha256()
+        if not expected:
+            expected = row.get("git_blob_id")
+            digest = hashlib.sha1(f"blob {row['bytes']}\0".encode())
         if not expected:
             raise ValueError(f"molmoact2_checkpoint_digest_missing:{name}")
-        digest = hashlib.sha256()
         with path.open("rb") as stream:
             for block in iter(lambda: stream.read(8 * 1024 * 1024), b""):
                 digest.update(block)
         if digest.hexdigest() != expected:
             raise ValueError(f"molmoact2_checkpoint_digest_mismatch:{name}")
-    expected_code = {name for name in required if name.endswith(".py")}
-    if {p.relative_to(root).as_posix() for p in root.rglob("*.py")} != expected_code:
-        raise ValueError("molmoact2_checkpoint_extra_code")
     expected_shards = {name for name in required if name.endswith(".safetensors")}
     if ({p.name for p in root.glob("*.safetensors")} != expected_shards
             or set(json.loads((root / "model.safetensors.index.json").read_text())["weight_map"].values())
@@ -52,7 +68,7 @@ def verify_checkpoint_directory(directory: str | Path) -> dict[str, Any]:
         raise ValueError("molmoact2_checkpoint_selection_ambiguous")
     return {"model_id": MODEL_ID, "model_revision": MODEL_REVISION, "source_revision": SOURCE_REVISION,
             "norm_stats_sha256": NORM_SHA256, "checkpoint_bytes_verified": True,
-            "files_verified": len(required), "license": manifest["license"],
+            "files_verified": len(present), "license": manifest["license"],
             "license_evidence_url": manifest["license_evidence_url"],
             "inference_performed": False}
 
