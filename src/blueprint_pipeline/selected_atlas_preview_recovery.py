@@ -1,7 +1,8 @@
 """Source-bound observations and requeue of one existing website Atlas preview.
 
-This module never advances a job, creates a grant, reserves money, or calls a
-provider. The existing preview timer owns all later paid work and admission.
+Atlas status/requeue creates no grant or provider request. A separately selected
+preparation resume invokes the existing native handler after a reviewed snapshot;
+that handler retains its source, lease, completed-stage and spending admission.
 """
 from __future__ import annotations
 
@@ -241,6 +242,23 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
                      "expires_at_epoch": job["enqueued_at_epoch"] + MAXIMUM_JOB_SECONDS,
                      "retry_count": len(job.get("retries", []))}, "preflight_blockers": [],
              "capture_inference_accounting": None}
+    # Old native failures may precede the Atlas-wait continuation seam. Keep
+    # their entire ledger in the reviewed digest, including unknown outcomes,
+    # attempts and lease history; never manufacture a successful/waiting row.
+    from .pubsub_handoff_listener import JOB_LEDGER_FILENAME
+    native_path = capture_root / JOB_LEDGER_FILENAME
+    value["native_preparation"] = None
+    if native_path.exists() or native_path.is_symlink():
+        native, _ = _read_json(native_path, storage_root)
+        _require(native.get("scene_id") == selection["scene_id"]
+                 and native.get("capture_id") == selection["capture_id"]
+                 and _number(native.get("revision"), positive=True, integer=True)
+                 and _number(native.get("attempt_count"), integer=True), "native_ledger_invalid")
+        value["native_preparation"] = {
+            "ledger_digest": canonical_digest(native),
+            **{key: native.get(key) for key in (
+                "status", "revision", "attempt_count", "source_payload_sha256", "producer_delivery_key")},
+        }
     if type(job.get("reason")) is str and _CODE.fullmatch(job["reason"]):
         value["job"]["reason"] = job["reason"]
     if type(job.get("stage")) is str and _CODE.fullmatch(job["stage"]):
@@ -311,12 +329,13 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
     return value
 
 
-def recover_selected_atlas_preview(selection, *, observation, membership, capture_root, storage_root):
+def recover_selected_atlas_preview(selection, *, observation, membership, capture_root, storage_root,
+                                   handoff_payload=None, listener=None):
     from .task_evaluation_scene_retirement_generations import _capture_admission
     from .website_atlas_preview import retry_failed_job
     from .website_atlas_preview_store import capture_withdrawn
 
-    _require(selection["mode"] in {"atlas-status", "atlas-retry"}, "mode_invalid")
+    _require(selection["mode"] in {"atlas-status", "atlas-retry", "preparation-resume"}, "mode_invalid")
 
     expected = (Path(storage_root) / selection["bucket"] / "scenes" / selection["scene_id"]
                 / "captures" / selection["capture_id"])
@@ -327,7 +346,7 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
     _safe_path(lock_path, storage_root)
     with _capture_admission(capture_root, required=True):
         _require(not capture_withdrawn(capture_root), "capture_withdrawn")
-        if selection["mode"] == "atlas-status":
+        if selection["mode"] in {"atlas-status", "preparation-resume"}:
             with os.fdopen(os.open(lock_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
@@ -335,6 +354,35 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                     raise ValueError("selected_handoff_atlas_job_busy") from None
                 job, _ = _read_json(job_path, storage_root)
                 snapshot = _snapshot(selection, observation, membership, capture_root, storage_root, job)
+            if selection["mode"] == "preparation-resume":
+                # Atlas has finished and will not be repurchased. Its remaining
+                # call quota and price-review date cannot block native work;
+                # native allocation still checks its own current authority.
+                blockers = set(snapshot["preflight_blockers"]) - {
+                    "website_scene_preparation_budget_exhausted", "atlas_runtime_price_review_expired"}
+                _require(not blockers, "preflight_blocked")
+                _require(snapshot["atlas_status_digest"] == selection["atlas_status_digest"], "status_changed")
+                _require(job["state"] == "ready", "reconstruction_not_ready")
+                native = snapshot["native_preparation"]
+                _require(type(native) is dict and native["status"] == "failed_retryable"
+                         and type(native["producer_delivery_key"]) is str
+                         and _SHA.fullmatch(native["producer_delivery_key"])
+                         and native["producer_delivery_key"] == observation["producer_delivery"].get("delivery_key"),
+                         "native_resume_not_eligible")
+                _require(type(handoff_payload) is bytes and listener is not None, "original_payload_required")
+                provider = os.getenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "")
+                _require(provider in {"local", "claude", "openai"}, "current_provider_missing")
+                # This is one explicit operator retry, not a broker reset or a
+                # new wait/grant. The native claim checks the reviewed ledger
+                # atomically, then increments its existing attempt history.
+                result = listener.process_handoff_payload(handoff_payload, storage_root=Path(storage_root),
+                    provider=provider, expected_preparation_purpose="scene_preparation",
+                    expected_preparation_resume_digest=native["ledger_digest"])
+                complete = result.get("status") == "processed" and result.get("queue_disposition") == "terminal_success"
+                return {"status": "native_preparation_resumed" if complete else "blocked", "atlas": snapshot,
+                        "atlas_retry_performed": False, "native_handler_invoked": True,
+                        "native_status": result.get("status"), "native_disposition": result.get("queue_disposition"),
+                        "blockers": [] if complete else ["selected_handoff_native_preparation_still_blocked"]}
             return {"status": "atlas_status_returned", "atlas": snapshot, "atlas_retry_performed": False}
 
         def preflight(job):

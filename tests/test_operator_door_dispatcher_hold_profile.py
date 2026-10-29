@@ -55,6 +55,8 @@ atlas_status = {**selected, "mode":"atlas-status"}
 atlas_retry = {**selected, "mode":"atlas-retry", "atlas_status_digest":"sha256:"+"c"*64}
 assert r.validate_request(atlas_status) == atlas_status
 assert r.validate_request(atlas_retry) == atlas_retry
+preparation = {**atlas_retry, "mode":"preparation-resume"}
+assert r.validate_request(preparation) == preparation
 discovery = {key:value for key,value in selected.items() if key in {"kind", "bucket", "scene_id", "capture_id", "marker_generation"}}
 discovery["mode"] = "discover-selector"
 assert r.validate_request(discovery) == discovery

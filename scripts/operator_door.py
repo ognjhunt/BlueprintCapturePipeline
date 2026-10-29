@@ -663,7 +663,8 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     selected_modes.add_argument("--dispatch", action="store_true", help="invoke only the existing admission-fenced native handler")
     selected_modes.add_argument("--atlas-status", action="store_true", help="read this original capture's existing Atlas job and allowance")
     selected_modes.add_argument("--atlas-retry", action="store_true", help="requeue exactly this failed Atlas job after budget review; its timer can spend")
-    selected.add_argument("--atlas-status-digest", help="exact snapshot digest reviewed before --atlas-retry")
+    selected_modes.add_argument("--resume-preparation", action="store_true", help="resume this failed native job after Atlas is ready, using the reviewed status and existing admission")
+    selected.add_argument("--atlas-status-digest", help="exact snapshot digest reviewed before --atlas-retry or --resume-preparation")
     selected.add_argument("--resume-request", help="recover one matching retained failure before native lease creation")
     _add_wait(selected, 2 * 3600 + 600)
     request = commands.add_parser("request")
@@ -751,12 +752,13 @@ def run(args: argparse.Namespace) -> int:
         body = json.loads(raw)
         if not isinstance(body, dict) or any(key in body for key in ("kind", "mode", "operation_key", "resume_request_id")):
             raise DoorError(2, "selected_handoff_selector_file_invalid")
-        mode = ("discover-selector" if args.discover_selector else "atlas-retry" if args.atlas_retry
+        mode = ("discover-selector" if args.discover_selector else "preparation-resume" if args.resume_preparation else "atlas-retry" if args.atlas_retry
                 else "atlas-status" if args.atlas_status else "dispatch" if args.dispatch else "inspect")
         body.update(kind="selected-handoff", mode=mode)
-        if args.atlas_retry != bool(args.atlas_status_digest):
+        reviewed_retry = args.atlas_retry or args.resume_preparation
+        if reviewed_retry != bool(args.atlas_status_digest):
             raise DoorError(2, "selected_handoff_atlas_status_digest_required_for_retry_only")
-        if args.atlas_retry:
+        if reviewed_retry:
             body["atlas_status_digest"] = args.atlas_status_digest
         if args.resume_request:
             if not args.dispatch:

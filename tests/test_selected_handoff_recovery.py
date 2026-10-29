@@ -542,12 +542,12 @@ def test_selected_staging_recovery_refuses_partial_local_state_before_native_cal
     assert retained.read_bytes() == before
 
 
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume"])
 def test_selected_atlas_reuses_original_validators_before_existing_job_surface(tmp_path, monkeypatch, mode):
     from blueprint_pipeline import selected_atlas_preview_recovery as atlas
     selection, objects, client, listener, owner, retirement, _, pins, native_calls = fixture(tmp_path)
     selection["mode"] = mode
-    if mode == "atlas-retry":
+    if mode in {"atlas-retry", "preparation-resume"}:
         selection["atlas_status_digest"] = "sha256:" + "c" * 64
     root = tmp_path / "capture"
     root.mkdir()
@@ -575,12 +575,12 @@ def test_selected_atlas_reuses_original_validators_before_existing_job_surface(t
     assert result["status"] == "blocked" and len(seen) == 1
 
 
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume"])
 def test_selected_atlas_inherits_current_owner_membership_and_retirement_refusals(tmp_path, monkeypatch, mode):
     from blueprint_pipeline import selected_atlas_preview_recovery as atlas
     selection, _, client, listener, owner, retirement, admission, _, _ = fixture(tmp_path)
     selection["mode"] = mode
-    if mode == "atlas-retry":
+    if mode in {"atlas-retry", "preparation-resume"}:
         selection["atlas_status_digest"] = "sha256:" + "c" * 64
     monkeypatch.setattr(atlas, "recover_selected_atlas_preview", lambda *a, **kw: pytest.fail("Atlas reached"))
     for changed in ({"owner_reader": lambda **kw: {"producer_delivery": {"kind": "other"}}},
