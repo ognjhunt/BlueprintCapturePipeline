@@ -347,6 +347,28 @@ def _prepare_capture_parent(path, rows):
         current /= part
 
 
+def _same_capture_birth_projection(prior, prior_owner, owner, expected_purpose):
+    if (prior.get('capture_observation_purpose') == expected_purpose
+            and prior_owner['source_projection_digest'] == owner['source_projection_digest']):
+        return True
+    if (expected_purpose != 'scene_preparation'
+            or 'capture_observation_purpose' in prior or 'purpose' in prior_owner):
+        return False
+    # Old authenticated births predate purpose-scoped preparation reads. The
+    # fresh observation was validated for preparation by this caller. Compare
+    # its entire original source projection, excluding only that newer label;
+    # retain the historical bytes and purpose rather than issuing new authority.
+    from .capture_original_owner_observer import _SOURCE_KEYS, validate_observation
+    from .decision_evidence_contracts import cross_runtime_canonical_digest
+
+    validate_observation(prior_owner, bucket=owner['bucket'], scene_id=owner['scene_id'],
+        capture_id=owner['capture_id'], marker_generation=owner['completion_marker']['generation'],
+        now_epoch=prior_owner['observed_at_epoch'])
+    keys = (*_SOURCE_KEYS, *(('capture_binding',) if 'capture_binding' in owner else ()))
+    return prior_owner['source_projection_digest'] == cross_runtime_canonical_digest({
+        key: owner[key] for key in keys})
+
+
 def birth_capture_member(path, *, observation, membership_selector, membership_raw, now=None, expected_purpose=None, require_policy=False, require_authenticated_birth=False):
     """Birth a selected website capture before its first ledger or payload write.
 
@@ -420,11 +442,10 @@ def birth_capture_member(path, *, observation, membership_selector, membership_r
                         with _opened(path, directory=True) as (_, info):
                             _require(_identity(info) == (prior['dev'], prior['ino'], prior['mode']),
                                      'scene_capture_generation_changed')
-                        _require(prior_owner['source_projection_digest'] == owner['source_projection_digest']
+                        _require(_same_capture_birth_projection(prior, prior_owner, owner, expected_purpose)
                                  and prior_delivery == birth_delivery
                                  and _raw_reference(membership_ref) == membership
                                  and prior['capture_owner_user_id'] == capture_owner_user_id
-                                 and prior.get('capture_observation_purpose') == expected_purpose
                                  and prior['pinned_marker'] == marker,
                                  'scene_capture_active_delivery_conflict')
                         return prior

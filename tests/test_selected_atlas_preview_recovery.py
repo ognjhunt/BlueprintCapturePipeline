@@ -17,6 +17,7 @@ from blueprint_pipeline import website_atlas_pipeline as pipeline
 from blueprint_pipeline import website_atlas_preview as preview
 from blueprint_pipeline import website_atlas_preview_store as store
 from blueprint_pipeline import website_task_context as context
+from blueprint_pipeline.capture_delivery_staging import CaptureStagingError
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
 
@@ -570,3 +571,43 @@ def test_request_allowance_exhaustion_uses_current_original_cap_without_reset(si
     with pytest.raises(ValueError, match="selected_handoff_atlas_preflight_blocked"):
         recover(site, retry_digest=result["atlas"]["atlas_status_digest"])
     assert site.job_path.read_bytes() == before
+
+
+@pytest.mark.parametrize('field', ['staging_reason', 'owner_observation_reason'])
+@pytest.mark.parametrize('reason', ['capture_owner_purpose_mismatch', 'capture_original_birth_refused',
+                                  'private token=secret', None])
+def test_native_resume_preserves_only_a_bounded_refusal_code(site, monkeypatch, field, reason):
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+
+    delivery = 'sha256:' + '8' * 64
+    site.observation['producer_delivery']['delivery_key'] = delivery
+    ledger = {'scene_id': 'site-fixture', 'capture_id': 'walkthrough-fixture',
+              'status': 'failed_retryable', 'revision': 13, 'attempt_count': 5,
+              'source_payload_sha256': '7' * 64, 'producer_delivery_key': delivery}
+    (site.capture / listener.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
+    write_job(site, state='ready')
+    reviewed = recover(site)['atlas']['atlas_status_digest']
+    calls = []
+
+    def native(payload, **kwargs):
+        calls.append((payload, kwargs))
+        return {'status': 'capture_source_membership_unavailable_retryable',
+                'queue_disposition': 'retryable',
+                field: str(CaptureStagingError(reason)) if reason is not None else None}
+
+    monkeypatch.setenv('BLUEPRINT_PUBSUB_HANDOFF_PROVIDER', 'openai')
+    before = tree_bytes(site)
+    result = recovery.recover_selected_atlas_preview(
+        {**site.selection, 'mode': 'preparation-resume', 'atlas_status_digest': reviewed},
+        observation=site.observation, membership=site.membership,
+        capture_root=site.capture, storage_root=site.storage,
+        handoff_payload=b'original selected bytes',
+        listener=SimpleNamespace(process_handoff_payload=native))
+    assert result['status'] == 'blocked' and result['native_handler_invoked'] is True
+    safe = (reason == 'capture_owner_purpose_mismatch'
+            or (field == 'staging_reason' and reason == 'capture_original_birth_refused'))
+    assert result.get(field) == (reason if safe else None)
+    assert 'private token=secret' not in json.dumps(result)
+    assert len(calls) == 1 and calls[0][0] == b'original selected bytes'
+    assert calls[0][1]['expected_preparation_purpose'] == 'scene_preparation'
+    assert tree_bytes(site) == before
