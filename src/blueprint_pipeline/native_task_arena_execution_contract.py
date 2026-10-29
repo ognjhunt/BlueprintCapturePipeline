@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 
 
 PROVIDER_STATUS_FILENAME = "native_task_arena_policy_canary_status.v1.json"
@@ -31,6 +31,26 @@ NATIVE_METROLOGY_RUNTIME_MODULE_NAMES = (
 NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES = (
     "core/__init__.py", "core/security_controls.py",
 )
+CONTROLLED_POLICY_RUNTIME_PACKAGE_FILES = ("core/__init__.py", "core/security_controls.py")
+POLICY_RUNTIME_PACKAGE_FILES = ("core/__init__.py", "core/common.py", "core/security_controls.py")
+
+
+def native_task_arena_runtime_archive_paths(
+    execution_mode: str, runtime_module_names: Iterable[str],
+) -> tuple[set[str], set[str]]:
+    """Exact Python member allowlist and required package members for preflight."""
+    names, package_files = set(runtime_module_names), set()
+    if "site_task_native_metrology.py" in names:
+        package_files.update(NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES)
+    if execution_mode == "controlled_policy":
+        package_files.update(CONTROLLED_POLICY_RUNTIME_PACKAGE_FILES)
+    if execution_mode in {"policy", "policy_diagnostic"}:
+        package_files.update(POLICY_RUNTIME_PACKAGE_FILES)
+    prefix = "provider_runtime/blueprint_pipeline/"
+    package_paths = {prefix + name for name in package_files}
+    module_paths = {prefix + name for name in names}
+    module_paths.update(path for path in package_paths if not path.endswith("/__init__.py"))
+    return module_paths, package_paths
 
 
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (

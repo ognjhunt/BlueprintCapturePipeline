@@ -29,7 +29,9 @@ from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE as DEFAULT_IMAG
 from .common import ensure_dir, utc_now_iso, write_json
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_packet import RECEIPT_SCHEMA_VERSION
-from .native_task_arena_execution_contract import NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES
+from .native_task_arena_execution_contract import (
+    NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES, POLICY_RUNTIME_PACKAGE_FILES,
+)
 from .native_task_runtime_source_packet import (
     verify_native_task_runtime_source_packet,
 )
@@ -76,7 +78,7 @@ POLICY_RUNTIME_ROOT_MODULE_NAMES = (
     "groot_n17_droid_policy_runtime.py",
     "openpi_droid_policy_runtime.py",
 )
-POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES = ("core/__init__.py", "core/common.py", "core/security_controls.py")
+POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES = POLICY_RUNTIME_PACKAGE_FILES
 
 
 class NativeTaskArenaBundleError(ValueError):

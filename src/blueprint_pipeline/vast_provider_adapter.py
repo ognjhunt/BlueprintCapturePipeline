@@ -3008,27 +3008,9 @@ def _blueprint_bundle_preflight(
                                 and entry.endswith(".py")
                                 and not entry.endswith("/__init__.py")
                             }
-                            expected_module_paths = {
-                                f"provider_runtime/blueprint_pipeline/{name}"
-                                for name in expected_modules
-                            }
-                            if "site_task_native_metrology.py" in expected_modules:
-                                from .native_task_arena_execution_contract import NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES
-                                metrology_package_paths = {
-                                    "provider_runtime/blueprint_pipeline/" + name
-                                    for name in NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES
-                                }
-                                required_entries.update(metrology_package_paths)
-                                expected_module_paths.update(
-                                    path for path in metrology_package_paths
-                                    if not path.endswith("/__init__.py")
-                                )
-                            if execution_mode == "controlled_policy":
-                                expected_module_paths.add(
-                                    "provider_runtime/blueprint_pipeline/core/security_controls.py"
-                                )
-                            if execution_mode in {"policy", "policy_diagnostic"}:
-                                expected_module_paths.update("provider_runtime/blueprint_pipeline/core/" + name for name in ("common.py", "security_controls.py"))
+                            from .native_task_arena_execution_contract import native_task_arena_runtime_archive_paths
+                            expected_module_paths, package_paths = native_task_arena_runtime_archive_paths(execution_mode, expected_modules)
+                            required_entries.update(package_paths)
                             if (
                                 native_manifest.get("schema_version")
                                 != "native_task_arena_provider_bundle.v1"
