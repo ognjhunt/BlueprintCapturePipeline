@@ -33,7 +33,10 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .native_task_arena_execution_contract import RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES
+from .native_task_arena_execution_contract import (
+    NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES,
+    RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES,
+)
 from .rigid_robot_free_probe_worker import (
     EXECUTION_MODE,
     INPUTS_FILENAME,
@@ -162,6 +165,7 @@ def build_rigid_robot_free_probe_bundle(*, job_dir: str | Path, packet_dir: str 
     package = Path(__file__).resolve().parent
     assert_provider_runtime_import_closure(
         package_source_dir=package, shipped_module_names=RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES,
+        shipped_package_files=NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES,
         code="rigid_robot_free_probe_bundle_import_closure_incomplete")
     inputs = validate_probe_inputs(_read(Path(inputs_path)))
     packet_receipt = _read(Path(packet_dir) / PACKET_RECEIPT_FILENAME)

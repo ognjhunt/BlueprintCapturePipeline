@@ -10,6 +10,7 @@ No GPU, provider, network or spend.
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from blueprint_pipeline import rigid_robot_free_probe_worker as worker
 from blueprint_pipeline import vast_provider_adapter
 from blueprint_pipeline.native_task_arena_execution_contract import (
     EXECUTION_MODE_CONTRACTS,
+    NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES,
     RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES,
 )
 from blueprint_pipeline.provider_runtime_bundle_contract import provider_runtime_contract_blockers
@@ -61,17 +63,28 @@ def _closure(roots: tuple[str, ...]) -> set[str]:
         if name in seen:
             continue
         seen.add(name)
-        for target, lazy in _import_targets((PACKAGE / name).read_text(encoding="utf-8")):
+        source = (PACKAGE / name).read_text(encoding="utf-8")
+        for target, lazy in _import_targets(source):
             if not ((name, target) in CONTROL_PLANE_ONLY_LAZY_IMPORTS and lazy):
-                pending.append(f"{target}.py")
+                if (PACKAGE / target).is_dir():
+                    pending.append(target + "/__init__.py")
+                    for node in ast.walk(ast.parse(source)):
+                        if isinstance(node, ast.ImportFrom) and node.module:
+                            module = node.module.removeprefix("blueprint_pipeline.")
+                            if module.startswith(target + "."):
+                                pending.append(module.replace(".", "/") + ".py")
+                else:
+                    pending.append(f"{target}.py")
     return seen
 
 
 def test_the_shipped_package_is_exactly_the_workers_static_import_closure() -> None:
-    assert set(RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES) == _closure(CLOSURE_ROOTS)
+    assert set(RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES) | set(
+        NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES) == _closure(CLOSURE_ROOTS)
     assert len(set(RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES)) == len(RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES)
     assert provider_runtime_import_closure_blockers(
-        package_source_dir=PACKAGE, shipped_module_names=RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES) == []
+        package_source_dir=PACKAGE, shipped_module_names=RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES,
+        shipped_package_files=NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES) == []
     contract = EXECUTION_MODE_CONTRACTS[worker.EXECUTION_MODE]
     assert contract.expected_output_filename == worker.RESULT_FILENAME
     assert contract.policy_candidate_required is False
@@ -114,7 +127,9 @@ def test_the_sealed_bundle_passes_the_vast_preflight_and_carries_no_policy(seale
     assert receipt["status"] == "ready" and receipt["execution_mode"] == worker.EXECUTION_MODE
     assert receipt["program_id"] == "blueprint-free-beta-evaluated-pilot"
     assert receipt["candidate_policy_queried"] is False and receipt["policy_candidate_id"] is None
-    assert receipt["policy_provisioning_script"] is None and receipt["runtime_root_modules"] == []
+    assert receipt["policy_provisioning_script"] is None
+    assert {row["relative_path"] for row in receipt["runtime_root_modules"]} == {
+        "blueprint_pipeline/" + name for name in NATIVE_METROLOGY_RUNTIME_PACKAGE_FILES}
     bundle_path = Path(receipt["bundle_path"])
     preflight = vast_provider_adapter._blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight", generated_at="fixed", enable_blueprint_bundle=True,

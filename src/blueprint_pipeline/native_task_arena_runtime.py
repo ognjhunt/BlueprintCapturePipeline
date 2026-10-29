@@ -20,6 +20,7 @@ from typing import Any, Mapping, Sequence
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_usd_dependency_closure import G1_KIT_RUNTIME_ASSETS
+from .native_task_robot_registry import ARENA_CAMERA_OBSERVATION_GROUP, drop_per_step_camera_observations
 from .native_articulation_root_frame import (
     NativeArticulationRootFrameError,
     convert_root_pose,
@@ -60,9 +61,6 @@ LOGICAL_CONTACT_SENSOR_IDS = frozenset(
 )
 PINHOLE_HORIZONTAL_APERTURE_MM = 20.955
 SCENE_PLAN_SCHEMA = "native_task_arena_scene_plan.v1"
-#: The observation group Arena composes from an embodiment's cameras
-#: (``isaaclab_arena.utils.cameras.make_camera_observation_cfg``).
-ARENA_CAMERA_OBSERVATION_GROUP = "camera_obs"
 
 
 class NativeTaskArenaRuntimeError(ValueError):
@@ -292,6 +290,12 @@ class NativeTaskArenaEnvironment:
     preconstruction_device_binding: Mapping[str, Any] | None = None
     native_configuration_readback: Mapping[str, Any] | None = None
     policy_view_scene_names: Mapping[str, str] | None = None  # policy-only views, never evidence cameras
+    default_robot_model: Any = None  # verified local bytes, never execution/open authority
+
+    def read_site_task_metrology(self, *, selectors: Mapping[str, Any], episode_adapter: Any = None):
+        from .site_task_native_metrology import read_rigid_native_metrology
+        return read_rigid_native_metrology(self, selectors=selectors, episode_adapter=episode_adapter,
+                                          default_robot_model=self.default_robot_model)
 
 
 def _validated_plan(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -528,26 +532,6 @@ def _rotation_matrix_to_xyzw(matrix: Sequence[Sequence[float]]) -> list[float]:
     if quaternion[3] < 0.0:
         quaternion = [-value for value in quaternion]
     return quaternion
-
-
-def drop_per_step_camera_observations(cfg: Any) -> bool:
-    """Remove Arena's per-step camera observation group; return whether it existed.
-
-    Arena adds one ``mdp.image`` term per camera and data type whenever cameras
-    are enabled, and Isaac Lab computes every observation group after every
-    ``env.step()``.  In the pinned Isaac Lab a camera read is what pulls the
-    RTX ``app.update()``, so those terms rendered all three cameras on every
-    15 Hz control step: run 57749451 spent 227 s of a 441 s episode inside
-    ``env.step()``.  Nothing consumes them -- the episode adapter reads the
-    scene cameras directly and renders only on the steps whose frames it uses.
-    Isaac Lab's observation manager skips a ``None`` group.
-    """
-
-    observations = getattr(cfg, "observations", None)
-    if getattr(observations, ARENA_CAMERA_OBSERVATION_GROUP, None) is None:
-        return False
-    setattr(observations, ARENA_CAMERA_OBSERVATION_GROUP, None)
-    return True
 
 
 def camera_runtime_parameters(camera: Mapping[str, Any], *, robot_id: str = "franka_panda") -> dict[str, Any]:
@@ -1385,6 +1369,7 @@ def build_native_task_arena_environment(
     enable_cameras: bool = True,
     include_scene_appearance: bool = True,
     render_mode: str | None = "rgb_array",
+    default_robot_model: Any = None,
 ) -> NativeTaskArenaEnvironment:
     """Instantiate the pinned Arena environment from one immutable plan."""
 
@@ -1400,6 +1385,11 @@ def build_native_task_arena_environment(
             ["native_task_arena_vector_runtime_configuration_invalid"]
         )
     plan = _validated_plan(scene_plan)
+    if default_robot_model is not None:
+        from .site_task_native_metrology import VerifiedDefaultDroidModel
+        if not isinstance(default_robot_model, VerifiedDefaultDroidModel) or plan["robot"]["robot_id"] != "franka_panda":
+            raise NativeTaskArenaRuntimeError(["native_task_arena_default_model_binding_invalid"])
+        default_robot_model.recheck()
     runtime_objects = _resolve_portable_assets(plan, bundle_root=bundle_root)
     scenario_applications = list(
         (plan.get("scenario") or {}).get("parameter_applications") or []
@@ -1556,7 +1546,9 @@ def build_native_task_arena_environment(
 
     robot = _resolve_portable_robot(plan, bundle_root=bundle_root)
     robot_pose = robot["base_pose_world"]
-    embodiment = build_native_robot_embodiment(robot, enable_cameras=enable_cameras, pose_class=Pose)
+    embodiment = (build_native_robot_embodiment(robot, enable_cameras=enable_cameras, pose_class=Pose)
+        if default_robot_model is None else build_native_robot_embodiment(robot, enable_cameras=enable_cameras,
+                                                                         pose_class=Pose, default_robot_model=default_robot_model))
     exact_robot_reset = dict(robot["joint_reset_positions_rad"])
     embodiment.initial_pose = None
     # Beta2's AssetBaseCfg.InitialStateCfg.rot, articulation root/body pose
@@ -1966,6 +1958,7 @@ def build_native_task_arena_environment(
         camera_scene_names={role: name for role, name in camera_names.items() if role != "exterior_right"},
         policy_view_scene_names={role: name for role, name in camera_names.items() if role == "exterior_right"},
         preconstruction_device_binding=preconstruction,
+        default_robot_model=default_robot_model,
         native_configuration_readback={
             "cameras": camera_configuration_readback,
             "direct_wrist_camera_aim": direct_camera_aim,
