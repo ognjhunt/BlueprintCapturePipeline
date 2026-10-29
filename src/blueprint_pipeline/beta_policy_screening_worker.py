@@ -162,19 +162,52 @@ def publish_screening(publication: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
+def _publication_failure_category(error: Exception) -> str:
+    try:
+        message = str(error)
+    except Exception:  # noqa: BLE001 - diagnostics cannot become publication authority
+        return "unknown"
+    match = re.fullmatch(r"beta_screening_publication_http_([0-9]{3})", message)
+    if match:
+        code = int(match[1])
+        return ("auth" if code in {401, 403} else "source" if 400 <= code < 500 and code not in {408, 429}
+                else "unavailable" if code in {408, 429} or 500 <= code <= 599 else "unknown")
+    if message == "beta_screening_publication_ack_invalid" or isinstance(error, (json.JSONDecodeError, UnicodeError)):
+        return "ack"
+    return "unavailable" if isinstance(error, OSError) else "unknown"
+
+
 def deliver_publications(*, queue_root: str | Path, transport=None,
-                         refresh_startable: bool = False) -> dict[str, Any]:
+                         refresh_startable: bool = False, include_failure_details: bool = False) -> dict[str, Any]:
     from .beta_policy_screening_coordinator import acknowledge_publication, pending_publications
     sent = failed = 0
+    failure = None
     for publication in pending_publications(queue_root=queue_root, refresh_startable=refresh_startable):
         try:
             (transport or publish_screening)(publication)
             acknowledged = acknowledge_publication(publication["campaign_id"], publication["publication_digest"],
                 queue_root=queue_root)
+            if not acknowledged:
+                raise ValueError("beta_screening_publication_ack_invalid")
             sent += int(acknowledged)
-        except (OSError, ValueError, RuntimeError):
+        except (OSError, ValueError, RuntimeError) as error:
             failed += 1
-    return {"acknowledged": sent, "pending": failed}
+            failure = _publication_failure_category(error)
+    result = {"acknowledged": sent, "pending": failed}
+    if include_failure_details:
+        result.update(last_failure_category=failure, next_retry_at_epoch=None)
+    return result
+
+
+def _worker_status(root: Path, *, publication_before=None, publication_after=None, execution=None) -> dict[str, Any]:
+    """The existing status projection has no authority over queue effects."""
+    try:
+        from .beta_policy_screening_status import write_worker_status
+        return write_worker_status(root, publication_before=publication_before,
+            publication_after=publication_after, execution=execution)
+    except Exception:  # noqa: BLE001 - telemetry must not block canonical execution or teardown
+        return {"schema_version": "blueprint.beta_policy_screening_worker_status.v1",
+                "status": "unknown", "reason": "screening_status_unavailable", "performs_live_actions": False}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -191,11 +224,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     sources = enqueue_prepared_scenes(queue_root=root, packet_queue_root=args.packet_queue_root,
         max_sources=args.max_sources) if args.packet_queue_root else {"status": "source_queue_not_configured"}
     # Publish queued rows before a potentially long allocator attempt.
-    before = deliver_publications(queue_root=root, refresh_startable=True)
-    execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
-        max_launches=args.max_launches)
+    before = deliver_publications(queue_root=root, refresh_startable=True, include_failure_details=True)
+    _worker_status(root, publication_before=before)
+    execution = after = None
+    try:
+        execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
+            max_launches=args.max_launches)
+        after = deliver_publications(queue_root=root, include_failure_details=True)
+    finally:
+        # The preceding snapshot already observed these delivery events. Keep
+        # its timestamps instead of re-counting old ACKs/failures as fresh.
+        observed_before = {**before, "acknowledged": 0, "last_failure_category": None}
+        status = _worker_status(root, publication_before=observed_before, publication_after=after, execution=execution)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
-                      "publication_after": deliver_publications(queue_root=root)}, sort_keys=True))
+                      "publication_after": after, "worker_status": status}, sort_keys=True))
     return 0
 
 

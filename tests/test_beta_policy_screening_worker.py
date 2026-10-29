@@ -91,6 +91,79 @@ def test_failed_delivery_retains_durable_outbox_and_retry_acknowledges(tmp_path)
     assert coordinator.pending_publications(queue_root=tmp_path) == []
 
 
+@pytest.mark.parametrize("error,category", [
+    (ValueError("beta_screening_publication_http_403"), "auth"),
+    (ValueError("beta_screening_publication_http_402"), "source"),
+    (ValueError("beta_screening_publication_http_409"), "source"),
+    (ValueError("beta_screening_publication_http_429"), "unavailable"),
+    (ValueError("beta_screening_publication_http_307"), "unknown"),
+    (ValueError("beta_screening_publication_http_503"), "unavailable"),
+    (ValueError("beta_screening_publication_ack_invalid"), "ack"),
+    (ValueError("beta_screening_publication_http_403 private token=do-not-expose"), "unknown"),
+    (UnicodeError("private remote response token=do-not-expose"), "ack"),
+    (json.JSONDecodeError("private remote response", "token=do-not-expose", 0), "ack"),
+    (OSError("private remote URL token=do-not-expose"), "unavailable"),
+    (RuntimeError("private customer content"), "unknown"),
+])
+def test_opt_in_publication_failure_details_are_only_safe_enums(tmp_path, error, category):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from tests.test_beta_policy_screening_coordinator import plan
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    def send(_publication):
+        raise error
+    result = worker.deliver_publications(queue_root=tmp_path, transport=send, include_failure_details=True)
+    assert result == {"acknowledged": 0, "pending": 1, "last_failure_category": category, "next_retry_at_epoch": None}
+    assert "private" not in json.dumps(result) and "do-not-expose" not in json.dumps(result)
+    assert coordinator.pending_publications(queue_root=tmp_path)
+
+
+def test_changed_ledger_ack_keeps_publication_pending_and_reports_safe_ack_failure(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from tests.test_beta_policy_screening_coordinator import plan
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    monkeypatch.setattr(coordinator, "acknowledge_publication", lambda *a, **k: False)
+    assert worker.deliver_publications(queue_root=tmp_path, transport=lambda _: None, include_failure_details=True) == {
+        "acknowledged": 0, "pending": 1, "last_failure_category": "ack", "next_retry_at_epoch": None}
+    assert len(coordinator.pending_publications(queue_root=tmp_path)) == 1
+
+
+@pytest.mark.parametrize("execution_error", [False, True])
+def test_worker_writes_existing_status_before_execution_and_in_finally_without_blocking_work(
+        tmp_path, monkeypatch, capsys, execution_error):
+    import sys
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    calls = []
+    def snapshot(root, **kwargs):
+        assert root == tmp_path
+        calls.append(("snapshot", kwargs))
+        raise OSError("status filesystem unavailable")
+    monkeypatch.setitem(sys.modules, "blueprint_pipeline.beta_policy_screening_status",
+        SimpleNamespace(write_worker_status=snapshot))
+    def delivery(**kwargs):
+        calls.append(("publication", kwargs))
+        return {"acknowledged": 0, "pending": 0, "last_failure_category": None, "next_retry_at_epoch": None}
+    def execute(**kwargs):
+        calls.append(("execution", kwargs))
+        if execution_error:
+            raise RuntimeError("canonical failure must still propagate")
+        return {"status": "processed"}
+    monkeypatch.setattr(worker, "deliver_publications", delivery)
+    monkeypatch.setattr(coordinator, "process_screening_queue", execute)
+    if execution_error:
+        with pytest.raises(RuntimeError, match="canonical failure"):
+            worker.main(["--queue-root", str(tmp_path), "--packet-queue-root", ""])
+        assert [kind for kind, _ in calls] == ["publication", "snapshot", "execution", "snapshot"]
+        assert capsys.readouterr().out == ""
+    else:
+        assert worker.main(["--queue-root", str(tmp_path), "--packet-queue-root", ""]) == 0
+        assert [kind for kind, _ in calls] == ["publication", "snapshot", "execution", "publication", "snapshot"]
+        result = json.loads(capsys.readouterr().out)
+        assert result["worker_status"]["status"] == "unknown"
+        assert result["worker_status"]["reason"] == "screening_status_unavailable"
+        assert result["execution"]["status"] == "processed"
+    assert calls[0][1]["include_failure_details"] is True
+
+
 def test_restart_revalidates_accepted_source_and_refusal_blocks_new_spend(tmp_path):
     from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
     from tests.test_beta_policy_screening_coordinator import Backend, plan
@@ -281,3 +354,93 @@ def test_fresh_deploy_provisions_screening_sandbox_before_timer_can_start(tmp_pa
     repeated = deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
         units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
     assert repeated["created"] == []
+
+
+@pytest.mark.parametrize("before_ack,after_ack,expected", [(1, 0, 100), (0, 1, 200)])
+def test_worker_status_publication_time_does_not_refresh_an_earlier_ack(
+        tmp_path, monkeypatch, capsys, before_ack, after_ack, expected):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from blueprint_pipeline import beta_policy_screening_status as status
+
+    ticks = iter((100, 200))
+    monkeypatch.setattr(status, "time", SimpleNamespace(time=lambda: next(ticks)))
+    deliveries = iter((before_ack, after_ack))
+    monkeypatch.setattr(worker, "deliver_publications", lambda **_kwargs: {
+        "acknowledged": next(deliveries), "pending": 0,
+        "last_failure_category": None, "next_retry_at_epoch": None})
+    monkeypatch.setattr(coordinator, "process_screening_queue", lambda **_kwargs: {"status": "processed"})
+    assert worker.main(["--queue-root", str(tmp_path), "--packet-queue-root", ""]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["publication_before"]["acknowledged"] == before_ack
+    assert result["publication_after"]["acknowledged"] == after_ack
+    assert result["worker_status"]["last_successful_publication_at_epoch"] == expected
+    retained = json.loads((tmp_path / "worker_status.json").read_text())
+    assert retained["last_successful_publication_at_epoch"] == expected
+
+
+def test_unprintable_publication_error_stays_unknown_and_pending(tmp_path):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from tests.test_beta_policy_screening_coordinator import plan
+
+    class UnprintableError(RuntimeError):
+        def __str__(self):
+            raise ValueError("private token=do-not-expose")
+
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    def unavailable(_publication):
+        raise UnprintableError()
+    result = worker.deliver_publications(queue_root=tmp_path, transport=unavailable, include_failure_details=True)
+    assert result == {"acknowledged": 0, "pending": 1, "last_failure_category": "unknown", "next_retry_at_epoch": None}
+    assert len(coordinator.pending_publications(queue_root=tmp_path)) == 1
+
+
+def test_failed_initial_status_does_not_invent_a_later_publication_time(tmp_path, monkeypatch, capsys):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from blueprint_pipeline import beta_policy_screening_status as status
+
+    real_snapshot = status.write_worker_status
+    calls = []
+    def snapshot(*args, **kwargs):
+        calls.append(True)
+        if len(calls) == 1:
+            raise OSError("initial status write unavailable")
+        return real_snapshot(*args, **kwargs)
+    monkeypatch.setattr(status, "write_worker_status", snapshot)
+    deliveries = iter(((1, "ack"), (0, None)))
+    def delivery(**_kwargs):
+        count, category = next(deliveries)
+        return {"acknowledged": count, "pending": int(category is not None),
+            "last_failure_category": category, "next_retry_at_epoch": None}
+    monkeypatch.setattr(worker, "deliver_publications", delivery)
+    monkeypatch.setattr(coordinator, "process_screening_queue", lambda **_kwargs: {"status": "processed"})
+    assert worker.main(["--queue-root", str(tmp_path), "--packet-queue-root", ""]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["publication_before"]["acknowledged"] == 1
+    assert result["publication_before"]["last_failure_category"] == "ack"
+    assert result["publication_before"]["next_retry_at_epoch"] is None
+    assert result["worker_status"]["last_successful_publication_at_epoch"] is None
+    assert result["worker_status"]["last_publication_failure"] is None
+
+
+@pytest.mark.parametrize("after_failure,expected_category,expected_time", [(None, "auth", 100), ("ack", "ack", 200)])
+def test_worker_status_retains_original_failure_time_until_a_new_attempt_fails(
+        tmp_path, monkeypatch, capsys, after_failure, expected_category, expected_time):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from blueprint_pipeline import beta_policy_screening_status as status
+
+    ticks = iter((100, 200))
+    monkeypatch.setattr(status, "time", SimpleNamespace(time=lambda: next(ticks)))
+    categories = iter(("auth", after_failure))
+    def delivery(**_kwargs):
+        category = next(categories)
+        return {"acknowledged": 0, "pending": int(category is not None),
+            "last_failure_category": category, "next_retry_at_epoch": None}
+    monkeypatch.setattr(worker, "deliver_publications", delivery)
+    monkeypatch.setattr(coordinator, "process_screening_queue", lambda **_kwargs: {"status": "processed"})
+    assert worker.main(["--queue-root", str(tmp_path), "--packet-queue-root", ""]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["publication_before"]["last_failure_category"] == "auth"
+    failure = result["worker_status"]["last_publication_failure"]
+    assert failure["category"] == expected_category
+    assert failure["observed_at_epoch"] == expected_time
+    assert failure["next_retry_at_epoch"] is None
