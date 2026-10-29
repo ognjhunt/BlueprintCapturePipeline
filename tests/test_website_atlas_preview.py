@@ -612,9 +612,22 @@ def test_a_job_stopped_for_background_review_resumes_but_one_needing_a_new_captu
     job = preview.retry_failed_job(site.job, now=world.now)
     assert job["state"] == "processing" and job["retries"][0]["reason"] == "atlas_background_review_required"
     assert world.advance() == "ready" and len(world.runs) == 2
-    site.job.write_text(json.dumps({**_job(site), "state": "needs_input", "reason": "atlas_scene_planner_abstained"}))
+    site.job.write_text(json.dumps({**_job(site), "state": "needs_input", "reason": "atlas_task_and_scene_coverage_gap"}))
     with pytest.raises(ValueError, match="requires_recoverable_failure"):
         preview.retry_failed_job(site.job, now=world.now)
+
+
+def test_a_retained_planner_abstention_can_resume_after_a_source_review_fix(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError("atlas_scene_planner_abstained"), _completed])
+    assert world.advance() == "needs_input"
+    before = _job(site)
+    assert world.advance() == "needs_input" and len(world.runs) == 1
+    resumed = preview.retry_failed_job(site.job, now=world.now)
+    assert resumed["source_video"] == before["source_video"]
+    assert resumed["enqueued_at_epoch"] == before["enqueued_at_epoch"]
+    assert resumed["retries"] == [{"reason": "atlas_scene_planner_abstained", "at_epoch": world.clock}]
+    assert world.advance() == "ready" and len(world.runs) == 2
 
 
 def test_a_retry_refuses_an_expired_or_withdrawn_job(monkeypatch, site):

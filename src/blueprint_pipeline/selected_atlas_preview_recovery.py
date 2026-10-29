@@ -339,7 +339,8 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
 
         def preflight(job):
             nonlocal snapshot
-            _require(job.get("state") == "failed", "retry_requires_failed_job")
+            # The controller already checks recoverability under its lock.
+            # Its stopped needs_input jobs use the same source/accounting fence.
             snapshot = _snapshot(selection, observation, membership, capture_root, storage_root, job)
             _require(not snapshot["preflight_blockers"], "preflight_blocked")
             _require(snapshot["atlas_status_digest"] == selection["atlas_status_digest"], "status_changed")
