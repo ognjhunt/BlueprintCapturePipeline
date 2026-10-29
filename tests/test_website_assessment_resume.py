@@ -124,6 +124,66 @@ def test_task_family_upgrade_preserves_context_changes_and_archive_conflicts_as_
     assert original_path.read_bytes() == original
 
 
+# 2026-10-29 capture-4b60431e: an upload with no description was prepared under the
+# placeholder brief; the site then named the job and every retry refused forever.
+NAMED_TASK = "Pick up the wooden tray from the dining table and place it at the other end of the same table."
+
+
+def _unnamed(context, **changes):
+    """capture-4b60431e's retained context (2026-10-29), moved onto this fixture's capture."""
+    value = {**{key: value for key, value in context.items() if key not in {"confirmed_at", "context_digest"}},
+             "purpose": "scene_preparation", "description": resume.UNNAMED_TASK_DESCRIPTION,
+             "task_family": "general_task", "confirmed": False, "confirmed_at": None,
+             "unresolved": ["sceneStability", "taskShape", "objectVariety", "deploymentTimeline", "accessWindow"],
+             "capture_rights": {"derived_scene_generation_allowed": True, "data_licensing_allowed": False,
+                 "capture_contributor_payout_eligible": False, "consent_status": "granted", "consent_revoked": False,
+                 "consent_scope": ["derived_scene_generation", "robot_evaluation"],
+                 "statement_version": "2026-09-18.v1", "recorded_at_iso": "2026-10-29T16:11:31.509Z"}, **changes}
+    value["context_digest"] = canonical_digest(value, digest_field="context_digest")
+    return value
+
+
+def test_capture_prepared_before_its_task_was_named_follows_the_named_brief(waiting, monkeypatch):
+    root, _, context, _, _ = waiting
+    _ready(waiting, monkeypatch)
+    path = root / "pipeline/website_task_context.json"
+    retained = _unnamed(context)
+    write_json(path, retained)
+    original = path.read_bytes()
+    named = {**retained, "description": NAMED_TASK, "task_family": "rigid_pick_and_place", "unresolved": []}
+    named["context_digest"] = canonical_digest(named, digest_field="context_digest")
+    monkeypatch.setattr(context_reader, "load_current_website_task_context", lambda **_: named)
+    _admit(waiting)
+    history = root / "pipeline/website_task_context_history" / (retained["context_digest"][7:] + ".json")
+    assert history.read_bytes() == original
+    assert json.loads(path.read_bytes()) == named
+    _admit(waiting)
+    assert len(list(history.parent.iterdir())) == 1
+
+
+@pytest.mark.parametrize("change", ["already_named", "rights", "other_field", "still_unnamed"])
+def test_only_an_unconfirmed_unnamed_brief_may_be_named_after_preparation_began(waiting, monkeypatch, change):
+    root, _, context, _, _ = waiting
+    path = root / "pipeline/website_task_context.json"
+    retained = _unnamed(context, **({"description": "Move the tray to the counter"} if change == "already_named" else {}))
+    write_json(path, retained)
+    original = path.read_bytes()
+    current = {**retained, "description": NAMED_TASK, "task_family": "rigid_pick_and_place"}
+    if change == "rights":
+        current["capture_rights"] = {**current["capture_rights"], "data_licensing_allowed": True}
+    elif change == "other_field":
+        current["success_criteria"] = {**current["success_criteria"], "unknown": False}
+    elif change == "still_unnamed":
+        current.update(description="  ", unresolved=[])
+    current["context_digest"] = canonical_digest(current, digest_field="context_digest")
+    monkeypatch.setattr(context_reader, "load_current_website_task_context", lambda **_: current)
+    monkeypatch.setattr(context_reader, "load_website_scene_sponsorship", lambda **_: pytest.fail("changed context entered spending admission"))
+    with pytest.raises(ValueError, match="website_assessment_resume_binding_invalid"):
+        _admit(waiting)
+    assert path.read_bytes() == original
+    assert not (root / "pipeline/website_task_context_history").exists()
+
+
 @pytest.mark.parametrize("prepared_source", [None, "continuation"], indirect=True)
 def test_pending_preflight_retains_exact_bytes_and_never_claims_another_attempt(waiting, monkeypatch):
     root, _, _, raw, record = waiting
