@@ -1390,6 +1390,9 @@ def _run_isolated_cell_processes(
                 reason="policy_canary_isolated_cell_result_unreadable", interrupted_cell_index=index)
             raise
         child_results.append(child_result)
+        if guard is not None and (stopped := guard.stop_receipt()) is not None:
+            _seal_beta_control_stop(output_root=output_root, inputs=inputs, authority=authority, children=child_results, construction_lineage_mode=construction_lineage_mode, receipt=stopped)
+            return 1
         if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
             # The scene failed its robot-free check in cell 0: no further team episode runs on it.
             blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
