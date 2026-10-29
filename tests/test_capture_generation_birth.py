@@ -141,6 +141,92 @@ def test_capture_birth_retains_original_proofs_before_empty_target(tmp_path, mon
                                 membership_raw=membership_raw) == born
 
 
+def _preparation_observation(owner):
+    from blueprint_pipeline.capture_original_owner_observer import _SOURCE_KEYS
+
+    current = json.loads(json.dumps(owner))
+    current['purpose'] = 'scene_preparation'
+    current['source_projection_digest'] = cross_runtime_canonical_digest({
+        key: current[key] for key in (*_SOURCE_KEYS, 'purpose')})
+    current['observation_digest'] = cross_runtime_canonical_digest(
+        current, digest_field='observation_digest')
+    return current
+
+
+@pytest.mark.parametrize('policy_kind', ['enabled', 'absent', 'disabled'])
+def test_preparation_reuses_legacy_birth_without_rewriting_any_proof(
+        tmp_path, monkeypatch, policy_kind):
+    from blueprint_pipeline.task_evaluation_scene_retirement_generations import (
+        birth_capture_member, capture_birth_source_projection,
+    )
+
+    access, policy, target, owner, selector, raw = _fixture(tmp_path, monkeypatch)
+    if policy_kind != 'enabled':
+        _without_retirement_policy(access, policy, target, tmp_path, monkeypatch, policy_kind)
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+                                membership_raw=raw, require_authenticated_birth=True)
+    assert 'capture_observation_purpose' not in born
+    current = _preparation_observation(owner)
+    assert current['source_projection_digest'] != owner['source_projection_digest']
+    store = Path(policy['generation_store'])
+    before = {p.name: p.read_bytes() for p in store.iterdir() if p.is_file()}
+    reused = birth_capture_member(target, observation=current, membership_selector=selector,
+        membership_raw=raw, expected_purpose='scene_preparation', require_authenticated_birth=True)
+    assert reused == born
+    assert {p.name: p.read_bytes() for p in store.iterdir() if p.is_file()} == before
+    assert list(target.iterdir()) == []
+    source = capture_birth_source_projection(target, expected_purpose='scene_preparation')
+    assert source['owner_observation_raw_ref'] == born['owner_observation_raw_ref']
+    assert 'capture_observation_purpose' not in source
+
+
+@pytest.mark.parametrize('change', ['owner', 'rights', 'video', 'membership',
+                                  'revoked', 'stale', 'purpose', 'missing_purpose',
+                                  'explicit_null_birth_purpose'])
+def test_legacy_preparation_reuse_refuses_real_source_or_authority_changes(
+        tmp_path, monkeypatch, change):
+    from blueprint_pipeline.capture_original_owner_observer import _SOURCE_KEYS
+    from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
+
+    _, policy, target, owner, selector, raw = _fixture(tmp_path, monkeypatch)
+    born = birth_capture_member(target, observation=owner, membership_selector=selector,
+                                membership_raw=raw)
+    current = _preparation_observation(owner)
+    if change == 'owner':
+        current['capture_owner']['user_id'] = 'another-owner'
+    elif change == 'rights':
+        current['capture_rights']['consent_scope'] = ['derived_scene_generation']
+    elif change == 'video':
+        current['producer_delivery']['raw_video']['generation'] = '17000000000000000090'
+    elif change == 'membership':
+        member = json.loads(raw)
+        member['raw'][2]['sha256'] = 'sha256:' + '9' * 64
+        raw = json.dumps(member, sort_keys=True, separators=(',', ':')).encode()
+        selector = {**selector, 'size_bytes': len(raw),
+                    'sha256': 'sha256:' + hashlib.sha256(raw).hexdigest()}
+    elif change == 'revoked':
+        current['capture_rights']['consent_revoked'] = True
+    elif change == 'stale':
+        current['valid_until_epoch'] = current['observed_at_epoch'] - 1
+    elif change == 'purpose':
+        current['purpose'] = 'robot_evaluation'
+    elif change == 'missing_purpose':
+        current.pop('purpose')
+    else:
+        record = Path(policy['generation_store']) / (hashlib.sha256(str(target).encode()).hexdigest() + '.json')
+        _sealed_file(record, {**born, 'capture_observation_purpose': None}, 'state_digest', mode=0o600)
+    current['source_projection_digest'] = cross_runtime_canonical_digest({
+        key: current[key] for key in (*_SOURCE_KEYS, *(('purpose',) if 'purpose' in current else ()))})
+    current['observation_digest'] = cross_runtime_canonical_digest(current, digest_field='observation_digest')
+    store = Path(policy['generation_store'])
+    before = {p.name: p.read_bytes() for p in store.iterdir() if p.is_file()}
+    with pytest.raises(ValueError):
+        birth_capture_member(target, observation=current, membership_selector=selector,
+                             membership_raw=raw, expected_purpose='scene_preparation')
+    assert {p.name: p.read_bytes() for p in store.iterdir() if p.is_file()} == before
+    assert list(target.iterdir()) == []
+
+
 def test_normal_capture_birth_prepares_absent_parent_under_owned_root(tmp_path, monkeypatch):
     from blueprint_pipeline.task_evaluation_scene_retirement_generations import birth_capture_member
 
@@ -381,8 +467,9 @@ def test_retired_capture_requires_new_raw_delivery_and_marker(tmp_path, monkeypa
 
 @pytest.mark.parametrize('terminal', [False, True])
 @pytest.mark.parametrize('policy_kind', ['enabled', 'absent', 'disabled'])
+@pytest.mark.parametrize('preparation_purpose', [None, 'scene_preparation'])
 def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
-        tmp_path, monkeypatch, terminal, policy_kind):
+        tmp_path, monkeypatch, terminal, policy_kind, preparation_purpose):
     from blueprint_pipeline import capture_original_owner_observer as observer
     from blueprint_pipeline import pubsub_handoff_listener as listener
 
@@ -489,6 +576,12 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
     assert staged_manifest['source_membership_selector'] == selector
     assert staged_manifest['local_generation_id']
     assert not (target / 'derived').exists()
+    proof_store = Path(policy['generation_store'])
+    original_proofs = {p.name: p.read_bytes() for p in proof_store.iterdir() if p.is_file()}
+    if preparation_purpose:
+        # The real saved-upload seam: initial authenticated generic birth,
+        # then a fresh scoped preparation read of the identical original source.
+        owner = _preparation_observation(owner)
     runs = []
 
     def consume(**kwargs):
@@ -502,7 +595,7 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
 
     first = listener.process_handoff_payload(
         payload, storage_root=target.parents[4], storage_client=Client(),
-        provider='local', run_e2e=consume)
+        provider='local', run_e2e=consume, expected_preparation_purpose=preparation_purpose)
     assert first['status'] == ('terminal_authority_ended' if terminal else 'processed')
     ledger = json.loads((target / listener.JOB_LEDGER_FILENAME).read_bytes())
     assert ledger['producer_delivery_key'] == owner['producer_delivery']['delivery_key']
@@ -514,10 +607,11 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
     replay = {**payload, 'source_finalize': {**payload['source_finalize'], 'event_id': 'evt-2'}}
     second = listener.process_handoff_payload(
         replay, storage_root=target.parents[4], storage_client=Client(),
-        provider='local', run_e2e=consume)
+        provider='local', run_e2e=consume, expected_preparation_purpose=preparation_purpose)
     assert second['status'] == ('skipped_terminal_authority_ended' if terminal
                                 else 'skipped_already_processed')
     assert len(runs) == 1
+    assert {p.name: p.read_bytes() for p in proof_store.iterdir() if p.is_file()} == original_proofs
 
 
 def test_capture_lease_binds_semantic_delivery_across_changed_payload_bytes(tmp_path):
