@@ -20,17 +20,19 @@ and deletes its Atlas assets.
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import logging
 import os
 import re
-import stat
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+from .atlas_preparation_job_control import (
+    _Withdrawn, PreparationJobBusy, _transition, _reason, _NEEDS_NEW_CAPTURE,
+    preparation_job_lock as preparation_job_lock, retry_preparation_job as retry_preparation_job,
+)
 from .common import write_json
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .website_atlas_preview_store import (
@@ -47,7 +49,7 @@ PREVIEW_SCHEMA = "website_atlas_preview.v1"
 MAXIMUM_TRANSIENT_FAILURES = 8
 MAXIMUM_CLEANUP_ATTEMPTS = 12
 AUTHORITY_RECHECK_SECONDS = 1800
-_CODE = re.compile(r"[a-z][a-z0-9_]{0,99}")
+
 # Refusals an owner or operator can lift: re-checked, not final, until the job expires.
 _AWAITING_AUTHORITY = frozenset({
     "website_atlas_source_consent_required", "website_atlas_consent_expired",
@@ -58,17 +60,11 @@ _AWAITING_AUTHORITY = frozenset({
 # A planner abstention can be re-examined after a source-review fix. It is not
 # proof that the recording must be replaced. Other selection failures keep
 # their existing non-retryable boundary.
-_NEEDS_NEW_CAPTURE = frozenset({"atlas_task_and_scene_coverage_gap",
-                                "atlas_insufficient_overlapping_distinct_views",
-                                "atlas_coverage_anchor_quality_insufficient"})
 _NEEDS_TASK_INPUT = frozenset({"atlas_scene_subject_origin_uncertain", "atlas_scene_subject_origin_changed",
                               "atlas_scene_requires_preserved_capture",
                               "atlas_synthetic_subject_requires_preserved_capture"})
-_WITHDRAWN = frozenset({"source_revoked", "website_capture_withdrawn", "consent_revoked"})
-
-
-class _Withdrawn(Exception):
-    pass
+_WITHDRAWN = frozenset({"source_revoked", "website_capture_withdrawn", "consent_revoked",
+                        "capture_revoked_or_expired"})
 
 
 def routing_mode() -> str:
@@ -140,32 +136,6 @@ def enqueue_preview(*, descriptor: Any, capture_root: Path, pipeline_dir: Path,
         return None
 
 
-def _transition(job: Mapping[str, Any], current: int, state: str, reason: str | None,
-                **fields: Any) -> dict[str, Any]:
-    changed = (job["state"], job["reason"]) != (state, reason) or (
-        "archive" in fields and fields["archive"] != job.get("archive"))
-    value = {**job, "retry_at_epoch": None, **fields, "state": state, "reason": reason, "updated_at_epoch": current}
-    if changed:
-        value.update(revision=job["revision"] + 1, revised_at_epoch=current)
-    return value
-
-
-def _reason(error: BaseException) -> str:
-    """The typed code of a refusal: the owning service's code, never its text."""
-    if isinstance(error, _Withdrawn):
-        return "website_capture_withdrawn"
-    status = getattr(error, "status", None)
-    if isinstance(status, int):
-        return f"website_atlas_api_{status}"
-    head, _, tail = str(error).partition(":")
-    if head.startswith("website_control_") and "_http_" in head:
-        owned = tail.partition(":")[0]
-        head = head if owned in {"", "unclassified"} else owned
-    code = head.strip().lower().replace("-", "_")
-    return code if _CODE.fullmatch(code) else "atlas_preview_" + re.sub(r"[^a-z0-9_]", "_",
-                                                                         type(error).__name__.lower())[:60]
-
-
 #: The owner confirmed or edited the task while a step ran: what it reserved
 #: against the old task context is refused, and the next tick reloads the current one.
 _TASK_CONTEXT_CHANGED = frozenset({"website_scene_sponsorship_binding_invalid"})
@@ -177,14 +147,14 @@ def _transient(error: BaseException) -> bool:
         return status == 429 or status >= 500
     if isinstance(error, ValueError):
         return (_reason(error) in _TASK_CONTEXT_CHANGED
-                or re.match(r"website_control_[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None)
+                or re.match(r"(?:website_control_|owned_capture_atlas_control_)[a-z-]+_http_(429|5\d\d)\b", str(error)) is not None)
     return True  # Typed refusals are ValueErrors; transport, storage and lock contention retry.
 
 
 def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> dict[str, Any]:
     code = _reason(error)
     if code in _WITHDRAWN:
-        return _transition(job, current, "withdrawn", "website_capture_withdrawn")
+        return _transition(job, current, "withdrawn", "website_capture_withdrawn" if job.get("schema_version") == SCHEMA else code)
     if code in _AWAITING_AUTHORITY:
         return _transition(job, current, "needs_input", code, retry_at_epoch=current + AUTHORITY_RECHECK_SECONDS)
     if code in _NEEDS_NEW_CAPTURE or code in _NEEDS_TASK_INPUT or code == "atlas_scene_planner_abstained":
@@ -227,7 +197,6 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
         return job
     if current - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
         return _transition(job, current, "failed", "atlas_preview_expired")
-    from .website_atlas_pipeline import run_atlas_pipeline
     from .website_task_context import load_current_website_task_context
 
     def checkpoint(_stage: str) -> None:
@@ -236,13 +205,37 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
     try:
         context = load_current_website_task_context(request_id=job["request_id"], scene_id=job["scene_id"],
                                                     capture_id=job["capture_id"], purpose="scene_preparation")
+        correction = {}
         if job.get('target_correction'):
-            from .website_target_background_worker import advance_correction
-            result = advance_correction(job=job, job_dir=job_dir, capture_root=capture_root,
-                                        context=context, max_polls=1, checkpoint=checkpoint)
-        else:
-            result = run_atlas_pipeline(source_video=capture_root / job["source_video"], output_root=job_dir,
-                                        task_context=context, max_polls=1, checkpoint=checkpoint)
+            from .website_target_background_worker import advance_correction, publish_correction
+            correction = {
+                "run_step": lambda: advance_correction(job=job, job_dir=job_dir, capture_root=capture_root,
+                    context=context, max_polls=1, checkpoint=checkpoint),
+                "publish_result": lambda result: publish_correction(job_dir=job_dir, result=result,
+                    capture_root=capture_root, context=context, checkpoint=checkpoint),
+            }
+        return advance_preparation_step(job, job_dir=job_dir, source_video=capture_root / job["source_video"],
+                                        task_context=context, checkpoint=checkpoint, now=now, **correction)
+    except Exception as error:  # noqa: BLE001 - the source adapter owns its typed refusal
+        return _failed_step(job, error, current)
+
+
+def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video: Path,
+                             task_context: Mapping[str, Any], checkpoint: Callable[[str], None],
+                             now: Callable[[], float],
+                             run_step: Callable[[], Mapping[str, Any]] | None = None,
+                             publish_result: Callable[[Mapping[str, Any]], None] | None = None) -> dict[str, Any]:
+    """The shared controller/result step; source adapters retain their own identity and authority.
+
+    Website previews and owned uploads use the same bounded provider resume,
+    archive, incomplete-completion refusal and teardown lifecycle. This helper
+    issues no grant and never constructs a website source for another upload.
+    """
+    from .website_atlas_pipeline import run_atlas_pipeline
+    current = int(now())
+    try:
+        result = (run_step() if run_step is not None else run_atlas_pipeline(source_video=source_video,
+            output_root=job_dir, task_context=task_context, max_polls=1, checkpoint=checkpoint))
         if result["status"] == "processing":
             return _transition(job, current, "processing", None, stage=result["stage"], transient_failures=0,
                                next_attempt_at_epoch=current)
@@ -262,16 +255,14 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
         # The last paid-stage checkpoint is behind the final provider call, fusion and export.
         checkpoint("archive")
         archive = _archive(job, result)
-        if job.get('target_correction'):
-            from .website_target_background_worker import publish_correction
-            publish_correction(job_dir=job_dir, result=result, capture_root=capture_root,
-                               context=context, checkpoint=checkpoint)
+        if publish_result is not None:
+            publish_result(result)
     except Exception as error:  # noqa: BLE001 - every outcome is a typed job state, never a raise
         return _failed_step(job, error, current)
-    if _withdrawn(capture_root):
-        # The withdrawal landed during the upload: the copy is taken back before anything uses it.
-        return _transition(job, current, "withdrawn", "website_capture_withdrawn", archive=archive,
-                           archive_retraction="pending")
+    try:
+        checkpoint("archive_complete")
+    except Exception as error:  # noqa: BLE001 - retract a copy overtaken by loss of source authority
+        return _failed_step({**job, "archive": archive, "archive_retraction": "pending"}, error, current)
     return _transition(job, current, "ready", None, stage="archived", archive=archive, transient_failures=0,
                        result_digest=result["digest"], splat_available=bool(result.get("splat_available")),
                        mesh_available=bool(result.get("mesh_available")))
@@ -454,27 +445,38 @@ def _deliver(job: dict[str, Any], *, now: Callable[[], float]) -> dict[str, Any]
 
 def advance_job(path: Path, *, now: Callable[[], float] = time.time, transport: Any = None) -> str:
     """One bounded step for one job: Atlas progress, provider cleanup, WebApp delivery."""
-    job_dir, capture_root = path.parent, path.parents[2]
-    with (job_dir / LOCK_FILE).open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return "busy"
-        job = _read(path)
-        before = json.dumps(job, sort_keys=True)
-        if job["state"] not in TERMINAL or job.get("retry_at_epoch"):
-            job = _step(job, job_dir=job_dir, capture_root=capture_root, now=now)
-        if job["state"] in TERMINAL and not job.get("retry_at_epoch"):
-            job = _retract_archive(job)
-            job = _clean_provider(job, job_dir=job_dir, now=now, transport=transport)
-        job = _deliver(job, now=now)
-        if json.dumps(job, sort_keys=True) != before:
-            write_json(path, job)
-        return job["state"]
+    return advance_preparation_job(path, reader=_read,
+        step=lambda job: _step(job, job_dir=path.parent, capture_root=path.parents[2], now=now),
+        deliver=lambda job: _deliver(job, now=now), now=now, transport=transport)
+
+
+def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]],
+                            step: Callable[[dict[str, Any]], dict[str, Any]],
+                            deliver: Callable[[dict[str, Any]], dict[str, Any]],
+                            refresh: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+                            now: Callable[[], float] = time.time, transport: Any = None) -> str:
+    """One shared lock, terminal cleanup and delivery cycle for an admitted source adapter."""
+    job_dir = path.parent
+    try:
+        with preparation_job_lock(job_dir):
+            job = reader(path)
+            before = json.dumps(job, sort_keys=True)
+            if refresh is not None:
+                job = refresh(job)
+            if job["state"] not in TERMINAL or job.get("retry_at_epoch"):
+                job = step(job)
+            if job["state"] in TERMINAL and not job.get("retry_at_epoch"):
+                job = _retract_archive(job)
+                job = _clean_provider(job, job_dir=job_dir, now=now, transport=transport)
+            job = deliver(job)
+            if json.dumps(job, sort_keys=True) != before:
+                write_json(path, job)
+            return job["state"]
+    except PreparationJobBusy:
+        return "busy"
 
 
 #: Failures a retry cannot cure: the job outlived its window, or its source is gone.
-_NOT_RETRYABLE = frozenset({"atlas_preview_expired", "atlas_preview_source_video_unavailable"})
 
 
 def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
@@ -487,41 +489,10 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
     review) resumes the same way. A withdrawn capture, a job that only a new
     capture can help, or one that cannot recover, is refused.
     """
-    lock_fd = os.open(path.parent / LOCK_FILE, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(lock_fd, "r+") as lock:
-        if not stat.S_ISREG(os.fstat(lock.fileno()).st_mode):
-            raise ValueError("atlas_preview_lock_unsafe")
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise ValueError("atlas_preview_job_busy") from None
-        job = _read(path)
-        if (job["state"] not in {"failed", "needs_input"} or job["reason"] in _NOT_RETRYABLE
-                or job["reason"] in _NEEDS_NEW_CAPTURE):
-            raise ValueError("atlas_preview_retry_requires_recoverable_failure")
+    def source_check(_job):
         if _withdrawn(path.parents[2]):
             raise ValueError("website_capture_withdrawn")
-        current = int(now())
-        if current - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
-            raise ValueError("atlas_preview_expired")
-        # The selected-delivery operator rechecks source, current rights and the
-        # reviewed budget snapshot beneath the worker's own lock, before writing.
-        if preflight is not None:
-            preflight(job)
-            current = int(now())
-            if current - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
-                raise ValueError("atlas_preview_expired")
-            if _withdrawn(path.parents[2]):
-                raise ValueError("website_capture_withdrawn")
-        retries = [*job.get("retries", []), {"reason": job["reason"], "at_epoch": current}]
-        # The failure's own cleanup completed; the resumed run makes new assets,
-        # so cleanup is armed again, keeping what was already deleted.
-        cleanup = {**(job.get("provider_cleanup") or {}), "state": "pending", "attempts": 0,
-                   "next_attempt_at_epoch": 0}
-        job = _transition(job, current, "processing", None, stage="queued", transient_failures=0,
-                          next_attempt_at_epoch=current, retries=retries, provider_cleanup=cleanup)
-        write_json(path, job)
-        return job
+    return retry_preparation_job(path, reader=_read, source_check=source_check, now=now, preflight=preflight)
 
 
 def tick(storage_root: Path, *, now: Callable[[], float] = time.time) -> dict[str, int]:
@@ -552,7 +523,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({key: job[key] for key in ("capture_id", "state", "revision", "retries")},
                          sort_keys=True), flush=True)
         return 0
-    print(json.dumps(tick(args.storage_root), sort_keys=True), flush=True)
+    counts = tick(args.storage_root)
+    from .owned_capture_atlas_worker import tick_from_environment
+    counts.update({"owned_" + key: value for key, value in tick_from_environment().items()})
+    print(json.dumps(counts, sort_keys=True), flush=True)
     return 0
 
 

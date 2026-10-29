@@ -39,8 +39,13 @@ def load_current_website_task_context(
                                          scene_id=scene_id, capture_id=capture_id, purpose=purpose)
 
 
-def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[str, Any],
+                           source_kind: str = "website") -> dict[str, Any]:
     """Use the existing signed transport for private preparation control data."""
+    if source_kind not in {"website", "owned_capture"}:
+        raise ValueError("preparation_source_kind_invalid")
+    if source_kind == "owned_capture" and operation not in {"atlas-configuration", "preparation-spend", "preparation-settlement"}:
+        raise ValueError("owned_capture_atlas_control_operation_invalid")
     if operation in {"prepared-scene", "preparation-spend", "task-item-evidence", "atlas-preview"} or (
             operation in {"scene-sponsorship", "atlas-configuration"} and payload.get("create") is not False):
         from .core.handoff_lease import handoff_lease_checkpoint
@@ -62,8 +67,9 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
     # ordinary configuration, authority or other control responses.
     response_limit = 200_000 if operation == "atlas-configuration" and payload.get("create") is False else 100_000
     try:
+        namespace = "owned-captures" if source_kind == "owned_capture" else "creator-captures"
         response = safe_request(
-            f"{origin}/api/internal/pipeline/creator-captures/{quote(capture_id, safe='')}/{operation}",
+            f"{origin}/api/internal/pipeline/{namespace}/{quote(capture_id, safe='')}/{operation}",
             method="POST", data=body, headers=_pipeline_sync_headers(token, body),
             timeout_seconds=10, policy=pinned_api_policy(origin, max_response_bytes=response_limit),
             max_response_bytes=response_limit,
@@ -83,11 +89,41 @@ def website_webapp_request(*, capture_id: str, operation: str, payload: Mapping[
             exc.close()
         if not isinstance(code, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,99}", code):
             code = "unclassified"
-        raise ValueError(f"website_control_{operation}_http_{exc.code}:{code}") from None
+        prefix = "owned_capture_atlas_control" if source_kind == "owned_capture" else "website_control"
+        raise ValueError(f"{prefix}_{operation}_http_{exc.code}:{code}") from None
     value = json.loads(response.body)
     if not isinstance(value, Mapping):
         raise ValueError("website_task_context_response_invalid")
     return dict(value)
+
+
+def preparation_webapp_request(*, task_context: Mapping[str, Any], operation: str,
+                               payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Route each source's real identity through the existing signed transport."""
+    from .atlas_preparation_context import validate_preparation_task_context
+    from .owned_capture_atlas_context import SCHEMA
+    if task_context.get("schema_version") != SCHEMA:
+        return website_webapp_request(capture_id=task_context["capture_id"], operation=operation, payload=payload)
+    validate_preparation_task_context(task_context)
+    if operation == "preparation-settlement":
+        body = {"settlement": payload["settlement"]}
+    elif operation in {"atlas-configuration", "preparation-spend"}:
+        spend = payload.get("spend")
+        source = payload.get("source_video_digest") if operation == "atlas-configuration" else (spend or {}).get("source_video_digest")
+        if not isinstance(source, str) or source != task_context["source_capture"]["capture_digest"]:
+            raise ValueError("owned_capture_atlas_source_video_binding_mismatch")
+        body = {"plan_id": task_context["request_id"], "task_context_digest": task_context["context_digest"],
+                "source_video_digest": source}
+        if operation == "preparation-spend":
+            body["spend"] = spend
+            if payload.get("create") is False:
+                body["create"] = False
+        else:
+            body["create"] = False  # Only an actual owner command may retain the first allowance.
+    else:
+        raise ValueError("owned_capture_atlas_control_operation_invalid")
+    return website_webapp_request(capture_id=task_context["capture_id"], operation=operation,
+                                 payload=body, source_kind="owned_capture")
 
 
 def reserve_website_sam_spend(*, task_context: Mapping[str, Any], binding_digest: str,
@@ -110,6 +146,10 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
     import time
 
     from .paid_resource_admission import require_paid_resource_admission, require_paid_resource_budget
+    from .atlas_preparation_runtime import preparation_source_checkpoint
+    source_checkpoint = preparation_source_checkpoint(task_context)
+    if source_checkpoint is not None:
+        source_checkpoint("owned_atlas_spend_reservation")
     if (resource_class, provider) not in {("evaluator_api", "meta"), ("evaluator_api", "google"), ("openai_api_candidate", "openai"),
                                          ("provider_reconstruction_api", "world_labs_atlas"), ("gpu_render", "vast")}:
         raise ValueError("website_preparation_provider_resource_mismatch")
@@ -127,9 +167,11 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
     require_paid_resource_budget(resource_class=resource_class)
     operator_file = os.getenv("BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "").strip()
     if operator_file:
+        if source_checkpoint is not None:
+            raise ValueError("owned_capture_atlas_website_operator_admission_refused")
         value = load_atlas_operator_admission(Path(operator_file), command=command, task_context=task_context)
     else:
-        value = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-spend",
+        value = preparation_webapp_request(task_context=task_context, operation="preparation-spend",
             payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
     if (any(value.get(key) != expected for key, expected in command.items())
             or value.get("external_disclosure_allowed") is not True
@@ -283,4 +325,23 @@ def enqueue_website_prepared_scene(*, task_context: Mapping[str, Any], request: 
     if (value.get("request_digest") != cross_runtime_canonical_digest(request) or value.get("state") != "forward_pending"
             or not isinstance(value.get("id"), str) or not value["id"].startswith("scene-")):
         raise ValueError("website_scene_outbox_receipt_invalid")
+    return value
+
+
+def load_atlas_configuration(context, source_digest, *, create=True):
+    from .website_task_context import preparation_webapp_request
+    from .owned_capture_atlas_context import SCHEMA
+    if type(create) is not bool:
+        raise ValueError("atlas_runtime_configuration_create_invalid")
+    value = preparation_webapp_request(task_context=context, operation="atlas-configuration", payload={
+        "request_id": context["request_id"], "scene_id": context["scene_id"],
+        "task_context_digest": context["context_digest"], "source_video_digest": source_digest,
+        **({"create": False} if not create else {})})
+    schema = "owned_capture_atlas_configuration.v1" if context.get("schema_version") == SCHEMA else "website_atlas_configuration.v1"
+    if (value.get("schema_version") != schema
+            or value.get("source_video_digest") != source_digest
+            or value.get("task_context_digest") != context["context_digest"]
+            or value.get("dispatch_authorized") is not False
+            or not create and value.get("grant_creation_allowed") is not False):
+        raise ValueError("atlas_runtime_configuration_invalid")
     return value

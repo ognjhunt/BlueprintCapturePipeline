@@ -164,3 +164,12 @@ def test_retained_calibration_evidence_cannot_reach_execution_or_replay() -> Non
         "source_calibration_finalization_reuse", "task_evaluation_stage_replay",
         "task_evaluation_sam31_preparation_execution", "task_evaluation_sam31_preparation_stages",
     })
+
+
+def test_owned_atlas_cpu_queue_and_task_contracts_exclude_active_execution() -> None:
+    reachable = _transitive_local_modules(("owned_capture_atlas_control", "atlas_preparation_context"))
+    assert "atlas_preparation_job_control" in reachable
+    assert not reachable.intersection(HOT_LANE_MODULES | {
+        "owned_capture_atlas_worker", "website_atlas_preview", "website_atlas_pipeline",
+        "paid_resource_allocator",
+    })

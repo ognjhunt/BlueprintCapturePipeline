@@ -327,7 +327,7 @@ def settle_completed_image_batches(*, output_root: Path, task_context: Mapping[s
     requires the receipt count to equal the reserved request count, so a batch with
     an uncertain in-flight request keeps its full hold. Settlements are idempotent.
     """
-    from .website_task_context import website_webapp_request
+    from .website_task_context import preparation_webapp_request
     settled = []
     for root in sorted(output_root.iterdir()) if output_root.is_dir() else []:
         if not root.is_dir() or not re.fullmatch(r"[0-9a-f]{64}", root.name):
@@ -351,7 +351,7 @@ def settle_completed_image_batches(*, output_root: Path, task_context: Mapping[s
                    "provider_charge_amount_usd": round(sum(costs), 6),
                    "usage_receipt_digest": canonical_digest({"receipts": receipts})}
         try:
-            receipt = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-settlement",
+            receipt = preparation_webapp_request(task_context=task_context, operation="preparation-settlement",
                 payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"],
                          "settlement": command})
         except ValueError as exc:
@@ -519,6 +519,9 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
             else:
                 if spent + cap > budget:
                     raise ValueError("website_image_completion_budget_exhausted")
+                from .atlas_preparation_runtime import preparation_disclosure_opener
+                request_opener = (preparation_disclosure_opener(task_context, opener)
+                                  if task_context is not None else opener)
                 canvas, box = _canvas(source, native_aspect=native_aspect)
                 # Retain intent before the paid call, including its reference.
                 with receipt_path.open("x") as stream:
@@ -548,7 +551,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                                 "guide_image_digest": _sha256_file(guide_path)}
                 response = _execute_frame_request(execution=execution, prompt=binding["prompt"], request_digest=request_digest,
                                                   image_bytes=_png(canvas), mask_bytes=None,
-                                                  expected_size=canvas.size, token=token, opener=opener,
+                                                  expected_size=canvas.size, token=token, opener=request_opener,
                                                   reference_images=references)
                 if not response["succeeded"]:
                     # Keep the adapter's sanitized provider evidence before

@@ -81,11 +81,21 @@ def open_bundle(*, request_id: str, capture_id: str, digest: str, storage_root: 
                     or job.get("request_id") != request_id or job.get("capture_id") != capture_id
                     or (job.get("archive") or {}).get("digest") != digest):
                 raise PreviewUnavailable("website_atlas_preview_unavailable")
+    return open_archived_bundle(filename=bundle_filename(capture_id, request_id), digest=digest,
+                                 client=client, bucket=bucket)
+
+
+def open_archived_bundle(*, filename: str, digest: str, client: Any = None,
+                         bucket: str | None = None) -> tuple[Any, int]:
+    """Read a private digest-bound archive after its source adapter authorized the owner."""
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,299}\.zip", filename)
+            or not _DIGEST.fullmatch(digest)):
+        raise PreviewUnavailable("website_atlas_preview_unavailable")
     from .task_evaluation_configured_scene_object_keys import LARGE_ARTIFACT_KEY_PREFIX
     from .task_evaluation_configured_scene_object_store import _artifact_object_store_client, _object_missing
     if client is None or bucket is None:
         client, bucket = _artifact_object_store_client()
-    key = f"{LARGE_ARTIFACT_KEY_PREFIX}/{ARTIFACT_KIND}/sha256/{digest[7:]}/{bundle_filename(capture_id, request_id)}"
+    key = f"{LARGE_ARTIFACT_KEY_PREFIX}/{ARTIFACT_KIND}/sha256/{digest[7:]}/{filename}"
     try:
         head = client.head_object(Bucket=bucket, Key=key)
     except Exception as error:  # noqa: BLE001 - provider exception shapes vary

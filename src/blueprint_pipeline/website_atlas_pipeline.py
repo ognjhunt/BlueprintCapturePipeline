@@ -19,27 +19,12 @@ import os
 from pathlib import Path
 import time
 
+from .website_task_context import load_atlas_configuration as load_configuration
 from .common import write_json
 from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
-
-
-def load_configuration(context, source_digest, *, create=True):
-    from .website_task_context import website_webapp_request
-    if type(create) is not bool:
-        raise ValueError("atlas_runtime_configuration_create_invalid")
-    value = website_webapp_request(capture_id=context["capture_id"], operation="atlas-configuration", payload={
-        "request_id": context["request_id"], "scene_id": context["scene_id"],
-        "task_context_digest": context["context_digest"], "source_video_digest": source_digest,
-        **({"create": False} if not create else {})})
-    if (value.get("schema_version") != "website_atlas_configuration.v1"
-            or value.get("source_video_digest") != source_digest
-            or value.get("task_context_digest") != context["context_digest"]
-            or value.get("dispatch_authorized") is not False
-            or not create and value.get("grant_creation_allowed") is not False):
-        raise ValueError("atlas_runtime_configuration_invalid")
-    return value
+from .atlas_preparation_context import requires_task_semantic_analysis
 
 
 #: Who read the rate card, and when. Renewing it re-confirms the same prices.
@@ -214,7 +199,7 @@ def run_atlas_pipeline(*, output_root: Path, **options):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = _run_atlas_pipeline(output_root=output_root, **options)
         if (result.get("mesh_available") and not result.get('observed_scene_only')
-                and options.get("task_context", {}).get("task_family") == "general_task"):
+                and requires_task_semantic_analysis(options.get("task_context", {}))):
             from .website_operation_coverage_review import clarify_operation_coverage
             clarify_operation_coverage(job_dir=output_root, task_context=options["task_context"],
                 source_video_digest=result["source_video_digest"], experimental=options.get("experimental", False),

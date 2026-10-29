@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from .decision_evidence_contracts import canonical_digest
+from .atlas_preparation_context import requires_task_semantic_analysis
 from .website_operation_coverage import (
     clarification_request, load_operation_coverage, retain_operation_coverage,
 )
@@ -16,7 +17,7 @@ from .website_task_semantics import load_task_semantics, task_semantics_from_rec
 
 
 def _selected(job_dir, task_context, source_video_digest):
-    if task_context.get("task_family") != "general_task":
+    if not requires_task_semantic_analysis(task_context):
         return None, None, None
     current = load_task_semantics(job_dir=Path(job_dir), task_context=task_context,
                                   source_video_digest=source_video_digest)

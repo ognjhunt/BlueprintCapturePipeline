@@ -15,8 +15,12 @@ from typing import Any, Mapping
 from pydantic import BaseModel, ConfigDict, Field
 
 from .decision_evidence_contracts import canonical_digest
+from .atlas_preparation_context import (
+    preparation_context_digest_matches, requires_task_semantic_analysis, task_text_sources,
+)
 from .task_profile_contracts import TASK_PROFILES
 from .website_task_semantics import OperativeStep
+from .owned_capture_atlas_context import SCHEMA as OWNED_CONTEXT_SCHEMA
 
 
 class OperationCoverage(BaseModel):
@@ -79,7 +83,7 @@ def clarification_request(parent_semantics: Mapping[str, Any], *, task_context: 
     from .website_task_semantics import validate_task_semantics, _operation_profile
     value = validate_task_semantics(parent_semantics, task_context=task_context,
                                     source_video_digest=source_video_digest)
-    if task_context.get("task_family") != "general_task" or "operation_coverage_clarification" in value:
+    if not requires_task_semantic_analysis(task_context) or "operation_coverage_clarification" in value:
         return None
     semantics = value["semantics"]
     if ((semantics["covers_entire_job"] and not semantics["unresolved_aspects"])
@@ -109,11 +113,10 @@ def validate_coverage(value: Mapping[str, Any], *, request: Mapping[str, Any],
     if (request.get("scope") != "operation_coverage"
             or request.get("schema_version") != "website_operation_coverage_request.v1"
             or request.get("task_context_digest") != task_context.get("context_digest")
-            or task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")):
+            or not preparation_context_digest_matches(task_context)):
         raise ValueError("website_task_operation_coverage_binding_invalid")
     coverage = OperationCoverage.model_validate(value).model_dump(mode="json")
-    sources = _strings({key: task_context.get(key) for key in (
-        "description", "success_criteria", "operator_answers", "operator_task_details")})
+    sources = task_text_sources(task_context)
     if any(not step["task_quote"].strip() or not any(step["task_quote"] in text for text in sources)
            for step in coverage["steps"]):
         raise ValueError("website_task_operation_coverage_quote_invalid")
@@ -212,13 +215,15 @@ def operation_coverage_gap(value: Mapping[str, Any], *, task_context: Mapping[st
     from .task_profile_contracts import task_profile_for
     from .website_task_semantics import resolved_task_profile, validate_task_semantics
     verified = validate_task_semantics(value, task_context=task_context, source_video_digest=source_video_digest)
-    if task_context.get("task_family") != "general_task" or resolved_task_profile(
+    if not requires_task_semantic_analysis(task_context) or resolved_task_profile(
             verified, task_context=task_context, source_video_digest=source_video_digest) is not None:
         return None
     clarification = verified.get("operation_coverage_clarification")
     reading = clarification["operation_coverage"] if clarification else verified["semantics"]
     unknown = [step["operation"] for step in reading["steps"] if task_profile_for(step["operation"]) is None]
-    return {"code": "website_task_operation_coverage_unresolved", "task_family": "general_task",
+    return {"code": "website_task_operation_coverage_unresolved", "task_family": task_context.get("task_family") or "general_task",
+            **({"derived_task_family": reading["task_family"]}
+               if task_context.get("schema_version") == OWNED_CONTEXT_SCHEMA else {}),
             "task_context_digest": task_context["context_digest"], "job_disposition": "held_for_preparation",
             "description": task_context.get("description"),
             "reason": "The complete requested robot operation sequence is not yet resolved to a supported native "

@@ -17,7 +17,7 @@ from typing import Any, Mapping, Sequence
 
 from .capture_intake import CaptureIntakeError, validate_capture_intake_envelope
 from .core.security_controls import strict_identifier
-from .decision_evidence_contracts import canonical_digest, canonical_json
+from .decision_evidence_contracts import canonical_digest, canonical_json, cross_runtime_canonical_digest
 from .local_reconstruction_adapters import (
     LOCAL_ARKIT_METRIC_SCAFFOLD_ADAPTER,
     LOCAL_DECODED_OBSERVATION_ADAPTER,
@@ -30,6 +30,7 @@ from .local_reconstruction_adapters import (
 )
 from .reconstruction_capability import (
     ReconstructionContractError,
+    aggregate_reconstruction_costs,
     normalize_reconstruction_result,
     plan_reconstruction_methods,
 )
@@ -217,6 +218,64 @@ def _source_binding(
 
 def _run_root(state_root: str | Path, plan_id: str) -> Path:
     return Path(state_root).expanduser().resolve() / "plans" / plan_id
+
+
+def prepare_owned_capture_atlas_plan(
+    *, state_root: str | Path, capture_store_root: str | Path,
+    capture_session_id: str, intake_id: str, requested_claim_types: Sequence[str],
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Plan the existing Atlas controller from the accepted original upload.
+
+    This separate provider-preparation contract cannot be consumed by the v1
+    local execution/authorization functions. No API call, grant or queue entry
+    is created here. The full source task and its proposed status are retained.
+    """
+    from .owned_capture_atlas_context import build_owned_capture_atlas_context
+
+    try:
+        session = strict_identifier(capture_session_id, field="capture_session_id", max_length=192)
+        intake = strict_identifier(intake_id, field="intake_id", max_length=192)
+        key = strict_identifier(idempotency_key, field="idempotency_key", max_length=192)
+    except ValueError as exc:
+        raise ReconstructionControlPlaneError(str(exc)) from exc
+    claims = sorted({str(item).strip() for item in requested_claim_types if str(item).strip()})
+    if not claims:
+        raise ReconstructionControlPlaneError("requested_claim_types:missing")
+    source = _source_binding(capture_store_root=Path(capture_store_root).expanduser().resolve(),
+                             capture_session_id=session, intake_id=intake)
+    receipt = source["receipt"]
+    identity = {"capture_session_id": session, "intake_id": intake,
+                "capture_digest": receipt["capture_digest"], "envelope_digest": receipt["envelope_digest"],
+                "qa_report_digest": source["qa"]["qa_report_digest"],
+                "object_manifest_digest": source["object_manifest"]["manifest_digest"],
+                "requested_claim_types": claims, "provider_id": "world_labs_atlas"}
+    plan_id = "reconstruction-atlas-" + cross_runtime_canonical_digest(identity)[7:31]
+    try:
+        context = build_owned_capture_atlas_context(source=source, plan_id=plan_id)
+    except ValueError as exc:
+        raise ReconstructionControlPlaneError(str(exc)) from exc
+    root = _run_root(state_root, plan_id)
+    plan = {"schema_version": "owned_capture_atlas_preparation_plan.v1", "plan_id": plan_id,
+            "state": "authorization_required", "provider_id": "world_labs_atlas",
+            "source_context": context, "requested_claim_types": claims,
+            "source_video_digest": receipt["capture_digest"],
+            "claim_ceiling": _mapping(receipt.get("claim_ceiling")),
+            "proof_boundary": {"plan_is_execution_authorization": False,
+                               "provider_disclosure_authorized": False, "paid_compute_authorized": False,
+                               "derived_reconstruction_upgrades_raw_capture": False,
+                               "metric_or_collision_qualification_established": False,
+                               "robot_execution_established": False}}
+    plan["plan_digest"] = cross_runtime_canonical_digest(plan, digest_field="plan_digest")
+    request_key = hashlib.sha256(f"{session}\0{intake}\0{key}".encode()).hexdigest()
+    # One request key cannot silently select another source/task/claim set.
+    # A different key for identical inputs reuses this same immutable plan.
+    _write_immutable(Path(state_root).expanduser().resolve() / "owned_atlas_requests" / (request_key + ".json"),
+                     {"schema_version": "owned_capture_atlas_plan_request.v1", "plan_id": plan_id,
+                      "capture_session_id": session, "intake_id": intake, "idempotency_key": key,
+                      "plan_digest": plan["plan_digest"]})
+    _write_immutable(root / "artifacts" / "owned_atlas_context.json", context)
+    return _write_immutable(root / "artifacts" / "owned_atlas_preparation_plan.json", plan)
 
 
 def prepare_reconstruction_plan(
@@ -530,7 +589,7 @@ def execute_reconstruction_plan(
             }
             - {""}
         ),
-        "cost_usd": round(sum(float(row.get("cost_usd") or 0.0) for row in results), 6),
+        **aggregate_reconstruction_costs(results),
         "proof_boundary": {
             "execution_was_local_and_explicitly_authorized": True,
             "derived_reconstruction_upgrades_raw_capture": False,
@@ -648,6 +707,12 @@ def load_reconstruction_compilation_inputs(
 ) -> dict[str, Any]:
     """Load exact Pipeline-owned inputs for immutable testbed compilation."""
 
+    identifier = strict_identifier(plan_id, field="plan_id", max_length=192)
+    if (_run_root(state_root, identifier) / "artifacts" / "owned_atlas_preparation_plan.json").is_file():
+        from .owned_capture_atlas_reconstruction import adopt_owned_atlas_reconstruction
+        return adopt_owned_atlas_reconstruction(state_root=Path(state_root),
+            capture_store_root=Path(capture_store_root), plan_id=identifier,
+            expected_execution_result_digest=execution_result_digest)
     inspection = inspect_reconstruction_plan(state_root=state_root, plan_id=plan_id)
     execution = inspection.get("execution_result")
     if not isinstance(execution, Mapping):

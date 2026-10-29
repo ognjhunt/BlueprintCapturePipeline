@@ -468,9 +468,22 @@ def normalize_reconstruction_result(value: Mapping[str, Any]) -> dict[str, Any]:
             ),
             "physics_use_allowed": False,
         }
+    unknown_cost = result.get("cost_status") == "unknown"
     cost = _number(result.get("cost_usd"))
     duration = _number(result.get("duration_seconds"))
-    if cost is None:
+    if unknown_cost:
+        subtotal = _number(result.get("known_cost_subtotal_usd"))
+        if ("cost_usd" not in result or result.get("cost_usd") is not None
+                or result.get("cost_reason") != "provider_usage_unreported"
+                or subtotal is None or not math.isfinite(subtotal)):
+            errors.append("cost_usd:unknown_cost_binding_invalid")
+        else:
+            result["known_cost_subtotal_usd"] = subtotal
+    elif result.get("cost_status") not in (None, "known"):
+        errors.append("cost_status:invalid")
+    elif "cost_reason" in result or "known_cost_subtotal_usd" in result:
+        errors.append("cost_usd:known_cost_binding_invalid")
+    elif cost is None or not math.isfinite(cost):
         errors.append("cost_usd:invalid")
     else:
         result["cost_usd"] = cost
@@ -488,6 +501,20 @@ def normalize_reconstruction_result(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ReconstructionContractError(errors)
     result["reconstruction_result_digest"] = expected_digest
     return result
+
+
+def aggregate_reconstruction_costs(results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Keep unknown actual totals separate from known actual subtotals.
+
+    Numeric legacy results preserve their existing aggregate shape. This is
+    reporting only; reservations and paid admission remain independently bound.
+    """
+    normalized = [normalize_reconstruction_result(row) for row in results]
+    unknown = any(row.get("cost_status") == "unknown" for row in normalized)
+    subtotal = round(sum(row["known_cost_subtotal_usd"] if row.get("cost_status") == "unknown"
+                         else row["cost_usd"] for row in normalized), 6)
+    return ({"cost_usd": None, "cost_status": "unknown", "cost_reason": "provider_usage_unreported",
+             "known_cost_subtotal_usd": subtotal} if unknown else {"cost_usd": subtotal})
 
 
 def decide_simready_assets(

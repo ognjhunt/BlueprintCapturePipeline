@@ -30,6 +30,7 @@ from blueprint_pipeline.reconstruction_control_plane import (
     inspect_reconstruction_plan,
     load_reconstruction_compilation_inputs,
     prepare_reconstruction_plan,
+    prepare_owned_capture_atlas_plan,
 )
 from blueprint_pipeline.task_evaluation_supervisor import (
     validate_reconstruction_readiness_pointer,
@@ -45,14 +46,13 @@ def _write(path: Path, value: dict) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
-def _seed_capture_store(root: Path) -> tuple[str, str, str]:
-    session_id = "capture-session-1"
-    intake_id = "intake-1"
+def _seed_capture_store(root: Path, *, session_id: str = "capture-session-1",
+                        intake_id: str = "intake-1") -> tuple[str, str, str]:
     media = b"retained-video"
     capture_digest = _digest_bytes(media)
     object_relative = f"objects/sha256/{capture_digest[7:9]}/{capture_digest[7:]}"
     object_path = root / object_relative
-    object_path.parent.mkdir(parents=True)
+    object_path.parent.mkdir(parents=True, exist_ok=True)
     object_path.write_bytes(media)
     envelope = validate_capture_intake_envelope(
         {
@@ -609,3 +609,337 @@ def test_authenticated_service_plan_authorize_execute_and_inspect(
     )
     assert inspection_response.status_code == 200
     assert inspection_response.json()["state"] == "completed"
+
+
+def _seed_owned_atlas_source(root: Path, *, session_id: str = "capture-session-1",
+                             intake_id: str = "intake-1") -> tuple[str, str, str]:
+    session, intake, digest = _seed_capture_store(root, session_id=session_id, intake_id=intake_id)
+    receipt_path = root / 'transfer_receipts' / (hashlib.sha256(f'{session}\0{intake}'.encode()).hexdigest() + '.json')
+    receipt = json.loads(receipt_path.read_text())
+    previous = root / receipt['artifact_reference']['uri']
+    envelope = json.loads((previous / 'capture_intake_envelope.json').read_text())
+    envelope.pop('envelope_digest')
+    envelope['known_task_specification'] = {
+        'description': 'Navigate to the end of the aisle, avoid both shelves, and stop before the end bookshelf.',
+        'task_family': 'customer_navigation_and_stopping',
+        'success_parameters_status': 'proposed_unconfirmed',
+        'operations': ['navigate', 'avoid_side_shelves', 'stop_before_end_shelving'],
+    }
+    envelope['governance']['consent'] = 'not_required'
+    envelope = validate_capture_intake_envelope(envelope)
+    artifact = root / 'intakes' / intake / envelope['envelope_digest'][7:]
+    qa = json.loads((previous / 'capture_qa_report.json').read_text())
+    qa['envelope_digest'] = envelope['envelope_digest']
+    qa['qa_report_digest'] = canonical_digest(qa, digest_field='qa_report_digest')
+    manifest = json.loads((previous / 'capture_intake_object_manifest.json').read_text())
+    manifest['envelope_digest'] = envelope['envelope_digest']
+    manifest['manifest_digest'] = canonical_digest(manifest, digest_field='manifest_digest')
+    _write(artifact / 'capture_intake_envelope.json', envelope)
+    _write(artifact / 'capture_qa_report.json', qa)
+    _write(artifact / 'capture_intake_object_manifest.json', manifest)
+    receipt.update(envelope_digest=envelope['envelope_digest'], capture_qa_report=qa,
+                   artifact_reference={'uri': str(artifact.relative_to(root)),
+                                       'envelope_digest': envelope['envelope_digest']})
+    _write(receipt_path, receipt)
+    return session, intake, digest
+
+
+def test_owned_atlas_plan_retains_real_task_source_and_reuses_identical_reconstruction(tmp_path):
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, digest = _seed_owned_atlas_source(store)
+    options = dict(state_root=state, capture_store_root=store, capture_session_id=session, intake_id=intake,
+                   requested_claim_types=['navigation_clearance', 'task_discovery'])
+    plan = prepare_owned_capture_atlas_plan(**options, idempotency_key='owned-plan-1')
+    assert plan['source_video_digest'] == digest
+    assert plan['plan_digest'] == cross_runtime_canonical_digest(plan, digest_field='plan_digest')
+    context = plan['source_context']
+    assert context['request_id'] == plan['plan_id']
+    assert context['capture_id'] == session
+    assert context['task_specification']['operations'] == ['navigate', 'avoid_side_shelves', 'stop_before_end_shelving']
+    assert context['task_confirmation_status'] == 'proposed_unconfirmed'
+    assert context['governance']['consent'] == 'not_required'
+    assert context['governance']['provider_constraints']['external_processing_allowed'] is False
+    assert plan['proof_boundary']['provider_disclosure_authorized'] is False
+    assert plan['proof_boundary']['paid_compute_authorized'] is False
+    assert plan['state'] == 'authorization_required'
+    artifact = state / 'plans' / plan['plan_id'] / 'artifacts' / 'owned_atlas_preparation_plan.json'
+    before = artifact.stat().st_mtime_ns
+    assert prepare_owned_capture_atlas_plan(**options, idempotency_key='owned-plan-1') == plan
+    assert prepare_owned_capture_atlas_plan(**options, idempotency_key='another-request-key') == plan
+    assert artifact.stat().st_mtime_ns == before
+    assert len(list((state / 'plans').iterdir())) == 1
+
+
+def test_owned_atlas_request_key_cannot_change_claims_or_silently_replace_task(tmp_path):
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    options = dict(state_root=state, capture_store_root=store, capture_session_id=session, intake_id=intake,
+                   idempotency_key='owned-plan-1')
+    first = prepare_owned_capture_atlas_plan(**options, requested_claim_types=['task_discovery'])
+    with pytest.raises(ReconstructionControlPlaneError, match='immutable_artifact_conflict') as failure:
+        prepare_owned_capture_atlas_plan(**options, requested_claim_types=['collision_contact'])
+    assert failure.value.status_code == 409
+    assert len(list((state / 'plans').iterdir())) == 1
+    assert json.loads((state / 'plans' / first['plan_id'] / 'artifacts' / 'owned_atlas_preparation_plan.json').read_text()) == first
+
+
+@pytest.mark.parametrize('change', ['bytes', 'revocation'])
+def test_owned_atlas_plan_reopens_source_even_on_an_idempotent_retry(tmp_path, change):
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, digest = _seed_owned_atlas_source(store)
+    options = dict(state_root=state, capture_store_root=store, capture_session_id=session, intake_id=intake,
+                   idempotency_key='owned-plan-1', requested_claim_types=['task_discovery'])
+    prepare_owned_capture_atlas_plan(**options)
+    if change == 'bytes':
+        (store / 'objects' / 'sha256' / digest[7:9] / digest[7:]).write_bytes(b'changed source')
+        expected = 'capture_object_digest_or_size_mismatch'
+    else:
+        marker = hashlib.sha256(f'{session}\0{intake}'.encode()).hexdigest() + '.json'
+        _write(store / 'lifecycle_tombstones' / marker, {'revoked': True})
+        expected = 'capture_revoked_or_expired'
+    with pytest.raises(ReconstructionControlPlaneError, match=expected):
+        prepare_owned_capture_atlas_plan(**options)
+
+
+def test_owned_provider_plan_never_satisfies_local_v1_execution_authorization(tmp_path):
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    with pytest.raises(ReconstructionControlPlaneError, match='reconstruction_plan_not_found'):
+        authorize_reconstruction_plan(state_root=state, plan_id=plan['plan_id'],
+            reconstruction_plan_digest=plan['plan_digest'],
+            authorized_adapter_references=[LOCAL_DECODED_OBSERVATION_ADAPTER], actor={'identity': 'owner'},
+            idempotency_key='owned-authorization-1')
+
+
+def test_owned_provider_plan_reports_missing_complete_task_as_input_gap(tmp_path):
+    store = tmp_path / 'store'
+    session, intake, _ = _seed_capture_store(store)
+    with pytest.raises(ReconstructionControlPlaneError, match='owned_capture_atlas_task_description_required'):
+        prepare_owned_capture_atlas_plan(state_root=tmp_path / 'state', capture_store_root=store,
+            capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+            idempotency_key='owned-plan-1')
+
+
+@pytest.mark.parametrize('change', ['bytes', 'revocation'])
+def test_owned_atlas_transport_reopens_source_for_each_disclosure_but_can_reconcile_and_cleanup(tmp_path, change):
+    from blueprint_pipeline.atlas_preparation_runtime import preparation_source_checkpoint
+    from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
+    from blueprint_pipeline.website_atlas_pose import AtlasClient
+
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, digest = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    sent = []
+
+    def transport(method, url, headers, data):
+        sent.append((method, url))
+        return 200, b'{}'
+
+    with bind_owned_atlas_source(state_root=state, capture_store_root=store, plan_id=plan['plan_id']) as context:
+        client = AtlasClient(base_url='https://api.example.test/api/v2', api_key='hermetic-test',
+                             transport=transport, source_checkpoint=preparation_source_checkpoint(context))
+        client.call('POST', '/assets', {'asset': {'displayName': 'source-view'}})
+        assert len(sent) == 1
+        if change == 'bytes':
+            (store / 'objects' / 'sha256' / digest[7:9] / digest[7:]).write_bytes(b'changed source')
+            expected = 'capture_object_digest_or_size_mismatch'
+        else:
+            marker = hashlib.sha256(f'{session}\0{intake}'.encode()).hexdigest() + '.json'
+            _write(store / 'lifecycle_tombstones' / marker, {'revoked': True})
+            expected = 'capture_revoked_or_expired'
+        with pytest.raises(ReconstructionControlPlaneError, match=expected):
+            client.call('POST', '/tasks:images2PosedRGBD', {'frames': []})
+        with pytest.raises(ReconstructionControlPlaneError, match=expected):
+            client.send_bytes('https://uploads.example.test/frame', method='PUT', headers={}, data=b'frame')
+        assert len(sent) == 1
+        # No new source disclosure: finish accounting/output retention and teardown.
+        client.call('GET', '/operations/existing-operation')
+        client.call('POST', '/assets/existing-output:createReadUrl')
+        client.call('DELETE', '/assets/existing-source')
+        assert len(sent) == 4
+    # A resumed worker can still reconcile an already-bought operation.
+    with bind_owned_atlas_source(state_root=state, capture_store_root=store, plan_id=plan['plan_id']) as context:
+        client = AtlasClient(base_url='https://api.example.test/api/v2', api_key='hermetic-test',
+                             transport=transport, source_checkpoint=preparation_source_checkpoint(context))
+        client.call('GET', '/operations/existing-operation')
+        with pytest.raises(ReconstructionControlPlaneError, match=expected):
+            client.call('POST', '/tasks:atlasGenerate', {})
+
+
+def test_owned_source_context_never_supplies_its_own_runtime_fence(tmp_path):
+    from blueprint_pipeline.atlas_preparation_runtime import preparation_source_checkpoint
+    from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
+
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    with pytest.raises(ValueError, match='owned_capture_atlas_source_fence_required'):
+        preparation_source_checkpoint(plan['source_context'])
+    with bind_owned_atlas_source(state_root=state, capture_store_root=store, plan_id=plan['plan_id']) as context:
+        # The explicit callback carries the source fence across SDK worker threads.
+        from concurrent.futures import ThreadPoolExecutor
+        checkpoint = preparation_source_checkpoint(context)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(checkpoint, 'test-threaded-disclosure').result()
+    with pytest.raises(ValueError, match='owned_capture_atlas_source_fence_required'):
+        preparation_source_checkpoint(plan['source_context'])
+    assert preparation_source_checkpoint({'schema_version': 'website_task_context.v1'}) is None
+
+
+def test_owned_runtime_refuses_a_modified_retained_plan(tmp_path):
+    from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
+
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    plan['source_video_digest'] = 'sha256:' + 'f' * 64
+    _write(state / 'plans' / plan['plan_id'] / 'artifacts' / 'owned_atlas_preparation_plan.json', plan)
+    with pytest.raises(ValueError, match='owned_capture_atlas_plan_binding_invalid'):
+        with bind_owned_atlas_source(state_root=state, capture_store_root=store, plan_id=plan['plan_id']):
+            pytest.fail('modified plan admitted')
+
+
+def test_mutating_yielded_context_cannot_retarget_a_captured_source_fence(tmp_path):
+    from copy import deepcopy
+    from blueprint_pipeline.atlas_preparation_runtime import preparation_source_checkpoint
+    from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
+    from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
+    from blueprint_pipeline.website_atlas_pose import AtlasClient
+
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    first = _seed_owned_atlas_source(store)
+    other = _seed_owned_atlas_source(store, session_id='capture-session-2', intake_id='intake-2')
+    plans = [prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+             capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+             idempotency_key='owned-plan-1') for session, intake, _ in [first, other]]
+    sent = []
+
+    def transport(*args):
+        sent.append(args)
+        return 200, b'{}'
+
+    with bind_owned_atlas_source(state_root=state, capture_store_root=store, plan_id=plans[0]['plan_id']) as context:
+        client = AtlasClient(base_url='https://api.example.test/api/v2', api_key='hermetic-test',
+                             transport=transport, source_checkpoint=preparation_source_checkpoint(context))
+        replacement = deepcopy(plans[1]['source_context'])
+        replacement['request_id'] = plans[0]['plan_id']
+        replacement['context_digest'] = cross_runtime_canonical_digest(replacement, digest_field='context_digest')
+        context.clear()
+        context.update(replacement)
+        marker = hashlib.sha256(f'{first[0]}\0{first[1]}'.encode()).hexdigest() + '.json'
+        _write(store / 'lifecycle_tombstones' / marker, {'revoked': True})
+        with pytest.raises(ReconstructionControlPlaneError, match='capture_revoked_or_expired'):
+            client.send_bytes('https://uploads.example.test/frame', method='PUT', headers={}, data=b'original-frame')
+        assert sent == []
+
+
+def test_owned_atlas_configuration_uses_existing_signed_transport_without_website_identity(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import website_task_context as transport
+    from blueprint_pipeline.website_atlas_pipeline import load_configuration
+
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    context = plan['source_context']
+    monkeypatch.setenv('PIPELINE_SYNC_WEBAPP_URL', 'https://tryblueprint.io/api/internal/pipeline/sync')
+    monkeypatch.setattr(transport, 'load_pipeline_sync_token', lambda: 'hermetic-sync-secret')
+    requests = []
+
+    def request(url, **options):
+        requests.append((url, options))
+        return SimpleNamespace(body=json.dumps({'schema_version': 'owned_capture_atlas_configuration.v1',
+            'source_video_digest': plan['source_video_digest'], 'task_context_digest': context['context_digest'],
+            'dispatch_authorized': False, 'grant_creation_allowed': False}).encode())
+
+    monkeypatch.setattr(transport, 'safe_request', request)
+    result = load_configuration(context, plan['source_video_digest'])
+    assert result['dispatch_authorized'] is False
+    url, options = requests[0]
+    assert url == f'https://tryblueprint.io/api/internal/pipeline/owned-captures/{session}/atlas-configuration'
+    assert options['method'] == 'POST' and options['headers']
+    assert json.loads(options['data']) == {'plan_id': plan['plan_id'], 'task_context_digest': context['context_digest'],
+        'source_video_digest': plan['source_video_digest'], 'create': False}
+    assert 'site-' not in url and 'walkthrough-' not in url
+    with pytest.raises(ValueError, match='source_video_binding_mismatch'):
+        load_configuration(context, 'sha256:' + 'f' * 64)
+    assert len(requests) == 1
+
+
+def test_owned_settlement_routes_without_reopening_revoked_processing_authority(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as transport
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    marker = hashlib.sha256(f'{session}\0{intake}'.encode()).hexdigest() + '.json'
+    _write(store / 'lifecycle_tombstones' / marker, {'revoked': True})
+    calls = []
+    monkeypatch.setattr(transport, 'website_webapp_request', lambda **kw: calls.append(kw) or {'status': 'settled'})
+    result = transport.preparation_webapp_request(task_context=plan['source_context'], operation='preparation-settlement',
+        payload={'request_id': plan['plan_id'], 'scene_id': plan['source_context']['scene_id'],
+                 'settlement': {'allocation_binding_digest': 'sha256:' + 'd' * 64}})
+    assert result == {'status': 'settled'}
+    assert calls == [{'capture_id': session, 'operation': 'preparation-settlement',
+        'payload': {'settlement': {'allocation_binding_digest': 'sha256:' + 'd' * 64}}, 'source_kind': 'owned_capture'}]
+
+
+def test_owned_paid_reservation_requires_current_runtime_source_before_budget_or_rpc(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_task_context as transport
+    from blueprint_pipeline import paid_resource_admission as admission
+    from blueprint_pipeline.owned_capture_atlas_runtime import bind_owned_atlas_source
+    store, state = tmp_path / 'store', tmp_path / 'state'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=['task_discovery'],
+        idempotency_key='owned-plan-1')
+    monkeypatch.setattr(admission, 'require_paid_resource_budget', lambda **kw: pytest.fail('reached budget before source'))
+    monkeypatch.setattr(transport, 'website_webapp_request', lambda **kw: pytest.fail('reached RPC before source'))
+    options = dict(task_context=plan['source_context'], binding_digest='sha256:' + 'b' * 64,
+                   maximum_cost_usd=1, request_count=1, resource_class='provider_reconstruction_api',
+                   provider='world_labs_atlas', source_video_digest=plan['source_video_digest'])
+    with pytest.raises(ValueError, match='source_fence_required'):
+        transport.reserve_website_preparation_spend(**options)
+    with bind_owned_atlas_source(state_root=state, capture_store_root=store, plan_id=plan['plan_id']):
+        marker = hashlib.sha256(f'{session}\0{intake}'.encode()).hexdigest() + '.json'
+        _write(store / 'lifecycle_tombstones' / marker, {'revoked': True})
+        with pytest.raises(ReconstructionControlPlaneError, match='capture_revoked_or_expired'):
+            transport.reserve_website_preparation_spend(**options)
+
+
+def test_owned_atlas_http_plan_requires_authentication_and_never_accepts_authority_fields(tmp_path, monkeypatch):
+    store = tmp_path / 'store'
+    session, intake, _ = _seed_owned_atlas_source(store)
+    manifest = tmp_path / 'control' / 'manifest.json'
+    _write(manifest, {})
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest))
+    monkeypatch.setenv(service.INTAKE_WORK_DIR_ENV, str(tmp_path / 'work'))
+    monkeypatch.setenv(service.CAPTURE_UPLOAD_STORE_ROOT_ENV, str(store))
+    monkeypatch.setenv(service.INTAKE_TOKEN_ENV, 'test-intake-token')
+    monkeypatch.setenv(service.INTAKE_ALLOW_LEGACY_BEARER_ENV, 'true')
+    monkeypatch.setenv(service.INTAKE_NONCE_STORE_DIR_ENV, str(tmp_path / 'nonces'))
+    client = TestClient(service.create_app())
+    command = {'schema_version': 'owned_capture_atlas_plan_submission.v1', 'capture_session_id': session,
+               'intake_id': intake, 'requested_claim_types': ['navigation_clearance'], 'idempotency_key': 'owned-plan-1'}
+    assert client.post('/api/live-pipeline/reconstructions/atlas-plan', json=command).status_code in {401, 403}
+    headers = {'authorization': 'Bearer test-intake-token'}
+    refused = client.post('/api/live-pipeline/reconstructions/atlas-plan', headers=headers,
+                          json={**command, 'paid_compute_authorized': True})
+    assert refused.status_code == 422
+    response = client.post('/api/live-pipeline/reconstructions/atlas-plan', headers=headers, json=command)
+    assert response.status_code == 200
+    assert response.json()['source_context']['description'].startswith('Navigate')
+    assert response.json()['proof_boundary']['provider_disclosure_authorized'] is False
