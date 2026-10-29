@@ -1486,6 +1486,7 @@ def _stub_host_deploy(monkeypatch, tmp_path: Path, commit: str) -> dict[str, obj
     ]}
     entrypoints = dict.fromkeys(("node", "browser_root", "browser", "node_modules"), "/runtime")
     stubs = {
+        "_prepare_capture_transfer_from_source": lambda *_args: None,
         "_holding_paid_launch_gate": lambda _locks: contextlib.nullcontext([]),
         "_installed_path_unit_states": lambda _installed: {},
         "_quiesce_active_path_units": lambda _before: [],
@@ -2772,6 +2773,8 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
                 fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         observed.append(stage)
 
+    monkeypatch.setattr(deploy, "_prepare_capture_transfer_from_source",
+        lambda *_args: (assert_lock_held("capture_prerequisites") or None))
     monkeypatch.setattr(
         deploy, "_prepare_scene_retirement_runtime",
         lambda **_kwargs: (assert_lock_held("scene_retirement_runtime_prepare") or {
@@ -2856,6 +2859,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
 
     assert observed == [
         "path_quiesce",
+        "capture_prerequisites",
         "scene_retirement_runtime_prepare",
         "shared_runtime_dependencies",
         "scene_retirement_disabled_stores",
@@ -3551,6 +3555,7 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
     staged = tmp_path / "staged-release"
     staged.mkdir()
     moved: list[str] = []
+    monkeypatch.setattr(deploy, "_prepare_capture_transfer_from_source", lambda *_args: None)
     # Isolate the preceding host step so this test reaches its intended splat
     # prerequisite refusal. This is not proof of an installed or enabled SDK.
     monkeypatch.setattr(deploy, "_prepare_scene_retirement_runtime", lambda **_kwargs: {
@@ -4618,6 +4623,54 @@ def test_main_runtime_failure_retains_static_diagnostic_without_changing_blocker
     assert blocked["runtime_diagnostic"] == {"phase": "build_sdk", "reason": "deadline"}
     assert blocked["provider_mutation_performed"] is False
     assert "private-canary" not in text
+
+
+def test_failed_capture_preflight_writes_the_advertised_deployment_receipt(tmp_path, monkeypatch, capsys):
+    _stub_main_break_glass_notes(monkeypatch, tmp_path)
+
+    def refused(**kwargs):
+        raise deploy.ControlPlaneDeployError("deploy_capture_transfer_store_unavailable")
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", refused)
+    receipt = tmp_path / "receipts" / "blocked.json"
+    assert deploy.main([*_cli_args(tmp_path, tmp_path), "--receipt-out", str(receipt)]) == 2
+    emitted = json.loads(capsys.readouterr().out)
+    assert json.loads(receipt.read_text()) == emitted
+    assert emitted["blockers"] == ["deploy_capture_transfer_store_unavailable"]
+    assert emitted["provider_mutation_performed"] is False
+
+
+def test_capture_prerequisites_fail_before_release_staging(tmp_path, monkeypatch):
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "d" * 40)
+    def refuse(*_args):
+        raise deploy.ControlPlaneDeployError("deploy_capture_transfer_scanner_definitions_not_ready")
+    monkeypatch.setattr(deploy, "_prepare_capture_transfer_from_source", refuse)
+    monkeypatch.setattr(deploy, "stage_task_evaluation_control_plane_release",
+                        lambda **kw: pytest.fail("staged release before prerequisite controls"))
+    with pytest.raises(deploy.ControlPlaneDeployError, match="scanner_definitions_not_ready"):
+        deploy.deploy_control_plane_commit(**arguments)
+
+
+@pytest.mark.parametrize("available", [False, True])
+def test_capture_prerequisites_use_the_exact_target_unit(tmp_path, monkeypatch, available):
+    commit = "a" * 40
+    text = "[Service]\nEnvironment=fixture\n"
+    def git(source, *argv):
+        assert source == tmp_path
+        assert argv == ("show", commit + ":deploy/systemd/blueprint-pipeline-intake.service")
+        return (0, text) if available else (1, "private git diagnostic")
+    calls = []
+    monkeypatch.setattr(deploy, "_git", git)
+    monkeypatch.setattr(deploy, "_prepare_capture_transfer_runtime",
+                        lambda **kw: calls.append(kw) or {"controls": "fixture"})
+    if available:
+        assert deploy._prepare_capture_transfer_from_source(tmp_path, commit) == {"controls": "fixture"}
+        assert calls[0]["unit_text"] == text
+        assert calls[0]["account"] == "blueprint"
+    else:
+        with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_capture_transfer_unit_unavailable$"):
+            deploy._prepare_capture_transfer_from_source(tmp_path, commit)
+        assert calls == []
 
 
 @pytest.mark.parametrize('invalid_field', [None, 'store', 'phase', 'reason'])

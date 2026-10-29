@@ -678,10 +678,105 @@ def test_release_report_option_preserves_legacy_scope_and_requires_trust(retaine
     assert legacy["production_autonomy_acceptance"] is None
     assert legacy["proof_boundary"]["supported_production_completion"] is False
     untrusted = build_release_gate_report(**args, production_autonomy_manifest_path=retained["manifest_path"])
-    assert untrusted["status"] == "blocked"
+    assert untrusted["status"] == "passed"
+    assert untrusted["ready_for_beta_release"] is True
+    assert untrusted["blockers"] == legacy["blockers"] == []
+    assert untrusted["gates"] == legacy["gates"]
     assert untrusted["production_autonomy_acceptance"]["status"] == "not_proven"
+    assert "upload:authenticated_acquisition_not_proven" in untrusted["production_autonomy_acceptance"]["blockers"]
+    assert untrusted["proof_boundary"]["production_autonomy_observation_requested"] is True
+    assert untrusted["proof_boundary"]["supported_production_completion"] is False
+    assert untrusted["public_claim_upgrade_allowed"] is False
     joined = build_release_gate_report(**args, production_autonomy_manifest_path=retained["manifest_path"],
                                       acquisition_verifier=retained["acquisitions"])
     assert joined["status"] == "passed"
     assert joined["proof_boundary"]["supported_production_completion"] is True
     assert joined["public_claim_upgrade_allowed"] is False
+
+
+@pytest.mark.parametrize("role,facts,reason", [
+    ("metric_scene", {"metric_evidence_qualified": False}, "metric_scene_qualification_not_proven"),
+    ("event_history", {"coverage_complete": False}, "complete_intervention_history_not_proven"),
+])
+def test_release_keeps_incomplete_autonomy_observations_diagnostic(retained, role, facts, reason):
+    from scripts.run_sim_only_beta_release_gate import build_release_gate_report
+    from tests.test_sim_only_beta_release_gate import (
+        _deployment_proof, _forwarding_report, _local_gate_report, _route_proof,
+    )
+
+    change_acquisition(retained, role, facts=facts)
+    standalone = report(retained)
+    assert standalone["status"] == "not_proven"
+    assert reason in standalone["blockers"]
+    root = retained["root"]
+    capture_root = root / "capture"
+    local, forwarding, route, deployment = [root / (name + ".json") for name in
+                                            ("local", "forwarding", "route", "deployment")]
+    _local_gate_report(local)
+    _forwarding_report(forwarding)
+    _route_proof(route, capture_root)
+    _deployment_proof(deployment)
+
+    result = build_release_gate_report(
+        capture_root=capture_root, local_gate_report_path=local,
+        forwarding_preflight_report_path=forwarding,
+        production_route_forwarding_proof_path=route,
+        production_deployment_proof_path=deployment,
+        production_autonomy_manifest_path=retained["manifest_path"],
+        acquisition_verifier=retained["acquisitions"],
+    )
+
+    assert result["status"] == "passed"
+    assert result["ready_for_beta_release"] is True
+    assert result["blockers"] == []
+    assert len(result["gates"]) == 5
+    assert result["production_autonomy_acceptance"] == standalone
+    assert result["proof_boundary"]["supported_production_completion"] is False
+    assert result["public_claim_upgrade_allowed"] is False
+
+
+@pytest.mark.parametrize("required_proof_present", [True, False])
+def test_release_cli_optional_manifest_preserves_required_proof_failures(retained, required_proof_present):
+    from scripts.run_sim_only_beta_release_gate import main
+    from tests.test_sim_only_beta_release_gate import (
+        _deployment_proof, _forwarding_report, _local_gate_report, _route_proof,
+    )
+
+    root = retained["root"]
+    capture_root = root / "capture"
+    local, forwarding, route, deployment, output = [root / (name + ".json") for name in
+        ("local", "forwarding", "route", "deployment", "release")]
+    missing = [] if required_proof_present else ["full_trace_package"]
+    _local_gate_report(
+        local, sim_only_beta_requirements_satisfied=required_proof_present,
+        sim_only_beta_blocked_requirement_ids=missing,
+        requirements=[{"requirement_id": "full_trace_package", "sim_only_beta_required": True,
+                       "passed": required_proof_present, "blockers": missing}],
+    )
+    _forwarding_report(forwarding)
+    _route_proof(route, capture_root)
+    _deployment_proof(deployment)
+
+    exit_code = main([
+        "--capture-root", str(capture_root), "--local-gate-report", str(local),
+        "--forwarding-preflight-report", str(forwarding),
+        "--production-route-forwarding-proof", str(route),
+        "--production-deployment-proof", str(deployment),
+        "--production-autonomy-manifest", str(retained["manifest_path"]),
+        "--output-path", str(output),
+    ])
+
+    result = json.loads(output.read_text())
+    assert exit_code == (0 if required_proof_present else 1)
+    assert result["ready_for_beta_release"] is required_proof_present
+    assert result["status"] == ("passed" if required_proof_present else "blocked")
+    expected = [] if required_proof_present else [
+        "local_sim_only_post_upload_autonomy:sim_only_beta_requirement_full_trace_package_not_complete"]
+    assert result["blockers"] == expected
+    assert len(result["gates"]) == 5
+    observation = result["production_autonomy_acceptance"]
+    assert observation["status"] == "not_proven"
+    assert "upload:authenticated_acquisition_not_proven" in observation["blockers"]
+    assert result["proof_boundary"]["production_autonomy_observation_requested"] is True
+    assert result["proof_boundary"]["supported_production_completion"] is False
+    assert result["public_claim_upgrade_allowed"] is False

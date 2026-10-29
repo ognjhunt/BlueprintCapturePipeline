@@ -178,6 +178,108 @@ def test_one_source_bound_paid_call_settles_and_resume_never_repurchases(tmp_pat
     assert len(calls) == 1
 
 
+def _abstained_source_review(tmp_path, monkeypatch, *, still_missing=False, change_source=False):
+    import base64
+    from copy import deepcopy
+    from io import BytesIO
+    from blueprint_pipeline import website_task_context as control
+    from blueprint_pipeline import paid_resource_admission as admission
+
+    path, survey, proposal, policy = fixture(tmp_path)
+    source = Path(survey["frames"][0]["source_image_path"])
+    Image.new("RGB", (1920, 1080), "white").save(source)
+    for row in survey["frames"]:
+        row["source_image_digest"] = _sha256_file(source)
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    path.write_text(json.dumps(survey))
+    abstained = deepcopy(proposal)
+    abstained.update(status="abstained", summary="Small overview previews do not establish a usable object/destination pair",
+                     uncaptured_regions=["A clear view of one permitted object and its destination"])
+    abstained["coverage_requirements"] = abstained["coverage_requirements"][1:]
+    calls = {"reserved": [], "settled": [], "inputs": [], "source": source,
+             "source_digest": _sha256_file(source)}
+    monkeypatch.setattr(admission, "require_paid_resource_admission_grant", lambda *_, **__: None)
+    monkeypatch.setattr(control, "reserve_website_preparation_spend",
+                        lambda **kw: (calls["reserved"].append(kw) or {}, object()))
+    monkeypatch.setattr(control, "website_webapp_request",
+                        lambda **kw: calls["settled"].append(kw) or {"status": "settled"})
+
+    class Invoker:
+        def configure_reservation_audit(self, **_):
+            pass
+
+        def invoke(self, spec, value):
+            parts = value[0]["content"]
+            frames = [json.loads(p["text"])["frame_id"] for p in parts
+                      if p["type"] == "input_text" and "frame_id" in json.loads(p["text"])]
+            sizes = []
+            for part in parts:
+                if part["type"] == "input_image":
+                    with Image.open(BytesIO(base64.b64decode(part["image_url"].partition(",")[2]))) as image:
+                        sizes.append(image.size)
+            calls["inputs"].append({"frames": frames, "sizes": sizes, "instructions": spec.instructions})
+            first = len(calls["inputs"]) == 1
+            if first and change_source:
+                Image.new("RGB", (1920, 1080), "black").save(source)
+            return SimpleNamespace(output=abstained if first or still_missing else proposal,
+                                   cost_usd=.03, usage={"input_tokens": 100}, model=spec.model, sdk_version="test")
+
+    options = dict(survey_path=path, task_context={"description": "Move any suitable observed box to an empty spot on the same shelf",
+        "context_digest": "sha256:" + "b" * 64, "request_id": "r", "scene_id": "s", "capture_id": "c"},
+        configuration={"policy": policy}, output_root=tmp_path / "plans", invoker=Invoker(),
+        release_blockers=lambda: ("c" * 40, []))
+    return options, calls, survey, policy
+
+
+def test_abstained_preview_gets_one_retained_higher_detail_source_review(tmp_path, monkeypatch):
+    options, calls, survey, _ = _abstained_source_review(tmp_path, monkeypatch)
+    result = planner.review_survey(**options)
+    assert result["proposal"]["status"] == "proposed"
+    assert len(calls["inputs"]) == len(calls["reserved"]) == len(calls["settled"]) == 2
+    assert calls["inputs"][0]["sizes"] == [(288, 512)] * 3
+    assert calls["inputs"][1]["sizes"] == [(720, 1280)] * 3
+    assert all(row["frames"] == [frame["frame_id"] for frame in survey["frames"]] for row in calls["inputs"])
+    assert _sha256_file(calls["source"]) == calls["source_digest"]
+    assert all(row["source_video_digest"] == survey["source_video_digest"] for row in calls["reserved"])
+    assert all(row["maximum_cost_usd"] == options["configuration"]["policy"]["maximum_review_cost_usd"]
+               for row in calls["reserved"])
+    predecessor = json.loads((options["output_root"] /
+                             (result["binding"]["source_review_recovery"]["prior_binding_digest"][7:] + ".json")).read_text())
+    assert predecessor["proposal"]["status"] == "abstained" and predecessor["cost_usd"] == .03
+    assert result["binding"]["source_review_recovery"]["prior_proposal_digest"] == predecessor["proposal_digest"]
+    assert planner.review_survey(**options) == result
+    assert len(calls["inputs"]) == len(calls["reserved"]) == 2
+
+
+def test_unresolved_source_gap_stops_after_one_detail_review_and_is_never_promoted(tmp_path, monkeypatch):
+    options, calls, survey, policy = _abstained_source_review(tmp_path, monkeypatch, still_missing=True)
+    result = planner.review_survey(**options)
+    assert result["proposal"]["status"] == "abstained"
+    with pytest.raises(ValueError, match="atlas_scene_planner_abstained"):
+        planner.proposal_review(result["proposal"], survey=survey, policy=policy, pose_budget=4)
+    assert planner.review_survey(**options) == result
+    assert len(calls["inputs"]) == len(calls["reserved"]) == 2
+
+
+def test_changed_source_refuses_before_the_detail_review_reserves_or_calls(tmp_path, monkeypatch):
+    options, calls, _, _ = _abstained_source_review(tmp_path, monkeypatch, change_source=True)
+    with pytest.raises(ValueError, match="atlas_scene_planner_source_changed"):
+        planner.review_survey(**options)
+    assert len(calls["inputs"]) == len(calls["reserved"]) == len(calls["settled"]) == 1
+    assert len(list(options["output_root"].glob("*.settlement.json"))) == 1
+
+
+def test_detail_review_keeps_the_supplied_invokers_existing_cumulative_budget(tmp_path, monkeypatch):
+    from blueprint_pipeline.openai_prompt_cache import worst_case_reservation_usd
+    options, calls, survey, policy = _abstained_source_review(tmp_path, monkeypatch)
+    first_ceiling = worst_case_reservation_usd(model=policy["model"],
+        input_token_ceiling=24000 + 3000 * len(survey["frames"]), max_output_tokens=4000, cache_policy=None)
+    options["invoker"].config = SimpleNamespace(max_inference_cost_usd=first_ceiling + .02 + .000001)
+    with pytest.raises(ValueError, match="atlas_scene_planner_invoker_budget_exhausted"):
+        planner.review_survey(**options)
+    assert len(calls["inputs"]) == len(calls["reserved"]) == len(calls["settled"]) == 1
+
+
 def test_full_frame_export_review_reserves_for_each_image_not_each_sheet(tmp_path, monkeypatch):
     path, survey, _, policy = fixture(tmp_path)
     image = tmp_path / 'preview.png'
