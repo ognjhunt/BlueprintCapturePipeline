@@ -655,6 +655,7 @@ def _invoke_agentic_video(
     """Run the explicitly selected mode; require tool traces only for agentic."""
     if processing not in {"static", "agentic"}:
         raise ValueError("gemini_clean_plate_processing_invalid")
+    handoff_lease_checkpoint("gemini_removal_before_client")
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
         timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
     ))
@@ -740,6 +741,7 @@ def _repair_prompt(prompt: str, previous_text: str, error: str) -> str:
 def _invoke_text_repair(*, api_key: str, model: str, genai: Any, types: Any, prompt: str,
                         previous_text: str, error: str) -> dict[str, Any]:
     """The repair turn: the model's own answer and the exact failed rule; no new media."""
+    handoff_lease_checkpoint("gemini_removal_validation_repair")
     client = genai.Client(api_key=api_key, http_options=types.HttpOptions(
         timeout=300_000, retry_options=types.HttpRetryOptions(attempts=1),
     ))

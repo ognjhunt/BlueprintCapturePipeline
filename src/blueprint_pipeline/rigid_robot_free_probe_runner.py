@@ -228,6 +228,20 @@ def _allocator_alive(attempt: Path) -> bool:
 def run_allocator(argv: list[str], *, attempt: Path) -> int:
     """Run the canonical allocator for one attempt; its own watchdog survives this process."""
 
+    invocation = attempt / "invocation/manifest.json"
+    if invocation.exists() and "--execute" in argv:
+        from .allocator_invocation import start_invocation, manifest
+        if list(argv) != manifest(invocation)["argv"]:
+            raise ValueError("rigid_robot_free_probe_invocation_argv_mismatch")
+        try:
+            pid = start_invocation(invocation, log_path=attempt / "allocator.log")
+        except OSError:
+            _write_exclusive(attempt / SPAWN_FAILED_FILENAME, {"reason": "allocator_spawn_failed",
+                                                              "observed_at_iso": utc_now_iso()})
+            return 127
+        _write_exclusive(attempt / PROCESS_FILENAME, {"pid": pid, "start_ticks": _process_start_ticks(pid),
+                                                     "started_at_iso": utc_now_iso()})
+        return os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
     log_path = attempt / "allocator.log"
     with log_path.open("x", encoding="utf-8") as stream:
         try:
@@ -311,6 +325,15 @@ def retain_trace_file(run_root: Path, trace: Mapping[str, Any]) -> str:
     return "written"
 
 
+def _legacy_funding_unknown(attempt: Path) -> bool:
+    from .allocator_invocation import manifest
+    from .probe_funding_recovery import PROTOCOL
+    path = attempt / "invocation/manifest.json"
+    return ((not path.exists() or manifest(path)["binding"].get("funding_request_protocol") != PROTOCOL)
+            and any((attempt / name).exists() for name in (
+                INTENT_FILENAME, PROCESS_FILENAME, RESULT_FILENAME, "invocation/started.json")))
+
+
 def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]:
     """Classify one attempt's outcome; ingest a completed run once teardown and provider zero are proven."""
 
@@ -318,15 +341,46 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
     from .task_evaluation_scene_execution_authority import proves_no_provider_allocation
     from .team_robot_free_probe import retain_recorded_probe
 
+    from .probe_funding_recovery import funding_state, reconcile_funding
+    legacy_funding_unknown = _legacy_funding_unknown(attempt)
+    funding = funding_state(attempt / "allocator")
+    if legacy_funding_unknown and funding["status"] == "no_request":
+        # Pre-protocol allocators were bare subprocesses, including crashes
+        # before their PID receipt. Their blocked result or cached unfunded
+        # ingest cannot prove the remote reservation transaction never ran.
+        return {"state": "unknown", "reason": "probe_legacy_funding_reconciliation_required",
+                "next_action": "recover_exact_legacy_funding_request", "funded": None}
     recorded = _read_optional(attempt / INGEST_FILENAME)
     if recorded is not None:
+        if legacy_funding_unknown and recorded.get("state") in UNFUNDED_STATES:
+            return {"state": "unknown", "reason": "probe_legacy_funding_reconciliation_required",
+                    "next_action": "recover_exact_legacy_funding_request", "funded": None}
         return recorded
     result = _read_optional(attempt / RESULT_FILENAME)
+    if funding["status"] == "unknown":
+        # The old RPC may have committed even without a retained response.
+        # Reconcile only after preventing the old allocator from dispatching.
+        if (attempt / "invocation/manifest.json").exists():
+            from .allocator_invocation import fence_unstarted
+            if fence_unstarted(attempt / "invocation/manifest.json")["status"] == "fenced_unspent":
+                funding = reconcile_funding(attempt / "allocator")
+        return {"state": "unknown", "reason": "probe_funding_reconciliation_required", **funding}
     if result is None:
         if (attempt / SPAWN_FAILED_FILENAME).is_file() and not (attempt / PROCESS_FILENAME).exists():
             return _record_ingest(attempt, {"state": "not_launched", "funded": False, "allocated": False,
                                             "reason": "allocator_spawn_failed"})
         if (attempt / INTENT_FILENAME).is_file():
+            if (attempt / "invocation/manifest.json").exists():
+                from .allocator_invocation import fence_unstarted
+                fenced = fence_unstarted(attempt / "invocation/manifest.json")
+                if fenced["status"] == "fenced_unspent":
+                    if funding["status"] == "reserved" or legacy_funding_unknown:
+                        # No-create is known, but an issued remote funding hold
+                        # or legacy request without durable intent is unresolved.
+                        return {"state": "unknown", "reason": "probe_funding_reconciliation_required"}
+                    return _record_ingest(attempt, {"state": "not_launched", "funded": False,
+                        "allocated": False, "reason": "allocator_fenced_before_create",
+                        "no_create_fence_path": fenced["proof_path"]})
             # A launched allocator with no result is never followed by a second allocation.
             return {"state": "running" if _allocator_alive(attempt) else "unknown"}
         return _record_ingest(attempt, {"state": "not_launched", "funded": False, "allocated": False})
@@ -365,10 +419,14 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
 
 
 def _counts(job: Path) -> tuple[int, int]:
+    from .probe_funding_recovery import funding_state
     funded = unfunded = 0
     for attempt in _attempts(job):
         record = _read_optional(attempt / INGEST_FILENAME) or {}
-        if (attempt / "allocator" / FUNDING_FILENAME).is_file() or record.get("allocated") is True:
+        # Unknown funding consumes an attempt slot until exact reconciliation;
+        # the absence of a local response never replenishes the capture cap.
+        if (funding_state(attempt / "allocator")["status"] in {"reserved", "unknown"}
+                or _legacy_funding_unknown(attempt) or record.get("allocated") is True):
             funded += 1
         elif record.get("state") in UNFUNDED_STATES:
             unfunded += 1
@@ -422,6 +480,12 @@ def stage_attempt(job: Path, index: int, *, state: Mapping[str, Any], commit: st
                                                   "authority_digest": authority["authority_digest"],
                                                   "bundle_sha256": bundle["bundle_sha256"],
                                                   "staged_at_iso": utc_now_iso()})
+    from .allocator_invocation import retain_invocation
+    from .probe_funding_recovery import PROTOCOL
+    retain_invocation(attempt_dir=attempt, argv=argv, binding={
+        "attempt_id": authority["attempt_id"], "authority_digest": authority["authority_digest"],
+        "resource_name": authority["resource_name"], "bundle_sha256": bundle["bundle_sha256"], "provider": "vast",
+        "funding_request_protocol": PROTOCOL})
     return {"root": attempt, "argv": argv}
 
 
@@ -461,7 +525,8 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
             settled = settle_attempt(attempts[-1], state=state)
             if settled["state"] in WAITING_STATES:
                 return {"status": "waiting", "capture_root": state["capture_root"], "attempt": attempts[-1].name,
-                        "reason": settled["state"]}
+                        "reason": settled["state"], **{key: settled[key] for key in (
+                            "next_action", "next_retry_at_epoch", "allocation_binding_digest") if key in settled}}
             if settled["state"] in TERMINAL_STATES:
                 return _seal_terminal(root, item, entry, job, settled["state"], settled)
         funded, unfunded = _counts(job)

@@ -11,7 +11,7 @@ import hashlib
 import json
 import math
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -40,9 +40,12 @@ def _read_bound(record: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _bindings(*, adapter: Mapping[str, Any], prepared: Mapping[str, Any], adapter_path: Path) -> dict[str, Any]:
-    authority = validate_session_authority(_read_bound(prepared["authority"]))
-    bundle = validate_provider_bundle(_read_bound(prepared["bundle_receipt"]), authority=authority)
+def _bindings(*, adapter: Mapping[str, Any], prepared: Mapping[str, Any], adapter_path: Path,
+              record_reader: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
+              retained_only: bool = False) -> dict[str, Any]:
+    read_bound = record_reader or _read_bound
+    authority = validate_session_authority(read_bound(prepared["authority"]))
+    bundle = validate_provider_bundle(read_bound(prepared["bundle_receipt"]), authority=authority)
     if (authority["run_kind"] != BETA_RUN_KIND
             or prepared.get("prepared_digest") != canonical_digest(prepared, digest_field="prepared_digest")
             or adapter.get("bundle_sha256") != bundle["bundle_sha256"]
@@ -58,6 +61,9 @@ def _bindings(*, adapter: Mapping[str, Any], prepared: Mapping[str, Any], adapte
             or consumption.get("maximum_provider_allocations") != 1 or consumption.get("retry_cap") != 0
             or consumption.get("consumption_digest") != canonical_digest(consumption, digest_field="consumption_digest")):
         raise ValueError("beta_screening_closeout_consumed_authority_mismatch")
+    if retained_only and not isinstance(adapter.get("vast_instance_ids"), list):
+        # Offline validation cannot discover unindexed late-watchdog files.
+        raise ValueError("beta_screening_retained_allocation_identity_missing")
     identities = adapter_instance_ids(adapter, result_path=adapter_path,
         read_json=lambda path, code: json.loads(path.read_text()), error_factory=ValueError)
     if len(identities) != 1:
@@ -66,9 +72,12 @@ def _bindings(*, adapter: Mapping[str, Any], prepared: Mapping[str, Any], adapte
     for key in ("adapter_result", "teardown_manifest"):
         record = closeout.get(key) or {}
         path = Path(str(record.get("path") or ""))
-        if not path.resolve().is_relative_to(adapter_path.resolve().parent):
+        in_attempt = (path.is_absolute() and ".." not in path.parts
+                      and path.is_relative_to(adapter_path.parent)) if retained_only else (
+                          path.resolve().is_relative_to(adapter_path.resolve().parent))
+        if not in_attempt:
             raise ValueError("beta_screening_closeout_foreign_attempt_record")
-        evidence = _read_bound(record)
+        evidence = read_bound(record)
         if evidence.get("vast_instance_ids") != identities:
             raise ValueError("beta_screening_closeout_allocation_record_mismatch")
     return {"authority_digest": authority["authority_digest"], "bundle_sha256": bundle["bundle_sha256"],
@@ -151,19 +160,49 @@ def collect_scoped_closeout(*, adapter: Mapping[str, Any], prepared: Mapping[str
     return receipt
 
 
-def scoped_closeout_verified(receipt: Mapping[str, Any], *, adapter: Mapping[str, Any],
-                             prepared: Mapping[str, Any], adapter_path: Path) -> bool:
+def _scoped_closeout_verified(receipt: Mapping[str, Any], *, adapter: Mapping[str, Any],
+        prepared: Mapping[str, Any], adapter_path: Path, now: float,
+        record_reader: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
+        retained_only: bool = False) -> bool:
     try:
-        binding = _bindings(adapter=adapter, prepared=prepared, adapter_path=adapter_path)
+        if type(now) not in (int, float) or not math.isfinite(now) or now < 0:
+            return False
+        if retained_only and (adapter.get("provider_closeout") or {}).get("all_staged_objects_absent") is not True:
+            # A relocated promotion proof needs its own indexed receipt reader.
+            # Until supplied, it is unknown; never follow original host paths.
+            return False
+        binding = _bindings(adapter=adapter, prepared=prepared, adapter_path=adapter_path,
+                            record_reader=record_reader, retained_only=retained_only)
         return (receipt.get("schema_version") == SCHEMA and receipt.get("scope") == SCOPE
                 and receipt.get("provider") == "vast" and receipt.get("status") == "verified"
                 and receipt.get("provider_absence_confirmed") is True and receipt.get("blockers") == []
                 and receipt.get("global_provider_zero_claimed") is False
                 and receipt.get("receipt_digest") == canonical_digest(receipt, digest_field="receipt_digest")
                 and all(receipt.get(key) == value for key, value in binding.items())
-                and not _observation_blockers(receipt, now=time.time()) and _own_teardown(adapter))
-    except (OSError, ValueError, KeyError, TypeError):
+                and not _observation_blockers(receipt, now=now) and _own_teardown(adapter))
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
         return False
+
+
+def scoped_closeout_verified(receipt: Mapping[str, Any], *, adapter: Mapping[str, Any],
+                             prepared: Mapping[str, Any], adapter_path: Path) -> bool:
+    return _scoped_closeout_verified(receipt, adapter=adapter, prepared=prepared,
+                                     adapter_path=adapter_path, now=time.time())
+
+
+def retained_scoped_closeout_verified(receipt: Mapping[str, Any], *, adapter: Mapping[str, Any],
+        prepared: Mapping[str, Any], adapter_path: Path,
+        record_reader: Callable[[Mapping[str, Any]], dict[str, Any]], observed_at_epoch: float) -> bool:
+    """Recheck an historical own-resource receipt and every nested retained byte.
+
+    The caller supplies a safe, digest/size-checking reader for copies of the
+    original records. This calls no provider and performs no path discovery or
+    mutation. ``observed_at_epoch`` is the original collection time, not a later
+    acquisition time; the caller must also join it after execution completion.
+    It proves no current provider inventory and grants no retry authority.
+    """
+    return _scoped_closeout_verified(receipt, adapter=adapter, prepared=prepared,
+        adapter_path=adapter_path, now=observed_at_epoch, record_reader=record_reader, retained_only=True)
 
 
 def join_scoped_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[str, Any],

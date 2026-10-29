@@ -1127,6 +1127,30 @@
       "reviewed_on": "2026-10-06",
       "severity": "MEDIUM",
       "test_id": "B103"
+    },
+    {
+      "disposition": "mitigated_by_control",
+      "expires_on": "2026-11-12",
+      "filename": "src/blueprint_pipeline/production_preflight_summary.py",
+      "fingerprint": "1b37399b9a842189c2aa1399ef7fa302cee1fbdbd41e32ba35c563ced6acdf97",
+      "line_number": 247,
+      "owner": "codex/real-video-e2e-20261028",
+      "reason": "The held private directory is checked for current-owner UID and absence of group/other write before fchmod to mode 0711. Only traversal is added for the known service reader; directory listing remains owner-only and the raw report remains mode 0600. All path components are opened no-follow and named/held inode identities are rechecked around publication. build_safe_summary projects only code-owned finding/unit enums, bounded counts and digests; unknown codes are collapsed and arbitrary response/command/customer fields are omitted. Atomic summary file publication uses mode 0644. These permissions support the existing service-reader contract; they do not grant writes or paid execution authority. This is a source/control review with privacy and race tests, not a claim of observed host permissions, human risk acceptance or new security approval.",
+      "reviewed_on": "2026-10-28",
+      "severity": "MEDIUM",
+      "test_id": "B103"
+    },
+    {
+      "disposition": "mitigated_by_control",
+      "expires_on": "2026-11-12",
+      "filename": "src/blueprint_pipeline/production_preflight_summary.py",
+      "fingerprint": "7bbd9227132829cadb730079c68c0fe6d9d9f47b93c5dbe1a1a3b88408234db2",
+      "line_number": 251,
+      "owner": "codex/real-video-e2e-20261028",
+      "reason": "The held publication directory is checked for current-owner UID and absence of group/other write before fchmod to mode 0755. It exposes the intentional reduced summary directory, not the raw report. All path components are opened no-follow and named/held inode identities are rechecked around publication. build_safe_summary projects only code-owned finding/unit enums, bounded counts and digests; unknown codes are collapsed and arbitrary response/command/customer fields are omitted. Atomic summary file publication uses mode 0644. These permissions support the existing service-reader contract; they do not grant writes or paid execution authority. This is a source/control review with privacy and race tests, not a claim of observed host permissions, human risk acceptance or new security approval.",
+      "reviewed_on": "2026-10-28",
+      "severity": "MEDIUM",
+      "test_id": "B103"
     }
   ],
   "fingerprint_policy": "filename_test_id_ast_scope_column_issue_text_canonical_code_and_source_anchor",

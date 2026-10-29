@@ -104,6 +104,7 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
                                      atlas_auxiliary: bool = False,
                                      retained_admission: Mapping[str, Any] | None = None,
                                      unallocated_continuation_path: str | Path | None = None,
+                                     retain_request_intent: Callable[[Mapping[str, Any]], None] | None = None,
                                      retain_admission: Callable[[Mapping[str, Any]], None] | None = None) -> tuple[dict[str, Any], Any]:
     """The controller obtains an exact, one-dispatch grant from the shared cap."""
     import time
@@ -128,8 +129,14 @@ def reserve_website_preparation_spend(*, task_context: Mapping[str, Any], bindin
     if operator_file:
         value = load_atlas_operator_admission(Path(operator_file), command=command, task_context=task_context)
     else:
+        payload = {"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command}
+        if retain_request_intent is not None:
+            # The exact dispatched command, durably retained by its caller
+            # before transport. An absent response can never prove no hold.
+            retain_request_intent({"capture_id": task_context["capture_id"], "operation": "preparation-spend",
+                                   "payload": payload})
         value = website_webapp_request(capture_id=task_context["capture_id"], operation="preparation-spend",
-            payload={"request_id": task_context["request_id"], "scene_id": task_context["scene_id"], "spend": command})
+            payload=payload)
     if (any(value.get(key) != expected for key, expected in command.items())
             or value.get("external_disclosure_allowed") is not True
             or not isinstance(value.get("expires_at_epoch"), (int, float)) or value["expires_at_epoch"] <= time.time()):

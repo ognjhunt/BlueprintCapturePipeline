@@ -138,11 +138,14 @@ def run_team_candidate_session_vast(
     if blockers:
         return _blocked(blockers)
     environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
+    from .beta_screening_control_delivery import runtime_control_ready_for_authority
+    runtime_control_ready = runtime_control_ready_for_authority(authority=authority, execute=execute)
     consumption = consume_session_authority_once(
         authority, consumption_path=Path(job_dir) / "policy_canary_session_consumption.json") if execute else None
     if consumption is not None and consumption.get("status") != "consumed":
         return _blocked(list(consumption.get("blockers") or []), authorization_consumption=consumption)
     return run_arena_native_control_vast(
+        **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
         approval_path=".", job_dir=job_dir, paid_resource_admission_grant=paid_resource_admission_grant,
         execute=execute, prepared_bundle=bundle, machine_avoidlist_path=machine_avoidlist_path,
         max_hourly_rate_usd=max_hourly_rate_usd, hard_cap_usd=hard_cap_usd, hard_ttl_seconds=hard_ttl_seconds,

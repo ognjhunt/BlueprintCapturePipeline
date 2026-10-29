@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .common import write_json
+from .core.handoff_lease import guarded_handoff_write_json as write_json, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .website_task_preparation import (
     compile_website_scene_preparation, native_task_preparation_gap, native_task_subject_profile,
@@ -65,6 +65,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                                  capture_root: Path, now: float,
                                  allow_operation_coverage_review: bool = False,
                                  allow_static_target_recovery: bool = False) -> dict[str, Any]:
+    handoff_lease_checkpoint("website_scene_handoff_start")
     root = capture_root / "pipeline" / "website_scene_preparation"
     root.mkdir(parents=True, exist_ok=True)
     handoff_path = root / "handoff.json"
@@ -95,6 +96,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # geometry. Reopening it never reconstructs or purchases geometry.
         from .website_atlas_scene_source import atlas_scene_source
         atlas = atlas_scene_source(capture_root=capture_root, output_root=root / "atlas")
+        handoff_lease_checkpoint("website_scene_handoff_after_source")
         if atlas["status"] != "ready":
             result.update(status="awaiting_reconstruction" if atlas["status"] == "pending" else "needs_input",
                 blockers=[atlas["reason"]], geometry_backend=None, provider_mutation_performed=False,
@@ -131,6 +133,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 from .website_operation_coverage_review import clarify_operation_coverage
                 operation_review_requested = True
                 result.pop("provider_mutation_performed", None)
+                handoff_lease_checkpoint("website_scene_handoff_operation_review")
                 clarified = clarify_operation_coverage(job_dir=capture_root / "pipeline" / "atlas",
                     task_context=context, source_video_digest=source_video_digest)
                 semantics = clarified["task_semantics"]
@@ -160,6 +163,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                         and source_video.resolve().is_relative_to(capture_root.resolve())):
                     recovery_options = {"task_context": context, "source_video": source_video,
                                         "recovery_geometry": atlas["source_geometry"]}
+            handoff_lease_checkpoint("website_scene_handoff_static_masks")
             masks = complete_retained_static_task_masks(plan=json.loads(plan_path.read_text()),
                 source_geometry=clean_plate["source_frames"], task_masks=clean_plate["task_masks"],
                 output_root=plan_path.parent / "task_masks",
@@ -229,6 +233,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # decoded frames make a restart free.
         from .website_assembly_coverage import attach_assembly_coverage
         source_video = Path(clean_plate.get("input_video_path") or "")
+        handoff_lease_checkpoint("website_scene_handoff_assembly_coverage")
         masks = attach_assembly_coverage(task_masks=clean_plate["task_masks"],
             source_geometry=clean_plate["source_geometry"], removal_manifest=removal, task_context=context,
             source_video=(source_video if source_video.is_file()
@@ -238,6 +243,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         # the builder. An unknown identity or closed agent gate records not_run
         # and spends nothing; retained receipts make restarts free.
         from .website_object_spec_research import attach_object_specs
+        handoff_lease_checkpoint("website_scene_handoff_object_specs")
         masks = attach_object_specs(task_masks=masks, removal_manifest=removal, task_context=context,
                                     output_root=root / "object_spec")
         if masks != clean_plate["task_masks"]:

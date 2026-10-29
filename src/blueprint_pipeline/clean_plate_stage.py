@@ -27,7 +27,9 @@ from .common import (
     optional_read_json,
     parse_bool,
     utc_now_iso,
-    write_json,
+)
+from .core.handoff_lease import (
+    HandoffLeaseError, handoff_lease_checkpoint, guarded_handoff_write_json as write_json,
 )
 from .local_capture import resolve_local_capture_context
 from .website_scene_geometry import prepare_website_source_frames
@@ -324,8 +326,10 @@ def run_clean_plate_stage(
         input_video_path = None
     else:
         input_video_path = website_source_video or _resolve_input_video(ctx.pipeline_root, ctx.capture_root)
+        handoff_lease_checkpoint("clean_plate_before_analysis")
         plan = analyze_removal_targets(video_path=website_source_video or input_video_path, task_context=task_context,
                                        output_root=clean_plate_root / "gemini_analysis")
+        handoff_lease_checkpoint("clean_plate_after_analysis")
         plan_errors = validate_removal_plan(plan)
         if plan_errors:
             blockers.extend(plan_errors)
@@ -363,10 +367,14 @@ def run_clean_plate_stage(
     # job until the provider has published its visual result.
     if website_source_video is not None and privacy_verified and not blockers:
         try:
+            handoff_lease_checkpoint("clean_plate_before_source_frames")
             source_geometry = prepare_website_source_frames(
                 source_video=website_source_video,
                 output_root=clean_plate_root / "source_geometry", capture_id=ctx.capture_id,
             )
+            handoff_lease_checkpoint("clean_plate_after_source_frames")
+        except HandoffLeaseError:
+            raise
         except Exception as exc:
             status, mode = "blocked", "source_geometry_blocked"
             reason = "website_source_geometry_unavailable"
@@ -377,12 +385,16 @@ def run_clean_plate_stage(
         for target in task_plan.get("targets", [])
     ):
         try:
+            handoff_lease_checkpoint("clean_plate_before_task_masks")
             task_masks = run_website_task_masks(plan=task_plan, source_geometry=source_geometry, defer_kept_static=True,
                                                 output_root=clean_plate_root / "task_masks",
                                                 meta_admission=meta_sam_admission,
                                                 meta_admission_grant=meta_sam_admission_grant,
                                                 task_context=task_context,
                                                 source_video=website_source_video)
+            handoff_lease_checkpoint("clean_plate_after_task_masks")
+        except HandoffLeaseError:
+            raise
         except Exception as exc:
             status, mode = "blocked", "task_masks_blocked"
             reason = "website_task_masks_unavailable"

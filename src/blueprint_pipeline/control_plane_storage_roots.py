@@ -86,6 +86,7 @@ _PUBSUB = "/var/lib/blueprint/pubsub-handoffs"
 
 STORAGE_ROOTS: tuple[StorageRoot, ...] = (
     StorageRoot("/var/lib/blueprint", "container", "blueprint", "service state tree"),
+    StorageRoot("/var/lib/blueprint/capture-intakes", "evidence_hot", "blueprint", "immutable admitted source bytes and capture intake receipts; never reclaimed"),
     StorageRoot(_CONTROL_PLANE, "container", "blueprint", "control-plane state"),
     StorageRoot(_INPUTS, "container", "blueprint", "immutable and derived launch inputs"),
     StorageRoot("/mnt/blueprint-work", "container", "blueprint", "bulk work volume"),
