@@ -66,6 +66,59 @@ def test_all_49_reviewed_safe_observations_remain_candidates_without_an_arbitrar
     assert not review['excluded_frame_ids']
 
 
+def test_room_continuation_uses_real_image_selection_privacy_screen_and_retained_inputs(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    import numpy as np
+    from PIL import Image
+    from blueprint_pipeline import atlas_video_inputs, website_atlas_pose, paid_resource_allocator
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    _, survey, proposal, context, receipt, config = observed_case(tmp_path)
+    root = tmp_path / 'atlas'
+    survey_root = root / 'survey'
+    survey_root.mkdir(parents=True)
+    pixels = np.random.default_rng(31).integers(20, 230, (384, 512), dtype=np.uint8)
+    frames = []
+    for i in range(3):
+        path = survey_root / f'{i}.png'
+        Image.fromarray(np.roll(pixels, i * 32, axis=1)).convert('RGB').save(path)
+        frames.append({'frame_id': str(i), 'timestamp_seconds': i, 'source_image_path': str(path),
+            'source_image_digest': _sha256_file(path), 'sharpness': 50, 'clipped_fraction': 0})
+    survey.update(schema_version=atlas_video_inputs.SURVEY_SCHEMA, frames=frames,
+                  display_rotation_degrees=0, sample_count=3, heldout_frame_count=0)
+    survey['digest'] = canonical_digest(survey, digest_field='digest')
+    survey_path = survey_root / 'atlas_video_survey.json'
+    write_json(survey_path, survey)
+    proposal.update(unsafe_frame_ids=[], static_intervals_seconds=[[0, 2.5]])
+    receipt['binding']['survey_digest'] = survey['digest']
+    receipt['binding_digest'] = canonical_digest(receipt['binding'])
+    config['policy']['reviewed_on'] = datetime.now(timezone.utc).date().isoformat()
+    write_json(root / 'configuration.json', config)
+    room.retain_selection(output_root=root, survey_path=survey_path, survey=survey,
+        receipt=receipt, task_context=context, configuration=config)
+    monkeypatch.setattr(website_atlas_pose, 'atlas_api_config', lambda: ('configured', 'test-non-secret'))
+    monkeypatch.setattr(pipeline, 'load_configuration', lambda *_, **kw: deepcopy(config))
+    posed = []
+    def pose_boundary(**kwargs):
+        posed.append(json.loads((kwargs['output_root'] / atlas_video_inputs.GEOMETRY_INPUTS_FILE).read_text()))
+        return {'status': 'processing', 'operation_id': 'test-only-no-provider-call'}
+    monkeypatch.setattr(paid_resource_allocator, 'run_sponsored_website_atlas_pose', pose_boundary)
+    run = dict(output_root=root, source_digest=survey['source_video_digest'], task_context=context,
+               max_polls=1, checkpoint=lambda _: None)
+    expected = {'status': 'processing', 'stage': 'source_pose', 'operation_id': 'test-only-no-provider-call'}
+    assert room.run_observed_room(**run) == expected
+    selection_path = root / 'observed_room/pose/atlas_view_selection.json'
+    selected = json.loads(selection_path.read_text())
+    assert selected['selected_frame_count'] == 3
+    assert selected['task_and_surrounding_scene_covered'] is False
+    assert selected['observed_room_only'] is True
+    assert {row['role'] for row in selected['coverage_requirements']} == {'surrounding_scene'}
+    retained_bytes = selection_path.read_bytes()
+    assert room.run_observed_room(**run) == expected
+    assert posed[0] == posed[1] and selection_path.read_bytes() == retained_bytes
+    assert len(posed[0]['frames']) == 3
+    assert receipt['proposal']['status'] == 'abstained'
+
+
 def test_same_source_resume_uses_existing_allowance_and_never_reasks_task_planner(tmp_path, monkeypatch):
     path, survey, proposal, context, receipt, config = observed_case(tmp_path)
     root = tmp_path / 'job'

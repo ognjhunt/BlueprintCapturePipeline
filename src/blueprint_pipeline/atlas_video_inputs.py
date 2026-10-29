@@ -175,7 +175,8 @@ SURROUNDING_GAP_DECISIONS = {"surrounding_scene_below_quality": "below the revie
                              "surrounding_scene_unconnected": "not connected by overlapping views"}
 
 
-def select_coverage_views(*, frames, features, maximum_frames, requirements, anchor_id, policy=None):
+def select_coverage_views(*, frames, features, maximum_frames, requirements, anchor_id, policy=None,
+                          observed_room_only=False):
     """Connect reviewed task and environment anchors before admitting a subset.
 
     Labels come from source-image review. Feature matches establish only a
@@ -188,7 +189,8 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
     if (not isinstance(requirements, list) or not requirements
             or not all(isinstance(r, Mapping) for r in requirements)
             or "surrounding_scene" not in {r.get("role") for r in requirements}
-            or not {"task_object", "task_region"} & {r.get("role") for r in requirements}):
+            or (not observed_room_only and not {"task_object", "task_region"} & {r.get("role") for r in requirements})
+            or (observed_room_only and any(r.get("role") != "surrounding_scene" for r in requirements))):
         raise ValueError("atlas_task_and_scene_coverage_review_required")
     if type(maximum_frames) is not int or maximum_frames < 2:
         raise ValueError("atlas_selection_limit_invalid")
@@ -205,7 +207,8 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
         else:
             for identifier in ids:
                 context_labels.setdefault(identifiers[identifier], requirement["label"])
-    if anchor_id not in identifiers:
+    if anchor_id not in identifiers or (observed_room_only and anchor_id not in {
+            key for row in requirements for key in row['required_frame_ids']}):
         raise ValueError("atlas_coverage_task_anchor_missing")
     policy = dict(policy or {})
     minimum_sharpness = policy.get("minimum_sharpness", 25)
@@ -269,6 +272,12 @@ def select_coverage_views(*, frames, features, maximum_frames, requirements, anc
         if not unconnected:
             raise ValueError("atlas_coverage_anchor_quality_insufficient")
         raise ValueError("atlas_task_and_scene_coverage_gap:" + frames[unconnected[0]]["frame_id"])
+    if observed_room_only and len(selected) < 2:
+        # A room anchor may be one view. Find its genuinely overlapping,
+        # distinct neighbour without inventing a task-object requirement.
+        selected, added = add_distinct_views(frames=frames, features=features, selected=selected,
+            maximum_frames=maximum_frames, policy=policy)
+        diagnostics.extend(added)
     if len(selected) < 2:
         raise ValueError("atlas_insufficient_overlapping_distinct_views")
     return sorted(selected), diagnostics
@@ -422,7 +431,8 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
                            "frame_target": maximum, "connected_cover_frames": cover_count,
                            "distinct_views_added": len(prepared) - cover_count}
             and plan.get("privacy_screen") == privacy
-            and plan.get("task_and_surrounding_scene_covered") is True
+            and plan.get("task_and_surrounding_scene_covered") is (review.get('review_scope') != 'observed_room_only')
+            and (review.get('review_scope') != 'observed_room_only' or plan.get('observed_room_only') is True)
             and plan.get("unseen_regions_recovered") is False
             and plan.get("geometry_or_static_state_proven") is False
             and inputs.get("source_sample_count") == survey.get("sample_count")
@@ -497,7 +507,7 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     try:
         cover, diagnostics = select_coverage_views(frames=frames, features=features,
             maximum_frames=cover_limit, requirements=requirements, anchor_id=anchor_id,
-            policy=review.get("selection_policy"))
+            policy=review.get("selection_policy"), observed_room_only=review.get('review_scope') == 'observed_room_only')
     except ValueError as error:
         write_json(output_root / "atlas_coverage_gap.json", {"status": "blocked_before_upload", "reason": str(error),
             "survey_digest": survey["digest"], "review_digest": canonical_digest(review),
@@ -551,7 +561,8 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
             "frame_policy": {"basis": "accuracy_first", "provider_input_capacity": capacity,
                              "frame_target": maximum_frames,
                              "connected_cover_frames": len(cover), "distinct_views_added": len(selected) - len(cover)},
-            "task_and_surrounding_scene_covered": True,
+            "task_and_surrounding_scene_covered": review.get('review_scope') != 'observed_room_only',
+            **({'observed_room_only': True} if review.get('review_scope') == 'observed_room_only' else {}),
             **({"uncaptured_regions": uncaptured} if uncaptured else {}),
             "coverage_requirements": requirements, "coverage_authority": "source_image_review_and_overlap_heuristic",
             "privacy_screen": inputs["binding"]["privacy_screen"],
