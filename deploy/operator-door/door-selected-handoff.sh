@@ -28,8 +28,8 @@ export BLUEPRINT_PIPELINE_REPO="$PWD"
 # status/requeue and inspection do not activate workers or run the guard's
 # unrelated reconciliation. The Atlas worker keeps its own paid gate.
 mode="$(python3 -c 'import json,os; print(json.loads(os.environ["DOOR_SELECTED_HANDOFF_REQUEST"])["mode"])')"
-case "$mode" in inspect | dispatch | atlas-status | atlas-retry | discover-selector) ;; *) door_fail selected_handoff_mode_invalid ;; esac
-if [ "$mode" = dispatch ]; then
+case "$mode" in inspect | dispatch | atlas-status | atlas-retry | preparation-resume | discover-selector) ;; *) door_fail selected_handoff_mode_invalid ;; esac
+if [ "$mode" = dispatch ] || [ "$mode" = preparation-resume ]; then
   (
     umask 077
     setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all -- env PYTHONPATH=src \
