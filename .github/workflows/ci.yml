@@ -468,12 +468,43 @@ jobs:
           assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "native skips and refusals do not prove acceptance"
           PYTHON
 
+      - name: Prove capture storage parent and service identity as root
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src:${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          evidence="${RUNNER_TEMP}/blueprint-native-evidence"
+          test_temp="$(mktemp -d "${RUNNER_TEMP}/blueprint-capture-root-tests.XXXXXX")"
+          trap 'sudo -n rm -rf -- "$test_temp"' EXIT
+          sudo -n -- env PYTHONPATH="$PYTHONPATH" PYTHONDONTWRITEBYTECODE=1 GITHUB_ACTIONS=true \
+            /var/lib/blueprint-native-test-venv/bin/python -c \
+            'import os, sys; assert os.getuid() == os.geteuid() == 0; import pytest; raise SystemExit(pytest.main(sys.argv[1:]))' \
+            tests/test_capture_upload_prerequisites.py::test_root_owned_parent_creates_only_the_new_service_directory \
+            tests/test_capture_upload_prerequisites.py::test_actual_root_parent_and_service_owned_descendants \
+            -c pyproject.toml -m 'slow or not slow' --basetemp="$test_temp" \
+            --maxfail=1 --junitxml="$evidence/capture-root-junit.xml" -q
+          /var/lib/blueprint-native-test-venv/bin/python - "$evidence/capture-root-junit.xml" <<'PYTHON'
+          import sys, xml.etree.ElementTree as ET
+          cases = list(ET.parse(sys.argv[1]).getroot().iter("testcase"))
+          assert len(cases) == 2, "both root-runner regression and actual service identity boundaries must execute"
+          assert not any(case.find(tag) is not None for case in cases for tag in ("skipped", "error", "failure")), "root/service skips and refusals are not proof"
+          PYTHON
+
       - name: Retain native execution evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-feature-linux-${{ github.sha }}
           path: ${{ runner.temp }}/blueprint-native-evidence/native-junit.xml
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Retain capture storage root identity evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: capture-storage-root-linux-${{ github.sha }}
+          path: ${{ runner.temp }}/blueprint-native-evidence/capture-root-junit.xml
           if-no-files-found: error
           retention-days: 7
 
