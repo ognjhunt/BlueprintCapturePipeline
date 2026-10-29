@@ -38,6 +38,16 @@ def run_website_capture_preparation(
         sponsors_scene_preparation,
     )
 
+    from .website_observed_room_limit import retain_observed_room_limit
+    handoff_lease_checkpoint('website_preparation_observed_room_limit')
+    room_limit = (retain_observed_room_limit(capture_root=capture_root,
+        task_context=descriptor.metadata.get('site_task_context') or {}, source_video=source_video)
+        if derived_scene_generation_allowed else None)
+    if room_limit is not None:
+        write_json(pipeline_dir / 'provider_run_manifest.json', {'schema_version': 'v1',
+            'provider_name': None, 'status': 'not_requested', 'website_scene_preparation': room_limit})
+        return {'status': 'completed', 'lane': 'qualification', 'website_scene_preparation': room_limit,
+                'native_execution_complete': False}
     privacy_processing = {
         "status": "pending_website_review",
         "mode": "task_aware_prepared_images",
