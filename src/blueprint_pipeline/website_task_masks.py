@@ -635,6 +635,11 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         # Only the object the robot moves is asked about; the answer names exact instances.
         site_choice = ((target_choices or {}).get(target["target_id"])
                        if target.get("task_effect") == "manipulated" else None)
+        # A confirmation keeps the original deterministic guess and its exact
+        # mask manifest bytes. Reaffirming after a rejection must not replace
+        # the original registration merely by changing selection provenance.
+        if site_choice and site_choice.get('kind') == 'confirm_guess':
+            site_choice = None
         if site_choice and task_context and site_choice.get('task_context_digest', task_context['context_digest']) != task_context['context_digest']:
             site_choice = None
         try:

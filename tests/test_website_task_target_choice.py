@@ -134,6 +134,12 @@ def test_task_masks_continue_on_the_best_guess_and_report_it(tmp_path, monkeypat
     assert [row["guessed_track_id"] for row in guesses] == ["sam-right"]
     question = choice.build_question(target=TARGET, candidates=guesses[0]["candidates"], frames=guesses[0]["frames"],
         guessed_track_id="sam-right", scene_id="s", capture_id="c", source_geometry=GEOMETRY)
+    manifest_path = next((tmp_path / 'masks').glob('*/task_masks.json'))
+    original_bytes = manifest_path.read_bytes()
+    confirmed = run(target_choices={'target-1': {'target_id': 'target-1', 'kind': 'confirm_guess',
+        'candidate_set_digest': question['candidate_set_digest'], 'candidate_id': question['guessed_candidate_id'],
+        'question_digest': question['question_digest']}})
+    assert confirmed == result and manifest_path.read_bytes() == original_bytes
     left = next(row["candidate_id"] for row in question["candidates"] if row["candidate_id"] != question["guessed_candidate_id"])
     again = []
     corrected = run(target_guesses=again, target_choices={"target-1": {"target_id": "target-1",
