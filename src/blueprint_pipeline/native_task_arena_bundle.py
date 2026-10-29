@@ -348,6 +348,12 @@ def _verified_packet(packet_dir: str | Path) -> tuple[Path, dict[str, Any], list
                 f"native_task_arena_bundle_packet_asset_identity_mismatch:{binding.get('semantic_role') or relative}"
             )
     errors.extend(_stale_servo_limit_restatements(root))
+    if not errors:
+        from .task_family_authoring_evidence import verify_packet_authoring
+        try:
+            verify_packet_authoring(root, by_path)
+        except ValueError as exc:
+            errors.append(str(exc))
     if errors:
         raise NativeTaskArenaBundleError(errors)
     return root, receipt, rows

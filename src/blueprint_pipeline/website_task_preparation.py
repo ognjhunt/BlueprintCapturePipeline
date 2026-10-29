@@ -27,6 +27,7 @@ from . import task_evaluation_scene_intake as intake
 from .adp009d_newton_gripper_drive import FULL_STROKE_M
 from .core.handoff_lease import guarded_handoff_write_json as write_json
 from .decision_evidence_contracts import canonical_digest
+from .website_task_context_contracts import website_task_context_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
@@ -711,7 +712,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         return value
 
     for value, field in ((task_context, "context_digest"), (task_masks, "digest"), (source_geometry, "digest")):
-        if value.get(field) != canonical_digest(value, digest_field=field):
+        expected = (website_task_context_digest(value) if field == "context_digest"
+                    else canonical_digest(value, digest_field=field))
+        if value.get(field) != expected:
             raise ValueError("website_preparation_input_digest_mismatch")
     if gap is not None:
         return retain_gap(gap)

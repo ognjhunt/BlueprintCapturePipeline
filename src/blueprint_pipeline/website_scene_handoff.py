@@ -120,10 +120,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         if (atlas.get("subject_origin") == "synthetic_design") != ("synthetic_subject" in removal):
             raise ValueError("website_subject_origin_conflict")
         from .website_task_semantics import load_task_semantics
+        from .task_family_scoring import canonical_task_family
         source_video_digest = (atlas["source_geometry"].get("binding") or {}).get("source_video_digest")
         semantics = (load_task_semantics(job_dir=capture_root / "pipeline" / "atlas", task_context=context,
                                         source_video_digest=source_video_digest)
-                     if context.get("task_family") == "general_task" and source_video_digest else None)
+                     if (context.get("task_family") == "general_task"
+                         or canonical_task_family(context.get("task_family")) is not None)
+                     and source_video_digest else None)
         if semantics is not None and allow_operation_coverage_review:
             from .website_operation_coverage import clarification_request
             if clarification_request(semantics, task_context=context, source_video_digest=source_video_digest) is not None:
@@ -146,7 +149,6 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                           source_geometry_digest=atlas["source_geometry"]["digest"])
             return retain_gap(gap)
         from .website_task_masks import bind_task_masks_to_geometry, complete_retained_static_task_masks
-        from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile
         family = canonical_task_family(effective_task_profile(task_context=context, **semantics_options))
         result.pop("provider_mutation_performed", None)

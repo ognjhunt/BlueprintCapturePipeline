@@ -10,7 +10,15 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+
+
+def website_task_context_digest(value: Mapping[str, Any]) -> str:
+    """Honor the explicit WebApp byte contract; retained contexts stay exact."""
+    if not isinstance(value, Mapping) or ("canonicalization" in value and value["canonicalization"] != "rfc8785"):
+        raise ValueError("website_task_context_canonicalization_invalid")
+    digest = cross_runtime_canonical_digest if value.get("canonicalization") == "rfc8785" else canonical_digest
+    return digest(value, digest_field="context_digest")
 
 
 def admits_scene_preparation(value: Mapping[str, Any] | None) -> bool:
@@ -87,7 +95,7 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
         return False
     return (
         task_context.get("schema_version") == "website_site_task_context.v1"
-        and digest == canonical_digest(task_context, digest_field="context_digest")
+        and digest == website_task_context_digest(task_context)
         and handoff.get("schema_version") == "website_scene_handoff.v1"
         and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
         and all(handoff.get(key) == task_context[key] for key in ("scene_id", "capture_id"))
@@ -118,7 +126,7 @@ def retains_task_family_preparation(handoff: Mapping[str, Any], task_context: Ma
         family = canonical_task_family(effective_task_profile(task_context=task_context,
             task_semantics=inputs.get("task_semantics"), source_video_digest=inputs.get("source_video_digest")))
         if (family is None or not isinstance(inputs, Mapping)
-                or task_context.get("context_digest") != canonical_digest(task_context, digest_field="context_digest")
+                or task_context.get("context_digest") != website_task_context_digest(task_context)
                 or handoff.get("schema_version") != "website_scene_handoff.v1"
                 or handoff.get("digest") != canonical_digest(handoff, digest_field="digest")
                 or any(handoff.get(key) != task_context.get(key) for key in ("scene_id", "capture_id"))
@@ -175,7 +183,7 @@ def validate_website_task_context(
         ("request_id", request_id), ("scene_id", scene_id), ("capture_id", capture_id),
     )):
         raise ValueError("website_task_context_identity_mismatch")
-    if value.get("context_digest") != canonical_digest(value, digest_field="context_digest"):
+    if value.get("context_digest") != website_task_context_digest(value):
         raise ValueError("website_task_context_digest_mismatch")
     if purpose not in {None, "scene_preparation"}:
         raise ValueError("website_task_context_purpose_invalid")

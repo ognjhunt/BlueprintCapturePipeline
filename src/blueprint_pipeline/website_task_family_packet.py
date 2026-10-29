@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .website_task_context_contracts import website_task_context_digest
 from .task_evaluation_scene_attempt_evidence import record
 from .task_evaluation_scene_configuration_submission_inputs import checked_file
 from .task_evaluation_scene_progression_contracts import require, safe_path
@@ -35,11 +36,12 @@ def family_source_references(*, preparation, runtime_inputs_path, task_context=N
                 for key in ('task_context_digest', 'source_geometry_digest', 'task_masks_digest',
                             'splat_digest', 'collision_mesh_digest')), 'website_task_family_preparation_binding_changed')
     if task_context is None:
-        require(inputs.get('task_semantics') is None, 'website_task_family_semantics_context_required')
+        require(inputs.get('task_semantics') is None and native['task_family'] != 'multi_step',
+                'website_task_family_semantics_context_required')
     else:
         from .task_family_scoring import canonical_task_family
         from .website_task_semantics import effective_task_profile, require_semantic_stage_order
-        require(task_context.get('context_digest') == canonical_digest(task_context, digest_field='context_digest')
+        require(task_context.get('context_digest') == website_task_context_digest(task_context)
                 and task_context.get('context_digest') == preparation['binding']['task_context_digest']
                 and native['task_spec']['task_success_contract']['scope']['task_context_digest'] == task_context['context_digest'],
                 'website_task_family_source_context_changed')
@@ -55,6 +57,8 @@ def family_source_references(*, preparation, runtime_inputs_path, task_context=N
     require(retained == native, "website_task_family_runtime_contract_changed")
     require(not family_source_blockers(native=native, source_bindings=inputs["source_bindings"],
             source_scene=inputs["source_scene"]), "website_task_family_source_binding_incomplete")
+    from .task_family_authoring_evidence import preparation_authoring_reference
+    preparation_authoring_reference(inputs=inputs, native=native)
     task = preparation["intake_request"]["task"]
     require(task.get("native_runtime_contract_digest") == native["contract_digest"]
             and task.get("task_success_contract_digest") == native["task_spec"]["task_success_contract"]['contract_digest']
@@ -99,6 +103,8 @@ def materialize_website_task_family_packet(*, preparation, runtime_inputs_path, 
                                    task_context=task_context)
     inputs = preparation["task_evaluation_inputs"]
     native = inputs["native_runtime_contract"]
+    from .task_family_authoring_evidence import preparation_authoring_reference
+    authoring_reference = preparation_authoring_reference(inputs=inputs, native=native)
     output = safe_path(output_root)
     require(output.is_absolute() and not output.exists(), "website_task_family_packet_output_exists")
     output.mkdir(parents=True, mode=0o750)
@@ -122,6 +128,8 @@ def materialize_website_task_family_packet(*, preparation, runtime_inputs_path, 
             "policy_selection": inputs.get("policy_selection"),
             "scene_intent": intent_reference, "preparation_attempt": attempt_reference,
             "release_binding": release_reference, "assets": rows, "paid_authority_granted": False}
+        if authoring_reference is not None:
+            request["source_authoring_requirements"] = authoring_reference
         request["request_digest"] = canonical_digest(request, digest_field="request_digest")
         write_json(output / "native_task_arena_packet_request.v1.json", request)
         write_json(output / "native_task_runtime_contract.v1.json", native)

@@ -1,0 +1,90 @@
+{
+  "evidence_class": "hermetic_fixture_no_source_or_runtime_admission",
+  "context": {
+    "schema_version": "website_site_task_context.v1",
+    "request_id": "family-facts",
+    "scene_id": "site-family-facts",
+    "capture_id": "walkthrough-family-facts",
+    "description": "Press the red button — café 🦾.",
+    "task_family": "general_task",
+    "confirmed": true,
+    "confirmed_at": "2026-10-28T12:00:00.000Z",
+    "operator_answers": {
+      "family_task_facts": {
+        "schema_version": "website_family_task_facts.v1",
+        "canonicalization": "rfc8785",
+        "capture_id": "walkthrough-family-facts",
+        "source_video_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "task_description_digest": "sha256:6579dda707d1d43243a10b8d80f70bcd5baeb9d446db39f11bd2c2a918a5500b",
+        "task_success_criteria_digest": "sha256:8f2ea1b123417414a1f70a662107e62625ed3b3e65af1a7bbbd40edbc95cc844",
+        "confirmed": true,
+        "confirmation_reference": "site-task-brief:family-facts:a020d7ee1ff8f464c05ac47ad3077651b88274e87633232a14d2a1edbdce46a5",
+        "operations": [
+          {
+            "operation_id": "operation-001",
+            "minimum_hold_seconds": 1e-7
+          }
+        ],
+        "facts_digest": "sha256:1bde1a47ebc0591bdb866eb8c423ed25486ce725c158a938574b4654a164ae41"
+      }
+    },
+    "unresolved": [],
+    "capture_rights": {
+      "derived_scene_generation_allowed": true,
+      "data_licensing_allowed": false,
+      "capture_contributor_payout_eligible": false,
+      "consent_status": "granted",
+      "consent_revoked": false,
+      "consent_scope": [
+        "derived_scene_generation",
+        "robot_evaluation"
+      ],
+      "statement_version": "fixture",
+      "recorded_at_iso": "2026-10-28T12:00:00.000Z"
+    },
+    "success_criteria": {
+      "successDefinition": "The red button remains pressed — café 🦾.",
+      "successRate": 1e-7,
+      "cycleTimeSeconds": 1,
+      "unknown": false
+    },
+    "task_evidence_provenance": {
+      "item_details": "owner_stated_unverified",
+      "success_criteria": "owner_stated_target",
+      "success_rate_unit": "percent",
+      "cycle_time_unit": "seconds",
+      "physical_measurements_verified": false
+    },
+    "canonicalization": "rfc8785",
+    "context_digest": "sha256:c940eb0cbcce49a4ff35bb60a5550254bc5578a6dfa778b77d1760f466f64857"
+  },
+  "facts": {
+    "schema_version": "website_family_task_facts.v1",
+    "canonicalization": "rfc8785",
+    "capture_id": "walkthrough-family-facts",
+    "source_video_digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "task_description_digest": "sha256:6579dda707d1d43243a10b8d80f70bcd5baeb9d446db39f11bd2c2a918a5500b",
+    "task_success_criteria_digest": "sha256:8f2ea1b123417414a1f70a662107e62625ed3b3e65af1a7bbbd40edbc95cc844",
+    "confirmed": true,
+    "confirmation_reference": "site-task-brief:family-facts:a020d7ee1ff8f464c05ac47ad3077651b88274e87633232a14d2a1edbdce46a5",
+    "operations": [
+      {
+        "operation_id": "operation-001",
+        "minimum_hold_seconds": 1e-7
+      }
+    ],
+    "facts_digest": "sha256:1bde1a47ebc0591bdb866eb8c423ed25486ce725c158a938574b4654a164ae41"
+  },
+  "canonicalizer_vector": {
+    "value": {
+      "😀": "astral",
+      "": "BMP",
+      "é": "composed",
+      "é": "decomposed",
+      "tiny": 1e-7,
+      "integral": 1
+    },
+    "canonical_json": "{\"é\":\"decomposed\",\"integral\":1,\"tiny\":1e-7,\"é\":\"composed\",\"😀\":\"astral\",\"\":\"BMP\"}",
+    "digest": "sha256:293f8cafe1e0fd0fb3f6c5ffcd33c051659a639b15ef99be03fcd6b0a09fecf7"
+  }
+}

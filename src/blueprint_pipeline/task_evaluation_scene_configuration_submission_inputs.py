@@ -57,9 +57,12 @@ def read(path: str | Path, *, digest_field: str | None = None) -> dict[str, Any]
     if retained is None:
         record_touched(path, _identity(path.lstat()), "sha256:" + hashlib.sha256(raw).hexdigest())
     if digest_field:
-        require(value.get(digest_field) == canonical_digest(
-            value, digest_field=digest_field
-        ), "input_digest_mismatch")
+        if digest_field == "context_digest" and value.get("schema_version") == "website_site_task_context.v1":
+            from .website_task_context_contracts import website_task_context_digest
+            expected = website_task_context_digest(value)
+        else:
+            expected = canonical_digest(value, digest_field=digest_field)
+        require(value.get(digest_field) == expected, "input_digest_mismatch")
     return value
 
 
