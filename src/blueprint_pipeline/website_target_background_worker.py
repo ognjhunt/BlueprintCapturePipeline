@@ -168,7 +168,7 @@ def _owner_checkpoint(*, job_dir, capture_root, context, request, checkpoint):
 
 def advance_correction(*, job, job_dir, capture_root, context, checkpoint, max_polls=1):
     """Called only under the existing Atlas job lock, with its unchanged expiry."""
-    from .website_atlas_pipeline import load_configuration, finalize_background_result, _REVIEW_RECORD
+    from .website_atlas_pipeline import load_configuration, finalize_background_result, resumed_policy
     from .paid_resource_allocator import run_sponsored_website_atlas_automation
     from .website_atlas_pose import ATLAS_PROVIDER_RETENTION_ENV
     import os
@@ -183,10 +183,7 @@ def advance_correction(*, job, job_dir, capture_root, context, checkpoint, max_p
             or context['context_digest'] != request['task_context_digest']):
         raise ValueError('website_target_correction_source_changed')
     current = load_configuration(context, request['source_video_digest'], create=False)
-    original = _read(job_dir / 'configuration.json')
-    if (current['authority'] != original['authority']
-            or any(current['policy'].get(key) != value for key, value in original['policy'].items() if key not in _REVIEW_RECORD)):
-        raise ValueError('atlas_runtime_authority_or_policy_changed')
+    current = {**current, **resumed_policy(current=current, stored=_read(job_dir / 'configuration.json'))}
     inputs, tracks, review = _source_inputs(job_dir, request)
     _retain(root / 'effective_review.json', review)
 

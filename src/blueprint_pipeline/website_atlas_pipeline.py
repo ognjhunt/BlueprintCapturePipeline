@@ -29,6 +29,27 @@ from .atlas_preparation_context import requires_task_semantic_analysis
 
 #: Who read the rate card, and when. Renewing it re-confirms the same prices.
 _REVIEW_RECORD = ("rate_card_reference", "reviewed_by", "reviewed_on")
+#: The per-review cap a job was admitted under. A cap raised later serves only the reviews this
+#: one refuses, so a review bought before the raise is found again under its own receipt.
+ADMITTED_REVIEW_CAP = "admitted_maximum_review_cost_usd"
+
+
+def resumed_policy(stored, current):
+    """The policy fields a job that already bought work under ``stored`` takes from ``current``.
+
+    The authority and every price must be unchanged; the review record may be renewed. The
+    per-review cap may rise but never fall below the admitted one: the authority's total still
+    bounds what the job can spend.
+    """
+    admitted = stored.get(ADMITTED_REVIEW_CAP, stored["policy"]["maximum_review_cost_usd"])
+    if (stored["authority"] != current["authority"]
+            or current["policy"]["maximum_review_cost_usd"] < admitted
+            or any(current["policy"].get(key) != value for key, value in stored["policy"].items()
+                   if key not in (*_REVIEW_RECORD, "maximum_review_cost_usd"))):
+        raise ValueError("atlas_runtime_authority_or_policy_changed")
+    if ADMITTED_REVIEW_CAP in stored or current["policy"]["maximum_review_cost_usd"] != admitted:
+        return {"policy": current["policy"], ADMITTED_REVIEW_CAP: admitted}
+    return {"policy": current["policy"]}
 
 
 def _require_current_price_review(policy) -> None:
@@ -396,12 +417,11 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             # The scene review is the first purchase, and a lapsed price review stops a
             # job before it: a job that bought nothing takes the current configuration whole.
             config = current
-        # A resumed job may gain a reviewed price for a stage it has not bought, or a
-        # renewed review of the same prices; any changed price or authority refuses.
-        elif (config["authority"] != current["authority"]
-                or any(current["policy"].get(key) != value for key, value in config["policy"].items()
-                       if key not in _REVIEW_RECORD)):
-            raise ValueError("atlas_runtime_authority_or_policy_changed")
+        else:
+            # A resumed job may gain a reviewed price for a stage it has not bought, a
+            # renewed review of the same prices or a raised review cap; any changed
+            # price or authority refuses.
+            config = {**config, **resumed_policy(config, current)}
         config = {**config, "policy": current["policy"]}
         if config != stored:
             write_json(saved, config)

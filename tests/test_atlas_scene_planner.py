@@ -504,6 +504,22 @@ def test_cut_off_review_is_settled_and_retried_with_a_larger_allowance(tmp_path,
     assert calls["allowances"] == [4000, 8000] and len(calls["settled"]) == 2
 
 
+def test_a_raised_review_cap_serves_only_reviews_the_admitted_cap_refuses(tmp_path, monkeypatch):
+    from blueprint_pipeline.website_atlas_pipeline import ADMITTED_REVIEW_CAP
+    options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=0)
+    policy = options["configuration"]["policy"]
+    bought = planner.review_survey(**options)
+    assert bought["binding"]["maximum_cost_usd"] == 1 and len(calls["reserved"]) == 1
+    # The owner raises the cap mid-job: the review bought under the admitted cap is found again.
+    raised = {"policy": {**policy, "maximum_review_cost_usd": 4}, ADMITTED_REVIEW_CAP: 1}
+    assert planner.review_survey(**{**options, "configuration": raised}) == bought
+    assert len(calls["reserved"]) == 1
+    # A review the admitted cap refuses is priced and bought under the raised one.
+    refused = {"policy": policy, ADMITTED_REVIEW_CAP: .00001}
+    result = planner.review_survey(**{**options, "configuration": refused, "output_root": tmp_path / "raised"})
+    assert result["binding"]["maximum_cost_usd"] == 1 and len(calls["reserved"]) == 2
+
+
 def test_cut_off_review_stops_after_two_larger_retries(tmp_path, monkeypatch):
     options, calls = cut_off_review(tmp_path, monkeypatch, cut_offs=3)
     with pytest.raises(ValueError, match="output_truncated_retry_unavailable"):
