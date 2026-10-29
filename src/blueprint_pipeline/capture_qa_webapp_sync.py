@@ -11,7 +11,7 @@ from typing import Any, Mapping, Sequence
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import canonical_digest, canonical_json
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
 from .task_evaluation_launch_webapp_sync import (
     PIPELINE_SYNC_TOKEN_FILE_ENV,
@@ -100,6 +100,10 @@ def build_capture_qa_webapp_publication(
         "status": verified["status"],
         "state": verified["state"],
         "report": verified,
+        # Preserve Python-owned digest bytes across JavaScript number parsing.
+        "qa_report_canonical_json": canonical_json({
+            key: value for key, value in verified.items() if key != "qa_report_digest"
+        }),
         "proof_boundary": {
             "qa_is_task_success": False,
             "qa_is_physical_success": False,
