@@ -20,7 +20,7 @@ from .meta_sam31 import PROFILE as META_PROFILE, prepare_continuous_video, run_m
 from .sam31_source_track_provider_stage import run_sam31_source_track_stage
 from .scene_placement.sam31_source_track_provider import RUN_REQUEST_SCHEMA_VERSION
 from .scene_placement.semantic_gaussian_lifting import canonical_json_digest
-from .website_task_target_choice import TaskTargetAmbiguous, chosen_track
+from .website_task_target_choice import TaskTargetAmbiguous, best_supported_guess, chosen_track
 
 
 def decode_track_mask(observation: Mapping[str, Any]) -> np.ndarray:
@@ -93,14 +93,9 @@ def track_at_geometry_resolution(track: Mapping[str, Any], frames: list[Mapping[
     return {**track, "observations": observations}
 
 
-def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
-                      frames: list[Mapping[str, Any]],
-                      site_choice: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
-    """A text match alone must not remove every instance of the same object class.
-
-    When the anchors cannot pick one instance, the site's own choice can, but
-    only an answer bound to exactly these candidate instances.
-    """
+def anchor_scores(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
+                  frames: list[Mapping[str, Any]]) -> list[tuple[float, Mapping[str, Any]]]:
+    """Each instance's mean overlap with the video analysis's anchor boxes, highest first."""
     evidence = [row for row in target.get("spatial_evidence", [])
                 if isinstance(row, Mapping) and row.get("box_xywh_normalized") is not None]
     if not evidence:
@@ -138,13 +133,26 @@ def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, An
             overlaps.append(float(intersection / union) if union else 0.0)
         scores.append((sum(overlaps) / len(overlaps) if overlaps else 0.0, track))
     scores.sort(key=lambda item: item[0], reverse=True)
+    return scores
+
+
+def select_task_track(*, target: Mapping[str, Any], tracks: list[Mapping[str, Any]],
+                      frames: list[Mapping[str, Any]],
+                      site_choice: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    """A text match alone must not remove every instance of the same object class.
+
+    When the anchors cannot pick one instance, the site's own choice can, but
+    only an answer bound to exactly these candidate instances.
+    """
+    scores = anchor_scores(target=target, tracks=tracks, frames=frames)
     if not scores or scores[0][0] < 0.25 or (len(scores) > 1 and scores[0][0] - scores[1][0] < 0.1):
         candidates = [track for _, track in scores]
         chosen = chosen_track(target["target_id"], candidates, site_choice)
         if chosen is not None:
             return {**chosen, "selection_basis": "site_choice",
                     "site_choice_question_digest": site_choice["question_digest"]}
-        raise TaskTargetAmbiguous(target["target_id"], candidates=candidates, frames=frames)
+        raise TaskTargetAmbiguous(target["target_id"], candidates=candidates, frames=frames,
+                                  scores={str(track["track_id"]): score for score, track in scores})
     return scores[0][1]
 
 
@@ -425,7 +433,9 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                           view_plan: Mapping[str, Any] | None = None,
                           retained_static_masks: Mapping[str, Any] | None = None,
                           recovery_geometry: Mapping[str, Any] | None = None,
-                          target_choices: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                          target_choices: Mapping[str, Mapping[str, Any]] | None = None,
+                          target_guesses: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """``target_guesses``, when given, receives each best supported guess made for an ambiguous object to move."""
     targets = tracked_task_targets(plan)
     if not [target for target in targets if not is_person_removal(target)]:
         raise ValueError("website_task_targets_missing")
@@ -635,72 +645,97 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
         site_choice = ((target_choices or {}).get(target["target_id"])
                        if target.get("task_effect") == "manipulated" else None)
         try:
-            identity = select_task_track(target=target, tracks=candidates, frames=identity_frames,
-                                         site_choice=site_choice)
-        except ValueError as exc:
-            static_contact = target.get("task_effect") == "static_contact" and target.get("disposition") == "keep"
-            if (str(exc) != f"task_target_track_ambiguous:{target['target_id']}"
-                    or provider != "meta" or not video_artifact or not task_context
-                    or (view_plan is not None and not (recovering and static_contact))
-                    or (recovering and not static_contact)):
-                raise
-            from .website_task_grounding import ground_task_target
-            grounded = ground_task_target(target=target, tracks=candidates, registry=grounding_registry,
-                video=video_artifact, task_context=task_context, output_root=root / "grounding")
-            grounding = grounded["grounding"]
             try:
-                identity = select_task_track(target=grounded, tracks=candidates, frames=identity_frames,
+                identity = select_task_track(target=target, tracks=candidates, frames=identity_frames,
                                              site_choice=site_choice)
-            except ValueError as grounded_exc:
-                if str(grounded_exc) != f"task_target_track_ambiguous:{target['target_id']}":
+            except ValueError as exc:
+                static_contact = target.get("task_effect") == "static_contact" and target.get("disposition") == "keep"
+                if (str(exc) != f"task_target_track_ambiguous:{target['target_id']}"
+                        or provider != "meta" or not video_artifact or not task_context
+                        or (view_plan is not None and not (recovering and static_contact))
+                        or (recovering and not static_contact)):
                     raise
-                previous_prompt = next(p["text"] for p in prompts if p["output_label"] == prompt_labels[target["target_id"]])
-                ambiguous = f"task_target_track_ambiguous:{target['target_id']}"
-                # A surface the task only rests on still has the single-frame
-                # rescue; an object that must be removed from every frame does
-                # not, and fails here rather than shipping one frame of evidence.
-                single_frame_rescue = (target.get("task_effect") == "static_contact"
-                                       and target.get("disposition") == "keep")
-                if recovering and single_frame_rescue:
-                    # The paid clip is complete. A static support needs one
-                    # calibrated observed mask, never another full-video call.
-                    identity = segment_grounded_static_target(target=grounded, registry=registry,
-                        task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
-                    selected_prompt = grounded["segmentation_prompt"]
-                else:
-                    try:
-                        # Removed objects still need full-video coverage. Prove
-                        # a changed concept before buying their clip.
-                        grounded = resolve_video_segmentation_concept(target=grounded, tracks=candidates,
-                            registry=registry, video=video_artifact, task_context=task_context,
-                            grounding_root=root / "grounding", probe_root=root / "concept_probes",
-                            failed_concept=previous_prompt)
-                    except ValueError as concept_exc:
-                        if str(concept_exc) != ambiguous or not single_frame_rescue:
-                            raise
+                from .website_task_grounding import ground_task_target
+                grounded = ground_task_target(target=target, tracks=candidates, registry=grounding_registry,
+                    video=video_artifact, task_context=task_context, output_root=root / "grounding")
+                grounding = grounded["grounding"]
+                try:
+                    identity = select_task_track(target=grounded, tracks=candidates, frames=identity_frames,
+                                                 site_choice=site_choice)
+                except ValueError as grounded_exc:
+                    if str(grounded_exc) != f"task_target_track_ambiguous:{target['target_id']}":
+                        raise
+                    previous_prompt = next(p["text"] for p in prompts if p["output_label"] == prompt_labels[target["target_id"]])
+                    ambiguous = f"task_target_track_ambiguous:{target['target_id']}"
+                    # A surface the task only rests on still has the single-frame
+                    # rescue; an object that must be removed from every frame does
+                    # not, and fails here rather than shipping one frame of evidence.
+                    single_frame_rescue = (target.get("task_effect") == "static_contact"
+                                           and target.get("disposition") == "keep")
+                    if recovering and single_frame_rescue:
+                        # The paid clip is complete. A static support needs one
+                        # calibrated observed mask, never another full-video call.
                         identity = segment_grounded_static_target(target=grounded, registry=registry,
                             task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
                         selected_prompt = grounded["segmentation_prompt"]
                     else:
-                        grounding = grounded["grounding"]
-                        refined = run_meta_sam31(frame_registry=registry, frame_artifacts=[],
-                            prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"],
-                                      "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
-                            admission={}, task_context=task_context, video_artifact=video_artifact)
                         try:
-                            identity = select_task_track(target=grounded, tracks=refined["tracks"],
-                                                         frames=identity_frames, site_choice=site_choice)
-                        except ValueError as refined_exc:
-                            if str(refined_exc) != ambiguous or not single_frame_rescue:
+                            # Removed objects still need full-video coverage. Prove
+                            # a changed concept before buying their clip.
+                            grounded = resolve_video_segmentation_concept(target=grounded, tracks=candidates,
+                                registry=registry, video=video_artifact, task_context=task_context,
+                                grounding_root=root / "grounding", probe_root=root / "concept_probes",
+                                failed_concept=previous_prompt)
+                        except ValueError as concept_exc:
+                            if str(concept_exc) != ambiguous or not single_frame_rescue:
                                 raise
                             identity = segment_grounded_static_target(target=grounded, registry=registry,
                                 task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
-                        selected_prompt = grounded["segmentation_prompt"]
-                # The concept can change while target id stays fixed; replace the
-                # sampled candidate below from the exact selected full track.
-            tracks = [row for row in tracks if row["track_id"] != identity["track_id"]]
-            tracks.append(track_at_geometry_resolution({**identity, "observations": [row for row in identity["observations"]
-                if row["source_frame_id"] in geometry_ids]}, frames))
+                            selected_prompt = grounded["segmentation_prompt"]
+                        else:
+                            grounding = grounded["grounding"]
+                            refined = run_meta_sam31(frame_registry=registry, frame_artifacts=[],
+                                prompts=[{"prompt_id": target["target_id"], "output_label": target["target_id"],
+                                          "text": grounded["segmentation_prompt"]}], output_root=root / "grounded_masks",
+                                admission={}, task_context=task_context, video_artifact=video_artifact)
+                            try:
+                                identity = select_task_track(target=grounded, tracks=refined["tracks"],
+                                                             frames=identity_frames, site_choice=site_choice)
+                            except ValueError as refined_exc:
+                                if str(refined_exc) != ambiguous or not single_frame_rescue:
+                                    if isinstance(refined_exc, TaskTargetAmbiguous):
+                                        refined_exc.segmentation_prompt = grounded["segmentation_prompt"]
+                                    raise
+                                identity = segment_grounded_static_target(target=grounded, registry=registry,
+                                    task_context=task_context, output_root=root / "grounded_static_masks" / target["target_id"])
+                            selected_prompt = grounded["segmentation_prompt"]
+                    # The concept can change while target id stays fixed; replace the
+                    # sampled candidate below from the exact selected full track.
+                tracks = [row for row in tracks if row["track_id"] != identity["track_id"]]
+                tracks.append(track_at_geometry_resolution({**identity, "observations": [row for row in identity["observations"]
+                    if row["source_frame_id"] in geometry_ids]}, frames))
+        except TaskTargetAmbiguous as unresolved:
+            # Owner direction 2026-10-28: an ambiguous object to move is flagged
+            # and the job continues on the best supported guess; the site can
+            # correct it on its job page, which reruns the same job.
+            if target.get("task_effect") != "manipulated" or not unresolved.candidates:
+                raise
+            try:
+                weights = unresolved.scores or {str(track["track_id"]): score for score, track in anchor_scores(
+                    target=target, tracks=unresolved.candidates, frames=identity_frames)}
+            except ValueError:
+                weights = {}
+            identity = best_supported_guess(target_id=target["target_id"], candidates=unresolved.candidates,
+                                            anchor_scores=weights)
+            selected_prompt = unresolved.segmentation_prompt or selected_prompt
+            if target_guesses is not None:
+                target_guesses.append({"target": dict(target), "candidates": list(unresolved.candidates),
+                                       "frames": list(unresolved.frames or identity_frames),
+                                       "guessed_track_id": str(identity["track_id"])})
+            if provider == "meta":
+                tracks = [row for row in tracks if row["track_id"] != identity["track_id"]]
+                tracks.append(track_at_geometry_resolution({**identity, "observations": [
+                    row for row in identity["observations"] if row["source_frame_id"] in geometry_ids]}, frames))
         track = {**next(row for row in tracks if row["track_id"] == identity["track_id"]),
                  "label": target["target_id"]}
         if track["track_id"] in selected_track_ids:

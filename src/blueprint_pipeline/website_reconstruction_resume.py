@@ -52,14 +52,25 @@ def _explicit_wait(row) -> bool:
     return type(record) is dict and record.get("schema_version") == SCHEMA and row.get("error") == record.get("error")
 
 
-def safe_to_arm(attempt_count, previous_history, recovered_expired_lease) -> bool:
-    """Only explicit waits came before: an unknown provider outcome never becomes fresh retry capacity."""
-    return (not recovered_expired_lease and len(previous_history) == attempt_count - 1
-            and all(_explicit_wait(row) for row in previous_history))
+def safe_to_arm(attempt_count, previous_history, recovered_expired_lease, *, correction: bool = False) -> bool:
+    """Only explicit waits came before: an unknown provider outcome never becomes fresh retry capacity.
+
+    The site's correction of the object the robot moves starts a new run of the
+    same job (``correction``, marked in its history row): the rows before it are
+    settled by that run's own claim, and only the explicit waits since count.
+    """
+    if recovered_expired_lease or len(previous_history) != attempt_count - 1:
+        return False
+    if correction:
+        return True
+    from .website_task_target_choice import CORRECTION_MARK
+    marks = [index for index, row in enumerate(previous_history) if type(row) is dict and row.get(CORRECTION_MARK)]
+    since = previous_history[marks[-1]:] if marks else previous_history
+    return all(_explicit_wait(row) for row in since)
 
 
 def resume_record(listener, *, exc, payload, payload_digest, producer_delivery_key, capture_root: Path,
-                  attempt_count, previous_history, recovered_expired_lease) -> dict | None:
+                  attempt_count, previous_history, recovered_expired_lease, correction: bool = False) -> dict | None:
     """The record that lets the drain replay this exact handoff once the Atlas job is final, or None.
 
     Runs inside the listener's failure path, so it never raises: the original
@@ -68,7 +79,7 @@ def resume_record(listener, *, exc, payload, payload_digest, producer_delivery_k
     from .website_atlas_preview_store import JOB_FILE, read_job
     try:
         if producer_delivery_key is None or not atlas_wait(exc) or not safe_to_arm(
-                attempt_count, previous_history, recovered_expired_lease):
+                attempt_count, previous_history, recovered_expired_lease, correction=correction):
             return None
         # The orchestrator's word is checked against the job it waited on.
         if read_job(Path(capture_root) / "pipeline" / "atlas" / JOB_FILE).get("state") != "processing":

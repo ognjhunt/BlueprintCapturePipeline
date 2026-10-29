@@ -174,9 +174,6 @@ def _silent_since(ledger: Mapping[str, Any], current: datetime) -> datetime | No
         if (status == "failed_retryable" and ledger.get("last_error") == _ASSESSMENT_PENDING
                 and isinstance(ledger.get("assessment_resume"), Mapping)):
             return None
-        from .website_task_target_choice import armed as waits_on_site_choice
-        if waits_on_site_choice(ledger):
-            return None  # Waiting on the site's answer, which the job page asks for.
         stopped = _parse_utc(ledger.get("updated_at"))
         from .website_reconstruction_resume import armed
         if stopped is not None and armed(ledger):

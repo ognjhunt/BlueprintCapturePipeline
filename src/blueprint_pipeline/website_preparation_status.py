@@ -36,8 +36,8 @@ _UNAVAILABLE = "website_preparation_status_unavailable"
 STATUS_V1 = "website_preparation_status.v1"
 STATUS_V2 = "website_preparation_status.v2"
 STATUS_V3 = "website_preparation_status.v3"
-# v4 adds the one question the site can answer inside this job (which object
-# the robot moves), only while its preparation is parked on that answer.
+# v4 adds the one optional question the site can answer inside this job: which
+# object the robot moves, when preparation went on with its best guess.
 STATUS_V4 = "website_preparation_status.v4"
 # The WebApp opts in per read; an absent or unknown value is answered with v1.
 VERSION_HEADER = "x-blueprint-preparation-status-version"
@@ -157,11 +157,8 @@ def _current_context(*, request_id: str, scene_id: str, capture_id: str,
 def _v2_state(ledger: Mapping[str, Any]) -> tuple[str, str | None]:
     """Typed v2 meaning of a ledger that is not handed off."""
     from .website_preparation_terminal import capacity_only, current_terminal, current_overdue
-    from .website_task_target_choice import armed as waits_on_site_choice
     status = ledger.get("status")
     _require(status in _LEDGER_STATES)
-    if waits_on_site_choice(ledger):
-        return "awaiting_inputs", None
     terminal = current_terminal(ledger) if status != "terminal_authority_ended" else None
     if terminal is not None:
         return "failed_terminal", terminal["reason"]
@@ -259,17 +256,17 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         elif schema_version in {STATUS_V2, STATUS_V3, STATUS_V4}:
             state, terminal_reason = _v2_state(before)
         else:
-            from .website_task_target_choice import armed as waits_on_site_choice
             _require(before.get("status") in _LEDGER_STATES)
-            state = "awaiting_inputs" if waits_on_site_choice(before) else _LEDGER_STATES[before["status"]]
+            state = _LEDGER_STATES[before["status"]]
         outcome = question = None
         if schema_version in {STATUS_V3, STATUS_V4}:
             from .website_preparation_outcome import read_preparation_outcome
             outcome = read_preparation_outcome(capture_root=root,
                 task_context_digest=selected["task_context_digest"], state=state)
-        if schema_version == STATUS_V4 and state == "awaiting_inputs":
+        if schema_version == STATUS_V4 and state != "authority_ended":
+            # Optional: the job continues on its guess whether or not this is answered.
             from .website_task_target_choice import public_question
-            question = public_question(root, before)
+            question = public_question(root)
         after = _read_job_ledger(root)
         _require(before == after)
         _require(read_consent_state(root)["state"] != "revoked")

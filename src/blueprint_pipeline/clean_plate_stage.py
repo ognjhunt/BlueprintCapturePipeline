@@ -34,7 +34,7 @@ from .core.handoff_lease import (
 from .local_capture import resolve_local_capture_context
 from .website_scene_geometry import prepare_website_source_frames
 from .website_task_masks import run_website_task_masks
-from .website_task_target_choice import load_target_choices, retain_question
+from .website_task_target_choice import load_target_choices, retain_questions
 
 FLAG_ENV = "BLUEPRINT_CLEAN_PLATE_ENABLED"
 ADP_ITEM_ENV = "BLUEPRINT_CLEAN_PLATE_ADP_ITEM"
@@ -385,6 +385,7 @@ def run_clean_plate_stage(
         target.get("task_effect") in {"manipulated", "static_contact", "static_obstacle"}
         for target in task_plan.get("targets", [])
     ):
+        guesses: list[dict[str, Any]] = []
         try:
             handoff_lease_checkpoint("clean_plate_before_task_masks")
             task_masks = run_website_task_masks(plan=task_plan, source_geometry=source_geometry, defer_kept_static=True,
@@ -393,18 +394,25 @@ def run_clean_plate_stage(
                                                 meta_admission_grant=meta_sam_admission_grant,
                                                 task_context=task_context,
                                                 source_video=website_source_video,
-                                                target_choices=load_target_choices(ctx.pipeline_root))
+                                                target_choices=load_target_choices(ctx.pipeline_root),
+                                                target_guesses=guesses)
+            # Several instances of the object the robot moves: the run went on
+            # with its best supported guess, which the site can correct. The
+            # question is optional; failing to record it never holds the job.
+            try:
+                retain_questions(ctx.pipeline_root, guesses=guesses, source_geometry=source_geometry,
+                                 scene_id=ctx.scene_id, capture_id=ctx.capture_id)
+            except HandoffLeaseError:
+                raise
+            except Exception:  # noqa: BLE001 - the guess stands and stays recorded in the task masks
+                pass
             handoff_lease_checkpoint("clean_plate_after_task_masks")
         except HandoffLeaseError:
             raise
         except Exception as exc:
             status, mode = "blocked", "task_masks_blocked"
             reason = "website_task_masks_unavailable"
-            # Several instances of the object the robot moves: ask the site
-            # which one, instead of failing the same way on every retry.
-            asked = retain_question(ctx.pipeline_root, exc=exc, plan=task_plan, source_geometry=source_geometry,
-                                    scene_id=ctx.scene_id, capture_id=ctx.capture_id)
-            blockers.append(asked or (str(exc) if isinstance(exc, ValueError) else type(exc).__name__))
+            blockers.append(str(exc) if isinstance(exc, ValueError) else type(exc).__name__)
 
     if task_masks is not None and not blockers:
         # Scene preparation needs the plan, the source frames and the task

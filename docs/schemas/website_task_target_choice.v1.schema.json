@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://tryblueprint.io/contracts/website-task-target-choice.v1.schema.json",
-  "title": "The one in-job question 'which object should the robot move?' and the site's answer",
-  "description": "question is the website_preparation_status.v4 'question' field (null unless the state is awaiting_inputs and preparation is parked on this answer). answer is what the WebApp returns to the Pipeline's signed task-target-choice control read. Candidates are opaque ids and position labels derived from segmentation masks; no image or pixel data crosses this boundary. answer_digest is the RFC 8785 cross-runtime digest of the answer without answer_digest.",
+  "title": "The one optional in-job question 'we picked this object; is it the one the robot should move?' and the site's answer",
+  "description": "question is the website_preparation_status.v4 'question' field: preparation already continued with guessed_candidate_id, its best supported guess, and the site may confirm it, pick another candidate (which reruns the same job from retained work), or say none of these (the same-job walkthrough update). It is optional and never makes the job wait. answer is what the WebApp returns to the Pipeline's signed task-target-choice control read. Candidates are opaque ids and position labels derived from segmentation masks; no image or pixel data crosses this boundary. answer_digest is the RFC 8785 cross-runtime digest of the answer without answer_digest.",
   "oneOf": [
     {
       "$ref": "#/$defs/question"
@@ -33,6 +33,7 @@
         "target_id",
         "semantic_label",
         "candidate_set_digest",
+        "guessed_candidate_id",
         "candidates"
       ],
       "properties": {
@@ -52,6 +53,9 @@
         },
         "candidate_set_digest": {
           "$ref": "#/$defs/digest"
+        },
+        "guessed_candidate_id": {
+          "$ref": "#/$defs/candidateId"
         },
         "candidates": {
           "type": "array",
@@ -102,6 +106,7 @@
         "question_digest",
         "target_id",
         "candidate_set_digest",
+        "guessed_candidate_id",
         "choice",
         "answered_at",
         "answer_digest"
@@ -145,6 +150,9 @@
         "candidate_set_digest": {
           "$ref": "#/$defs/digest"
         },
+        "guessed_candidate_id": {
+          "$ref": "#/$defs/candidateId"
+        },
         "choice": {
           "oneOf": [
             {
@@ -156,7 +164,23 @@
               ],
               "properties": {
                 "kind": {
-                  "const": "candidate"
+                  "const": "confirm_guess"
+                },
+                "candidate_id": {
+                  "$ref": "#/$defs/candidateId"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "candidate_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "other_candidate"
                 },
                 "candidate_id": {
                   "$ref": "#/$defs/candidateId"
@@ -194,6 +218,7 @@
       "target_id": "target-1",
       "semantic_label": "Tote",
       "candidate_set_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "guessed_candidate_id": "c0123456789abcdef",
       "candidates": [
         {
           "candidate_id": "c0123456789abcdef",
@@ -219,12 +244,13 @@
       "question_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "target_id": "target-1",
       "candidate_set_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "guessed_candidate_id": "c0123456789abcdef",
       "choice": {
-        "kind": "candidate",
+        "kind": "other_candidate",
         "candidate_id": "cfedcba9876543210"
       },
       "answered_at": "2026-10-29T12:00:00.000Z",
-      "answer_digest": "sha256:de63a335874d4eec29bab7e76df9858715329574d69dae482051673977552322"
+      "answer_digest": "sha256:691b872ecc4c461cc039ffbe17bf6c4cecaa663a822e0a9dda3a2435ed1c53f3"
     },
     {
       "schema_version": "website_task_target_choice_answer.v1",
@@ -238,11 +264,32 @@
       "question_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
       "target_id": "target-1",
       "candidate_set_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "guessed_candidate_id": "c0123456789abcdef",
+      "choice": {
+        "kind": "confirm_guess",
+        "candidate_id": "c0123456789abcdef"
+      },
+      "answered_at": "2026-10-29T12:00:00.000Z",
+      "answer_digest": "sha256:1b1728e214c53ff9b7f092a289a276a644a521941e6d043e6cec99bd6d7348dd"
+    },
+    {
+      "schema_version": "website_task_target_choice_answer.v1",
+      "request_id": "req-1",
+      "scene_id": "site-req-1",
+      "capture_id": "walkthrough-req-1",
+      "completion_marker_generation": "1700000000000001",
+      "producer_delivery_key": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "source_payload_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "task_context_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "question_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "target_id": "target-1",
+      "candidate_set_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "guessed_candidate_id": "c0123456789abcdef",
       "choice": {
         "kind": "none_of_these"
       },
       "answered_at": "2026-10-29T12:00:00.000Z",
-      "answer_digest": "sha256:42222bd552b6ddb138975996be93acc54578924c38d9879458cd5207e84795d6"
+      "answer_digest": "sha256:f5c73fddabd43ebf7260213aeb9a7706bb44624aec96220a2b1206e3fa11e9ff"
     }
   ]
 }

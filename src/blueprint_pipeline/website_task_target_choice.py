@@ -1,19 +1,22 @@
-"""Ask the site which object the robot moves, then resume the same job.
+"""Guess which object the robot moves, keep going, and let the site correct it.
 
-When the segmenter found instances of a manipulated task object but no spatial
-anchor picks one, preparation used to fail the same way on every redelivery
-until Pub/Sub gave up, and nobody asked the site. Instead the attempt retains
-one typed question listing the instances it already found (opaque ids and
-position labels derived from their masks; never pixels, because these masks
-come from unscreened source frames) and parks the job in the existing ledger
-with its exact handoff bytes. Nothing is spent while it waits.
+Owner direction 2026-10-28: only privacy, rights and money stop a job. When the
+segmenter found several instances of the object the robot moves and no spatial
+anchor picks one, preparation makes the best supported guess (rule in
+``best_supported_guess``), records it, and continues the same job. The guess is
+published as one optional question on the job page: "We picked <label>. Is that
+the object the robot should move?", with the other instances it already found.
+Candidates are opaque ids and position labels derived from their masks; no
+pixels leave the Pipeline, because these masks come from unscreened frames.
 
-The site answers on its job page. The existing drain tick reads that answer
-through the existing signed WebApp control transport, refuses one bound to any
-other question or candidate set, and replays the same handoff: retained
-provider results are reused and the chosen instance is selected. "None of
-these" ends the wait; the site sends an updated walkthrough of the same job.
-No new queue, service, grant or approval step.
+The existing drain tick reads the site's answer through the existing signed
+WebApp control transport and refuses one bound to any other question, candidate
+set or source. Confirming the guess records it; nothing reruns. Another
+candidate reruns the same job from its retained stage outputs with that target,
+inside the existing grant and budget, and the drain keeps owning that rerun
+until it finishes or reaches a wait another drain owns. "None of these" leads to
+the existing same-job walkthrough update. Choices are kept per target, so two
+ambiguous objects never overwrite each other. No new queue, service or gate.
 """
 from __future__ import annotations
 
@@ -28,50 +31,42 @@ from typing import Any
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
-QUESTION_FILE = "website_task_target_choice.json"
-ANSWER_FILE = "website_task_target_choice_answer.json"
-POLL_FILE = "website_task_target_choice_poll.json"
+QUESTION_DIR = "website_task_target_choices"
+INDEX_FILE = "current.json"
+REPLAY_STATE_FILE = "replay.json"
 QUESTION_SCHEMA = "website_task_target_choice_question.v1"
+INDEX_SCHEMA = "website_task_target_choice_index.v1"
 ANSWER_SCHEMA = "website_task_target_choice_answer.v1"
-RESUME_SCHEMA = "website_task_target_choice_resume.v1"
-#: The job ledger field that holds the parked handoff while the site chooses.
-FIELD = "target_choice_resume"
-BLOCKER = "website_task_target_choice_required"
+REPLAY_SCHEMA = "website_task_target_choice_replay.v1"
+#: Job ledger field holding the exact handoff bytes a correction replays.
+REPLAY_FIELD = "target_choice_replay"
+#: Attempt-history mark of a run the site's correction started (its corrections digest).
+CORRECTION_MARK = "target_choice_correction"
 OPERATION = "task-target-choice"
 MAX_CANDIDATES = 8
-_TARGET_ID = r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
-_CANDIDATE_ID = re.compile(r"c[0-9a-f]{16}\Z")
+MAX_CORRECTION_REPLAYS = 6
+CORRECTABLE_STATUSES = frozenset({"completed", "failed_retryable", "retryable_blocked"})
+_TARGET_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-# The whole failure is the choice, possibly under stage prefixes; never one of several blockers.
-_ONLY_CHOICE = re.compile(rf"(?:[a-z_]+: )*{BLOCKER}:({_TARGET_ID})")
-_RECORD_FIELDS = frozenset({"schema_version", "payload_base64", "source_payload_sha256",
-                            "producer_delivery_key", "error", "question_digest"})
+_REPLAY_FIELDS = frozenset({"schema_version", "payload_base64", "source_payload_sha256", "producer_delivery_key"})
 _SELECTORS = ("request_id", "scene_id", "capture_id", "completion_marker_generation",
               "producer_delivery_key", "source_payload_sha256", "task_context_digest")
-_CHAIN_LIMIT = 16
 
 
 class TaskTargetAmbiguous(ValueError):
     """The unchanged ambiguity refusal, carrying the instances the segmenter found."""
 
     def __init__(self, target_id: str, *, candidates: Sequence[Mapping[str, Any]] = (),
-                 frames: Sequence[Mapping[str, Any]] | None = None) -> None:
+                 frames: Sequence[Mapping[str, Any]] | None = None,
+                 scores: Mapping[str, float] | None = None) -> None:
         super().__init__(f"task_target_track_ambiguous:{target_id}")
         self.target_id = target_id
         self.candidates = [track for track in candidates
                            if isinstance(track, Mapping) and track.get("track_id") is not None]
         self.frames = list(frames or [])
-
-
-def _chain(exc: BaseException):
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    for _ in range(_CHAIN_LIMIT):
-        if current is None or id(current) in seen:
-            return
-        seen.add(id(current))
-        yield current
-        current = current.__cause__ if current.__cause__ is not None else current.__context__
+        self.scores = dict(scores or {})
+        # The concept that produced these candidates, when it is not the target's first prompt.
+        self.segmentation_prompt: str | None = None
 
 
 def _candidate_rows(tracks: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
@@ -106,6 +101,38 @@ def _run_length(observation: Mapping[str, Any]) -> int:
     return sum(int(run.get("length") or 0) for run in observation.get("runs") or [])
 
 
+def _area(observation: Mapping[str, Any]) -> float:
+    try:
+        pixels = int(observation.get("width") or 0) * int(observation.get("height") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return _run_length(observation) / pixels if pixels > 0 else 0.0
+
+
+def best_supported_guess(*, target_id: str, candidates: Sequence[Mapping[str, Any]],
+                         anchor_scores: Mapping[str, float]) -> dict[str, Any]:
+    """The instance preparation continues with when no anchor decides.
+
+    Only evidence the candidates already carry is used, in this order:
+    1. the highest mean overlap with the video analysis's own anchor boxes
+       (the selector's evidence, here merely not decisive);
+    2. the most source frames in which the instance is visible (a non-empty mask);
+    3. the largest mean visible mask area, as a fraction of the frame;
+    4. the smallest candidate id (a digest of the track and its masks), so the
+       same candidates always give the same guess on every replay.
+    """
+    if not candidates:
+        raise TaskTargetAmbiguous(target_id)
+    ids = {row["track_id"]: row["candidate_id"] for row in _candidate_rows(candidates)}
+
+    def rank(track: Mapping[str, Any]) -> tuple[float, int, float, str]:
+        visible = [row for row in track.get("observations") or [] if _run_length(row) > 0]
+        area = sum(_area(row) for row in visible) / len(visible) if visible else 0.0
+        return (-round(float(anchor_scores.get(str(track["track_id"]), 0.0)), 9), -len(visible),
+                -round(area, 9), ids[str(track["track_id"])])
+    return {**min(candidates, key=rank), "selection_basis": "best_supported_guess"}
+
+
 def _centroid(observation: Mapping[str, Any]) -> tuple[float, float, float]:
     import numpy as np
 
@@ -127,8 +154,8 @@ def _semantic_label(target: Mapping[str, Any]) -> str:
     return (text[:1].upper() + text[1:]) if text else "Object"
 
 
-def _candidates(semantic: str, tracks: Sequence[Mapping[str, Any]],
-                frames: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _candidates(semantic: str, tracks: Sequence[Mapping[str, Any]], frames: Sequence[Mapping[str, Any]],
+                keep: str) -> list[dict[str, Any]]:
     """Position labels from the masks the segmenter returned; no pixels leave the Pipeline."""
     times = {}
     for frame in frames:
@@ -161,8 +188,10 @@ def _candidates(semantic: str, tracks: Sequence[Mapping[str, Any]],
         x, y, area = _centroid(observation)
         placed.append({"track_id": track_id, "x": x, "y": y, "area": area, "frame": frame,
                        "shared": frame == reference})
-    # The most visible instances when there are more than can be asked about at once.
-    shown = sorted(placed, key=lambda row: (-row["area"], row["track_id"]))[:MAX_CANDIDATES]
+    # The most visible instances when there are more than can be asked about at once; the guess is always shown.
+    shown = sorted(placed, key=lambda row: (row["track_id"] != keep, -row["area"], row["track_id"]))[:MAX_CANDIDATES]
+    if not any(row["track_id"] == keep for row in shown):
+        return []
     shown.sort(key=lambda row: (not row["shared"], row["x"], row["y"], row["track_id"]))
     result = []
     for index, row in enumerate(shown, start=1):
@@ -175,44 +204,32 @@ def _candidates(semantic: str, tracks: Sequence[Mapping[str, Any]],
 
 
 def build_question(*, target: Mapping[str, Any], candidates: Sequence[Mapping[str, Any]],
-                   frames: Sequence[Mapping[str, Any]], scene_id: str, capture_id: str,
+                   frames: Sequence[Mapping[str, Any]], guessed_track_id: str, scene_id: str, capture_id: str,
                    source_geometry: Mapping[str, Any]) -> dict[str, Any] | None:
     target_id = str(target["target_id"])
-    if (re.fullmatch(_TARGET_ID, target_id) is None or target.get("task_effect") != "manipulated"
+    if (_TARGET_ID.fullmatch(target_id) is None or target.get("task_effect") != "manipulated"
             or target.get("target_class") == "person" or not candidates):
         return None
-    semantic = _semantic_label(target)
-    shown = _candidates(semantic, candidates, frames)
-    if not shown:
+    shown = _candidates(_semantic_label(target), candidates, frames, str(guessed_track_id))
+    guessed = next((row["candidate_id"] for row in _candidate_rows(candidates)
+                    if row["track_id"] == str(guessed_track_id)), None)
+    if not shown or guessed is None:
         return None
     question = {"schema_version": QUESTION_SCHEMA, "kind": "task_target_choice",
                 "scene_id": scene_id, "capture_id": capture_id, "target_id": target_id,
-                "semantic_label": semantic,
+                "semantic_label": _semantic_label(target),
                 "source_video_digest": (source_geometry.get("binding") or {}).get("source_video_digest"),
                 "source_geometry_digest": source_geometry.get("digest"),
-                "candidate_set_digest": candidate_set_digest(target_id, candidates), "candidates": shown}
+                "candidate_set_digest": candidate_set_digest(target_id, candidates),
+                "guessed_candidate_id": guessed, "candidates": shown}
     question["question_digest"] = canonical_digest(question, digest_field="question_digest")
     return question
 
 
-def retain_question(pipeline_root: Path, *, exc: BaseException, plan: Mapping[str, Any],
-                    source_geometry: Mapping[str, Any], scene_id: str, capture_id: str) -> str | None:
-    """The typed blocker for an ambiguous manipulated target whose question is now retained, or None."""
-    from .core.handoff_lease import guarded_handoff_write_json
-    ambiguous = next((item for item in _chain(exc) if isinstance(item, TaskTargetAmbiguous)), None)
-    if ambiguous is None:
-        return None
-    target = next((row for row in plan.get("targets") or []
-                   if isinstance(row, Mapping) and row.get("target_id") == ambiguous.target_id), None)
-    try:
-        question = None if target is None else build_question(target=target, candidates=ambiguous.candidates,
-            frames=ambiguous.frames, scene_id=scene_id, capture_id=capture_id, source_geometry=source_geometry)
-    except Exception:  # noqa: BLE001 - an unreadable candidate keeps the original refusal
-        question = None
-    if question is None:
-        return None
-    guarded_handoff_write_json(Path(pipeline_root) / QUESTION_FILE, question)
-    return f"{BLOCKER}:{question['target_id']}"
+def _path(pipeline_root: Path, target_id: str, kind: str) -> Path:
+    if _TARGET_ID.fullmatch(str(target_id)) is None:
+        raise ValueError("website_task_target_choice_target_invalid")
+    return Path(pipeline_root) / QUESTION_DIR / f"{target_id}.{kind}.json"
 
 
 def _read(path: Path) -> dict[str, Any] | None:
@@ -222,36 +239,89 @@ def _read(path: Path) -> dict[str, Any] | None:
     return value if type(value) is dict else None
 
 
-def read_question(pipeline_root: Path) -> dict[str, Any] | None:
+def retain_questions(pipeline_root: Path, *, guesses: Sequence[Mapping[str, Any]],
+                     source_geometry: Mapping[str, Any], scene_id: str, capture_id: str) -> list[str]:
+    """Record the questions this task-mask run's guesses raise; the index names only these.
+
+    Called after a completed task-mask run, so a target settled since (by the
+    site's choice, or by new evidence) no longer has a current question.
+    """
+    from .core.handoff_lease import guarded_handoff_write_json
+    questions: dict[str, dict[str, Any]] = {}
+    for guess in guesses:
+        try:
+            question = build_question(target=guess["target"], candidates=guess["candidates"],
+                frames=guess["frames"], guessed_track_id=guess["guessed_track_id"], scene_id=scene_id,
+                capture_id=capture_id, source_geometry=source_geometry)
+        except Exception:  # noqa: BLE001 - an unreadable candidate set is a guess without a question
+            question = None
+        if question is not None:
+            questions[question["target_id"]] = question
+    for target_id, question in questions.items():
+        guarded_handoff_write_json(_path(pipeline_root, target_id, "question"), question)
+    index = {"schema_version": INDEX_SCHEMA,
+             "questions": {target_id: questions[target_id]["question_digest"] for target_id in sorted(questions)}}
+    guarded_handoff_write_json(Path(pipeline_root) / QUESTION_DIR / INDEX_FILE, index)
+    return list(index["questions"].values())
+
+
+def read_question(pipeline_root: Path, target_id: str) -> dict[str, Any] | None:
     try:
-        question = _read(Path(pipeline_root) / QUESTION_FILE)
+        question = _read(_path(pipeline_root, target_id, "question"))
     except (OSError, ValueError):
         return None
+    shown = {row.get("candidate_id") for row in (question or {}).get("candidates") or [] if isinstance(row, Mapping)}
     if (question is None or question.get("schema_version") != QUESTION_SCHEMA
             or question.get("question_digest") != canonical_digest(question, digest_field="question_digest")
+            or question.get("target_id") != target_id
             or question.get("capture_id") != Path(pipeline_root).parent.name
-            or type(question.get("candidates")) is not list or not question["candidates"]):
+            or question.get("guessed_candidate_id") not in shown):
         return None
     return question
 
 
+def current_questions(pipeline_root: Path) -> list[dict[str, Any]]:
+    """Questions raised by the latest completed task-mask run, in target order."""
+    try:
+        index = _read(Path(pipeline_root) / QUESTION_DIR / INDEX_FILE) or {}
+    except (OSError, ValueError):
+        return []
+    rows = index.get("questions") if index.get("schema_version") == INDEX_SCHEMA else None
+    result = []
+    for target_id, digest in sorted(rows.items()) if isinstance(rows, dict) else []:
+        question = read_question(pipeline_root, target_id) if type(target_id) is str else None
+        if question is not None and question["question_digest"] == digest:
+            result.append(question)
+    return result
+
+
+def _all_questions(pipeline_root: Path) -> list[dict[str, Any]]:
+    folder = Path(pipeline_root) / QUESTION_DIR
+    names = sorted(path.name.removesuffix(".question.json") for path in folder.glob("*.question.json")) \
+        if folder.is_dir() and not folder.is_symlink() else []
+    return [question for name in names if (question := read_question(pipeline_root, name)) is not None]
+
+
 def validate_answer(value: Any, *, question: Mapping[str, Any],
                     selectors: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Refuse an answer bound to another question, candidate set, source or digest."""
+    """Refuse an answer bound to another question, candidate set, guess, source or digest."""
     fields = {"schema_version", *_SELECTORS, "question_digest", "target_id", "candidate_set_digest",
-              "choice", "answered_at", "answer_digest"}
+              "guessed_candidate_id", "choice", "answered_at", "answer_digest"}
     choice = value.get("choice") if isinstance(value, Mapping) else None
     shown = {row.get("candidate_id") for row in question["candidates"]}
+    guessed = question["guessed_candidate_id"]
     if (type(value) is not dict or set(value) != fields or value["schema_version"] != ANSWER_SCHEMA
             or value["question_digest"] != question["question_digest"]
             or value["target_id"] != question["target_id"]
             or value["candidate_set_digest"] != question["candidate_set_digest"]
+            or value["guessed_candidate_id"] != guessed
             or value["capture_id"] != question["capture_id"] or value["scene_id"] != question["scene_id"]
             or (selectors is not None and any(value[key] != selectors[key] for key in _SELECTORS))
             or type(choice) is not dict
             or not (choice == {"kind": "none_of_these"}
-                    or (set(choice) == {"kind", "candidate_id"} and choice["kind"] == "candidate"
-                        and choice["candidate_id"] in shown))
+                    or choice == {"kind": "confirm_guess", "candidate_id": guessed}
+                    or (set(choice) == {"kind", "candidate_id"} and choice["kind"] == "other_candidate"
+                        and choice["candidate_id"] in shown and choice["candidate_id"] != guessed))
             or type(value["answered_at"]) is not str or len(value["answered_at"]) > 40
             or type(value["answer_digest"]) is not str or _DIGEST.fullmatch(value["answer_digest"]) is None
             or value["answer_digest"] != cross_runtime_canonical_digest(value, digest_field="answer_digest")):
@@ -262,109 +332,116 @@ def validate_answer(value: Any, *, question: Mapping[str, Any],
 def read_answer(pipeline_root: Path, question: Mapping[str, Any]) -> dict[str, Any] | None:
     """The retained answer to exactly this question; an answer to any other question is not one."""
     try:
-        value = _read(Path(pipeline_root) / ANSWER_FILE)
+        value = _read(_path(pipeline_root, question["target_id"], "answer"))
         return None if value is None else validate_answer(value, question=question)
     except (OSError, ValueError):
         return None
 
 
 def load_target_choices(pipeline_root: Path) -> dict[str, dict[str, Any]]:
-    """{target_id: choice} for the task masks: only a candidate the site chose for the current question."""
-    question = read_question(pipeline_root)
-    answer = None if question is None else read_answer(pipeline_root, question)
-    if answer is None or answer["choice"]["kind"] != "candidate":
-        return {}
-    return {question["target_id"]: {"target_id": question["target_id"],
-            "candidate_set_digest": question["candidate_set_digest"],
-            "candidate_id": answer["choice"]["candidate_id"], "question_digest": question["question_digest"]}}
+    """{target_id: choice} for the task masks: every target whose site answer names one of its instances."""
+    choices = {}
+    for question in _all_questions(pipeline_root):
+        answer = read_answer(pipeline_root, question)
+        if answer is not None and answer["choice"]["kind"] in {"confirm_guess", "other_candidate"}:
+            choices[question["target_id"]] = {"target_id": question["target_id"],
+                "candidate_set_digest": question["candidate_set_digest"],
+                "candidate_id": answer["choice"]["candidate_id"], "question_digest": question["question_digest"]}
+    return choices
 
 
-def required_choice(exc: BaseException) -> str | None:
-    """The target this run stopped on for the site's choice alone, anywhere in its chain."""
-    for item in _chain(exc):
-        try:
-            match = _ONLY_CHOICE.fullmatch(str(item))
-        except Exception:  # noqa: BLE001 - an unprintable error is no typed question
-            return None
-        if match:
-            return match.group(1)
+def corrections(pipeline_root: Path) -> list[dict[str, str]]:
+    """The site's answers that differ from the guess: the only ones that rerun the job."""
+    return [{"target_id": choice["target_id"], "question_digest": choice["question_digest"],
+             "candidate_id": choice["candidate_id"]}
+            for target_id, choice in sorted(load_target_choices(pipeline_root).items())
+            if choice["candidate_id"] != (read_question(pipeline_root, target_id) or {}).get("guessed_candidate_id")]
+
+
+def correction_binding_digest(pipeline_root: Path) -> str | None:
+    """Input binding of the website preparation stage, so a correction reruns it and a confirmation does not."""
+    fixes = corrections(pipeline_root)
+    return canonical_digest({"corrections": fixes}) if fixes else None
+
+
+def public_question(capture_root: Path) -> dict[str, Any] | None:
+    """The one question a site sees: the first current guess it has not settled.
+
+    A "none of these" answer keeps its question on the page; the site's next
+    step there is the same-job walkthrough update.
+    """
+    pipeline = Path(capture_root) / "pipeline"
+    for question in current_questions(pipeline):
+        answer = read_answer(pipeline, question)
+        if answer is None or answer["choice"]["kind"] == "none_of_these":
+            return {"kind": "task_target_choice", **{key: question[key] for key in (
+                "question_digest", "target_id", "semantic_label", "candidate_set_digest", "guessed_candidate_id")},
+                "candidates": [{key: row[key] for key in ("candidate_id", "label", "reference_time_ms")}
+                               for row in question["candidates"]]}
     return None
 
 
-def resume_record(listener, *, exc, payload, payload_digest, producer_delivery_key,
-                  capture_root: Path) -> dict | None:
-    """The record that parks this exact handoff until the site answers, or None.
-
-    Runs inside the listener's failure path, so it never raises: the original
-    failure is recorded either way.
-    """
+def replay_record(listener, *, payload, payload_digest, producer_delivery_key, capture_root: Path) -> dict | None:
+    """The exact handoff bytes a correction replays, kept while a guess or a correction exists. Never raises."""
     from .website_assessment_resume import _payload_bytes
     try:
-        target_id = required_choice(exc)
-        question = read_question(Path(capture_root) / "pipeline")
-        if (producer_delivery_key is None or target_id is None or question is None
-                or question["target_id"] != target_id):
+        pipeline = Path(capture_root) / "pipeline"
+        if producer_delivery_key is None or not (current_questions(pipeline) or corrections(pipeline)):
             return None
         raw = _payload_bytes(listener, payload, payload_digest)
-    except Exception:  # noqa: BLE001 - an unparked failure falls back to Pub/Sub's own retries
+    except Exception:  # noqa: BLE001 - without the bytes the guess stands and is still shown
         return None
-    return {"schema_version": RESUME_SCHEMA, "payload_base64": base64.b64encode(raw).decode(),
-            "source_payload_sha256": payload_digest, "producer_delivery_key": producer_delivery_key,
-            "error": str(exc), "question_digest": question["question_digest"]}
+    return {"schema_version": REPLAY_SCHEMA, "payload_base64": base64.b64encode(raw).decode(),
+            "source_payload_sha256": payload_digest, "producer_delivery_key": producer_delivery_key}
 
 
-def armed(ledger: Mapping[str, Any]) -> bool:
-    """Whether this ledger's current attempt waits only on the site's choice."""
-    record = ledger.get(FIELD)
-    return (ledger.get("status") == "failed_retryable" and type(record) is dict
-            and record.get("schema_version") == RESUME_SCHEMA and set(record) == _RECORD_FIELDS
-            and record.get("error") == ledger.get("last_error"))
+def _reconstruction_armed(ledger: Mapping[str, Any]) -> bool:
+    from .website_reconstruction_resume import armed
+    return armed(ledger) or isinstance(ledger.get("assessment_resume"), Mapping)
+
+
+def correction_pending(ledger: Mapping[str, Any], pipeline_root: Path) -> str | None:
+    """The corrections digest the drain still owes a run for, or None.
+
+    Owed while the latest task-mask run still guessed a target the site
+    corrected, or while the correction's own run stopped short and nothing else
+    (Pub/Sub, or the reconstruction drain's armed wait) owns its retry.
+    """
+    fixes = corrections(pipeline_root)
+    if not fixes:
+        return None
+    digest = canonical_digest({"corrections": fixes})
+    current = {question["question_digest"] for question in current_questions(pipeline_root)}
+    if any(fix["question_digest"] in current for fix in fixes):
+        return digest
+    history = ledger.get("attempt_history")
+    last = history[-1] if type(history) is list and history else None
+    if (ledger.get("status") in {"failed_retryable", "retryable_blocked"} and isinstance(last, Mapping)
+            and last.get(CORRECTION_MARK) == digest and not _reconstruction_armed(ledger)):
+        return digest
+    return None
 
 
 def claim_matches(ledger, expected, *, payload_sha256, producer_delivery_key) -> bool:
-    """Inside the claim lock: the ledger still waits on exactly the record the drain replays."""
-    record = expected.get("record")
+    """Inside the claim lock: the ledger is still the one the drain read, and correctable."""
     return (type(expected.get("revision")) is int and ledger.get("revision") == expected["revision"]
-            and armed(ledger) and type(record) is dict and ledger.get(FIELD) == record
-            and record.get("source_payload_sha256") == payload_sha256
-            and record.get("producer_delivery_key") == producer_delivery_key)
+            and type(expected.get("corrections_digest")) is str
+            and ledger.get("status") in CORRECTABLE_STATUSES and not _reconstruction_armed(ledger)
+            and ledger.get("source_payload_sha256") == payload_sha256
+            and ledger.get("producer_delivery_key") == producer_delivery_key)
 
 
-def public_question(capture_root: Path, ledger: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The question this ledger is parked on, for as long as it is parked.
-
-    It stays after the site answered: the WebApp shows its own stored answer
-    for it (resuming, or the same-job walkthrough update for "none of these").
-    """
-    if not armed(ledger):
-        return None
-    question = read_question(Path(capture_root) / "pipeline")
-    if (question is None or question["question_digest"] != ledger[FIELD]["question_digest"]
-            or question.get("scene_id") != ledger.get("scene_id")):
-        return None
-    return {"kind": "task_target_choice", **{key: question[key] for key in (
-        "question_digest", "target_id", "semantic_label", "candidate_set_digest")},
-        "candidates": [{key: row[key] for key in ("candidate_id", "label", "reference_time_ms")}
-                       for row in question["candidates"]]}
-
-
-def _poll_due(pipeline: Path, question_digest: str, now: float) -> bool:
+def _poll_due(pipeline: Path, target_id: str, question_digest: str, now: float) -> bool:
     try:
-        value = _read(pipeline / POLL_FILE) or {}
+        value = _read(_path(pipeline, target_id, "poll")) or {}
     except (OSError, ValueError):
         return True
     return value.get("question_digest") != question_digest or float(value.get("next_poll_at_epoch") or 0) <= now
 
 
-def _defer(pipeline: Path, question_digest: str, now: float) -> None:
-    try:
-        value = _read(pipeline / POLL_FILE) or {}
-    except (OSError, ValueError):
-        value = {}
-    failures = int(value.get("failures") or 0) + 1 if value.get("question_digest") == question_digest else 1
-    write_json(pipeline / POLL_FILE, {"schema_version": "website_task_target_choice_poll.v1",
-               "question_digest": question_digest, "failures": failures,
-               "next_poll_at_epoch": now + min(1800, 60 * 2 ** min(failures - 1, 5))})
+def _backoff(previous: Mapping[str, Any], key: str, value: str, now: float) -> dict[str, Any]:
+    failures = int(previous.get("failures") or 0) + 1 if previous.get(key) == value else 1
+    return {key: value, "failures": failures, "next_poll_at_epoch": now + min(1800, 60 * 2 ** min(failures - 1, 5))}
 
 
 def fetch_answer(root: Path, ledger: Mapping[str, Any], question: Mapping[str, Any], *,
@@ -373,6 +450,7 @@ def fetch_answer(root: Path, ledger: Mapping[str, Any], question: Mapping[str, A
     from .website_preparation_status import DELIVERY_FILE, validate_selectors
     from .website_task_context import website_webapp_request
     pipeline = root / "pipeline"
+    poll = _path(pipeline, question["target_id"], "poll")
     delivery = _read(root / DELIVERY_FILE) or {}
     selectors = validate_selectors(delivery.get("selectors"))
     if (selectors["capture_id"] != root.name or selectors["scene_id"] != question["scene_id"]
@@ -384,52 +462,82 @@ def fetch_answer(root: Path, ledger: Mapping[str, Any], question: Mapping[str, A
             payload={**selectors, "question_digest": question["question_digest"]}),
             question=question, selectors=selectors)
     except Exception:  # noqa: BLE001 - unanswered, unreachable or stale: ask again later
-        _defer(pipeline, question["question_digest"], now)
+        try:
+            previous = _read(poll) or {}
+        except (OSError, ValueError):
+            previous = {}
+        write_json(poll, {"schema_version": "website_task_target_choice_poll.v1",
+                          **_backoff(previous, "question_digest", question["question_digest"], now)})
         return None
     # Only reached while no answer to this question is retained; one to an older question is replaced.
-    write_json(pipeline / ANSWER_FILE, answer)
+    write_json(_path(pipeline, question["target_id"], "answer"), answer)
     return answer
 
 
-def reconcile_waiting_target_choices(listener, *, storage_root: Path, process_args, limit=1,
-                                     poll_limit=4, now: float | None = None) -> dict[str, int]:
-    """Resume each parked capture the site has answered; at most ``limit`` replays per tick."""
+def _replay_due(pipeline: Path, digest: str, now: float) -> bool:
+    try:
+        value = _read(pipeline / QUESTION_DIR / REPLAY_STATE_FILE) or {}
+    except (OSError, ValueError):
+        value = {}
+    if value.get("corrections_digest") != digest:
+        return True
+    return int(value.get("failures") or 0) < MAX_CORRECTION_REPLAYS and float(value.get("next_poll_at_epoch") or 0) <= now
+
+
+def _note_replay(pipeline: Path, digest: str, now: float) -> None:
+    path = pipeline / QUESTION_DIR / REPLAY_STATE_FILE
+    try:
+        previous = _read(path) or {}
+    except (OSError, ValueError):
+        previous = {}
+    # Durable before the run, so a crash mid-run cannot turn into an unbounded loop.
+    write_json(path, {"schema_version": "website_task_target_choice_replay_state.v1",
+                      **_backoff(previous, "corrections_digest", digest, now)})
+
+
+def reconcile_target_choices(listener, *, storage_root: Path, process_args, limit=1, poll_limit=4,
+                             now: float | None = None) -> dict[str, int]:
+    """Read the site's answers and rerun the same job for a correction; at most ``limit`` reruns per tick."""
     from .task_evaluation_scene_retirement_generations import capture_birth_source_projection
     from .website_assessment_resume import MAX_BYTES, _payload_bytes, _require
-    from .website_preparation_status import _root, read_preparation_status
+    from .website_preparation_status import DELIVERY_FILE, _root, read_preparation_status, validate_selectors
     current = time.time() if now is None else now
-    counts = {"resumed": 0, "waiting": 0, "declined": 0}
+    counts = {"replayed": 0, "confirmed": 0, "corrected": 0, "declined": 0, "waiting": 0}
     polled = 0
     roots = sorted(path.parent for path in Path(storage_root).glob(
         f"*/scenes/site-*/captures/*/{listener.JOB_LEDGER_FILENAME}")
         if path.parent.name.startswith(("walkthrough-", "supplement-")))
     for root in roots:
-        if counts["resumed"] >= max(0, min(limit, 50)):
+        if counts["replayed"] >= max(0, min(limit, 50)):
             break
         try:
+            pipeline = root / "pipeline"
+            if not (pipeline / QUESTION_DIR).is_dir():
+                continue
             _root(root)
             _require(not (root / listener.JOB_LEDGER_FILENAME).is_symlink())
             before = listener._read_job_ledger(root)
-            if not armed(before):
+            if before.get("status") == listener.TERMINAL_AUTHORITY_STATUS:
                 continue
-            record, pipeline = before[FIELD], root / "pipeline"
-            question = read_question(pipeline)
-            _require(question is not None and question["question_digest"] == record["question_digest"])
-            answer = read_answer(pipeline, question)
-            if answer is None:
-                if polled >= max(0, poll_limit) or not _poll_due(pipeline, question["question_digest"], current):
+            for question in current_questions(pipeline):
+                if read_answer(pipeline, question) is not None:
+                    continue
+                if polled >= max(0, poll_limit) or not _poll_due(pipeline, question["target_id"],
+                                                                 question["question_digest"], current):
                     counts["waiting"] += 1
                     continue
                 polled += 1
                 answer = fetch_answer(root, before, question, now=current)
-                if answer is None:
-                    counts["waiting"] += 1
-                    continue
-            if answer["choice"]["kind"] != "candidate":
-                # The site will send an updated walkthrough of the same job instead.
-                counts["declined"] += 1
+                kind = None if answer is None else answer["choice"]["kind"]
+                counts[{"confirm_guess": "confirmed", "other_candidate": "corrected",
+                        "none_of_these": "declined"}.get(kind, "waiting")] += 1
+            digest = correction_pending(before, pipeline)
+            record = before.get(REPLAY_FIELD)
+            if (digest is None or before.get("status") not in CORRECTABLE_STATUSES or _reconstruction_armed(before)
+                    or type(record) is not dict or set(record) != _REPLAY_FIELDS
+                    or record.get("schema_version") != REPLAY_SCHEMA or not _replay_due(pipeline, digest, current)):
                 continue
-            _require(len(record["payload_base64"]) <= 4 * ((MAX_BYTES + 2) // 3))
+            _require(type(record["payload_base64"]) is str and len(record["payload_base64"]) <= 4 * ((MAX_BYTES + 2) // 3))
             raw = _payload_bytes(listener, base64.b64decode(record["payload_base64"], validate=True),
                                  record["source_payload_sha256"])
             handoff = listener.parse_handoff_payload(raw)
@@ -437,28 +545,21 @@ def reconcile_waiting_target_choices(listener, *, storage_root: Path, process_ar
                      and before.get("source_payload_sha256") == record["source_payload_sha256"]
                      and before.get("producer_delivery_key") == record["producer_delivery_key"])
             _require(handoff.source_finalize is not None and handoff.source_membership_selector is not None)
-            context = _read(pipeline / "website_task_context.json") or {}
             # The status reader re-checks the active birth and membership, fresh
             # owner, local consent, current context and unchanged ledger.
-            status = read_preparation_status(capture_root=root, selectors={
-                "request_id": handoff.scene_id.removeprefix("site-"), "scene_id": handoff.scene_id,
-                "capture_id": handoff.capture_id,
-                "completion_marker_generation": handoff.source_finalize["generation"],
-                "producer_delivery_key": record["producer_delivery_key"],
-                "source_payload_sha256": record["source_payload_sha256"],
-                "task_context_digest": context.get("context_digest")})
-            _require(status["state"] == "awaiting_inputs" and status["revision"] == before["revision"])
+            selectors = validate_selectors((_read(root / DELIVERY_FILE) or {}).get("selectors"))
+            status = read_preparation_status(capture_root=root, selectors=selectors)
+            _require(status["revision"] == before["revision"] and status["state"] != "authority_ended")
             birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
             _require(birth is not None and birth["source_membership_selector"] == handoff.source_membership_selector)
             _require(listener._read_job_ledger(root) == before)
-            # The same lease claim consumes the record; its failure row keeps the bytes.
-            result = listener.process_handoff_payload(raw, storage_root=storage_root,
+            _note_replay(pipeline, digest, current)
+            counts["replayed"] += 1
+            listener.process_handoff_payload(raw, storage_root=storage_root,
                 payload_digest=record["source_payload_sha256"],
-                expected_target_choice_resume={"revision": before["revision"], "record": record},
+                expected_target_choice_correction={"revision": before["revision"], "corrections_digest": digest},
                 **({"expected_preparation_purpose": "scene_preparation"}
                    if birth.get("capture_observation_purpose") == "scene_preparation" else {}), **process_args)
-            if result.get("status") in {"processed", "retryable_blocked", "awaiting_site_target_choice"}:
-                counts["resumed"] += 1
-        except Exception:  # noqa: BLE001 - one unreadable capture never stops the others
-            listener.logger.debug("pubsub_handoff.target_choice_resume_pending")
+        except Exception:  # noqa: BLE001 - one capture never stops the others; an owed rerun stays owed
+            listener.logger.debug("pubsub_handoff.target_choice_correction_pending")
     return counts
