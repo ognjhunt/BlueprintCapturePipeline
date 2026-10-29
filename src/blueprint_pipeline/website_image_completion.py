@@ -242,14 +242,15 @@ def _anchor_rank(frame: Mapping[str, Any]) -> tuple[int, int]:
 
 # Owner decision 2026-10-29: the editor redraws the whole frame, and on
 # capture-4b60431e it also erased an unrelated object behind the removed one.
-# Keep its pixels only within reach of the removed objects and the photographed
+# Keep its pixels only close around the removed objects and the photographed
 # pixels everywhere else. Pasting back through the bare silhouette left the
-# object's outline, shadow and reflections (2026-09-24), so the zone reaches one
-# removed-region size beyond the mask, with a soft edge.
+# object's outline, shadow and reflections (2026-09-24), so the zone reaches a
+# quarter of the removed region's size past the mask, with a soft edge. A trace
+# beyond it is the review's to find: that view then uses its full edited frame.
 REMOVAL_ZONE_POLICY = "removal_zone_composite_v1"
-REMOVAL_ZONE_MIN_REACH_PIXELS = 32
-REMOVAL_ZONE_MAX_REACH_PIXELS = 240
-REMOVAL_ZONE_FEATHER_PIXELS = 24
+REMOVAL_ZONE_MIN_REACH_PIXELS = 16
+REMOVAL_ZONE_MAX_REACH_PIXELS = 120
+REMOVAL_ZONE_FEATHER_PIXELS = 16
 
 
 def removal_zone_alpha(editable: np.ndarray) -> np.ndarray:
@@ -257,7 +258,7 @@ def removal_zone_alpha(editable: np.ndarray) -> np.ndarray:
     from scipy.ndimage import distance_transform_edt
 
     reach = min(REMOVAL_ZONE_MAX_REACH_PIXELS,
-                max(REMOVAL_ZONE_MIN_REACH_PIXELS, math.sqrt(int(np.count_nonzero(editable)))))
+                max(REMOVAL_ZONE_MIN_REACH_PIXELS, 0.25 * math.sqrt(int(np.count_nonzero(editable)))))
     distance = distance_transform_edt(~editable)
     return np.clip((reach + REMOVAL_ZONE_FEATHER_PIXELS - distance) / REMOVAL_ZONE_FEATHER_PIXELS, 0.0, 1.0)
 

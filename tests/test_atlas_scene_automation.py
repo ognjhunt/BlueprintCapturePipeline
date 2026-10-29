@@ -826,6 +826,21 @@ def test_composited_anchor_with_a_remaining_trace_is_reviewed_once_as_its_full_f
                       "automation_anchor_full_frame_review"]
 
 
+def test_only_views_the_review_traced_switch_to_their_already_bought_full_frame():
+    composited = {"frame_id": "a", "image_path": "a.png", "image_digest": "sha256:a", "generated_region": "removal_zone",
+                  "full_frame_image_path": "a-full.png", "full_frame_image_digest": "sha256:a-full"}
+    clean = {**composited, "frame_id": "b", "image_path": "b.png", "full_frame_image_path": "b-full.png"}
+    whole = {"frame_id": "c", "image_path": "c.png", "image_digest": "sha256:c", "generated_region": "full_frame"}
+    review = {"status": "blocked", "review": {"remaining_task_object_frame_ids": ["a", "c"]}}
+    swapped, changed = edits.full_frames_for_traces([composited, clean, whole], review)
+    assert changed and swapped[1:] == [clean, whole]
+    assert swapped[0] == {**composited, "image_path": "a-full.png", "image_digest": "sha256:a-full",
+                          "generated_region": "full_frame"}
+    # A second pass finds nothing left to switch, so the repair loop ends as before.
+    assert edits.full_frames_for_traces(swapped, review) == (swapped, False)
+    assert edits.full_frames_for_traces([composited], {"review": {}}) == ([composited], False)
+
+
 def test_unrelated_object_instruction_quotes_the_finding_as_bounded_data():
     from blueprint_pipeline.website_image_repair_agent import (
         UNRELATED_OBJECTS_KEPT_INSTRUCTION, unrelated_objects_kept_instruction)

@@ -857,18 +857,18 @@ def test_only_a_scene_with_transients_extends_the_bound_edit_and_review_prompts(
     assert completion.MULTI_OBJECT_PROMPT not in edit
 
 
-def test_removal_zone_reaches_one_object_size_beyond_the_mask_with_a_soft_edge():
-    editable = np.zeros((400, 600), dtype=bool)
-    editable[180:220, 280:320] = True                      # 40 x 40: reach 40 px
-    alpha = completion.removal_zone_alpha(editable)
-    row = alpha[200]
-    assert row[300] == 1 and row[320 + 39] == 1            # mask and its reach
-    assert 0 < row[320 + 52] < 1                           # the 24 px soft edge
-    assert row[320 + 40 + 24] == 0 and row[0] == 0         # photographed pixels beyond
-    tiny = np.zeros((400, 600), dtype=bool)
-    tiny[200, 300] = True
-    assert completion.removal_zone_alpha(tiny)[200, 300 + 32] == 1      # at least 32 px
-    assert completion.removal_zone_alpha(np.ones((400, 600), dtype=bool)).min() == 1
+def test_removal_zone_reaches_a_quarter_of_the_object_size_past_the_mask_with_a_soft_edge():
+    editable = np.zeros((600, 900), dtype=bool)
+    editable[200:400, 300:500] = True                      # 200 x 200: reach 50 px
+    row = completion.removal_zone_alpha(editable)[300]
+    assert row[400] == 1 and row[499 + 50] == 1            # mask and its reach
+    assert 0 < row[499 + 58] < 1                           # the 16 px soft edge
+    assert row[499 + 66] == 0 and row[0] == 0              # photographed pixels beyond
+    small = np.zeros((600, 900), dtype=bool)
+    small[300, 450] = True
+    row = completion.removal_zone_alpha(small)[300]
+    assert row[450 + 16] == 1 and row[450 + 32] == 0       # at least 16 px
+    assert completion.removal_zone_alpha(np.ones((600, 900), dtype=bool)).min() == 1
 
 
 def _zone_inputs(tmp_path):
