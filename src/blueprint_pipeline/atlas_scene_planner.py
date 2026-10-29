@@ -19,7 +19,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .atlas_automation_plan import (
-    AutomationPlan, AUTOMATION_INSTRUCTIONS, ScaleReference, SubjectOrigin, PRESERVED_SCENE_ORIGINS,
+    AutomationPlan, CurrentAutomationPlan, AUTOMATION_INSTRUCTIONS, ScaleReference, SubjectOrigin, PRESERVED_SCENE_ORIGINS,
 )
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -145,11 +145,13 @@ class RefinementProposal(SceneProposal):
 class CurrentSceneProposal(SceneProposal):
     subject_origin: SubjectOrigin
     abstention_reasons: list[AbstentionReason]
+    automation: CurrentAutomationPlan | None = None
 
 
 class CurrentRefinementProposal(RefinementProposal):
     subject_origin: SubjectOrigin
     abstention_reasons: list[AbstentionReason]
+    automation: CurrentAutomationPlan | None = None
 
 
 class SemanticSceneProposal(CurrentSceneProposal):

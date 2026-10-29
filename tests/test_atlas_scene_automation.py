@@ -1395,14 +1395,99 @@ def test_an_object_track_missing_a_view_refuses_but_an_absent_transient_is_empty
     assert "removed_transient_ids" not in prepared[1]
 
 
-def _segment(tmp_path, monkeypatch, frames, regions, found):
+def _segment(tmp_path, monkeypatch, frames, regions, found, task_context=None):
     from blueprint_pipeline import meta_sam31
     sam = {"track_id": "meta-sam31-obj-0", "label": "obj", **track(found)["track"]}
     monkeypatch.setattr(meta_sam31, "run_meta_sam31", lambda **_: {"tracks": [sam]})
     target = {**plan()["objects"][0], "regions": regions}
     inputs = {"frames": [{"frame_id": f["frame_id"], "timestamp_seconds": i} for i, f in enumerate(frames)]}
-    return edits.segment_objects(frames=frames, objects=[target], inputs=inputs, task_context={},
+    return edits.segment_objects(frames=frames, objects=[target], inputs=inputs, task_context=task_context or {},
                                  source_digest="sha256:" + "a" * 64, root=tmp_path / "sam")
+
+
+CONTEXT_WITH_CAPTURE = {"capture_id": "walkthrough-c", "description": "Move the task object to the shelf"}
+
+
+@pytest.mark.parametrize("task_context", [CONTEXT_WITH_CAPTURE, {}])
+def test_a_view_still_without_an_outline_is_looked_at_again_before_any_edit(tmp_path, monkeypatch, task_context):
+    """2026-10-29 capture-4b60431e: the tray had no outline in the wide view and kept it."""
+    from blueprint_pipeline import atlas_removal_visibility as visibility
+    a, b, c, d = (view(tmp_path), view(tmp_path, "b", 0.1), view(tmp_path, "c", 0.2), view(tmp_path, "d", 0.3))
+    looked = []
+    monkeypatch.setattr(visibility, "locate_target", lambda **kw: looked.append(kw["frame"]["frame_id"]) or (
+        [0.25, 0.25, 0.5, 0.5] if kw["frame"]["frame_id"] == "c" else None))
+    box = {"box_xywh_normalized": [0.2, 0.2, 0.6, 0.6]}
+    # SAM found a, the planner boxed b; nothing outlines c or d yet.
+    [selected] = _segment(tmp_path, monkeypatch, [a, b, c, d], [{"frame_id": "a", **box}, {"frame_id": "b", **box}],
+                          found=[a], task_context=task_context)
+    observations = {row["source_frame_id"]: row for row in selected["track"]["observations"]}
+    prepared = edits.prepare_masked_frames(frames=[a, b, c, d], targets=[selected], margin=0.01,
+                                           root=tmp_path / "masks")
+    if task_context:
+        # Only the views without an outline are looked at; a confident box outlines c.
+        assert looked == ["c", "d"] and observations["c"]["runs"] and observations["d"]["runs"] == []
+        assert [row["remaining_pixel_count"] > 0 for row in prepared] == [True, True, True, False]
+        assert observations["a"] == track([a])["track"]["observations"][0]  # SAM's own mask is kept
+    else:
+        # A run without a capture context (local or replay) buys no observation.
+        assert looked == [] and observations["c"]["runs"] == []
+
+
+def test_a_box_only_target_gets_its_missed_view_outlined_too(tmp_path, monkeypatch):
+    """capture-4b60431e's own path: no SAM track, planner boxes in two of three views."""
+    from blueprint_pipeline import atlas_removal_visibility as visibility
+    a, b = view(tmp_path), view(tmp_path, "b", 0.1)
+    monkeypatch.setattr(visibility, "locate_target", lambda **kw: [0.1, 0.1, 0.3, 0.3])
+    target = {**plan()["objects"][0], "regions": [{"frame_id": "b", "box_xywh_normalized": [0.2, 0.2, 0.6, 0.6]}],
+              "spatial_evidence": [{"timestamp_seconds": 1, "box_xywh_normalized": [0.2, 0.2, 0.6, 0.6]}]}
+    guide = edits.grounded_region_guide(target=target, frames=[a, b])
+    assert [row["runs"] == [] for row in guide["observations"]] == [True, False]
+    outlined = edits.outline_missed_views(track=guide, sam_track=None, target=target, frames=[a, b],
+        timestamps={"a": 0, "b": 1}, task_context=CONTEXT_WITH_CAPTURE, root=tmp_path / "visibility")
+    assert all(row["runs"] for row in outlined["observations"]) and outlined["guide_only"] is True
+
+
+def test_the_visibility_answer_counts_only_when_confident_and_inside_the_frame(tmp_path, monkeypatch):
+    from blueprint_pipeline import atlas_removal_visibility as visibility
+    a = view(tmp_path)
+    calls = []
+
+    def answer(observation):
+        monkeypatch.setattr(visibility, "retained_gemini_call", lambda **kw: calls.append(kw) or {"observation": observation})
+        return visibility.locate_target(target=plan()["objects"][0], frame=a, task_context=CONTEXT_WITH_CAPTURE,
+                                        output_root=tmp_path / "v")
+
+    assert answer({"visible": True, "confidence": 0.9, "box_xywh_normalized": [0.1, 0.2, 0.3, 0.4]}) == [0.1, 0.2, 0.3, 0.4]
+    assert answer({"visible": True, "confidence": 0.6, "box_xywh_normalized": [0.1, 0.2, 0.3, 0.4]}) is None
+    assert answer({"visible": True, "confidence": 0.95, "box_xywh_normalized": [0.8, 0.2, 0.3, 0.4]}) is None
+    assert answer({"visible": False, "confidence": 0.99, "box_xywh_normalized": [0.1, 0.2, 0.3, 0.4]}) is None
+    binding = calls[0]["binding"]
+    assert binding["kind"] == "removal_target_visibility" and binding["frame_id"] == "a"
+    assert binding["image_digest"] == a["image_digest"] and "Move the task object" in binding["prompt"]
+    Image.new("RGB", (80, 60), "white").save(a["image_path"])
+    with pytest.raises(ValueError, match="atlas_removal_visibility_source_changed"):
+        answer({"visible": False})
+
+
+def test_new_planner_answers_name_a_short_concept_sam_can_find(tmp_path):
+    from pydantic import ValidationError
+    from blueprint_pipeline.atlas_automation_plan import (
+        AUTOMATION_INSTRUCTIONS, AutomationPlan, CurrentAutomationPlan)
+    from blueprint_pipeline.atlas_scene_planner import CurrentSceneProposal, CurrentRefinementProposal
+
+    long_prompt = "wooden serving tray on the dining table, including its rim, handles and everything resting inside it"
+    object_plan = {**plan(), "objects": [{**plan()["objects"][0], "segmentation_prompt": long_prompt}]}
+    with pytest.raises(ValidationError, match="not_a_short_concept"):
+        CurrentAutomationPlan.model_validate(object_plan)
+    # A retained answer from before this rule still reads.
+    assert AutomationPlan.model_validate(object_plan).objects[0].segmentation_prompt == long_prompt
+    short = {**plan(), "objects": [{**plan()["objects"][0], "segmentation_prompt": "wooden tray"}]}
+    assert CurrentAutomationPlan.model_validate(short).objects[0].segmentation_prompt == "wooden tray"
+    for schema in (CurrentSceneProposal, CurrentRefinementProposal):
+        assert schema.model_fields["automation"].annotation == CurrentAutomationPlan | None
+    text = " ".join(AUTOMATION_INSTRUCTIONS.split())
+    assert "Box each object in every required or additional frame where it is visible" in text
+    assert "at most five words" in text
 
 
 def test_a_sam_track_that_found_some_views_covers_the_rest_without_leaving_the_object(tmp_path, monkeypatch):
