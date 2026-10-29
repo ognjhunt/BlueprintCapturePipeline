@@ -327,9 +327,23 @@ def run_clean_plate_stage(
     else:
         input_video_path = website_source_video or _resolve_input_video(ctx.pipeline_root, ctx.capture_root)
         handoff_lease_checkpoint("clean_plate_before_analysis")
-        plan = analyze_removal_targets(video_path=website_source_video or input_video_path, task_context=task_context,
-                                       output_root=clean_plate_root / "gemini_analysis")
+        retained_analysis = None
+        if website_source_video is not None and task_context is not None:
+            from .website_atlas_task_selection import load_retained_uncertain_analysis
+            retained_analysis = load_retained_uncertain_analysis(
+                capture_root=ctx.capture_root, task_context=task_context, source_video=website_source_video,
+            )
+        plan = retained_analysis if retained_analysis is not None else analyze_removal_targets(
+            video_path=website_source_video or input_video_path, task_context=task_context,
+            output_root=clean_plate_root / "gemini_analysis",
+        )
         handoff_lease_checkpoint("clean_plate_after_analysis")
+        if website_source_video is not None and task_context is not None:
+            from .website_atlas_task_selection import resolve_retained_target_selection
+            plan = resolve_retained_target_selection(
+                plan=plan, capture_root=ctx.capture_root, task_context=task_context,
+                source_video=website_source_video,
+            )
         plan_errors = validate_removal_plan(plan)
         if plan_errors:
             blockers.extend(plan_errors)
