@@ -1,0 +1,303 @@
+{
+  "model_id": "allenai/MolmoAct2-BimanualYAM",
+  "model_revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+  "source_revision": "6070080a20321b4f498ab30f28e1d09ac465edb7",
+  "total_repository_bytes": 21782347229,
+  "weight_bytes": 21768955912,
+  "weight_files_downloaded": false,
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 1759,
+      "git_blob_id": "3e21065556e2702a15ee274ffaadaad9b95e2672",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "README.md",
+      "bytes": 8734,
+      "git_blob_id": "93255b2798c7e68ac383af748cba77c23380149c",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "f949b0d84ece84caa529b66cd84bfc42845a59c0b52a667e9ee62b33aca2e9f7",
+      "required_for_inference": true
+    },
+    {
+      "path": "assets/MolmoAct2.svg",
+      "bytes": 7616,
+      "git_blob_id": "4d627afa3187285b335a46bbfed2ad8ebfb1ef83",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "assets/sample_left_rgb.png",
+      "bytes": 215263,
+      "git_blob_id": "a90236e6ec9609188fd9d57326d43210c604ec5c",
+      "publisher_lfs_sha256": "2908fecaae088cbd810c2ce9c2924ac7c305f8c3a961ddb85b9cf877f40efc2e",
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "assets/sample_right_rgb.png",
+      "bytes": 254673,
+      "git_blob_id": "7cbd695728e165d7fafe00e454392432d4a483a6",
+      "publisher_lfs_sha256": "12c966772cd13bc857744b193e71efcbeb3df718c9f4ae9f7f71722a507c8445",
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "assets/sample_top_rgb.png",
+      "bytes": 453259,
+      "git_blob_id": "e51d3890d322117c6b07ce5572131662eb808f29",
+      "publisher_lfs_sha256": "3d42e26d70ab3ff71f7010bd1b9410b85ee107e66a80b1b24aa75e29053db6c9",
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "chat_template.jinja",
+      "bytes": 3169,
+      "git_blob_id": "c1149ea803d36a1b379786becf193259356464b5",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "ec66862fda57dc1aef90a21b2a0f64c18a280e2483206449bd251a73b8993101",
+      "required_for_inference": true
+    },
+    {
+      "path": "config.json",
+      "bytes": 4271,
+      "git_blob_id": "d0b5af6bb74933c4d53f9b1521aac6d7bdc81bd9",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "12bb27d584b3b91ebf86b6f85327a3f934f239b5fcdf5f89298e91d7c9516112",
+      "required_for_inference": true
+    },
+    {
+      "path": "configuration_molmoact2.py",
+      "bytes": 20708,
+      "git_blob_id": "e17786c5b78cc08615847e86b134181d7c8c3223",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "ccc1b24db7ab42b30705414b14de9601b1d82fba6f6d85393b0e9cbe1052fac4",
+      "required_for_inference": true
+    },
+    {
+      "path": "generation_config.json",
+      "bytes": 116,
+      "git_blob_id": "bab1089d8a05e0cb6eaabb81f0d3c9b0783cb86d",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "52ed940eef55d9a7e41adc8cac3408b01e26727ef828309c962f0ae5890cd281",
+      "required_for_inference": true
+    },
+    {
+      "path": "image_processing_molmoact2.py",
+      "bytes": 22359,
+      "git_blob_id": "e28471c185d83f9c23e2e003b9162d6f73464721",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "bb623a013e7f897ffb938990bd02374b61dabcabd87f9f19d59111ec88ecf675",
+      "required_for_inference": true
+    },
+    {
+      "path": "inference.py",
+      "bytes": 25938,
+      "git_blob_id": "6da66f145d664029e6c42c3b77aea4631dd7e6a6",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "14a328aa9c8094fe5bf6d99aa98d49d0337485ff48f828cc1944bb66318cc67d",
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00001-of-00005.safetensors",
+      "bytes": 4919324120,
+      "git_blob_id": "4ea4d1022ceb901741384a2ddbeb9f2f0be156a9",
+      "publisher_lfs_sha256": "af779f7c1f755ea6f4eb5e845347ce129dc5fa7bf36b09b225defc1eb1de7f64",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00002-of-00005.safetensors",
+      "bytes": 4844690992,
+      "git_blob_id": "80cd61594e58e2d420d91ea947736a387b567a58",
+      "publisher_lfs_sha256": "cb9d302e9030a66a6a1fd20e25e497c82a0e218840ec1528f4c4b40ab13b279e",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00003-of-00005.safetensors",
+      "bytes": 4844691024,
+      "git_blob_id": "7bf6deba243f384118b1a42624c343708c8cd182",
+      "publisher_lfs_sha256": "72b928892f060966cb660264ef98d3685c0fd9da53b3155608efdaa92daff9e1",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00004-of-00005.safetensors",
+      "bytes": 4877619536,
+      "git_blob_id": "7a130a2158325c972b69411841f6fa036334281a",
+      "publisher_lfs_sha256": "5c828fa227dc788e84e0383b49745073ac0cfe3b162cadec34189f291f54b95c",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00005-of-00005.safetensors",
+      "bytes": 2282630240,
+      "git_blob_id": "5852c4f8f5a9273bdc78045cd3d78f5540832b58",
+      "publisher_lfs_sha256": "9af4e86a0cc06747ca6e8d93ac900ed31370a07c23a7651118dca2f8618cb818",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "bytes": 131529,
+      "git_blob_id": "63c7b98a522f73edb29ab0ad5bd34e6b422c6bf9",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "273799bed0cbdc2c4a7a524c294652a0538c482e5e1148cf403951e836722c06",
+      "required_for_inference": true
+    },
+    {
+      "path": "modeling_molmoact2.py",
+      "bytes": 190994,
+      "git_blob_id": "9c22ac3e5ad4b69ac723fb906053d096f394824a",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "3e0090b8cc045d59911c0a579815ebd17ce0423f9fdd03be887412df5c7b8b49",
+      "required_for_inference": true
+    },
+    {
+      "path": "norm_stats.json",
+      "bytes": 10244,
+      "git_blob_id": "ebcfbc17121400a589bd4075278af05cfaa7947d",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "6357a264ac820c5b775c884bd303ed13ffa18a36def28409312c842139879f4b",
+      "required_for_inference": true
+    },
+    {
+      "path": "processing_molmoact2.py",
+      "bytes": 17254,
+      "git_blob_id": "15b928f078032a2a491fcf75f3ac7625f3c01b6b",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "61ec88c04cf70844dc98ab518d332911ec32cf5f24f052b7413ddd5d61483109",
+      "required_for_inference": true
+    },
+    {
+      "path": "processor_config.json",
+      "bytes": 1853,
+      "git_blob_id": "5e7c55130e1c7a136124bfa2d9dbead2d606fb51",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "bd5ad3ddc456b7534005e075a5c3cb0644da5e4b1aa77f1d74268a9e4c7f071a",
+      "required_for_inference": true
+    },
+    {
+      "path": "tokenizer.json",
+      "bytes": 11983605,
+      "git_blob_id": "4590977d5fb66ae6c07cc5c09e415f574f46cc06",
+      "publisher_lfs_sha256": "d5395aefc9b1b7f0385d8c86a2f1775e5af81bdfbf9f2d97827ea37921d9f862",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "tokenizer_config.json",
+      "bytes": 782,
+      "git_blob_id": "b3b4200316d8af2cd1afeaa4890045d7cd33a145",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "0ffb85ef66d5b354f53a341ff01edc5137c324981bf37928b86bcdee2b265415",
+      "required_for_inference": true
+    },
+    {
+      "path": "video_processing_molmoact2.py",
+      "bytes": 37191,
+      "git_blob_id": "df17335f75f3f0ae045559946638994dd53556a5",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "8da721aa638da65aaa35e458920037c16b81dca344a623bb08db2b73f9ce9992",
+      "required_for_inference": true
+    }
+  ],
+  "publisher_license_evidence": {
+    "readme_sha256": "5b3cc2e6780938fbbf5d5f72f43368ff210b69b8d6cc0ff6daff8bfbdeef5909",
+    "apache_license_file_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  "schema_version": "molmoact2_yam_release.v1",
+  "license": "Apache-2.0",
+  "license_basis": "publisher_model_license_statement_in_pinned_repository_readme",
+  "license_evidence_url": "https://github.com/allenai/molmoact2/blob/6070080a20321b4f498ab30f28e1d09ac465edb7/README.md#7-license",
+  "license_declaration": "This model is licensed under Apache 2.0.",
+  "publisher_intended_use": "research and educational use in accordance with Ai2 Responsible Use Guidelines",
+  "hf_model_card_license_field": null,
+  "source_files": [
+    {
+      "path": "LICENSE",
+      "bytes": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "path": "README.md",
+      "bytes": 19456,
+      "sha256": "5b3cc2e6780938fbbf5d5f72f43368ff210b69b8d6cc0ff6daff8bfbdeef5909"
+    },
+    {
+      "path": "examples/yam/README.md",
+      "bytes": 6344,
+      "sha256": "c1caf2853f4ec9154c1c709a990c9087411bcd4c161597dbc648f1fede411baa"
+    },
+    {
+      "path": "examples/yam/configs/yam_left.yaml",
+      "bytes": 3379,
+      "sha256": "4423c65bddd9e65b4374c5931ca501cf7cb821cc94dd17e0352015b494204b4c"
+    },
+    {
+      "path": "examples/yam/configs/yam_right.yaml",
+      "bytes": 430,
+      "sha256": "0413d37596dd9c9003ebe1cde25304c50cea65ea6d8d5a5a0934a43ead22554e"
+    },
+    {
+      "path": "examples/yam/gello_min/robot.py",
+      "bytes": 3793,
+      "sha256": "009c5211ef91792d942223a6ddb46a52fd4cecfb9545f095ab2104ecdc8795ca"
+    },
+    {
+      "path": "examples/yam/gello_min/yam.py",
+      "bytes": 3347,
+      "sha256": "dc7160fed1342d870e75f9472a91838b9642503cf5cd4262288b32364fd8736b"
+    },
+    {
+      "path": "examples/yam/host_server_yam.py",
+      "bytes": 12951,
+      "sha256": "306dc845105c37edb16f56668f6bd06b0f2636e941c038935390c03be2927d73"
+    },
+    {
+      "path": "examples/yam/launch_yaml_eval_molmoact.py",
+      "bytes": 16372,
+      "sha256": "3b538b842f2cb5a6a831d75fa891730451ddcc1eebec199509b4cd435147af4c"
+    },
+    {
+      "path": "examples/yam/molmoact_client.py",
+      "bytes": 19877,
+      "sha256": "655fc02dd11808d85926a583b83b00133d286183665d186a6956b283d7c58185"
+    },
+    {
+      "path": "pyproject.toml",
+      "bytes": 1020,
+      "sha256": "46a0cd9a1cc4a28168022f407ebc5fdce96da119c3b4b9977dfa522b3fb9a3bb"
+    },
+    {
+      "path": "sim_eval/README.md",
+      "bytes": 3142,
+      "sha256": "59ef4714d5c974262f5b935a9e37015fa529dbd114de6ffc4c2db1aa11443192"
+    },
+    {
+      "path": "sim_eval/inference/client.py",
+      "bytes": 4674,
+      "sha256": "3194603856626721029791045443b5a71a38048e9f9e9f0d8c07806401e1b16a"
+    },
+    {
+      "path": "sim_eval/inference/common.py",
+      "bytes": 4459,
+      "sha256": "450666106726cc93347806e807dbb9766b8af9156137fb443cf51d2bee1f7b2b"
+    },
+    {
+      "path": "sim_eval/robots/bimanual_yam.py",
+      "bytes": 8248,
+      "sha256": "269fa2345a7b28a0d6512eac4b9893ead73e96d2cb1fc5e708a947dfde396bb1"
+    },
+    {
+      "path": "sim_eval/scripts/download_assets.py",
+      "bytes": 1828,
+      "sha256": "231ff8c36a4372494ba129193a64ea1f2451cde7950ba0b6d8c9a52985280488"
+    }
+  ]
+}
