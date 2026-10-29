@@ -19,7 +19,7 @@ from typing import Any
 
 from .common import write_json
 from .core.security_controls import strict_identifier
-from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .decision_evidence_contracts import canonical_json, cross_runtime_canonical_digest
 from .owned_capture_atlas_runtime import bind_owned_atlas_source, owned_atlas_source_checkpoint
 from .reconstruction_control_plane import _run_root, _source_binding, _write_immutable
 from .website_atlas_preview import (
@@ -218,6 +218,9 @@ def inspect_owned_atlas(*, state_root: Path, capture_store_root: Path, plan_id: 
         # Adoption reopens source/job/bytes beneath the shared lifecycle lock.
         # A status read performs local verification only, never a provider tick.
         value["reconstruction"] = {"plan_id": plan_id, "reconstruction_plan": retained["reconstruction_plan"],
+                                   "reconstruction_plan_canonical_json": canonical_json({
+                                       key: item for key, item in retained["reconstruction_plan"].items()
+                                       if key != "reconstruction_plan_digest"}),
                                    "execution_result": retained["execution_result"]}
         value["execution_digest"] = cross_runtime_canonical_digest(value, digest_field="execution_digest")
     return value

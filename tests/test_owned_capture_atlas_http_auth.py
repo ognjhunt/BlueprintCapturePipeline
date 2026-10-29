@@ -139,12 +139,18 @@ def _ready_owned_result(owned):
 
 
 def test_actual_hmac_ready_inspect_and_repeat_execute_adopt_without_dispatch(owned, client, monkeypatch):
+    import hashlib
     path, _ = _ready_owned_result(owned)
     monkeypatch.setattr(controller, "run_atlas_pipeline", lambda **_: pytest.fail("status dispatched provider"))
     response = _post(client, "inspect", _read_command(owned), nonce="ready-projection")
     assert response.status_code == 200, response.text
     status = response.json()
     normal = status["reconstruction"]
+    canonical = normal["reconstruction_plan_canonical_json"]
+    assert json.loads(canonical) == {key: value for key, value in normal["reconstruction_plan"].items()
+                                    if key != "reconstruction_plan_digest"}
+    assert "sha256:" + hashlib.sha256(canonical.encode()).hexdigest() == normal["reconstruction_plan"]["reconstruction_plan_digest"]
+    assert '"expected_cost_usd":0.0' in canonical
     assert normal["plan_id"] == owned.plan["plan_id"]
     assert normal["execution_result"]["state"] == "partial"
     assert normal["execution_result"]["cost_usd"] is None
