@@ -230,6 +230,7 @@ def run_automation(
     replay_exports_only=False,
     finalize_retained_exports=False,
     retained_mesh_root=None,
+    selected_tracks=None,
 ):
     from .atlas_scene_measurements import load_views, estimate_sizes
     from .atlas_background_automation import run_background
@@ -275,6 +276,10 @@ def run_automation(
         raise ValueError("atlas_background_reviewed_selection_missing")
     if pose_root is None and selected_ids is not None:
         frames = [row for row in frames if row["frame_id"] in selected_ids]
+    if selected_tracks is not None:
+        frame_ids = {row['frame_id'] for row in frames}
+        selected_tracks = {key: {**track, 'observations': [row for row in track['observations']
+            if row['source_frame_id'] in frame_ids]} for key, track in selected_tracks.items()}
     try:
         background = run_background(
             frames=frames,
@@ -295,6 +300,7 @@ def run_automation(
             transients=review.get("transients", []),
             **({'prior_background_path': prior_background_path} if prior_background_path is not None else {}),
             **({'require_cached': True} if retained_only else {}),
+            **({'selected_tracks': selected_tracks} if selected_tracks is not None else {}),
         )
         if background["status"] == "processing":
             return background

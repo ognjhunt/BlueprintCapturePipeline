@@ -236,8 +236,13 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
     try:
         context = load_current_website_task_context(request_id=job["request_id"], scene_id=job["scene_id"],
                                                     capture_id=job["capture_id"], purpose="scene_preparation")
-        result = run_atlas_pipeline(source_video=capture_root / job["source_video"], output_root=job_dir,
-                                    task_context=context, max_polls=1, checkpoint=checkpoint)
+        if job.get('target_correction'):
+            from .website_target_background_worker import advance_correction
+            result = advance_correction(job=job, job_dir=job_dir, capture_root=capture_root,
+                                        context=context, max_polls=1, checkpoint=checkpoint)
+        else:
+            result = run_atlas_pipeline(source_video=capture_root / job["source_video"], output_root=job_dir,
+                                        task_context=context, max_polls=1, checkpoint=checkpoint)
         if result["status"] == "processing":
             return _transition(job, current, "processing", None, stage=result["stage"], transient_failures=0,
                                next_attempt_at_epoch=current)
@@ -250,13 +255,17 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
                                stage='preserved_scene_completion', result_digest=result.get('digest'))
         if not result.get("download"):
             reason = (_reason(ValueError(result["reason"]))
-                      if result.get("stage") == "source_pose" and result.get("reason")
+                      if result.get("stage") in {"source_pose", "target_correction"} and result.get("reason")
                       else "atlas_background_review_required")
             return _transition(job, current, "needs_input", reason,
                                stage=result.get("stage", "background_review"), result_digest=result.get("digest"))
         # The last paid-stage checkpoint is behind the final provider call, fusion and export.
         checkpoint("archive")
         archive = _archive(job, result)
+        if job.get('target_correction'):
+            from .website_target_background_worker import publish_correction
+            publish_correction(job_dir=job_dir, result=result, capture_root=capture_root,
+                               context=context, checkpoint=checkpoint)
     except Exception as error:  # noqa: BLE001 - every outcome is a typed job state, never a raise
         return _failed_step(job, error, current)
     if _withdrawn(capture_root):

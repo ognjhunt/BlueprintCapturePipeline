@@ -270,6 +270,14 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
                                          scale=scale, output_root=output_root / "source_geometry")
 
     automation_root = job_dir / "automation"
+    if result.get('target_correction'):
+        from .website_target_background_worker import _bound_request
+        _, request = _bound_request(job_dir, result['target_correction'])
+        if (request['source_video_digest'] != result['source_video_digest']
+                or request['task_context_digest'] != result['task_context_digest']
+                or request['source_pose'] != result['source_pose']):
+            raise ValueError('website_target_correction_source_changed')
+        automation_root = _inside(job_dir / result['target_correction']['automation_relative_path'], job_dir)
     bundle = bundle_root = None
     download = background.get("download") or {}
     if download.get("directory"):
