@@ -128,6 +128,22 @@ room built from more real footage is clearly better, run one capture with
 - Compare the two jobs' background splat and mesh. If the room is clearly
   better, make `all_selected_views` the default in `EDIT_SCOPES`.
 
+## Missing floor and access views
+
+Owner decision (2026-10-29): the planner names every area the task needs that
+the video never shows (floor, approach/access space, clearances, the far side of
+a support) in `uncaptured_regions` before anything is generated. Completion
+treats each one as a target, and generated floor and access views may be used to
+place the simulated robot. They stay labelled estimates and never override
+observed geometry or free space.
+
+- A missing area is never by itself a reason to abstain. An abstention must name
+  a typed cause in `abstention_reasons`: task object or region not visible,
+  support or destination not visible, inconsistent scene states, unusable
+  frames, or uncertain subject origin.
+- An abstention with no cause is refused at the SDK boundary and gets the
+  planner's one repair turn. Retained receipts without the field still read.
+
 ## Accuracy-first input selection
 
 Owner direction (2026-10-22): accuracy, not cost, decides the provider inputs.
