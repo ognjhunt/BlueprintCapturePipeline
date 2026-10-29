@@ -39,7 +39,7 @@ and success requirements. The selected planner's original_semantics is retained
 unchanged, including its covers_entire_job flag and unresolved_aspects. Do not
 reinterpret that flag as proof of missing robot capability. Distinguish missing
 or ambiguous ROBOT OPERATIONS, identities, destinations and requested outcomes
-from preparation requirements: authoring/CAD and ball parameters, measurements,
+from preparation requirements: authoring/CAD and synthetic-object parameters, measurements,
 metric registration, numerical tolerances, owner confirmation, provider rights,
 budget, deployment, executable policies, native physics and qualification.
 Read every requested operation and success requirement. operation_coverage_complete

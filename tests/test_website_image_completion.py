@@ -284,10 +284,13 @@ def test_largest_removal_view_is_the_edited_anchor_for_every_other_view(tmp_path
     anchor = Path(outputs[1]["image_path"]).read_bytes()
     assert [call["reference_images"] for call in calls[1:]] == [[anchor], [anchor]]
     assert [output["frame_id"] for output in outputs] == ["0", "1", "2"]
-    # The rules name the open bay for built-in objects, in the edit and in the review.
-    assert "leave the empty bay it occupied open to its full depth" in calls[0]["prompt"]
-    assert "never fill that space with cabinets, doors, drawers, panels" in calls[0]["prompt"]
-    assert "not new cabinets, doors, drawers or panels" in completion.REVIEW_PROMPT
+    # The rules name the open bay only for a built-in task object, in the edit and
+    # in the review, and never let the editor touch anything else.
+    assert "Only where a listed task object was itself built" in calls[0]["prompt"]
+    assert "leave the opening it occupied open to its full depth" in calls[0]["prompt"]
+    assert "never fill that opening with new fronts, panels or other objects" in calls[0]["prompt"]
+    assert "Never remove, open or replace anything that is not a listed task object" in calls[0]["prompt"]
+    assert "not new fronts, panels or other fill" in completion.REVIEW_PROMPT
     # Objects next to the removed one stay, and a covered rug or mat continues underneath.
     assert "even where they touch or sit next to the removed object" in calls[0]["prompt"]
     assert "continue it underneath" in calls[0]["prompt"]

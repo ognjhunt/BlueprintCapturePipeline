@@ -192,12 +192,13 @@ def test_edit_prompt_names_every_object_and_the_view_showing_most_objects_anchor
     assert all(call["prompt"] == prompt for call in calls)
 
 
-# The dishwasher scene's retained paid edits and reviews are content addressed.
-# These digests were computed on origin/main (including its #2199 review prompt).
-SINGLE_BINDING_DIGEST = "sha256:852a8de192a120f450bb5c2e03e2aea4df43d6a1ee4e638852786432154009af"
-SINGLE_REPAIR_BINDING_DIGEST = "sha256:0903c71068138cff0197884eb750175e8ed6fcaac057607a08616a0b7b720dae"
-REVIEW_PROMPT_SHA256 = "14bc55f4b4b5fdeb0149834387716880bf1f779ce1c07fd5ef9231aa5c1b643e"
-PROMPT_SHA256 = "f3ec969f5d959f4a5696ebc1afeb73f197cea8ee94681b38eedc6b55502f026e"
+# Retained paid edits and reviews are content addressed, so a prompt change is
+# deliberate. 2026-10-29: the prompts name roles, never a kind of object (owner
+# rule), and edits keep only the removal zone; earlier receipts are not reused.
+SINGLE_BINDING_DIGEST = "sha256:442f9b2b8447fdf2746d788b204e2970283875c819675079bed370318c6823dc"
+SINGLE_REPAIR_BINDING_DIGEST = "sha256:0779c76832766b43e94e4da7247d01d20b91d8fdac9cb94f67acfeb030a0d59a"
+REVIEW_PROMPT_SHA256 = "5ff92c802eeb52156f7220512861e255435f9e77d3d0d08697507a8f92103b20"
+PROMPT_SHA256 = "34d6df26da128e25d7f3e4f7d599e77075bebf8b9d6b36ee6bdebe924ce10960"
 
 
 def test_single_object_edit_and_review_requests_are_byte_identical_to_before(tmp_path):

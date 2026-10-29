@@ -395,4 +395,4 @@ def test_novel_view_review_rejects_invented_objects_on_known_surfaces():
     assert 'consistent_background false' in prompt
     assert 'minor blur, seams, speckling' in prompt
     assert 'clear task obstruction' in prompt
-    assert 'generic cabinet door' in prompt
+    assert 'generic front' in prompt

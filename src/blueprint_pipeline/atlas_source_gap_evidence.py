@@ -24,7 +24,7 @@ SOURCE_FIRST_INSTRUCTIONS = """
 Check the ORIGINAL CAPTURE gallery before proposing any generation. These raw
 frames are evidence for this decision only; they are not additional Atlas inputs.
 They may still show removed task objects. Compare the fixed surrounding surfaces,
-not the appliance or other object that was intentionally removed.
+not the task object that was intentionally removed.
 For EACH selected gap provide source_evidence with its exact gap_id, visibility,
 source_frame_ids and reason. Distinguish: observed_in_conditioning (visible in
 the recorded frames whose IDs are in conditioned_frame_ids),
