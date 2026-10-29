@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/website-task-target-choice.v1.schema.json",
+  "title": "The one optional in-job question 'we picked this object; is it the one the robot should move?' and the site's answer",
+  "description": "question is the website_preparation_status.v4 'question' field: preparation already continued with guessed_candidate_id, its best supported guess, and the site may confirm it, pick another candidate (which reruns the same job from retained work), or say none of these (the same-job walkthrough update). It is optional and never makes the job wait. answer is what the WebApp returns to the Pipeline's signed task-target-choice control read. Candidates are opaque ids and position labels derived from segmentation masks; no image or pixel data crosses this boundary. answer_digest is the RFC 8785 cross-runtime digest of the answer without answer_digest.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/question"
+    },
+    {
+      "$ref": "#/$defs/answer"
+    }
+  ],
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "targetId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "candidateId": {
+      "type": "string",
+      "pattern": "^c[0-9a-f]{16}$"
+    },
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "question_digest",
+        "target_id",
+        "semantic_label",
+        "candidate_set_digest",
+        "guessed_candidate_id",
+        "candidates"
+      ],
+      "properties": {
+        "kind": {
+          "const": "task_target_choice"
+        },
+        "question_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "target_id": {
+          "$ref": "#/$defs/targetId"
+        },
+        "semantic_label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "candidate_set_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "guessed_candidate_id": {
+          "$ref": "#/$defs/candidateId"
+        },
+        "candidates": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "candidate_id",
+              "label",
+              "reference_time_ms"
+            ],
+            "properties": {
+              "candidate_id": {
+                "$ref": "#/$defs/candidateId"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "reference_time_ms": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 86400000
+              }
+            }
+          }
+        }
+      }
+    },
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "request_id",
+        "scene_id",
+        "capture_id",
+        "completion_marker_generation",
+        "producer_delivery_key",
+        "source_payload_sha256",
+        "task_context_digest",
+        "question_digest",
+        "target_id",
+        "candidate_set_digest",
+        "guessed_candidate_id",
+        "choice",
+        "answered_at",
+        "answer_digest"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "website_task_target_choice_answer.v1"
+        },
+        "request_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+        },
+        "scene_id": {
+          "type": "string",
+          "pattern": "^site-[A-Za-z0-9][A-Za-z0-9._-]{0,119}$"
+        },
+        "capture_id": {
+          "type": "string",
+          "pattern": "^(walkthrough-[A-Za-z0-9][A-Za-z0-9._-]{0,119}|supplement-[0-9a-f]{40})$"
+        },
+        "completion_marker_generation": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]{0,19}$"
+        },
+        "producer_delivery_key": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_payload_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "task_context_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "question_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "target_id": {
+          "$ref": "#/$defs/targetId"
+        },
+        "candidate_set_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "guessed_candidate_id": {
+          "$ref": "#/$defs/candidateId"
+        },
+        "choice": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "candidate_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "confirm_guess"
+                },
+                "candidate_id": {
+                  "$ref": "#/$defs/candidateId"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "candidate_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "other_candidate"
+                },
+                "candidate_id": {
+                  "$ref": "#/$defs/candidateId"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "none_of_these"
+                }
+              }
+            }
+          ]
+        },
+        "answered_at": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "answer_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "kind": "task_target_choice",
+      "question_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "target_id": "target-1",
+      "semantic_label": "Tote",
+      "candidate_set_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "guessed_candidate_id": "c0123456789abcdef",
+      "candidates": [
+        {
+          "candidate_id": "c0123456789abcdef",
+          "label": "Tote 1: left side, center of the view",
+          "reference_time_ms": 4000
+        },
+        {
+          "candidate_id": "cfedcba9876543210",
+          "label": "Tote 2: right side, center of the view",
+          "reference_time_ms": 4000
+        }
+      ]
+    },
+    {
+      "schema_version": "website_task_target_choice_answer.v1",
+      "request_id": "req-1",
+      "scene_id": "site-req-1",
+      "capture_id": "walkthrough-req-1",
+      "completion_marker_generation": "1700000000000001",
+      "producer_delivery_key": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "source_payload_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "task_context_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "question_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "target_id": "target-1",
+      "candidate_set_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "guessed_candidate_id": "c0123456789abcdef",
+      "choice": {
+        "kind": "other_candidate",
+        "candidate_id": "cfedcba9876543210"
+      },
+      "answered_at": "2026-10-29T12:00:00.000Z",
+      "answer_digest": "sha256:691b872ecc4c461cc039ffbe17bf6c4cecaa663a822e0a9dda3a2435ed1c53f3"
+    },
+    {
+      "schema_version": "website_task_target_choice_answer.v1",
+      "request_id": "req-1",
+      "scene_id": "site-req-1",
+      "capture_id": "walkthrough-req-1",
+      "completion_marker_generation": "1700000000000001",
+      "producer_delivery_key": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "source_payload_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "task_context_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "question_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "target_id": "target-1",
+      "candidate_set_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "guessed_candidate_id": "c0123456789abcdef",
+      "choice": {
+        "kind": "confirm_guess",
+        "candidate_id": "c0123456789abcdef"
+      },
+      "answered_at": "2026-10-29T12:00:00.000Z",
+      "answer_digest": "sha256:1b1728e214c53ff9b7f092a289a276a644a521941e6d043e6cec99bd6d7348dd"
+    },
+    {
+      "schema_version": "website_task_target_choice_answer.v1",
+      "request_id": "req-1",
+      "scene_id": "site-req-1",
+      "capture_id": "walkthrough-req-1",
+      "completion_marker_generation": "1700000000000001",
+      "producer_delivery_key": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "source_payload_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
+      "task_context_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "question_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "target_id": "target-1",
+      "candidate_set_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "guessed_candidate_id": "c0123456789abcdef",
+      "choice": {
+        "kind": "none_of_these"
+      },
+      "answered_at": "2026-10-29T12:00:00.000Z",
+      "answer_digest": "sha256:f5c73fddabd43ebf7260213aeb9a7706bb44624aec96220a2b1206e3fa11e9ff"
+    }
+  ]
+}

@@ -241,15 +241,26 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
     try:
         context = load_current_website_task_context(request_id=job["request_id"], scene_id=job["scene_id"],
                                                     capture_id=job["capture_id"], purpose="scene_preparation")
+        correction = {}
+        if job.get('target_correction'):
+            from .website_target_background_worker import advance_correction, publish_correction
+            correction = {
+                "run_step": lambda: advance_correction(job=job, job_dir=job_dir, capture_root=capture_root,
+                    context=context, max_polls=1, checkpoint=checkpoint),
+                "publish_result": lambda result: publish_correction(job_dir=job_dir, result=result,
+                    capture_root=capture_root, context=context, checkpoint=checkpoint),
+            }
         return advance_preparation_step(job, job_dir=job_dir, source_video=capture_root / job["source_video"],
-                                        task_context=context, checkpoint=checkpoint, now=now)
+                                        task_context=context, checkpoint=checkpoint, now=now, **correction)
     except Exception as error:  # noqa: BLE001 - the source adapter owns its typed refusal
         return _failed_step(job, error, current)
 
 
 def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video: Path,
                              task_context: Mapping[str, Any], checkpoint: Callable[[str], None],
-                             now: Callable[[], float]) -> dict[str, Any]:
+                             now: Callable[[], float],
+                             run_step: Callable[[], Mapping[str, Any]] | None = None,
+                             publish_result: Callable[[Mapping[str, Any]], None] | None = None) -> dict[str, Any]:
     """The shared controller/result step; source adapters retain their own identity and authority.
 
     Website previews and owned uploads use the same bounded provider resume,
@@ -259,8 +270,8 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
     from .website_atlas_pipeline import run_atlas_pipeline
     current = int(now())
     try:
-        result = run_atlas_pipeline(source_video=source_video, output_root=job_dir,
-                                    task_context=task_context, max_polls=1, checkpoint=checkpoint)
+        result = (run_step() if run_step is not None else run_atlas_pipeline(source_video=source_video,
+            output_root=job_dir, task_context=task_context, max_polls=1, checkpoint=checkpoint))
         if result["status"] == "processing":
             return _transition(job, current, "processing", None, stage=result["stage"], transient_failures=0,
                                next_attempt_at_epoch=current)
@@ -273,13 +284,15 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
                                stage='preserved_scene_completion', result_digest=result.get('digest'))
         if not result.get("download"):
             reason = (_reason(ValueError(result["reason"]))
-                      if result.get("stage") == "source_pose" and result.get("reason")
+                      if result.get("stage") in {"source_pose", "target_correction"} and result.get("reason")
                       else "atlas_background_review_required")
             return _transition(job, current, "needs_input", reason,
                                stage=result.get("stage", "background_review"), result_digest=result.get("digest"))
         # The last paid-stage checkpoint is behind the final provider call, fusion and export.
         checkpoint("archive")
         archive = _archive(job, result)
+        if publish_result is not None:
+            publish_result(result)
     except Exception as error:  # noqa: BLE001 - every outcome is a typed job state, never a raise
         return _failed_step(job, error, current)
     try:
