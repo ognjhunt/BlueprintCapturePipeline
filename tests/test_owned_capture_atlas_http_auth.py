@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import hashlib
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -126,13 +125,88 @@ def test_signed_wrong_owner_cannot_read_actual_job(owned, client):
     assert _post(client, "inspect", command).status_code == 409
 
 
+def _ready_owned_result(owned):
+    from tests.test_owned_capture_atlas_reconstruction import _write_retained_result
+    path = owned.state / "plans" / owned.plan["plan_id"] / "atlas" / "owned_job.json"
+    result, manifest = _write_retained_result(path.parent, owned.plan)
+    job = json.loads(path.read_text())
+    job.update(state="ready", stage="archived", result_digest=result["digest"], splat_available=True,
+        archive={"digest": result["download"]["zip_sha256"],
+                 "size_bytes": (path.parent / "download.zip").stat().st_size,
+                 "filename": "capture-session-1.zip", "manifest_digest": manifest["digest"]})
+    path.write_text(json.dumps(job))
+    return path, job
+
+
+def test_actual_hmac_ready_inspect_and_repeat_execute_adopt_without_dispatch(owned, client, monkeypatch):
+    path, _ = _ready_owned_result(owned)
+    monkeypatch.setattr(controller, "run_atlas_pipeline", lambda **_: pytest.fail("status dispatched provider"))
+    response = _post(client, "inspect", _read_command(owned), nonce="ready-projection")
+    assert response.status_code == 200, response.text
+    status = response.json()
+    normal = status["reconstruction"]
+    assert normal["plan_id"] == owned.plan["plan_id"]
+    assert normal["execution_result"]["state"] == "partial"
+    assert normal["execution_result"]["cost_usd"] is None
+    assert normal["execution_result"]["results"][0]["outputs"] == ["appearance_layer"]
+    retained = path.parent.parent / "artifacts/owned_atlas_reconstruction_projection.json"
+    before = retained.read_bytes(), retained.stat().st_mtime_ns
+    repeat = _post(client, "inspect", _read_command(owned), nonce="ready-repeat")
+    assert repeat.status_code == 200 and repeat.json() == status
+    execute = {"schema_version": "owned_capture_atlas_execution_submission.v1",
+        "plan_id": owned.plan["plan_id"], "task_context_digest": owned.plan["source_context"]["context_digest"],
+        "source_video_digest": owned.digest, "owner_user_id": "owner", "idempotency_key": "owned-execution-1"}
+    repeated_execute = _post(client, "execute", execute, nonce="repeat-ready-execute")
+    assert repeated_execute.status_code == 200, repeated_execute.text
+    assert repeated_execute.json() == status
+    assert (retained.read_bytes(), retained.stat().st_mtime_ns) == before
+
+
+def test_actual_hmac_status_refuses_tampered_asset_even_after_projection(owned, client):
+    path, _ = _ready_owned_result(owned)
+    assert _post(client, "inspect", _read_command(owned), nonce="before-tamper").status_code == 200
+    (path.parent / "download/splat/draft.ply").write_bytes(b"changed-after-adoption")
+    response = _post(client, "inspect", _read_command(owned), nonce="after-tamper")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "owned_atlas_reconstruction_asset_changed"
+
+
+@pytest.mark.parametrize("state", ["processing", "needs_input", "failed", "withdrawn"])
+def test_actual_hmac_non_success_never_promotes_retained_output(owned, client, state):
+    path, job = _ready_owned_result(owned)
+    job.update(state=state, reason="hermetic_stopped_stage")
+    path.write_text(json.dumps(job))
+    response = _post(client, "inspect", _read_command(owned), nonce="not-success-" + state)
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == state
+    assert response.json()["reconstruction"] is None and response.json()["bundle"] is None
+    assert not (path.parent.parent / "artifacts/owned_atlas_reconstruction_projection.json").exists()
+
+
+def test_actual_hmac_withdrawal_hides_previous_normal_projection(owned, client):
+    import hashlib
+    _ready_owned_result(owned)
+    assert _post(client, "inspect", _read_command(owned), nonce="before-withdrawal").status_code == 200
+    marker = hashlib.sha256(b"capture-session-1\0intake-1").hexdigest()
+    path = owned.store / "lifecycle_tombstones" / (marker + ".json")
+    path.parent.mkdir(parents=True)
+    path.write_text('{"revoked":true}')
+    response = _post(client, "inspect", _read_command(owned), nonce="after-withdrawal")
+    assert response.status_code == 200
+    assert response.json()["state"] == "withdrawn"
+    assert response.json()["reconstruction"] is None and response.json()["bundle"] is None
+
+
 def test_actual_hmac_owner_bundle_stream_and_digest_binding(owned, client, monkeypatch):
-    payload = b"hermetic-private-reconstruction-bundle"
-    digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+    from tests.test_owned_capture_atlas_reconstruction import _write_retained_result
     job_path = owned.state / "plans" / owned.plan["plan_id"] / "atlas" / "owned_job.json"
+    result, manifest = _write_retained_result(job_path.parent, owned.plan)
+    payload = (job_path.parent / "download.zip").read_bytes()
+    digest = result["download"]["zip_sha256"]
     job = json.loads(job_path.read_text())
-    job.update(state="ready", stage="archived", archive={"digest": digest, "size_bytes": len(payload),
-        "filename": "capture-session-1.zip", "manifest_digest": "sha256:" + "b" * 64})
+    job.update(state="ready", stage="archived", result_digest=result["digest"],
+        archive={"digest": digest, "size_bytes": len(payload),
+        "filename": "capture-session-1.zip", "manifest_digest": manifest["digest"]})
     job_path.write_text(json.dumps(job))
     reads = []
 

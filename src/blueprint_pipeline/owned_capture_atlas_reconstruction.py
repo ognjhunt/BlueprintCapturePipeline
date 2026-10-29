@@ -161,7 +161,8 @@ def project_owned_atlas_reconstruction(*, owned_plan: Mapping[str, Any], job: Ma
 
 
 def adopt_owned_atlas_reconstruction(*, state_root: Path, capture_store_root: Path, plan_id: str,
-                                    expected_execution_result_digest: str | None = None) -> dict[str, Any]:
+                                    expected_execution_result_digest: str | None = None,
+                                    expected_owner_user_id: str | None = None) -> dict[str, Any]:
     """Verify local retained bytes and immutable source; never dispatch a provider."""
     from .owned_capture_atlas_runtime import bind_owned_atlas_source, owned_atlas_source_checkpoint
     from .owned_capture_atlas_worker import _job_path, _check_job_source, read_job
@@ -185,6 +186,8 @@ def adopt_owned_atlas_reconstruction(*, state_root: Path, capture_store_root: Pa
         checkpoint = owned_atlas_source_checkpoint(context)
         checkpoint("owned_atlas_result_adoption")
         job = read_job(path)
+        if expected_owner_user_id is not None and job["owner_user_id"] != expected_owner_user_id:
+            raise ValueError("owned_capture_atlas_owner_mismatch")
         _check_job_source(job, context=context, path=path)
         owned_plan = read(path.parent.parent / "artifacts/owned_atlas_preparation_plan.json")
         binding = read(path.parent / "execution_binding.json")

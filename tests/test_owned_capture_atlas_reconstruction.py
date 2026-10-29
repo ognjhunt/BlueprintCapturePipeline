@@ -24,14 +24,8 @@ def sha(value):
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
-@pytest.fixture
-def retained(tmp_path):
-    store, state = tmp_path / "store", tmp_path / "state"
-    session, intake, digest = _seed_owned_atlas_source(store)
-    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
-        capture_session_id=session, intake_id=intake, requested_claim_types=["navigation_clearance"],
-        idempotency_key="retained-plan")
-    root = state / "plans" / plan["plan_id"] / "atlas"
+def _write_retained_result(root, plan):
+    digest = plan["source_video_digest"]
     directory = root / "download"
     (directory / "splat").mkdir(parents=True)
     data = b"ply\nformat ascii 1.0\nelement vertex 0\nend_header\n"
@@ -50,13 +44,29 @@ def retained(tmp_path):
         "download": {"directory": str(directory), "zip_path": str(archive), "zip_sha256": sha(archive.read_bytes()),
                      "manifest_digest": manifest["digest"]}}
     result["digest"] = canonical_digest(result, digest_field="digest")
+    result.update(status="ready", splat_available=True, mesh_available=False)
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    (root / "result.json").write_text(json.dumps(result))
+    return result, manifest
+
+
+@pytest.fixture
+def retained(tmp_path):
+    store, state = tmp_path / "store", tmp_path / "state"
+    session, intake, digest = _seed_owned_atlas_source(store)
+    plan = prepare_owned_capture_atlas_plan(state_root=state, capture_store_root=store,
+        capture_session_id=session, intake_id=intake, requested_claim_types=["navigation_clearance"],
+        idempotency_key="retained-plan")
+    root = state / "plans" / plan["plan_id"] / "atlas"
+    result, manifest = _write_retained_result(root, plan)
     job = {"schema_version": "owned_capture_atlas_job.v1", "state": "ready", "plan_id": plan["plan_id"],
         "request_id": plan["plan_id"], "plan_digest": plan["plan_digest"], "capture_id": session,
         "intake_id": intake, "owner_user_id": "owner", "task_context_digest": result["task_context_digest"],
         "source_video_digest": digest, "result_digest": result["digest"], "authorization_digest": "sha256:" + "6" * 64,
         "enqueued_at_epoch": 10, "revised_at_epoch": 20, "updated_at_epoch": 20,
         "archive": {"digest": result["download"]["zip_sha256"], "manifest_digest": manifest["digest"],
-                    "size_bytes": archive.stat().st_size}}
+                    "size_bytes": (root / "download.zip").stat().st_size, "filename": "capture-session-1.zip"},
+        "stage": "archived", "reason": None, "revision": 2, "splat_available": True}
     (root / "owned_job.json").write_text(json.dumps(job))
     (root / "execution_binding.json").write_text(json.dumps({**job, "schema_version": "owned_capture_atlas_queue_binding.v1"}))
     (root / "result.json").write_text(json.dumps(result))

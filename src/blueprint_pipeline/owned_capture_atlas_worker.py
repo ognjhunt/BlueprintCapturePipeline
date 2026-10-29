@@ -92,23 +92,21 @@ def enqueue_owned_atlas(*, state_root: Path, capture_store_root: Path, plan_id: 
         path.parent.mkdir(parents=True, exist_ok=True)
         with preparation_job_lock(path.parent):
             _write_immutable(path.parent / "execution_binding.json", command)
-            if path.exists():
-                return inspect_owned_atlas(state_root=state_root, capture_store_root=capture_store_root,
-                                            plan_id=plan_id, owner_user_id=owner)
-            # Reopen after remote configuration/lock acquisition. No queued work
-            # can outlive a revocation which landed during those checks.
-            checkpoint("owned_atlas_enqueue_commit")
-            current = int(now())
-            plan_path = path.parent.parent / "artifacts" / "owned_atlas_preparation_plan.json"
-            plan = json.loads(plan_path.read_text())
-            job = {**command, "schema_version": SCHEMA, "request_id": plan_id,
-                   "plan_digest": plan["plan_digest"], "state": "processing", "reason": None,
-                   "stage": "queued", "enqueued_at_epoch": current, "revision": 1,
-                   "revised_at_epoch": current, "updated_at_epoch": current,
-                   "next_attempt_at_epoch": current, "retry_at_epoch": None, "transient_failures": 0,
-                   "archive": None, "provider_cleanup": None, "delivered_revision": 0,
-                   "delivery_attempts": 0, "delivery_next_at_epoch": 0}
-            write_json(path, job)
+            if not path.exists():
+                # Reopen after remote configuration/lock acquisition. No queued work
+                # can outlive a revocation which landed during those checks.
+                checkpoint("owned_atlas_enqueue_commit")
+                current = int(now())
+                plan_path = path.parent.parent / "artifacts" / "owned_atlas_preparation_plan.json"
+                plan = json.loads(plan_path.read_text())
+                job = {**command, "schema_version": SCHEMA, "request_id": plan_id,
+                       "plan_digest": plan["plan_digest"], "state": "processing", "reason": None,
+                       "stage": "queued", "enqueued_at_epoch": current, "revision": 1,
+                       "revised_at_epoch": current, "updated_at_epoch": current,
+                       "next_attempt_at_epoch": current, "retry_at_epoch": None, "transient_failures": 0,
+                       "archive": None, "provider_cleanup": None, "delivered_revision": 0,
+                       "delivery_attempts": 0, "delivery_next_at_epoch": 0}
+                write_json(path, job)
     return inspect_owned_atlas(state_root=state_root, capture_store_root=capture_store_root,
                                 plan_id=plan_id, owner_user_id=owner)
 
@@ -189,7 +187,7 @@ def projection(job: Mapping[str, Any]) -> dict[str, Any]:
     value = {"schema_version": "owned_capture_atlas_execution.v1",
              **{key: job[key] for key in ("plan_id", "capture_id", "intake_id", "plan_digest",
                 "task_context_digest", "source_video_digest", "authorization_digest", "state", "stage", "reason", "revision")},
-             "updated_at_epoch": job["updated_at_epoch"],
+             "updated_at_epoch": job["updated_at_epoch"], "reconstruction": None,
              "bundle": None if archive is None else {key: archive[key] for key in
                  ("digest", "size_bytes", "filename", "manifest_digest")},
              "splat_available": bool(job.get("splat_available")), "mesh_available": bool(job.get("mesh_available")),
@@ -210,8 +208,19 @@ def inspect_owned_atlas(*, state_root: Path, capture_store_root: Path, plan_id: 
         raise ValueError("owned_capture_atlas_owner_mismatch")
     # An owner read may retain a reason after revocation, but it never exposes
     # a bundle whose source is now gone or changed.
-    return projection(_refresh_source(job, state_root=state_root, capture_store_root=capture_store_root,
-                                      path=path, now=time.time))
+    job = _refresh_source(job, state_root=state_root, capture_store_root=capture_store_root,
+                          path=path, now=time.time)
+    value = projection(job)
+    if job["state"] == "ready":
+        from .owned_capture_atlas_reconstruction import adopt_owned_atlas_reconstruction
+        retained = adopt_owned_atlas_reconstruction(state_root=state_root,
+            capture_store_root=capture_store_root, plan_id=plan_id, expected_owner_user_id=owner_user_id)
+        # Adoption reopens source/job/bytes beneath the shared lifecycle lock.
+        # A status read performs local verification only, never a provider tick.
+        value["reconstruction"] = {"plan_id": plan_id, "reconstruction_plan": retained["reconstruction_plan"],
+                                   "execution_result": retained["execution_result"]}
+        value["execution_digest"] = cross_runtime_canonical_digest(value, digest_field="execution_digest")
+    return value
 
 
 def open_owned_bundle(*, state_root: Path, capture_store_root: Path, plan_id: str,
@@ -253,9 +262,10 @@ def retry_owned_atlas(*, state_root: Path, capture_store_root: Path, plan_id: st
             if configuration["authority"]["authorization_digest"] != job["authorization_digest"]:
                 raise ValueError("owned_capture_atlas_job_authority_changed")
 
-    job = retry_preparation_job(path, reader=read_job, source_check=source_check, preflight=preflight,
+    retry_preparation_job(path, reader=read_job, source_check=source_check, preflight=preflight,
                                  request_id=key, now=now)
-    return projection(job)
+    return inspect_owned_atlas(state_root=state_root, capture_store_root=capture_store_root,
+                               plan_id=plan_id, owner_user_id=owner)
 
 
 def tick(*, state_root: Path, capture_store_root: Path, now: Callable[[], float] = time.time) -> dict[str, int]:

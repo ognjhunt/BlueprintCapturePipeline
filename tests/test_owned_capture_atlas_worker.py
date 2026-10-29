@@ -110,8 +110,9 @@ def test_queue_rechecks_revocation_after_remote_authority_read(owned, configurat
 def test_worker_resumes_same_original_source_and_archives_without_execution_claim(owned, configuration, monkeypatch):
     _enqueue(owned, configuration, monkeypatch)
     calls, published = [], []
-    bundle = owned.path.parent / "retained-bundle.zip"
-    bundle.write_bytes(b"hermetic reconstruction bundle")
+    from tests.test_owned_capture_atlas_reconstruction import _write_retained_result
+    retained_result, _ = _write_retained_result(owned.path.parent, owned.plan)
+    bundle = owned.path.parent / "download.zip"
     digest = "sha256:" + hashlib.sha256(bundle.read_bytes()).hexdigest()
 
     def run(**options):
@@ -123,10 +124,7 @@ def test_worker_resumes_same_original_source_and_archives_without_execution_clai
         options["checkpoint"]("test-before-provider")
         if len(calls) == 1:
             return {"status": "processing", "stage": "source_pose"}
-        return {"status": "ready", "stage": "complete", "digest": "sha256:" + "a" * 64,
-                "download": {"zip_path": str(bundle), "zip_sha256": digest,
-                             "manifest_digest": "sha256:" + "b" * 64}, "splat_available": True,
-                "mesh_available": True}
+        return retained_result
 
     def publish(**options):
         published.append(options)
@@ -147,7 +145,8 @@ def test_worker_resumes_same_original_source_and_archives_without_execution_clai
     assert value["scale_status"] == "unscaled_provider_world_units"
     assert not any(value["proof_boundary"].values())
     assert value["execution_digest"] == cross_runtime_canonical_digest(value, digest_field="execution_digest")
-    assert json.loads((owned.path.parent / "owned_status.json").read_text()) == value
+    assert value["reconstruction"]["execution_result"]["cost_usd"] is None
+    assert json.loads((owned.path.parent / "owned_status.json").read_text()) == worker.projection(json.loads(owned.path.read_text()))
 
 
 def test_revoked_owned_source_stops_controller_and_cleans_retained_assets(owned, configuration, monkeypatch):
