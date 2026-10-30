@@ -817,6 +817,12 @@ def test_spend_guard_refresh_leaves_a_bounded_idle_window_after_slow_runs():
             "a slow guard refresh must leave waiting workers an idle window, "
             "then refresh again within two minutes"
         )
+    # Paid admission accepts a report at most five minutes old. A typical slow run
+    # (about the observed 90th percentile) plus the wait must refresh within it,
+    # and a deploy that restarts the timer must not wait for a full cycle.
+    cycle = 208 + seconds(settings["OnUnitInactiveSec"]) + seconds(settings["RandomizedDelaySec"])
+    assert cycle <= 300
+    assert seconds(settings["OnActiveSec"]) <= 60
 
 
 def test_main_deploy_image_includes_ffmpeg_for_clip_and_keyframe_lanes():
