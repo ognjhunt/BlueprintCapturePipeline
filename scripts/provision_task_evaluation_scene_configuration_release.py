@@ -51,6 +51,7 @@ from scripts.build_task_evaluation_scene_configuration_native_import_component i
     build_native_import_scene_configuration_component,
 )
 from scripts.build_task_evaluation_scene_configuration_toolchain import (
+    admit_proven_readback,
     build_published_scene_configuration_toolchain,
 )
 from scripts.build_task_evaluation_splat_render_runtime import (
@@ -287,6 +288,9 @@ def provision_scene_configuration_release(
             "toolchain_digest": toolchain["toolchain_digest"],
         }
     else:
+        # Before any component copies them: inodes an earlier toolchain's
+        # readback read in full are not digested or read through again.
+        proven_readback = admit_proven_readback(toolchain_root, readback_actor=readback_actor)
         vgg16_weights = materialize_vgg16_weights(
             cache_root=runtimes / "public-model-cache"
         )
@@ -336,6 +340,7 @@ def provision_scene_configuration_release(
                 readback=readback,
                 readback_actor=readback_actor,
                 component_packages=component_packages,
+                proven_readback=proven_readback,
             )
         finally:
             _remove_tree(component_parent)
@@ -364,7 +369,7 @@ def provision_scene_configuration_release(
 
 
 def service_account_readback(user: str) -> ServiceAccountReader:
-    """One service-account process reads back every published byte of this release."""
+    """One service-account process reads back this release's bytes, or opens inodes it already read."""
     return ServiceAccountReader(user)
 
 

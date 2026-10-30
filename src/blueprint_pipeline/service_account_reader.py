@@ -13,6 +13,10 @@ Bytes stream in bounded chunks. Reading each file whole held every byte twice
 on the root side and once in the account process; on 2026-10-13 the first
 ARTISAN toolchain (libtorch_cuda.so is 1.19 GB) failed the deploy that way.
 ``digest`` hashes the stream without keeping it.
+
+``identity`` has the account open a file for reading and report its own
+descriptor's sealed identity without reading the bytes: for an inode an earlier
+release's readback already read in full (see ``readback_ledger``).
 """
 
 from __future__ import annotations
@@ -26,25 +30,35 @@ from pathlib import Path
 from typing import IO
 
 # Runs as the service account under ``python -I -S``: no site, no environment.
-# Request: 4-byte big-endian length + path bytes. Reply: status byte. On 0 (read)
-# the bytes follow as chunks, each a 4-byte big-endian length + bytes, ended by
-# a zero-length chunk. On 1 (refused) an 8-byte big-endian length + the refusal
-# follows. A read error after the first chunk ends the stream with length
-# 0xFFFFFFFF, then the refusal as on 1.
+# Request: operation byte (r: read, i: identity) + 4-byte big-endian length +
+# path bytes. Reply: status byte. On 0 (read) the bytes follow as chunks, each a
+# 4-byte big-endian length + bytes, ended by a zero-length chunk; on 0
+# (identity) an 8-byte big-endian length + the opened descriptor's sealed
+# identity as space-separated decimals. On 1 (refused) an 8-byte big-endian
+# length + the refusal follows. A read error after the first chunk ends the
+# stream with length 0xFFFFFFFF, then the refusal as on 1.
 CHUNK_BYTES = 4 * 1024 * 1024
 _READER = r"""
-import sys
+import os, sys
 requests, replies = sys.stdin.buffer, sys.stdout.buffer
 while True:
-    head = requests.read(4)
-    if len(head) < 4:
+    head = requests.read(5)
+    if len(head) < 5:
         break
-    path = requests.read(int.from_bytes(head, "big"))
+    operation, path = head[:1], requests.read(int.from_bytes(head[1:], "big"))
     try:
         stream = open(path, "rb")
     except OSError as exc:
         body = repr(exc).encode("utf-8", "replace")
         replies.write(b"\1" + len(body).to_bytes(8, "big") + body)
+        replies.flush()
+        continue
+    if operation == b"i":
+        with stream:
+            value = os.fstat(stream.fileno())
+        body = " ".join(str(field) for field in (value.st_dev, value.st_ino, value.st_size,
+            value.st_mtime_ns, value.st_mode, value.st_uid, value.st_gid)).encode()
+        replies.write(b"\0" + len(body).to_bytes(8, "big") + body)
         replies.flush()
         continue
     replies.write(b"\0")
@@ -123,20 +137,30 @@ class ServiceAccountReader:
         self._stream(path, consume)
         return size, "sha256:" + hasher.hexdigest()
 
-    def _stream(self, path: Path, consume) -> None:
+    def identity(self, path: Path) -> tuple[int, ...]:
+        """``sealed_identity`` of the inode the account opened for reading at ``path``; no bytes read."""
+        fields: list[int] = []
+        self._stream(path, fields.extend, operation=b"i")
+        return tuple(fields)
+
+    def _stream(self, path: Path, consume, *, operation: bytes = b"r") -> None:
         if self.closed:
             raise ValueError("service_account_reader_closed")
         encoded = os.fsencode(Path(path))
         process = self._process
         assert process.stdin is not None and process.stdout is not None
         try:
-            process.stdin.write(len(encoded).to_bytes(4, "big") + encoded)
+            process.stdin.write(operation + len(encoded).to_bytes(4, "big") + encoded)
             process.stdin.flush()
             status = _read_exactly(process.stdout, 1)
             if status != b"\0":
                 refusal = _read_exactly(process.stdout, int.from_bytes(_read_exactly(process.stdout, 8), "big"))
                 # The per-file reader raised CalledProcessError when dd refused.
                 raise subprocess.CalledProcessError(1, ["read", str(path)], stderr=refusal)
+            if operation == b"i":
+                body = _read_exactly(process.stdout, int.from_bytes(_read_exactly(process.stdout, 8), "big"))
+                consume(int(field) for field in body.split())
+                return
             while True:
                 length = int.from_bytes(_read_exactly(process.stdout, 4), "big")
                 if length == 0:
