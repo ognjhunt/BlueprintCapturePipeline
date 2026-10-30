@@ -150,7 +150,9 @@ def validate_beta_authority(value: Mapping[str, Any], *, candidate_id: str,
 def validate_frozen_cell(cell: Mapping[str, Any]) -> dict[str, Any]:
     if (set(cell) != {"cell_id", "seed", "family", "partition", "resolved_scenario",
                      "cell_spec_digest", "resolved_scenario_digest"}
-            or not isinstance(cell["cell_id"], str) or not cell["cell_id"].startswith("screening.")
+            or not isinstance(cell["cell_id"], str)
+            or not re.fullmatch(r"screening\.[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}", cell["cell_id"])
+            or ".." in cell["cell_id"]
             or type(cell["seed"]) is not int or not 0 <= cell["seed"] < 2**31
             or cell["family"] != "canonical_anchor" or cell["partition"] != "screening"
             or not isinstance(cell["resolved_scenario"], Mapping)

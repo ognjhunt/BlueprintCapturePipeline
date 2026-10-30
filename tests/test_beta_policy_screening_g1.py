@@ -144,6 +144,14 @@ def test_four_candidates_have_individual_budget_outcomes_and_explicit_frozen_res
     Draft202012Validator(schema).validate(plan)
 
 
+@pytest.mark.parametrize("cell_id", ["screening./../../escape", "screening.\\..\\escape", "screening...", "screening." + "x" * 201])
+def test_frozen_cell_cannot_escape_output_namespace(cell_id):
+    cell = g1_plan()["candidates"][0]["scenario_cells"][0]
+    cell["cell_id"] = cell_id
+    with pytest.raises(ValueError, match="frozen_cell_invalid"):
+        rights.validate_frozen_cell(cell)
+
+
 def test_no_registration_retains_each_g1_reason_without_displacing_existing_candidates():
     catalog = load_default_catalog()
     value = build_screening_plan(catalog, scene(), campaign_id="unavailable", now=NOW,
