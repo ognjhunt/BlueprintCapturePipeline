@@ -98,6 +98,44 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "scripted_controller_invoked": {
+                  "const": true
+                }
+              },
+              "required": [
+                "scripted_controller_invoked"
+              ]
+            },
+            "then": {
+              "properties": {
+                "scripted_rollout_count": {
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "candidate_policy_queried": {
+                  "const": true
+                }
+              },
+              "required": [
+                "candidate_policy_queried"
+              ]
+            },
+            "then": {
+              "properties": {
+                "learned_policy_rollout_count": {
+                  "minimum": 1
+                }
+              }
+            }
           }
         ],
         "dependentRequired": {

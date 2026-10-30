@@ -147,6 +147,8 @@ def _publication_execution_evidence(configured: Mapping[str, Any], summary: Mapp
     if (any(type(count) is not int or count < 0 for count in counts)
             or sum(counts) > configured.get("episode_count", 0)
             or any(type(fields[key]) is not bool for key in ("scripted_controller_invoked", "candidate_policy_queried"))
+            or fields["scripted_controller_invoked"] and fields["scripted_rollout_count"] == 0
+            or fields["candidate_policy_queried"] and fields["learned_policy_rollout_count"] == 0
             or fields["action_source"] != ("scripted_simulator_state" if scripted else "learned_policy")
             or (scripted and (fields["learned_policy_rollout_count"] != 0 or fields["candidate_policy_queried"]
                 or scored > fields["scripted_rollout_count"] or scored and not fields["scripted_controller_invoked"]))

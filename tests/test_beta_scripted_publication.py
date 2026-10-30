@@ -61,6 +61,19 @@ def test_retained_prestart_failures_do_not_invent_controller_invocation():
     assert row["scripted_rollout_count"] == 10 and row["scripted_controller_invoked"] is False
 
 
+@pytest.mark.parametrize("kind", [KIND, "learned_policy"])
+def test_invocation_requires_at_least_one_retained_episode_record(kind):
+    inputs = publication_inputs()
+    inputs["plan"]["candidates"][0]["execution_evidence_kind"] = kind
+    summary = next(iter(inputs["state"]["candidates"].values()))["summary"]
+    summary.update(episodes_scored=0, episodes_succeeded=0, episodes_failed=0, episodes_void=10,
+        success_rate=None, execution_evidence_kind=kind, scripted_rollout_count=0, learned_policy_rollout_count=0,
+        action_source="scripted_simulator_state" if kind == KIND else "learned_policy",
+        scripted_controller_invoked=kind == KIND, candidate_policy_queried=kind == "learned_policy")
+    with pytest.raises(ValueError, match="beta_screening_result_execution_evidence_invalid"):
+        screening_publication(**inputs)
+
+
 @pytest.mark.parametrize("change", [{"learned_policy_rollout_count": 1}, {"candidate_policy_queried": True},
     {"action_source": "learned_policy"}, {"execution_evidence_kind": "learned_policy"},
     {"scripted_controller_invoked": False}, {"scripted_rollout_count": 2}, {"scripted_rollout_count": True}])
