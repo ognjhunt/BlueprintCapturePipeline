@@ -16,6 +16,9 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .team_policy_episode_outcome import episode_outcome
+from .policy_execution_evidence import (
+    candidate_execution_kinds, evidence_kind, SCRIPTED, SCRIPTED_ACTION_SOURCE, scripted_episode_outcome,
+)
 
 PUBLICATION_SCHEMA = "beta_policy_screening_publication.v2"
 # The job-facing ceiling. The native session keeps its own runtime ceiling,
@@ -81,13 +84,18 @@ def candidate_result_summary(
             score = episode.get("score") if isinstance(episode, Mapping) else None
             if row.get("deterministic_score_digest") != canonical_digest({"value": score}):
                 raise ValueError("beta_screening_result_score_binding_mismatch")
-        outcome, reason = episode_outcome(row)
+        outcome, reason = scripted_episode_outcome(row) if evidence_kind(row) == SCRIPTED else episode_outcome(row)
         outcomes.append({"cell_id": row["cell_id"], "outcome": outcome, "reason": reason})
     succeeded = sum(row["outcome"] == "success" for row in outcomes)
     failed = sum(row["outcome"] == "failure" for row in outcomes)
     void = sum(row["outcome"] == "void" for row in outcomes)
     scored = succeeded + failed
+    kind = candidate_execution_kinds(result)[candidate["candidate_id"]]
     return {
+        **({"execution_evidence_kind": SCRIPTED, "action_source": SCRIPTED_ACTION_SOURCE,
+            "scripted_rollout_count": result["scripted_rollout_count"], "learned_policy_rollout_count": 0,
+            "scripted_controller_invoked": result.get("scripted_controller_invoked") is True,
+            "candidate_policy_queried": False} if kind == SCRIPTED else {}),
         "episodes_scored": scored, "episodes_succeeded": succeeded,
         "episodes_failed": failed, "episodes_void": void,
         "success_rate": succeeded / scored if scored else None,

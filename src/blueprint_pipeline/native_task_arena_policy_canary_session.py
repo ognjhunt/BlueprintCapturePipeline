@@ -29,6 +29,8 @@ try:  # flat provider-bundle layout
         validate_task_success_contract,
     )
     from decision_evidence_contracts import canonical_digest
+    from policy_execution_evidence import (candidate_execution_kinds, evidence_kind, execution_evidence_valid,
+        execution_invoked, retained_rollout_counts, rollout_counts, rollout_counts_valid, rollout_total, SCRIPTED, scripted_fields)
 except ModuleNotFoundError:  # repository package
     from .adp_task_scoring import TaskNeutralScoringError as TaskNeutralScoringError
     from .adp_articulated_task_success_contract import (
@@ -36,6 +38,8 @@ except ModuleNotFoundError:  # repository package
         validate_task_success_contract,
     )
     from .decision_evidence_contracts import canonical_digest
+    from .policy_execution_evidence import (candidate_execution_kinds, evidence_kind, execution_evidence_valid,
+        execution_invoked, retained_rollout_counts, rollout_counts, rollout_counts_valid, rollout_total, SCRIPTED, scripted_fields)
 
 
 SCHEMA_VERSION = "native_task_arena_policy_canary_session.v1"
@@ -306,6 +310,7 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
         "construction_result",
         "policy_readiness",
         "candidate_ids",
+        "candidate_execution_evidence_kinds",
         "cells",
         "execution_authority",
         "resource_authority",
@@ -326,6 +331,7 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise PolicyCanarySessionError("policy_canary_runtime_input_identity_invalid")
     _candidate_set(payload.get("candidate_ids"), payload.get("run_kind"))
+    candidate_execution_kinds(payload)
     _team_admission_binding(payload)
     _beta_admission_binding(payload)
     for field in ("activation_digest", "configuration_digest", "plan_digest"):
@@ -438,15 +444,14 @@ def validate_runtime_input_manifest(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def validate_session_authority(value: Mapping[str, Any]) -> dict[str, Any]:
     payload = json.loads(json.dumps(value, allow_nan=False))
-    candidate_ids = _candidate_set(payload.get("candidate_ids"), payload.get("run_kind"))
+    _candidate_set(payload.get("candidate_ids"), payload.get("run_kind"))
     if (
         payload.get("schema_version") != AUTHORITY_SCHEMA_VERSION
         or payload.get("run_kind") not in RUN_KINDS
         or payload.get("claim_ceiling") != CLAIM_CEILING
         or payload.get("episodes_per_policy")
         != episodes_per_policy_for(payload.get("run_kind"), payload.get("episodes_per_policy"))
-        or payload.get("learned_policy_rollout_count")
-        != payload.get("episodes_per_policy") * len(candidate_ids)
+        or not rollout_counts_valid(payload, payload.get("episodes_per_policy"))
         or payload.get("maximum_provider_allocations") != 1
         or payload.get("retry_cap") != 0
         or payload.get("automatic_retry_authorized") is not False
@@ -537,8 +542,8 @@ def validate_provider_bundle(
         or tuple(payload.get("candidate_ids") or ())
         != tuple(bound_authority["candidate_ids"])
         or payload.get("episodes_per_policy") != bound_authority["episodes_per_policy"]
-        or payload.get("learned_policy_rollout_count")
-        != bound_authority["learned_policy_rollout_count"]
+        or not rollout_counts_valid(payload, bound_authority["episodes_per_policy"])
+        or candidate_execution_kinds(payload) != candidate_execution_kinds(bound_authority)
         or payload.get("maximum_provider_allocations") != 1
         or payload.get("retry_cap") != 0
         or payload.get("candidate_policy_queried") is not False
@@ -582,6 +587,7 @@ def build_session_authority(
         or activation.get("claim_ceiling") != CLAIM_CEILING
         or activation.get("activation_digest") != inputs["activation_digest"]
         or tuple(activation.get("candidate_ids") or ()) != candidate_ids
+        or candidate_execution_kinds(activation) != candidate_execution_kinds(inputs)
         or activation.get("campaign_unit_count") != len(inputs["cells"])
         or activation.get("task_success_contract")
         != inputs["task_success_contract"]
@@ -598,7 +604,7 @@ def build_session_authority(
         "run_id": activation.get("run_id"),
         "candidate_ids": list(candidate_ids),
         "episodes_per_policy": len(inputs["cells"]),
-        "learned_policy_rollout_count": len(inputs["cells"]) * len(candidate_ids),
+        **rollout_counts(candidate_execution_kinds(inputs), len(inputs["cells"])),
         "activation_manifest": _record(
             activation_record, code="policy_canary_session_activation_manifest_invalid"
         ),
@@ -638,6 +644,8 @@ def build_session_authority(
 
 
 def _episode_evidence_valid(episode: Mapping[str, Any]) -> bool:
+    if not execution_evidence_valid(episode):
+        return False
     common_digests = (
         "checkpoint_digest",
         "runtime_identity_digest",
@@ -696,7 +704,7 @@ def _episode_evidence_valid(episode: Mapping[str, Any]) -> bool:
             violations = rejection.get("violations")
             raw_queries = episode.get("candidate_policy_action_queries")
             return (
-                episode.get("candidate_policy_queried") is True
+                execution_invoked(episode)
                 and episode.get("candidate_action_returned") is True
                 and episode.get("actions_reached_robot") is False
                 and episode.get("arm_moved") is False
@@ -733,7 +741,7 @@ def _episode_evidence_valid(episode: Mapping[str, Any]) -> bool:
     )
     return (
         all(_digest(episode.get(field)) for field in required_digests)
-        and episode.get("candidate_policy_queried") is True
+        and execution_invoked(episode)
         and isinstance(episode.get("actions_reached_robot"), bool)
         and isinstance(episode.get("arm_moved"), bool)
         and episode.get("scoring_authority") == "deterministic_simulator_state"
@@ -759,15 +767,14 @@ def validate_session_result(
         or payload.get("claim_ceiling") != CLAIM_CEILING
         or payload.get("episodes_per_policy")
         != episodes_per_policy_for(payload.get("run_kind"), payload.get("episodes_per_policy"))
-        or payload.get("learned_policy_rollout_count")
-        != payload.get("episodes_per_policy") * len(candidate_ids)
+        or not rollout_counts_valid(payload, payload.get("episodes_per_policy"))
         or payload.get("retry_cap") != 0
         or payload.get("warm_session_open_count") != 1
         or payload.get("scene_promotion_performed") is not False
         or payload.get("official_ranking_performed") is not False
         or not isinstance(episodes, list)
-        or (len(episodes) != payload.get("learned_policy_rollout_count") and not strict_partial)
-        or len(episodes) > payload.get("learned_policy_rollout_count", 0)
+        or (len(episodes) != rollout_total(payload) and not strict_partial)
+        or len(episodes) > rollout_total(payload)
         or not strict_result_controls_valid(payload)
     ):
         raise PolicyCanarySessionError("policy_canary_session_result_identity_invalid")
@@ -835,6 +842,7 @@ def validate_session_result(
             or row.get("run_kind") != payload["run_kind"]
             or row.get("claim_ceiling") != CLAIM_CEILING
             or row.get("ranking_eligible") is not False
+            or evidence_kind(row) != candidate_execution_kinds(payload).get(candidate)
             or not _episode_evidence_valid(row)
         ):
             raise PolicyCanarySessionError("policy_canary_session_episode_invalid")
@@ -855,11 +863,15 @@ def validate_session_result(
         observed.add(key)
         by_candidate[candidate].append((cell_id, seed))
     if (
-        (len(observed) != payload["learned_policy_rollout_count"] and not strict_partial)
+        (len(observed) != rollout_total(payload) and not strict_partial)
         or any(sorted(by_candidate[candidate]) != sorted(by_candidate[candidate_ids[0]])
                for candidate in candidate_ids)
     ):
         raise PolicyCanarySessionError("policy_canary_session_pairing_invalid")
+    if SCRIPTED in candidate_execution_kinds(payload).values():
+        if (payload.get("candidate_policy_queried") is not any(row.get("candidate_policy_queried") is True for row in episodes)
+                or payload.get("scripted_controller_invoked") is not any(row.get("scripted_controller_invoked") is True for row in episodes)):
+            raise PolicyCanarySessionError("policy_canary_session_invocation_evidence_invalid")
     completed = not strict_partial and all(row.get("status") == "completed" for row in episodes)
     expected_status = "completed_unqualified" if completed else "blocked"
     if payload.get("status") != expected_status:
@@ -901,7 +913,8 @@ def execute_paired_session(
     candidate_ids = _candidate_set(inputs["candidate_ids"], inputs["run_kind"])
     if bound_authority["runtime_inputs_digest"] != inputs["runtime_inputs_digest"]:
         raise PolicyCanarySessionError("policy_canary_session_runtime_binding_mismatch")
-    if tuple(bound_authority["candidate_ids"]) != candidate_ids:
+    if (tuple(bound_authority["candidate_ids"]) != candidate_ids
+            or candidate_execution_kinds(bound_authority) != candidate_execution_kinds(inputs)):
         raise PolicyCanarySessionError("policy_canary_session_candidate_binding_mismatch")
     if selected_cell_index is not None and (
         isinstance(selected_cell_index, bool)
@@ -915,6 +928,7 @@ def execute_paired_session(
         else [inputs["cells"][selected_cell_index]]
     )
     expected_episode_count = len(candidate_ids) * len(selected_cells)
+    kinds = candidate_execution_kinds(inputs)
     session = None
     episodes: list[dict[str, Any]] = []
     policy_loads: list[dict[str, Any]] = []
@@ -960,6 +974,8 @@ def execute_paired_session(
                     context = {
                         **cell,
                         "candidate_id": candidate_id,
+                        **({"execution_evidence_kind": SCRIPTED, "action_source": "scripted_simulator_state"}
+                           if kinds[candidate_id] == SCRIPTED else {}),
                         "run_kind": inputs["run_kind"],
                         "claim_ceiling": CLAIM_CEILING,
                         "policy_outcome_interpretable": False,
@@ -1020,13 +1036,19 @@ def execute_paired_session(
                             ),
                         )
                     observed.update(context)
+                    if kinds[candidate_id] == SCRIPTED:
+                        for field, value in scripted_fields(invoked=observed.get("scripted_controller_invoked") is True).items():
+                            observed.setdefault(field, value)
+                    if (evidence_kind(observed) != kinds[candidate_id] or not execution_evidence_valid(observed)):
+                        raise PolicyCanarySessionError("policy_episode_execution_evidence_mismatch")
                     episode_score = _mapping(_mapping(observed.get("episode")).get("score"))
                     motion_valid = observed.get("arm_moved") is True
                     if family_pending:
                         from blueprint_pipeline.task_family_result_admission import family_policy_episode_interpretable
                         motion_valid = family_policy_episode_interpretable(observed, inputs["task_success_contract"])
-                    observed["policy_outcome_interpretable"] = bool(
-                        observed.get("candidate_policy_queried") is True
+                    outcome_field = "scripted_outcome_interpretable" if kinds[candidate_id] == SCRIPTED else "policy_outcome_interpretable"
+                    observed[outcome_field] = bool(
+                        execution_invoked(observed)
                         and observed.get("actions_reached_robot") is True
                         and motion_valid
                         and observed.get("observation_support_qualified", True)
@@ -1073,8 +1095,9 @@ def execute_paired_session(
         "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
         "episodes_per_policy": len(inputs["cells"]),
-        "learned_policy_rollout_count": len(episodes),
-        "planned_learned_policy_rollout_count": expected_episode_count,
+        **retained_rollout_counts(kinds, episodes),
+        **{"planned_" + key: value for key, value in rollout_counts(kinds, len(selected_cells)).items()
+           if key.endswith("rollout_count")},
         **({"beta_screening_admission": inputs["beta_screening_admission"],
             **{key: inputs[key] for key in ("scene_revision_digest", "plan_digest", "configuration_digest")},
             **{key: inputs[key] for key in ("pre_policy_site_qualification_required", "family_static_readiness_digest") if key in inputs}}

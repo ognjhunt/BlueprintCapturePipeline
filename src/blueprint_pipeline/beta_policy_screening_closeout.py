@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .policy_execution_evidence import candidate_execution_kinds, KINDS_FIELD, rollout_total
 from .native_task_arena_policy_canary_session import (
     BETA_RUN_KIND, validate_provider_bundle, validate_session_authority, validate_session_result,
 )
@@ -84,7 +85,8 @@ def _bindings(*, adapter: Mapping[str, Any], prepared: Mapping[str, Any], adapte
             "prepared_digest": prepared["prepared_digest"], "adapter_digest": canonical_digest(adapter),
             "instance_id": identities[0], "resource_name": authority["resource_name"],
             "beta_screening_admission": authority["beta_screening_admission"],
-            "candidate_ids": authority["candidate_ids"], "runtime_inputs_digest": authority["runtime_inputs_digest"]}
+            "candidate_ids": authority["candidate_ids"], "runtime_inputs_digest": authority["runtime_inputs_digest"],
+            **({KINDS_FIELD: authority[KINDS_FIELD]} if KINDS_FIELD in authority else {})}
 
 
 def _own_teardown(adapter: Mapping[str, Any]) -> bool:
@@ -218,12 +220,13 @@ def join_scoped_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[s
     if (inner.get("run_kind") != BETA_RUN_KIND
             or inner.get("beta_screening_admission") != receipt["beta_screening_admission"]
             or inner.get("candidate_ids") != receipt["candidate_ids"]
+            or candidate_execution_kinds(inner) != candidate_execution_kinds(receipt)
             or inner.get("result_digest") != adapter.get("native_control_result_digest")
             or inner.get("result_digest") != canonical_digest(inner, digest_field="result_digest")):
         raise ValueError("beta_screening_closeout_native_result_binding_mismatch")
     value = json.loads(json.dumps(inner, allow_nan=False))
     episodes = value.get("episodes")
-    returned = (isinstance(episodes, list) and len(episodes) == value.get("learned_policy_rollout_count")
+    returned = (isinstance(episodes, list) and len(episodes) == rollout_total(value)
                 and all(isinstance(row, Mapping) for row in episodes))
     blockers = [] if returned else ["beta_screening_episodes_incomplete"]
     value["provider_allocations_observed"] = 1
