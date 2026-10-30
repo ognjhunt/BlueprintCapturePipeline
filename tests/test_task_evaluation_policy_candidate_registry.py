@@ -7,6 +7,7 @@ import dataclasses
 import pytest
 
 from blueprint_pipeline import task_evaluation_policy_candidate_registry as registry
+from blueprint_pipeline.molmoact2_droid_assets import release_inventory
 from blueprint_pipeline.task_evaluation_policy_canary_scene_setup import CANDIDATE_IDS
 
 
@@ -17,7 +18,15 @@ def test_the_registry_never_overstates_what_can_run() -> None:
     assert sorted(pending) == ["cosmos3_nano_policy_droid", "flux3_action_droid", "molmoact2_droid"]
     assert pending["cosmos3_nano_policy_droid"].status == "integration_pending"
     assert pending["cosmos3_nano_policy_droid"].commercial_use == "allowed"
-    assert pending["molmoact2_droid"].status == "license_review_pending"
+    molmo = pending["molmoact2_droid"]
+    reviewed = release_inventory()
+    assert molmo.status == "integration_pending"
+    assert molmo.commercial_use == "allowed"
+    assert molmo.license_id == reviewed["license"].lower() == "apache-2.0"
+    assert molmo.checkpoint_revision == reviewed["model_revision"]
+    assert reviewed["source_revision"] in molmo.license_note
+    assert "license_review_pending" not in molmo.blockers
+    assert "frozen-pair evaluation" in molmo.reason
     assert pending["flux3_action_droid"].commercial_use == "not_allowed"
     assert all(row.checkpoint_digest_kind == "hub_tree_listing" for row in pending.values())
     assert all(len(row.checkpoint_revision) == 40 for row in pending.values())
@@ -30,6 +39,9 @@ def test_a_pair_is_two_distinct_runnable_candidates_in_registry_order() -> None:
     with pytest.raises(registry.PolicyCandidateRegistryError) as held:
         registry.validate_selected_pair(["pi05_droid", "cosmos3_nano_policy_droid"])
     assert held.value.blockers == ("policy_candidate_not_runnable:cosmos3_nano_policy_droid:integration_pending",)
+    with pytest.raises(registry.PolicyCandidateRegistryError) as held:
+        registry.validate_selected_pair(["pi05_droid", "molmoact2_droid"])
+    assert held.value.blockers == ("policy_candidate_not_runnable:molmoact2_droid:integration_pending",)
     with pytest.raises(registry.PolicyCandidateRegistryError, match="unknown:g05_droid"):
         registry.validate_selected_pair(["pi05_droid", "g05_droid"])
 

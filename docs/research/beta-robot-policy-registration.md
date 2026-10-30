@@ -2,10 +2,11 @@
 
 The default catalog considers 84 named candidates: 74 deployment robot–policy
 route combinations across 16 robot configurations, plus 10 existing policy
-candidates. The local pi0.5 DROID, GR00T N1.7 DROID and Cosmos Edge DROID
-paths are enabled; actual scene compatibility and budget still determine which
-ones execute. Cosmos requires the third, real `exterior_right` policy camera.
-Missing cameras produce an individual reason while other candidates continue.
+candidates. Five local DROID paths are enabled: pi0.5, GR00T N1.7, Cosmos Edge,
+Cosmos Nano and MolmoAct2. Actual scene compatibility and budget still determine
+which ones execute. Both Cosmos policies require the third, real
+`exterior_right` policy camera. Missing cameras produce an individual reason
+while other candidates continue.
 
 Robot source preparation and imported USD are different states. A reusable
 registration needs the imported model and its actual manifest, an exact served
