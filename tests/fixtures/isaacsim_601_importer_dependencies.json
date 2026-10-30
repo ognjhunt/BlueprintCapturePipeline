@@ -1,0 +1,81 @@
+{
+  "claim": "development_only selected official dependency edges; not complete Kit resolution or SDK/GPU execution",
+  "extensions": {
+    "isaacsim.asset.importer.urdf": {
+      "version": "3.11.2",
+      "dependencies": [
+        "isaacsim.asset.importer.utils",
+        "isaacsim.asset.transformer.rules",
+        "isaacsim.pip.newton",
+        "omni.usdex.libs"
+      ],
+      "source_sha256": "sha256:e43148fed05e6914333314342514ae7461add400e1782d289a37f9388427a8db",
+      "source_url": "https://github.com/isaac-sim/IsaacSim/blob/045ca8b59622b99a408092124377c66346e8d9c2/source/extensions/isaacsim.asset.importer.urdf/config/extension.toml",
+      "optional_dependencies": []
+    },
+    "isaacsim.asset.importer.mjcf": {
+      "version": "3.10.1",
+      "dependencies": [
+        "isaacsim.asset.importer.utils",
+        "isaacsim.asset.transformer.rules",
+        "isaacsim.pip.newton",
+        "omni.usd.schema.mujoco",
+        "omni.usdex.libs"
+      ],
+      "source_sha256": "sha256:f7abeaa90df51a71f006786662418ec93ded45f099b1a75e1fa40b8aa087411e",
+      "source_url": "https://github.com/isaac-sim/IsaacSim/blob/045ca8b59622b99a408092124377c66346e8d9c2/source/extensions/isaacsim.asset.importer.mjcf/config/extension.toml",
+      "optional_dependencies": []
+    },
+    "isaacsim.replicator.nurec_utils": {
+      "version": "0.1.2",
+      "dependencies": [
+        "omni.isaac.ml_archive",
+        "omni.kit.pip_archive",
+        "omni.replicator.core",
+        "omni.rtx.spg",
+        "omni.timeline",
+        "omni.usd"
+      ],
+      "source_sha256": "sha256:1394de39214ab2f22e9712922134e463b01791636cc5b27c6abba1b566936a45",
+      "source_url": "https://github.com/isaac-sim/IsaacSim/blob/045ca8b59622b99a408092124377c66346e8d9c2/source/extensions/isaacsim.replicator.nurec_utils/config/extension.toml",
+      "optional_dependencies": []
+    },
+    "isaacsim.pip.newton": {
+      "version": "0.6.1",
+      "dependencies": [
+        "omni.kit.pip_archive"
+      ],
+      "source_sha256": "sha256:84441f6a51fdfb204094f586058d880220e9773e97e469a2749a83f7a3ad73aa",
+      "source_url": "https://github.com/isaac-sim/IsaacSim/blob/045ca8b59622b99a408092124377c66346e8d9c2/source/extensions/isaacsim.pip.newton/config/extension.toml",
+      "optional_dependencies": []
+    },
+    "isaacsim.asset.importer.utils": {
+      "version": "1.8.1",
+      "dependencies": [
+        "isaacsim.asset.transformer",
+        "isaacsim.robot.schema",
+        "omni.scene.optimizer.core",
+        "omni.usd.schema.newton",
+        "omni.usd.schema.physx"
+      ],
+      "source_sha256": "sha256:9cdd63939accc27c96914a2299d82ac6219c50fc1355bd4623088ade325ca4be",
+      "source_url": "https://github.com/isaac-sim/IsaacSim/blob/045ca8b59622b99a408092124377c66346e8d9c2/source/extensions/isaacsim.asset.importer.utils/config/extension.toml",
+      "optional_dependencies": []
+    },
+    "isaacsim.asset.transformer.rules": {
+      "version": "1.7.10",
+      "dependencies": [
+        "isaacsim.asset.importer.utils",
+        "isaacsim.asset.transformer",
+        "isaacsim.robot.schema",
+        "omni.kit.pip_archive",
+        "omni.usdphysics"
+      ],
+      "source_sha256": "sha256:c33f548ab11ad05cabcd08c696746b00ae4aadd96a6dd4c62a7c7071506b68ab",
+      "source_url": "https://github.com/isaac-sim/IsaacSim/blob/045ca8b59622b99a408092124377c66346e8d9c2/source/extensions/isaacsim.asset.transformer.rules/config/extension.toml",
+      "optional_dependencies": [
+        "omni.kit.material.library"
+      ]
+    }
+  }
+}

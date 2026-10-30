@@ -287,7 +287,7 @@ def run_bounded_smoke_process(body: Path, *, wall_seconds: float, run=subprocess
 
 
 def main(argv=None):
-    from .native_task_isaaclab_launch import launch_native_task_isaaclab
+    from .deployment_embodiment_isaac_launch import launch_embodiment_isaaclab
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--body", type=Path, required=True)
     parser.add_argument("--wall-seconds", type=float, required=True)
@@ -295,8 +295,8 @@ def main(argv=None):
     start = time.monotonic()
     body = args.body.resolve()
     binding = read(body / "binding-inputs.json")
-    app, _launch = launch_native_task_isaaclab(Path(os.environ["BLUEPRINT_EMBODIMENT_PROVISIONING_RECEIPT"]),
-        device="cuda:0", appearance_render_path="no_site_appearance", enable_cameras=False)
+    app, _launch = launch_embodiment_isaaclab(Path(os.environ["BLUEPRINT_EMBODIMENT_PROVISIONING_RECEIPT"]),
+        output=body / "controller-launch")
     try:
         run_native_controller_smoke(binding, body / "prepared" / binding["model_record"]["source_import_provenance"]["model"]["path"],
             body, configuration_dir=body / "configuration",
