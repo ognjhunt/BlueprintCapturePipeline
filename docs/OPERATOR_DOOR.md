@@ -4,6 +4,10 @@ The fixed [`install-public-franka-policy` operation](research/openwam-franka-int
 installs OpenWAM Alpha on the distinct single-FR3 + nominal Robotiq2F85 simulation
 body from retained imported assets, with pinned public license evidence and no compute.
 
+The fixed [`install-scripted-robot-baselines` operation](scripted_robot_baseline_registration.md)
+registers all supported scripted configurations from one exact retained public
+robot preparation batch, with individual unavailable reasons and no compute.
+
 The fixed [`install-public-yam-policy` operation](research/molmoact2-yam-registration-2026-10-29.md)
 installs the public MolmoAct2 YAM screening registration from retained prepared
 assets and verified official license evidence, without launching compute.

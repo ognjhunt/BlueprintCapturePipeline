@@ -50,6 +50,14 @@ def test_restricted_installer_preserves_credentials_and_recovers_old_door(
         path.write_bytes(b"development-only synthetic credential\n")
         path.chmod((0o600, 0o600, 0o644)[index])
     before = _credentials(credentials)
+    # Installer tests must never modify tracked profile/license/controller bytes,
+    # even if a shell install command changes shape in a future revision.
+    repository = DOOR.parents[1]
+    scripted_sources = [repository / "config/policy_runtimes" / name for name in (
+        "scripted_robot_baseline_registration_profile.json", "scripted_robot_baseline_license.txt")]
+    scripted_sources += [repository / "src/blueprint_pipeline" / name for name in (
+        "scripted_robot_baseline.py", "scripted_robot_baseline_runtime.py", "scripted_robot_grasp_frames.py")]
+    source_before = _credentials(scripted_sources)
     units = tmp_path / "systemd"
     units.mkdir()
     for name in ("blueprint-operator-door.service", "blueprint-operator-door-runner.service",
@@ -129,6 +137,8 @@ if directory:
     for path in paths:
         pathlib.Path(path).mkdir(parents=True, exist_ok=True)
 else:
+    assert len(paths) == 2, "fixture requires explicit single-source/destination install"
+    assert pathlib.Path(paths[1]).resolve().is_relative_to(pathlib.Path(""" + repr(str(tmp_path)) + """)), "fixture destination escaped synthetic host"
     shutil.copyfile(paths[0], paths[1])
 """)
     if case == "swap-failure":
@@ -147,6 +157,7 @@ else:
     result = subprocess.run(["/bin/bash", str(DOOR / "install.sh"), "--upgrade"],
                             env=environment, capture_output=True, text=True, timeout=30)
     assert _credentials(credentials) == before
+    assert _credentials(scripted_sources) == source_before
     assert caddy.read_text() == "development-only Caddy fixture\n"
     for name in ('historical-generation-actions', 'historical-generation-journals'):
         assert not (tmp_path / 'state' / 'requests' / name).exists()
@@ -185,6 +196,11 @@ else:
         assert len(retained) == 1 and retained[0].read_bytes() == content, name
     if case == "success":
         assert result.returncode == 0, result.stderr
+        for source in scripted_sources:
+            installed = door / "operator_door"
+            if source.suffix == ".py":
+                installed /= "scripted-baseline-source"
+            assert (installed / source.name).read_bytes() == source.read_bytes()
         assert "DISPATCHER_HOLD_ONLY = True" in (
             door / "operator_door" / "admitted_controls.py").read_text()
         assert (door / "INSTALLED_COMMIT").read_text() == "b" * 40 + "\n"

@@ -658,7 +658,7 @@ exit "$FAKE_HELPER_RC"
 
 
 @pytest.mark.parametrize("helper_rc", [0, 2])
-@pytest.mark.parametrize("operation", ["install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy"])
+@pytest.mark.parametrize("operation", ["install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines"])
 def test_public_policy_shell_builds_unprivileged_then_uses_only_installed_stdlib_installer(env, tmp_path, helper_rc, operation):
     repository = tmp_path / "repository"
     repository.mkdir()
@@ -686,7 +686,8 @@ exec "''' + sys.executable + '''" "$@"
     assert rc == helper_rc
     assert outcome["status"] == ("completed" if helper_rc == 0 else "failed")
     assert (tmp_path / "public-policy-prepare-argv").read_text().splitlines() == [
-        "-m", "blueprint_pipeline.openwam_piper_registration", "--request-json", request]
+        "-m", ("blueprint_pipeline.scripted_robot_registration_install" if operation == "install-scripted-robot-baselines"
+               else "blueprint_pipeline.openwam_piper_registration"), "--request-json", request]
     root_argv = tmp_path / "public-policy-root-argv"
     if helper_rc == 0:
         assert root_argv.read_text().splitlines() == ["-I", "-S", str(DOOR / "operator_door/public_policy_registration.py"),

@@ -200,6 +200,7 @@ CONTROLS_RUNTIME_MODULE_NAMES = (
 )
 
 POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
+    "policy_execution_evidence.py",
     # Family execution has its own native-state scorer and qualified factory;
     # none of these modules substitutes the Franka rigid episode adapter.
     "task_family_native_contracts.py",

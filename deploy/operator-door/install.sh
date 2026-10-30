@@ -101,6 +101,14 @@ install -m 0644 "$repo_root/config/policy_runtimes/openwam_franka_registration_p
   "$stage/operator_door/openwam_franka_registration_profile.json"
 install -m 0644 "$repo_root/config/policy_runtimes/openwam_franka_model_card.md" \
   "$stage/operator_door/openwam_franka_model_card.md"
+install -m 0644 "$repo_root/config/policy_runtimes/scripted_robot_baseline_registration_profile.json" \
+  "$stage/operator_door/scripted_robot_baseline_registration_profile.json"
+install -m 0644 "$repo_root/config/policy_runtimes/scripted_robot_baseline_license.txt" \
+  "$stage/operator_door/scripted_robot_baseline_license.txt"
+install -d -m 0755 "$stage/operator_door/scripted-baseline-source"
+for scripted_source in scripted_robot_baseline.py scripted_robot_baseline_runtime.py scripted_robot_grasp_frames.py; do
+  install -m 0644 "$repo_root/src/blueprint_pipeline/$scripted_source" "$stage/operator_door/scripted-baseline-source/$scripted_source"
+done
 install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_registration_profile.json" \
   "$stage/operator_door/openwam_piper_registration_profile.json"
 install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_model_card.md" \

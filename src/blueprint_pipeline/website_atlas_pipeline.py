@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import inspect
 from copy import deepcopy
 import json
 import os
@@ -49,6 +50,12 @@ def resumed_policy(stored, current):
         raise ValueError("atlas_runtime_authority_or_policy_changed")
     caps = [*caps, cap] if cap > caps[-1] else caps
     return {"policy": current["policy"], REVIEW_CAPS: caps} if len(caps) > 1 else {"policy": current["policy"]}
+
+
+def _current_configuration(task_context, source_digest, resumed):
+    """The current allowance for a later stage, keeping every review cap the job ran under."""
+    value = load_configuration(task_context, source_digest)
+    return {**value, REVIEW_CAPS: resumed[REVIEW_CAPS]} if REVIEW_CAPS in resumed else value
 
 
 def _require_current_price_review(policy) -> None:
@@ -302,7 +309,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             completion = run_sponsored_website_atlas_automation(preserved_capture=True,
                 pose_root=source_root, pose=pose, frames=frames, review=review,
                 root=output_root / 'preserved_completion', job_root=output_root, context=task_context,
-                configuration=load_configuration(task_context, source_digest), splat_root=splat_root,
+                configuration=_current_configuration(task_context, source_digest, configuration), splat_root=splat_root,
                 source_survey_path=source_survey_path, checkpoint=completion_checkpoint,
                 experimental=experimental, max_polls=max_polls)
             write_json(output_root / 'preserved_completion/controller_state.json', completion)
@@ -382,12 +389,36 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     return result
 
 
+def _checkpoint_with_details(checkpoint):
+    """Keep stage-only source checks compatible with diagnostic progress details."""
+    if checkpoint is None:
+        return None
+    try:
+        signature = inspect.signature(checkpoint)
+    except (TypeError, ValueError):
+        signature = None  # Opaque callables retain the documented stage-only contract.
+
+    def check(stage, **details):
+        if details and signature is not None:
+            try:
+                signature.bind(stage, **details)
+            except TypeError:
+                pass
+            else:
+                return checkpoint(stage, **details)
+        # Never catch/retry an exception from the actual source/withdrawal check.
+        return checkpoint(stage)
+
+    return check
+
+
 def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, experimental=False,
                        invoker=None, max_polls=2, refinement_feedback: Path | None = None, checkpoint=None,
                        edit_scope: str | None = None):
     # ``checkpoint(stage)`` runs before every paid stage; raising there (a
     # withdrawal) stops the job before it buys or uploads anything more.
-    check = checkpoint or (lambda _stage: None)
+    checkpoint = _checkpoint_with_details(checkpoint)
+    check = checkpoint or (lambda _stage, **_details: None)
     from .atlas_video_inputs import survey_video, prepare_video_inputs, takes_reviewed_background
     from .atlas_scene_planner import proposal_review
     from .paid_resource_allocator import (run_sponsored_website_atlas_plan, run_sponsored_website_atlas_pose,
@@ -546,7 +577,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             output=output_root / 'capture_source_survey.json')
         return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,
             policy=policy, task_context=task_context, source_digest=source_digest,
-            configuration=load_configuration(task_context, source_digest), check=check,
+            configuration=_current_configuration(task_context, source_digest, config), check=check,
             experimental=experimental, max_polls=max_polls, model=receipt["model"],
             source_survey_path=source_survey)
     if takes_reviewed_background(review):
@@ -564,7 +595,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         check("reviewed_background")
         automation = run_sponsored_website_atlas_automation(
             pose_root=None, inputs=inputs, review=review, output_root=output_root / "automation",
-            task_context=task_context, configuration=load_configuration(task_context, source_digest),
+            task_context=task_context, configuration=_current_configuration(task_context, source_digest, config),
             experimental=experimental, max_polls=max_polls, checkpoint=checkpoint, edit_scope=edit_scope,
             source_survey_path=full_source_survey,
             **reuse_options)
@@ -658,7 +689,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         from .paid_resource_allocator import run_sponsored_website_atlas_automation
         automation = run_sponsored_website_atlas_automation(pose_root=pose_root, inputs=inputs, review=review,
             output_root=output_root / "automation", task_context=task_context,
-            configuration=load_configuration(task_context, source_digest), experimental=experimental, max_polls=max_polls,
+            configuration=_current_configuration(task_context, source_digest, config), experimental=experimental,
+            max_polls=max_polls,
             checkpoint=checkpoint, edit_scope=edit_scope, **reuse_options)
         result["automation"] = automation
         result["size_estimates"] = automation.get("measurements")

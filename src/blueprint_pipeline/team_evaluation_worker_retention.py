@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.native_task_arena_policy_canary_session import PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND
+from blueprint_pipeline.policy_execution_evidence import (
+    candidate_execution_kinds, evidence_kind, execution_evidence_valid, rollout_counts_valid,
+    session_evidence_binding_valid, retained_rollout_counts, SCRIPTED,
+)
+from blueprint_pipeline.native_task_arena_policy_canary_session import BETA_RUN_KIND, EXECUTION_MODES, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND
 
 
 def _prefix_episode_evidence_paths(
@@ -60,6 +64,8 @@ def _validate_isolated_cell_result(*, child: Mapping[str, Any], inputs: Mapping[
         != "runtime_selected_cell_completed_pending_aggregation"
         or not isinstance(child.get("episodes"), list)
         or len(child["episodes"]) != len(candidate_ids)
+        or ("candidate_execution_evidence_kinds" in inputs and (not rollout_counts_valid(child, 1)
+            or candidate_execution_kinds(child) != candidate_execution_kinds(inputs)))
         or child.get("task_success_contract")
         != inputs.get("task_success_contract")
         or child.get("task_success_contract_digest")
@@ -72,6 +78,9 @@ def _validate_isolated_cell_result(*, child: Mapping[str, Any], inputs: Mapping[
         if (not isinstance(row, Mapping)
                 or (row.get("telemetry") is not None and not isinstance(row["telemetry"], Mapping))):
             raise RuntimeError("policy_canary_isolated_cell_result_invalid")
+        if (evidence_kind(row) != candidate_execution_kinds(inputs).get(row.get("candidate_id"))
+                or not execution_evidence_valid(row)):
+            raise RuntimeError("policy_canary_isolated_cell_execution_evidence_invalid")
         if any(row.get(field) != cell.get(field) for field in (
             "cell_id", "seed", "cell_spec_digest", "family",
             "resolved_scenario", "resolved_scenario_digest",
@@ -148,3 +157,81 @@ def _team_checkpoint(*, output_root: Path, inputs: Mapping[str, Any],
     value["result_digest"] = canonical_digest(value, digest_field="result_digest")
     seal_result(result_path=output_root / "team_evaluation_checkpoint.json", result=value)
 
+
+
+def _validate_provider_manifest(
+    value: Mapping[str, Any],
+    *,
+    runtime_inputs: Mapping[str, Any],
+    authority: Mapping[str, Any],
+) -> dict[str, Any]:
+    manifest = json.loads(json.dumps(dict(value), allow_nan=False))
+    if (
+        manifest.get("schema_version")
+        != "native_task_arena_policy_canary_provider_bundle.v1"
+        or manifest.get("execution_mode")
+        != EXECUTION_MODES.get(str(runtime_inputs.get("run_kind")))
+        or manifest.get("run_kind") != runtime_inputs.get("run_kind")
+        or manifest.get("claim_ceiling") != "diagnostic_policy_execution"
+        or manifest.get("runtime_inputs_digest")
+        != runtime_inputs.get("runtime_inputs_digest")
+        or manifest.get("task_success_contract_digest")
+        != runtime_inputs.get("task_success_contract_digest")
+        or manifest.get("authority_digest") != authority.get("authority_digest")
+        or not session_evidence_binding_valid(manifest, authority, runtime_inputs)
+        or manifest.get("input_digest")
+        != canonical_digest(manifest, digest_field="input_digest")
+    ):
+        raise RuntimeError("policy_canary_provider_manifest_invalid")
+    return manifest
+
+
+def seal_scripted_interruption(*, inputs: Mapping[str, Any], authority: Mapping[str, Any],
+        children: list[Mapping[str, Any]], child_root: Path, output_root: Path, index: int,
+        reason: str, seal_result: Callable[..., None]) -> bool:
+    """Retain known scripted episodes without inventing the interrupted cell's state.
+
+    The legacy interruption reader understands only the frozen learned pair.
+    A scripted timeout retains its own already sealed children and an explicit
+    unknown for an unsealed current cell, without allocating or retrying.
+    """
+    kinds = candidate_execution_kinds(inputs)
+    if inputs.get("run_kind") != BETA_RUN_KIND or set(kinds.values()) != {SCRIPTED}:
+        return False
+    retained = list(children)
+    current = child_root / PROVIDER_RESULT_FILENAME
+    verified_current = False
+    if current.is_file() and not current.is_symlink() and current.stat().st_size <= 128 * 1024**2:
+        try:
+            child = json.loads(current.read_text())
+            verified_current = _validate_isolated_cell_result(child=child, inputs=inputs, index=index)
+            if verified_current:
+                retained.append(child)
+        except (ValueError, TypeError, KeyError, RuntimeError, OSError):
+            pass  # Original bytes remain on disk; unverified content is not execution evidence.
+    episodes = [_prefix_episode_evidence_paths(row, prefix=f"cell_runs/{ordinal:02d}")
+                for ordinal, child in enumerate(retained) for row in child.get("episodes", [])]
+    inventory = [{**row, "relative_path": f"cell_runs/{ordinal:02d}/{row['relative_path']}"}
+                 for ordinal, child in enumerate(retained) for row in child.get("artifact_inventory", [])]
+    value = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
+        "run_id": authority["run_id"], "run_kind": BETA_RUN_KIND, "claim_ceiling": "diagnostic_policy_execution",
+        "candidate_ids": list(kinds), **retained_rollout_counts(kinds, episodes),
+        "episodes_per_policy": len(retained), "planned_episodes_per_policy": len(inputs["cells"]),
+        "planned_learned_policy_rollout_count": 0, "planned_scripted_rollout_count": len(inputs["cells"]),
+        "episodes": episodes, "artifact_inventory": inventory,
+        "task_success_contract": inputs["task_success_contract"],
+        "task_success_contract_digest": inputs["task_success_contract_digest"],
+        "runtime_inputs_digest": inputs["runtime_inputs_digest"], "authority_digest": authority["authority_digest"],
+        **{key: inputs[key] for key in ("beta_screening_admission", "scene_revision_digest", "plan_digest", "configuration_digest")},
+        "candidate_policy_queried": False, "candidate_policy_query_attempted": False,
+        "interrupted_cell_index": index, "interrupted_cell_receipt_verified": verified_current,
+        "interrupted_scripted_invocation_status": "retained_receipt" if verified_current else "unknown",
+        "retry_cap": 0, "warm_session_open_count": 1, "provider_allocations_observed": None,
+        "session_closeout": {"status": "interrupted_runtime_close_unproven", "runtime_closed": False,
+                             "provider_closeout_pending": True},
+        "automatic_retry_performed": False, "official_ranking_performed": False, "scene_promotion_performed": False,
+        "provider_zero_required_after_return": True, "blockers": [reason]}
+    value["artifact_inventory_digest"] = canonical_digest({"value": inventory})
+    value["result_digest"] = canonical_digest(value, digest_field="result_digest")
+    seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=value)
+    return True

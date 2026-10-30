@@ -25,8 +25,12 @@ import time
 from typing import Any, Callable, Mapping
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.policy_execution_evidence import (
+    candidate_execution_kinds, evidence_kind, retained_rollout_counts, SCRIPTED, scripted_fields,
+)
 from blueprint_pipeline.team_evaluation_worker_retention import (
     _compact_team_child_result, _prefix_episode_evidence_paths, _validate_isolated_cell_result,
+    _validate_provider_manifest, seal_scripted_interruption,
     _team_checkpoint as _retention_checkpoint,
 )
 from blueprint_pipeline.team_embodiment import apply_team_embodiment, is_team_plan
@@ -50,7 +54,7 @@ from blueprint_pipeline.appearance_render_backend import (
     build_appearance_render_backend,
 )
 from blueprint_pipeline.native_task_arena_policy_canary_session import (
-    BETA_RUN_KIND, EXECUTION_MODES, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND,
+    BETA_RUN_KIND, PolicyCanaryEpisodeFailure, PROVIDER_RESULT_FILENAME, TEAM_RUN_KIND,
     PROVIDER_STATUS_FILENAME, PROVIDER_STATUS_SCHEMA,
     execute_paired_session,
     validate_runtime_input_manifest,
@@ -481,7 +485,8 @@ def preflight_policy_canary_static_inputs(
         def validate_spec(candidate: str = candidate, spec: Mapping[str, Any] = spec) -> None:
             if (spec.get("candidate_id") != candidate
                 or spec.get("execution_spec_digest") != canonical_digest(spec, digest_field="execution_spec_digest")
-                or spec.get("task_success_contract_digest") != inputs.get("task_success_contract_digest")):
+                or spec.get("task_success_contract_digest") != inputs.get("task_success_contract_digest")
+                or evidence_kind(spec) != candidate_execution_kinds(inputs).get(candidate)):
                 raise RuntimeError("policy_canary_frozen_execution_spec_mismatch")
             if inputs.get("run_kind") == BETA_RUN_KIND:
                 if is_task_family_scene_plan(base_scene_plan):
@@ -999,32 +1004,6 @@ def isaac_cell_runtime() -> CellRuntime:
     )
 
 
-def _validate_provider_manifest(
-    value: Mapping[str, Any],
-    *,
-    runtime_inputs: Mapping[str, Any],
-    authority: Mapping[str, Any],
-) -> dict[str, Any]:
-    manifest = json.loads(json.dumps(dict(value), allow_nan=False))
-    if (
-        manifest.get("schema_version")
-        != "native_task_arena_policy_canary_provider_bundle.v1"
-        or manifest.get("execution_mode")
-        != EXECUTION_MODES.get(str(runtime_inputs.get("run_kind")))
-        or manifest.get("run_kind") != runtime_inputs.get("run_kind")
-        or manifest.get("claim_ceiling") != "diagnostic_policy_execution"
-        or manifest.get("runtime_inputs_digest")
-        != runtime_inputs.get("runtime_inputs_digest")
-        or manifest.get("task_success_contract_digest")
-        != runtime_inputs.get("task_success_contract_digest")
-        or manifest.get("authority_digest") != authority.get("authority_digest")
-        or manifest.get("input_digest")
-        != canonical_digest(manifest, digest_field="input_digest")
-    ):
-        raise RuntimeError("policy_canary_provider_manifest_invalid")
-    return manifest
-
-
 def _sha256(path: Path) -> str:
     import hashlib
 
@@ -1104,10 +1083,6 @@ def _seal_result_before_simulation_close(
     close()
 
 
-
-
-
-
 def _aggregate_isolated_cell_results(
     *,
     authority: Mapping[str, Any],
@@ -1158,7 +1133,7 @@ def _aggregate_isolated_cell_results(
         "task_success_contract": inputs["task_success_contract"],
         "task_success_contract_digest": inputs["task_success_contract_digest"],
         "episodes_per_policy": len(inputs["cells"]) - len(failed_cells),
-        "learned_policy_rollout_count": len(episodes),
+        **retained_rollout_counts(candidate_execution_kinds(inputs), episodes),
         "provider_allocations_observed": None,
         "retry_cap": 0,
         "warm_session_open_count": 1,
@@ -1356,6 +1331,9 @@ def _run_isolated_cell_processes(
             reason = ("policy_canary_export_deadline_reached"
                       if _HARD_DEADLINE_ENV in os.environ and _isolated_cell_timeout_seconds() <= 0
                       else "policy_canary_isolated_cell_process_timeout")
+            if seal_scripted_interruption(inputs=inputs, authority=authority, children=child_results,
+                    child_root=child_root, output_root=output_root, index=index, reason=reason, seal_result=_seal_result):
+                return 1
             try:
                 child_result_path = child_root / PROVIDER_RESULT_FILENAME
                 if child_was_sealed := child_result_path.is_file():
@@ -1739,6 +1717,8 @@ def _run_selected_cell(
                     output_root, episode, camera_ids=[*(row["role"] for row in scene_plan["cameras"]
                                                         if row.get("policy_input") is True), "overview"])
             except Exception as exc:
+                if evidence_kind(spec) == SCRIPTED:
+                    episode_progress.update(scripted_fields(invoked=tracker.scripted_controller_invoked))
                 failure_path = _write_episode_failure_gap(
                     output_root=output_root, run_id=str(authority["run_id"]), context=context, failure=exc,
                     progress=episode_progress)
@@ -1959,6 +1939,7 @@ def _run_selected_cell(
                 role="policy_query_receipt",
                 value={
                     "candidate_policy_queried": tracker.candidate_policy_queried,
+                    **(scripted_fields(invoked=tracker.scripted_controller_invoked) if evidence_kind(spec) == SCRIPTED else {}),
                     "exact_policy_request_artifacts": episode.get("policy_request_artifacts") or [],
                     "policy_request_evidence_complete": episode.get("policy_request_evidence_complete") is True,
                     "sensor_freshness": episode.get("sensor_freshness") or [],
@@ -2019,6 +2000,7 @@ def _run_selected_cell(
         return {
             "status": "completed",
             "candidate_policy_queried": tracker.candidate_policy_queried,
+            **(scripted_fields(invoked=tracker.scripted_controller_invoked) if evidence_kind(spec) == SCRIPTED else {}),
             "actions_reached_robot": bool(motion.get("actions_reached_robot")),
             "arm_moved": bool(motion.get("arm_moved")),
             "observation_support_qualified": observation_support_qualified,

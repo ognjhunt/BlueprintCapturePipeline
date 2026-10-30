@@ -238,7 +238,8 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
     {"automation": {"objects": [{"disposition": "keep"}]}, "transient_frame_ids": ["0"],
      "coverage_requirements": [{"role": "task_object", "required_frame_ids": ["0"]}]},
 ])
-def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatch, review):
+@pytest.mark.parametrize("checkpoint_mode", ["stage_only", "metadata", "withdrawn", "callback_typeerror", "none"])
+def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatch, review, checkpoint_mode):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, atlas_video_inputs as inputs
     from blueprint_pipeline import paid_resource_allocator as allocator, website_atlas_pose as pose_api
 
@@ -260,11 +261,42 @@ def test_removal_automation_precedes_every_atlas_submission(tmp_path, monkeypatc
     monkeypatch.setattr(inputs, "prepare_video_inputs", lambda **_: {"frames": []})
     for name in ("run_sponsored_website_atlas_pose", "run_sponsored_website_atlas_task"):
         monkeypatch.setattr(allocator, name, lambda **_: pytest.fail("unreviewed RGB reached Atlas"))
-    seen = []
-    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", lambda **kw:
-        seen.append(kw) or {"status": "quality_rejected", "background": {"status": "quality_rejected"}})
-    result = pipeline.run_atlas_pipeline(source_video=video, output_root=root,
-                                        task_context={"capture_id": "c", "context_digest": "task"})
+    seen, stages, details_seen, completed = [], [], [], []
+    def source_check(stage, **details):
+        stages.append(stage)
+        details_seen.append(details)
+        if stage == "automation_export_coverage":
+            if checkpoint_mode == "withdrawn":
+                raise ValueError("website_capture_withdrawn")
+            if checkpoint_mode == "callback_typeerror":
+                raise TypeError("callback_body_failed")
+    checkpoint = stages.append if checkpoint_mode == "stage_only" else (
+        None if checkpoint_mode == "none" else source_check)
+    def automate(**kw):
+        seen.append(kw)
+        # Actual export coverage calls this metadata-bearing seam after fusion.
+        if kw["checkpoint"] is not None:
+            kw["checkpoint"]("automation_export_coverage", export_digest="sha256:fixture",
+                             gaussian_count=13, completed_repair_passes=0)
+        completed.append(True)
+        return {"status": "quality_rejected", "background": {"status": "quality_rejected"}}
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_automation", automate)
+    options = {"source_video": video, "output_root": root, "checkpoint": checkpoint,
+               "task_context": {"capture_id": "c", "context_digest": "task"}}
+    if checkpoint_mode in {"withdrawn", "callback_typeerror"}:
+        error, reason = ((ValueError, "website_capture_withdrawn") if checkpoint_mode == "withdrawn"
+                         else (TypeError, "callback_body_failed"))
+        with pytest.raises(error, match=reason):
+            pipeline.run_atlas_pipeline(**options)
+        assert stages.count("automation_export_coverage") == 1 and not completed
+        assert not (root / "result.json").exists()
+        return
+    result = pipeline.run_atlas_pipeline(**options)
+    if checkpoint_mode != "none":
+        assert stages.count("automation_export_coverage") == 1
+    if checkpoint_mode == "metadata":
+        assert details_seen[-1] == {"export_digest": "sha256:fixture", "gaussian_count": 13,
+                                   "completed_repair_passes": 0}
     assert seen[0]["pose_root"] is None and not result["splat_available"]
     source_survey = json.loads(seen[0]['source_survey_path'].read_text())
     assert source_survey['basis'] == 'full_video_candidates_plus_dense_task_state_candidates'
@@ -614,3 +646,13 @@ def test_resume_checks_current_remaining_allowance_before_any_more_planning(tmp_
     with pytest.raises(ValueError,match="atlas_runtime_budget_insufficient"):
         pipeline.run_atlas_pipeline(source_video=video,output_root=root,task_context={"capture_id":"c","context_digest":"ctx"})
     assert json.loads((root / "configuration.json").read_text())==saved
+
+
+def test_later_stages_read_the_current_allowance_with_every_review_cap_the_job_ran_under(monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    current = {"authority": {"id": "a"}, "policy": {"maximum_review_cost_usd": 4}, "remaining_cost_usd": 22.9}
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: dict(current))
+    resumed = {**current, "remaining_cost_usd": 25, pipeline.REVIEW_CAPS: [1, 4]}
+    # Automation and completion reviews bought under $1 before the raise must be found again.
+    assert pipeline._current_configuration({}, "sha256:v", resumed) == {**current, pipeline.REVIEW_CAPS: [1, 4]}
+    assert pipeline._current_configuration({}, "sha256:v", current) == current

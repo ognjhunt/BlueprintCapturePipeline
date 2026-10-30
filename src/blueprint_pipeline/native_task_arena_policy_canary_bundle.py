@@ -62,6 +62,7 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "team_candidate_policy_client.py", "droid_https_policy_client.py", "team_policy_https_client.py",
     "task_family_policy_https_client.py",
     "dreamlabs_policy_client.py", "team_arm_kinematics.py",
+    "scripted_robot_baseline.py", "scripted_robot_baseline_runtime.py", "scripted_robot_grasp_frames.py",
     "team_policy_episode_outcome.py", "team_evaluation_worker_retention.py",
     "native_task_arena_execution_contract.py",
     "team_embodiment.py", "team_embodiment_runtime.py", "native_task_robot_contact_topology.py",
@@ -474,9 +475,16 @@ def build_policy_canary_session_bundle(
                 control_result=_read(family_controls_path),
             )
     local_candidates = []
+    scripted_candidates = []
     for candidate, spec in specs.items():
         interface = resolve_policy_interface(spec)
-        if interface not in TEAM_HTTPS_INTERFACES:
+        if interface == "blueprint_scripted_pick_place.v1":
+            from .scripted_robot_baseline_runtime import validate_execution_spec as validate_scripted_spec
+            validate_scripted_spec(spec)
+            if inputs.get("run_kind") != "blueprint_beta_screening":
+                raise ValueError("scripted_baseline_execution_requires_beta_run")
+            scripted_candidates.append(candidate)
+        elif interface not in TEAM_HTTPS_INTERFACES:
             if interface in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1", "molmoact2_yam_joint14.v1"}:
                 from .team_local_policy import runtime_for_interface
                 runtime_for_interface(interface).validate_execution_spec(spec)
@@ -731,6 +739,14 @@ def build_policy_canary_session_bundle(
                 "input_digest": "",
             }
         )
+        if scripted_candidates:
+            from .policy_execution_evidence import candidate_execution_kinds, rollout_counts
+            kinds = candidate_execution_kinds(inputs)
+            if len(specs) != 1 or any(kinds[key] != "scripted_simulator_state_baseline" for key in scripted_candidates):
+                raise ValueError("scripted_baseline_bundle_evidence_kind_mismatch")
+            manifest.update(**rollout_counts(kinds, len(inputs["cells"])),
+                            team_policy_interface_id="blueprint_scripted_pick_place.v1",
+                            model_delivery="scripted_in_process", secret_material_bundled=False)
         manifest["input_digest"] = canonical_digest(
             manifest, digest_field="input_digest"
         )

@@ -53,6 +53,15 @@ def canary_policy_client(spec: Mapping[str, Any], *,
         client = OpenWAMFrankaPolicyClient(binding=policy_binding(spec["policy_spec"]))
         client.execution_binding_digest = spec["execution_spec_digest"]
         return client
+    if interface == "blueprint_scripted_pick_place.v1":
+        from .scripted_robot_baseline import ScriptedRobotBaseline
+        from .scripted_robot_baseline_runtime import validate_execution_spec
+
+        validate_execution_spec(spec)
+        client = ScriptedRobotBaseline(plan=spec["scripted_task_plan"], policy_id=spec["candidate_id"],
+            policy_spec=spec["policy_spec"], manifest=spec["team_embodiment"]["manifest"])
+        client.execution_binding_digest = spec["execution_spec_digest"]
+        return client
     if interface == "openwam_piper_eef20.v1":
         from .openwam_piper_client_dependencies import activate_client_dependencies
         from .openwam_piper_policy import OpenWAMPiperPolicyClient

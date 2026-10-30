@@ -30,12 +30,23 @@ FRANKA_CANDIDATE_ID = "openwam_alpha_franka"
 FRANKA_CHECKPOINT_ID = "openwam-alpha-franka-e75522eb"
 FRANKA_PROFILE_ID = "openwam_alpha_real_franka.v1"
 FRANKA_EMBODIMENT_ID = "franka_research_3_robotiq_2f85_sim"
+SCRIPTED_SCHEMA = "scripted_robot_baseline_install_request.v1"
+SCRIPTED_PROFILE_ID = "blueprint_scripted_pick_place.v1"
+SCRIPTED_TEAM_ID = "blueprint-owned-baselines"
+SCRIPTED_BODIES = ("i2rt_yam_bimanual", "agilex_piper_bimanual", "franka_research_3_bimanual",
+    "universal_robots_ur5e_bimanual", "kinova_gen3", "kinova_gen3_bimanual", "ufactory_xarm7",
+    "ufactory_xarm7_bimanual", "almond_axol", "trlc_dk1_bimanual")
 IDENTITIES = {
     FRANKA_SCHEMA: {"candidate_id": FRANKA_CANDIDATE_ID, "team_id": TEAM_ID, "checkpoint_id": FRANKA_CHECKPOINT_ID,
         "policy_profile": FRANKA_PROFILE_ID, "embodiment_id": FRANKA_EMBODIMENT_ID,
         "operation": "install-public-franka-policy", "profile_file": "openwam_franka_registration_profile.json",
         "proposal_schema": "openwam_franka_policy_install_proposal.v1",
         "receipt_schema": "openwam_franka_policy_install_receipt.v1"},
+    SCRIPTED_SCHEMA: {"team_id": SCRIPTED_TEAM_ID, "policy_profile": SCRIPTED_PROFILE_ID,
+        "operation": "install-scripted-robot-baselines",
+        "profile_file": "scripted_robot_baseline_registration_profile.json",
+        "proposal_schema": "scripted_robot_baseline_install_proposal.v1",
+        "receipt_schema": "scripted_robot_baseline_install_receipt.v1"},
     SCHEMA: {"candidate_id": CANDIDATE_ID, "team_id": TEAM_ID, "checkpoint_id": CHECKPOINT_ID,
         "policy_profile": PROFILE_ID, "embodiment_id": EMBODIMENT_ID,
         "operation": "install-public-piper-policy", "profile_file": "openwam_piper_registration_profile.json",
@@ -89,8 +100,9 @@ def request_identity(value: dict) -> dict:
 
 
 def validate_request(value: Any, *, operation: str | None = None) -> dict:
-    require(isinstance(value, dict) and set(value) == FIELDS,
-            "request_schema_invalid")
+    require(isinstance(value, dict), "request_schema_invalid")
+    fields = FIELDS - {"candidate_id", "checkpoint_id"} if value.get("schema_version") == SCRIPTED_SCHEMA else FIELDS
+    require(set(value) == fields, "request_schema_invalid")
     identity = request_identity(value)
     require(operation is None or operation == identity["operation"], "request_operation_mismatch")
     for key in ("installation_id", "preparation_authorization_id"):
@@ -99,7 +111,8 @@ def validate_request(value: Any, *, operation: str | None = None) -> dict:
             "release_commit_invalid")
     for key in ("preparation_publication_digest", "expected_registry_digest"):
         require(isinstance(value[key], str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value[key]), key + "_invalid")
-    require(all(value[key] == identity[key] for key in ("candidate_id", "team_id", "checkpoint_id", "policy_profile")),
+    fixed = ("team_id", "policy_profile") if value["schema_version"] == SCRIPTED_SCHEMA else ("candidate_id", "team_id", "checkpoint_id", "policy_profile")
+    require(all(value[key] == identity[key] for key in fixed),
             "fixed_profile_mismatch")
     reference = value["authorization_reference"]
     require(isinstance(reference, str) and 1 <= len(reference) <= 300 and reference.isprintable(),
@@ -211,8 +224,12 @@ def rights_record(request: dict, profile: dict) -> dict:
     return {**value, "rights_digest": digest(value)}
 
 
-def retained_body(request: dict, *, model_root: Path = MODEL_ROOT) -> tuple[Path, dict, dict]:
-    embodiment_id = request_identity(request)["embodiment_id"]
+def retained_body(request: dict, *, model_root: Path = MODEL_ROOT, embodiment_id: str | None = None) -> tuple[Path, dict, dict]:
+    if request["schema_version"] == SCRIPTED_SCHEMA:
+        require(embodiment_id in SCRIPTED_BODIES, "body_mismatch")
+    else:
+        require(embodiment_id is None, "body_mismatch")
+        embodiment_id = request_identity(request)["embodiment_id"]
     publication = read(model_root / "batches" / (request["preparation_authorization_id"] + ".json"))
     require(publication.get("publication_digest") == request["preparation_publication_digest"]
             == digest(publication, "publication_digest") and publication.get("status") == "completed"

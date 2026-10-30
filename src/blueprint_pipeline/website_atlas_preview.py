@@ -159,6 +159,11 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
         return _transition(job, current, "needs_input", code, retry_at_epoch=current + AUTHORITY_RECHECK_SECONDS)
     if code in _NEEDS_NEW_CAPTURE or code in _NEEDS_TASK_INPUT or code == "atlas_scene_planner_abstained":
         return _transition(job, current, "needs_input", code)
+    if not isinstance(error, ValueError):
+        # Typed refusals are ValueErrors with their own code. Anything else (transport, storage
+        # or a defect) keeps only its type name in the job, so record where it was raised.
+        logger.warning("website_atlas_preview_step_error capture=%s code=%s", job.get("capture_id"), code,
+                       exc_info=error)
     if _transient(error):
         failures = job["transient_failures"] + 1
         if failures >= MAXIMUM_TRANSIENT_FAILURES:
@@ -199,7 +204,9 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
         return _transition(job, current, "failed", "atlas_preview_expired")
     from .website_task_context import load_current_website_task_context
 
-    def checkpoint(_stage: str) -> None:
+    # Stages may report details with their name (coverage refinement passes its
+    # export digest); capture-4b60431e failed every tick on that call.
+    def checkpoint(_stage: str, **_details: Any) -> None:
         if _withdrawn(capture_root):
             raise _Withdrawn()
     try:

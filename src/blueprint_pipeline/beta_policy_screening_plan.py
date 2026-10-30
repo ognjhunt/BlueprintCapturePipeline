@@ -340,6 +340,9 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
         blockers.append("commercial_use_not_admitted")
     pinned_runtime = (candidate["policy"]["digest_kind"] == "pinned_runtime_file_inventory"
                       and (candidate.get("interface") or {}).get("policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1", "molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1", "cosmos_nano_droid.v1"})
+    pinned_runtime = pinned_runtime or (candidate["policy"]["kind"] == "scripted"
+        and candidate["policy"]["digest_kind"] == "source_code_inventory"
+        and (candidate.get("interface") or {}).get("policy_interface_id") == "blueprint_scripted_pick_place.v1")
     if candidate["policy"]["digest_kind"] not in {"downloaded_snapshot_inventory", "provider_metadata"} and not pinned_runtime:
         blockers.append("policy_identity_not_verified")
     if not candidate["policy"]["digest"] or not candidate["policy"]["revision"]:
@@ -415,6 +418,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                                "display_name": candidate["display_name"],
                                "configuration_digest": candidate["configuration_digest"],
                                "status": "unavailable", "blockers": []}
+        if candidate["policy"]["kind"] == "scripted":
+            row["execution_evidence_kind"] = "scripted_simulator_state_baseline"
         binding = bindings.get(candidate_id)
         row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials)
         row["blockers"] = sorted(set(row["blockers"] + failures.get(candidate_id, [])))
@@ -550,6 +555,9 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(row, dict) or not {"candidate_id", "display_name", "configuration_digest", "status", "blockers"} <= set(row):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_invalid")
         candidates.append(_id(row["candidate_id"], "beta_screening_candidate_invalid"))
+        evidence_fields = {"execution_evidence_kind"} if "execution_evidence_kind" in row else set()
+        if evidence_fields and row["execution_evidence_kind"] != "scripted_simulator_state_baseline":
+            raise BetaPolicyScreeningPlanError("beta_screening_evidence_kind_invalid")
         if not _CANDIDATE_ID.fullmatch(row["candidate_id"]):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_invalid")
         _digest(row["configuration_digest"], "beta_screening_configuration_invalid")
@@ -560,7 +568,7 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 or any(not isinstance(reason, str) or not 1 <= len(reason) <= 300 for reason in row["blockers"])):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_blockers_invalid")
         if row["status"] == "selected":
-            if set(row) != {"candidate_id", "display_name", "configuration_digest", "status", "blockers", "admission_digest",
+            if set(row) - evidence_fields != {"candidate_id", "display_name", "configuration_digest", "status", "blockers", "admission_digest",
                             "execution_spec", "cost_quote", "max_cost_usd", "episode_count", "scenario_cells"}:
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_fields_invalid")
             if row["blockers"] or row.get("episode_count") != len(cells) or row.get("scenario_cells") != cells:
@@ -583,7 +591,7 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
             committed += money(row["max_cost_usd"])
         elif row["status"] not in {"unavailable", "deferred"} or not row["blockers"]:
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_status_invalid")
-        elif set(row) != {"candidate_id", "display_name", "configuration_digest", "status", "blockers"}:
+        elif set(row) - evidence_fields != {"candidate_id", "display_name", "configuration_digest", "status", "blockers"}:
             raise BetaPolicyScreeningPlanError("beta_screening_unselected_execution_forbidden")
     if len(set(candidates)) != len(candidates):
         raise BetaPolicyScreeningPlanError("beta_screening_duplicate_candidate")
