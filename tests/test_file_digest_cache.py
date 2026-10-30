@@ -132,3 +132,29 @@ def test_an_unreadable_sidecar_is_ignored_and_gone_files_are_dropped(tmp_path, h
     assert set(json.loads(sidecar.read_text())["entries"]) == {str(kept)}
     with pytest.raises(FileNotFoundError):
         _digest(sidecar, gone)
+
+
+def test_a_passed_check_runs_once_per_job_for_the_same_binding(tmp_path):
+    sidecar, runs = tmp_path / cache.SIDECAR, []
+    binding = {"check": "square_padding.v1", "source": "sha256:" + "a" * 64, "padded": "sha256:" + "b" * 64}
+    for _tick in range(2):
+        with cache.file_digest_cache(sidecar):
+            cache.verify_once(binding, lambda: runs.append("first"))
+            cache.verify_once(binding, lambda: runs.append("first"))
+    assert runs == ["first"]
+    with cache.file_digest_cache(sidecar):
+        cache.verify_once({**binding, "padded": "sha256:" + "c" * 64}, lambda: runs.append("changed input"))
+    cache.verify_once(binding, lambda: runs.append("outside a job step"))
+    assert runs == ["first", "changed input", "outside a job step"]
+
+
+def test_a_failed_check_is_never_remembered(tmp_path):
+    sidecar, runs = tmp_path / cache.SIDECAR, []
+
+    def refuse():
+        runs.append(1)
+        raise ValueError("atlas_context_padding_changed")
+    for _tick in range(2):
+        with cache.file_digest_cache(sidecar), pytest.raises(ValueError, match="padding_changed"):
+            cache.verify_once({"check": "square_padding.v1"}, refuse)
+    assert runs == [1, 1] and not sidecar.exists()

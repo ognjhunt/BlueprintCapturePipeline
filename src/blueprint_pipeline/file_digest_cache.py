@@ -8,6 +8,10 @@ the file again otherwise. Callers still compare the result with their own
 retained digest, so no receipt, record or identity changes; the sidecar is a
 plain cache, and deleting it only costs one re-hash of each file. Outside the
 block nothing is cached.
+
+``verify_once`` applies the same idea to a pure check of file contents (such as
+decoding two images to compare their pixels): it runs once per job for exactly
+the digests, code and library versions its binding names.
 """
 from __future__ import annotations
 
@@ -19,11 +23,12 @@ import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, Mapping
 
 SCHEMA = "file_digest_cache.v1"
 SIDECAR = "file_digest_cache.json"
 MAXIMUM_ENTRIES = 50_000
+MAXIMUM_CHECKS = 4096
 # Threat model: user space can set a file's mtime but never its ctime, which the
 # kernel sets to the current time on every write, truncate, chmod, link change
 # or utime (only root can move it, by setting the clock back), and a replaced
@@ -42,9 +47,13 @@ def _fingerprint(info: os.stat_result) -> list[int]:
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
 
 
+def _is_digest(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 71 and value.startswith("sha256:")
+
+
 def _valid(row: Any) -> bool:
     return (isinstance(row, list) and len(row) == 6 and all(type(value) is int for value in row[:5])
-            and isinstance(row[5], str) and len(row[5]) == 71 and row[5].startswith("sha256:"))
+            and _is_digest(row[5]))
 
 
 class _Cache:
@@ -54,11 +63,13 @@ class _Cache:
             # Opened, not probed: a missing cache is not a retained record anyone looked for.
             with open(sidecar, "rb") as stream:
                 value = json.loads(stream.read())
-            entries = value["entries"] if value.get("schema_version") == SCHEMA else {}
+            entries, checks = ((value["entries"], value.get("checks", []))
+                               if value.get("schema_version") == SCHEMA else ({}, []))
         except (OSError, ValueError, AttributeError, KeyError, TypeError):
-            entries = {}
+            entries, checks = {}, []
         self.entries = ({key: row for key, row in entries.items() if isinstance(key, str) and _valid(row)}
                         if isinstance(entries, dict) else {})
+        self.checks = dict.fromkeys(key for key in checks if _is_digest(key)) if isinstance(checks, list) else {}
 
     def remember(self, key: str, before: os.stat_result, after: list[int], started: int, digest: str) -> None:
         fingerprint = _fingerprint(before)
@@ -82,10 +93,13 @@ class _Cache:
             ordered = sorted(self.entries, key=lambda key: key not in self.used)
             self.entries = {key: self.entries[key] for key in ordered[:MAXIMUM_ENTRIES]}
             self.changed = True
+        if len(self.checks) > MAXIMUM_CHECKS:
+            self.checks = dict.fromkeys(list(self.checks)[-MAXIMUM_CHECKS:])  # the most recently passed
+            self.changed = True
         if not self.changed:
             return
-        payload = json.dumps({"schema_version": SCHEMA, "entries": self.entries}, sort_keys=True,
-                             separators=(",", ":")).encode()
+        payload = json.dumps({"schema_version": SCHEMA, "entries": self.entries, "checks": list(self.checks)},
+                             sort_keys=True, separators=(",", ":")).encode()
         descriptor, temporary = tempfile.mkstemp(prefix="." + self.sidecar.name + ".", dir=self.sidecar.parent)
         try:
             with os.fdopen(descriptor, "wb") as stream:
@@ -117,6 +131,25 @@ def file_sha256(path: Any) -> str:
     if cache is not None:
         cache.remember(key, before, after, started, value)
     return value
+
+
+def verify_once(binding: Mapping[str, Any], check: Callable[[], None]) -> None:
+    """Run ``check`` unless it already passed in this job for exactly ``binding``.
+
+    For a pure check of file contents: ``binding`` names every input by a digest
+    the caller has just verified (through ``file_sha256``) and the code and
+    library versions that check them, so the same binding means the same answer.
+    A check that raises is never remembered; outside a job step it always runs.
+    """
+    cache = _active.get()
+    key = "sha256:" + hashlib.sha256(json.dumps(binding, sort_keys=True, separators=(",", ":"),
+                                                allow_nan=False).encode()).hexdigest()
+    if cache is not None and key in cache.checks:
+        cache.checks[key] = cache.checks.pop(key)  # most recently used: kept longest under the cap
+        return
+    check()
+    if cache is not None:
+        cache.checks[key], cache.changed = None, True
 
 
 @contextmanager

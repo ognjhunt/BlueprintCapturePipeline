@@ -19,6 +19,10 @@ from .decision_evidence_contracts import canonical_digest
 MIN_SOURCE_AREA_RETAINED = .99
 
 
+def _implementation_sha256() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
 def _audit_input_binding(inputs, sources, frames):
     """Exact pixels and implementation behind a reusable, passed CPU audit."""
     import cv2
@@ -29,7 +33,7 @@ def _audit_input_binding(inputs, sources, frames):
         raise ValueError("atlas_context_rgb_grid_invalid")
     return {"schema_version": "atlas_context_fov_inputs.v1",
             "source_pose_inputs_digest": inputs["digest"],
-            "implementation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "implementation_sha256": _implementation_sha256(),
             "dependencies": {"opencv": cv2.__version__, "numpy": np.__version__, "pillow": pillow_version},
             "minimum_retained_source_area_fraction": MIN_SOURCE_AREA_RETAINED,
             "sources": [{"frame_id": row["frame_id"], "image_digest": row["image_digest"]} for row in sources],
@@ -39,20 +43,50 @@ def _audit_input_binding(inputs, sources, frames):
                          for frame in frames]}
 
 
+def square_pad_transform(width: int, height: int) -> dict:
+    """Where ``square_pad`` puts a width x height source in its square."""
+    side = max(height, width)
+    left, top = (side - width) // 2, (side - height) // 2
+    return {"source_rect": [left, top, width, height], "padded_size": [side, side],
+            "source_pixels_unchanged": True}
+
+
 def square_pad(source: np.ndarray) -> tuple[np.ndarray, dict]:
     """Keep every source pixel; add neutral padding rather than crop to a grid."""
     height, width = source.shape[:2]
-    side = max(height, width)
-    left, top = (side - width) // 2, (side - height) // 2
+    transform = square_pad_transform(width, height)
+    (left, top, _, _), side = transform["source_rect"], transform["padded_size"][0]
     padded = np.full((side, side, 3), 127, np.uint8)
     padded[top:top + height, left:left + width] = source
-    return padded, {"source_rect": [left, top, width, height], "padded_size": [side, side],
-                    "source_pixels_unchanged": True}
+    return padded, transform
+
+
+def verify_square_padding(source: Path, source_digest: str, padded: Path, padding) -> None:
+    """``padded`` holds exactly ``square_pad`` of ``source``, whose bytes the caller verified.
+
+    The same bytes give the same answer, so a job decodes each pair once rather
+    than on every tick: the pass is remembered against both files' digests, this
+    code and the decoder (file_digest_cache.verify_once).
+    """
+    from PIL import Image, __version__ as pillow_version
+    from .file_digest_cache import verify_once
+    from .local_reconstruction_adapters import _sha256_file
+
+    def check() -> None:
+        with Image.open(source) as image:
+            expected, transform = square_pad(np.asarray(image.convert("RGB")))
+        with Image.open(padded) as image:
+            actual = np.asarray(image.convert("RGB"))
+        if padding != transform or not np.array_equal(actual, expected):
+            raise ValueError("atlas_context_padding_changed")
+    verify_once({"check": "atlas_context_square_padding.v1", "source_image_digest": source_digest,
+                 "padded_image_digest": _sha256_file(Path(padded)), "padding": padding,
+                 "implementation_sha256": _implementation_sha256(),
+                 "dependencies": {"numpy": np.__version__, "pillow": pillow_version}}, check)
 
 
 def full_view_sources(inputs: dict, root: Path) -> list:
     """Verify retained sources and the exact padding bought by this pose input."""
-    from PIL import Image
     from .local_reconstruction_adapters import _sha256_file
 
     sources = inputs.get("full_view_sources")
@@ -65,12 +99,7 @@ def full_view_sources(inputs: dict, root: Path) -> list:
         if (path.is_symlink() or not path.resolve().is_relative_to(root.resolve())
                 or not path.is_file() or _sha256_file(path) != source["image_digest"]):
             raise ValueError("atlas_context_source_changed")
-        with Image.open(path) as image:
-            expected, transform = square_pad(np.asarray(image.convert("RGB")))
-        with Image.open(padded["image_path"]) as image:
-            actual = np.asarray(image.convert("RGB"))
-        if source.get("padding") != transform or not np.array_equal(actual, expected):
-            raise ValueError("atlas_context_padding_changed")
+        verify_square_padding(path, source["image_digest"], Path(padded["image_path"]), source.get("padding"))
     return sources
 
 
