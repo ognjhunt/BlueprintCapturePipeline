@@ -50,13 +50,18 @@ def _safe_path(path, root, *, directory=False):
     return path
 
 
+# Bounds the read, not the job: a native ledger grows with every attempt and
+# lease (capture-447ae4f4's was 138 KB), and refusing it stopped the retry.
+RECORD_LIMIT_BYTES = 16 * 1024 * 1024
+
+
 def _read_json(path, root):
     from .selected_handoff_recovery import _json
     _safe_path(path, root)
     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
         info = os.fstat(stream.fileno())
-        _require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= 65536, "record_invalid")
-        raw = stream.read(65537)
+        _require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= RECORD_LIMIT_BYTES, "record_invalid")
+        raw = stream.read(RECORD_LIMIT_BYTES + 1)
     _require(len(raw) == info.st_size, "record_changed")
     return _json(raw), "sha256:" + hashlib.sha256(raw).hexdigest()
 

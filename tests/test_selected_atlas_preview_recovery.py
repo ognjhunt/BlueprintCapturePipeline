@@ -581,6 +581,18 @@ def test_request_allowance_exhaustion_uses_current_original_cap_without_reset(si
     assert site.job_path.read_bytes() == before
 
 
+def test_a_long_native_ledger_is_read_not_refused(site):
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+
+    ledger = {'scene_id': 'site-fixture', 'capture_id': 'walkthrough-fixture',
+              'status': 'failed_retryable', 'revision': 13, 'attempt_count': 5,
+              'history': [{'attempt': i, 'detail': 'x' * 200} for i in range(700)]}
+    (site.capture / listener.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
+    assert (site.capture / listener.JOB_LEDGER_FILENAME).stat().st_size > 65536
+    write_job(site, state='ready')
+    assert recover(site)['atlas']['atlas_status_digest'].startswith('sha256:')
+
+
 @pytest.mark.parametrize('field', ['staging_reason', 'owner_observation_reason'])
 @pytest.mark.parametrize('reason', ['capture_owner_purpose_mismatch', 'capture_original_birth_refused',
                                   'private token=secret', None])
