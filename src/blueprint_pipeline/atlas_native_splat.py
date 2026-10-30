@@ -59,8 +59,6 @@ def prepare_splat_request(*, frames, root: Path):
     from .atlas_scene_preservation import _valid
     from .website_atlas_tasks import validate_task_request
 
-    if len(frames) < 2:
-        raise ValueError("atlas_splat_frames_required")
     root.mkdir(parents=True, exist_ok=True)
     # Recovered views can repeat a generated view's ID; the position is the identity here.
     keyed = [{**frame, "frame_id": f"{index:04d}"} for index, frame in enumerate(frames)]
@@ -71,11 +69,13 @@ def prepare_splat_request(*, frames, root: Path):
             if (frame["rgb"].shape != (k["height"], k["width"], 3)
                     or frame["depth"].shape != (k["height"], k["width"])):
                 raise ValueError("atlas_splat_frame_grid_changed")
-            key = frame["frame_id"]
+            key, valid = frame["frame_id"], _valid(frame)
+            if not valid.any():
+                continue  # The draft admitted none of this view's pixels.
             rgb = root / f"{key}.png"
             Image.fromarray(frame["rgb"]).save(rgb)
             views.append((key, rgb, write_exr_depth(root / f"{key}.exr", frame["depth"]),
-                          _keep_mask(_valid(frame), root / f"{key}-mask.png"),
+                          _keep_mask(valid, root / f"{key}-mask.png"),
                           {"intrinsics": frame["intrinsics"], "extrinsics": frame["extrinsics"]}))
     else:
         from .atlas_scene_chisel import prepare_source_photographs, project_source_depth
@@ -84,9 +84,14 @@ def prepare_splat_request(*, frames, root: Path):
         for photo in prepare_source_photographs(frames=keyed, root=root / "photographs"):
             key = photo["frame_id"]
             depth = project_source_depth([by_id[photo["source_frame_id"]]], photo["camera"])
+            valid = np.isfinite(depth) & (depth > 0)
+            if not valid.any():
+                continue
             views.append((key, Path(photo["image_path"]), write_exr_depth(root / f"{key}.exr", depth),
-                          _keep_mask(np.isfinite(depth) & (depth > 0), root / f"{key}-mask.png"),
+                          _keep_mask(valid, root / f"{key}-mask.png"),
                           photo["camera"]))
+    if len(views) < 2:
+        raise ValueError("atlas_splat_frames_required")
     contexts, uploads, provenance = [], {}, []
     for i, (key, rgb, depth, mask, camera) in enumerate(views):
         context = {"imageAsset": {"assetId": f"upload:frame-{i}-rgb"}, "camera": camera,

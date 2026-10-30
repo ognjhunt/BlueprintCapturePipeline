@@ -197,6 +197,12 @@ def test_refined_request_masks_exactly_the_pixels_the_draft_would_not_fuse(tmp_p
     mask = np.asarray(Image.open(uploads["frame-1-mask"]["path"]))
     assert np.array_equal(mask == 255, frames[1]["confidence"] > 0) and set(np.unique(mask)) == {0, 255}
     assert provenance[1]["mask_sha256"] == uploads["frame-1-mask"]["sha256"]
+    # A view the draft admitted no pixel of is not posted at all.
+    empty = {**frames[0], "frame_id": "generated", "confidence": np.zeros_like(frames[0]["confidence"])}
+    request, _, provenance = native.prepare_splat_request(frames=[*frames, empty], root=tmp_path / "with-empty")
+    assert len(request["posedFrames"]) == 2 and "generated" not in {row["frame_id"] for row in provenance}
+    with pytest.raises(ValueError, match="frames_required"):
+        native.prepare_splat_request(frames=[frames[0], empty], root=tmp_path / "too-few")
 
 
 def test_mixed_grids_are_posted_on_one_grid_with_their_rays(tmp_path):
