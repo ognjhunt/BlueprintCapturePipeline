@@ -54,7 +54,9 @@ SCRIPTED_BODIES = ("i2rt_yam_bimanual", "agilex_piper_bimanual", "franka_researc
     "fanuc_crx_10ia_l_robotiq_2f85_sim",
     "fanuc_m710ic_45m_robotiq_2f85_sim",
     "abb_gofa_crb15000_5_95_robotiq_2f85_sim",
-    "abb_gofa_crb15000_12_127_robotiq_2f85_sim")
+    "abb_gofa_crb15000_12_127_robotiq_2f85_sim",
+    "fanuc_m10id_12_robotiq_2f85_sim", "yaskawa_hc20_robotiq_2f85_sim",
+    "agile_robots_diana_7_robotiq_2f85_sim")
 IDENTITIES = {
     TRLC_SCHEMA: {"candidate_id": TRLC_CANDIDATE_ID, "team_id": TEAM_ID, "checkpoint_id": TRLC_CHECKPOINT_ID,
         "policy_profile": TRLC_PROFILE_ID, "embodiment_id": TRLC_EMBODIMENT_ID,

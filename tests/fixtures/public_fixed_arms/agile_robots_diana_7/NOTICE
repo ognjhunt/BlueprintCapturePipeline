@@ -1,0 +1,41 @@
+diana_description
+
+Copyright 2026 Agile Robots SE
+
+This product is a migration of franka_description and includes software developed
+by Franka Robotics GmbH.
+
+Modifications by Agile Robots SE:
+  The following files are derived from franka_description and were modified by
+  Agile Robots SE to describe the Diana series robots (Diana3, Diana7, Diana7G2):
+  the URDF/SRDF xacro macros, robot descriptions and robot parameter YAML files
+  under robots/, accessories/ and end_effectors/, the launch, rviz, scripts, test
+  and .docker files, and the package build files (CMakeLists.txt, package.xml).
+  Source files that carry a license header also state the modification in that
+  header.
+
+Third-party assets:
+  The diana_head accessory is taken from the franka_head_v0_2 accessory of
+  franka_description, Copyright 2023 Franka Robotics GmbH, licensed under the
+  Apache License, Version 2.0. Its meshes
+  (meshes/accessories/diana_head/visual/diana_head.dae and
+  meshes/accessories/diana_head/collision/diana_head.stl) and parameter files
+  (accessories/diana_head/inertials.yaml and kinematics.yaml) are unmodified
+  copies under new file names; accessories/diana_head/diana_head.xacro was
+  adapted from franka_head.xacro.
+
+franka_description
+
+Copyright 2023 Franka Robotics GmbH
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

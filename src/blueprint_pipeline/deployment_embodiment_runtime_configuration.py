@@ -32,6 +32,7 @@ from .deployment_embodiment_station import _inverse, _mesh_paths, _multiply, _or
 from .immutable_directory_publication import publish_staged_immutable_directory
 from .deployment_embodiment_industrial_composition import VARIANTS as _INDUSTRIAL_VARIANTS
 from .deployment_embodiment_yaskawa_composition import VARIANTS as _YASKAWA_VARIANTS
+from .deployment_embodiment_public_arm_composition import VARIANTS as _PUBLIC_ARM_VARIANTS
 from .team_embodiment import model_structure_blockers, read_model_structure, validate_embodiment_manifest
 
 SCHEMA = "embodiment_runtime_configuration.v1"
@@ -94,6 +95,20 @@ for _identity in (*_INDUSTRIAL_VARIANTS, *_YASKAWA_VARIANTS):
 _PROFILES["kuka_lbr_iiwa_14_robotiq_2f85_sim"] = [_arm("base", "robotiq_85_base_link", 7, tcp="grasp_link",
     fingers={"robotiq_85_left_knuckle_joint": [0.0, .7929]},
     contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)]
+
+
+# Public fixed-arm batch 1. Bare arms bind only source joints; KR IONTEC rows are
+# bare bodies only. The Jaco2 j2n6s300 three-finger hand is deliberately absent:
+# its six independent finger joints have no source-derived parallel-jaw width.
+_PROFILES["fanuc_m10id_12"] = [_arm("base_link", "J6_link", 6)]
+_PROFILES["yaskawa_hc20"] = [_arm("base_link", "link_6_t", 6)]
+_PROFILES["agile_robots_diana_7"] = [_arm("diana7_link0", "diana7_link7", 7)]
+for _identity in ("kuka_kr20_r3100", "kuka_kr30_r2100", "kuka_kr50_r2100", "kuka_kr50_r2500", "kuka_kr70_r2100"):
+    _PROFILES[_identity] = [_arm("base_link", "link_6", 6)]
+for _identity, _base in _PUBLIC_ARM_VARIANTS.items():
+    _PROFILES[_identity] = [_arm(_PROFILES[_base][0]["base_link"], "robotiq_85_base_link", _PROFILES[_base][0]["dof"],
+        tcp="grasp_link", fingers={"robotiq_85_left_knuckle_joint": [0.0, .7929]},
+        contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)]
 
 
 def runtime_profiles() -> dict[str, Any]:
