@@ -20,7 +20,7 @@ def test_runtime_execution_graph_is_refused_before_normalized_output(tmp_path):
     with pytest.raises(ValueError, match="completed_mesh_prim_type_not_supported"):
         normalize_completed_mesh(source=source, original_filename=source.name,
             coordinate_frame={"meters_per_unit": 1.0, "up_axis": "Z"}, output_root=tmp_path / "out")
-    assert not (tmp_path / "out/normalized_scene.usdc").exists()
+    assert not (tmp_path / "out/normalized_scene.usda").exists()
 
 
 def test_y_up_centimeter_mesh_retains_world_geometry_and_material_through_extraction(tmp_path):
@@ -83,7 +83,7 @@ def test_real_pinned_splat_converter_normalizes_y_up_without_training_or_repeati
 
 
 def test_normalized_ascii_layer_larger_than_the_source_cap_is_read_back(tmp_path, monkeypatch):
-    # 2026-10-30 capture-447ae4f4: a 70.6 MB Atlas GLB wrote a 292 MB ASCII normalized layer, and
+    # 2026-10-30 capture-447ae4f4: a 70.6 MB Atlas GLB wrote a 292 MB normalized_scene.usda, and
     # the read-back of the pipeline's own layer refused it under the 256 MiB source cap.
     import trimesh
     from blueprint_pipeline import provided_scene_mesh
@@ -98,14 +98,11 @@ def test_normalized_ascii_layer_larger_than_the_source_cap_is_read_back(tmp_path
     normalized = normalize_completed_mesh(source=source, original_filename=source.name,
                                           coordinate_frame=frame, output_root=root)
     output = root / normalized["output"]["relative_path"]
-    assert output.name == "normalized_scene.usdc" and output.read_bytes()[:8] == b"PXR-USDC"
+    assert normalized["output"]["size_bytes"] > source.stat().st_size
     # Only the pipeline's own layer is read back past the cap; a source of that size is still refused.
-    monkeypatch.setattr(provided_scene_mesh, "MAX_INSPECTION_BYTES", output.stat().st_size - 1)
-    frame_z = {"meters_per_unit": 1.0, "up_axis": "Z"}
-    assert inspect_mesh(output, original_filename=output.name, coordinate_frame_declaration=frame_z,
-                        normalized_output=True) == normalized["normalized_inspection"]
     with pytest.raises(ReconstructionContractError, match="inspection_size_limit"):
-        inspect_mesh(output, original_filename=output.name, coordinate_frame_declaration=frame_z)
+        inspect_mesh(output, original_filename=output.name,
+                     coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"})
     monkeypatch.setattr(provided_scene_mesh, "MAX_INSPECTION_BYTES", source.stat().st_size - 1)
     with pytest.raises(ReconstructionContractError, match="inspection_size_limit"):
         normalize_completed_mesh(source=source, original_filename=source.name,

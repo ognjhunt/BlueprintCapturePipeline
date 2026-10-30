@@ -156,9 +156,7 @@ def _normalize_completed_mesh(*, source: Path, original_filename: str, coordinat
                 "completed_mesh_normalization_conflict")
         checked_file(output_root / prior["output"]["relative_path"], prior["output"])
         return prior
-    # Binary crate layer: several times smaller and faster to read than USDA.
-    # Receipts written before keep their recorded ``.usda`` relative path.
-    output = output_root / "normalized_scene.usdc"
+    output = output_root / "normalized_scene.usda"
     require(not output.exists(), "completed_mesh_partial_normalization_requires_replay")
     scale, axis = float(coordinate_frame["meters_per_unit"]), coordinate_frame["up_axis"]
     with mesh_filename(source, original_filename) as named:
@@ -167,8 +165,8 @@ def _normalize_completed_mesh(*, source: Path, original_filename: str, coordinat
             mapping = _usd_copy(named, output, scale=scale, axis=axis)
         else:
             mapping = _triangle_copy(named, output, suffix=suffix, scale=scale, axis=axis)
-    # The pipeline's own layer is read back without the supplied-file byte cap;
-    # its points and faces are compared exactly with the source inspection below.
+    # This ASCII layer is several times the admitted source's bytes; its points
+    # and faces are compared exactly with the source inspection below.
     observed = inspect_mesh(output, original_filename=output.name,
                             coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"},
                             normalized_output=True)
