@@ -64,6 +64,9 @@ _PROFILES = {
         fingers={f"{side}_finger_1_joint": [-.044, 0.0]},
         contacts=[f"{side}_finger_1", f"{side}_finger_2"], width=.088) for side in ("left", "right")],
 }
+_PROFILES["franka_research_3_robotiq_2f85_sim"] = [_arm("fr3_link0", "robotiq_85_base_link", 7, tcp="grasp_link",
+    fingers={"robotiq_85_left_knuckle_joint": [0.0, .7929]},
+    contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)]
 _PROFILES["kinova_gen3_bimanual"] = deepcopy(_PROFILES["kinova_gen3"])
 _PROFILES["ufactory_xarm7_bimanual"] = [
     {**deepcopy(_PROFILES["ufactory_xarm7"][0]), "source_prefix": prefix} for prefix in ("L_", "R_")]

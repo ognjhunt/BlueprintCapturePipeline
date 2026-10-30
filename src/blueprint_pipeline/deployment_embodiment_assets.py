@@ -49,6 +49,14 @@ def _path(value: str) -> str:
     return value
 
 
+def _composition_module(recipe):
+    if recipe["composition"].get("schema_version") == "fr3_robotiq2f85_sim_composition.v1":
+        from . import deployment_embodiment_fr3_composition
+        return deployment_embodiment_fr3_composition
+    from . import deployment_embodiment_tool_composition
+    return deployment_embodiment_tool_composition
+
+
 def asset_recipes() -> dict[str, Any]:
     value = json.loads(DATA.read_text(encoding="utf-8"))
     if value.get("schema_version") != "embodiment_asset_recipes.v1" or value.get("claim_ceiling") != "source_asset_not_qualified":
@@ -59,8 +67,7 @@ def asset_recipes() -> dict[str, Any]:
             raise AssetPreparationError("asset_recipe_duplicate_identity")
         identities.add(row["embodiment_id"])
         if row.get("composition") is not None:
-            from .deployment_embodiment_tool_composition import component_recipe
-            component_recipe(row)
+            _composition_module(row).component_recipe(row)
         source = row["source"]
         if source is None:
             if row["status"] not in {"existing_runtime", "source_unavailable"}:
@@ -142,12 +149,15 @@ def _refuse_symlink_ancestors(path: Path) -> None:
 
 def verify_source_bundle(directory: str | Path, *, embodiment_id: str | None = None) -> dict[str, Any]:
     from .deployment_embodiment_tool_composition import COMPOSITE_SCHEMA, verify_composite
+    from .deployment_embodiment_fr3_composition import COMPOSITE_SCHEMA as FR3_SCHEMA, verify_composite as verify_fr3
     root = Path(directory)
     _refuse_symlink_ancestors(root / RECEIPT)
     if (root / RECEIPT).is_file() and (root / RECEIPT).stat().st_size <= MAX_RECEIPT_BYTES:
         value = json.loads((root / RECEIPT).read_text())
         if isinstance(value, dict) and value.get("schema_version") == COMPOSITE_SCHEMA:
             return verify_composite(root, embodiment_id=embodiment_id)
+        if isinstance(value, dict) and value.get("schema_version") == FR3_SCHEMA:
+            return verify_fr3(root, embodiment_id=embodiment_id)
     return _verify_source_recipe(directory, embodiment_id=embodiment_id)
 
 
@@ -237,8 +247,7 @@ def materialize_sources(embodiment_id: str, destination: str | Path, *, get=None
     """
     recipe = recipe_for(embodiment_id)
     if recipe.get("composition") is not None:
-        from .deployment_embodiment_tool_composition import materialize_composite
-        return materialize_composite(recipe, Path(destination), get=get)
+        return _composition_module(recipe).materialize_composite(recipe, Path(destination), get=get)
     return _materialize_source_recipe(recipe, Path(destination), get=get)
 
 
@@ -365,8 +374,7 @@ def materialize_available_sources(destination: str | Path, *, get=None) -> dict[
 def source_description(recipe: dict, receipt: dict) -> dict:
     if recipe.get("composition") is None:
         return recipe["source"]
-    from .deployment_embodiment_tool_composition import effective_description
-    return effective_description(recipe, receipt)
+    return _composition_module(recipe).effective_description(recipe, receipt)
 
 
 def main(argv=None) -> int:

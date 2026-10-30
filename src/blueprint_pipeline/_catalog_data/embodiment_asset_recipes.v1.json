@@ -820,6 +820,88 @@
         "accessible_policy_controller_and_runtime"
       ],
       "reason": "Official Atlas product information does not provide Blueprint an exact licensed robot asset or executable controller/API. Historical Atlas models and Spot SDK assets are not the current electric Atlas."
+    },
+    {
+      "embodiment_id": "franka_research_3_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/frankarobotics/franka_description",
+        "revision": "7aeeddc449edf8d62b594f9e36a81da53e7796f9",
+        "entry_path": "robots/fr3/fr3.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/frankarobotics/franka_description/blob/7aeeddc449edf8d62b594f9e36a81da53e7796f9/LICENSE",
+        "license_note": "Retain the exact source license and notices. Source publication is not Blueprint rights admission, imported physics qualification or policy compatibility.",
+        "include_paths": [
+          "robots/common",
+          "robots/fr3",
+          "end_effectors/common",
+          "end_effectors/franka_hand",
+          "meshes/robots/fr3",
+          "meshes/robot_ee/franka_hand_white",
+          "meshes/robot_ee/franka_hand_black",
+          "LICENSE",
+          "NOTICE"
+        ],
+        "import_arguments": {
+          "robot_type": "fr3",
+          "hand": "false",
+          "ee_id": "none"
+        },
+        "package_roots": {
+          "franka_description": "."
+        },
+        "source_arm_count": 1
+      },
+      "composition": {
+        "schema_version": "fr3_robotiq2f85_sim_composition.v1",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "tool_component_id": "robotiq_2f85_source_component",
+        "simulation_assumptions": {
+          "robot": "Single official FR3 source, not Panda or FR3-Duo.",
+          "tool_sku": "Robotiq2F85 selected for simulation; OpenWAM paper specifies only Robotiq parallel gripper.",
+          "mount": "Robotiq source base directly fixed to fr3_link8 with zero translation/rotation; no manufacturer adapter or camera spacer geometry is implied.",
+          "tcp": "Nominal grasp_link at Robotiq base+134mmZ/yawpi from pinned public PickNik example; OpenWAM training TCP is unpublished.",
+          "cameras": "Generic overhead/wrist simulated camera rigs, not publisher RealSense455 calibration."
+        },
+        "publisher_hardware_match_established": false,
+        "publisher_calibration_match_established": false,
+        "policy_compatibility_established": false,
+        "tcp_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro"
+      },
+      "composition_required": [],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_robotiq_SKU_mount_TCP_and_camera_calibration_unpublished",
+        "simulation_assumption_direct_zero_offset_flange_mount",
+        "simulation_assumption_robotiq_2f85_nominal_134mm_TCP"
+      ],
+      "reason": "Public single FR3 plus licensed Robotiq2F85 simulation assembly; distinct from Panda/DROID and dual FR3 plus Franka Hand. Publisher-specific tool/calibration match remains unknown."
     }
   ]
 }

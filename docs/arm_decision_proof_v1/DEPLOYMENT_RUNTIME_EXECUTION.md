@@ -44,8 +44,9 @@ mock transport tests and a CPU controller smoke are separate evidence.
 
 ## Public-source runtime configurations
 
-`deployment_embodiment_runtime_configuration` registers 18 exact source profiles:
-ten include public source grippers (YAM, PiPER, FR3, Kinova single/dual,
+`deployment_embodiment_runtime_configuration` registers 19 exact source profiles:
+eleven include public source grippers (YAM, PiPER, dual FR3 plus Franka Hand,
+single FR3 plus Robotiq2F85 simulation assembly, Kinova single/dual,
 xArm7 single/dual, Axol, TRLC-DK1 and dual UR5e with Robotiq2F85); eight are bare arms
 (UR5e, UR10e, KUKA iiwa14, three FANUC variants and Yaskawa GP12/GP20). Bare arms do not acquire grasping
 capability from their registration. The remaining catalog rows retain an
@@ -145,7 +146,7 @@ The public single-file model preflight still rejects external dependencies.
 ## Availability and acceptance
 
 The exact source catalog remains enumerated in
-[source notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md), with 18 source-to-runtime
+[source notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md), with 19 source-to-runtime
 configuration profiles described above. The same native manifest
 runtime executes configured OEM USDs; a separate hardcoded adapter per vendor
 is unnecessary. Exact tools, mounts, resets, cameras and licenses are execution

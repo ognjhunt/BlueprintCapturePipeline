@@ -277,3 +277,33 @@ gravity. No Isaac import or policy/task result is claimed by these checks.
 This generic public assembly does not establish Dream's hardware, calibration
 or policy compatibility. PickNik maintains the tool package; its README says
 it is not maintained or sponsored by Robotiq.
+
+## Single FR3 with Robotiq2F85 simulation tool
+
+`franka_research_3_robotiq_2f85_sim` is a separate single-arm assembly for
+experiments with the public OpenWAM Franka EEF checkpoint. It uses official
+[FR3 source](https://github.com/frankarobotics/franka_description/tree/7aeeddc449edf8d62b594f9e36a81da53e7796f9)
+with `hand=false, ee_id=none` and the separately pinned
+[PickNik Robotiq2F85 source](https://github.com/PickNikRobotics/ros2_robotiq_gripper/tree/a74d007d8f2f06dc6a503ad21038ba869d4999a6).
+Retain the FR3 Apache-2.0 license and NOTICE and the Robotiq package BSD-3-Clause
+license. Source files remain unchanged in independent component bundles. The
+generated wrapper and its assumptions have their own sealed identity.
+
+The [checkpoint card](https://huggingface.co/OpenWAM/OpenWAM-Alpha-Real-Single-Arm-Franka/blob/e75522eb38f9b4148d5ecb985ab80c490ddb3854/README.md)
+and paper identify FR3 and a Robotiq parallel gripper, without exact SKU, mount
+or TCP calibration. This variant selects 2F85, fixes its base directly to
+`fr3_link8` with zero translation/rotation, and retains the nominal 134mm/yaw-pi
+`grasp_link` convention from the existing pinned public PickNik example. It
+does not model an unpublished adapter or camera spacer. Those choices and
+the generic overhead/wrist camera rig are simulation assumptions, not a
+publisher hardware match. The existing dual-FR3/Franka Hand and Panda/DROID
+identities are unchanged. Policy observation/calibration adaptation is separate.
+
+The retained 2026-10-30 source audit prepared 71 files / 31,773,064 bytes from
+verified cached publisher files and expanded all dependencies. It found seven
+FR3 arm joints, six actuated/mimicked Robotiq joints, one tool channel and
+authored positive inertias on all 13 moving links. A CPU MuJoCo 3.11 controller
+isolation moved the arm and all six tool joints and repeated reset, with
+contacts/gravity disabled. This establishes neither Isaac import, task contact,
+GPU policy inference nor task success. The new 19th preparation option does not
+alter any previously sealed 18-body grant.
