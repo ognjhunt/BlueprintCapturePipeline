@@ -1,6 +1,7 @@
 """Automatic estimates/editing preserve raw geometry, source caps and quality rejection."""
 
 from copy import deepcopy
+import json
 import math
 from pathlib import Path
 
@@ -946,7 +947,9 @@ def test_unrelated_object_instruction_quotes_the_finding_as_bounded_data():
     assert quoted.startswith("the oven was erased ") and quoted.endswith('"') and len(quoted) == 301
 
 
-def test_insufficient_entire_path_budget_refuses_before_sam(tmp_path, monkeypatch):
+def test_entire_path_estimate_is_recorded_not_a_stop(tmp_path, monkeypatch):
+    # Owner decision 2026-10-30: WebApp admission is the money stop for each call;
+    # the up-front path estimate (2x renders, minimums) is advisory evidence.
     from blueprint_pipeline import website_image_completion as image_edit
 
     frames = [view(tmp_path), view(tmp_path, "b", 0.1)]
@@ -956,9 +959,10 @@ def test_insufficient_entire_path_budget_refuses_before_sam(tmp_path, monkeypatc
         lambda *a, **k: ({}, {"pricing_binding": {"max_cost_per_request_usd": 0.2}}, "b"),
     )
     monkeypatch.setattr(
-        edits, "segment_objects", lambda **_: (_ for _ in ()).throw(AssertionError("SAM called"))
+        edits, "segment_objects", lambda **_: (_ for _ in ()).throw(RuntimeError("SAM reached"))
     )
-    with pytest.raises(ValueError, match="budget_insufficient"):
+    monkeypatch.setattr(edits, "_provider_preflight", lambda: None)
+    with pytest.raises(RuntimeError, match="SAM reached"):
         edits.run_background(
             frames=frames,
             objects=plan()["objects"],
@@ -973,6 +977,8 @@ def test_insufficient_entire_path_budget_refuses_before_sam(tmp_path, monkeypatc
             release_blockers=lambda: ("commit", []),
             configuration={"remaining_cost_usd": 0},
         )
+    preflight = json.loads(next((tmp_path / "run").rglob("preflight.json")).read_text())
+    assert preflight["advisory"] is True and preflight["estimated_maximum_path_cost_usd"] > 0
 
 
 def test_failed_automation_preserves_measurement_result_without_reconstructing(

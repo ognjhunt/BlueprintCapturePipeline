@@ -728,14 +728,10 @@ def run_background(
             "original_views": len(frames),
             "same_source_allowance": True,
             "fallback_requires_remaining_allowance": True,
+            # An estimate for the record; WebApp admission checks each real call.
+            "advisory": True,
         },
     )
-    if (
-        not (root / "anchor").exists()
-        and configuration is not None
-        and configuration["remaining_cost_usd"] + 1e-9 < forecast
-    ):
-        raise ValueError("atlas_automation_budget_insufficient:" + str(forecast))
     _provider_preflight()
     check("automation_segmentation")
     selected = segment_objects(
