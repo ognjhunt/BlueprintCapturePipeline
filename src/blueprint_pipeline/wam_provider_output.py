@@ -91,6 +91,8 @@ RUNTIME_RESULT_FILENAMES = (
     "native_task_arena_policy_canary_session_result.v1.json",
     "native_g1_provider_campaign_result.v1.json",
     "native_g1_beta_session_result.v1.json",
+    "native_g1_team_provider_result.v1.json",
+    "embodiment_asset_preparation_result.v1.json",
     "native_task_arena_runtime_preflight.v1.json",
     "task_evaluation_rigid_destination_native_observation.v1.json",
     "paired_target_native_import_runtime_result.v1.json",
