@@ -10,10 +10,19 @@ from blueprint_pipeline import native_g1_beta_paid as paid
 from blueprint_pipeline import native_g1_beta_bundle as bundle_builder
 from blueprint_pipeline import control_plane_disk_budget as disk
 from blueprint_pipeline import control_plane_disk_reservation_heartbeat as heartbeat
+from blueprint_pipeline import adp_isaac_lab_arena_vast as arena
+from blueprint_pipeline import vast_independent_watchdog_control as watchdog
 from tests.test_native_g1_beta_bundle import fixture
 
 
 def setup(tmp_path, monkeypatch):
+    # These fixtures model a standalone offline caller, not the CI runner's
+    # systemd service or live spend configuration. Separate cases below opt
+    # into an unproven systemd caller and retain the real production guard.
+    for name in ("INVOCATION_ID", watchdog.CALLER_EXIT_SURVIVAL_ENV,
+                 arena.SPEND_ADMISSION_LOCK_PATH_ENV, arena.REQUIRE_SPEND_ADMISSION_LOCK_ENV,
+                 "BLUEPRINT_LAUNCH_PROOF_MODE"):
+        monkeypatch.delenv(name, raising=False)
     authority, spec = fixture(tmp_path, monkeypatch)
     bundle = bundle_builder.build_bundle(job_dir=tmp_path / "sealed", authority=authority, spec=spec, implementation_commit="a" * 40)
     authority_path = tmp_path / "authority.json"
@@ -110,11 +119,36 @@ def test_uncertain_transport_never_claims_zero_or_retries(tmp_path, monkeypatch)
     assert "g1_beta_paid_authority_already_consumed" in dispatch(args, identity)["blockers"]
 
 
-def test_dry_run_reaches_real_canonical_transport_without_consumption(tmp_path, monkeypatch):
+@pytest.mark.parametrize("inherited_host_context", [False, True])
+def test_dry_run_reaches_real_canonical_transport_without_consumption(tmp_path, monkeypatch, inherited_host_context):
+    if inherited_host_context:
+        monkeypatch.setenv("INVOCATION_ID", "hermetic-systemd-fixture")
+        monkeypatch.setenv(watchdog.CALLER_EXIT_SURVIVAL_ENV, "unproven")
+        monkeypatch.setenv(arena.SPEND_ADMISSION_LOCK_PATH_ENV, str(tmp_path / "absent-live-lock"))
+        monkeypatch.setenv(arena.REQUIRE_SPEND_ADMISSION_LOCK_ENV, "true")
+        monkeypatch.setenv("BLUEPRINT_LAUNCH_PROOF_MODE", "production")
     args, _, _, identity, reservations, _ = setup(tmp_path, monkeypatch)
     args.execute = False
     result = dispatch(args, identity)
-    assert result["status"] == "dry_run_ready"
+    assert result["status"] == "dry_run_ready", result
+    assert result["live_spend_preflight_checked"] is False
+    assert result["independent_watchdog_preflight"] == {
+        "caller_exit_survival_contract": "detached_posix_session",
+        "caller_exit_survival_supported": True, "watchdog_armed": False}
+    assert reservations == []
+    assert not (Path(args.adp_job_dir) / "authorization_consumption.json").exists()
+
+
+def test_real_dry_transport_still_refuses_unproven_systemd_survival(tmp_path, monkeypatch):
+    args, _, _, identity, reservations, _ = setup(tmp_path, monkeypatch)
+    args.execute = False
+    monkeypatch.setenv("INVOCATION_ID", "hermetic-systemd-fixture")
+    monkeypatch.setattr(arena, "run_vast_provider_adapter", lambda **kwargs: pytest.fail("provider boundary entered"))
+    result = dispatch(args, identity)
+    assert result["status"] == "blocked", result
+    assert result["blockers"] == ["native_g1_beta_independent_watchdog_caller_exit_survival_unproven"]
+    assert result["provider_mutations_performed"] == 0
+    assert result["independent_watchdog_preflight"]["caller_exit_survival_supported"] is False
     assert reservations == []
     assert not (Path(args.adp_job_dir) / "authorization_consumption.json").exists()
 
