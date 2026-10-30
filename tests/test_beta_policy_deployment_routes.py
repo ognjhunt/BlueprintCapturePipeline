@@ -37,9 +37,14 @@ def test_packaged_routes_cover_every_recorded_pair_once_without_changing_enabled
     catalog = load_default_catalog()
     expected = {(body["embodiment_id"], route["route_id"])
                 for body in support_catalog()["embodiments"] for route in body["policy_routes"]}
+    public_baselines = {row["candidate_id"] for row in catalog["candidates"]
+                        if (row.get("deployment") or {}).get("relationship") == "public_controller_integration"
+                        and not row["deployment"]["companies"]}
+    assert len(public_baselines) == 12
     pairs = Counter((row["deployment"]["configuration_id"], row["deployment"]["policy_route_id"])
-                    for row in catalog["candidates"] if (row.get("deployment") or {}).get("policy_route_id"))
-    assert len(catalog["candidates"]) == 88 and len(expected) == 74
+                    for row in catalog["candidates"] if (row.get("deployment") or {}).get("policy_route_id")
+                    and row["candidate_id"] not in public_baselines)
+    assert len(catalog["candidates"]) == 100 and len(expected) == 74
     assert pairs == Counter({pair: 1 for pair in expected})
     assert ORIGINAL_IDS <= {row["candidate_id"] for row in catalog["candidates"]}
     assert {row["candidate_id"]: row["configuration_digest"] for row in catalog["candidates"]
@@ -48,7 +53,8 @@ def test_packaged_routes_cover_every_recorded_pair_once_without_changing_enabled
         "groot_n17_droid": "sha256:bee000dea18063838a80c1f4e362b3e6b360c5c32c1a5824c3e77b86e0e58692",
         "cosmos3_edge_policy_droid": "sha256:2ef6b265d6a79187db6079230e6f9a9ac0b7477eeeb7fb1e561bf222518c4be7",
     }
-    added = [row for row in catalog["candidates"] if row["candidate_id"] not in ORIGINAL_IDS | set(G1_CANDIDATES)]
+    added = [row for row in catalog["candidates"]
+             if row["candidate_id"] not in ORIGINAL_IDS | set(G1_CANDIDATES) | public_baselines]
     assert len(added) == 58
     assert all(row["deployment"]["relationship"] == "planning_candidate" for row in added)
     assert all(row["interface"] is None and row["runtime"] is None for row in added)
@@ -60,7 +66,7 @@ def test_all_74_route_reasons_survive_real_planning_queue_and_publication(tmp_pa
     coordinator.enqueue_screening_campaign(plan, queue_root=tmp_path)
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
     published = {row["candidate_id"]: row for row in publication["candidates"]}
-    assert len(published) == len(plan["candidates"]) == 88
+    assert len(published) == len(plan["candidates"]) == 100
     for candidate in catalog["candidates"]:
         row = published[candidate["candidate_id"]]
         assert row["status"] == "unavailable"
@@ -113,7 +119,7 @@ def _rename_registration(registrations, old, new):
 def test_distinct_registered_checkpoints_on_one_body_and_route_are_not_collapsed(tmp_path, monkeypatch):
     base, registrations = _registered_pair(tmp_path, monkeypatch)
     catalog = catalog_for_profile({"screening_candidates": registrations}, base)
-    assert len(catalog["candidates"]) == 90
+    assert len(catalog["candidates"]) == 102
     first, second = [catalog_candidate(catalog, key) for key in registrations]
     assert first["deployment"] == second["deployment"]
     assert first["policy"]["digest"] != second["policy"]["digest"]
@@ -170,4 +176,4 @@ def test_custom_body_and_route_are_not_excluded_by_the_packaged_picker(tmp_path,
     plan = build_screening_plan(catalog, scene(), campaign_id="custom-routes", now=NOW)
     planned = next(row for row in plan["candidates"] if row["candidate_id"] == "team_policy_00")
     assert planned["status"] == "unavailable" and "runtime_candidate_binding_missing" in planned["blockers"]
-    assert len(plan["candidates"]) == 90
+    assert len(plan["candidates"]) == 102
