@@ -26,6 +26,29 @@ goal. A missing navigation goal does not block manipulation or other robots.
 The runtime source packet must verify as `unitree_g1`. Correcting a registration
 changes the campaign catalog identity while preserving the existing site spend.
 
+`beta_policy_screening_g1_prepare.prepare_native_g1_beta_packet` supplies the
+initial G1 packet from the trusted base packet, sidecar task-success contract,
+current source identity and exact pinned Arena USD. It uses the existing floor
+and footprint search, keeping long collision fixtures in the obstacle set;
+the G1 pelvis starts 0.79 m above the inferred floor. The fixed development head
+camera is mounted on the actual `head_link`, while the site's overview camera
+is retained unchanged. Those choices, the right task hand and the 50 Hz control /
+200 Hz physics rates are explicit simulation assumptions, not measured camera
+or robot calibration. The action-step cap is resampled without increasing the
+source episode duration. No navigation goal, scene geometry, task instruction,
+human decision or ADP context is invented.
+
+Preparation writes under the protected site root at
+`native-g1/<base-receipt-digest>/<current-source-digest>/`. A changed current
+context gets its own immutable packet. The
+`native_g1_beta_scene_preparation.v1.json` receipt records these assumptions and
+retains `current_consent_revalidated=false`: technical preparation does not
+replace the live current-source checks in planning and launch. The initial CPU
+validation compiled a real synthetic task fixture with the exact 38,195,671-byte
+public Arena USD and read all 43 joint limits; it did not start Isaac or run a
+policy. `OmniPBR.mdl` remains the declared Kit runtime dependency and is not
+claimed resolved by this host-side test.
+
 The planner composes a machine authority from the unchanged exact model-term
 review and current trusted capture/task authority, within the owner's requested
 internal simulation scope. It records `new_human_review_claimed=false`; it never

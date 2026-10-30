@@ -137,7 +137,8 @@ def validate_beta_authority(value: Mapping[str, Any], *, candidate_id: str,
                 or set(source) != set(SOURCE_FIELDS)
                 or any(not _digest(source[key]) if key.endswith("digest") else
                        not isinstance(source[key], str) or not source[key] for key in SOURCE_FIELDS)
-                or not isinstance(row["site_id"], str) or not row["site_id"].startswith("site-")
+                or not isinstance(row["site_id"], str)
+                or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,191}", row["site_id"])
                 or (current_source is not None and source != {key: current_source[key] for key in SOURCE_FIELDS})
                 or (task_success_contract_digest is not None and row["task_success_contract_digest"] != task_success_contract_digest)
                 or row["authority_digest"] != canonical_digest(row, digest_field="authority_digest")):

@@ -194,6 +194,7 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
     from .beta_policy_screening_launch import _bound_path, _read, _record as file_record
     from .native_task_arena_bundle import verify_native_task_arena_packet
     from .native_g1_embodiment import validate_g1_robot_plan
+    from .native_task_arena_runtime import _resolve_portable_robot
     from .native_g1_scene_packet_request import ROBOT_TASK_FIELDS
     from .native_g1_navigation_goal import validate_g1_navigation_goal_authority
     from .native_g1_publisher_source_stage import verify_g1_publisher_source
@@ -225,7 +226,10 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
     if asset_identity(receipt) != asset_identity(base_receipt):
         raise ValueError("g1_beta_source_scene_assets_mismatch")
     task = g1["task_spec"]
-    source_task = scene_plan["task_spec"]
+    if scene_plan["task_spec"].get("task_success_contract") not in (None, contract):
+        raise ValueError("g1_beta_current_task_binding_mismatch")
+    source_task = {**scene_plan["task_spec"], "task_success_contract": dict(contract),
+                   "task_success_contract_digest": contract["contract_digest"]}
     if candidate_id.endswith("_vision_navi") and source_task.get("g1_navigation_goal") is None:
         raise ValueError("g1_beta_current_navigation_goal_authority_missing")
     if (g1.get("task_id") != source["task_id"] or g1.get("scene_id") != site_id
@@ -236,7 +240,7 @@ def candidate_execution_spec(*, candidate_id: str, registration: Mapping[str, An
             or any(task[k] != source_task[k] for k in task if k not in ROBOT_TASK_FIELDS)
             or task.get("control_frequency_hz") != 50):
         raise ValueError("g1_beta_current_task_binding_mismatch")
-    robot = validate_g1_robot_plan(g1["robot"], verify_asset=False)
+    robot = validate_g1_robot_plan(_resolve_portable_robot(g1, bundle_root=packet_root), verify_asset=False)
     if robot["usd_sha256"] != ROBOT_USD_SHA256:
         raise ValueError("g1_beta_robot_asset_mismatch")
     cameras = [row for row in g1.get("cameras", []) if row.get("role") == "head"]
