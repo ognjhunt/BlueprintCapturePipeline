@@ -45,6 +45,7 @@ def arena_provider_output_packaging_script(provider_bundle_kind: str) -> str:
         + repr(provider_bundle_kind == "native_g1_beta_screening")
         + "\n"
         "if g1_beta_output:\n"
+        "    required_result_max_bytes = 128 * 1024**2\n"
         "    for path in output_dir.rglob('*'):\n"
         "        if path.is_symlink() or not (path.is_file() or path.is_dir()):\n"
         "            raise SystemExit('g1_beta_output_not_regular')\n"

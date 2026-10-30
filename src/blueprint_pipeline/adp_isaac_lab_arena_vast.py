@@ -651,6 +651,11 @@ def run_arena_native_control_vast(
         or _file_sha256(bundle_path) != bundle.get("bundle_sha256")
     ):
         raise ValueError("adp_arena_prepared_bundle_binding_invalid")
+    provider_disk_gb = 200
+    if provider_bundle_kind == "native_g1_beta_screening":
+        provider_disk_gb = bundle.get("provider_disk_gb")
+        if type(provider_disk_gb) is not int or provider_disk_gb <= 0:
+            raise ValueError("g1_beta_provider_disk_quote_invalid")
     watchdog_preflight: dict[str, Any] = {}
     if require_independent_watchdog:
         survival = _caller_exit_survival_contract()
@@ -1036,7 +1041,7 @@ def run_arena_native_control_vast(
                 vast_launch_mode="ssh_direct",
                 allow_cold_isaac_image_pull=True,
                 min_cold_isaac_pull_live_minutes=30,
-                disk_gb=200,
+                disk_gb=provider_disk_gb,
                 min_gpu_ram_mb=min_gpu_ram_mb,
                 min_compute_cap=min_compute_cap,
                 max_compute_cap=max_compute_cap,

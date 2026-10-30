@@ -9,7 +9,7 @@ from .decision_evidence_contracts import canonical_digest
 RESULT_SCHEMA = "native_g1_beta_session_result.v1"
 RESULT_FILENAME = RESULT_SCHEMA + ".json"
 MAX_OUTPUT_BYTES = 4 * 1024**3
-MAX_TERMINAL_BYTES = 512 * 1024**2
+MAX_TERMINAL_BYTES = 128 * 1024**2
 
 
 def transport_completed(result: Mapping, *, manifest: Mapping | None = None) -> bool:

@@ -85,7 +85,8 @@ def test_actual_bootstrap_and_packager_retain_evidence_not_execution_inputs(tmp_
     output = tmp_path / "output"
     output.mkdir()
     (output / RESULT).write_text(json.dumps({"status": "blocked", "claim_ceiling": "development_only"}))
-    excluded = ["policy-runtime-build/policy-runtime/model.bin", "models/checkpoints/weights.bin",
+    excluded = ["policy-runtime-build/policy-runtime/model.bin", "policy-runtime-build/wheel-downloads/torch.whl",
+        "models/checkpoints/weights.bin",
         "models/sonic/weights.bin", "models/torch/weights.bin", "cell_packets/cell/scene.usda"]
     retained = ["models/checkpoint-inventory.json", "policy-runtime-build/build.json",
         "cells/cell/worker/query_checkpoints/0.json", "cells/cell/request.json"]
@@ -104,7 +105,7 @@ def test_actual_bootstrap_and_packager_retain_evidence_not_execution_inputs(tmp_
         assert archive.getinfo("cells/cell/worker/policy-input.png").file_size == 100_000_001
 
 
-@pytest.mark.parametrize("defect", ["missing_g1_result", "symlink", "too_large"])
+@pytest.mark.parametrize("defect", ["missing_g1_result", "symlink", "too_large", "terminal_limit"])
 def test_packaging_refuses_incomplete_or_over_budget_archive(tmp_path, defect):
     output = tmp_path / "output"
     output.mkdir()
@@ -115,6 +116,10 @@ def test_packaging_refuses_incomplete_or_over_budget_archive(tmp_path, defect):
         (output / "adp009d_native_microcheck.json").write_text("{}")
     elif defect == "symlink":
         (output / "aliased-result.json").symlink_to(output / RESULT)
+    elif defect == "terminal_limit":
+        assert transport.MAX_TERMINAL_BYTES == 128 * 1024**2
+        with (output / RESULT).open("wb") as stream:
+            stream.truncate(transport.MAX_TERMINAL_BYTES + 1)
     else:
         # Exercise the actual post-compression budget branch without making a 4 GiB file.
         prefix = ("from pathlib import Path\nfrom types import SimpleNamespace\n"

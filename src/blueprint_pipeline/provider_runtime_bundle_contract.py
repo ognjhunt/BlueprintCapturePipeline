@@ -66,7 +66,7 @@ def g1_provider_output_contract(kind: str) -> tuple[str | None, bool, tuple[str,
         return "native_g1_team_provider_result.v1.json", True, ()
     if kind == "native_g1_beta_screening":
         return "native_g1_beta_session_result.v1.json", True, (
-            "policy-runtime-build/policy-runtime/", "models/checkpoints/",
+            "policy-runtime-build/policy-runtime/", "policy-runtime-build/wheel-downloads/", "models/checkpoints/",
             "models/sonic/", "models/torch/", "cell_packets/",
         )
     if kind == "native_g1_development_campaign":
