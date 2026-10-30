@@ -157,3 +157,46 @@ def test_specific_bad_object_is_excluded_without_discarding_undetected_backgroun
 def test_actual_sdk_accepts_surface_review_schema():
     from agents import AgentOutputSchema
     assert AgentOutputSchema(SurfaceMaskReview).is_strict_json_schema()
+
+
+@pytest.mark.parametrize("remaining,retained,bought", [(3, False, False), (4, False, True), (0, True, True)])
+def test_mask_corrections_are_bought_only_while_the_scene_can_finish(tmp_path, remaining, retained, bought):
+    from blueprint_pipeline.atlas_scene_surface_masks import segment_and_review_surfaces
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    _, _, reviewed = fixture()
+    fid = reviewed[0]["frame"]["frame_id"]
+    bad = np.zeros((48, 64), bool)
+    bad[10:20, 25:35] = True
+    calls = []
+    def sam(**kw):
+        calls.append(kw["prompts"][0]["text"])
+        return {"binding_digest": "sam", "profile": {"model": "sam-3.1"}, "responses": [],
+                "tracks": [{"observations": [observation(kw["frame_registry"][0], bad)]}]}
+    def reviewer(**kw):
+        rows = kw["recovery"]["candidates"]
+        return {"proposal": {"status": "passed" if rows else "revise", "views": [{
+            "frame_id": fid, "retain_full_view": True, "task_mask_ids": [], "context_mask_ids": [],
+            "excluded_mask_ids": [r["mask_id"] for r in rows], "reason": "Remove only the invented box",
+            "corrections": [] if rows else [region("invented box", "exclude", "uncertain")]}],
+            "remaining_required_surfaces": []}}
+    root = tmp_path / "masks"
+    if retained:
+        key = canonical_digest({"frame_id": fid, "concept": "invented box"})[7:23]
+        (root / key / "sam/retained").mkdir(parents=True)
+        (root / key / "sam/retained/response-0.json").write_text("{}")
+    # One correction call and its review, plus the refined splat and mesh still to buy.
+    configuration = {"remaining_requests": remaining,
+                     "policy": {"refined_splat_cost_usd": 5, "mesh_export_cost_usd": .5}}
+    def run():
+        return segment_and_review_surfaces(
+            proposal=make_plan(tmp_path, reviewed, [region("work area")])["proposal"],
+            reviewed_views=reviewed, survey_path=tmp_path / "survey.json", context={},
+            configuration=configuration, root=root, source_digest="video",
+            planner_runner=reviewer, segmenter=sam, final_output_root=tmp_path / "automation")
+    if bought:
+        assert run()["review_rounds"] == 2
+    else:
+        with pytest.raises(ValueError, match="request_budget_insufficient:required=4,remaining=3"):
+            run()
+    assert calls == (["invented box"] if bought else [])
+    assert (root / "request-budget-01.json").is_file() is not retained

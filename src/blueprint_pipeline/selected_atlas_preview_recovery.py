@@ -50,13 +50,18 @@ def _safe_path(path, root, *, directory=False):
     return path
 
 
+# Bounds the read, not the job: a native ledger grows with every attempt and
+# lease (capture-447ae4f4's was 138 KB), and refusing it stopped the retry.
+RECORD_LIMIT_BYTES = 16 * 1024 * 1024
+
+
 def _read_json(path, root):
     from .selected_handoff_recovery import _json
     _safe_path(path, root)
     with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
         info = os.fstat(stream.fileno())
-        _require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= 65536, "record_invalid")
-        raw = stream.read(65537)
+        _require(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= RECORD_LIMIT_BYTES, "record_invalid")
+        raw = stream.read(RECORD_LIMIT_BYTES + 1)
     _require(len(raw) == info.st_size, "record_changed")
     return _json(raw), "sha256:" + hashlib.sha256(raw).hexdigest()
 
@@ -277,15 +282,18 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
             ("request_id", observation["request_id"]), ("capture_id", selection["capture_id"]),
             ("source_video_digest", source["video_sha256"])))
             and _number(authority.get("maximum_cost_usd"), positive=True)
-            and _number(authority.get("maximum_requests"), positive=True, integer=True)
+            # Money is the hard stop; a request count is optional and only reported.
+            and ("maximum_requests" not in authority
+                 or _number(authority.get("maximum_requests"), positive=True, integer=True))
             and _number(authority.get("expires_at_epoch"), positive=True)
             and all(_number(config.get(key)) for key in (
-                "reserved_or_settled_cost_usd", "remaining_cost_usd", "remaining_requests")),
+                "reserved_or_settled_cost_usd", "remaining_cost_usd"))
+            and ("remaining_requests" not in config or _number(config.get("remaining_requests"))),
             "configuration_invalid")
         value["allowance"] = {key: authority[key] for key in (
-            "maximum_cost_usd", "maximum_requests", "expires_at_epoch")}
+            "maximum_cost_usd", "maximum_requests", "expires_at_epoch") if key in authority}
         value["allowance"].update({key: config[key] for key in (
-            "reserved_or_settled_cost_usd", "remaining_cost_usd", "remaining_requests")})
+            "reserved_or_settled_cost_usd", "remaining_cost_usd", "remaining_requests") if key in config})
         value["allowance"]["authorization_digest"] = canonical_digest(authority)
         value["policy_digest"] = canonical_digest(config["policy"])
         # Reservation summaries come only from the bounded read-only WebApp getter.
@@ -304,12 +312,12 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
                              value["allowance_accounting"]["reserved_or_settled_cost_usd"])
                  and _equal_cost(config["remaining_cost_usd"], max(
                      0, authority["maximum_cost_usd"] - config["reserved_or_settled_cost_usd"]))
-                 and config["remaining_requests"] == max(
-                     0, authority["maximum_requests"] - value["allowance_accounting"]["request_count"]),
+                 and ("remaining_requests" not in config or config["remaining_requests"] == max(
+                     0, authority["maximum_requests"] - value["allowance_accounting"]["request_count"])),
                  "configuration_invalid")
         if authority["expires_at_epoch"] <= time.time():
             value["preflight_blockers"].append("website_atlas_consent_expired")
-        if config["remaining_cost_usd"] <= 0 or config["remaining_requests"] <= 0:
+        if config["remaining_cost_usd"] <= 0 or config.get("remaining_requests", 1) <= 0:
             value["preflight_blockers"].append("website_scene_preparation_budget_exhausted")
         try:
             _require_current_price_review(config["policy"])

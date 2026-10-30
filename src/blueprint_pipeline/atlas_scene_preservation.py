@@ -13,7 +13,7 @@ import numpy as np
 
 from .atlas_depth_splat import _rotation_matrix, restrict_frame, MAX_MEDIAN_CROSS_VIEW_RESIDUAL
 from .common import write_json
-from .atlas_pricing import render_cost, final_output_cost
+from .atlas_pricing import render_cost, novel_view_headroom, require_headroom
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -407,7 +407,6 @@ def generate_masked_completion(*, frames, selected, candidates, root, pose, cont
                'naturally, without additional objects, furniture, clutter or decorations. '
                'Existing empty installation openings remain empty. '
                'The following task objects are absent: ' + json.dumps(list(removed_objects)) + '.')
-    remaining = 0.
     for index, group in enumerate(groups):
         request, uploads = masked_request(group, caption)
         # Supply a finished-scene caption ourselves. The default enhancer
@@ -422,11 +421,10 @@ def generate_masked_completion(*, frames, selected, candidates, root, pose, cont
                  **{k: policy[k] for k in ('rate_card_reference', 'reviewed_by', 'reviewed_on')}}
         if (stage / 'result.json').is_file():
             _completed_task(stage, pose['binding']['source_video_digest'], 'generated')
-        else:
-            remaining += cost
         specs.append((group, request, uploads, stage, quote))
-    if remaining + final_output_cost(policy) + 1 > configuration['remaining_cost_usd']:
-        raise ValueError('atlas_completion_remaining_budget_insufficient')
+    require_headroom(novel_view_headroom(configuration,
+        batches=[(spec[3], spec[4]['maximum_cost_usd']) for spec in specs], final_output_root=root.parent,
+        context=context, source_digest=pose['binding']['source_video_digest']), root / 'request-budget-preflight.json')
     binding = {'schema_version': 'atlas_masked_completion_plan.v1', 'source_pose_digest': pose['digest'],
                'selected_camera_ids': [row['camera_id'] for row in selected],
                'anchor_camera_ids': [row['camera_id'] for row in anchors], 'prepared_views': rows,

@@ -548,6 +548,14 @@ def test_current_configuration_allowance_must_agree_with_checked_ledger(site, ch
     assert site.job_path.read_bytes() == before
 
 
+def test_a_dollar_only_allowance_is_not_blocked_by_a_request_count(site):
+    # Owner decision 2026-10-30: money is the hard stop; requests are only counted.
+    site.config.pop("remaining_requests")
+    result = recover(site)["atlas"]
+    assert "remaining_requests" not in result["allowance"]
+    assert "website_scene_preparation_budget_exhausted" not in result["preflight_blockers"]
+
+
 def test_native_preparation_costs_remain_separate_from_the_original_atlas_cap(site):
     native_row = copy.deepcopy(site.config["allowance_accounting"]["reservations"][0])
     native_row.update(allocation_binding_digest="sha256:" + "9" * 64, provider="openai",
@@ -571,6 +579,18 @@ def test_request_allowance_exhaustion_uses_current_original_cap_without_reset(si
     with pytest.raises(ValueError, match="selected_handoff_atlas_preflight_blocked"):
         recover(site, retry_digest=result["atlas"]["atlas_status_digest"])
     assert site.job_path.read_bytes() == before
+
+
+def test_a_long_native_ledger_is_read_not_refused(site):
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+
+    ledger = {'scene_id': 'site-fixture', 'capture_id': 'walkthrough-fixture',
+              'status': 'failed_retryable', 'revision': 13, 'attempt_count': 5,
+              'history': [{'attempt': i, 'detail': 'x' * 200} for i in range(700)]}
+    (site.capture / listener.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
+    assert (site.capture / listener.JOB_LEDGER_FILENAME).stat().st_size > 65536
+    write_job(site, state='ready')
+    assert recover(site)['atlas']['atlas_status_digest'].startswith('sha256:')
 
 
 @pytest.mark.parametrize('field', ['staging_reason', 'owner_observation_reason'])

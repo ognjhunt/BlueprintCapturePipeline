@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from blueprint_pipeline.atlas_pricing import completion_request_preflight
+from blueprint_pipeline.atlas_pricing import novel_view_headroom, require_headroom
 
 
 def configuration(remaining=40):
@@ -13,9 +13,9 @@ def configuration(remaining=40):
                        'mesh_export_cost_usd': .5}}
 
 
-def forecast(tmp_path, config, count=1):
-    return completion_request_preflight(config,
-        generation_roots=[tmp_path / 'generated' / str(i) for i in range(count)],
+def forecast(tmp_path, config, count=1, cost=0.):
+    return novel_view_headroom(config,
+        batches=[(tmp_path / 'generated' / str(i), cost) for i in range(count)],
         final_output_root=tmp_path, context={'context_digest': 'context'}, source_digest='source')
 
 
@@ -88,6 +88,56 @@ def test_production_forecast_reads_current_noncreating_allowance_after_planning(
     assert calls == [({'context_digest': 'context'}, 'source', False)]
     assert report['remaining_requests'] == 2 and not report['sufficient_for_known_calls']
     assert config['remaining_requests'] == 40
+    # The owner raising this grant's limits continues the job; any other change stops it.
     current['authority']['maximum_requests'] = 400
+    assert forecast(tmp_path, config)['sufficient_for_known_calls'] is False
+    current['authority']['provider_retention'] = 'project_library_retention_approved'
     with pytest.raises(ValueError, match='authority_or_policy_changed'):
         forecast(tmp_path, config)
+
+
+def test_dollars_and_requests_share_one_forecast_without_counting_bought_work_twice(tmp_path):
+    config = {**configuration(40), 'remaining_cost_usd': 7.5}
+    # Two $.5 batches + refined splat $5 + mesh $.5 + one review margin = $7.5.
+    report = forecast(tmp_path, config, count=2, cost=.5)
+    assert report['minimum_remaining_cost_usd'] == 7.5 and report['sufficient_for_known_calls']
+    config['remaining_cost_usd'] = 7.49
+    with pytest.raises(ValueError, match='remaining_budget_insufficient'):
+        require_headroom(forecast(tmp_path, config, count=2, cost=.5), tmp_path / 'forecast.json')
+    # An in-flight batch is already held by admission; a bought splat is already paid.
+    for relative, value in [('generated/0/atlas_pose/submission.json', {'status': 'submitted'}),
+                            ('refined/atlas_pose/submission.json', {'status': 'submitted',
+                                'binding': {'task': 'posedImages2Splats'}})]:
+        (tmp_path / relative).parent.mkdir(parents=True)
+        (tmp_path / relative).write_text(json.dumps(value))
+    config['remaining_cost_usd'] = 2.
+    assert forecast(tmp_path, config, count=2, cost=.5)['minimum_remaining_cost_usd'] == 2
+
+
+@pytest.mark.parametrize('change,allowed', [
+    ({'maximum_requests': 60}, True),
+    ({'maximum_requests': 60, 'maximum_cost_usd': 50, 'approval_reference': 'owner raise',
+      'expires_at_epoch': 2, 'authorization_digest': 'sha256:amended'}, True),
+    ({'maximum_requests': None}, True),
+    ({'maximum_requests': 39}, False),
+    ({'maximum_cost_usd': 39}, False),
+    ({'maximum_requests': 60, 'source_video_digest': 'other'}, False),
+    ({'maximum_requests': 60, 'provider_training_authorized': True}, False),
+    ({'maximum_requests': 60, 'planner': {'provider': 'other'}}, False),
+])
+def test_owner_may_raise_a_running_jobs_limits_but_not_change_its_grant(change, allowed):
+    from blueprint_pipeline.website_atlas_pipeline import resumed_policy
+
+    authority = {'request_id': 'r', 'capture_id': 'c', 'source_video_digest': 'v',
+                 'provider_training_authorized': False, 'planner': {'provider': 'openai'},
+                 'approval_reference': 'owner', 'expires_at_epoch': 1, 'authorization_digest': 'sha256:a',
+                 'maximum_cost_usd': 40, 'maximum_requests': 40}
+    policy = {'maximum_review_cost_usd': 1, 'pose_input_cost_usd': .02}
+    stored = {'authority': authority, 'policy': policy}
+    current = {'authority': {k: v for k, v in {**authority, **change}.items() if v is not None},
+               'policy': dict(policy)}
+    if allowed:
+        assert resumed_policy(stored, current) == {'policy': policy}
+    else:
+        with pytest.raises(ValueError, match='authority_or_policy_changed'):
+            resumed_policy(stored, current)

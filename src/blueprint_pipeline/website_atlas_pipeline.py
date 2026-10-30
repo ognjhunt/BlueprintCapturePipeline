@@ -36,16 +36,33 @@ _REVIEW_RECORD = ("rate_card_reference", "reviewed_by", "reviewed_on")
 REVIEW_CAPS = "review_caps_usd"
 
 
+# The owner may raise a running job's allowance by amending its own canonical
+# authorization; who, what source, which terms and retention stay fixed.
+_RAISABLE_LIMITS = ("maximum_cost_usd", "maximum_requests")
+_AMENDMENT_RECORD = ("approval_reference", "expires_at_epoch", "authorization_digest")
+
+
+def _same_authority(stored, current):
+    amendable = (*_RAISABLE_LIMITS, *_AMENDMENT_RECORD)
+    if ({k: v for k, v in stored.items() if k not in amendable}
+            != {k: v for k, v in current.items() if k not in amendable}):
+        return False
+    # A limit the owner removed is raised; dollars stay bounded by WebApp admission.
+    return all(key not in current or (type(current[key]) in (int, float) and current[key] >= stored[key])
+               for key in _RAISABLE_LIMITS if key in stored)
+
+
 def resumed_policy(stored, current):
     """The policy fields a job that already bought work under ``stored`` takes from ``current``.
 
-    The authority and every price must be unchanged; the review record may be renewed. The
-    per-review cap may rise but never fall below one the job ran under: the authority's total
-    still bounds what the job can spend.
+    Every price must be unchanged; the review record may be renewed. The authority may only
+    be the same grant with limits the owner raised: canonical admission keeps counting what
+    the job already used, so a raise continues the job instead of buying it again. The
+    per-review cap may rise but never fall below one the job ran under.
     """
     cap = current["policy"]["maximum_review_cost_usd"]
     caps = stored.get(REVIEW_CAPS, [stored["policy"]["maximum_review_cost_usd"]])
-    if (stored["authority"] != current["authority"] or cap < caps[-1]
+    if (not _same_authority(stored["authority"], current["authority"]) or cap < caps[-1]
             or any(current["policy"].get(key) != value for key, value in stored["policy"].items()
                    if key not in (*_REVIEW_RECORD, "maximum_review_cost_usd"))):
         raise ValueError("atlas_runtime_authority_or_policy_changed")

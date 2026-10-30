@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .atlas_pricing import AFTER_NOVEL_VIEWS, finish_reserve
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
@@ -351,6 +352,9 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
     else:
         feedback["remaining_budget_usd_at_plan"] = configuration["remaining_cost_usd"]
         feedback["remaining_requests_at_plan"] = configuration.get("remaining_requests")
+        # What finishing needs after the novel views; the rest is room for them.
+        feedback["reserved_for_finishing"] = finish_reserve(
+            configuration.get("policy", {}), AFTER_NOVEL_VIEWS, root.parent)
         write_json(feedback_path, feedback)
     if checkpoint:
         checkpoint("automation_completion_plan")
