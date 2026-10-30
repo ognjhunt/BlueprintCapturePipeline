@@ -118,6 +118,13 @@ install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_model_card.md" 
 for public_profile_file in molmoact2_yam_registration_profile.json molmoact2_yam_publisher_readme.md molmoact2_yam_publisher_license.txt; do
   install -m 0644 "$repo_root/config/policy_runtimes/$public_profile_file" "$stage/operator_door/$public_profile_file"
 done
+for trlc_profile_file in trlc_pi05_registration_profile.json trlc_pi05_tokenizer_inventory.v1.json; do
+  install -m 0644 "$repo_root/config/policy_runtimes/$trlc_profile_file" "$stage/operator_door/$trlc_profile_file"
+done
+install -d -m 0755 "$stage/operator_door/trlc_pi05_notices"
+for trlc_notice in APACHE-2.0.txt NOTICE.txt base-model-card.md community-model-card.md gemma-prohibited-use.txt gemma-terms.txt provenance.json; do
+  install -m 0644 "$repo_root/src/blueprint_pipeline/_vendor/trlc_pi05_notices/$trlc_notice" "$stage/operator_door/trlc_pi05_notices/$trlc_notice"
+done
 if [ "$dispatcher_hold_only" -eq 0 ]; then
   python3 -I -S "$source_dir/stage-historical-runtime.py" "$repo_root/src/blueprint_pipeline" "$stage/historical-python"
   install -m 0644 "$source_dir/historical-generation-entry.py" "$stage/historical-generation-entry.py"

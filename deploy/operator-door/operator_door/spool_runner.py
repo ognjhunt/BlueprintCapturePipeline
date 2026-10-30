@@ -302,6 +302,10 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         "blueprint-operator-door-native-g1-policy", "door-install-public-piper-policy.sh", "15min",
         lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
         _public_policy_environment, _native_g1_properties),
+    "install-public-trlc-policy": _LaunchSpec(
+        "blueprint-operator-door-public-trlc-policy", "door-install-public-piper-policy.sh", "5min",
+        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
+        _public_policy_environment, _public_policy_properties),
     "install-public-franka-policy": _LaunchSpec(
         "blueprint-operator-door-public-franka-policy", "door-install-public-piper-policy.sh", "5min",
         lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],

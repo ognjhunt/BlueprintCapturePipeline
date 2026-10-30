@@ -13,7 +13,7 @@ import sys
 
 if __package__:
     from .public_policy_registration_contract import (
-        MODEL_ROOT, REGISTRY_PATH, STATE_ROOT,
+        MODEL_ROOT, REGISTRY_PATH, STATE_ROOT, TRLC_SCHEMA, trlc_tokenizer_record,
         decode, digest, expected_manifest, expected_policy, file_record, read, require,
         retained_body, rights_record, safe_path, validate_request, load_profile, request_identity,
     )
@@ -27,7 +27,7 @@ else:
     _spec.loader.exec_module(_contract)
     sys.modules[_spec.name] = _contract
     from public_policy_registration_contract import (
-        MODEL_ROOT, REGISTRY_PATH, STATE_ROOT,
+        MODEL_ROOT, REGISTRY_PATH, STATE_ROOT, TRLC_SCHEMA, trlc_tokenizer_record,
         decode, digest, expected_manifest, expected_policy, file_record, read, require,
         retained_body, rights_record, safe_path, validate_request, load_profile, request_identity,
     )
@@ -88,6 +88,8 @@ def verified_registration(request: dict, *, state_root: Path, model_root: Path, 
         "dependency_closure": original["model_record"]["dependency_closure"],
         "source_import_provenance": original["model_record"]["source_import_provenance"],
         "minimum_gpu_memory_gb": profile["minimum_gpu_memory_gb"], "deployment": profile["deployment"]}
+    if request["schema_version"] == TRLC_SCHEMA:
+        expected["offline_tokenizer"] = trlc_tokenizer_record(profile)
     proposal = read(destination / "proposal.json")
     require(proposal == {"schema_version": identity["proposal_schema"],
         "request_digest": request["request_digest"], "registration": expected,

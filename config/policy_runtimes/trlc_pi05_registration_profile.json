@@ -1,0 +1,125 @@
+{
+  "camera_overrides": {
+    "left_wrist": {
+      "height": 540,
+      "width": 960
+    },
+    "overhead": {
+      "height": 600,
+      "width": 800
+    },
+    "right_wrist": {
+      "height": 540,
+      "width": 960
+    }
+  },
+  "candidate_id": "pi05_trlc_rabc_10466a13",
+  "checkpoint_id": "pi05-trlc-rabc-10466a13",
+  "deployment": {
+    "companies": [],
+    "configuration_id": "trlc_dk1_bimanual",
+    "evidence_url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/tree/10466a133c74018465c6839b7003b700775e4f69",
+    "policy_route_id": "pi05_custom_checkpoint",
+    "relationship": "public_controller_integration"
+  },
+  "display_name": "Community Pi0.5 \u00b7 TRLC DK1 bimanual (OOD rigid-task diagnostic)",
+  "license_evidence_files": {
+    "APACHE-2.0.txt": {
+      "sha256": "sha256:43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "size_bytes": 11356
+    },
+    "NOTICE.txt": {
+      "sha256": "sha256:66989753893863d627b12f35777e97d0a2ab956906ce7cf4a6b470e0fc93a917",
+      "size_bytes": 1914
+    },
+    "base-model-card.md": {
+      "sha256": "sha256:5660a59c4bc742dbab3b0f8a109442436b8378200cdbdf6ed35045efe16cdfdc",
+      "size_bytes": 5139
+    },
+    "community-model-card.md": {
+      "sha256": "sha256:5916bef5353aa251d59ad4434680c7df504431a0f5c6139b19a3384169dac68c",
+      "size_bytes": 2140
+    },
+    "gemma-prohibited-use.txt": {
+      "sha256": "sha256:f6f8fd65cc8fb5170815e5aaa3cea6850ae9ed70f639ddcbbbb17225aa9868a8",
+      "size_bytes": 3610
+    },
+    "gemma-terms.txt": {
+      "sha256": "sha256:a490e6c5e07cbf144366468d64205302f34fb90edaf795d360c0268447b7759d",
+      "size_bytes": 10110
+    },
+    "provenance.json": {
+      "sha256": "sha256:a58904e95e11666c293c208340d1fa31e1a43cfd1d7783e9d178c7dd8329fbd7",
+      "size_bytes": 2557
+    }
+  },
+  "license_evidence_url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/blob/10466a133c74018465c6839b7003b700775e4f69/README.md",
+  "minimum_gpu_memory_gb": 48,
+  "policy_profile": "pi05_trlc_rabc_joint14.v1",
+  "policy_spec_template": {
+    "action_chunk_rows": 50,
+    "action_hz": 30,
+    "binding": {
+      "camera_binding_reference": "initial_simulation_assumption:source_configured_camera_mounts_poses_and_optics_not_publisher_or_site_calibration;dataset_joint_zero_matches_public_URDF_unverified;native60Hz_policy30Hz_execution50_of50;rigid_task_is_out_of_distribution_for_tshirt_folding_checkpoint",
+      "camera_names": [
+        "overhead",
+        "right_wrist",
+        "left_wrist"
+      ],
+      "configuration_digest": null,
+      "execution_horizon": 50
+    },
+    "camera_names": [
+      "overhead",
+      "right_wrist",
+      "left_wrist"
+    ],
+    "embodiment_id": "trlc_dk1_bimanual",
+    "model_identity_digest": "sha256:45c826f9a40aa9d2e5b8764a087fe33634d7948f2117e8e975447264774a498a",
+    "open_loop_horizon": 50,
+    "policy_id": "pi05_trlc_rabc_joint14.v1",
+    "policy_interface_id": "pi05_trlc_joint14.v1",
+    "source_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9"
+  },
+  "team_id": "blueprint-public-models",
+  "tokenizer_inventory": {
+    "files": [
+      {
+        "git_blob_sha1": "ff9246e420971b10c510b39a0de289132c2bf23f",
+        "path": "added_tokens.json",
+        "size_bytes": 24
+      },
+      {
+        "git_blob_sha1": "28cf2b54fa2e3de2f07c11fb13a29c6541ca913b",
+        "path": "preprocessor_config.json",
+        "size_bytes": 699
+      },
+      {
+        "git_blob_sha1": "0c18fdd94629ea652e2ef36ed9a422474ad0a8e8",
+        "path": "special_tokens_map.json",
+        "size_bytes": 607
+      },
+      {
+        "path": "tokenizer.json",
+        "sha256": "ef6773c135b77b834de1d13c75a4c98ab7a3684ffd602d1831e1f1bf5467c563",
+        "size_bytes": 17549604
+      },
+      {
+        "path": "tokenizer.model",
+        "sha256": "8986bb4f423f07f8c7f70d0dbe3526fb2316056c17bae71b1ea975e77a168fc6",
+        "size_bytes": 4264023
+      },
+      {
+        "git_blob_sha1": "960dcec0bccc6e594d865eceb63c8078e164cfb2",
+        "path": "tokenizer_config.json",
+        "size_bytes": 39968
+      }
+    ],
+    "model_license": "gemma",
+    "rights_review_required": true,
+    "schema_version": "g1_paligemma_tokenizer_inventory.v1",
+    "source_repository": "https://huggingface.co/google/paligemma-3b-pt-224",
+    "source_revision": "35e4f46485b4d07967e7e9935bc3786aad50687c"
+  },
+  "tokenizer_inventory_sha256": "sha256:5020414c0d782bb33cdf1f53b220569c83aff55356d2d920f7741657eb0fe830"
+}
