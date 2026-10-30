@@ -369,7 +369,20 @@ def _terminal(state: dict[str, Any]) -> bool | None:
     if observed.get("status") in {"observed_completed", "observed_failed"}:
         return observed["status"] == "observed_completed"
     if outcome:
-        if (state.get("request") or {}).get("kind") == "selected-handoff" and outcome.get("status") == "completed":
+        kind = (state.get("request") or {}).get("kind")
+        public_disposition = {
+            "public-embodiment-preparation": "grant_queued",
+            "install-public-piper-policy": "public_policy_registered",
+            "install-public-yam-policy": "public_policy_registered",
+            "install-public-franka-policy": "public_policy_registered",
+            "install-scripted-robot-baselines": "public_policy_registered",
+        }.get(kind)
+        if public_disposition is not None:
+            # Only the bounded enqueue/registration completed, not a simulation.
+            return (outcome.get("status") == "completed"
+                    and type(outcome.get("exit_code")) is int and outcome["exit_code"] == 0
+                    and outcome.get("disposition") == public_disposition)
+        if kind == "selected-handoff" and outcome.get("status") == "completed":
             # This proves the bounded command returned, not downstream job completion.
             return type(outcome.get("exit_code")) is int and outcome["exit_code"] == 0
         return outcome.get("status") in _TERMINAL_OK

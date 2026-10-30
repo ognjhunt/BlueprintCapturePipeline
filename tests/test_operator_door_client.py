@@ -439,6 +439,42 @@ def test_wait_fails_on_a_refusal(door: dict[str, Any]) -> None:
     assert code == 1
 
 
+@pytest.mark.parametrize("kind", ["public-embodiment-preparation", "install-public-piper-policy",
+    "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines"])
+@pytest.mark.parametrize("change,expected", [({}, 0), ({"status": "failed"}, 1),
+    ({"exit_code": 2}, 1), ({"exit_code": False}, 1), ({"exit_code": None}, 1),
+    ({"disposition": "wrong_operation"}, 1)])
+def test_public_operation_submit_wait_reports_only_its_completed_command(
+    door: dict[str, Any], tmp_path: Path, kind: str, change: dict, expected: int,
+) -> None:
+    if kind == "public-embodiment-preparation":
+        value, disposition = _asset_grant(), "grant_queued"
+    elif kind == "install-scripted-robot-baselines":
+        from tests.test_operator_door_scripted_registration import request
+        value, disposition = request(), "public_policy_registered"
+    else:
+        from tests.test_operator_door_public_policy_registration import request
+        value = request(yam=kind == "install-public-yam-policy", franka=kind == "install-public-franka-policy")
+        disposition = "public_policy_registered"
+    path = tmp_path / "public-operation.json"
+    path.write_text(json.dumps(value))
+    arguments = (kind, "--request-file", str(path))
+    code, output = _run(*arguments)
+    assert code == 0
+    request_id = json.loads(output)["id"]
+    root = door["state"] / "requests"
+    (root / "pending" / f"{request_id}.json").rename(root / "completed" / f"{request_id}.json")
+    outcome = {"status": "completed", "exit_code": 0, "disposition": disposition, **change}
+    (root / "results" / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
+
+    # Retry the exact submission through real HTTP and its actual --wait path.
+    # A completed enqueue/registration does not claim the simulator ran.
+    code, output = _run(*arguments, "--wait", "--poll", "0.01", "--timeout", "5")
+    final = json.loads(output)
+    assert code == expected and final["id"] == request_id and final["outcome"] == outcome
+    assert not list((root / "pending").glob("*.json"))
+
+
 def test_scope_refusal_on_post_exits_3(door: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run("deploy", SHA)[0] == 3
