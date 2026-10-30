@@ -35,14 +35,14 @@ def verify_inputs(runtime: Path) -> dict:
 def import_one(runtime: Path, output: Path, identity: str) -> dict:
     from .deployment_embodiment_runtime_configuration import prepare_runtime_configuration, bind_prepared_configuration
     from .deployment_embodiment_asset_import import import_source_asset
-    from .native_task_isaaclab_launch import launch_native_task_isaaclab
+    from .deployment_embodiment_isaac_launch import launch_embodiment_isaaclab
 
     inputs = verify_inputs(runtime)
     require(identity in inputs["request"]["embodiment_ids"], "worker_identity_unbound")
     output.mkdir(parents=True, exist_ok=True)
     config = prepare_runtime_configuration(runtime / "robot_sources" / identity, output / "configuration")
-    app, launch = launch_native_task_isaaclab(Path(os.environ["BLUEPRINT_EMBODIMENT_PROVISIONING_RECEIPT"]),
-        device="cuda:0", appearance_render_path="no_site_appearance", enable_cameras=False)
+    app, launch = launch_embodiment_isaaclab(Path(os.environ["BLUEPRINT_EMBODIMENT_PROVISIONING_RECEIPT"]),
+        output=output / "import-launch", source_format=config.get("source_model", {}).get("format", "urdf"))
     try:
         imported = import_source_asset(output / "configuration", output / "prepared", fix_base=True,
                                         station_parameters=config["station_parameters"])

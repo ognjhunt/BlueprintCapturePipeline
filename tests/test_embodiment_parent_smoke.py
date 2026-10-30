@@ -32,7 +32,7 @@ from blueprint_pipeline import deployment_embodiment_preparation_worker as worke
 from blueprint_pipeline import deployment_embodiment_runtime_configuration as config
 from blueprint_pipeline import deployment_embodiment_asset_import as importer
 from blueprint_pipeline import deployment_embodiment_assets as assets
-from blueprint_pipeline import native_task_isaaclab_launch as launch
+from blueprint_pipeline import deployment_embodiment_isaac_launch as launch
 source, prepared, body, identity, recipe = sys.argv[1:]
 def prepare(_source, output):
     shutil.copytree(source, output)
@@ -44,7 +44,7 @@ with patch.object(worker, "verify_inputs", return_value={"request": {"embodiment
      patch.object(assets, "recipe_for", return_value=json.loads(recipe)), \
      patch.object(config, "prepare_runtime_configuration", side_effect=prepare), \
      patch.object(importer, "import_source_asset", side_effect=convert), \
-     patch.object(launch, "launch_native_task_isaaclab", return_value=(
+     patch.object(launch, "launch_embodiment_isaaclab", return_value=(
          SimpleNamespace(close=lambda: os._exit(0)), {"development_only_fake_sdk": True})):
     worker.import_one(Path("unused-development-runtime"), Path(body), identity)
 raise AssertionError("SDK close must terminate before this statement")
@@ -215,12 +215,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from blueprint_pipeline import deployment_embodiment_native_smoke as smoke
 from blueprint_pipeline import deployment_embodiment_assets as assets
-from blueprint_pipeline import native_task_isaaclab_launch as launch
+from blueprint_pipeline import deployment_embodiment_isaac_launch as launch
 from tests.test_embodiment_native_smoke import Stepper
 run = partial(smoke.run_native_controller_smoke, backend_factory=Stepper)
 with patch.object(smoke, "run_native_controller_smoke", run), \
      patch.object(assets, "recipe_for", return_value=json.loads(sys.argv[2])), \
-     patch.object(launch, "launch_native_task_isaaclab", return_value=(
+     patch.object(launch, "launch_embodiment_isaaclab", return_value=(
          SimpleNamespace(close=lambda: os._exit(0)), {"development_only_fake_sdk": True})):
     smoke.main(["--body", sys.argv[1], "--wall-seconds", "60"])
 raise AssertionError("SDK close must terminate")
