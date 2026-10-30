@@ -7,12 +7,17 @@ No model, network, simulator, allocation or human-review action occurs here.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from copy import deepcopy
+import fcntl
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import shutil
+import stat
+import tempfile
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
@@ -49,14 +54,69 @@ def _bound(record: Mapping[str, Any]) -> Path:
 
 
 def _copy(source: Path, destination: Path, *, sha256: str, size_bytes: int) -> None:
-    if source.is_symlink() or source.stat().st_size != size_bytes:
+    def matches(path):
+        return (not path.is_symlink() and path.is_file() and path.stat().st_size == size_bytes
+                and "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() == sha256)
+    if not matches(source):
         raise ValueError("g1_beta_preparation_source_changed")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if not destination.exists():
-        shutil.copyfile(source, destination)
-    if (destination.is_symlink() or destination.stat().st_size != size_bytes
-            or "sha256:" + hashlib.sha256(destination.read_bytes()).hexdigest() != sha256):
+    if matches(destination):
+        return
+    if destination.is_symlink() or destination.exists() and not destination.is_file():
         raise ValueError("g1_beta_preparation_source_changed")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=destination.parent, prefix="." + destination.name + ".copy-", delete=False) as stream:
+            temporary = Path(stream.name)
+        shutil.copyfile(source, temporary)
+        if not matches(temporary):
+            raise ValueError("g1_beta_preparation_source_changed")
+        with temporary.open("rb") as stream:
+            os.fsync(stream.fileno())
+        if matches(destination):
+            return
+        if destination.exists():
+            # An older interrupted copier could leave an invalid final file.
+            # Preserve those bytes; never replace a verified retained file.
+            _preserve_incomplete(destination)
+        os.link(temporary, destination)  # Exclusive publish, never overwrite.
+        _sync_directory(destination.parent)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _sync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _preserve_incomplete(path: Path) -> None:
+    if path.is_symlink():
+        raise ValueError("g1_beta_preparation_symlink_refused")
+    retained = Path(tempfile.mkdtemp(prefix="." + path.name + ".incomplete-", dir=path.parent))
+    os.rename(path, retained / path.name)
+    _sync_directory(retained)
+    _sync_directory(path.parent)
+
+
+@contextmanager
+def _namespace_lock(path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("g1_beta_preparation_lock_invalid")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise ValueError("g1_beta_preparation_in_progress") from exc
+        yield
+    finally:
+        os.close(descriptor)  # Process exit releases this lock, including SIGKILL.
 
 
 def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: Path,
@@ -179,26 +239,34 @@ def prepare_native_g1_beta_packet(*, base_packet_record: Mapping[str, Any], sour
     for path in (destination, evidence):
         if any(part.is_symlink() for part in (path, *path.parents)):
             raise ValueError("g1_beta_preparation_symlink_refused")
-    robot_asset = evidence / "robot" / robot_source.name
-    _copy(robot_source, robot_asset, sha256=robot_asset_record["sha256"], size_bytes=robot_asset_record["size_bytes"])
-    request, assumptions = _request(base_root=base_root, base_receipt=receipt, robot_asset=robot_asset,
-        evidence_root=evidence, source=source, site_id=site_id, task_success_contract=task_success_contract)
-    if destination.exists():
-        _, prior, _ = verify_native_task_arena_packet(destination)
-        if _read(destination / "native_task_arena_packet_request.v1.json") != request:
-            raise ValueError("g1_beta_preparation_existing_packet_conflict")
-    else:
-        prior = materialize_native_task_arena_packet(request=request, evidence_root=evidence, output_dir=destination)
-        verify_native_task_arena_packet(destination)
-    packet = _record(destination / "native_task_arena_packet_receipt.v1.json")
-    result = {"schema_version": SCHEMA, "status": "prepared_not_executed", "recipe_id": RECIPE,
-        "source": dict(source), "site_id": site_id, "base_packet": dict(base_packet_record),
-        "scene_packet": packet, "assumptions": assumptions, "scene_plan_digest": prior["arena_scene_plan_digest"],
-        "candidate_reasons": {key: ["g1_beta_current_navigation_goal_authority_missing"] for key in (
-            "humanoidarena_dp_g1_dex3_sonic_vision_navi", "humanoidarena_pi05_g1_dex3_sonic_vision_navi")},
-        "candidate_policy_queried": False, "simulator_executed": False, "provider_allocations_performed": 0,
-        "new_human_review_claimed": False, "current_consent_revalidated": False,
-        "claim_ceiling": "development_only"}
-    result["preparation_digest"] = canonical_digest(result, digest_field="preparation_digest")
-    write_once(destination / FILENAME, result)
-    return {**result, "preparation_receipt": _record(destination / FILENAME)}
+    with _namespace_lock(parent / ("." + source_key + ".lock")):
+        if destination.exists() and not (destination / "native_task_arena_packet_receipt.v1.json").exists():
+            if not destination.is_dir():
+                raise ValueError("g1_beta_preparation_existing_packet_conflict")
+            # A killed packet compiler has no complete receipt. Keep its
+            # partial bytes outside the final namespace and retry the same
+            # final path, so portable and embedded source paths stay stable.
+            _preserve_incomplete(destination)
+        robot_asset = evidence / "robot" / robot_source.name
+        _copy(robot_source, robot_asset, sha256=robot_asset_record["sha256"], size_bytes=robot_asset_record["size_bytes"])
+        request, assumptions = _request(base_root=base_root, base_receipt=receipt, robot_asset=robot_asset,
+            evidence_root=evidence, source=source, site_id=site_id, task_success_contract=task_success_contract)
+        if destination.exists():
+            _, prior, _ = verify_native_task_arena_packet(destination)
+            if _read(destination / "native_task_arena_packet_request.v1.json") != request:
+                raise ValueError("g1_beta_preparation_existing_packet_conflict")
+        else:
+            prior = materialize_native_task_arena_packet(request=request, evidence_root=evidence, output_dir=destination)
+            verify_native_task_arena_packet(destination)
+        packet = _record(destination / "native_task_arena_packet_receipt.v1.json")
+        result = {"schema_version": SCHEMA, "status": "prepared_not_executed", "recipe_id": RECIPE,
+            "source": dict(source), "site_id": site_id, "base_packet": dict(base_packet_record),
+            "scene_packet": packet, "assumptions": assumptions, "scene_plan_digest": prior["arena_scene_plan_digest"],
+            "candidate_reasons": {key: ["g1_beta_current_navigation_goal_authority_missing"] for key in (
+                "humanoidarena_dp_g1_dex3_sonic_vision_navi", "humanoidarena_pi05_g1_dex3_sonic_vision_navi")},
+            "candidate_policy_queried": False, "simulator_executed": False, "provider_allocations_performed": 0,
+            "new_human_review_claimed": False, "current_consent_revalidated": False,
+            "claim_ceiling": "development_only"}
+        result["preparation_digest"] = canonical_digest(result, digest_field="preparation_digest")
+        write_once(destination / FILENAME, result)
+        return {**result, "preparation_receipt": _record(destination / FILENAME)}

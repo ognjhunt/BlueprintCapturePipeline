@@ -4,7 +4,10 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+import multiprocessing
+import os
 from pathlib import Path
+import signal
 
 import pytest
 
@@ -131,3 +134,88 @@ def test_wrong_current_task_or_changed_source_bytes_are_rejected(prepared_scene)
     Path(args["robot_asset_record"]["path"]).write_text("changed")
     with pytest.raises(ValueError, match="input_bytes_changed"):
         prepare.prepare_native_g1_beta_packet(**args)
+
+
+def test_interrupted_evidence_copy_never_publishes_partial_bytes(tmp_path, monkeypatch):
+    source, destination = tmp_path / "source.usd", tmp_path / "evidence/robot.usd"
+    source.write_bytes(b"complete verified robot fixture")
+    expected = _record(source)
+    real_copy = prepare.shutil.copyfile
+
+    def interrupted(src, dst):
+        Path(dst).write_bytes(Path(src).read_bytes()[:3])
+        raise OSError("injected interrupted copy")
+
+    monkeypatch.setattr(prepare.shutil, "copyfile", interrupted)
+    with pytest.raises(OSError, match="injected interrupted copy"):
+        prepare._copy(source, destination, sha256=expected["sha256"], size_bytes=expected["size_bytes"])
+    assert not destination.exists()
+    monkeypatch.setattr(prepare.shutil, "copyfile", real_copy)
+    prepare._copy(source, destination, sha256=expected["sha256"], size_bytes=expected["size_bytes"])
+    assert destination.read_bytes() == source.read_bytes()
+    inode = destination.stat().st_ino
+    monkeypatch.setattr(prepare.shutil, "copyfile", lambda *a: pytest.fail("valid evidence must not be recopied"))
+    prepare._copy(source, destination, sha256=expected["sha256"], size_bytes=expected["size_bytes"])
+    assert destination.stat().st_ino == inode
+
+
+def test_legacy_partial_copy_is_preserved_before_exact_retry(tmp_path):
+    source, destination = tmp_path / "source.usd", tmp_path / "robot.usd"
+    source.write_bytes(b"complete verified source")
+    destination.write_bytes(b"com")
+    expected = _record(source)
+    prepare._copy(source, destination, sha256=expected["sha256"], size_bytes=expected["size_bytes"])
+    assert destination.read_bytes() == source.read_bytes()
+    [retained] = list(tmp_path.glob(".robot.usd.incomplete-*/robot.usd"))
+    assert retained.read_bytes() == b"com"
+
+
+def test_killed_packet_compiler_releases_lock_and_retries_without_losing_partial_evidence(prepared_scene):
+    args, _, _ = prepared_scene
+    base = json.loads(Path(args["base_packet_record"]["path"]).read_text())
+    final = args["output_root"] / "native-g1" / base["receipt_digest"][7:] / canonical_digest(args["source"])[7:]
+
+    def killed_compiler():
+        from blueprint_pipeline import native_task_arena_packet
+
+        def interrupted(*, output_dir, **kwargs):
+            output_dir.mkdir()
+            (output_dir / "partial-build.bin").write_bytes(b"retained incomplete CPU fixture")
+            os.kill(os.getpid(), signal.SIGKILL)
+
+        native_task_arena_packet.materialize_native_task_arena_packet = interrupted
+        prepare.prepare_native_g1_beta_packet(**args)
+
+    child = multiprocessing.get_context("fork").Process(target=killed_compiler)
+    child.start()
+    try:
+        child.join(timeout=20)
+        assert child.exitcode == -signal.SIGKILL
+    finally:
+        if child.is_alive():
+            child.kill()
+            child.join(timeout=5)
+    assert (final / "partial-build.bin").is_file()
+    assert not (final / "native_task_arena_packet_receipt.v1.json").exists()
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    assert Path(result["scene_packet"]["path"]).parent == final
+    verify_native_task_arena_packet(final)
+    [retained] = list(final.parent.glob("." + final.name + ".incomplete-*/" + final.name + "/partial-build.bin"))
+    assert retained.read_bytes() == b"retained incomplete CPU fixture"
+    assert not (final / "partial-build.bin").exists()
+
+
+def test_retained_packet_with_receipt_is_never_replaced_on_validation_failure(prepared_scene):
+    args, _, _ = prepared_scene
+    result = prepare.prepare_native_g1_beta_packet(**args)
+    final = Path(result["scene_packet"]["path"]).parent
+    plan = final / "native_task_arena_scene_plan.v1.json"
+    inode = final.stat().st_ino
+    receipt_bytes = Path(result["scene_packet"]["path"]).read_bytes()
+    plan.write_text("corrupted retained packet")
+    with pytest.raises(ValueError):
+        prepare.prepare_native_g1_beta_packet(**args)
+    assert final.stat().st_ino == inode
+    assert plan.read_text() == "corrupted retained packet"
+    assert Path(result["scene_packet"]["path"]).read_bytes() == receipt_bytes
+    assert not list(final.parent.glob("." + final.name + ".incomplete-*"))
