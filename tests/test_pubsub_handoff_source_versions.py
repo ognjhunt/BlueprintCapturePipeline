@@ -40,6 +40,26 @@ def test_selected_generation_is_the_actual_download_precondition(tmp_path, monke
     assert calls == [{"if_generation_match": int(blob.generation), "timeout": 60, "retry": None}]
 
 
+def test_current_staging_needs_no_bulk_disk_admission(tmp_path, monkeypatch):
+    from blueprint_pipeline import pubsub_handoff_disk_admission as admission
+    from blueprint_pipeline.common import PipelineError
+
+    monkeypatch.setattr(admission, "reserve_control_plane_disk",
+                        lambda *_, **__: pytest.fail("reserved disk for zero downloaded bytes"))
+    name = "scenes/scene-1/captures/capture-1/raw/video.mov"
+    rows = [{"name": name, "size": 2, "generation": "17000000000000000001"}]
+    admission.download_with_reservation(
+        downloads=[], manifest_rows=rows, selected_generations={name: "17000000000000000001"},
+        storage_root=tmp_path, capture_root=tmp_path / "capture",
+    )
+    # The selected version is still proved when nothing is downloaded.
+    with pytest.raises(PipelineError, match="handoff_source_generation_unproven"):
+        admission.download_with_reservation(
+            downloads=[], manifest_rows=rows, selected_generations={name: "17000000000000000002"},
+            storage_root=tmp_path, capture_root=tmp_path / "capture",
+        )
+
+
 def test_selected_generation_mismatch_refuses_before_disk_reservation(tmp_path, monkeypatch):
     from blueprint_pipeline import pubsub_handoff_disk_admission as admission
     from blueprint_pipeline.common import PipelineError
