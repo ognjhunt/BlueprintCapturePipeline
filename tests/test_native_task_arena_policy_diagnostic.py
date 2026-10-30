@@ -311,6 +311,24 @@ def test_diagnostic_bundle_is_not_an_official_policy_bundle(tmp_path: Path) -> N
         expected_implementation_commit="d" * 40,
     )
     assert loaded["bundle_sha256"] == receipt["bundle_sha256"]
+    # Exact installed helper closure is required; arbitrary runtime members are refused.
+    from copy import deepcopy
+    from blueprint_pipeline.native_task_official_nurec import runtime_data_files
+    expected_data = set(runtime_data_files())
+    assert expected_data <= {row["relative_path"] for row in loaded["runtime_root_modules"]}
+    for extra in (False, True):
+        changed = deepcopy(loaded)
+        if extra:
+            changed["runtime_root_modules"].append({"relative_path": "blueprint_pipeline/unreviewed.py"})
+        else:
+            changed["runtime_root_modules"] = [row for row in changed["runtime_root_modules"]
+                                               if row["relative_path"] != sorted(expected_data)[0]]
+        changed["input_digest"] = canonical_digest({key: value for key, value in changed.items()
+            if key not in {"bundle_path", "bundle_size_bytes", "bundle_sha256"}}, digest_field="input_digest")
+        altered = tmp_path / ("extra-runtime.json" if extra else "missing-runtime.json")
+        altered.write_text(json.dumps(changed))
+        with pytest.raises(ValueError, match="native_task_policy_diagnostic_bundle_contract_invalid"):
+            load_verified_native_task_arena_policy_diagnostic_bundle(altered, expected_implementation_commit="d" * 40)
 
     with pytest.raises(ValueError, match="native_task_policy_execution_authority_invalid"):
         build_native_task_arena_policy_bundle(

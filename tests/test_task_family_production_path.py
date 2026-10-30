@@ -237,6 +237,9 @@ def test_actual_family_capture_to_native_screening_publication(
     from blueprint_pipeline.task_evaluation_scene_intake import scene_intent_status
     from blueprint_pipeline import task_evaluation_control_stage_policy
 
+    from blueprint_pipeline import native_task_runtime_capabilities as capabilities
+    monkeypatch.setattr(capabilities, "policy_controller",
+                        lambda **_kwargs: pytest.fail("Family execution must not select an Isaac arm controller"))
     sdk = installed_sdk
     if controls_paused:
         assert task_evaluation_control_stage_policy.CONTROLS_PAUSED is True

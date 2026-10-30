@@ -1,0 +1,23 @@
+{
+  "source_repository": "https://github.com/isaac-sim/IsaacSim",
+  "source_revision": "045ca8b59622b99a408092124377c66346e8d9c2",
+  "license": "Apache-2.0",
+  "source_directory": "source/extensions/isaacsim.replicator.nurec_utils/isaacsim/replicator/nurec_utils",
+  "files": [
+    {
+      "path": "rendering_setup.py",
+      "size_bytes": 12257,
+      "sha256": "sha256:99c2afb1ff9cfd61ff73740eb28935e34f3ec263c2fd028a5bf2bd956bc750da"
+    },
+    {
+      "path": "config/nurec_config.yaml",
+      "size_bytes": 2978,
+      "sha256": "sha256:86f81e23b9bcad3ec58fe74594359e547546f47d66690d319d5cc5ece27af440"
+    },
+    {
+      "path": "LICENSE",
+      "size_bytes": 10797,
+      "sha256": "sha256:99a1d647e8751407fd965af6733624d96abfc1f2a7e767d09ed528ef414c603e"
+    }
+  ]
+}

@@ -52,7 +52,12 @@ class App:
 def fake_sdk(calls, app):
     def factory(**kwargs):
         calls.append(kwargs)
-        experience = Path(kwargs["experience"]).read_text()
+        experience_path = Path(kwargs["experience"])
+        # The native importer rejected the former hyphenated experience names
+        # before loading any body. Use a conservative dotted Kit identifier.
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*", experience_path.stem):
+            raise ValueError("kit_experience_extension_identifier_invalid")
+        experience = experience_path.read_text()
         excluded = json.loads(re.search(r"^app.extensions.excluded = (.*)$", experience, re.M)[1])
         args = kwargs["kit_args"].split()
         requested = [args[i + 1] for i, value in enumerate(args) if value == "--enable"]
@@ -101,6 +106,19 @@ def test_asset_profiles_resolve_official_graph_and_retain_source_and_warp(source
         assert Path(actual["experience"]) == root / "isaaclab.python.headless.kit"
         assert recorded["profile"]["excluded_extensions"] == launch.UPSTREAM_EXCLUSIONS
     assert json.loads((tmp_path / "launch/launch.json").read_text()) == recorded
+
+
+@pytest.mark.parametrize("source_format", ["urdf", "mjcf"])
+def test_former_importer_experience_names_fail_before_extension_loading(source, tmp_path, source_format):
+    _, root, original = source
+    legacy = tmp_path / ("embodiment-import-" + source_format + ".kit")
+    legacy.write_bytes(original)
+    app = App()
+    factory, _ = fake_sdk([], app)
+    with pytest.raises(ValueError, match="kit_experience_extension_identifier_invalid"):
+        factory(experience=str(legacy), kit_args="--enable " + launch.IMPORTERS[source_format])
+    assert not hasattr(app, "enabled")
+    assert (root / "isaaclab.python.headless.kit").read_bytes() == original
 
 
 @pytest.mark.parametrize("change,reason", [

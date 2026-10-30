@@ -62,8 +62,9 @@ the same per-site USD15 budget decides what executes. Registered compatibility
 and passing software tests do not establish that an Isaac episode has run.
 
 The audited tool bindings cover dual YAM, PiPER, UR5e/Robotiq, FR3, Gen3, xArm7
-and TRLC; Axol; and single Gen3 and xArm7. That is ten configurations covering
-eight prioritized catalog bodies plus two single-arm variants. The source
+and TRLC; Axol; and single Gen3 and xArm7. The separate Robotiq profile adds
+single UR5e, UR10e and FR3 simulation assemblies for thirteen configurations.
+The original ten source inventories remain byte-identical. The source
 TRLC and Axol open/closed corrections must be present in prepared bindings.
 Per-tool receipts distinguish authored nominal TCPs from approximate mesh pad
 centres and retain unknown physical calibration and moving-pad limitations.

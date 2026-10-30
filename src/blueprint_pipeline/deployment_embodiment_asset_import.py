@@ -504,8 +504,9 @@ def verify_prepared_asset_directory(directory: str | Path) -> dict[str, Any]:
             or receipt.get("single_file_self_contained") is not (len(dependencies) == 1)
             or receipt.get("source_bundle_required_for_dependency_resolution") is not False):
         raise AssetPreparationError("asset_import_dependency_changed")
-    from . import deployment_embodiment_gofa_model as gofa
-    if receipt["embodiment_id"] in gofa.PAYLOAD_KG:
+    from .deployment_embodiment_simulation_models import for_identity
+    gofa = for_identity(receipt["embodiment_id"])
+    if gofa is not None:
         report = receipt.get("simulation_model", {})
         gofa.verify_report(destination, report, identity=receipt["embodiment_id"])
         if gofa.usd_values(destination / model["path"], report) != receipt.get("simulation_model_readback"):
@@ -572,9 +573,10 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
             format_name = "urdf"
             source_files = {(work / path.relative_to(source.resolve())).resolve() for path in source_files} | {entry.resolve()}
         _precheck_input_closure(entry, allowed=source_files, packages=packages)
-        from . import deployment_embodiment_gofa_model as gofa
+        from .deployment_embodiment_simulation_models import for_identity
+        gofa = for_identity(source_receipt["embodiment_id"])
         simulation_model = None
-        if source_receipt["embodiment_id"] in gofa.PAYLOAD_KG:
+        if gofa is not None:
             entry, simulation_model = gofa.prepare_model(entry, identity=source_receipt["embodiment_id"],
                                                         staged=staged, packages=packages, allowed=source_files)
             _precheck_input_closure(entry, allowed={p.resolve() for p in staged.rglob("*") if p.is_file()}, packages={})

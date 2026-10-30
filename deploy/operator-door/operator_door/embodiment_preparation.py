@@ -14,6 +14,14 @@ import time
 from typing import Any
 
 PUBLIC_EMBODIMENT_IDS = frozenset({
+    "yaskawa_gp12_robotiq_2f85_sim", "yaskawa_gp20_robotiq_2f85_sim",
+    "kuka_lbr_iiwa_14_robotiq_2f85_sim",
+    "fanuc_crx_10ia_robotiq_2f85_sim",
+    "fanuc_crx_10ia_l_robotiq_2f85_sim",
+    "fanuc_m710ic_45m_robotiq_2f85_sim",
+    "abb_gofa_crb15000_5_95_robotiq_2f85_sim",
+    "abb_gofa_crb15000_12_127_robotiq_2f85_sim",
+    "universal_robots_ur5e_robotiq_2f85_sim", "universal_robots_ur10e_robotiq_2f85_sim",
     "abb_gofa_crb15000_5_95", "abb_gofa_crb15000_12_127",
     "franka_research_3_robotiq_2f85_sim", "agilex_piper_bimanual", "almond_axol", "fanuc_crx_10ia", "fanuc_crx_10ia_l",
     "fanuc_m710ic_45m", "franka_research_3_bimanual", "i2rt_yam_bimanual", "kinova_gen3",

@@ -325,7 +325,7 @@ def main(argv=None):
         )
         app, launch = launch_native_task_isaaclab(
             output / "native_task_runtime_source_provisioning.v1.json",
-            device=NATIVE_TASK_ARENA_DEVICE,
+            device=NATIVE_TASK_ARENA_DEVICE, controller_backend=("g1_joint" if plan["robot"]["robot_id"] == "unitree_g1" else "joint"),
             appearance_render_path="particlefield_3d_gaussian_splat",
         )
         result["isaaclab_launch"] = launch

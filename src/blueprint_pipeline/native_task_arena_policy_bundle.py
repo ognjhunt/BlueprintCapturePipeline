@@ -665,6 +665,7 @@ def load_verified_native_task_arena_policy_bundle(
     }
     if candidate_id == "pi05_droid":
         expected_input_names.add("openpi_polaris_checkpoint_inventory.json")
+    from .native_task_official_nurec import runtime_data_files
     runtime_root_names = {
         str(row.get("relative_path") or "")
         for row in receipt.get("runtime_root_modules") or []
@@ -684,7 +685,7 @@ def load_verified_native_task_arena_policy_bundle(
         != f"adp009d_policy_provisioning.{candidate_id}.sh"
         or runtime_root_names
         != set(POLICY_RUNTIME_ROOT_MODULE_NAMES) | {
-            "blueprint_pipeline/" + name for name in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES}
+            "blueprint_pipeline/" + name for name in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES} | set(runtime_data_files())
     ):
         errors.append("native_task_policy_bundle_contract_invalid")
     if receipt.get("implementation_commit") != expected_implementation_commit:

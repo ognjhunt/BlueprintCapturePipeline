@@ -2,7 +2,8 @@
 from collections.abc import Mapping
 from typing import Any
 
-from .scripted_robot_baseline_runtime import build_policy_spec, candidate_id, MINIMUM_GPU_MEMORY_GB
+from .scripted_robot_baseline_runtime import candidate_id, MINIMUM_GPU_MEMORY_GB
+from .scripted_robot_runtime_dispatch import build_policy_spec
 from .team_embodiment import validate_embodiment_manifest
 
 

@@ -54,12 +54,8 @@ def canary_policy_client(spec: Mapping[str, Any], *,
         client.execution_binding_digest = spec["execution_spec_digest"]
         return client
     if interface == "blueprint_scripted_pick_place.v1":
-        from .scripted_robot_baseline import ScriptedRobotBaseline
-        from .scripted_robot_baseline_runtime import validate_execution_spec
-
-        validate_execution_spec(spec)
-        client = ScriptedRobotBaseline(plan=spec["scripted_task_plan"], policy_id=spec["candidate_id"],
-            policy_spec=spec["policy_spec"], manifest=spec["team_embodiment"]["manifest"])
+        from .scripted_robot_runtime_dispatch import client_for_spec
+        client = client_for_spec(spec)
         client.execution_binding_digest = spec["execution_spec_digest"]
         return client
     if interface == "openwam_piper_eef20.v1":

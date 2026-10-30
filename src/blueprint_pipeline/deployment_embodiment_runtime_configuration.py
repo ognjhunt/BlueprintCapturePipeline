@@ -30,6 +30,8 @@ from .deployment_embodiment_asset_import import (
 )
 from .deployment_embodiment_station import _inverse, _mesh_paths, _multiply, _origin_matrix, _tree, gen_urdf
 from .immutable_directory_publication import publish_staged_immutable_directory
+from .deployment_embodiment_industrial_composition import VARIANTS as _INDUSTRIAL_VARIANTS
+from .deployment_embodiment_yaskawa_composition import VARIANTS as _YASKAWA_VARIANTS
 from .team_embodiment import model_structure_blockers, read_model_structure, validate_embodiment_manifest
 
 SCHEMA = "embodiment_runtime_configuration.v1"
@@ -70,6 +72,8 @@ _PROFILES["franka_research_3_robotiq_2f85_sim"] = [_arm("fr3_link0", "robotiq_85
 _PROFILES["kinova_gen3_bimanual"] = deepcopy(_PROFILES["kinova_gen3"])
 _PROFILES["ufactory_xarm7_bimanual"] = [
     {**deepcopy(_PROFILES["ufactory_xarm7"][0]), "source_prefix": prefix} for prefix in ("L_", "R_")]
+for _identity in ("universal_robots_ur5e_robotiq_2f85_sim", "universal_robots_ur10e_robotiq_2f85_sim"):
+    _PROFILES[_identity] = deepcopy(_PROFILES["universal_robots_ur5e_bimanual"])
 for _identity in ("universal_robots_ur5e", "universal_robots_ur10e"):
     _PROFILES[_identity] = [_arm("base_link_inertia", "wrist_3_link", 6)]
 for _identity in ("fanuc_crx_10ia", "fanuc_crx_10ia_l", "fanuc_m710ic_45m"):
@@ -79,6 +83,17 @@ for _identity in ("yaskawa_gp12", "yaskawa_gp20"):
 _PROFILES["kuka_lbr_iiwa_14"] = [_arm("base", "link7", 7)]
 for _identity in ("abb_gofa_crb15000_5_95", "abb_gofa_crb15000_12_127"):
     _PROFILES[_identity] = [_arm("base_link", "link_6", 6, tcp="tool0")]
+
+
+for _identity in (*_INDUSTRIAL_VARIANTS, *_YASKAWA_VARIANTS):
+    _PROFILES[_identity] = [_arm("base_link", "robotiq_85_base_link", 6, tcp="grasp_link",
+        fingers={"robotiq_85_left_knuckle_joint": [0.0, .7929]},
+        contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)]
+
+
+_PROFILES["kuka_lbr_iiwa_14_robotiq_2f85_sim"] = [_arm("base", "robotiq_85_base_link", 7, tcp="grasp_link",
+    fingers={"robotiq_85_left_knuckle_joint": [0.0, .7929]},
+    contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)]
 
 
 def runtime_profiles() -> dict[str, Any]:
@@ -321,9 +336,10 @@ def prepare_runtime_configuration(source_bundle: str | Path, output_dir: str | P
                 arms = [_prefix_arm(arms[0], side + "_") for side in ("left", "right")]
             else:
                 _mesh_paths(root, entry=entry, output_anchor=staged, packages=packages, allowed=files)
-            from . import deployment_embodiment_gofa_model as gofa
+            from .deployment_embodiment_simulation_models import for_identity
+            gofa = for_identity(identity)
             simulation_model = None
-            original_dynamics = _configuration(root, identity, arms, source_receipt, parameters) if identity in gofa.PAYLOAD_KG else None
+            original_dynamics = _configuration(root, identity, arms, source_receipt, parameters) if gofa is not None else None
             if original_dynamics is not None:
                 (staged / gofa.SOURCE_MODEL).write_text(XML.tostring(root, encoding="unicode"))
                 simulation_model = gofa.model_urdf(root, identity=identity, anchor=staged)
@@ -384,8 +400,9 @@ def verify_runtime_configuration(directory: str | Path) -> dict[str, Any]:
     _require(seen == actual, "generated_inventory_changed")
     if is_exact_predecessor(record):
         verify_predecessor_metadata(root, source, record)
-    from . import deployment_embodiment_gofa_model as gofa
-    if source["embodiment_id"] in gofa.PAYLOAD_KG:
+    from .deployment_embodiment_simulation_models import for_identity
+    gofa = for_identity(source["embodiment_id"])
+    if gofa is not None:
         gofa.verify_configuration(root, source, record)
     return record
 

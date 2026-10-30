@@ -46,7 +46,8 @@ def prepare_experience(contract: dict, output: Path, source_format: str | None) 
         # Keep the upstream extension search paths pointing at verified source.
         text = text.replace("${app}", json.dumps(str(upstream.parent))[1:-1])
         output.mkdir(parents=True, exist_ok=True)
-        experience = output / ("embodiment-import-" + source_format + ".kit")
+        # Kit resolves the experience filename as an extension identifier.
+        experience = output / ("blueprint.embodiment.import." + source_format + ".kit")
         experience.write_text(text, encoding="utf-8")
     return {"profile": "controller_smoke" if source_format is None else "official_" + source_format + "_import",
             "upstream_path": str(upstream), "upstream_sha256": HEADLESS_SHA256,

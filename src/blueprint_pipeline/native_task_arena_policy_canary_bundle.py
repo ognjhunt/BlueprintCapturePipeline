@@ -64,6 +64,10 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "task_family_policy_https_client.py",
     "dreamlabs_policy_client.py", "team_arm_kinematics.py",
     "scripted_robot_baseline.py", "scripted_robot_baseline_runtime.py", "scripted_robot_grasp_frames.py",
+    "scripted_robot_robotiq_runtime.py", "scripted_robot_runtime_dispatch.py",
+    "scripted_robot_industrial_robotiq_runtime.py",
+    "scripted_robot_yaskawa_robotiq_runtime.py",
+    "scripted_robot_kuka_robotiq_runtime.py",
     "team_policy_episode_outcome.py", "team_evaluation_worker_retention.py",
     "native_task_arena_execution_contract.py",
     "team_embodiment.py", "team_embodiment_runtime.py", "native_task_robot_contact_topology.py",
@@ -480,8 +484,8 @@ def build_policy_canary_session_bundle(
     for candidate, spec in specs.items():
         interface = resolve_policy_interface(spec)
         if interface == "blueprint_scripted_pick_place.v1":
-            from .scripted_robot_baseline_runtime import validate_execution_spec as validate_scripted_spec
-            validate_scripted_spec(spec)
+            from .scripted_robot_runtime_dispatch import runtime_for_policy
+            runtime_for_policy(spec["policy_spec"]).validate_execution_spec(spec)
             if inputs.get("run_kind") != "blueprint_beta_screening":
                 raise ValueError("scripted_baseline_execution_requires_beta_run")
             scripted_candidates.append(candidate)

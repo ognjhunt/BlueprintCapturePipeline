@@ -27,8 +27,8 @@ def team_policy_interface(spec: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("beta_screening_team_binding_invalid")
     manifest = validate_embodiment_manifest(binding["manifest"])
     if interface in TEAM_SCRIPTED_INTERFACES:
-        from .scripted_robot_baseline_runtime import interface_contract
-        return interface_contract(spec)
+        from .scripted_robot_runtime_dispatch import runtime_for_policy
+        return runtime_for_policy(spec["policy_spec"]).interface_contract(spec)
     if interface in TEAM_LOCAL_INTERFACES:
         return runtime_for_interface(interface).interface_contract(spec)
     if interface == "dreamlabs_dream1.v1":
@@ -76,7 +76,8 @@ def team_interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any
     runtime = configured.get("runtime") or {}
     policy = spec["policy_spec"]
     if spec["policy_interface_id"] in TEAM_SCRIPTED_INTERFACES:
-        from . import scripted_robot_baseline_runtime as local
+        from .scripted_robot_runtime_dispatch import runtime_for_policy
+        local = runtime_for_policy(policy)
         return (configured.get("interface") == expected and configured["policy"]["kind"] == "scripted"
                 and configured["policy"]["source"] == local.MODEL_SOURCE
                 and configured["policy"]["revision"] == local.MODEL_REVISION
@@ -167,7 +168,8 @@ def build_registered_team_spec(*, candidate_id: str, registration: Mapping[str, 
                     checkpoint_identity_basis="pinned_file_inventory_verified_before_worker_load",
                     weights_identity_verified=False)
     if interface in TEAM_SCRIPTED_INTERFACES:
-        from .scripted_robot_baseline_runtime import build_task_plan
+        from .scripted_robot_runtime_dispatch import runtime_for_policy
+        build_task_plan = runtime_for_policy(policy).build_task_plan
         from .scripted_robot_baseline import EVIDENCE_KIND, ACTION_SOURCE
         spec.update(policy_endpoint={"transport": "in_process"},
                     execution_evidence_kind=EVIDENCE_KIND, action_source=ACTION_SOURCE,
@@ -293,7 +295,8 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
             local = interface["policy_interface_id"] in TEAM_LOCAL_INTERFACES or scripted
             if local:
                 if scripted:
-                    from . import scripted_robot_baseline_runtime as module
+                    from .scripted_robot_runtime_dispatch import runtime_for_policy
+                    module = runtime_for_policy(policy)
                 else:
                     module = runtime_for_interface(interface["policy_interface_id"])
                 minimum_memory = module.MINIMUM_GPU_MEMORY_GB

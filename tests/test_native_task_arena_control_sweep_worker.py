@@ -61,9 +61,9 @@ def test_worker_routes_sealed_inputs_and_closes_app(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(
         "blueprint_pipeline.native_task_arena_control_sweep_worker."
         "launch_native_task_isaaclab",
-        lambda receipt, device, appearance_render_path: (
+        lambda receipt, device, appearance_render_path, controller_backend: (
             app,
-            {"status": "launched", "appearance_render_path": appearance_render_path},
+            {"status": "launched", "appearance_render_path": appearance_render_path, "controller_backend": controller_backend},
         ),
     )
     observed = {}

@@ -16,7 +16,8 @@ from operator_door.requests import validate_request, RequestRefused, required_sc
 from operator_door.config import DoorConfig
 from operator_door.hostinfo import CommandResult
 from operator_door.spool_runner import process_spool
-from blueprint_pipeline.scripted_robot_baseline_runtime import source_identity, build_policy_spec
+from blueprint_pipeline.scripted_robot_baseline_runtime import source_identity
+from blueprint_pipeline.scripted_robot_runtime_dispatch import build_policy_spec
 from tests.test_scripted_robot_grasp_frames import development_manifest
 
 
@@ -38,7 +39,7 @@ def installed_profile(tmp_path):
         shutil.copyfile(PROFILE_ROOT / name, target / name)
     code = target / "scripted-baseline-source"
     code.mkdir()
-    for name in scripts.CODE_FILES:
+    for name in set(scripts.CODE_FILES) | set(scripts.VARIANT_CODE_FILES) | set(scripts.INDUSTRIAL_CODE_FILES) | set(scripts.YASKAWA_CODE_FILES) | set(scripts.KUKA_CODE_FILES):
         shutil.copyfile(ROOT / "src/blueprint_pipeline" / name, code / name)
     return target
 
@@ -103,8 +104,14 @@ def batch(tmp_path):
 def test_installed_profile_is_exact_source_inventory_license_and_all_ten_frames(batch):
     from blueprint_pipeline.scripted_robot_grasp_frames import _FRAMES, _IDENTITIES
     assert batch.profile["source_identity"] == source_identity()
-    assert batch.profile["frames"] == json.loads(json.dumps(_FRAMES))
-    assert batch.profile["bodies"] == _IDENTITIES
+    assert {key: batch.profile["frames"][key] for key in _FRAMES} == json.loads(json.dumps(_FRAMES))
+    assert {key: batch.profile["bodies"][key] for key in _IDENTITIES} == _IDENTITIES
+    from blueprint_pipeline.scripted_robot_robotiq_runtime import source_identity as variant_source
+    assert batch.profile["variant_source_identity"] == variant_source()
+    from blueprint_pipeline.scripted_robot_industrial_robotiq_runtime import source_identity as industrial_source
+    assert batch.profile["industrial_source_identity"] == industrial_source()
+    from blueprint_pipeline.scripted_robot_yaskawa_robotiq_runtime import source_identity as yaskawa_source
+    assert batch.profile["yaskawa_source_identity"] == yaskawa_source()
     assert (PROFILE_ROOT / "scripted_robot_baseline_license.txt").read_bytes() == (ROOT / "LICENSE").read_bytes()
     assert required_scope("install-scripted-robot-baselines") == "operate"
     assert validate_request({"kind": "install-scripted-robot-baselines", "request": batch.request})["request"] == batch.request
@@ -123,7 +130,7 @@ def test_fixed_batch_shape_cannot_select_code_paths_authority_or_individual_cand
 
 def test_batch_cas_preserves_other_fields_and_exactly_ten_typed_registrations(batch):
     receipt = installer.apply(batch.request, **batch.options)
-    assert receipt["registered_count"] == 10 and len(receipt["results"]) == 10
+    assert receipt["registered_count"] == len(contract.SCRIPTED_BODIES) and len(receipt["results"]) == len(contract.SCRIPTED_BODIES)
     assert receipt["provider_allocations_performed"] == 0 and receipt["candidate_policy_queried"] is False
     assert receipt["scripted_controller_invoked"] is False and receipt["native_policy_execution_validated"] is False
     assert receipt["claim_ceiling"] == "scripted_baseline_registration_only"
@@ -150,7 +157,7 @@ def test_partial_batch_retains_individual_import_and_tool_reasons(batch):
         del batch.proposal["registrations"]["blueprint_scripted_"+body]
     write(batch.destination / "proposal.json", batch.proposal)
     receipt = installer.apply(batch.request, **batch.options)
-    assert receipt["registered_count"] == 7 and receipt["results"] == batch.proposal["results"]
+    assert receipt["registered_count"] == len(contract.SCRIPTED_BODIES) - 3 and receipt["results"] == batch.proposal["results"]
 
 
 @pytest.mark.parametrize("fault", ["endpoint", "credentials", "command", "translation", "rotation", "private_license", "source", "body", "manifest"])
@@ -213,7 +220,7 @@ def test_batch_serializes_retries_and_recovers_after_replace_without_reapplying(
     monkeypatch.setattr(installer, "_write_once", write_once)
     with ThreadPoolExecutor(max_workers=3) as pool:
         results = list(pool.map(lambda _: installer.apply(batch.request, **batch.options), range(3)))
-    assert results[0] == results[1] == results[2] and results[0]["registered_count"] == 10
+    assert results[0] == results[1] == results[2] and results[0]["registered_count"] == len(contract.SCRIPTED_BODIES)
     assert batch.options["registry_path"].read_bytes() == installed
     with pytest.raises(ValueError, match="audit_identity_conflict"):
         installer.apply(request(**{**batch.request, "authorization_reference": "changed"}), **batch.options)
@@ -258,7 +265,7 @@ def test_actual_isolated_installer_can_load_scripted_contract_and_profile(batch)
     # run profile validation in an isolated stdlib subprocess, never execute a script.
     code = "import importlib.util; from pathlib import Path; s=importlib.util.spec_from_file_location('installed'," + repr(str(ROOT /
         "deploy/operator-door/operator_door/public_policy_registration.py")) + "); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
-    code += "p=m._scripted_contract().load_profile(Path(" + repr(str(batch.options["profile_root"])) + ")); assert len(p['bodies'])==10"
+    code += "p=m._scripted_contract().load_profile(Path(" + repr(str(batch.options["profile_root"])) + ")); assert len(p['bodies'])==21"
     result = subprocess.run([sys.executable, "-I", "-S", "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
@@ -285,11 +292,11 @@ def test_service_builder_attempts_every_retained_body_and_retries_without_rebuil
     monkeypatch.setattr(registration, "registration_from_prepared_inputs", register)
     opts = {key: batch.options[key] for key in ("state_root", "model_root", "profile_root")}
     result = builder.prepare(batch.request, release_commit=batch.request["release_commit"], **opts)
-    assert calls == list(contract.SCRIPTED_BODIES) and result["registered_count"] == 9
+    assert calls == list(contract.SCRIPTED_BODIES) and result["registered_count"] == len(contract.SCRIPTED_BODIES) - 1
     assert result["results"][0]["reason"] == "source_or_import_verification_failed"
-    assert installer.apply(batch.request, **batch.options)["registered_count"] == 9
+    assert installer.apply(batch.request, **batch.options)["registered_count"] == len(contract.SCRIPTED_BODIES) - 1
     assert builder.prepare(batch.request, release_commit=batch.request["release_commit"], **opts) == result
-    assert len(calls) == 10
+    assert len(calls) == len(contract.SCRIPTED_BODIES)
 
 
 def test_absent_and_failed_imports_keep_individual_reasons_without_registration(batch):
@@ -307,7 +314,7 @@ def test_absent_and_failed_imports_keep_individual_reasons_without_registration(
         del batch.proposal["registrations"]["blueprint_scripted_"+body]
     write(batch.destination / "proposal.json", batch.proposal)
     receipt = installer.apply(req, **batch.options)
-    assert receipt["registered_count"] == 8 and receipt["results"][:2] == batch.proposal["results"][:2]
+    assert receipt["registered_count"] == len(contract.SCRIPTED_BODIES) - 2 and receipt["results"][:2] == batch.proposal["results"][:2]
 
 
 def test_stale_batch_registry_digest_never_changes_registry(batch):
@@ -344,6 +351,6 @@ def test_no_eligible_body_retains_ten_reasons_without_any_registry_change(batch)
     write(batch.destination / "proposal.json", batch.proposal)
     before = batch.options["registry_path"].read_bytes()
     receipt = installer.apply(batch.request, **batch.options)
-    assert receipt["registered_count"] == 0 and len(receipt["results"]) == 10
+    assert receipt["registered_count"] == 0 and len(receipt["results"]) == len(contract.SCRIPTED_BODIES)
     assert batch.options["registry_path"].read_bytes() == before
     assert receipt["before_registry_digest"] == receipt["after_registry_digest"]

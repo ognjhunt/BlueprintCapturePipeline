@@ -1,0 +1,144 @@
+{
+  "schema_version": "embodiment_asset_source_bundle.v1",
+  "claim_ceiling": "source_asset_not_qualified",
+  "embodiment_id": "kuka_lbr_iiwa_14",
+  "recipe_digest": "sha256:b8a45f5d2178e19d040d8260028420c23ee645d68b50cb8db2f49626c20b3d41",
+  "repository_url": "https://github.com/google-deepmind/mujoco_menagerie",
+  "revision": "cda5236f98383f6fbaa4820c6b18dba892cd087f",
+  "entry_path": "kuka_iiwa_14/iiwa14.xml",
+  "format": "mjcf",
+  "source_arm_count": 1,
+  "files": [
+    {
+      "path": "kuka_iiwa_14/CHANGELOG.md",
+      "size_bytes": 149,
+      "git_blob_sha": "3366ea507a097a1e1bcf7e2e0f3f8ce0ead951a5",
+      "sha256": "sha256:32fcfa98b81cc4f8a27babefd12fb47603c96dee109119a390dccc3607fbd854"
+    },
+    {
+      "path": "kuka_iiwa_14/LICENSE",
+      "size_bytes": 1697,
+      "git_blob_sha": "d4681a468ef93f00712d31e79c5262f72b73299f",
+      "sha256": "sha256:c0ddafa1e3b5f0edcb02b6ef477a9792e3e423b8fcd20abbd7654f4005e21ef8"
+    },
+    {
+      "path": "kuka_iiwa_14/README.md",
+      "size_bytes": 1746,
+      "git_blob_sha": "f39aa704edd3e26f6de34ca75d92d78ebfb4d0eb",
+      "sha256": "sha256:ea93a6da6960921563494c8e0b2d544f9b473c96508aad45bca9d35f7841a42a"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/band.obj",
+      "size_bytes": 56069,
+      "git_blob_sha": "d65fe23941215f0a667c022f763fb800fbdc5b79",
+      "sha256": "sha256:02cf16a93140489da3b05ce6bb30c5498bedaa5e5a77e56850ddbedb8d1ed23e"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/kuka.obj",
+      "size_bytes": 17749,
+      "git_blob_sha": "b0a7ab3d8fbdd8028006a3f039c020d466b217bd",
+      "sha256": "sha256:204a82d597d450f2a207731f8e3c17089f2de5a54c0d61feac454e96e325b834"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_0.obj",
+      "size_bytes": 633341,
+      "git_blob_sha": "c40c530466b584a460a6edbec2e904c39cf697a0",
+      "sha256": "sha256:6b607f6b5a601874863897ebfbb9821eb0c831c3115bca8350bf7856db6aaeee"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_1.obj",
+      "size_bytes": 662595,
+      "git_blob_sha": "7dfc780791c56536da3bef8164bfa64d7be1d8a9",
+      "sha256": "sha256:47a82247b647639c3e1f384ce5b980d374323ca737d6ebc87447667a71981798"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_2_grey.obj",
+      "size_bytes": 503388,
+      "git_blob_sha": "30f3016889842f980f2634d2152372152183780a",
+      "sha256": "sha256:842b8c3a9148b2fdf9c57ddfd80b595f8251792f94b71276dc9ce9a16674ba1a"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_2_orange.obj",
+      "size_bytes": 245774,
+      "git_blob_sha": "b2e0259f527df00081ff6ee9a7d01b823a9db489",
+      "sha256": "sha256:0d2d8829d89aa888ee04b0d97bed5f215fa0d9fd03d0d4cee2b2e0c8dd3c0124"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_3.obj",
+      "size_bytes": 591672,
+      "git_blob_sha": "225ca9f05c284bedf2453ca61b251743081b5cde",
+      "sha256": "sha256:b02d157e8090d82bfb78e7fd4dcd351033e0a5d7bb1937da01e66e7ff91a03a8"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_4_grey.obj",
+      "size_bytes": 489420,
+      "git_blob_sha": "88ea37e8e09aafdd1978e2cae398cd4c96c54e29",
+      "sha256": "sha256:e4555ea6954fffa40174baee25e6dd1b9efcc3eaf830b6e91d13e2ddc10b414a"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_4_orange.obj",
+      "size_bytes": 213084,
+      "git_blob_sha": "607b3f409600915fae45946862ce3b6ccb63ad7d",
+      "sha256": "sha256:ef4cf2102e9df98636ff03b82d49d914a6e730b299b0a982d64947f038136cb7"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_5.obj",
+      "size_bytes": 287260,
+      "git_blob_sha": "55b239f50d9d7d358fdcfc375c5871a2a81cf07f",
+      "sha256": "sha256:f0eef60cddf06e46bd943abcc49ada87510f095f2840bc9c117ed7a2b1a6a787"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_6_grey.obj",
+      "size_bytes": 384096,
+      "git_blob_sha": "1695475f84082405c6b9161dabb6ecda21ac9f53",
+      "sha256": "sha256:5b5f9883d4fc181c7aa06cb2037debfa4ca857fa0c3a5d55f8fd3e34d38c3100"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_6_orange.obj",
+      "size_bytes": 154514,
+      "git_blob_sha": "1903562ef70c28abfe175893fec2819e99e19e6b",
+      "sha256": "sha256:54aa0141e7f48497302f45daf074fd5c69320c620618c12fa76e8841c2a8a9fc"
+    },
+    {
+      "path": "kuka_iiwa_14/assets/link_7.obj",
+      "size_bytes": 767657,
+      "git_blob_sha": "1f7848b1a78523d86600b307413c2af1fb96bb27",
+      "sha256": "sha256:7307d0c852715ea234e575a0617ea2d8faf053469e7b823ac0c7c6c4dff36dad"
+    },
+    {
+      "path": "kuka_iiwa_14/iiwa14.xml",
+      "size_bytes": 8772,
+      "git_blob_sha": "7ddda365d13af7abc2686046ad55f8018147528c",
+      "sha256": "sha256:ee7e6d796a9f8642de6097f95077281d15f43678dc5285beafeda99b84cf9ef5"
+    },
+    {
+      "path": "kuka_iiwa_14/iiwa_14.png",
+      "size_bytes": 2135973,
+      "git_blob_sha": "054f46f7e925a2d69a345940fe3f4b64b3b5ffff",
+      "sha256": "sha256:a5807fe5b9788ef49f0a9901a58d93f179d603c2fac24bc68d0a955495de51db"
+    },
+    {
+      "path": "kuka_iiwa_14/scene.xml",
+      "size_bytes": 822,
+      "git_blob_sha": "f12087a0659adf0fb2bacc98df5eb7df42d7f787",
+      "sha256": "sha256:46491c7cd161130b684bd8724060cca2777573e431eda04d6becd7e8a1a98045"
+    }
+  ],
+  "license": {
+    "identifier": "BSD-3-Clause",
+    "path": "kuka_iiwa_14/LICENSE",
+    "sha256": "sha256:c0ddafa1e3b5f0edcb02b6ef477a9792e3e423b8fcd20abbd7654f4005e21ef8",
+    "note": "DeepMind Menagerie conversion; model LICENSE retains Drake BSD-3-Clause. This is not a manufacturer-supported Isaac runtime, nor a gripper-equipped workcell."
+  },
+  "composition_required": [
+    "exact_end_effector_and_tcp",
+    "site_camera_rig"
+  ],
+  "missing": [
+    "tool_asset_and_license",
+    "isaac_mjcf_import_receipt",
+    "controller_reset_and_runtime_receipt"
+  ],
+  "execution_authorized": false,
+  "bundle_digest": "sha256:0831a1445097fc344508aa75facecb2a60e11bbaf821c17e66b64118e3c3b4e9"
+}

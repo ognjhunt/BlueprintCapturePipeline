@@ -40,11 +40,11 @@ def test_packaged_routes_cover_every_recorded_pair_once_without_changing_enabled
     public_baselines = {row["candidate_id"] for row in catalog["candidates"]
                         if (row.get("deployment") or {}).get("relationship") == "public_controller_integration"
                         and not row["deployment"]["companies"]}
-    assert len(public_baselines) == 13
+    assert len(public_baselines) == 24
     pairs = Counter((row["deployment"]["configuration_id"], row["deployment"]["policy_route_id"])
                     for row in catalog["candidates"] if (row.get("deployment") or {}).get("policy_route_id")
                     and row["candidate_id"] not in public_baselines)
-    assert len(catalog["candidates"]) == 101 and len(expected) == 74
+    assert len(catalog["candidates"]) == 112 and len(expected) == 74
     assert pairs == Counter({pair: 1 for pair in expected})
     assert ORIGINAL_IDS <= {row["candidate_id"] for row in catalog["candidates"]}
     assert {row["candidate_id"]: row["configuration_digest"] for row in catalog["candidates"]
@@ -66,7 +66,7 @@ def test_all_74_route_reasons_survive_real_planning_queue_and_publication(tmp_pa
     coordinator.enqueue_screening_campaign(plan, queue_root=tmp_path)
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
     published = {row["candidate_id"]: row for row in publication["candidates"]}
-    assert len(published) == len(plan["candidates"]) == 101
+    assert len(published) == len(plan["candidates"]) == 112
     for candidate in catalog["candidates"]:
         row = published[candidate["candidate_id"]]
         assert row["status"] == "unavailable"
@@ -119,7 +119,7 @@ def _rename_registration(registrations, old, new):
 def test_distinct_registered_checkpoints_on_one_body_and_route_are_not_collapsed(tmp_path, monkeypatch):
     base, registrations = _registered_pair(tmp_path, monkeypatch)
     catalog = catalog_for_profile({"screening_candidates": registrations}, base)
-    assert len(catalog["candidates"]) == 103
+    assert len(catalog["candidates"]) == 114
     first, second = [catalog_candidate(catalog, key) for key in registrations]
     assert first["deployment"] == second["deployment"]
     assert first["policy"]["digest"] != second["policy"]["digest"]
@@ -176,4 +176,4 @@ def test_custom_body_and_route_are_not_excluded_by_the_packaged_picker(tmp_path,
     plan = build_screening_plan(catalog, scene(), campaign_id="custom-routes", now=NOW)
     planned = next(row for row in plan["candidates"] if row["candidate_id"] == "team_policy_00")
     assert planned["status"] == "unavailable" and "runtime_candidate_binding_missing" in planned["blockers"]
-    assert len(plan["candidates"]) == 103
+    assert len(plan["candidates"]) == 114

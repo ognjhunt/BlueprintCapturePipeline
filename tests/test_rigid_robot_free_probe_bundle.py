@@ -116,7 +116,10 @@ def test_the_sealed_bundle_passes_the_vast_preflight_and_carries_no_policy(seale
     assert receipt["status"] == "ready" and receipt["execution_mode"] == worker.EXECUTION_MODE
     assert receipt["program_id"] == "blueprint-free-beta-evaluated-pilot"
     assert receipt["candidate_policy_queried"] is False and receipt["policy_candidate_id"] is None
-    assert receipt["policy_provisioning_script"] is None and receipt["runtime_root_modules"] == []
+    assert receipt["policy_provisioning_script"] is None
+    from blueprint_pipeline.native_task_official_nurec import runtime_data_files
+    data = runtime_data_files()
+    assert {row["relative_path"] for row in receipt["runtime_root_modules"]} == set(data)
     bundle_path = Path(receipt["bundle_path"])
     preflight = vast_provider_adapter._blueprint_bundle_preflight(
         job_dir=tmp_path / "preflight", generated_at="fixed", enable_blueprint_bundle=True,
@@ -128,6 +131,11 @@ def test_the_sealed_bundle_passes_the_vast_preflight_and_carries_no_policy(seale
         names = set(archive.namelist())
         entrypoint = archive.read("provider_runtime/run_adp_arena_provider_runtime.sh").decode()
         runner_source = archive.read("provider_runtime/adp_arena_provider_runner.py").decode()
+        import hashlib
+        for row in receipt["runtime_root_modules"]:
+            payload = archive.read("provider_runtime/" + row["relative_path"])
+            assert payload == data[row["relative_path"]].read_bytes()
+            assert row["sha256"] == "sha256:" + hashlib.sha256(payload).hexdigest()
     assert f"provider_runtime/runtime_inputs/{worker.INPUTS_FILENAME}" in names
     assert not any("provisioning" in name or "policy_execution_spec" in name or "policy_server" in name
                    for name in names)

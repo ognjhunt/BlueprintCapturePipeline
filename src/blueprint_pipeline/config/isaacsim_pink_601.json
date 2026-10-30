@@ -1,0 +1,557 @@
+{
+  "source_revision": "045ca8b59622b99a408092124377c66346e8d9c2",
+  "source_repository": "https://github.com/isaac-sim/IsaacSim",
+  "license": "Apache-2.0",
+  "extensions": {
+    "isaacsim.core.experimental.utils": {
+      "config": "[package]\nversion = \"0.17.2\"\ncategory = \"Simulation\"\ntitle = \"Isaac Sim Core (Utils)\"\ndescription = \"The Core Utils extension provides a set of utility functions.\"\nkeywords = [\"isaacsim\", \"core\", \"utils\"]\nchangelog = \"docs/CHANGELOG.md\"\nreadme = \"docs/Overview.md\"\npreview_image = \"data/preview.png\"\nicon = \"data/icon.png\"\nwriteTarget.kit = true\n\n[dependencies]\n\"isaacsim.core.deprecation_manager\" = {}\n\"omni.hydra.usdrt_delegate\" = {}\n\"omni.kit.stage_templates\" = {}\n\"omni.usd\" = {}\n\"omni.usd.metrics.assembler\" = {}\n\"omni.warp.core\" = {}\n\n[[python.module]]\nname = \"isaacsim.core.experimental.utils\"\n\n# define the Python module for tests\n[[python.module]]\nname = \"isaacsim.core.experimental.utils.tests\"\n\n[[test]]\ntimeout = 900\ndependencies = [\n    \"isaacsim.core.experimental.materials\",\n    \"isaacsim.core.experimental.objects\",\n    \"isaacsim.storage.native\",\n    \"isaacsim.test.docstring\",\n]\nargs = [\n    \"--enable\",\n    \"omni.kit.loop-isaac\",\n    \"--reset-user\",\n    \"--vulkan\",\n    \"--/app/asyncRendering=0\",\n    \"--/app/asyncRenderingLowLatency=0\",\n    \"--/app/fastShutdown=1\",\n    \"--/app/file/ignoreUnsavedStage=1\",\n    \"--/app/hydraEngine/waitIdle=0\",\n    \"--/app/player/useFixedTimeStepping=false\",\n    \"--/app/renderer/skipWhileMinimized=0\",\n    \"--/app/renderer/sleepMsOnFocus=0\",\n    \"--/app/renderer/sleepMsOutOfFocus=0\",\n    \"--/app/runLoops/main/manualModeEnabled=true\",\n    \"--/app/runLoops/main/rateLimitEnabled=false\",\n    \"--/app/settings/fabricDefaultStageFrameHistoryCount=3\",\n    \"--/app/settings/persistent=0\",\n    \"--/app/useFabricSceneDelegate=true\",\n    \"--/app/viewport/createCameraModelRep=0\",\n    \"--/crashreporter/skipOldDumpUpload=1\",\n    \"--/exts/omni.usd/locking/onClose=0\",\n    \"--/omni/kit/plugin/syncUsdLoads=1\",\n    \"--/omni/replicator/asyncRendering=0\",\n    \"--/omnihydra/parallelHydraSprimSync=1\",\n    '--/persistent/app/stage/upAxis=\"Z\"',\n    \"--/persistent/app/viewport/defaults/tickRate=120\",\n    \"--/persistent/app/viewport/displayOptions=31951\",\n    \"--/persistent/omni/replicator/captureOnPlay=1\",\n    \"--/persistent/omnigraph/updateToUsd=0\",\n    \"--/persistent/physics/visualizationDisplayJoints=0\",\n    \"--/persistent/renderer/startupMessageDisplayed=1\",\n    \"--/persistent/simulation/defaultMetersPerUnit=1.0\",\n    \"--/persistent/simulation/minFrameRate=15\",\n    \"--/renderer/multiGpu/autoEnable=0\",\n    \"--/renderer/multiGpu/enabled=0\",\n    \"--/rtx-transient/dlssg/enabled=0\",\n    \"--/rtx-transient/resourcemanager/enableTextureStreaming=1\",\n    \"--/rtx/descriptorSets=360000\",\n    \"--/rtx/hydra/enableSemanticSchema=1\",\n    \"--/rtx/hydra/materialSyncLoads=1\",\n    \"--/rtx/hydra/supportMultiTickRate=true\",\n    \"--/rtx/materialDb/syncLoads=1\",\n    \"--/rtx/newDenoiser/enabled=1\",\n    \"--/rtx/rendering/perSensorTickTlas=true\",\n    \"--/rtx/reservedDescriptors=900000\",\n    ### Extension specific args\n    \"--/persistent/omnihydra/useFastSceneDelegate=true\",\n    \"--/persistent/omnihydra/useSceneGraphInstancing=true\",\n]\npythonTests.include = [\"isaacsim.core.experimental.utils.tests.*\"]\n\n[documentation]\npages = [\"docs/Overview.md\", \"docs/CHANGELOG.md\"]\n",
+      "files": [
+        {
+          "path": "isaacsim/core/experimental/utils/__init__.py",
+          "git_blob_sha1": "97b760028e1f7a43b1a8b9903f7bd28e6f4782b1",
+          "size_bytes": 684
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/__init__.py",
+          "git_blob_sha1": "97b760028e1f7a43b1a8b9903f7bd28e6f4782b1",
+          "size_bytes": 684
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/_templates.py",
+          "git_blob_sha1": "0737955a86ddc6e7e941a805414a40449a0be1b8",
+          "size_bytes": 1697
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/app.py",
+          "git_blob_sha1": "e61596d932e3df7c12c833f3e531cfd2a8c2967d",
+          "size_bytes": 12187
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/backend.py",
+          "git_blob_sha1": "27d9b0c131fa68433b79dca32a774611d8c8a70a",
+          "size_bytes": 8362
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/bounds.py",
+          "git_blob_sha1": "b264c8fbc410d33a0193dc973fa4d10d14a2d617",
+          "size_bytes": 10632
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/foundation.py",
+          "git_blob_sha1": "c785845276296bf8c44a3bf971f551adb1c290a1",
+          "size_bytes": 16810
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/ops.py",
+          "git_blob_sha1": "eccaf43ba60e8f1e57510c90de1ba8ea895f0d74",
+          "size_bytes": 20368
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/prim.py",
+          "git_blob_sha1": "1508c244373eef813fa023ea81dedf9007d2e1e7",
+          "size_bytes": 27588
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/semantics.py",
+          "git_blob_sha1": "0436af5ef8b55f96fb3ec880b9db2ca0158a2dd9",
+          "size_bytes": 12664
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/stage.py",
+          "git_blob_sha1": "ed36646eb941586c669b9d0fbe57644a04ec58f7",
+          "size_bytes": 30426
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/transform.py",
+          "git_blob_sha1": "89a425d40e9f8b5faef39527dcc679bc2564b88b",
+          "size_bytes": 42774
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/impl/xform.py",
+          "git_blob_sha1": "3232416b2f75d31472c40495e3b0c7d19b3779c1",
+          "size_bytes": 12288
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/__init__.py",
+          "git_blob_sha1": "97b760028e1f7a43b1a8b9903f7bd28e6f4782b1",
+          "size_bytes": 684
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/app.py",
+          "git_blob_sha1": "b6d05f8f07bf6ea49297cd842220600d745858c4",
+          "size_bytes": 728
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/backend.py",
+          "git_blob_sha1": "2d29b84a49b1d854a0975422f27f6708e979bd3c",
+          "size_bytes": 736
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/bounds.py",
+          "git_blob_sha1": "24f13a893db3f09ca7394e7d99c4bb8031be52fe",
+          "size_bytes": 734
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/foundation.py",
+          "git_blob_sha1": "98eae957107b53441c4c1e3109dd5cf22a7cd8f3",
+          "size_bytes": 742
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/ops.py",
+          "git_blob_sha1": "61760d471d546e7b70915eb36691b1c5bbb4102b",
+          "size_bytes": 728
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/prim.py",
+          "git_blob_sha1": "ea1cef06d4a8c81f384be4e08e50fa91412f24a8",
+          "size_bytes": 730
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/semantics.py",
+          "git_blob_sha1": "4442e48f0fb6fb6edc9f0bc42be3ac18586ef844",
+          "size_bytes": 740
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/stage.py",
+          "git_blob_sha1": "01e1836761b668819130b58f7699cdbfa6130df3",
+          "size_bytes": 732
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/transform.py",
+          "git_blob_sha1": "5e7eaca8baed68b054435b22db90433645abab22",
+          "size_bytes": 740
+        },
+        {
+          "path": "isaacsim/core/experimental/utils/mock/xform.py",
+          "git_blob_sha1": "21ccfc8d3155b8a3b90eec8a7e8bf3d2e21e835d",
+          "size_bytes": 732
+        }
+      ]
+    },
+    "isaacsim.core.experimental.prims": {
+      "config": "[package]\nversion = \"1.8.9\"\ncategory = \"Simulation\"\ntitle = \"Isaac Sim Core (Prims)\"\ndescription = \"The Core Prims extension provides a set of APIs to wrap one or more USD prims in the stage in order to manipulate (read/write) their attributes and perform other operations during the simulation.\"\nkeywords = [\"isaacsim\", \"core\", \"prims\"]\nchangelog = \"docs/CHANGELOG.md\"\nreadme = \"docs/Overview.md\"\npreview_image = \"data/preview.png\"\nicon = \"data/icon.png\"\nwriteTarget.kit = true\n\n[dependencies]\n\"isaacsim.core.deprecation_manager\" = {}\n\"isaacsim.core.experimental.utils\" = {}\n\"isaacsim.core.simulation_manager\" = {}\n\"isaacsim.mega.sim_state.client\" = { optional = true }\n\"isaacsim.test.docstring\" = {} # needed for tests to load in test runner\n\"omni.hydra.usdrt_delegate\" = {}\n\"omni.isaac.core_archive\" = {}\n\"omni.physics\" = {}\n\"omni.physx.tensors\" = {}\n\"omni.usd.schema.semantics\" = {}\n\"omni.warp.core\" = {}\n\n[[python.module]]\nname = \"isaacsim.core.experimental.prims\"\n\n# define the Python module for tests\n[[python.module]]\nname = \"isaacsim.core.experimental.prims.tests\"\n\n# define the C++ plugins that the extension provides\n[[native.plugin]]\npath = \"bin/*.plugin\"\n\n[settings]\n# Default extension that provides IPrimDataReader and IPrimDataReaderManager implementations.\nexts.\"isaacsim.core.experimental.prims\".prim_data_reader_provider_extension = \"isaacsim.core.experimental.primdata\"\n\n[[test]]\nname = \"physx\"\ntimeout = 900\ndependencies = [\n    \"isaacsim.core.experimental.materials\",  # for visual/physics materials\n    \"isaacsim.core.experimental.objects\",  # for GroundPlane/Cube in tests\n    \"isaacsim.storage.native\",\n    \"isaacsim.test.utils\" # Used to suppress NumPy coverage errors\n]\nargs = [\n    \"--enable\",\n    \"omni.kit.loop-isaac\",\n    \"--reset-user\",\n    \"--vulkan\",\n    \"--/app/asyncRendering=0\",\n    \"--/app/asyncRenderingLowLatency=0\",\n    \"--/app/fastShutdown=1\",\n    \"--/app/file/ignoreUnsavedStage=1\",\n    \"--/app/hydraEngine/waitIdle=0\",\n    \"--/app/player/useFixedTimeStepping=false\",\n    \"--/app/renderer/skipWhileMinimized=0\",\n    \"--/app/renderer/sleepMsOnFocus=0\",\n    \"--/app/renderer/sleepMsOutOfFocus=0\",\n    \"--/app/runLoops/main/manualModeEnabled=true\",\n    \"--/app/runLoops/main/rateLimitEnabled=false\",\n    \"--/app/settings/fabricDefaultStageFrameHistoryCount=3\",\n    \"--/app/settings/persistent=0\",\n    \"--/app/useFabricSceneDelegate=true\",\n    \"--/app/viewport/createCameraModelRep=0\",\n    \"--/crashreporter/skipOldDumpUpload=1\",\n    \"--/exts/omni.usd/locking/onClose=0\",\n    \"--/omni/kit/plugin/syncUsdLoads=1\",\n    \"--/omni/replicator/asyncRendering=0\",\n    \"--/omnihydra/parallelHydraSprimSync=1\",\n    '--/persistent/app/stage/upAxis=\"Z\"',\n    \"--/persistent/app/viewport/defaults/tickRate=120\",\n    \"--/persistent/app/viewport/displayOptions=31951\",\n    \"--/persistent/omni/replicator/captureOnPlay=1\",\n    \"--/persistent/omnigraph/updateToUsd=0\",\n    \"--/persistent/physics/visualizationDisplayJoints=0\",\n    \"--/persistent/renderer/startupMessageDisplayed=1\",\n    \"--/persistent/simulation/defaultMetersPerUnit=1.0\",\n    \"--/persistent/simulation/minFrameRate=15\",\n    \"--/renderer/multiGpu/autoEnable=0\",\n    \"--/renderer/multiGpu/enabled=0\",\n    \"--/rtx-transient/dlssg/enabled=0\",\n    \"--/rtx-transient/resourcemanager/enableTextureStreaming=1\",\n    \"--/rtx/descriptorSets=360000\",\n    \"--/rtx/hydra/enableSemanticSchema=1\",\n    \"--/rtx/hydra/materialSyncLoads=1\",\n    \"--/rtx/hydra/supportMultiTickRate=true\",\n    \"--/rtx/materialDb/syncLoads=1\",\n    \"--/rtx/newDenoiser/enabled=1\",\n    \"--/rtx/rendering/perSensorTickTlas=true\",\n    \"--/rtx/reservedDescriptors=900000\",\n    ### Extension specific args\n    \"--/persistent/omnihydra/useFastSceneDelegate=true\",\n    \"--/persistent/omnihydra/useSceneGraphInstancing=true\",\n]\npythonTests.include = [\"isaacsim.core.experimental.prims.tests.*\"]\n\nstdoutFailPatterns.exclude = [\n    '*The NumPy module was reloaded*',\n    '*Failed to create simulation view: no active physics scene found*',\n]\n\n[[test]]\nname = \"newton\"\ntimeout = 3600 # all the newton module loads take long time \nenabled = true\ndependencies = [\n    \"isaacsim.core.experimental.materials\", # for visual/physics materials\n    \"isaacsim.core.experimental.objects\", # for GroundPlane/Cube in tests\n    \"isaacsim.physics.newton\",\n    \"isaacsim.physics.newton.tensors\",\n    \"isaacsim.storage.native\",\n    \"isaacsim.test.utils\" # Used to suppress NumPy coverage errors\n]\nargs = [\n    \"--enable\",\n    \"omni.kit.loop-isaac\",\n    \"--reset-user\",\n    \"--vulkan\",\n    \"--/app/asyncRendering=0\",\n    \"--/app/asyncRenderingLowLatency=0\",\n    \"--/app/fastShutdown=1\",\n    \"--/app/file/ignoreUnsavedStage=1\",\n    \"--/app/hydraEngine/waitIdle=0\",\n    \"--/app/player/useFixedTimeStepping=false\",\n    \"--/app/renderer/skipWhileMinimized=0\",\n    \"--/app/renderer/sleepMsOnFocus=0\",\n    \"--/app/renderer/sleepMsOutOfFocus=0\",\n    \"--/app/runLoops/main/manualModeEnabled=true\",\n    \"--/app/runLoops/main/rateLimitEnabled=false\",\n    \"--/app/settings/fabricDefaultStageFrameHistoryCount=3\",\n    \"--/app/settings/persistent=0\",\n    \"--/app/useFabricSceneDelegate=true\",\n    \"--/app/viewport/createCameraModelRep=0\",\n    \"--/crashreporter/skipOldDumpUpload=1\",\n    \"--/exts/omni.usd/locking/onClose=0\",\n    \"--/omni/kit/plugin/syncUsdLoads=1\",\n    \"--/omni/replicator/asyncRendering=0\",\n    \"--/omnihydra/parallelHydraSprimSync=1\",\n    '--/persistent/app/stage/upAxis=\"Z\"',\n    \"--/persistent/app/viewport/defaults/tickRate=120\",\n    \"--/persistent/app/viewport/displayOptions=31951\",\n    \"--/persistent/omni/replicator/captureOnPlay=1\",\n    \"--/persistent/omnigraph/updateToUsd=0\",\n    \"--/persistent/physics/visualizationDisplayJoints=0\",\n    \"--/persistent/renderer/startupMessageDisplayed=1\",\n    \"--/persistent/simulation/defaultMetersPerUnit=1.0\",\n    \"--/persistent/simulation/minFrameRate=15\",\n    \"--/renderer/multiGpu/autoEnable=0\",\n    \"--/renderer/multiGpu/enabled=0\",\n    \"--/rtx-transient/dlssg/enabled=0\",\n    \"--/rtx-transient/resourcemanager/enableTextureStreaming=1\",\n    \"--/rtx/descriptorSets=360000\",\n    \"--/rtx/hydra/enableSemanticSchema=1\",\n    \"--/rtx/hydra/materialSyncLoads=1\",\n    \"--/rtx/hydra/supportMultiTickRate=true\",\n    \"--/rtx/materialDb/syncLoads=1\",\n    \"--/rtx/newDenoiser/enabled=1\",\n    \"--/rtx/rendering/perSensorTickTlas=true\",\n    \"--/rtx/reservedDescriptors=900000\",\n    ### Extension specific args\n    \"--/persistent/omnihydra/useFastSceneDelegate=true\",\n    \"--/persistent/omnihydra/useSceneGraphInstancing=true\",\n    \"--/exts/isaacsim.core.simulation_manager/default_engine=newton\",\n]\npythonTests.include = [\n    \"isaacsim.core.experimental.prims.tests.test_articulation*\",\n    \"isaacsim.core.experimental.prims.tests.test_prim*\",\n    \"isaacsim.core.experimental.prims.tests.test_rigid_prim*\",\n    \"isaacsim.core.experimental.prims.tests.test_docstrings*\",\n    \"isaacsim.core.experimental.prims.tests.test_geom_prim*\",\n    \"isaacsim.core.experimental.prims.tests.test_xform_prim*\",\n]\n\nstdoutFailPatterns.exclude = [\n    '*The NumPy module was reloaded*',\n    '*Simulation step error: Error while parsing function*',\n    '*UserWarning: UV primvar length*',\n    '*UserWarning: Warning: mesh*'\n]\n\n[documentation]\npages = [\"docs/Overview.md\", \"docs/CHANGELOG.md\"]\n",
+      "files": [
+        {
+          "path": "isaacsim/core/experimental/prims/__init__.py",
+          "git_blob_sha1": "e3ce19795cb1f5277897e35349973599ea77c67d",
+          "size_bytes": 843
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/__init__.py",
+          "git_blob_sha1": "22dfe3c66a7a20f1039c35b8edcac86aa90fbc71",
+          "size_bytes": 1219
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/_cpp_buffers.py",
+          "git_blob_sha1": "ce4703b567147ec4c42c60780b550ca19ca57ba8",
+          "size_bytes": 2022
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/_fabric.py",
+          "git_blob_sha1": "7c7bc4afbaa361275a884e21028f673b6f556b93",
+          "size_bytes": 9074
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/_transform.py",
+          "git_blob_sha1": "e17da3137db4dad5a5fb100e7eb6488ee64e1a1f",
+          "size_bytes": 4251
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/_usd_articulation.py",
+          "git_blob_sha1": "587975d721f709628500cb9d1968a390d5d2ca60",
+          "size_bytes": 15192
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/articulation.py",
+          "git_blob_sha1": "4477042aeebe59efc8d0e90a9245b00f906a34aa",
+          "size_bytes": 240250
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/buffer_dtype.py",
+          "git_blob_sha1": "ebade64f19bab0322d9b6b528691aea3b37b218f",
+          "size_bytes": 964
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/deformable_prim.py",
+          "git_blob_sha1": "167495c30ac196664be1755f9453ce2b3091a106",
+          "size_bytes": 76867
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/extension.py",
+          "git_blob_sha1": "42cb8da61b5b17bde7264284e22aec31a2c1e815",
+          "size_bytes": 3397
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/geom_prim.py",
+          "git_blob_sha1": "87ebf5fba58b89d85b107a67c779c7c5e80f04d4",
+          "size_bytes": 30599
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/prim.py",
+          "git_blob_sha1": "15bd072681cf1447b77aa8c7e0bd941b482cdfc8",
+          "size_bytes": 11982
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/rigid_prim.py",
+          "git_blob_sha1": "9c969f4419d3cf4c5145da446d9faa5c48f8d0ae",
+          "size_bytes": 90757
+        },
+        {
+          "path": "isaacsim/core/experimental/prims/impl/xform_prim.py",
+          "git_blob_sha1": "7628183277e8b2946e47a4a5ebad2c578bc255db",
+          "size_bytes": 57969
+        }
+      ]
+    },
+    "isaacsim.core.experimental.materials": {
+      "config": "[package]\nversion = \"0.7.1\"\ncategory = \"Simulation\"\ntitle = \"Isaac Sim Core (Materials)\"\ndescription = \"The Core Materials extension provides a set of APIs to create and/or wrap one or more USD materials in the stage...\"\nkeywords = [\"isaacsim\", \"core\", \"materials\"]\nchangelog = \"docs/CHANGELOG.md\"\nreadme = \"docs/Overview.md\"\npreview_image = \"data/preview.png\"\nicon = \"data/icon.png\"\nwriteTarget.kit = true\n\n[dependencies]\n\"isaacsim.core.deprecation_manager\" = {}\n\"isaacsim.core.experimental.prims\" = {}\n\"isaacsim.core.experimental.utils\" = {}\n\"omni.isaac.core_archive\" = {}\n\"omni.kit.material.library\" = {}\n\"omni.kit.usd.mdl\" = {}\n\"omni.warp.core\" = {}\n\n[[python.module]]\nname = \"isaacsim.core.experimental.materials\"\n\n# define the Python module for tests\n[[python.module]]\nname = \"isaacsim.core.experimental.materials.tests\"\n\n[[test]]\ntimeout = 900\ndependencies = [\n    \"omni.physx.commands\",\n]\nargs = [\n    \"--enable\",\n    \"omni.kit.loop-isaac\",\n    \"--reset-user\",\n    \"--vulkan\",\n    \"--/app/asyncRendering=0\",\n    \"--/app/asyncRenderingLowLatency=0\",\n    \"--/app/fastShutdown=1\",\n    \"--/app/file/ignoreUnsavedStage=1\",\n    \"--/app/hydraEngine/waitIdle=0\",\n    \"--/app/player/useFixedTimeStepping=false\",\n    \"--/app/renderer/skipWhileMinimized=0\",\n    \"--/app/renderer/sleepMsOnFocus=0\",\n    \"--/app/renderer/sleepMsOutOfFocus=0\",\n    \"--/app/runLoops/main/manualModeEnabled=true\",\n    \"--/app/runLoops/main/rateLimitEnabled=false\",\n    \"--/app/settings/fabricDefaultStageFrameHistoryCount=3\",\n    \"--/app/settings/persistent=0\",\n    \"--/app/useFabricSceneDelegate=true\",\n    \"--/app/viewport/createCameraModelRep=0\",\n    \"--/crashreporter/skipOldDumpUpload=1\",\n    \"--/exts/omni.usd/locking/onClose=0\",\n    \"--/omni/kit/plugin/syncUsdLoads=1\",\n    \"--/omni/replicator/asyncRendering=0\",\n    \"--/omnihydra/parallelHydraSprimSync=1\",\n    '--/persistent/app/stage/upAxis=\"Z\"',\n    \"--/persistent/app/viewport/defaults/tickRate=120\",\n    \"--/persistent/app/viewport/displayOptions=31951\",\n    \"--/persistent/omni/replicator/captureOnPlay=1\",\n    \"--/persistent/omnigraph/updateToUsd=0\",\n    \"--/persistent/physics/visualizationDisplayJoints=0\",\n    \"--/persistent/renderer/startupMessageDisplayed=1\",\n    \"--/persistent/simulation/defaultMetersPerUnit=1.0\",\n    \"--/persistent/simulation/minFrameRate=15\",\n    \"--/renderer/multiGpu/autoEnable=0\",\n    \"--/renderer/multiGpu/enabled=0\",\n    \"--/rtx-transient/dlssg/enabled=0\",\n    \"--/rtx-transient/resourcemanager/enableTextureStreaming=1\",\n    \"--/rtx/descriptorSets=360000\",\n    \"--/rtx/hydra/enableSemanticSchema=1\",\n    \"--/rtx/hydra/materialSyncLoads=1\",\n    \"--/rtx/hydra/supportMultiTickRate=true\",\n    \"--/rtx/materialDb/syncLoads=1\",\n    \"--/rtx/newDenoiser/enabled=1\",\n    \"--/rtx/rendering/perSensorTickTlas=true\",\n    \"--/rtx/reservedDescriptors=900000\",\n]\npythonTests.include = [\"isaacsim.core.experimental.materials.tests.*\"]\n\nstdoutFailPatterns.exclude = [\n    '*The NumPy module was reloaded*',\n]\n\n[documentation]\npages = [\"docs/Overview.md\", \"docs/CHANGELOG.md\"]\n",
+      "files": [
+        {
+          "path": "isaacsim/core/experimental/materials/__init__.py",
+          "git_blob_sha1": "d37d855e6b8da47d2be5b38e7677634da6713561",
+          "size_bytes": 705
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/__init__.py",
+          "git_blob_sha1": "535ffbb70a5ef274f48e397d06a6cd0e26987501",
+          "size_bytes": 1424
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/non_visual_material.py",
+          "git_blob_sha1": "e75f98b9839a28723e515bb66cc2809446b8a09e",
+          "size_bytes": 19735
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/physics_materials/__init__.py",
+          "git_blob_sha1": "2fc3ed94a6e38b9dabe028f6d5a9415bb052946d",
+          "size_bytes": 1094
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/physics_materials/physics_material.py",
+          "git_blob_sha1": "e092a0a785450cc6993e57da33419cadaaa011da",
+          "size_bytes": 5193
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/physics_materials/rigid_body.py",
+          "git_blob_sha1": "6e82b7da47a41b4e91a269f5c037ec1bb403ffea",
+          "size_bytes": 30747
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/physics_materials/surface_deformable.py",
+          "git_blob_sha1": "678582e5a3ab915096fdf2fb0971fca4cb80d456",
+          "size_bytes": 30198
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/physics_materials/volume_deformable.py",
+          "git_blob_sha1": "fca1b33f272f767fdaffef28aee3cd893e8b0bfe",
+          "size_bytes": 21177
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/visual_materials/__init__.py",
+          "git_blob_sha1": "20e723ba143cb70adc9cd52c0039b5545f41d0e1",
+          "size_bytes": 1065
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/visual_materials/omni_glass.py",
+          "git_blob_sha1": "9f46836d2afff23993dada031cf7a59b897f3f6a",
+          "size_bytes": 13515
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/visual_materials/omni_pbr.py",
+          "git_blob_sha1": "9fd25e5cdf95f1bb3ea84ebbf61bfeb72d83def3",
+          "size_bytes": 18592
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/visual_materials/preview_surface.py",
+          "git_blob_sha1": "9f0c0396507168e29e08c803a2a9222aaf2e627f",
+          "size_bytes": 9336
+        },
+        {
+          "path": "isaacsim/core/experimental/materials/impl/visual_materials/visual_material.py",
+          "git_blob_sha1": "06bb62cdc6e14fdf5b3c6bab1b11216d4318bf60",
+          "size_bytes": 17572
+        }
+      ]
+    },
+    "isaacsim.core.experimental.objects": {
+      "config": "[package]\nversion = \"0.8.1\"\ncategory = \"Simulation\"\ntitle = \"Isaac Sim Core (Objects)\"\ndescription = \"The Core Objects extension provides a set of APIs to create and/or wrap one or more USD objects in the stage...\"\nkeywords = [\"isaacsim\", \"core\", \"objects\"]\nchangelog = \"docs/CHANGELOG.md\"\nreadme = \"docs/Overview.md\"\npreview_image = \"data/preview.png\"\nicon = \"data/icon.png\"\nwriteTarget.kit = true\n\n[dependencies]\n\"isaacsim.core.deprecation_manager\" = {}\n\"isaacsim.core.experimental.materials\" = {}\n\"isaacsim.core.experimental.prims\" = {}\n\"isaacsim.core.experimental.utils\" = {}\n\"omni.isaac.core_archive\" = {}\n\"omni.warp.core\" = {}\n\n[[python.module]]\nname = \"isaacsim.core.experimental.objects\"\n\n# define the Python module for tests\n[[python.module]]\nname = \"isaacsim.core.experimental.objects.tests\"\n\n[[test]]\ntimeout = 900\nargs = [\n    \"--enable\",\n    \"omni.kit.loop-isaac\",\n    \"--reset-user\",\n    \"--vulkan\",\n    \"--/app/asyncRendering=0\",\n    \"--/app/asyncRenderingLowLatency=0\",\n    \"--/app/fastShutdown=1\",\n    \"--/app/file/ignoreUnsavedStage=1\",\n    \"--/app/hydraEngine/waitIdle=0\",\n    \"--/app/player/useFixedTimeStepping=false\",\n    \"--/app/renderer/skipWhileMinimized=0\",\n    \"--/app/renderer/sleepMsOnFocus=0\",\n    \"--/app/renderer/sleepMsOutOfFocus=0\",\n    \"--/app/runLoops/main/manualModeEnabled=true\",\n    \"--/app/runLoops/main/rateLimitEnabled=false\",\n    \"--/app/settings/fabricDefaultStageFrameHistoryCount=3\",\n    \"--/app/settings/persistent=0\",\n    \"--/app/useFabricSceneDelegate=true\",\n    \"--/app/viewport/createCameraModelRep=0\",\n    \"--/crashreporter/skipOldDumpUpload=1\",\n    \"--/exts/omni.usd/locking/onClose=0\",\n    \"--/omni/kit/plugin/syncUsdLoads=1\",\n    \"--/omni/replicator/asyncRendering=0\",\n    \"--/omnihydra/parallelHydraSprimSync=1\",\n    '--/persistent/app/stage/upAxis=\"Z\"',\n    \"--/persistent/app/viewport/defaults/tickRate=120\",\n    \"--/persistent/app/viewport/displayOptions=31951\",\n    \"--/persistent/omni/replicator/captureOnPlay=1\",\n    \"--/persistent/omnigraph/updateToUsd=0\",\n    \"--/persistent/physics/visualizationDisplayJoints=0\",\n    \"--/persistent/renderer/startupMessageDisplayed=1\",\n    \"--/persistent/simulation/defaultMetersPerUnit=1.0\",\n    \"--/persistent/simulation/minFrameRate=15\",\n    \"--/renderer/multiGpu/autoEnable=0\",\n    \"--/renderer/multiGpu/enabled=0\",\n    \"--/rtx-transient/dlssg/enabled=0\",\n    \"--/rtx-transient/resourcemanager/enableTextureStreaming=1\",\n    \"--/rtx/descriptorSets=360000\",\n    \"--/rtx/hydra/enableSemanticSchema=1\",\n    \"--/rtx/hydra/materialSyncLoads=1\",\n    \"--/rtx/hydra/supportMultiTickRate=true\",\n    \"--/rtx/materialDb/syncLoads=1\",\n    \"--/rtx/newDenoiser/enabled=1\",\n    \"--/rtx/rendering/perSensorTickTlas=true\",\n    \"--/rtx/reservedDescriptors=900000\",\n]\npythonTests.include = [\"isaacsim.core.experimental.objects.tests.*\"]\n\nstdoutFailPatterns.exclude = [\n    '*The NumPy module was reloaded*',\n]\n\n[documentation]\npages = [\"docs/Overview.md\", \"docs/CHANGELOG.md\"]\n",
+      "files": [
+        {
+          "path": "isaacsim/core/experimental/objects/__init__.py",
+          "git_blob_sha1": "d37d855e6b8da47d2be5b38e7677634da6713561",
+          "size_bytes": 705
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/__init__.py",
+          "git_blob_sha1": "41d3c92680ec3b43323f3112822b751bf7f0428c",
+          "size_bytes": 1490
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/camera.py",
+          "git_blob_sha1": "408aabf75cd67e6179b9dfbf8c8314bbfa961a96",
+          "size_bytes": 40533
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/ground_plane.py",
+          "git_blob_sha1": "d54adbd0fd11de91a6901055b265c98d6d91e0c2",
+          "size_bytes": 22902
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/lights/__init__.py",
+          "git_blob_sha1": "0efc96e254ecaebb7e5a85b02ecd6a23d8678259",
+          "size_bytes": 1116
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/lights/cylinder.py",
+          "git_blob_sha1": "2d40b02da8bacb1861e877c4a160a550b386bb66",
+          "size_bytes": 15021
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/lights/disk.py",
+          "git_blob_sha1": "cdc0731bf1d46791ba15979713db053cc8947ee6",
+          "size_bytes": 8979
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/lights/distant.py",
+          "git_blob_sha1": "52b933e4548fdb42c2d81363a058b386d454980e",
+          "size_bytes": 9341
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/lights/dome.py",
+          "git_blob_sha1": "6c2ff214a13d08e969dd12ccd8c7f55be2d1751f",
+          "size_bytes": 15444
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/lights/light.py",
+          "git_blob_sha1": "f2eb4955a450be8d08d7daabb9a83525e331a246",
+          "size_bytes": 30786
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/lights/rect.py",
+          "git_blob_sha1": "76efb6b503f44119655410ed039df1e9ab3c0980",
+          "size_bytes": 15203
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/lights/sphere.py",
+          "git_blob_sha1": "c54b880ca4b440d5e78d1c5229ccee6f84431893",
+          "size_bytes": 11917
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/mesh.py",
+          "git_blob_sha1": "df66776ed2d02d5e3b6a5cf4767183bfd0c06de6",
+          "size_bytes": 42111
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/shapes/__init__.py",
+          "git_blob_sha1": "093902944c3cd14efeae425397594128e1ce2145",
+          "size_bytes": 1081
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/shapes/capsule.py",
+          "git_blob_sha1": "c35d52659b12a9455f4ba4275c04b5ba1ed8896a",
+          "size_bytes": 17127
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/shapes/cone.py",
+          "git_blob_sha1": "6a2cf94da57e2a4a755eabb750d77e900c60737e",
+          "size_bytes": 16842
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/shapes/cube.py",
+          "git_blob_sha1": "9d224bbe148dee758bbb0ce31694e0c443e1ef8a",
+          "size_bytes": 10067
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/shapes/cylinder.py",
+          "git_blob_sha1": "9c13b71d4232ce681868f179e72523cad8bea8df",
+          "size_bytes": 16914
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/shapes/plane.py",
+          "git_blob_sha1": "a3d7cd7bb7067872be3b23ba9aaaff1da1fb0756",
+          "size_bytes": 17320
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/shapes/shape.py",
+          "git_blob_sha1": "3e50c20551e1b6a768f190c0e41643dee3c7079d",
+          "size_bytes": 9817
+        },
+        {
+          "path": "isaacsim/core/experimental/objects/impl/shapes/sphere.py",
+          "git_blob_sha1": "54fcd08799546dd2a5a7edcf0a48aa60312fb135",
+          "size_bytes": 10087
+        }
+      ]
+    },
+    "isaacsim.robot_motion.experimental.motion_generation": {
+      "config": "# Extension configuration file.\n# Visit the \"Extension configuration file (extension.toml)\" section for more details:\n# https://docs.omniverse.nvidia.com/kit/docs/kit-manual/latest/guide/extensions_advanced.html\n#\n\n[package]\nversion = \"6.1.3\"\ncategory = \"simulation\"\ntitle = \"motion_generation\"\ndescription = \"Contains APIs for interfacing external motion generation code to isaacsim.\"\nkeywords = [\"motion\",\"generation\",\"api\",\"planning\",\"kinematics\",\"trajectory\"]\nchangelog = \"docs/CHANGELOG.md\"\nreadme = \"docs/Overview.md\"\npreview_image = \"data/preview.png\"\nicon = \"data/icon.png\"\n\n[dependencies]\n\"isaacsim.core.experimental.objects\" = {}\n\"isaacsim.core.experimental.utils\" = {}\n\"isaacsim.robot_motion.schema\" = {}\n\n[[python.module]]\nname = \"isaacsim.robot_motion.experimental.motion_generation\"\n\n# define the Python module for tests\n[[python.module]]\nname = \"isaacsim.robot_motion.experimental.motion_generation.tests\"\n\n# test dependencies\n[[test]]\nenabled = true\ndependencies = [\n    \"isaacsim.storage.native\"\n]\n\nstdoutFailPatterns.exclude = [\n    '*The NumPy module was reloaded*',\n]\n\n[documentation]\npages = [\"docs/Overview.md\", \"docs/CHANGELOG.md\"]\n",
+      "files": [
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/__init__.py",
+          "git_blob_sha1": "c8347c90c17bc7266d88678d02e256a82b60586b",
+          "size_bytes": 1268
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/__init__.py",
+          "git_blob_sha1": "f220f0f58bf29b577bf511fcaaba113b89d73225",
+          "size_bytes": 1920
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/base_controller.py",
+          "git_blob_sha1": "64d7f849dbe7837da4b96658938b65cf8a2807b0",
+          "size_bytes": 3000
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/controller_structures.py",
+          "git_blob_sha1": "cdceea2283412f3f62f7e2a228ee70c211b30722",
+          "size_bytes": 13924
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/obstacle_strategy.py",
+          "git_blob_sha1": "2bc0baa097a80e22d537743680b2746a2ae7127a",
+          "size_bytes": 14827
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/path.py",
+          "git_blob_sha1": "a1d0ddf9d549960a81f6ac853542738251265906",
+          "size_bytes": 25754
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/scene_query.py",
+          "git_blob_sha1": "2d8e715598189c43c4a85ecd4ea11f64c3708ad0",
+          "size_bytes": 12376
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/trackable_api.py",
+          "git_blob_sha1": "87a7ff3ea40c4d62e23b672ca949abb9d8c0a6f7",
+          "size_bytes": 1435
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/trajectory.py",
+          "git_blob_sha1": "f9a6521576e02a3c0dcbb3676307c02d5ef1075f",
+          "size_bytes": 2213
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/trajectory_follower.py",
+          "git_blob_sha1": "5f197aa60b94f8fd9ec5b87a9959e53794640a41",
+          "size_bytes": 5018
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/types.py",
+          "git_blob_sha1": "764cb02a38e98bd076d856ceb37874af201ae739",
+          "size_bytes": 73436
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/__init__.py",
+          "git_blob_sha1": "467079831e16b82ab14d173aa9f6b5fe840fd5ed",
+          "size_bytes": 679
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/collision_approximation/__init__.py",
+          "git_blob_sha1": "1a68cc4d13fb950b89e70a456e23404bcd660f6a",
+          "size_bytes": 1238
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/collision_approximation/_mesh_bounds.py",
+          "git_blob_sha1": "1b0c5bfe44c2e5486f410a16420a8660d65aa0c8",
+          "size_bytes": 6758
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/collision_approximation/_primitive_bounds.py",
+          "git_blob_sha1": "8c054acee4f5485f4bc66d0f121994aedd75d42c",
+          "size_bytes": 4223
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/collision_approximation/bounding_geometries.py",
+          "git_blob_sha1": "6f60e76c9c4cbe1160b2f5d9459020c07f2165db",
+          "size_bytes": 3002
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/collision_approximation/bounds.py",
+          "git_blob_sha1": "f3008197d4d82e0b666592d1fdf9d9b1aefa2dd6",
+          "size_bytes": 4108
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/collision_approximation/triangulate_mesh.py",
+          "git_blob_sha1": "da3fba860f813dda8730b7fb8118900eb71b5ab9",
+          "size_bytes": 2738
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/prims/__init__.py",
+          "git_blob_sha1": "c8c85b2b151c6117039782719705e9a3b8981618",
+          "size_bytes": 819
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/prims/core_type.py",
+          "git_blob_sha1": "22080aad4012a61577aa8fc667216fa880964ad0",
+          "size_bytes": 2237
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/scene_validation/__init__.py",
+          "git_blob_sha1": "2158acb4730adcab6b4439314934e42ec7e468d3",
+          "size_bytes": 863
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/utils/scene_validation/validate_ancestor_scaling.py",
+          "git_blob_sha1": "19771b91b2cbdadd11c06cbf44dd81e41209e543",
+          "size_bytes": 4697
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/world_binding.py",
+          "git_blob_sha1": "e6ddf12ac91336674ee1cdb5c237238aa83ce069",
+          "size_bytes": 46183
+        },
+        {
+          "path": "isaacsim/robot_motion/experimental/motion_generation/impl/world_interface.py",
+          "git_blob_sha1": "325599fd588640eeb20c9b99676c751c53d79c7e",
+          "size_bytes": 20538
+        }
+      ]
+    },
+    "isaacsim.robot_motion.pink": {
+      "config": "[package]\nversion = \"0.1.3\"\ncategory = \"simulation\"\ntitle = \"pink\"\ndescription = \"Access to PINK (Python Inverse Kinematics) solvers under the isaacsim motion generation API.\"\nkeywords = [\"motion\", \"generation\", \"pink\", \"inverse\", \"kinematics\", \"ik\", \"pinocchio\"]\nchangelog = \"docs/CHANGELOG.md\"\nreadme = \"docs/Overview.md\"\npreview_image = \"data/preview.png\"\nicon = \"data/icon.png\"\nwriteTarget.kit = true\nwriteTarget.platform = true # pip prebundle makes this extension os specific\nwriteTarget.python = true\n\n[dependencies]\n\"isaacsim.core.experimental.utils\" = {}\n\"isaacsim.robot_motion.experimental.motion_generation\" = {}\n\"omni.kit.pip_archive\" = {}\n\n[[python.module]]\npath = \"pip_prebundle\"\n\n[[python.module]]\nname = \"isaacsim.robot_motion.pink\"\n\n[[python.module]]\nname = \"isaacsim.robot_motion.pink.tests\"\n\n[[test]]\nname = \"startup\"\nenabled = true\n\n\"filter:platform\".\"windows-x86_64\".pythonTests.exclude = [\n    \"*\",\n]\n\n[[test]]\nenabled = true\ndependencies = [\"isaacsim.test.utils\"]\n\nstdoutFailPatterns.exclude = [\n    '*The NumPy module was reloaded*',\n    '*SparseConversionWarning*',\n    '*SyntheticData extension needs at least a stageFrameHistoryCount*',\n]\n\n\"filter:platform\".\"windows-x86_64\".pythonTests.exclude = [\n    \"*\",\n]\n\n[documentation]\npages = [\"docs/Overview.md\", \"docs/CHANGELOG.md\"]\n",
+      "files": [
+        {
+          "path": "isaacsim/robot_motion/pink/__init__.py",
+          "git_blob_sha1": "0b88424eca5cbf4247e747497e0468641a8de69a",
+          "size_bytes": 2339
+        },
+        {
+          "path": "isaacsim/robot_motion/pink/extension.py",
+          "git_blob_sha1": "3937716914eae8a64921ad331f4f419e779aa098",
+          "size_bytes": 1435
+        },
+        {
+          "path": "isaacsim/robot_motion/pink/impl/__init__.py",
+          "git_blob_sha1": "dc82f6e88fb8e847c9b24cba75d9fa89c7b55bf1",
+          "size_bytes": 1047
+        },
+        {
+          "path": "isaacsim/robot_motion/pink/impl/configuration_loader.py",
+          "git_blob_sha1": "fe5f386430382bed84404ecef5d4c9ac55327b7f",
+          "size_bytes": 6825
+        },
+        {
+          "path": "isaacsim/robot_motion/pink/impl/pink_ik_controller.py",
+          "git_blob_sha1": "f6521fa786b24ef160a224e87618fe0bf3533e8c",
+          "size_bytes": 21539
+        },
+        {
+          "path": "isaacsim/robot_motion/pink/impl/utils/__init__.py",
+          "git_blob_sha1": "3e30f041e0877562252793c6ccbfc6d469bb3665",
+          "size_bytes": 1175
+        },
+        {
+          "path": "isaacsim/robot_motion/pink/impl/utils/transforms.py",
+          "git_blob_sha1": "f86966374eba94cae4f58a865695056286e7392e",
+          "size_bytes": 6388
+        }
+      ]
+    }
+  },
+  "franka_urdf": {
+    "path": "robot_configurations/franka/robot.urdf",
+    "git_blob_sha1": "15a85a576d1b6cc701d32d672abe026471f46b05",
+    "size_bytes": 15048
+  }
+}
