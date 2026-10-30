@@ -649,6 +649,47 @@ def test_resume_checks_current_remaining_allowance_before_any_more_planning(tmp_
     assert json.loads((root / "configuration.json").read_text())==saved
 
 
+@pytest.mark.parametrize("retry_status", ["failed", "capacity_wait"])
+def test_an_admitted_refined_splat_is_not_held_back_twice(tmp_path, monkeypatch, retry_status):
+    """capture-4b60431e 2026-10-30: two $5 splat reservations were held (a provider-failed
+    attempt and its live retry) and the pre-check held the splat back a third time."""
+    from blueprint_pipeline import website_atlas_pipeline as pipeline, paid_resource_allocator as allocator
+    from blueprint_pipeline import website_atlas_pose as pose_api
+    video = tmp_path / "source.mov"
+    video.write_bytes(b"retained-source")
+    root = tmp_path / "job"
+    (root / "survey").mkdir(parents=True)
+    (root / "scene_planner").mkdir()
+    (root / "survey/atlas_video_survey.json").write_text(json.dumps({
+        "source_video_digest": pipeline._sha256_file(video), "frames": []}))
+    attempts = root / "automation/draft-refined/native"
+    for path, status in ((attempts, "failed"), (attempts / "retry", retry_status)):
+        (path / "atlas_pose").mkdir(parents=True)
+        (path / "atlas_pose/submission.json").write_text(json.dumps(
+            {"status": status, "binding": {"task": "posedImages2Splats"}}))
+    policy = {"maximum_review_cost_usd": 4, "pose_input_cost_usd": .01, "rgbd_view_cost_usd": .05,
+              "additional_rgbd_view_cost_usd": .01, "mesh_export_cost_usd": .5, "refined_splat_cost_usd": 5,
+              "rate_card_reference": "https://example.test/rates", "reviewed_by": "test",
+              "reviewed_on": _reviewed_today()}
+    saved = {"authority": {"provider_retention": "project_library_retention_approved"}, "policy": policy,
+             "remaining_cost_usd": 12.588387}
+    (root / "configuration.json").write_text(json.dumps(saved))
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: deepcopy(saved))
+    monkeypatch.setattr(pose_api, "atlas_api_config", lambda: ("url", "test-non-secret"))
+
+    class Planned(Exception):
+        pass
+
+    def plan(**_):
+        raise Planned
+    monkeypatch.setattr(allocator, "run_sponsored_website_atlas_plan", plan)
+    # 12.59 - 2 x 4 review headroom - 0.50 mesh leaves room; holding the splat back too does not.
+    with pytest.raises(Planned if retry_status == "capacity_wait" else ValueError,
+                       **({} if retry_status == "capacity_wait" else {"match": "atlas_runtime_budget_insufficient"})):
+        pipeline.run_atlas_pipeline(source_video=video, output_root=root,
+                                    task_context={"capture_id": "c", "context_digest": "ctx"})
+
+
 def test_later_stages_read_the_current_allowance_with_every_review_cap_the_job_ran_under(monkeypatch):
     from blueprint_pipeline import website_atlas_pipeline as pipeline
     current = {"authority": {"id": "a"}, "policy": {"maximum_review_cost_usd": 4}, "remaining_cost_usd": 22.9}
