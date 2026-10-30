@@ -3,12 +3,17 @@
 set -euo pipefail
 umask 022
 . "$(dirname "$0")/door-common.sh"
-door_init_request install-public-piper-policy
+operation="${DOOR_PUBLIC_POLICY_OPERATION:-install-public-piper-policy}"
+case "$operation" in
+  install-public-piper-policy|install-public-yam-policy) ;;
+  *) echo "unsupported fixed public policy operation" >&2; exit 2 ;;
+esac
+door_init_request "$operation"
 : "${DOOR_VENV_PYTHON:?}" "${DOOR_CONTROL_PLANE_REPO:?}" "${DOOR_PUBLIC_POLICY_REQUEST:?}" "${DOOR_SERVICE_USER:?}"
 [ "$DOOR_SERVICE_USER" = blueprint ] || door_fail public_policy_service_user_invalid
 door_code="$(cd "$(dirname "$0")" && pwd)"
 cd -P "$DOOR_CONTROL_PLANE_REPO"
-result="$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.install-public-piper-policy.json"
+result="$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.$operation.json"
 set +e
 (
   umask 077

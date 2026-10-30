@@ -1,4 +1,4 @@
-"""Prepare one fixed public PiPER registration as the unprivileged service user.
+"""Prepare an allowlisted public PiPER/YAM registration as the service user.
 
 No registry write, credential discovery, download, simulator or allocation occurs.
 The independently installed operator door validates and installs the proposal.
@@ -33,28 +33,32 @@ def prepare(request: dict, *, state_root: Path = STATE_ROOT, model_root: Path = 
             profile_root: Path = PROFILE_ROOT, release_commit: str | None = None) -> dict:
     from .beta_policy_screening_team import registration_from_prepared_inputs
     from .deployment_embodiment_runtime_configuration import bind_prepared_configuration
-    from .openwam_piper_runtime import build_policy_spec
-
     request = validate_request(request)
+    identity = _contract.request_identity(request)
     actual = release_commit or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
     require(actual == request["release_commit"], "installed_release_mismatch")
-    profile = read(profile_root / "openwam_piper_registration_profile.json")
-    require(file_record(profile_root / "openwam_piper_model_card.md")["sha256"] == profile["model_card_sha256"],
-            "model_license_evidence_changed")
+    profile = _contract.load_profile(request, profile_root)
     body, original, model = retained_body(request, model_root=model_root)
+    rows = 30 if request["schema_version"] == _contract.YAM_SCHEMA else 1
     prepared = bind_prepared_configuration(body / "configuration", body / "prepared",
-        original["robot_embodiment"]["model"]["url"], runtime_settings={"control_hz": 60, "action_chunk_rows": 1})
-    require(prepared["robot_embodiment"] == expected_manifest(original["robot_embodiment"]), "native_binding_changed")
+        original["robot_embodiment"]["model"]["url"], runtime_settings={"control_hz": 60, "action_chunk_rows": rows})
+    if request["schema_version"] == _contract.YAM_SCHEMA:
+        from .molmoact2_yam_runtime import build_policy_spec, configure_prepared_inputs
+        prepared = configure_prepared_inputs(prepared)
+    else:
+        from .openwam_piper_runtime import build_policy_spec
+    require(prepared["robot_embodiment"] == expected_manifest(original["robot_embodiment"], profile), "native_binding_changed")
     policy = build_policy_spec(prepared["robot_embodiment"])
     require(policy == expected_policy(prepared["robot_embodiment"], profile), "fixed_policy_profile_changed")
     destination = safe_path(state_root / request["installation_id"])
     destination.mkdir(parents=True, exist_ok=True, mode=0o700)
     write_once(destination / "request.json", request)
     registration = registration_from_prepared_inputs(prepared=prepared, model_path=model["path"],
-        destination=destination, candidate_id=CANDIDATE_ID, team_id=TEAM_ID, checkpoint_id=CHECKPOINT_ID,
+        destination=destination, candidate_id=identity["candidate_id"], team_id=identity["team_id"],
+        checkpoint_id=identity["checkpoint_id"],
         policy_spec=policy, rights=rights_record(request, profile), display_name=profile["display_name"])
     registration.update(minimum_gpu_memory_gb=profile["minimum_gpu_memory_gb"], deployment=profile["deployment"])
-    proposal = {"schema_version": "openwam_piper_policy_install_proposal.v1", "request_digest": request["request_digest"],
+    proposal = {"schema_version": identity["proposal_schema"], "request_digest": request["request_digest"],
                 "registration": registration, "candidate_policy_queried": False, "provider_allocations_performed": 0}
     write_once(destination / "proposal.json", proposal)
     return {"status": "prepared", "installation_id": request["installation_id"],

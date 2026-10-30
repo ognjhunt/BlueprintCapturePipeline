@@ -1,5 +1,9 @@
 # Operator door
 
+The fixed [`install-public-yam-policy` operation](research/molmoact2-yam-registration-2026-10-29.md)
+installs the public MolmoAct2 YAM screening registration from retained prepared
+assets and verified official license evidence, without launching compute.
+
 The fixed [`install-public-piper-policy` operation](research/openwam-piper-registration-2026-10-29.md)
 installs the public OpenWAM PiPER screening registration from retained prepared
 assets, with a registry digest check and scoped public-license evidence. It

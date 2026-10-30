@@ -101,6 +101,9 @@ install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_registration_pr
   "$stage/operator_door/openwam_piper_registration_profile.json"
 install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_model_card.md" \
   "$stage/operator_door/openwam_piper_model_card.md"
+for public_profile_file in molmoact2_yam_registration_profile.json molmoact2_yam_publisher_readme.md molmoact2_yam_publisher_license.txt; do
+  install -m 0644 "$repo_root/config/policy_runtimes/$public_profile_file" "$stage/operator_door/$public_profile_file"
+done
 if [ "$dispatcher_hold_only" -eq 0 ]; then
   python3 -I -S "$source_dir/stage-historical-runtime.py" "$repo_root/src/blueprint_pipeline" "$stage/historical-python"
   install -m 0644 "$source_dir/historical-generation-entry.py" "$stage/historical-generation-entry.py"

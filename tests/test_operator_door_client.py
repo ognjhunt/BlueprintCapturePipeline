@@ -95,7 +95,7 @@ def _asset_grant(**changes):
     return value
 
 
-def _public_policy_request():
+def _public_policy_request(*, yam=False):
     from operator_door.public_policy_registration_contract import digest
     value = {"schema_version": "openwam_piper_policy_install_request.v1", "installation_id": "development-only",
         "release_commit": "a" * 40, "preparation_authorization_id": "development-only-assets",
@@ -103,22 +103,27 @@ def _public_policy_request():
         "candidate_id": "openwam_alpha_piper_bimanual", "team_id": "blueprint-public-models",
         "checkpoint_id": "openwam-alpha-piper-12bfca6f", "policy_profile": "openwam_alpha_real_piper.v1",
         "expected_registry_digest": "sha256:" + "c" * 64, "authorization_reference": "development_only public policy request"}
+    if yam:
+        value.update(schema_version="molmoact2_yam_policy_install_request.v1", candidate_id="molmoact2_bimanual_yam",
+            checkpoint_id="molmoact2-bimanual-yam-8dcbed66", policy_profile="molmoact2_bimanual_yam.v1")
     value["request_digest"] = digest(value)
     return value
 
 
-def test_public_policy_install_cli_http_keeps_exact_request_and_retry_identity(door, tmp_path, monkeypatch):
-    request = _public_policy_request()
+@pytest.mark.parametrize("yam", [False, True])
+def test_public_policy_install_cli_http_keeps_exact_request_and_retry_identity(door, tmp_path, monkeypatch, yam):
+    request = _public_policy_request(yam=yam)
     path = tmp_path / "request.json"
     path.write_text(json.dumps(request))
-    args = ("install-public-piper-policy", "--request-file", str(path))
+    kind = "install-public-yam-policy" if yam else "install-public-piper-policy"
+    args = (kind, "--request-file", str(path))
     code, output = _run(*args)
     assert code == 0
     request_id = json.loads(output)["id"]
     retry_code, retry = _run(*args)
     assert retry_code == 0 and json.loads(retry)["id"] == request_id
     saved = json.loads((door["state"] / "requests" / "pending" / (request_id + ".json")).read_text())
-    assert saved["request"] == {"kind": "install-public-piper-policy", "request": request}
+    assert saved["request"] == {"kind": kind, "request": request}
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run(*args)[0] == 3
 
@@ -132,6 +137,13 @@ def test_public_policy_install_cli_rejects_unsealed_or_duplicate_fields_without_
     assert _run("install-public-piper-policy", "--request-file", str(path))[0] == 2
     path.write_text('{"installation_id":"first",' + json.dumps(_public_policy_request())[1:])
     assert _run("install-public-piper-policy", "--request-file", str(path))[0] == 2
+
+
+def test_public_policy_install_cli_rejects_wrong_fixed_model_operation_before_http(tmp_path, monkeypatch):
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(_public_policy_request()))
+    monkeypatch.setattr(client, "_request", lambda *_a, **_k: pytest.fail("wrong profile reached network"))
+    assert _run("install-public-yam-policy", "--request-file", str(path))[0] == 2
 
 
 def test_public_asset_batch_cli_api_preserves_authority_and_retry_identity(door, tmp_path):

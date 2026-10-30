@@ -5,6 +5,7 @@ import copy
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
+import shutil
 from pathlib import Path
 import sys
 import subprocess
@@ -32,12 +33,12 @@ def test_actual_isolated_privileged_entrypoint_loads_only_its_installed_sibling(
     assert "--request-json" in result.stdout
 
 
-def request(**changes):
-    value = {"schema_version": contract.SCHEMA, "installation_id": "development-only",
+def request(*, yam=False, **changes):
+    identity = contract.IDENTITIES[contract.YAM_SCHEMA if yam else contract.SCHEMA]
+    value = {"schema_version": contract.YAM_SCHEMA if yam else contract.SCHEMA, "installation_id": "development-only",
         "release_commit": "a" * 40, "preparation_authorization_id": "development-only-assets",
         "preparation_publication_digest": "sha256:" + "b" * 64,
-        "candidate_id": contract.CANDIDATE_ID, "team_id": contract.TEAM_ID,
-        "checkpoint_id": contract.CHECKPOINT_ID, "policy_profile": contract.PROFILE_ID,
+        **{key: identity[key] for key in ("candidate_id", "team_id", "checkpoint_id", "policy_profile")},
         "expected_registry_digest": "sha256:" + "c" * 64,
         "authorization_reference": "development_only explicit request to test public models"}
     value.update(changes)
@@ -53,9 +54,19 @@ def write(path, value):
 
 @pytest.fixture()
 def retained(tmp_path):
+    return retained_fixture(tmp_path)
+
+
+@pytest.fixture()
+def retained_yam(tmp_path):
+    return retained_fixture(tmp_path, yam=True)
+
+
+def retained_fixture(tmp_path, *, yam=False):
     """Minimal fixed-source records; fake USD bytes never claim an actual import."""
     models = tmp_path / "models"
-    body = models / contract.EMBODIMENT_ID / ("d" * 64)
+    identity = contract.IDENTITIES[contract.YAM_SCHEMA if yam else contract.SCHEMA]
+    body = models / identity["embodiment_id"] / ("d" * 64)
     prepared = body / "prepared"
     prepared.mkdir(parents=True)
     model = prepared / "development-only.usd"
@@ -65,7 +76,11 @@ def retained(tmp_path):
     imported = {"model": model_source, "claim_ceiling": "development_only"}
     write(prepared / "asset-import.json", imported)
     original = {"schema_version": "embodiment_runtime_binding_inputs.v1", "robot_embodiment": {
-        "embodiment_id": contract.EMBODIMENT_ID, "control_hz": 30, "action_chunk_rows": 8,
+        "embodiment_id": identity["embodiment_id"], "control_hz": 30, "action_chunk_rows": 8,
+        "cameras": [{"name": name, "width": 320, "height": 176, "horizontal_fov_deg": 90.0,
+                     "mount_link": None if name == "overhead" else name.removesuffix("_wrist") + "_link_6",
+                     "position_m": [0.1, 0.2, 0.3], "orientation_xyzw": [0., 0., 0., 1.]}
+                    for name in ("overhead", "left_wrist", "right_wrist")],
         "model": {"format": "usd", "url": "https://assets.example.invalid/development-only.usd",
                   "sha256": model_record["sha256"]}},
         "model_record": {"sha256": model_record["sha256"], "size_bytes": model_record["size_bytes"],
@@ -74,7 +89,7 @@ def retained(tmp_path):
     write(body / "binding-inputs.json", original)
     publication = {"status": "completed", "claim_ceiling": "robot_asset_import_only",
         "candidate_policy_queried": False, "task_executed": False, "results": [{
-            "embodiment_id": contract.EMBODIMENT_ID, "status": "retained", "directory": str(prepared),
+            "embodiment_id": identity["embodiment_id"], "status": "retained", "directory": str(prepared),
             "binding_inputs_path": str(body / "binding-inputs.json"),
             "binding_inputs_sha256": contract.file_record(body / "binding-inputs.json")["sha256"]}]}
     publication["publication_digest"] = contract.digest(publication)
@@ -89,23 +104,23 @@ def retained(tmp_path):
     registry["registry_digest"] = contract.digest(registry)
     registry_path = tmp_path / "etc/registry.json"
     write(registry_path, registry)
-    req = request(preparation_publication_digest=publication["publication_digest"],
+    req = request(yam=yam, preparation_publication_digest=publication["publication_digest"],
                   expected_registry_digest=registry["registry_digest"])
     state = tmp_path / "proposals"
     destination = state / req["installation_id"]
-    manifest = contract.expected_manifest(original["robot_embodiment"])
+    profile = contract.load_profile(req, PROFILE_ROOT)
+    manifest = contract.expected_manifest(original["robot_embodiment"], profile)
     manifest_path = destination / (manifest["embodiment_digest"][7:] + ".robot_manifest.json")
     write(manifest_path, manifest)
     write(destination / "request.json", req)
-    profile = contract.read(PROFILE_ROOT / "openwam_piper_registration_profile.json")
-    registration = {"team_id": contract.TEAM_ID, "checkpoint_id": contract.CHECKPOINT_ID,
+    registration = {"team_id": identity["team_id"], "checkpoint_id": identity["checkpoint_id"],
         "display_name": profile["display_name"], "model": model_record,
         "manifest": contract.file_record(manifest_path), "policy_spec": contract.expected_policy(manifest, profile),
         "rights_binding": contract.rights_record(req, profile),
         "dependency_closure": original["model_record"]["dependency_closure"],
         "source_import_provenance": original["model_record"]["source_import_provenance"],
         "minimum_gpu_memory_gb": profile["minimum_gpu_memory_gb"], "deployment": profile["deployment"]}
-    proposal = {"schema_version": "openwam_piper_policy_install_proposal.v1", "request_digest": req["request_digest"],
+    proposal = {"schema_version": identity["proposal_schema"], "request_digest": req["request_digest"],
         "registration": registration, "candidate_policy_queried": False, "provider_allocations_performed": 0}
     write(destination / "proposal.json", proposal)
     return SimpleNamespace(request=req, original=original, profile=profile, registry=registry, model=model,
@@ -250,12 +265,14 @@ def test_audit_is_group_readable_under_actual_private_transient_umask(retained):
     assert json.loads(payload)["status"] == "installed"
 
 
-def test_spool_uses_fixed_networkless_privilege_separation(tmp_path):
+@pytest.mark.parametrize("yam", [False, True])
+def test_spool_uses_fixed_networkless_privilege_separation(tmp_path, yam):
     config = DoorConfig(state_root=str(tmp_path / "door"))
     for sub in ("pending", "processing", "completed", "results"):
         (Path(config.spool_root) / sub).mkdir(parents=True)
-    req = request()
-    body = {"kind": "install-public-piper-policy", "request": req}
+    req = request(yam=yam)
+    kind = "install-public-yam-policy" if yam else "install-public-piper-policy"
+    body = {"kind": kind, "request": req}
     first = enqueue(config, body, requested_by="development-only", operation_key="install-" + req["installation_id"])
     assert enqueue(config, body, requested_by="development-only", operation_key="install-" + req["installation_id"]) == first
     calls = []
@@ -265,5 +282,107 @@ def test_spool_uses_fixed_networkless_privilege_separation(tmp_path):
     assert "--property=PrivateNetwork=yes" in launch
     env = dict(value.removeprefix("--setenv=").split("=", 1) for value in launch if value.startswith("--setenv="))
     assert env["DOOR_SERVICE_USER"] == "blueprint"
+    assert env["DOOR_PUBLIC_POLICY_OPERATION"] == kind
     assert json.loads(env["DOOR_PUBLIC_POLICY_REQUEST"]) == req
     assert not any("TOKEN" in key or "KEY" in key for key in env)
+
+
+def test_yam_request_cannot_cross_piper_operation_or_impersonate_other_checkpoint():
+    value = request(yam=True)
+    assert validate_request({"kind": "install-public-yam-policy", "request": value})["request"] == value
+    assert required_scope("install-public-yam-policy") == "operate"
+    for kind, body in (("install-public-piper-policy", value), ("install-public-yam-policy", request()),
+                       ("install-public-yam-policy", request(yam=True, checkpoint_id=contract.CHECKPOINT_ID)),
+                       ("install-public-yam-policy", request(yam=True, team_id="DreamLabs")),
+                       ("install-public-yam-policy", request(yam=True, profile_file="/tmp/arbitrary"))):
+        with pytest.raises(RequestRefused):
+            validate_request({"kind": kind, "request": body})
+
+
+def test_yam_rights_reference_verified_publisher_statement_not_missing_hf_license():
+    req = request(yam=True)
+    profile = contract.load_profile(req, PROFILE_ROOT)
+    rights = contract.rights_record(req, profile)
+    assert rights["license_basis"] == "publisher_model_license_statement_in_pinned_repository_readme"
+    assert rights["hf_model_card_license_field"] is None
+    assert "model_card_sha256" not in rights and "model_card_url" not in rights
+    assert rights["license_declaration"] == "This model is licensed under Apache 2.0."
+    assert "research and educational" in rights["publisher_intended_use"]
+    assert "6070080a20321b4f498ab30f28e1d09ac465edb7/README.md" in rights["license_evidence_url"]
+    assert rights["private_vendor_authorization_claimed"] is False
+    from blueprint_pipeline.team_candidate_quick10_admission import validate_candidate_rights
+    validate_candidate_rights(rights, team_id=contract.TEAM_ID, checkpoint_id=contract.YAM_CHECKPOINT_ID,
+                              candidate_id=contract.YAM_CANDIDATE_ID)
+
+
+def test_yam_manifest_changes_only_declared_camera_optics_and_native_clock(retained_yam):
+    original = retained_yam.original["robot_embodiment"]
+    result = contract.expected_manifest(original, retained_yam.profile)
+    assert result["control_hz"] == 60 and result["action_chunk_rows"] == 30
+    assert [camera["horizontal_fov_deg"] for camera in result["cameras"]] == [69.4, 87.0, 87.0]
+    for current, previous in zip(result["cameras"], original["cameras"], strict=True):
+        assert (current["width"], current["height"]) == (640, 360)
+        for field in ("mount_link", "position_m", "orientation_xyzw"):
+            assert current[field] == previous[field]
+    restored = copy.deepcopy(result)
+    for field in ("cameras", "control_hz", "action_chunk_rows", "embodiment_digest"):
+        restored[field] = original[field]
+    assert restored == original
+    assert "not_publisher_or_site_calibration" in retained_yam.registration["policy_spec"]["binding"]["camera_binding_reference"]
+
+
+def test_yam_install_preserves_piper_and_has_independent_retry_receipt(retained_yam):
+    fixture = retained_yam
+    piper = {"robot_policy": {"development_only_existing_piper": "preserve_exactly"}}
+    for settings in [fixture.registry["derived_profiles"]["defaults"], *fixture.registry["profiles"]]:
+        settings["screening_candidates"][contract.CANDIDATE_ID] = piper
+    fixture.registry["registry_digest"] = contract.digest(fixture.registry, "registry_digest")
+    write(fixture.registry_path, fixture.registry)
+    fixture.request["expected_registry_digest"] = fixture.registry["registry_digest"]
+    fixture.request["request_digest"] = contract.digest(fixture.request, "request_digest")
+    write(fixture.destination / "request.json", fixture.request)
+    fixture.proposal["request_digest"] = fixture.request["request_digest"]
+    write(fixture.destination / "proposal.json", fixture.proposal)
+    receipt = installer.apply(fixture.request, **fixture.options)
+    assert receipt["schema_version"] == "molmoact2_yam_policy_install_receipt.v1"
+    assert receipt["candidate_id"] == contract.YAM_CANDIDATE_ID
+    assert receipt["provider_allocations_performed"] == 0 and receipt["native_policy_execution_validated"] is False
+    assert installer.apply(fixture.request, **fixture.options) == receipt
+    current = contract.read(fixture.registry_path)
+    for settings in [current["derived_profiles"]["defaults"], *current["profiles"]]:
+        assert settings["screening_candidates"][contract.CANDIDATE_ID] == piper
+        assert settings["screening_candidates"].pop(contract.YAM_CANDIDATE_ID) == {"robot_policy": fixture.registration}
+    current["registry_digest"] = fixture.registry["registry_digest"]
+    assert current == fixture.registry
+
+
+@pytest.mark.parametrize("name", ["molmoact2_yam_publisher_readme.md", "molmoact2_yam_publisher_license.txt"])
+def test_yam_publisher_license_evidence_cannot_be_replaced(retained_yam, tmp_path, name):
+    evidence = tmp_path / "installed-evidence"
+    shutil.copytree(PROFILE_ROOT, evidence)
+    (evidence / name).write_text("development_only changed publisher license statement")
+    with pytest.raises(ValueError, match="model_license_evidence_changed"):
+        installer.apply(retained_yam.request, **{**retained_yam.options, "profile_root": evidence})
+    assert contract.read(retained_yam.registry_path) == retained_yam.registry
+
+
+@pytest.mark.parametrize("field", ["camera_pose", "model", "private_rights", "credentials", "policy"])
+def test_yam_helper_proposal_cannot_broaden_fixed_registration(retained_yam, field):
+    registration = retained_yam.proposal["registration"]
+    if field == "camera_pose":
+        manifest_path = Path(registration["manifest"]["path"])
+        manifest = contract.read(manifest_path)
+        manifest["cameras"][0]["position_m"] = [9, 9, 9]
+        write(manifest_path, manifest)
+    elif field == "model":
+        registration["model"]["path"] = "/tmp/unrelated-robot.usd"
+    elif field == "private_rights":
+        registration["rights_binding"]["private_vendor_authorization_claimed"] = True
+    elif field == "credentials":
+        registration["credential_env"] = "DREAM_API_KEY"
+    else:
+        registration["policy_spec"]["endpoint_url"] = "https://arbitrary.invalid/infer"
+    write(retained_yam.destination / "proposal.json", retained_yam.proposal)
+    with pytest.raises(ValueError, match="fixed_(manifest|registration)_changed"):
+        installer.apply(retained_yam.request, **retained_yam.options)
+    assert contract.read(retained_yam.registry_path) == retained_yam.registry

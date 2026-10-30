@@ -231,6 +231,7 @@ def _embodiment_preparation_properties(config: DoorConfig, _request: dict[str, A
 def _public_policy_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
             "DOOR_SERVICE_USER": "blueprint",
+            "DOOR_PUBLIC_POLICY_OPERATION": request["kind"],
             "DOOR_PUBLIC_POLICY_REQUEST": json.dumps(request["request"], sort_keys=True, allow_nan=False)}
 
 
@@ -290,6 +291,10 @@ class _LaunchSpec:
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
+    "install-public-yam-policy": _LaunchSpec(
+        "blueprint-operator-door-public-yam-policy", "door-install-public-piper-policy.sh", "5min",
+        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
+        _public_policy_environment, _public_policy_properties),
     "install-public-piper-policy": _LaunchSpec(
         "blueprint-operator-door-public-policy", "door-install-public-piper-policy.sh", "5min",
         lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
