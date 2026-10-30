@@ -658,7 +658,7 @@ exit "$FAKE_HELPER_RC"
 
 
 @pytest.mark.parametrize("helper_rc", [0, 2])
-@pytest.mark.parametrize("operation", ["install-public-piper-policy", "install-public-yam-policy"])
+@pytest.mark.parametrize("operation", ["install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy"])
 def test_public_policy_shell_builds_unprivileged_then_uses_only_installed_stdlib_installer(env, tmp_path, helper_rc, operation):
     repository = tmp_path / "repository"
     repository.mkdir()

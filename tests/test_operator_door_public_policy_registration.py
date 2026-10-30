@@ -33,9 +33,10 @@ def test_actual_isolated_privileged_entrypoint_loads_only_its_installed_sibling(
     assert "--request-json" in result.stdout
 
 
-def request(*, yam=False, **changes):
-    identity = contract.IDENTITIES[contract.YAM_SCHEMA if yam else contract.SCHEMA]
-    value = {"schema_version": contract.YAM_SCHEMA if yam else contract.SCHEMA, "installation_id": "development-only",
+def request(*, yam=False, franka=False, **changes):
+    schema = contract.FRANKA_SCHEMA if franka else (contract.YAM_SCHEMA if yam else contract.SCHEMA)
+    identity = contract.IDENTITIES[schema]
+    value = {"schema_version": schema, "installation_id": "development-only",
         "release_commit": "a" * 40, "preparation_authorization_id": "development-only-assets",
         "preparation_publication_digest": "sha256:" + "b" * 64,
         **{key: identity[key] for key in ("candidate_id", "team_id", "checkpoint_id", "policy_profile")},
@@ -62,10 +63,10 @@ def retained_yam(tmp_path):
     return retained_fixture(tmp_path, yam=True)
 
 
-def retained_fixture(tmp_path, *, yam=False):
+def retained_fixture(tmp_path, *, yam=False, franka=False):
     """Minimal fixed-source records; fake USD bytes never claim an actual import."""
     models = tmp_path / "models"
-    identity = contract.IDENTITIES[contract.YAM_SCHEMA if yam else contract.SCHEMA]
+    identity = contract.IDENTITIES[contract.FRANKA_SCHEMA if franka else (contract.YAM_SCHEMA if yam else contract.SCHEMA)]
     body = models / identity["embodiment_id"] / ("d" * 64)
     prepared = body / "prepared"
     prepared.mkdir(parents=True)
@@ -80,7 +81,7 @@ def retained_fixture(tmp_path, *, yam=False):
         "cameras": [{"name": name, "width": 320, "height": 176, "horizontal_fov_deg": 90.0,
                      "mount_link": None if name == "overhead" else name.removesuffix("_wrist") + "_link_6",
                      "position_m": [0.1, 0.2, 0.3], "orientation_xyzw": [0., 0., 0., 1.]}
-                    for name in ("overhead", "left_wrist", "right_wrist")],
+                    for name in (("overhead", "arm_wrist") if franka else ("overhead", "left_wrist", "right_wrist"))],
         "model": {"format": "usd", "url": "https://assets.example.invalid/development-only.usd",
                   "sha256": model_record["sha256"]}},
         "model_record": {"sha256": model_record["sha256"], "size_bytes": model_record["size_bytes"],
@@ -104,7 +105,7 @@ def retained_fixture(tmp_path, *, yam=False):
     registry["registry_digest"] = contract.digest(registry)
     registry_path = tmp_path / "etc/registry.json"
     write(registry_path, registry)
-    req = request(yam=yam, preparation_publication_digest=publication["publication_digest"],
+    req = request(yam=yam, franka=franka, preparation_publication_digest=publication["publication_digest"],
                   expected_registry_digest=registry["registry_digest"])
     state = tmp_path / "proposals"
     destination = state / req["installation_id"]

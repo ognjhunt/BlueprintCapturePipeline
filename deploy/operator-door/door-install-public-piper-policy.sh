@@ -5,7 +5,7 @@ umask 022
 . "$(dirname "$0")/door-common.sh"
 operation="${DOOR_PUBLIC_POLICY_OPERATION:-install-public-piper-policy}"
 case "$operation" in
-  install-public-piper-policy|install-public-yam-policy) ;;
+  install-public-piper-policy|install-public-yam-policy|install-public-franka-policy) ;;
   *) echo "unsupported fixed public policy operation" >&2; exit 2 ;;
 esac
 door_init_request "$operation"

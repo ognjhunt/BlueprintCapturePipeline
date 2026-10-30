@@ -654,13 +654,13 @@ def run_native_task_arena_policy_canary_session_vast(
         pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
         groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
         cosmos = prepared_bundle.get("cosmos_runtime") is not None
-        openwam = prepared_bundle.get("team_policy_interface_id") == "openwam_piper_eef20.v1"
+        openwam = prepared_bundle.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}
         molmoact2 = prepared_bundle.get("team_policy_interface_id") == "molmoact2_yam_joint14.v1"
         molmoact2_droid = prepared_bundle.get("team_policy_interface_id") == "molmoact2_droid_joint8.v1"
         download_bytes, upload_bytes = pi_download + groot_download + witness_capacity, 8_000_000_000 + witness_capacity
         if openwam:
-            from .openwam_piper_bundle import transfer_byte_budget
-            download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
+            from .team_local_policy import openwam_bundle_for_interface
+            download_bytes, upload_bytes = openwam_bundle_for_interface(prepared_bundle["team_policy_interface_id"]).transfer_byte_budget(prepared_bundle)
         elif molmoact2:
             from .molmoact2_yam_bundle import transfer_byte_budget
             download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)

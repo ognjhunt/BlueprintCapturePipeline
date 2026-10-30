@@ -1,5 +1,9 @@
 # Operator door
 
+The fixed [`install-public-franka-policy` operation](research/openwam-franka-integration-2026-10-30.md)
+installs OpenWAM Alpha on the distinct single-FR3 + nominal Robotiq2F85 simulation
+body from retained imported assets, with pinned public license evidence and no compute.
+
 The fixed [`install-public-yam-policy` operation](research/molmoact2-yam-registration-2026-10-29.md)
 installs the public MolmoAct2 YAM screening registration from retained prepared
 assets and verified official license evidence, without launching compute.

@@ -25,7 +25,17 @@ YAM_CANDIDATE_ID = "molmoact2_bimanual_yam"
 YAM_CHECKPOINT_ID = "molmoact2-bimanual-yam-8dcbed66"
 YAM_PROFILE_ID = "molmoact2_bimanual_yam.v1"
 YAM_EMBODIMENT_ID = "i2rt_yam_bimanual"
+FRANKA_SCHEMA = "openwam_franka_policy_install_request.v1"
+FRANKA_CANDIDATE_ID = "openwam_alpha_franka"
+FRANKA_CHECKPOINT_ID = "openwam-alpha-franka-e75522eb"
+FRANKA_PROFILE_ID = "openwam_alpha_real_franka.v1"
+FRANKA_EMBODIMENT_ID = "franka_research_3_robotiq_2f85_sim"
 IDENTITIES = {
+    FRANKA_SCHEMA: {"candidate_id": FRANKA_CANDIDATE_ID, "team_id": TEAM_ID, "checkpoint_id": FRANKA_CHECKPOINT_ID,
+        "policy_profile": FRANKA_PROFILE_ID, "embodiment_id": FRANKA_EMBODIMENT_ID,
+        "operation": "install-public-franka-policy", "profile_file": "openwam_franka_registration_profile.json",
+        "proposal_schema": "openwam_franka_policy_install_proposal.v1",
+        "receipt_schema": "openwam_franka_policy_install_receipt.v1"},
     SCHEMA: {"candidate_id": CANDIDATE_ID, "team_id": TEAM_ID, "checkpoint_id": CHECKPOINT_ID,
         "policy_profile": PROFILE_ID, "embodiment_id": EMBODIMENT_ID,
         "operation": "install-public-piper-policy", "profile_file": "openwam_piper_registration_profile.json",
@@ -133,8 +143,9 @@ def load_profile(request: dict, profile_root: Path) -> dict:
     profile = read(profile_root / identity["profile_file"])
     require(all(profile[key] == identity[key] for key in ("candidate_id", "team_id", "checkpoint_id", "policy_profile")),
             "fixed_profile_changed")
-    if request["schema_version"] == SCHEMA:
-        require(file_record(profile_root / "openwam_piper_model_card.md")["sha256"] == profile["model_card_sha256"],
+    if request["schema_version"] in {SCHEMA, FRANKA_SCHEMA}:
+        card = "openwam_franka_model_card.md" if request["schema_version"] == FRANKA_SCHEMA else "openwam_piper_model_card.md"
+        require(file_record(profile_root / card)["sha256"] == profile["model_card_sha256"],
                 "model_license_evidence_changed")
     else:
         # These names are fixed installed evidence, not caller or proposal paths.
@@ -152,6 +163,12 @@ def expected_manifest(original: dict, profile: dict | None = None) -> dict:
     require(value.get("embodiment_id") == body, "body_mismatch")
     if body == EMBODIMENT_ID:
         value.update(control_hz=60, action_chunk_rows=1)
+    elif body == FRANKA_EMBODIMENT_ID:
+        value.update(control_hz=60, action_chunk_rows=1)
+        require(isinstance(value.get("cameras"), list)
+                and [row["name"] for row in value["cameras"]] == ["overhead", "arm_wrist"], "source_cameras_changed")
+        for camera in value["cameras"]:
+            camera.update(width=640, height=480)
     else:
         require(body == YAM_EMBODIMENT_ID, "body_mismatch")
         value.update(control_hz=60, action_chunk_rows=30)
@@ -183,7 +200,7 @@ def rights_record(request: dict, profile: dict) -> dict:
         "authorization_basis": "user_instruction_to_run_public_models",
         "authorization_reference": request["authorization_reference"],
         "private_vendor_authorization_claimed": False, "physical_validation_claimed": False}
-    if request["schema_version"] == SCHEMA:
+    if request["schema_version"] in {SCHEMA, FRANKA_SCHEMA}:
         value.update(license_basis="publisher_pinned_public_model_card", model_card_url=profile["model_card_url"],
                      model_card_sha256=profile["model_card_sha256"])
     else:

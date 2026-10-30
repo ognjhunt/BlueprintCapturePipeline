@@ -557,6 +557,8 @@ def _embodiment_preparation_request(path: str, *, public_policy: str | None = No
             schema, id_key = "openwam_piper_policy_install_request.v1", "installation_id"
             if public_policy == "yam":
                 schema = "molmoact2_yam_policy_install_request.v1"
+            elif public_policy == "franka":
+                schema = "openwam_franka_policy_install_request.v1"
         if (len(raw) > 16 * 1024 or not isinstance(request, dict) or set(request) != fields
                 or request["schema_version"] != schema
                 or not isinstance(request[id_key], str)
@@ -706,7 +708,8 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     _add_wait(preparation, 180)
     preparation.description = "Wait observes durable grant enqueue only; inspect retained batch results for simulation preparation outcomes."
     for public_command, public_name in (("install-public-piper-policy", "OpenWAM PiPER"),
-                                       ("install-public-yam-policy", "MolmoAct2 YAM")):
+                                       ("install-public-yam-policy", "MolmoAct2 YAM"),
+                                       ("install-public-franka-policy", "OpenWAM single-FR3")):
         policy_install = commands.add_parser(public_command,
             help=f"install the fixed public {public_name} registration from retained assets; launches no compute")
         policy_install.add_argument("--request-file", required=True,
@@ -805,9 +808,10 @@ def run(args: argparse.Namespace) -> int:
         if not args.operation_key:
             args.operation_key = "public-embodiment-preparation-" + request["authorization_id"]
         return _submit({"kind": command, "request": request}, args)
-    elif command in {"install-public-piper-policy", "install-public-yam-policy"}:
+    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy"}:
         request = _embodiment_preparation_request(args.request_file,
-            public_policy="yam" if command == "install-public-yam-policy" else "piper")
+            public_policy={"install-public-yam-policy": "yam", "install-public-piper-policy": "piper",
+                           "install-public-franka-policy": "franka"}[command])
         if not args.operation_key:
             args.operation_key = command + "-" + request["installation_id"]
         return _submit({"kind": command, "request": request}, args)

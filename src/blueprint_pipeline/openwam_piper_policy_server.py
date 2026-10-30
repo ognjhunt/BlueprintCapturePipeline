@@ -23,24 +23,26 @@ from .openwam_piper_policy import (
 from .policy_request_evidence import decode_scientific_wire
 
 
-def validate_wire_observation(value: dict[str, Any]) -> dict[str, Any]:
+def validate_wire_observation(value: dict[str, Any], *, cameras=WIRE_CAMERAS, state_width=20,
+                              gripper_indices=(9, 19), gripper_bounds=(0, 1), image_size=None) -> dict[str, Any]:
     """Keep the server boundary limited to declared sensor inputs and task text."""
     from PIL import Image
 
     if (set(value) != {"type", "images", "state", "prompt"} or value.get("type") != "obs"
-            or not isinstance(value.get("images"), dict) or set(value["images"]) != set(WIRE_CAMERAS)
+            or not isinstance(value.get("images"), dict) or set(value["images"]) != set(cameras)
             or not isinstance(value.get("prompt"), str) or not value["prompt"].strip()
             or len(value["prompt"]) > 16512):
         raise ValueError("openwam_wire_observation_invalid")
-    state = _vector(value["state"], 20, "openwam_wire_state_invalid")
-    if any(not 0 <= state[index] <= 1 for index in (9, 19)):
+    state = _vector(value["state"], state_width, "openwam_wire_state_invalid")
+    if any(not gripper_bounds[0] <= state[index] <= gripper_bounds[1] for index in gripper_indices):
         raise ValueError("openwam_wire_gripper_invalid")
     for encoded in value["images"].values():
         if not isinstance(encoded, str):
             raise ValueError("openwam_wire_image_invalid")
         raw = base64.b64decode(encoded, validate=True)
         with Image.open(io.BytesIO(raw)) as image:
-            if image.format != "PNG" or image.mode != "RGB" or any(not 1 <= side <= 4096 for side in image.size):
+            if (image.format != "PNG" or image.mode != "RGB" or any(not 1 <= side <= 4096 for side in image.size)
+                    or (image_size is not None and image.size != image_size)):
                 raise ValueError("openwam_wire_image_invalid")
             image.verify()
     return {"images": value["images"], "state": state.tolist(), "prompt": value["prompt"]}
@@ -48,6 +50,8 @@ def validate_wire_observation(value: dict[str, Any]) -> dict[str, Any]:
 
 class OpenWAMPiperServer:
     """Add exact release identity to the publisher's existing predict/reset API."""
+
+    validate_observation = staticmethod(validate_wire_observation)
 
     def __init__(self, *, backend: Any, binding: OpenWAMPiperBinding, checkpoint_receipt: dict[str, Any]):
         binding.validate()
@@ -64,7 +68,7 @@ class OpenWAMPiperServer:
         if message == {"type": "reset"}:
             self.backend.reset()
             return {"type": "reset_ack"}
-        observation = validate_wire_observation(message)
+        observation = self.validate_observation(message)
         # Publisher owns PNG decoding, 384x320 L-shaped view assembly, normalized
         # 80D scatter/gather and its 32-row action buffer. Return physical EEF20.
         response = self.backend.predict(observation)
@@ -98,6 +102,12 @@ class OpenWAMPiperServer:
 
 def build_server(*, checkpoint: str | Path, source_root: str | Path,
                  binding: OpenWAMPiperBinding, source_manifest: str | Path | None = None) -> OpenWAMPiperServer:
+    return _build_server(checkpoint=checkpoint, source_root=source_root, binding=binding, source_manifest=source_manifest,
+        checkpoint_verifier=verify_checkpoint_directory, server_type=OpenWAMPiperServer,
+        checkpoint_name="checkpoint_step_30000.safetensors")
+
+
+def _build_server(*, checkpoint, source_root, binding, source_manifest, checkpoint_verifier, server_type, checkpoint_name):
     """Load exact local bytes through the upstream supported checkpoint builder."""
     binding.validate()
     if source_manifest is None:
@@ -106,7 +116,7 @@ def build_server(*, checkpoint: str | Path, source_root: str | Path,
         from .openwam_piper_source import verify_source_directory
         source = verify_source_directory(source_root, source_manifest)
     deadline = os.environ.get("BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH")
-    receipt = verify_checkpoint_directory(checkpoint, **({"deadline_epoch": float(deadline)} if deadline else {}))
+    receipt = checkpoint_verifier(checkpoint, **({"deadline_epoch": float(deadline)} if deadline else {}))
     # A self-contained checkpoint requires no hub/network/credential discovery.
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -124,24 +134,28 @@ def build_server(*, checkpoint: str | Path, source_root: str | Path,
                          "dit_cache": {"enabled": False}, "prompt_embed_cache": {"enabled": True, "maxsize": 32}},
     })
     backend = upstream.build_server_from_config(settings, str(Path(checkpoint).resolve()), device="cuda",
-                                                ckpt_name="checkpoint_step_30000.safetensors")
-    return OpenWAMPiperServer(backend=backend, binding=binding, checkpoint_receipt=receipt)
+                                                ckpt_name=checkpoint_name)
+    return server_type(backend=backend, binding=binding, checkpoint_receipt=receipt)
 
 
 def main(argv: list[str] | None = None) -> None:
+    _main(argv, binding_type=OpenWAMPiperBinding, builder=build_server, verifier=verify_checkpoint_directory)
+
+
+def _main(argv, *, binding_type, builder, verifier, default_port=8848):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--source-manifest")
     parser.add_argument("--binding", required=True)
-    parser.add_argument("--port", type=int, default=8848)
+    parser.add_argument("--port", type=int, default=default_port)
     parser.add_argument("--verify-only", action="store_true")
     args = parser.parse_args(argv)
     if not 1 <= args.port <= 65535:
         parser.error("port must be between 1 and 65535")
     data = json.loads(Path(args.binding).read_text())
     data["camera_names"] = tuple(data["camera_names"])
-    binding = OpenWAMPiperBinding(**data)
+    binding = binding_type(**data)
     binding.validate()
     if args.verify_only:
         if args.source_manifest:
@@ -149,9 +163,9 @@ def main(argv: list[str] | None = None) -> None:
             verify_source_directory(args.source_root, args.source_manifest)
         else:
             verify_source_checkout(args.source_root)
-        print(_json(verify_checkpoint_directory(args.checkpoint)))
+        print(_json(verifier(args.checkpoint)))
         return
-    runtime = build_server(checkpoint=args.checkpoint, source_root=args.source_root, binding=binding,
+    runtime = builder(checkpoint=args.checkpoint, source_root=args.source_root, binding=binding,
                            source_manifest=args.source_manifest)
     from websockets.sync.server import serve
 

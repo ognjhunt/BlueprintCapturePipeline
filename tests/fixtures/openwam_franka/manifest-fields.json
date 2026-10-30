@@ -1,0 +1,198 @@
+{
+  "claim_ceiling": "development_only_manifest_fixture_not_import_or_execution",
+  "manifest_fields": {
+    "action_chunk_rows": 48,
+    "actuator": {
+      "damping": 20.0,
+      "stiffness": 100.0
+    },
+    "arms": [
+      {
+        "base_link": "fr3_link0",
+        "gripper_name": "arm_gripper",
+        "joint_names": [
+          "fr3_joint1",
+          "fr3_joint2",
+          "fr3_joint3",
+          "fr3_joint4",
+          "fr3_joint5",
+          "fr3_joint6",
+          "fr3_joint7"
+        ],
+        "name": "arm",
+        "tool_from_tcp": {
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            1.0,
+            6.123233995736766e-17
+          ],
+          "position_m": [
+            0.0,
+            0.0,
+            0.134
+          ]
+        },
+        "tool_link": "robotiq_85_base_link"
+      }
+    ],
+    "base": {
+      "mode": "fixed"
+    },
+    "cameras": [
+      {
+        "height": 176,
+        "horizontal_fov_deg": 90.0,
+        "mount_link": null,
+        "name": "overhead",
+        "orientation_xyzw": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "position_m": [
+          0.5,
+          0.0,
+          1.5
+        ],
+        "width": 320
+      },
+      {
+        "height": 176,
+        "horizontal_fov_deg": 90.0,
+        "mount_link": "robotiq_85_base_link",
+        "name": "arm_wrist",
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "width": 320
+      }
+    ],
+    "control_hz": 60,
+    "embodiment_id": "franka_research_3_robotiq_2f85_sim",
+    "form": "fixed_base_arm",
+    "grippers": [
+      {
+        "contact_links": [
+          "robotiq_85_left_finger_tip_link",
+          "robotiq_85_right_finger_tip_link"
+        ],
+        "joints": [
+          {
+            "closed": 0.7929,
+            "name": "robotiq_85_left_knuckle_joint",
+            "open": 0.0
+          },
+          {
+            "closed": -0.7929,
+            "name": "robotiq_85_right_knuckle_joint",
+            "open": 0.0
+          },
+          {
+            "closed": 0.7929,
+            "name": "robotiq_85_left_inner_knuckle_joint",
+            "open": 0.0
+          },
+          {
+            "closed": -0.7929,
+            "name": "robotiq_85_right_inner_knuckle_joint",
+            "open": 0.0
+          },
+          {
+            "closed": -0.7929,
+            "name": "robotiq_85_left_finger_tip_joint",
+            "open": 0.0
+          },
+          {
+            "closed": 0.7929,
+            "name": "robotiq_85_right_finger_tip_joint",
+            "open": 0.0
+          }
+        ],
+        "max_width_m": 0.085,
+        "name": "arm_gripper",
+        "tool_link": "robotiq_85_base_link"
+      }
+    ],
+    "joints": [
+      {
+        "control": "position",
+        "lower": -2.9007,
+        "max_velocity": 1.0,
+        "name": "fr3_joint1",
+        "upper": 2.9007
+      },
+      {
+        "control": "position",
+        "lower": -1.8361,
+        "max_velocity": 1.0,
+        "name": "fr3_joint2",
+        "upper": 1.8361
+      },
+      {
+        "control": "position",
+        "lower": -2.9007,
+        "max_velocity": 1.0,
+        "name": "fr3_joint3",
+        "upper": 2.9007
+      },
+      {
+        "control": "position",
+        "lower": -3.077,
+        "max_velocity": 1.0,
+        "name": "fr3_joint4",
+        "upper": -0.1169
+      },
+      {
+        "control": "position",
+        "lower": -2.8763,
+        "max_velocity": 1.0,
+        "name": "fr3_joint5",
+        "upper": 2.8763
+      },
+      {
+        "control": "position",
+        "lower": 0.4398,
+        "max_velocity": 1.0,
+        "name": "fr3_joint6",
+        "upper": 4.6216
+      },
+      {
+        "control": "position",
+        "lower": -3.0508,
+        "max_velocity": 1.0,
+        "name": "fr3_joint7",
+        "upper": 3.0508
+      }
+    ],
+    "reach_m": 1.4532623327153458,
+    "reset_joint_positions": {
+      "fr3_joint1": 0.0,
+      "fr3_joint2": 0.0,
+      "fr3_joint3": 0.0,
+      "fr3_joint4": -0.41291,
+      "fr3_joint5": 0.0,
+      "fr3_joint6": 0.85798,
+      "fr3_joint7": 0.0,
+      "robotiq_85_left_finger_tip_joint": 0.0,
+      "robotiq_85_left_inner_knuckle_joint": 0.0,
+      "robotiq_85_left_knuckle_joint": 0.0,
+      "robotiq_85_right_finger_tip_joint": 0.0,
+      "robotiq_85_right_inner_knuckle_joint": 0.0,
+      "robotiq_85_right_knuckle_joint": 0.0
+    },
+    "schema_version": "blueprint.robot_embodiment.v2",
+    "tool_link": "robotiq_85_base_link"
+  },
+  "source_bundle_digest": "sha256:5bd69932dc6a9e17d95203efc5840c4bf597e7554258e6bd95189e28c5ae6512",
+  "source_configuration_digest": "sha256:e216644b760980dea5284c98bad1e27c66e0ef8a17f0877882c87ab23cd760bf"
+}

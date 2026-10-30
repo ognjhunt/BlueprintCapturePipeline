@@ -57,6 +57,28 @@ def _transform(value: Any) -> np.ndarray:
                        value["orientation_xyzw"])
 
 
+def _validate_binding(self: Any, *, arms: tuple[str, ...], camera_count: int) -> None:
+    """Shared strict scalar/frame validation for fixed model-specific contracts."""
+    if (len(self.camera_names) != camera_count or len(set(self.camera_names)) != camera_count
+            or any(not isinstance(x, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", x)
+                   for x in self.camera_names)
+            or isinstance(self.control_hz, bool) or not isinstance(self.control_hz, numbers.Real)
+            or not math.isfinite(self.control_hz) or not 0 < self.control_hz <= 120
+            or not isinstance(self.configuration_digest, str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.configuration_digest)
+            or not isinstance(self.frame_binding_reference, str)
+            or not 1 <= len(self.frame_binding_reference) <= 512
+            or not self.frame_binding_reference.isprintable()
+            or type(self.execution_horizon) is not int or not 1 <= self.execution_horizon <= 32):
+        raise ValueError("openwam_piper_binding_invalid")
+    for group in (self.policy_base_from_native_base, self.native_tcp_from_policy_tcp):
+        if not isinstance(group, Mapping) or set(group) != set(arms):
+            raise ValueError("openwam_frame_binding_invalid")
+        for value in group.values():
+            _transform(value)
+
+
+
 @dataclass(frozen=True)
 class OpenWAMPiperBinding:
     """T_A_B maps coordinates in B into A; no implicit calibration defaults.
@@ -76,23 +98,7 @@ class OpenWAMPiperBinding:
     execution_horizon: int = 8
 
     def validate(self) -> None:
-        if (len(self.camera_names) != 3 or len(set(self.camera_names)) != 3
-                or any(not isinstance(x, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", x)
-                       for x in self.camera_names)
-                or isinstance(self.control_hz, bool) or not isinstance(self.control_hz, numbers.Real)
-                or not math.isfinite(self.control_hz) or not 0 < self.control_hz <= 120
-                or not isinstance(self.configuration_digest, str)
-                or not re.fullmatch(r"sha256:[0-9a-f]{64}", self.configuration_digest)
-                or not isinstance(self.frame_binding_reference, str)
-                or not 1 <= len(self.frame_binding_reference) <= 512
-                or not self.frame_binding_reference.isprintable()
-                or type(self.execution_horizon) is not int or not 1 <= self.execution_horizon <= 32):
-            raise ValueError("openwam_piper_binding_invalid")
-        for group in (self.policy_base_from_native_base, self.native_tcp_from_policy_tcp):
-            if not isinstance(group, Mapping) or set(group) != set(ARMS):
-                raise ValueError("openwam_frame_binding_invalid")
-            for value in group.values():
-                _transform(value)
+        _validate_binding(self, arms=ARMS, camera_count=3)
 
     def identity(self) -> dict[str, Any]:
         self.validate()
@@ -209,6 +215,10 @@ class OpenWAMPiperPolicyClient:
 
     learned_policy = True
     policy_id = MODEL_ID
+    interface_id = INTERFACE_ID
+    binding_type = OpenWAMPiperBinding
+    encode_observation = staticmethod(encode_observation)
+    decode_action = staticmethod(decode_action)
     action_space = "named_arm_pose"
     action_chunk_rows = 1
     open_loop_horizon = 1
@@ -225,7 +235,7 @@ class OpenWAMPiperPolicyClient:
         # Copy caller-owned mappings so a later mutation cannot change frame identity.
         data = json.loads(_json(binding.__dict__))
         data["camera_names"] = tuple(data["camera_names"])
-        self.binding = OpenWAMPiperBinding(**data)
+        self.binding = self.binding_type(**data)
         self._url = f"ws://{'[' + host + ']' if ':' in host else host}:{port}"
         self._factory, self._timeout = socket_factory, float(timeout_seconds)
         self._socket = None
@@ -302,7 +312,7 @@ class OpenWAMPiperPolicyClient:
     def infer(self, observation: Mapping[str, Any]) -> dict[str, Any]:
         if self._poisoned:
             raise ValueError("openwam_episode_reset_required")
-        wire = encode_observation(observation, self.binding)
+        wire = self.encode_observation(observation, self.binding)
         if not self._ready:
             self.reset()
         self._request_evidence = capture_request(wire, transport="openwam_local_websocket_json",
@@ -322,15 +332,8 @@ class OpenWAMPiperPolicyClient:
             if (response.get("type") != "action" or type(response.get("step")) is not int
                     or response["step"] != self._sequence + 1):
                 raise ValueError("openwam_response_sequence_invalid")
-            result = decode_action(response.get("action"), self.binding)
-            raw_openings = [float(response["action"][index]) for index in (9, 19)]
-            applied_openings = np.clip(raw_openings, 0.0, 1.0).tolist()
-            self._inference_evidence["gripper_projection"] = {
-                "rule": "saturate_finite_opening_to_[0,1]_at_native_interface",
-                "arm_names": list(ARMS), "raw_openings": raw_openings,
-                "applied_openings": applied_openings,
-                "clipped": [raw != applied for raw, applied in zip(raw_openings, applied_openings, strict=True)],
-            }
+            result = self.decode_action(response.get("action"), self.binding)
+            self._inference_evidence["gripper_projection"] = self.gripper_projection(response["action"])
             self._sequence += 1
             self._inference_evidence["actions_extracted"] = True
             return result
@@ -339,6 +342,13 @@ class OpenWAMPiperPolicyClient:
             self._poisoned = True
             self.close()
             raise
+
+    def gripper_projection(self, action: Any) -> dict[str, Any]:
+        raw = [float(action[index]) for index in (9, 19)]
+        applied = np.clip(raw, 0.0, 1.0).tolist()
+        return {"rule": "saturate_finite_opening_to_[0,1]_at_native_interface",
+                "arm_names": list(ARMS), "raw_openings": raw, "applied_openings": applied,
+                "clipped": [before != after for before, after in zip(raw, applied, strict=True)]}
 
     def last_request_evidence(self) -> dict[str, Any]:
         if self._request_evidence is None:
@@ -351,7 +361,7 @@ class OpenWAMPiperPolicyClient:
         return json.loads(_json(self._inference_evidence))
 
     def evidence_summary(self) -> dict[str, Any]:
-        return {"policy_id": MODEL_ID, "policy_interface_id": INTERFACE_ID,
+        return {"policy_id": self.policy_id, "policy_interface_id": self.interface_id,
                 "candidate_policy_queried": self.candidate_policy_queried,
                 "last_inference_evidence": self.last_inference_evidence() if self._inference_evidence else None,
                 "native_execution_validated": False, "catalog_registered": None,

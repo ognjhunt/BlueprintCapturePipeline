@@ -291,6 +291,10 @@ class _LaunchSpec:
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
+    "install-public-franka-policy": _LaunchSpec(
+        "blueprint-operator-door-public-franka-policy", "door-install-public-piper-policy.sh", "5min",
+        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
+        _public_policy_environment, _public_policy_properties),
     "install-public-yam-policy": _LaunchSpec(
         "blueprint-operator-door-public-yam-policy", "door-install-public-piper-policy.sh", "5min",
         lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
