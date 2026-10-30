@@ -111,7 +111,11 @@ def test_real_shell_child_is_terminated_by_the_bound(tmp_path):
         run_component_process(["bash", "-c", '"$1" -c "$2" & wait', "development-only", sys.executable, child], timeout=1.)
     pid = int(marker.read_text())
     stat = Path(f"/proc/{pid}/stat")
-    assert not stat.exists() or stat.read_text().split()[2] == "Z"
+    try:
+        state = stat.read_text().split()[2]
+    except FileNotFoundError:
+        state = None  # Reaped between parent exit and this read.
+    assert state in (None, "Z")
     assert pid != os.getpid()
 
 

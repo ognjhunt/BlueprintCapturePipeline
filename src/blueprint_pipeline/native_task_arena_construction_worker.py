@@ -240,7 +240,7 @@ def preflight_native_dependency_matrix(*, robot_id: str, controller_backend: str
             "traceback": traceback.format_exc(),
         }
         blockers.append(f"native_task_arena_embodiment_scope_failed:{robot_id}")
-    from .native_task_runtime_capabilities import controller_imports
+    from blueprint_pipeline.native_task_runtime_capabilities import controller_imports
     for name in controller_imports(DEPENDENCY_IMPORTS, G1_ONLY_DEPENDENCY_IMPORTS, robot_id=robot_id, controller_backend=controller_backend):
         try:
             module = importlib.import_module(name)

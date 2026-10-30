@@ -86,9 +86,18 @@ def test_every_native_launch_names_its_controller_and_franka_consumers_require_p
     assert seen == required
 
 
-def test_selected_dependency_matrix_keeps_g1_pure_pink_but_skips_unused_sdk_pink(monkeypatch):
+@pytest.mark.parametrize("standalone", [False, True])
+def test_selected_dependency_matrix_keeps_g1_pure_pink_but_skips_unused_sdk_pink(monkeypatch, standalone):
     from blueprint_pipeline import native_task_arena_construction_worker as worker
     from blueprint_pipeline import native_task_arena_import_scope as scope
+    if standalone:
+        import importlib.util
+        import sys
+        spec = importlib.util.spec_from_file_location("development_standalone_construction", worker.__file__)
+        worker = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, spec.name, worker)
+        spec.loader.exec_module(worker)
+        assert not worker.__package__
     monkeypatch.setattr(scope, "install_scoped_arena_embodiment", lambda _id: {})
     monkeypatch.setattr(worker, "DEPENDENCY_IMPORTS", tuple(sorted(caps.PINK_IMPORTS)))
     requested = []

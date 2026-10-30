@@ -1536,8 +1536,10 @@ def _run_selected_cell(
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
     team_binding = _team_embodiment_binding(specs)
-    from .native_task_runtime_capabilities import policy_controller
-    controller_backend = policy_controller(team_binding=team_binding, robot_id=str(base_scene_plan["robot"]["robot_id"]))
+    from blueprint_pipeline.native_task_runtime_capabilities import policy_controller
+    # Task-family execution bypasses this Isaac arm/controller path entirely.
+    controller_backend = None if family_scene else policy_controller(
+        team_binding=team_binding, robot_id=str(base_scene_plan["robot"]["robot_id"]))
     probe_request = next((spec["robot_free_probe"] for spec in specs.values()
                           if spec.get("robot_free_probe") is not None), None)
 
