@@ -82,6 +82,7 @@ Replay a failed production stage locally before redeploying:
 
 ```bash
 python -m blueprint_pipeline.task_evaluation_stage_replay --child <id> --isolate
+python -m blueprint_pipeline.atlas_preview_replay --job <pulled preview_job.json>
 ```
 
 Entrypoints:

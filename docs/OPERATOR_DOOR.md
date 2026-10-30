@@ -479,6 +479,16 @@ cloud session with `--queue-root`, `--input-root`, `--replay-root` and
 `--approved-root` pointing at the pulled copy. It runs your branch's code with
 no host secrets and no paid calls, and nothing unreviewed runs on the host.
 
+An Atlas preview job replays the same way before a fix is deployed: `pull` its
+capture root's `pipeline/atlas/preview_job.json`, `configuration.json`,
+`pipeline/website_task_context.json` and `raw/` video to the same absolute paths,
+then run `python -m blueprint_pipeline.atlas_preview_replay --job <that job>`
+(add `--configuration <snapshot>` for the current allowance). It advances the job
+on a scratch copy until its first stop and reports what it would buy there; a
+`missing_input` names the next file to pull, and `unpulled_before` lists records
+the code looked for just before stopping, which a partial pull can turn into a
+false purchase or refusal. The pulled files are never written.
+
 `usage` answers "what uses the disk?" in one call. It prints `capacity.usage` from
 `status` as tables: each surveyed filesystem's used, surveyed and classified bytes
 and the attributed fraction, then bytes by storage class, the top roots, the top
