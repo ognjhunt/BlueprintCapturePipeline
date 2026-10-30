@@ -1,9 +1,9 @@
-"""Read unchanged configurations from one exact corrected predecessor release.
+"""Read unchanged configurations from two exact corrected predecessor releases.
 
-This is not a historical-hash allowlist. The only accepted predecessor is
-9bd34559c, after the TRLC/Axol closure correction, and only its original 18
-profiles. Its entire derived contract is reconstructed from the retained,
-verified model/source and current matching profile before reuse. All source,
+Only 9bd34559c (18 profiles) and b0ccd89e0 (those 18 plus the single FR3)
+are accepted. Both follow the TRLC/Axol closure correction. Each complete derived
+contract is reconstructed from the retained, verified model/source and current
+matching profile before reuse. All source,
 model, generated-file inventory and receipt digests remain checked by caller.
 """
 from __future__ import annotations
@@ -18,10 +18,13 @@ PREDECESSOR_PROFILES = frozenset({
     "universal_robots_ur5e", "universal_robots_ur5e_bimanual", "yaskawa_gp12", "yaskawa_gp20",
 })
 
+B0_GENERATOR = "sha256:38bc862ed4178d8a0d35be10b15451e8122cf5af4ff3b7acb1b74fece7c45d69"
+B0_PROFILES = PREDECESSOR_PROFILES | {"franka_research_3_robotiq_2f85_sim"}
+
 
 def is_exact_predecessor(record: dict) -> bool:
-    return (record.get("generator_module_sha256") == PREDECESSOR_GENERATOR
-            and record.get("embodiment_id") in PREDECESSOR_PROFILES)
+    profiles = {PREDECESSOR_GENERATOR: PREDECESSOR_PROFILES, B0_GENERATOR: B0_PROFILES}
+    return record.get("embodiment_id") in profiles.get(record.get("generator_module_sha256"), ())
 
 
 def verify_predecessor_metadata(root: Path, source: dict, record: dict) -> None:

@@ -307,3 +307,66 @@ isolation moved the arm and all six tool joints and repeated reset, with
 contacts/gravity disabled. This establishes neither Isaac import, task contact,
 GPU policy inference nor task success. The new 19th preparation option does not
 alter any previously sealed 18-body grant.
+
+
+## Exact GoFa variants and explicit simulation dynamics
+
+The ambiguous legacy `abb_gofa_crb15000` ID remains unavailable. Two separate
+recipes/configurations select public, exact six-axis bare arms:
+`abb_gofa_crb15000_5_95` and `abb_gofa_crb15000_12_127`. Both retain
+[ROS-Industrial ABB commit 45f4769d826cf3ac62a65495f2db67b78b0c81df](https://github.com/ros-industrial/abb/tree/45f4769d826cf3ac62a65495f2db67b78b0c81df/abb_crb15000_support),
+the `abb_crb15000_support` and `abb_resources` Apache-2.0 licenses, package
+metadata, common materials/colours, and every referenced STL. The 12/1.27
+macro deliberately references 5/0.95 meshes for links 3, 5, 6; those six shared
+visual/collision files are retained without substitution. The exact closures
+contain 22 files each: 2,972,924 and 3,875,348 bytes respectively.
+
+Both source macros omit inertias and set all six effort limits to zero. The
+package warns that the 5/0.95 CAD conversion can differ from hardware and does
+not provide a tested OmniCore driver. Original URDF/Xacro/STL bytes remain
+unchanged. The generated `simulation-source.urdf` retains the expanded source
+semantics; only generated simulation XML/USD receives modeled values:
+
+- Transform actual collision-STL vertices by the authored mesh scale and
+  collision pose into each link frame, then compute an axis-aligned box.
+- Allocate the documented whole-robot mass proportionally to those seven box
+  volumes (fixed base plus six moving links). Use each box center and the
+  standard uniform-box diagonal inertia in the link frame. The uniform-density
+  mass distribution, COMs and inertias are estimates; hollow structures and
+  actuator concentrations are unknown.
+- The mass anchor is ABB product manual 3HAC077389-001 Revision Y, section 2.2,
+  page 42: 28 kg for 5/0.95 and 48 kg for 12/1.27, excluding additional tools/options.
+  [Official public download](https://search.abb.com/library/Download.aspx?DocumentID=3HAC077389-001&LanguageCode=en&DocumentPartId=&Action=Launch),
+  observed 2026-10-30, SHA256
+  `b502ddd2e7cdf12066c708f5e590b6768651771cbb738fe35f27f1561e407fa5`.
+  The manual is cited for these facts; it is not redistributed in source bundles.
+- Estimate each joint's positive torque cap as twice a conservative gravity
+  moment, using modeled downstream masses, source link translations and nominal
+  5/12kg payload with an explicitly hypothetical 0.15 m lever. No tool is added.
+  These caps are **not ABB motor ratings**. Set simulation stiffness to cap/0.1rad
+  and critical-damping estimate from modeled downstream inertia. Source joint
+  position/speed limits remain, and the generic command path caps arm velocity
+  at 1 rad/s. Saved USD uses force drives and records the applied cap; the generic
+  implicit actuator inherits it and receives the explicit per-joint PD gains.
+
+The retained numeric review gives effective densities 737.36/847.15 kg/m³,
+moving-link mass totals 23.144/39.233 kg, and exact whole-body totals 28/48 kg.
+Estimated joint torque caps range 15.20–495.15 Nm and 35.87–1133.94 Nm respectively.
+These deliberately conservative simulation envelopes are not physical feasibility
+or policy-ranking evidence. Every model report binds source mesh hashes, method,
+assumptions and generator digest; import writes and reads back mass, COM,
+principal axes, diagonal inertia and effort on the saved USD before publication.
+Existing corrected 18-body receipts and subsequent 19-body receipts remain
+verifiable only against their exact predecessor generator and complete
+reconstructed metadata; the new GoFa IDs cannot claim those old generators.
+
+Local MuJoCo 3.11 diagnostics used the actual expanded source/model, contact-free
+controller isolation with gravity, capped implicit PD actuators, 960 ticks at
+240 Hz and six 0.05 rad targets. Both remained finite, stayed within the modeled
+force caps and restored reset; maximum final position errors were 0.0160 rad and
+0.0128 rad, peak speeds 0.890/0.898 rad/s. This is CPU controller evidence, not
+native Isaac execution, collision/contact performance, a policy run or physical
+validation. USD application/readback tests use a clearly marked fake importer.
+The later bounded native preparation lane must still produce its own per-body
+import/controller outcomes. No gripper, camera calibration, trained policy or
+vendor hardware equivalence is inferred from these bare-arm models.
