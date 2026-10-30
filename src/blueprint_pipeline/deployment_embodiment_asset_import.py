@@ -504,6 +504,12 @@ def verify_prepared_asset_directory(directory: str | Path) -> dict[str, Any]:
             or receipt.get("single_file_self_contained") is not (len(dependencies) == 1)
             or receipt.get("source_bundle_required_for_dependency_resolution") is not False):
         raise AssetPreparationError("asset_import_dependency_changed")
+    from . import deployment_embodiment_gofa_model as gofa
+    if receipt["embodiment_id"] in gofa.PAYLOAD_KG:
+        report = receipt.get("simulation_model", {})
+        gofa.verify_report(destination, report, identity=receipt["embodiment_id"])
+        if gofa.usd_values(destination / model["path"], report) != receipt.get("simulation_model_readback"):
+            raise AssetPreparationError("asset_import_simulation_model_readback_changed")
     return receipt
 
 
@@ -566,6 +572,12 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
             format_name = "urdf"
             source_files = {(work / path.relative_to(source.resolve())).resolve() for path in source_files} | {entry.resolve()}
         _precheck_input_closure(entry, allowed=source_files, packages=packages)
+        from . import deployment_embodiment_gofa_model as gofa
+        simulation_model = None
+        if source_receipt["embodiment_id"] in gofa.PAYLOAD_KG:
+            entry, simulation_model = gofa.prepare_model(entry, identity=source_receipt["embodiment_id"],
+                                                        staged=staged, packages=packages, allowed=source_files)
+            _precheck_input_closure(entry, allowed={p.resolve() for p in staged.rglob("*") if p.is_file()}, packages={})
         imported, options, runtime = _converter(format_name, entry, staged / "converted",
                                                  fix_base=fix_base, packages=packages)
         if not imported.resolve().is_relative_to(staged.resolve()) or not imported.is_file():
@@ -581,6 +593,7 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
                                   source=source, source_receipt=source_receipt)
         output = staged / "robot.usda"
         layer.Export(str(output))
+        simulation_readback = gofa.usd_values(output, simulation_model, apply=True) if simulation_model is not None else None
         dependencies = _dependencies(output, staged=staged, relative_references=True)
         structure = read_model_structure(output)
         if not structure["joint_names"] or not structure["body_paths"]:
@@ -608,6 +621,9 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
                    "limitations": ["source_only_not_complete_mounted_robot", "collision_meshes_use_recorded_importer_approximation",
                                    "missing_source_inertia_is_not_measured_physics", "no_native_episode_or_method_qualification"],
                    "execution_authorized": False}
+        if simulation_model is not None:
+            receipt["simulation_model"] = simulation_model
+            receipt["simulation_model_readback"] = simulation_readback
         receipt["import_digest"] = cross_runtime_canonical_digest(receipt, digest_field="import_digest")
         (staged / RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
         # Recheck retained source after the importer read it and publish under

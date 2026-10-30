@@ -44,11 +44,12 @@ mock transport tests and a CPU controller smoke are separate evidence.
 
 ## Public-source runtime configurations
 
-`deployment_embodiment_runtime_configuration` registers 19 exact source profiles:
+`deployment_embodiment_runtime_configuration` registers 21 exact source profiles:
 eleven include public source grippers (YAM, PiPER, dual FR3 plus Franka Hand,
 single FR3 plus Robotiq2F85 simulation assembly, Kinova single/dual,
-xArm7 single/dual, Axol, TRLC-DK1 and dual UR5e with Robotiq2F85); eight are bare arms
-(UR5e, UR10e, KUKA iiwa14, three FANUC variants and Yaskawa GP12/GP20). Bare arms do not acquire grasping
+xArm7 single/dual, Axol, TRLC-DK1 and dual UR5e with Robotiq2F85); ten are bare arms
+(UR5e, UR10e, KUKA iiwa14, three FANUC variants, Yaskawa GP12/GP20 and exact
+ABB GoFa CRB15000-5/0.95 and CRB15000-12/1.27 variants). Bare arms do not acquire grasping
 capability from their registration. The remaining catalog rows retain an
 individual unavailable reason or the existing DROID runtime.
 
@@ -68,7 +69,13 @@ simulation assumptions. `source_dynamics` reports moving links without positive
 authored mass/inertia; no estimates are silently added. GP12/GP20 currently lack
 those dynamics and must retain that reason until a usable explicit estimate or
 vendor model is integrated. Other source-authored inertias are not physical
-validation. Source configurations contain no invented USD hash or execution result.
+validation. The two GoFa variants retain their original missing inertias and zero
+effort placeholders as source evidence. Their generated simulation models add
+explicit geometry-based inertias normalized to ABB's documented total robot mass,
+and positive estimated effort limits/PD gains. Saved USD mass/inertia/effort
+readback is required and retained; these estimates establish no physical dynamics
+or policy equivalence. See the [GoFa source/modeling notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md#exact-gofa-variants-and-explicit-simulation-dynamics).
+Source configurations contain no invented USD hash or execution result.
 
 The second phase runs on an installed Isaac worker obtained through the existing
 paid allocator (or already authorized local Isaac runtime), before dispatching a
@@ -151,7 +158,7 @@ The public single-file model preflight still rejects external dependencies.
 ## Availability and acceptance
 
 The exact source catalog remains enumerated in
-[source notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md), with 19 source-to-runtime
+[source notes](EMBODIMENT_ASSET_RECIPE_SOURCES.md), with 21 source-to-runtime
 configuration profiles described above. The same native manifest
 runtime executes configured OEM USDs; a separate hardcoded adapter per vendor
 is unnecessary. Exact tools, mounts, resets, cameras and licenses are execution

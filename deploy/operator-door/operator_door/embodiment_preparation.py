@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 PUBLIC_EMBODIMENT_IDS = frozenset({
+    "abb_gofa_crb15000_5_95", "abb_gofa_crb15000_12_127",
     "franka_research_3_robotiq_2f85_sim", "agilex_piper_bimanual", "almond_axol", "fanuc_crx_10ia", "fanuc_crx_10ia_l",
     "fanuc_m710ic_45m", "franka_research_3_bimanual", "i2rt_yam_bimanual", "kinova_gen3",
     "kinova_gen3_bimanual", "kuka_lbr_iiwa_14", "trlc_dk1_bimanual", "ufactory_xarm7", "ufactory_xarm7_bimanual",

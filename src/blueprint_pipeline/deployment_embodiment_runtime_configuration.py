@@ -77,6 +77,8 @@ for _identity in ("fanuc_crx_10ia", "fanuc_crx_10ia_l", "fanuc_m710ic_45m"):
 for _identity in ("yaskawa_gp12", "yaskawa_gp20"):
     _PROFILES[_identity] = [_arm("base_link", "link_6_t", 6)]
 _PROFILES["kuka_lbr_iiwa_14"] = [_arm("base", "link7", 7)]
+for _identity in ("abb_gofa_crb15000_5_95", "abb_gofa_crb15000_12_127"):
+    _PROFILES[_identity] = [_arm("base_link", "link_6", 6, tcp="tool0")]
 
 
 def runtime_profiles() -> dict[str, Any]:
@@ -319,11 +321,19 @@ def prepare_runtime_configuration(source_bundle: str | Path, output_dir: str | P
                 arms = [_prefix_arm(arms[0], side + "_") for side in ("left", "right")]
             else:
                 _mesh_paths(root, entry=entry, output_anchor=staged, packages=packages, allowed=files)
+            from . import deployment_embodiment_gofa_model as gofa
+            simulation_model = None
+            original_dynamics = _configuration(root, identity, arms, source_receipt, parameters) if identity in gofa.PAYLOAD_KG else None
+            if original_dynamics is not None:
+                (staged / gofa.SOURCE_MODEL).write_text(XML.tostring(root, encoding="unicode"))
+                simulation_model = gofa.model_urdf(root, identity=identity, anchor=staged)
             model = staged / "robot.urdf"
             model.write_text(XML.tostring(root, encoding="unicode"), encoding="utf-8")
             _precheck_input_closure(model, allowed={p.resolve() for p in staged.rglob("*") if p.is_file()}, packages={})
             result = _configuration(root, identity, arms, source_receipt, parameters)
             result["source_urdf_sha256"] = _sha(model)
+            if simulation_model is not None:
+                gofa.annotate_configuration(result, original_dynamics, simulation_model)
         result["generator_module_sha256"] = _sha(Path(__file__))
         result["generated_files"] = [{"path": path.relative_to(staged).as_posix(), "sha256": _sha(path),
                                       "size_bytes": path.stat().st_size}
@@ -374,6 +384,9 @@ def verify_runtime_configuration(directory: str | Path) -> dict[str, Any]:
     _require(seen == actual, "generated_inventory_changed")
     if is_exact_predecessor(record):
         verify_predecessor_metadata(root, source, record)
+    from . import deployment_embodiment_gofa_model as gofa
+    if source["embodiment_id"] in gofa.PAYLOAD_KG:
+        gofa.verify_configuration(root, source, record)
     return record
 
 
