@@ -219,3 +219,20 @@ def test_measured_placement_residual_widens_the_fitted_window_and_y_down_frames(
     assert down is not None and down["top_runtime_units"] == pytest.approx(-.7)
     assert support_under(flipped, [-.03, -.03, -.74], [.03, .03, -.66], up=2, meters_per_unit=1,
                          up_sign=-1) is None
+
+
+def test_a_wider_window_seeds_on_the_highest_surface_it_reaches():
+    # capture-447ae4f4: the 7 cm window around the tray's estimated bottom also reached the
+    # counter's edge 3-10 cm below its bumpy top, and the mixed seed failed the level fit.
+    top = plate(height=.7).subdivide().subdivide().subdivide().subdivide().subdivide()
+    vertices = top.vertices.copy()
+    vertices[:, 2] += np.random.default_rng(7).uniform(-.006, .006, len(vertices))
+    top = trimesh.Trimesh(vertices=vertices, faces=top.faces, process=False)
+    lip = plate(-.2, -.15, -.2, .2, height=.64).subdivide().subdivide().subdivide()
+    mesh = trimesh.util.concatenate([top, lip])
+    lower, upper = [-.2, -.2, .66], [.2, .2, .74]
+    found = support_under(mesh, lower, upper, up=2, meters_per_unit=1, placement_residual_m=.07)
+    assert found is not None and found["top_runtime_units"] == pytest.approx(.7, abs=.01)
+    assert found["search_window_m"] == .07
+    # The default window does not reach the top from this estimate, as before.
+    assert support_under(mesh, lower, upper, up=2, meters_per_unit=1) is None

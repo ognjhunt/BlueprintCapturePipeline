@@ -163,6 +163,13 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
         within &= (centres[:, axis] >= lower[axis]) & (centres[:, axis] <= upper[axis])
     tolerance = window_m / meters_per_unit
     seed = np.flatnonzero(gentle & within & (np.abs(centres[:, up] - lower[up]) <= tolerance))
+    if window_m > 0.03 and len(seed):
+        # A window wider than 3 cm can also reach a second surface under the
+        # footprint, such as a counter's edge below its top (capture-447ae4f4:
+        # 0.62-0.69 under a 0.72 top). Seed on the 3 cm band of the highest
+        # surface it reached: the object rests on the highest of them.
+        top = np.percentile(centres[seed, up], 90)
+        seed = seed[np.abs(centres[seed, up] - top) <= 0.03 / meters_per_unit]
     if len(seed) < 3:
         return None
     adjacency = np.asarray(mesh.face_adjacency, dtype=np.int64).reshape(-1, 2)
