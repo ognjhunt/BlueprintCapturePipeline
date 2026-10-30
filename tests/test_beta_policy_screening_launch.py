@@ -66,6 +66,49 @@ def test_real_single_candidate_robolab_bundle_passes_both_pre_create_gates(tmp_p
     assert not (tmp_path / "attempt" / "allocator_launch_intent.json").exists()
 
 
+def test_openpi_polaris_variant_is_selected_and_bundled_like_pi05(tmp_path, monkeypatch):
+    from blueprint_pipeline.adp009d_policy_provisioning import CHECKPOINT_INVENTORY_STAGED_NAME
+    from blueprint_pipeline.native_task_arena_policy_bundle import OPENPI_CHECKPOINT_INVENTORY_PATH
+    from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
+
+    variant = "pi0_fast_droid_jointpos_polaris"
+    world = _world(tmp_path, monkeypatch, derived=False, scene_half="frozen_pair")
+    profile = profile_for_capture(str(world["capture"]))
+    source = {"capture_id": "capture1", "task_id": profile["task_id"], "scene_intent_id": "intent1",
+              "scene_intent_digest": "sha256:" + "a" * 64, "task_context_digest": "sha256:" + "b" * 64,
+              "scene_revision_digest": world["probe_receipt"]["configured_scene_revision_digest"]}
+    catalog = load_default_catalog()
+    facts = build_planning_inputs(catalog=catalog, profile=profile, capture_root=world["capture"],
+                                 source=source, inputs_dir=tmp_path / "screening-inputs")
+    plan = build_screening_plan(catalog, facts["scene"], capabilities=facts["capabilities"],
+                                cost_quotes=facts["cost_quotes"], campaign_id="campaign1", candidate_ids=[variant])
+    [candidate] = plan["candidates"]
+    assert candidate["status"] == "selected" and candidate["blockers"] == []
+    spec = launch._read(Path(candidate["execution_spec"]["policy_execution_spec"]["path"]))
+    assert spec["policy_interface_id"] == "openpi_droid.v1" and spec["policy_spec"]["policy_id"] == variant
+    assert spec["policy_spec"]["action_chunk_rows"] == 10 and spec["open_loop_horizon"] == 8
+    prepared = launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=tmp_path / "attempt")
+    authority = validate_session_authority(launch._read(Path(prepared["authority"]["path"])))
+    assert authority["run_kind"] == BETA_RUN_KIND and authority["candidate_ids"] == [variant]
+    receipt = launch._read(Path(prepared["bundle_receipt"]["path"]))
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        manifest = validate_policy_canary_provider_manifest(json.loads(archive.read(
+            "provider_runtime/adp_arena_provider_manifest.json")))
+        assert manifest["candidate_ids"] == [variant] and manifest["evaluation_backend"] == "robolab.v1"
+        provisioning = archive.read(f"provider_runtime/adp009d_policy_provisioning.{variant}.sh").decode()
+        assert f'"gs://openpi-assets/checkpoints/polaris/{variant}"' in provisioning
+        assert "pi05_droid" not in provisioning
+        assert (archive.read("provider_runtime/" + CHECKPOINT_INVENTORY_STAGED_NAME)
+                == OPENPI_CHECKPOINT_INVENTORY_PATH.read_bytes())
+    preflight = _blueprint_bundle_preflight(job_dir=tmp_path / "transport-preflight", generated_at="fixed",
+        enable_blueprint_bundle=True, enable_isaac_smoke=True,
+        provider_bundle_kind="native_task_arena_policy_canary_session", bundle_path=Path(receipt["bundle_path"]),
+        provider_bundle_url="https://storage.example.com/bundle.zip",
+        provider_output_put_url="https://storage.example.com/output.zip")
+    assert preflight["status"] == "passed", preflight.get("blockers")
+    assert not (tmp_path / "attempt" / "allocator_launch_intent.json").exists()
+
+
 def test_launch_intent_crash_is_not_retried_or_released(tmp_path, monkeypatch):
     from blueprint_pipeline import team_candidate_quick10_launch as native
     from blueprint_pipeline import beta_policy_screening_worker as service

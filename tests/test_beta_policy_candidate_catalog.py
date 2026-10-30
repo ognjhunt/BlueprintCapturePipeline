@@ -17,10 +17,12 @@ from blueprint_pipeline.task_evaluation_policy_candidate_registry import validat
 
 def test_default_catalog_records_all_named_candidates_and_only_existing_initial_interfaces():
     value = load_default_catalog()
-    assert len(value["candidates"]) == 112
+    assert len(value["candidates"]) == 128
     enabled = {row["candidate_id"] for row in value["candidates"] if row["eligibility"]["enabled"]}
     from blueprint_pipeline.beta_policy_screening_g1 import CANDIDATES
-    assert enabled == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "molmoact2_droid", "cosmos3_nano_policy_droid", *CANDIDATES}
+    from blueprint_pipeline.openpi_droid_policy_runtime import BETA_POLARIS_VARIANT_CANDIDATE_IDS
+    assert enabled == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "molmoact2_droid", "cosmos3_nano_policy_droid",
+                       *BETA_POLARIS_VARIANT_CANDIDATE_IDS, *CANDIDATES}
     company_rows = [row for row in value["candidates"] if row.get("deployment") and row["candidate_id"] not in CANDIDATES
                     and not (row["deployment"]["relationship"] == "public_controller_integration"
                              and not row["deployment"]["companies"])]

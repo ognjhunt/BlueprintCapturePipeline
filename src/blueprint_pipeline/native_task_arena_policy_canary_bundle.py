@@ -45,6 +45,7 @@ from .native_task_arena_policy_canary_session import (
     validate_session_authority,
 )
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .openpi_droid_policy_runtime import ARENA_CANDIDATE_POLICY_IDS, BETA_POLARIS_VARIANT_CANDIDATE_IDS
 from .openwam_franka_bundle import RUNTIME_MODULES as OPENWAM_RUNTIME_MODULES
 from .molmoact2_yam_bundle import RUNTIME_MODULES as MOLMOACT2_RUNTIME_MODULES
 from .trlc_pi05_bundle import RUNTIME_MODULES as TRLC_RUNTIME_MODULES
@@ -500,6 +501,11 @@ def build_policy_canary_session_bundle(
                 validate_molmo_droid_spec(spec)
                 if inputs.get("run_kind") != "blueprint_beta_screening":
                     raise ValueError("molmoact2_droid_native_execution_requires_beta_run")
+            elif candidate in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
+                from .openpi_droid_policy_runtime import validate_beta_polaris_variant_execution_spec
+                validate_beta_polaris_variant_execution_spec(spec)
+                if inputs.get("run_kind") != "blueprint_beta_screening":
+                    raise ValueError("openpi_beta_polaris_variant_requires_beta_run")
             elif candidate not in ("pi05_droid", "groot_n17_droid", *COSMOS_CANDIDATES):
                 raise ValueError("policy_canary_local_provisioning_identity_not_admitted")
             if candidate in COSMOS_CANDIDATES:
@@ -525,8 +531,12 @@ def build_policy_canary_session_bundle(
     inventory_paths = dict(checkpoint_inventory_paths or {})
     if pi05_checkpoint_inventory_path is not None:
         inventory_paths.setdefault("pi05_droid", pi05_checkpoint_inventory_path)
-    if "pi05_droid" in local_candidates and "pi05_droid" not in inventory_paths:
+    # Every OpenPI server verifies its checkpoint against the one staged inventory.
+    openpi_local = [candidate for candidate in local_candidates if candidate in ARENA_CANDIDATE_POLICY_IDS]
+    if any(candidate not in inventory_paths for candidate in openpi_local):
         raise ValueError("policy_canary_openpi_inventory_missing")
+    if len({_sha256(Path(inventory_paths[candidate])) for candidate in openpi_local}) > 1:
+        raise ValueError("policy_canary_openpi_inventory_ambiguous")
     if set(specs) != set(inputs["candidate_ids"]) or set(specs) != set(authority["candidate_ids"]):
         raise ValueError("policy_canary_provider_candidate_interfaces_not_admitted")
     if any(
@@ -673,8 +683,8 @@ def build_policy_canary_session_bundle(
             if hotfix_overlay_path is not None
             else None
         )
-        if "pi05_droid" in local_candidates:
-            shutil.copy2(inventory_paths["pi05_droid"], runtime / CHECKPOINT_INVENTORY_STAGED_NAME)
+        if openpi_local:
+            shutil.copy2(inventory_paths[openpi_local[0]], runtime / CHECKPOINT_INVENTORY_STAGED_NAME)
         entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
         entrypoint.write_text(_entrypoint(local_candidates=tuple(local_candidates), run_kind=inputs["run_kind"],
                                          credential_env=credential_env,
