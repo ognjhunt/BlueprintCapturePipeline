@@ -242,7 +242,7 @@ def materialize_completed_scene_submission(
     normalization = read(normalization_path, digest_field="normalization_digest")
     normalized_path = checked_file(normalization_path.parent / normalization["output"]["relative_path"],
                                    normalization["output"])
-    collision_ref = stage.copy(normalized_path, "geometry/normalized_scene.usda")
+    collision_ref = stage.copy(normalized_path, "geometry/" + normalized_path.name)
     validation_ref = stage.copy(normalization_path, "geometry/mesh_normalization.v1.json")
     stage.copy(Path(task_request_path), "provenance/completed_task_request.v1.json")
     manifest = {"schema_version": "task_evaluation_completed_scene_source_manifest.v1",
