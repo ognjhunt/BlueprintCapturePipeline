@@ -379,7 +379,14 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                          episodes_per_candidate: int = DEFAULT_EPISODES,
                          capabilities: Mapping[str, Any] | None = None,
                          cost_quotes: Mapping[str, Any] | None = None,
-                         now: dt.datetime | None = None) -> dict[str, Any]:
+                         now: dt.datetime | None = None,
+                         priority: Sequence[str] | None = None) -> dict[str, Any]:
+    """Every requested candidate gets a status and reason; the budget decides how many run.
+
+    ``priority`` (the job's intake ranking) sets the order the budget is spent
+    in; unranked candidates follow by identifier. Capabilities may name measured
+    ``candidate_infeasible`` refusals, which stay listed as ``infeasible``.
+    """
     catalog = validate_catalog(catalog)
     scene = _scene(scene)
     _id(campaign_id, "beta_screening_campaign_id_invalid")
@@ -391,10 +398,12 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     if not isinstance(bindings, dict):
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
     failures = capabilities.get("candidate_blockers") or {}
-    if (not isinstance(failures, dict) or any(not isinstance(reasons, list)
-            or any(not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{1,127}", reason)
-                   for reason in reasons) for reasons in failures.values())):
-        raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
+    infeasible = capabilities.get("candidate_infeasible") or {}
+    for value, reason_required in ((failures, False), (infeasible, True)):
+        if (not isinstance(value, dict) or any(not isinstance(reasons, list) or (reason_required and not reasons)
+                or any(not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{1,127}", reason)
+                       for reason in reasons) for reasons in value.values())):
+            raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
     available = capabilities.get("credentials_available", [])
     if not isinstance(available, list) or any(not isinstance(name, str) for name in available):
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
@@ -410,10 +419,13 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_selection_invalid")
     if set(requested) - set(by_id):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_not_in_catalog")
+    if isinstance(priority, (str, bytes)) or any(not isinstance(row, str) for row in priority or ()):
+        raise BetaPolicyScreeningPlanError("beta_screening_candidate_priority_invalid")
+    ranked = [row for row in dict.fromkeys(priority or ()) if row in set(requested)]
     cells = screening_cells(scene, episodes_per_candidate)
     remaining = budget
     candidates = []
-    for candidate_id in sorted(requested):
+    for candidate_id in ranked + sorted(set(requested) - set(ranked)):
         candidate = by_id[candidate_id]
         row: dict[str, Any] = {"candidate_id": candidate_id,
                                "display_name": candidate["display_name"],
@@ -423,6 +435,11 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             row["execution_evidence_kind"] = "scripted_simulator_state_baseline"
         elif candidate_id in G1_CANDIDATES:
             row["execution_evidence_kind"] = "learned_policy"
+        if candidate_id in infeasible:
+            # Measured on this scene (station reach); listed with its reason, never quoted.
+            row.update(status="infeasible", blockers=sorted(set(infeasible[candidate_id])))
+            candidates.append(row)
+            continue
         binding = bindings.get(candidate_id)
         row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials)
         row["blockers"] = sorted(set(row["blockers"] + failures.get(candidate_id, [])))
@@ -594,7 +611,7 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
             if money(row["max_cost_usd"]) < execution_cost_floor(spec):
                 raise BetaPolicyScreeningPlanError("beta_screening_cost_below_resource_bound")
             committed += money(row["max_cost_usd"])
-        elif row["status"] not in {"unavailable", "deferred"} or not row["blockers"]:
+        elif row["status"] not in {"unavailable", "deferred", "infeasible"} or not row["blockers"]:
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_status_invalid")
         elif set(row) - evidence_fields != {"candidate_id", "display_name", "configuration_digest", "status", "blockers"}:
             raise BetaPolicyScreeningPlanError("beta_screening_unselected_execution_forbidden")

@@ -8,7 +8,7 @@ the authority over aggregate reservations.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_UP
 from pathlib import Path
@@ -117,12 +117,16 @@ def _native_templates(*, repo: Path, scene_plan: Mapping[str, Any], contract: Ma
 
 
 def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, Any],
-                          capture_root: Path, source: Mapping[str, Any], inputs_dir: Path) -> dict[str, Any]:
+                          capture_root: Path, source: Mapping[str, Any], inputs_dir: Path,
+                          priority: Sequence[str] = ()) -> dict[str, Any]:
     """Materialize facts, validated capabilities and real hard-cap cost quotes.
 
     Additional runtimes are operator registry ``screening_candidates`` rows,
     each naming a byte-sealed native execution spec and optional inventory.
-    No catalog declaration alone grants a runtime capability.
+    No catalog declaration alone grants a runtime capability. ``priority`` is
+    the job's retained intake ranking; it orders the plan and removes nothing.
+    A candidate is infeasible only when its registered fixed reach measurably
+    misses this reconstructed scene's station (``website_candidate_feasibility``).
     """
     from .beta_policy_candidate_catalog import validate_catalog, load_catalog
     from .beta_policy_screening_plan import validate_execution_descriptor
@@ -176,6 +180,10 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     if scene_plan.get("plan_digest") != canonical_digest(scene_plan, digest_field="plan_digest"):
         raise ValueError("beta_screening_native_scene_plan_digest_invalid")
     scene["native_scene_plan"] = scene_plan
+    from .website_candidate_feasibility import candidate_feasibility, infeasible_blockers
+    feasibility = candidate_feasibility(scene_plan=scene_plan, catalog=catalog, profile=profile)
+    _retain(root / (feasibility["feasibility_digest"][7:] + ".candidate_feasibility.json"), feasibility)
+    infeasible = infeasible_blockers(feasibility)
     template_failures = {}
     templates = {}
     if not family:
@@ -222,6 +230,8 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     # Hosted policies need a separately configured private delivery lane.
     for configured in catalog["candidates"]:
         key = configured["candidate_id"]
+        if key in infeasible:
+            continue  # The plan shows its measured reason; nothing is prepared or quoted.
         try:
             from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES
             g1 = key in G1_CANDIDATES
@@ -343,7 +353,9 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             code = str(exc).split(":", 1)[0]
             candidate_blockers[key] = [code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
                                        else "beta_screening_candidate_configuration_invalid"]
+    known = {row["candidate_id"] for row in catalog["candidates"]}
     return {"scene": scene,
             "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials,
-                             "candidate_blockers": candidate_blockers},
-            "cost_quotes": quotes}
+                             "candidate_blockers": candidate_blockers, "candidate_infeasible": infeasible},
+            "cost_quotes": quotes, "candidate_feasibility": feasibility,
+            "candidate_priority": [key for key in dict.fromkeys(priority) if key in known]}
