@@ -104,7 +104,7 @@ def retry_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]
             source_check(job)
         reason = job["reason"]
         if upgrade:
-            from .atlas_native_splat import request_gap_preserving_upgrade
+            from .atlas_refined_splat_forms import request_gap_preserving_upgrade
             root = Path(str(marker.get("splat_root")))
             if (not root.is_absolute() or root.is_symlink()
                     or not root.resolve().is_relative_to(path.parent.resolve())):

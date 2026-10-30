@@ -16,9 +16,9 @@ from pathlib import Path
 
 import numpy as np
 
+from .atlas_refined_splat_forms import REVIEW_RECORD as RECORD
 from .common import write_json
 
-RECORD = "whole_view_review.json"
 REFERENCES_PER_VIEW = 3
 MINIMUM_OVERLAP = 0.02
 MAX_OUTPUT_TOKENS = 8192
