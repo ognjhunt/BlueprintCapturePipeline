@@ -22,6 +22,13 @@ from operator_door.config import DoorConfig  # noqa: E402
 from operator_door.status import _preflight, _unit_health  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolate_probe_import_path(monkeypatch):
+    # The release probe selects a temporary source package; restore its path
+    # before another test starts a fresh interpreter with the shared sys.path.
+    monkeypatch.setattr(sys, "path", list(sys.path))
+
+
 def _report(*, observed: float | None = None) -> dict:
     when = time.time() if observed is None else observed
     return {"schema_version": preflight.SCHEMA_VERSION,

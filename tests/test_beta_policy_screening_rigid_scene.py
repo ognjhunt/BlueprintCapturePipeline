@@ -59,7 +59,7 @@ def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_pro
     profile = {"capture_root": str(tmp_path / "capture"), "scene_id": "site-rigid-fixture",
                "task_id": compiled["task_id"], "team_scene_inputs_path": compiled["path"],
                "robot_free_probe_root": str(tmp_path / "probe"), "open_loop_horizon": 8,
-               "max_hourly_rate_usd": 0.8}
+               "max_hourly_rate_usd": 0.5, "screening_candidate_cap_usd": 3}
     facts = scene_facts(profile)
     spec, inputs = facts["scene"]["task_spec"], facts["inputs"]
     assert spec["task_kind"] == "rigid_pick_place"
@@ -85,8 +85,8 @@ def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_pro
     plan = build_screening_plan(catalog, planning["scene"], capabilities=planning["capabilities"],
         cost_quotes=planning["cost_quotes"], campaign_id="rigid-campaign")
     candidates = [row for row in plan["candidates"] if row["status"] == "selected"]
-    assert {row["candidate_id"] for row in candidates} == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}
-    assert plan["maximum_planned_cost_usd"] == "12.00"
+    assert {row["candidate_id"] for row in candidates} == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid", "molmoact2_droid"}
+    assert plan["maximum_planned_cost_usd"] == "15.00"
     spawned = []
 
     def spawn(argv, **_):
@@ -102,11 +102,11 @@ def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_pro
     monkeypatch.setattr(launch, "preflight_candidate_capacity", capacity)
     queue = tmp_path / "screening-queue"
     coordinator.enqueue_screening_campaign(plan, queue_root=queue)
-    progressed = coordinator.process_screening_queue(queue_root=queue, max_launches=3, require_publication_ack=False)
-    assert progressed["launches_started"] == 3 and len(spawned) == 3
+    progressed = coordinator.process_screening_queue(queue_root=queue, max_launches=5, require_publication_ack=False)
+    assert progressed["launches_started"] == 5 and len(spawned) == 5
     ledger = coordinator._ledger(queue)
     state = ledger["campaigns"][plan["campaign_id"]]
-    assert state["site_budget"]["reserved_usd"] == "12"
+    assert state["site_budget"]["reserved_usd"] == "15"
     for candidate in candidates:
         row = state["candidates"][candidate["candidate_id"]]
         assert row["status"] == "running"
@@ -120,16 +120,18 @@ def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_pro
             assert sealed["candidate_ids"] == [candidate["candidate_id"]]
             assert sealed["task_success_contract_digest"] == inputs["task_success_contract_digest"]
             assert sealed["beta_screening_admission"]["robot_free_probe_receipt_digest"] == receipt["receipt_digest"]
-            if candidate["candidate_id"] == "cosmos3_edge_policy_droid":
+            if candidate["candidate_id"] in {"cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
+                from blueprint_pipeline.cosmos_droid_bundle import profile
+                selected = profile(candidate["candidate_id"])
                 manifest = json.loads(archive.read("provider_runtime/adp_arena_provider_manifest.json"))
-                assert manifest["minimum_gpu_memory_gb"] == 48
-                assert "provider_runtime/cosmos_edge_policy_snapshot_manifest.json" in archive.namelist()
+                assert manifest["minimum_gpu_memory_gb"] == selected.MINIMUM_GPU_MEMORY_GB
+                assert "provider_runtime/" + selected.SNAPSHOT_STAGED_NAME in archive.namelist()
                 native = json.loads(archive.read("provider_runtime/native_task_packet/native_task_arena_scene_plan.v1.json"))
                 cameras = {row["role"]: row for row in native["cameras"]}
                 assert cameras["exterior_right"]["policy_input"] is True
                 assert cameras["overview"]["policy_input"] is False
-                script = archive.read("provider_runtime/adp009d_policy_provisioning.cosmos3_edge_policy_droid.sh").decode()
-                assert "--group cu128-train --group policy-server" in script
+                script = archive.read(f"provider_runtime/adp009d_policy_provisioning.{candidate['candidate_id']}.sh").decode()
+                assert "blueprint_pipeline.cosmos_droid_provisioning" in script
         assert (attempt / "allocator_launch_intent.json").is_file()
-    replayed = coordinator.process_screening_queue(queue_root=queue, max_launches=3, require_publication_ack=False)
-    assert replayed["launches_started"] == 0 and len(spawned) == 3
+    replayed = coordinator.process_screening_queue(queue_root=queue, max_launches=5, require_publication_ack=False)
+    assert replayed["launches_started"] == 0 and len(spawned) == 5

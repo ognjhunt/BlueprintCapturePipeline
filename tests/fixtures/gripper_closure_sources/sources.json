@@ -1,0 +1,93 @@
+{
+  "claim_ceiling": "development_only_source_geometry_regression",
+  "sources": [
+    {
+      "embodiment_id": "trlc_dk1_bimanual",
+      "repository_url": "https://github.com/robot-learning-co/trlc-dk1",
+      "revision": "12f5368aefd0381461f2c7ffbb5611b4e8c90de9",
+      "entry_path": "urdf/follower/TRLC-DK1-Follower.urdf",
+      "license": {
+        "identifier": "Apache-2.0",
+        "path": "LICENSE",
+        "sha256": "sha256:98bd6d4c411234188c6ed1c371bff58ed2e000479c3fb244cbca0351240ddc8d",
+        "note": "Repository Apache-2.0 includes upstream MIT/Apache notices; publisher separately reserves linked CAD rights. This recipe references repository URDF/GLB/STL files and grants no rights to external CAD exports."
+      },
+      "files": [
+        {
+          "path": "LICENSE",
+          "size_bytes": 14639,
+          "git_blob_sha": "05f6474801b6e24df637c388e070e0ef093b43e5",
+          "sha256": "sha256:98bd6d4c411234188c6ed1c371bff58ed2e000479c3fb244cbca0351240ddc8d"
+        },
+        {
+          "path": "urdf/follower/TRLC-DK1-Follower.urdf",
+          "size_bytes": 9423,
+          "git_blob_sha": "5d961d3c8f36031802f9ea4ea686fb2a751663f1",
+          "sha256": "sha256:c23d4e8abe4fd43d8fb1a093fea38d9244439a28aff1330ea389675a15346219"
+        },
+        {
+          "path": "urdf/follower/meshes/collision/finger_left.stl",
+          "size_bytes": 6784,
+          "git_blob_sha": "57fc9d401ff2436b12a6fe79d332cd0b3524a376",
+          "sha256": "sha256:7a5d4cd310534fa511356445a2ea34ad8cf108457b1cdcd35181e42e72c26801"
+        },
+        {
+          "path": "urdf/follower/meshes/collision/finger_right.stl",
+          "size_bytes": 6784,
+          "git_blob_sha": "2fa2dd0cf573b08bbb058a8f382ef58af933c127",
+          "sha256": "sha256:86024f8ee4e0182c70ff71ca36e1ff8b353e7340c88ebb6768898acb2814015f"
+        }
+      ]
+    },
+    {
+      "embodiment_id": "almond_axol",
+      "repository_url": "https://github.com/almond-bot/axol",
+      "revision": "3ccc69cf3adaea09845456148d6a4f16ef059f27",
+      "entry_path": "almond_axol/kinematics/urdf/axol_standalone.urdf",
+      "license": {
+        "identifier": "MIT",
+        "path": "LICENSE",
+        "sha256": "sha256:fcd4699f60d95127385bd2e1de28be048c0bc3be211f2438c8536a79382e12d0",
+        "note": "Manufacturer MIT source. Retain the root license with the standalone URDF and its jelly/standalone mesh closure. This recipe does not include the separate Mink IK model or its inherited YAM mesh notices. Source publication is not imported physics qualification or policy compatibility."
+      },
+      "files": [
+        {
+          "path": "LICENSE",
+          "size_bytes": 1072,
+          "git_blob_sha": "cc76ffbeb26e42d81a6c0e7e7590c21157f97db3",
+          "sha256": "sha256:fcd4699f60d95127385bd2e1de28be048c0bc3be211f2438c8536a79382e12d0"
+        },
+        {
+          "path": "almond_axol/kinematics/urdf/axol_standalone.urdf",
+          "size_bytes": 43507,
+          "git_blob_sha": "f4d88c8f51cc24766fbf688f95e76a553f3ecd15",
+          "sha256": "sha256:ce381857775213ec527c60529ec476b38b2f12655dddf01eb8c3d2e68f3eab18"
+        },
+        {
+          "path": "almond_axol/kinematics/urdf/meshes/standalone/left_finger_1_collision.stl",
+          "size_bytes": 3284,
+          "git_blob_sha": "f879e9e94fffc6731ea330ab5013378541e21052",
+          "sha256": "sha256:0dc161f16af171d8640783de2433df3c0b5e275965993f9bac41b23f765fcc9f"
+        },
+        {
+          "path": "almond_axol/kinematics/urdf/meshes/standalone/left_finger_2_collision.stl",
+          "size_bytes": 3284,
+          "git_blob_sha": "f879e9e94fffc6731ea330ab5013378541e21052",
+          "sha256": "sha256:0dc161f16af171d8640783de2433df3c0b5e275965993f9bac41b23f765fcc9f"
+        },
+        {
+          "path": "almond_axol/kinematics/urdf/meshes/standalone/right_finger_1_collision.stl",
+          "size_bytes": 3284,
+          "git_blob_sha": "f879e9e94fffc6731ea330ab5013378541e21052",
+          "sha256": "sha256:0dc161f16af171d8640783de2433df3c0b5e275965993f9bac41b23f765fcc9f"
+        },
+        {
+          "path": "almond_axol/kinematics/urdf/meshes/standalone/right_finger_2_collision.stl",
+          "size_bytes": 3284,
+          "git_blob_sha": "f879e9e94fffc6731ea330ab5013378541e21052",
+          "sha256": "sha256:0dc161f16af171d8640783de2433df3c0b5e275965993f9bac41b23f765fcc9f"
+        }
+      ]
+    }
+  ]
+}

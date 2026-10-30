@@ -60,6 +60,8 @@ _CANDIDATE_SOURCE_ACTION_SPACES = {
     ("pi05_droid", ACTION_SPACE_JOINT_POSITION): SOURCE_PI05_POSITION,
     ("groot_n17_droid", ACTION_SPACE_JOINT_POSITION): SOURCE_GROOT_POSITION,
     ("cosmos3_edge_policy_droid", ACTION_SPACE_JOINT_POSITION): SOURCE_COSMOS_POSITION,
+    ("molmoact2_droid", ACTION_SPACE_JOINT_POSITION): "molmoact2_droid_absolute_joint_position_plus_absolute_gripper",
+    ("cosmos3_nano_policy_droid", ACTION_SPACE_JOINT_POSITION): "cosmos_nano_absolute_joint_position_plus_absolute_gripper",
 }
 
 # DROID's published control contract.

@@ -178,7 +178,10 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     elif native_spec.get("policy_interface_id") in TEAM_LOCAL_INTERFACES:
         from .team_local_policy import runtime_for_interface
         runtime_for_interface(native_spec["policy_interface_id"]).validate_execution_spec(native_spec)
-    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}:
+    elif native_spec.get("policy_interface_id") == "molmoact2_droid_joint8.v1":
+        from .molmoact2_droid_runtime import validate_execution_spec
+        validate_execution_spec(native_spec)
+    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
         raise ValueError("beta_screening_policy_provisioning_not_configured")
     if (native_spec["runtime_identity_digest"] != execution["runtime_digest"]
             or native_spec["task_success_contract_digest"] != scene["task_success_contract_digest"]):

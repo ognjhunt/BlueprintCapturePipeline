@@ -42,7 +42,7 @@ def test_packaged_routes_cover_every_recorded_pair_once_without_changing_enabled
     assert pairs == Counter({pair: 1 for pair in expected})
     assert ORIGINAL_IDS <= {row["candidate_id"] for row in catalog["candidates"]}
     assert {row["candidate_id"]: row["configuration_digest"] for row in catalog["candidates"]
-            if row["eligibility"]["enabled"]} == {
+            if row["candidate_id"] in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}} == {
         "pi05_droid": "sha256:667f2ad06a2e65e82b8876736f93ddbc11e3b875d0c92a0946ae84a2573cd445",
         "groot_n17_droid": "sha256:bee000dea18063838a80c1f4e362b3e6b360c5c32c1a5824c3e77b86e0e58692",
         "cosmos3_edge_policy_droid": "sha256:2ef6b265d6a79187db6079230e6f9a9ac0b7477eeeb7fb1e561bf222518c4be7",

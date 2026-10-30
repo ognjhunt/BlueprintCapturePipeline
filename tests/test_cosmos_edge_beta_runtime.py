@@ -13,6 +13,7 @@ from blueprint_pipeline.adp009d_droid_action_execution import plan_chunk_executi
 from blueprint_pipeline.adp009d_droid_observation import build_droid_observation
 from blueprint_pipeline.cosmos_edge_beta_provisioning import build_provisioning_script, DEPENDENCY_LOCK_SHA256
 from blueprint_pipeline.cosmos_edge_droid_policy_runtime import CosmosEdgeDroidPolicySpec
+from blueprint_pipeline.cosmos_droid_bundle import runtime_contract
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.droid_policy_bridge import DROID_ROBOARENA_CONCAT_VIEWS
 from blueprint_pipeline.policy_interface_binding import observation_interface
@@ -25,7 +26,8 @@ def _policy():
 
 
 def _execution():
-    spec = {"candidate_id": runtime.CANDIDATE_ID, "policy_interface_id": runtime.INTERFACE_ID,
+    spec = {"runtime_identity": {"provisioning_identity": runtime_contract(runtime.CANDIDATE_ID)},
+            "candidate_id": runtime.CANDIDATE_ID, "policy_interface_id": runtime.INTERFACE_ID,
             "evaluation_backend": "robolab.v1", "checkpoint_digest": runtime.CHECKPOINT_DIGEST,
             "policy_endpoint": {"host": "127.0.0.1", "port": 8000},
             "policy_spec": asdict(_policy()), "open_loop_horizon": 8}
@@ -166,13 +168,12 @@ def test_bootstrap_uses_cosmos_locked_environment_and_does_not_install_model_int
     path.write_text(script)
     checked = subprocess.run(["bash", "-n", str(path)], capture_output=True, text=True)
     assert checked.returncode == 0, checked.stderr
-    assert DEPENDENCY_LOCK_SHA256 in script
-    assert "--frozen" in script and "--group cu128-train --group policy-server" in script
-    assert "token=False" in script
-    isaac_lines = [line for line in script.splitlines() if "--python /isaac-sim/" in line]
-    assert len(isaac_lines) == 1
-    assert '--target "$RUNTIME_DIR/cosmos_policy_client" --no-deps' in isaac_lines[0]
-    assert "--require-hashes" in isaac_lines[0]
+    from blueprint_pipeline.cosmos_droid_dependencies import verified_dependency_manifest
+    dependencies = verified_dependency_manifest()
+    assert dependencies["upstream_uv_lock_sha256"] == DEPENDENCY_LOCK_SHA256
+    assert dependencies["interpreter"]["version"] == "3.13.9"
+    assert "blueprint_pipeline.cosmos_droid_provisioning" in script
+    assert "uv sync" not in script and "snapshot_download" not in script
     command = server_worker.build_serve_command(candidate_id=runtime.CANDIDATE_ID,
         python="/separate/venv/bin/python", source_root="/source", checkpoint_root="/checkpoint",
         port=8000, policy_spec_path="/execution.json", checkpoint_inventory_path="/manifest.json")
@@ -209,6 +210,7 @@ def test_beta_bundle_requires_the_actual_cosmos_bootstrap_and_manifest():
     from blueprint_pipeline.policy_canary_session_bundle_identity import run_kind_required_entries
     required = run_kind_required_entries({"execution_mode": "blueprint_beta_screening_session",
         "run_kind": "blueprint_beta_screening", "episodes_per_policy": 10,
-        "candidate_ids": [runtime.CANDIDATE_ID], "evaluation_backend": "robolab.v1"})
+        "candidate_ids": [runtime.CANDIDATE_ID], "evaluation_backend": "robolab.v1",
+        "cosmos_runtime": runtime_contract(runtime.CANDIDATE_ID)})
     assert "provider_runtime/" + runtime.SNAPSHOT_STAGED_NAME in required
     assert "provider_runtime/blueprint_pipeline/cosmos_edge_beta_runtime.py" in required

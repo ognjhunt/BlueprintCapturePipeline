@@ -74,6 +74,9 @@ def serve_identity_bound_policy(
     host: str,
     port: int,
     output_dir: str | Path,
+    candidate_id: str = "cosmos3_edge_policy_droid",
+    source_root: str | Path | None = None,
+    source_manifest: str | Path | None = None,
     service_factory: Callable[..., Any] | None = None,
     server_factory: Callable[..., Any] | None = None,
 ) -> dict[str, Any]:
@@ -84,14 +87,26 @@ def serve_identity_bound_policy(
     if not host.strip() or not 1 <= int(port) <= 65535:
         raise ValueError("cosmos_edge_policy_server_endpoint_invalid")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    spec = CosmosEdgeDroidPolicySpec(
-        snapshot_manifest_sha256=str(manifest.get("manifest_sha256") or "")
-    )
-    verification = verify_local_policy_snapshot(
-        spec=spec,
-        snapshot_dir=checkpoint,
-        snapshot_manifest_path=manifest_path,
-    )
+    if candidate_id == "cosmos3_edge_policy_droid":
+        spec_type, verifier = CosmosEdgeDroidPolicySpec, verify_local_policy_snapshot
+        prompt_json = True
+    elif candidate_id == "cosmos3_nano_policy_droid":
+        from .cosmos_nano_droid_policy_runtime import (
+            CosmosNanoDroidPolicySpec, verify_local_policy_snapshot as verify_nano,
+        )
+        spec_type, verifier = CosmosNanoDroidPolicySpec, verify_nano
+        prompt_json = False
+    else:
+        raise ValueError("cosmos_policy_candidate_identity_invalid")
+    spec = spec_type(snapshot_manifest_sha256=str(manifest.get("manifest_sha256") or ""))
+    verification = verifier(spec=spec, snapshot_dir=checkpoint, snapshot_manifest_path=manifest_path,
+        **({"require_exact_files": True} if prompt_json and source_root is not None else {}))
+    if source_root is not None or source_manifest is not None:
+        if source_root is None or source_manifest is None:
+            raise ValueError("cosmos_policy_source_binding_incomplete")
+        from .cosmos_droid_source import verify_source_directory
+        import sys
+        sys.path.insert(0, str(verify_source_directory(source_root, source_manifest)))
     if service_factory is None or server_factory is None:
         try:
             from cosmos_framework.scripts.action_policy_server_robolab import (
@@ -118,7 +133,7 @@ def serve_identity_bound_policy(
             guidance=3.0,
             num_steps=4,
             shift=5.0,
-            format_prompt_as_json=True,
+            format_prompt_as_json=prompt_json,
         )
 
         class BlueprintRobolabPolicyService(RobolabPolicyService):
@@ -138,7 +153,8 @@ def serve_identity_bound_policy(
     service = NativeActionShapeGuard(service_factory())
     metadata = {**spec.server_metadata(), **verification}
     startup = {
-        "schema_version": "cosmos_edge_droid_policy_server_startup.v1",
+        "schema_version": ("cosmos_edge_droid_policy_server_startup.v1" if prompt_json
+                           else "cosmos_nano_droid_policy_server_startup.v1"),
         "status": "model_loaded_ready_to_serve",
         "host": host,
         "port": int(port),
@@ -166,13 +182,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--candidate-id", default="cosmos3_edge_policy_droid")
+    parser.add_argument("--source-root")
+    parser.add_argument("--source-manifest")
     args = parser.parse_args(argv)
     serve_identity_bound_policy(
         checkpoint_path=args.checkpoint_path,
         snapshot_manifest_path=args.snapshot_manifest,
         host=args.host,
         port=args.port,
-        output_dir=args.output_dir,
+        output_dir=args.output_dir, candidate_id=args.candidate_id,
+        source_root=args.source_root, source_manifest=args.source_manifest,
     )
     return 0
 

@@ -47,6 +47,8 @@ from .native_task_arena_policy_canary_session import (
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .openwam_piper_bundle import RUNTIME_MODULES as OPENWAM_RUNTIME_MODULES
 from .molmoact2_yam_bundle import RUNTIME_MODULES as MOLMOACT2_RUNTIME_MODULES
+from .molmoact2_droid_bundle import RUNTIME_MODULES as MOLMOACT2_DROID_RUNTIME_MODULES
+from .cosmos_droid_bundle import CANDIDATES as COSMOS_CANDIDATES, RUNTIME_MODULES as COSMOS_RUNTIME_MODULES
 from .task_evaluation_canary_hotfix_overlay import (
     apply_canary_hotfix_overlay,
     canary_hotfix_execution_release,
@@ -67,7 +69,7 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "rigid_robot_free_probe_recorder.py", "rigid_robot_free_probe_plan.py",
     "rigid_robot_free_readiness_score.py",
 )
-TEAM_RUNTIME_MODULE_NAMES = tuple(dict.fromkeys((*TEAM_RUNTIME_MODULE_NAMES, *OPENWAM_RUNTIME_MODULES, *MOLMOACT2_RUNTIME_MODULES, "team_local_policy.py")))
+TEAM_RUNTIME_MODULE_NAMES = tuple(dict.fromkeys((*TEAM_RUNTIME_MODULE_NAMES, *OPENWAM_RUNTIME_MODULES, *MOLMOACT2_RUNTIME_MODULES, *MOLMOACT2_DROID_RUNTIME_MODULES, *COSMOS_RUNTIME_MODULES, "team_local_policy.py")))
 
 
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
@@ -480,11 +482,16 @@ def build_policy_canary_session_bundle(
                 runtime_for_interface(interface).validate_execution_spec(spec)
                 if inputs.get("run_kind") != "blueprint_beta_screening":
                     raise ValueError("team_local_native_execution_requires_beta_run")
-            elif candidate not in ("pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"):
+            elif interface == "molmoact2_droid_joint8.v1":
+                from .molmoact2_droid_runtime import validate_execution_spec as validate_molmo_droid_spec
+                validate_molmo_droid_spec(spec)
+                if inputs.get("run_kind") != "blueprint_beta_screening":
+                    raise ValueError("molmoact2_droid_native_execution_requires_beta_run")
+            elif candidate not in ("pi05_droid", "groot_n17_droid", *COSMOS_CANDIDATES):
                 raise ValueError("policy_canary_local_provisioning_identity_not_admitted")
-            if candidate == "cosmos3_edge_policy_droid":
-                from .cosmos_edge_beta_runtime import validate_execution_spec as validate_cosmos_spec
-                validate_cosmos_spec(spec)
+            if candidate in COSMOS_CANDIDATES:
+                from .cosmos_droid_bundle import profile
+                profile(candidate).validate_execution_spec(spec)
                 if inputs.get("run_kind") != "blueprint_beta_screening":
                     raise ValueError("cosmos_edge_native_execution_requires_beta_run")
             local_candidates.append(candidate)
@@ -614,7 +621,7 @@ def build_policy_canary_session_bundle(
         contract_dependency = stage_policy_contract_dependencies(runtime)
         robolab_dependency = (stage_robolab_source(runtime)
                               if any(spec.get("evaluation_backend") == "robolab.v1" for spec in specs.values()) else None)
-        openwam_contract = molmoact2_contract = None
+        openwam_contract = molmoact2_contract = molmoact2_droid_contract = cosmos_contract = None
         for candidate in local_candidates:
             script = runtime / f"adp009d_policy_provisioning.{candidate}.sh"
             if specs[candidate].get("policy_interface_id") == "openwam_piper_eef20.v1":
@@ -625,15 +632,14 @@ def build_policy_canary_session_bundle(
                 from .molmoact2_yam_bundle import stage_runtime, provisioning_script as molmoact2_script
                 molmoact2_contract = stage_runtime(runtime)
                 provisioning_script = molmoact2_script()
-            elif candidate == "cosmos3_edge_policy_droid":
-                from .cosmos_edge_beta_provisioning import build_provisioning_script as build_cosmos_provisioning
-                from .cosmos_edge_beta_runtime import (
-                    SNAPSHOT_STAGED_NAME, snapshot_manifest_path, verified_snapshot_manifest,
-                )
-                snapshot_path = snapshot_manifest_path()
-                verified_snapshot_manifest(snapshot_path)
-                shutil.copy2(snapshot_path, runtime / SNAPSHOT_STAGED_NAME)
-                provisioning_script = build_cosmos_provisioning()
+            elif specs[candidate].get("policy_interface_id") == "molmoact2_droid_joint8.v1":
+                from .molmoact2_droid_bundle import stage_runtime, provisioning_script as molmoact2_droid_script
+                molmoact2_droid_contract = stage_runtime(runtime)
+                provisioning_script = molmoact2_droid_script()
+            elif candidate in COSMOS_CANDIDATES:
+                from .cosmos_droid_bundle import stage_runtime as stage_cosmos, provisioning_script as cosmos_script
+                cosmos_contract = stage_cosmos(runtime, candidate)
+                provisioning_script = cosmos_script()
             else:
                 provisioning_script = build_provisioning_script(candidate)
             script.write_text(provisioning_script, encoding="utf-8")
@@ -662,6 +668,10 @@ def build_policy_canary_session_bundle(
             if type(minimum_gpu_memory_gb) not in (int, float) or not 0 < minimum_gpu_memory_gb <= 1024:
                 raise ValueError("beta_screening_gpu_memory_bound_invalid")
             manifest["minimum_gpu_memory_gb"] = minimum_gpu_memory_gb
+        if cosmos_contract is not None:
+            manifest["minimum_gpu_memory_gb"] = max(cosmos_contract["minimum_gpu_memory_gb"],
+                                                    manifest.get("minimum_gpu_memory_gb", 0))
+            manifest.update(cosmos_runtime=cosmos_contract, secret_material_bundled=False)
         if openwam_contract is not None:
             from .openwam_piper_runtime import MINIMUM_GPU_MEMORY_GB
             manifest["minimum_gpu_memory_gb"] = max(MINIMUM_GPU_MEMORY_GB, manifest.get("minimum_gpu_memory_gb", 0))
@@ -672,6 +682,11 @@ def build_policy_canary_session_bundle(
             manifest["minimum_gpu_memory_gb"] = max(MINIMUM_GPU_MEMORY_GB, manifest.get("minimum_gpu_memory_gb", 0))
             manifest.update(molmoact2_runtime=molmoact2_contract, team_policy_interface_id="molmoact2_yam_joint14.v1",
                             secret_material_bundled=False)
+        if molmoact2_droid_contract is not None:
+            from .molmoact2_droid_runtime import MINIMUM_GPU_MEMORY_GB
+            manifest["minimum_gpu_memory_gb"] = max(MINIMUM_GPU_MEMORY_GB, manifest.get("minimum_gpu_memory_gb", 0))
+            manifest.update(molmoact2_droid_runtime=molmoact2_droid_contract,
+                            team_policy_interface_id="molmoact2_droid_joint8.v1", secret_material_bundled=False)
         manifest.update(
             {
                 "schema_version": PROVIDER_BUNDLE_SCHEMA_VERSION,

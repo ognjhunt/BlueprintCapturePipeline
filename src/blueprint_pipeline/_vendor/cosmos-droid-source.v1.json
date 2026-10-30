@@ -1,0 +1,4505 @@
+{
+  "schema": "cosmos_droid_source_manifest.v1",
+  "repository": "https://github.com/NVIDIA/cosmos-framework",
+  "revision": "2f603cb114ff8b335e116060444d0b6caee3a85e",
+  "license": "OpenMDW-1.1",
+  "archive_sha256": "sha256:d0825b630396f62b58f4c8875066cc52ceadaf6432c9491602e83ef808a9eddc",
+  "archive_size_bytes": 4756151,
+  "files": [
+    {
+      "path": ".agents/skills/cosmos3-codebase-nav/SKILL.md",
+      "size_bytes": 11259,
+      "sha256": "sha256:c09ad544a399484e81878625183c2bac936d35a3c756b5543cf510697073c278"
+    },
+    {
+      "path": ".agents/skills/cosmos3-env-troubleshoot/SKILL.md",
+      "size_bytes": 5254,
+      "sha256": "sha256:431545d5454f12fb205e7462b35ea9c35cf6d1007b644d4b001fa81b06131c0e"
+    },
+    {
+      "path": ".agents/skills/cosmos3-inference/SKILL.md",
+      "size_bytes": 4863,
+      "sha256": "sha256:c6b80882fde9165675a90378b3ba4d91d8b414afdf5cd4707c4df040a3623ebd"
+    },
+    {
+      "path": ".agents/skills/cosmos3-post-training/SKILL.md",
+      "size_bytes": 11032,
+      "sha256": "sha256:67803478cd89ff46419aa1676b1637cb767c5288eda5cd6bbcf3874a53ce72e6"
+    },
+    {
+      "path": ".agents/skills/cosmos3-setup/SKILL.md",
+      "size_bytes": 4334,
+      "sha256": "sha256:57c158aab70fd69e22b394f10e320cecfb0aaf68ed8c99d19de85c1778c46b9e"
+    },
+    {
+      "path": ".claude/skills/cosmos3-codebase-nav/SKILL.md",
+      "size_bytes": 11259,
+      "sha256": "sha256:6ac3af0eaa42bfd5c08ba09c9b7a2b2dbb267f5e162439482d6f318bba35099c"
+    },
+    {
+      "path": ".claude/skills/cosmos3-env-troubleshoot/SKILL.md",
+      "size_bytes": 5254,
+      "sha256": "sha256:adb1ddfb614e5053c7a38d13d2b65bce2528e612f8985ce7690f13742d5468b7"
+    },
+    {
+      "path": ".claude/skills/cosmos3-inference/SKILL.md",
+      "size_bytes": 4863,
+      "sha256": "sha256:c6b80882fde9165675a90378b3ba4d91d8b414afdf5cd4707c4df040a3623ebd"
+    },
+    {
+      "path": ".claude/skills/cosmos3-post-training/SKILL.md",
+      "size_bytes": 11030,
+      "sha256": "sha256:65107bb779c36294e36ad5b454a513c1f80f65a0de2fb3c057841ebb42e8a12f"
+    },
+    {
+      "path": ".claude/skills/cosmos3-setup/SKILL.md",
+      "size_bytes": 4334,
+      "sha256": "sha256:57c158aab70fd69e22b394f10e320cecfb0aaf68ed8c99d19de85c1778c46b9e"
+    },
+    {
+      "path": ".config/rumdl.toml",
+      "size_bytes": 549,
+      "sha256": "sha256:ee73e495b22cafd5480e46efde667d4c040fa22001162a9299ce7aab480327f8"
+    },
+    {
+      "path": ".coveragerc",
+      "size_bytes": 586,
+      "sha256": "sha256:c83eb9f510f8fe16418df5d113d5a54104f592ca8a189d0e451ab51e3aea2cbb"
+    },
+    {
+      "path": ".dockerignore",
+      "size_bytes": 109,
+      "sha256": "sha256:e2956dc16ab68c40333133288bd980993ac0d7dbb979acfd5354ef11cd1c08cd"
+    },
+    {
+      "path": ".file_mapping.json",
+      "size_bytes": 61437,
+      "sha256": "sha256:a1e8e64c5da78c33d663bd31fdea88ddf053ba0c40f3f279f54c12b43d0c3ca0"
+    },
+    {
+      "path": ".gitattributes",
+      "size_bytes": 793,
+      "sha256": "sha256:afe1a73ca094b31c4ff8ebc8cd084496e9ee28b6b39b48d3352fdcff97d24a58"
+    },
+    {
+      "path": ".github/ISSUE_TEMPLATE/bug_report.md",
+      "size_bytes": 1716,
+      "sha256": "sha256:97eadae3f5201f46a05dd85406e8f11e4b3539aa4429e50580fedd483bc7e68b"
+    },
+    {
+      "path": ".github/workflows/docker-build.yml",
+      "size_bytes": 2152,
+      "sha256": "sha256:85917df0c55e0f27a488b235fb6418f001e870b17993ca456de2ffad9e68af03"
+    },
+    {
+      "path": ".github/workflows/gpu-tests.yml",
+      "size_bytes": 15601,
+      "sha256": "sha256:33beea8e8c3037ba992d44b09e8b4ae71a35c055cf58ba4f396f4092379978d0"
+    },
+    {
+      "path": ".github/workflows/pre-commit.yml",
+      "size_bytes": 687,
+      "sha256": "sha256:ab96eb76ebd96c905f38a50dbb79d9f1fdd5893b07875b71dfc59125aa14cb1e"
+    },
+    {
+      "path": ".gitignore",
+      "size_bytes": 4838,
+      "sha256": "sha256:b730e84a3de43f5b577d47e214beddfedb2a259c70f8925f86d5e2290ed69883"
+    },
+    {
+      "path": ".gitleaks.toml",
+      "size_bytes": 198,
+      "sha256": "sha256:985aac2cb569e49628856331852bf7f63045d03c55140058fdc68f967254cb20"
+    },
+    {
+      "path": ".pre-commit-config.yaml",
+      "size_bytes": 1805,
+      "sha256": "sha256:13daa75a2870877a9b8ef2cd79b6d8c5bdae11dfaaac0ad7c982699f7aaccc57"
+    },
+    {
+      "path": ".pytest.toml",
+      "size_bytes": 865,
+      "sha256": "sha256:86c0221ddd94a971d294a95e6f5c9963f3e37ade367f5dce0dbcc20a4e397b06"
+    },
+    {
+      "path": ".python-version",
+      "size_bytes": 5,
+      "sha256": "sha256:02e735b3dfe1c32833eb550b7ff8ffa17f5f2bc3fa1e7bae61a8f5a3883ce398"
+    },
+    {
+      "path": ".ruff.toml",
+      "size_bytes": 610,
+      "sha256": "sha256:790ec5710cfd967f5a1e90456cd1801bd8ce751b1b1da18b572da79b166ed6b7"
+    },
+    {
+      "path": "AGENTS.md",
+      "size_bytes": 9789,
+      "sha256": "sha256:71cc0e8491bf3a77c4ea511694422f55f0195c5337a01ff72dae6c47c2e1a4f0"
+    },
+    {
+      "path": "ATTRIBUTIONS.md",
+      "size_bytes": 3039051,
+      "sha256": "sha256:cc059c9b163ad96d92edbdd1f23e08e1c2b6e25f2be607722f37efcac6399a87"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "size_bytes": 657,
+      "sha256": "sha256:a599f371311ebb2bfad6a8208a4d0576c7ef845936a8b825408c032fca607ae7"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "size_bytes": 3734,
+      "sha256": "sha256:ad54b9eec87ad76e5a880684907bb2523440243a80c3ea9979a6e9130e81d90c"
+    },
+    {
+      "path": "Dockerfile",
+      "size_bytes": 2221,
+      "sha256": "sha256:ddb527c5a6a71639cb4e555670a68572694fd730df20b0bacf7b886f0b3c858d"
+    },
+    {
+      "path": "LICENSE",
+      "size_bytes": 2694,
+      "sha256": "sha256:6bd3fdb9356edb6e4c1f00ad9cd6639a1cf06ca0a415a5071fd70d68799209e6"
+    },
+    {
+      "path": "NOTICE",
+      "size_bytes": 1929,
+      "sha256": "sha256:0a3ebe37fb632d02a6a4d1cfce96109bb026b7833d8a3f0853091bb303c21ad9"
+    },
+    {
+      "path": "README.md",
+      "size_bytes": 8345,
+      "sha256": "sha256:f03087e7c7bce1d8eac7feb78eb9cc60fb8fea495ee7948cdb0e9da18d7ae739"
+    },
+    {
+      "path": "RELEASE.md",
+      "size_bytes": 352,
+      "sha256": "sha256:3e6ff729e9693e1037076a46f124432d5d9302a9ce27e6eb87d363192fb98e2a"
+    },
+    {
+      "path": "SECURITY.md",
+      "size_bytes": 3786,
+      "sha256": "sha256:de83b64e10ae4881d1256629e286537c6f34b07e2c0614dca9aa4c3bc30efc2f"
+    },
+    {
+      "path": "ci/.link-check.json",
+      "size_bytes": 173,
+      "sha256": "sha256:aa9ac80aadc55e38c0238733567686529bd59283ac4cc7751006810a913664fe"
+    },
+    {
+      "path": "ci/.markdown-toc-creator.toml",
+      "size_bytes": 217,
+      "sha256": "sha256:cefde1dcb46b84916783115500dbc485ae4e5a37b11345269ad554b78b0c2590"
+    },
+    {
+      "path": "ci/.pre-commit-config-base.yaml",
+      "size_bytes": 431,
+      "sha256": "sha256:87679792c93a9c89330812312c307d695e845068228160f57a146ae1fea32997"
+    },
+    {
+      "path": "ci/license.txt",
+      "size_bytes": 134,
+      "sha256": "sha256:9ec9284ade9e8853dfd8894cc87c4d7f5698938bdeea130e6dc56aa53eb4a069"
+    },
+    {
+      "path": "ci/uv_lock.sh",
+      "size_bytes": 446,
+      "sha256": "sha256:fcf5e81e453c83b5c23e2f637a5fa2e5e21a80d37ec11bffc3cd506adf265574"
+    },
+    {
+      "path": "ci/uv_lock_script.sh",
+      "size_bytes": 475,
+      "sha256": "sha256:eef9bd82e8dc9582265a9a2ded507dbe03212d4c6c227ecc4d8fce2aadefefd8"
+    },
+    {
+      "path": "conftest.py",
+      "size_bytes": 10424,
+      "sha256": "sha256:d89e9d9990d539f90ca154a4df04c62ddba8672d8fb5b49cfb2f23cd04e06cb3"
+    },
+    {
+      "path": "cosmos_framework/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/blocklist/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/blocklist/blocklist.py",
+      "size_bytes": 10580,
+      "sha256": "sha256:aeb6bd26f0eaea6e7453bbd5062f01836223de63c0d5a5dce9d630b2ef4fc8e0"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/blocklist/blocklist_test.py",
+      "size_bytes": 1300,
+      "sha256": "sha256:d78c0bfb5bb69999b9cb331606997d86af38ad6341d5cfcded8d7e992b42191e"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/blocklist/profile_blocklist.py",
+      "size_bytes": 2370,
+      "sha256": "sha256:a6aaf7a936faf1f928e931acdf9f5e246c2fca953a6fa5b5996c4b4342854b2d"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/blocklist/utils.py",
+      "size_bytes": 1001,
+      "sha256": "sha256:155c5d2fcd3cc8a249196667ece803474bc5212422374d635523a8ae656b24a4"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/common/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/common/core.py",
+      "size_bytes": 2524,
+      "sha256": "sha256:68f863d7c18bc7fc628ebff08efbb7f5949324322d83df0cde0ebdaa88fe2ce7"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/common/io_utils.py",
+      "size_bytes": 2118,
+      "sha256": "sha256:3491c288b3f5c64e828461e2a507cba6c6e3be67564553269e78fe9e3752a313"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/common/presets.py",
+      "size_bytes": 2361,
+      "sha256": "sha256:ef722cb60dce210f6f6fef2aabcba2b3a9a70a8eca9cf6883e67d2b32b26a345"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/face_blur_filter/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/face_blur_filter/blur_utils.py",
+      "size_bytes": 779,
+      "sha256": "sha256:197df3fbfd31759f0bf35185870106f6183c01542994a89cd315a6277524e74f"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/face_blur_filter/face_blur_filter.py",
+      "size_bytes": 8599,
+      "sha256": "sha256:0a4ee3c8362703202d3e2e745ff724b3044a03898b7cc295273e84f3af176d6b"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/face_blur_filter/retinaface_utils.py",
+      "size_bytes": 4123,
+      "sha256": "sha256:9da21976c188a5a6a8fd458504b07273bc790c886418bfb6fd39027d0b43dea6"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/llamaGuard3/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/llamaGuard3/categories.py",
+      "size_bytes": 574,
+      "sha256": "sha256:3c05348beb7bf270e29b24337911e96305a5a96cd0f15289f0b9ff91b1ffea6f"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/llamaGuard3/llamaGuard3.py",
+      "size_bytes": 4988,
+      "sha256": "sha256:cd58e8bcdb0d05638c78d8aafb5bc99aec586335696f95685e4a0055f6d15411"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/qwen3guard/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/qwen3guard/categories.py",
+      "size_bytes": 349,
+      "sha256": "sha256:97e3774ba67680885aa2c71e3f009db6390de88d43cb675162d8c58ace7d458e"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/qwen3guard/qwen3guard.py",
+      "size_bytes": 3606,
+      "sha256": "sha256:3e102cef96d0f11b3af2d0b22eec54f0c7e41f9355ad8742a432681d56211be6"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/video_content_safety_filter/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/video_content_safety_filter/model.py",
+      "size_bytes": 1495,
+      "sha256": "sha256:fc29df7d7155c7723116787c5195fa401e35fa08ec79fde934b38de5f3b06d6a"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/video_content_safety_filter/video_content_safety_filter.py",
+      "size_bytes": 8162,
+      "sha256": "sha256:a8480e119eae95886a68d2d970a4b562112db555af34ecdefc36d61cbc44f94f"
+    },
+    {
+      "path": "cosmos_framework/auxiliary/guardrail/video_content_safety_filter/vision_encoder.py",
+      "size_bytes": 1204,
+      "sha256": "sha256:8e8ad2d42b8ef63eb5d6e8b1a349a163d984e175e8cb20b7767d13c044c7a622"
+    },
+    {
+      "path": "cosmos_framework/callbacks/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/callbacks/compile_tokenizer.py",
+      "size_bytes": 4772,
+      "sha256": "sha256:db15603e966d21f6f8a0f4d716e115b340b59dd3b6a11cec6d86f7c666396f0a"
+    },
+    {
+      "path": "cosmos_framework/callbacks/cosmos_dataloader_state.py",
+      "size_bytes": 8564,
+      "sha256": "sha256:dc48fd4cb2fe3b100d9319b6ebec92a6d60aeb0c84526797c310af31fe4863bc"
+    },
+    {
+      "path": "cosmos_framework/callbacks/data_stats.py",
+      "size_bytes": 10806,
+      "sha256": "sha256:5b047ed4719b6104c0145d91c069c17fcfc1d3484514f9ff34bfb40453508a70"
+    },
+    {
+      "path": "cosmos_framework/callbacks/dataloader_state.py",
+      "size_bytes": 4013,
+      "sha256": "sha256:14dabf0f238e10bc721bfca540df51a62df9d7f0dfdb2edef5fbf6c89bbb448e"
+    },
+    {
+      "path": "cosmos_framework/callbacks/device_monitor.py",
+      "size_bytes": 7556,
+      "sha256": "sha256:d73816f5d6c9a0fa3a22d61235c87b8eefb3d70e6df4fdd31bee480b8ba62029"
+    },
+    {
+      "path": "cosmos_framework/callbacks/dit_image_sample.py",
+      "size_bytes": 3335,
+      "sha256": "sha256:79fdfb7501c6e87a99e6a492de84581c471461f823e2567677c8c5721a36bfb4"
+    },
+    {
+      "path": "cosmos_framework/callbacks/dmd2_metrics.py",
+      "size_bytes": 8087,
+      "sha256": "sha256:840a8e1342a6b584828abb6ad03e0efee18ba3b710f07ac14b57a856e4fc410b"
+    },
+    {
+      "path": "cosmos_framework/callbacks/dmd2_metrics_test.py",
+      "size_bytes": 8465,
+      "sha256": "sha256:cdd5cf177e2e762631c953c58ed30100ef467d9e36946f2b2fb7e3c199c0f42d"
+    },
+    {
+      "path": "cosmos_framework/callbacks/every_n.py",
+      "size_bytes": 2906,
+      "sha256": "sha256:ea64e8e9f7ce201bea3b6e2b53cf1415b98ed7dae6f1a3fb0111e3dd0f1b5d36"
+    },
+    {
+      "path": "cosmos_framework/callbacks/every_n_draw_sample.py",
+      "size_bytes": 38772,
+      "sha256": "sha256:19bfbe159047f6478f89fa0c14372f50b0c8b37889dd5cc4a89fb772000e14de"
+    },
+    {
+      "path": "cosmos_framework/callbacks/expert_heatmap.py",
+      "size_bytes": 4381,
+      "sha256": "sha256:8ff05f34dc099d79ed8a8a57219a40a57fb23d4036d841a537478181a2b8a570"
+    },
+    {
+      "path": "cosmos_framework/callbacks/grad_clip.py",
+      "size_bytes": 14965,
+      "sha256": "sha256:f0ae79acb76d608990eb14d2864fe57a3d79a7add9109b29ec8f7343da330702"
+    },
+    {
+      "path": "cosmos_framework/callbacks/grad_clip_distillation.py",
+      "size_bytes": 6184,
+      "sha256": "sha256:a1f5cc6c165c7f0462e41700efcca0b9c6dd15e27bc06cd8e285583aa2024d67"
+    },
+    {
+      "path": "cosmos_framework/callbacks/grad_clip_distillation_test.py",
+      "size_bytes": 7949,
+      "sha256": "sha256:532da125baeb3bb769a5c6d322c0a06b1fde63243545949f45c6608ed4f4db0d"
+    },
+    {
+      "path": "cosmos_framework/callbacks/heart_beat.py",
+      "size_bytes": 3683,
+      "sha256": "sha256:33e722e722efae2d10132574968159ec92d5a7067538fc052b27d270b8393c9a"
+    },
+    {
+      "path": "cosmos_framework/callbacks/hf_export.py",
+      "size_bytes": 22055,
+      "sha256": "sha256:75887b44040716023f37d081ee39a3fafd1b681a435c3d485d5bfe57ffb16815"
+    },
+    {
+      "path": "cosmos_framework/callbacks/iter_speed.py",
+      "size_bytes": 4941,
+      "sha256": "sha256:8915b0db5c9bb8437b241d52b3b88067bfb66515a34fdce3e524421e7ca82f23"
+    },
+    {
+      "path": "cosmos_framework/callbacks/learning_rate_logger.py",
+      "size_bytes": 2362,
+      "sha256": "sha256:98918ba8ddcac35f6d57c58088e76d7ab8d13f37285789c8d43c56c6a15d27fe"
+    },
+    {
+      "path": "cosmos_framework/callbacks/load_pretrained.py",
+      "size_bytes": 1461,
+      "sha256": "sha256:54f02ba523e5c2be1d2ace01b491da46f884cbb05179c2622ba92ed5e7c5bb81"
+    },
+    {
+      "path": "cosmos_framework/callbacks/log_tensor_shape.py",
+      "size_bytes": 1366,
+      "sha256": "sha256:93693400f70657d0da658354027137a6952d39cdbaf19e41a83cdf3651408625"
+    },
+    {
+      "path": "cosmos_framework/callbacks/manual_gc.py",
+      "size_bytes": 1366,
+      "sha256": "sha256:4d07956275f48117716b47595663eead9d9ba32e261d7d8d64d8631f9eded4a2"
+    },
+    {
+      "path": "cosmos_framework/callbacks/mfu.py",
+      "size_bytes": 13162,
+      "sha256": "sha256:58901d6baf3c5ea7589f2f8fb68cc90b5e82fd3d2780d88b9a48970a9e214b9c"
+    },
+    {
+      "path": "cosmos_framework/callbacks/moe_specialization_callback.py",
+      "size_bytes": 8439,
+      "sha256": "sha256:9cca86a06a91f631a5b1bc829f888a4ade1cb24ae63bfc7c2c0d7feb70b0577b"
+    },
+    {
+      "path": "cosmos_framework/callbacks/moe_stability_callback.py",
+      "size_bytes": 26583,
+      "sha256": "sha256:a93d7f763fe08fec86de3f58aa25197077ae799b13bc3370a77fe5bc1683c826"
+    },
+    {
+      "path": "cosmos_framework/callbacks/norm_monitor.py",
+      "size_bytes": 15233,
+      "sha256": "sha256:ce3dec2ea7daddd0c6263a7595b32ab8f6aa9973a7761f8b2ee6da0cadccaec1"
+    },
+    {
+      "path": "cosmos_framework/callbacks/ofu.py",
+      "size_bytes": 11000,
+      "sha256": "sha256:e80be1bea7ad94d4b34a44a6519d43209d14832c96dd76ce698fb8e870984e79"
+    },
+    {
+      "path": "cosmos_framework/callbacks/param_count.py",
+      "size_bytes": 1277,
+      "sha256": "sha256:9802628f521c02f8f900510be28773b786bfe28637decb664570a702394fb660"
+    },
+    {
+      "path": "cosmos_framework/callbacks/sampled_media_recorder.py",
+      "size_bytes": 11164,
+      "sha256": "sha256:4f8c8eb83df8b36b16fd7271943e59f6ce579c11f367eed5bc888a4458ae9a48"
+    },
+    {
+      "path": "cosmos_framework/callbacks/sampled_media_recorder_test.py",
+      "size_bytes": 3742,
+      "sha256": "sha256:a853113f3fbf1c876343f51304dd34c17f2dbe6fc07f181071e5656d86b52db8"
+    },
+    {
+      "path": "cosmos_framework/callbacks/sequence_packing_padding.py",
+      "size_bytes": 2755,
+      "sha256": "sha256:0746f03ec9f5bb0cdea2f27eaeb97adc75b1ba11dd6c97d080ae7d3d383f9033"
+    },
+    {
+      "path": "cosmos_framework/callbacks/sigma_loss_analysis.py",
+      "size_bytes": 13631,
+      "sha256": "sha256:adb740ecbef8f4337896a1ac96c549ecabce6d5ef25906f7f10de7bee441b59d"
+    },
+    {
+      "path": "cosmos_framework/callbacks/skip_nan_step.py",
+      "size_bytes": 2945,
+      "sha256": "sha256:e132b239d01de7149440944265365bc6e74ceaa85b5690f7f47324c9030fb987"
+    },
+    {
+      "path": "cosmos_framework/callbacks/termination_signal_checkpoint.py",
+      "size_bytes": 8186,
+      "sha256": "sha256:a8c3f65a34a0754387909d02eed9c3815ccc6d5d1b9a3f99da5d7778819867ba"
+    },
+    {
+      "path": "cosmos_framework/callbacks/tokens_per_sec.py",
+      "size_bytes": 23613,
+      "sha256": "sha256:4e24f06f8db102253003ace2abaf659f34a36d255b572b272b794ebe19b32fc4"
+    },
+    {
+      "path": "cosmos_framework/callbacks/training_stats.py",
+      "size_bytes": 12485,
+      "sha256": "sha256:c61667ef2b09be2f9aaf5801f3e594a12c68dea8a046dfe91ea48bec1117ddd0"
+    },
+    {
+      "path": "cosmos_framework/callbacks/wandb_log.py",
+      "size_bytes": 10070,
+      "sha256": "sha256:1baa9a6e3e86dcb0e522ba603b827d11df51205d05f9ad647af168cf4efb1a40"
+    },
+    {
+      "path": "cosmos_framework/callbacks/wandb_log_eval.py",
+      "size_bytes": 5141,
+      "sha256": "sha256:dcd62e38a3c5a448e2232ddaaf117521279d7d1d516733872fffb7225b00b362"
+    },
+    {
+      "path": "cosmos_framework/callbacks/wandb_vis.py",
+      "size_bytes": 3729,
+      "sha256": "sha256:9759f4632305cf5a287a48f4cad6a279dbecfe6660ff09b6a0182323b943c2e7"
+    },
+    {
+      "path": "cosmos_framework/checkpoint/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/checkpoint/base.py",
+      "size_bytes": 6916,
+      "sha256": "sha256:e894920655d640d363c277163adad7b8226ea0c375ffb8bde4b87876d9e6d943"
+    },
+    {
+      "path": "cosmos_framework/checkpoint/dcp.py",
+      "size_bytes": 54891,
+      "sha256": "sha256:a0d3b4a0a400a3a261159fb448f752ae51dafa3b746bbe63e6e716acde5cc36c"
+    },
+    {
+      "path": "cosmos_framework/checkpoint/dcp_distill.py",
+      "size_bytes": 17534,
+      "sha256": "sha256:b2e9783aea7cb7cf647c71053c349b82c4551766af796be4aabdc06617778b11"
+    },
+    {
+      "path": "cosmos_framework/checkpoint/dcp_distill_test.py",
+      "size_bytes": 9556,
+      "sha256": "sha256:6a2b8caa2ad42ec0d7dc6d418eb79e0fb73d5088c09d50b293e5db859e86219e"
+    },
+    {
+      "path": "cosmos_framework/checkpoint/dummy.py",
+      "size_bytes": 1063,
+      "sha256": "sha256:b1c488cf13262e96603849fa7539ecfb9a68867d077605b88844e8e34c9b673d"
+    },
+    {
+      "path": "cosmos_framework/checkpoint/s3_filesystem.py",
+      "size_bytes": 16818,
+      "sha256": "sha256:f95c453020ab557395e055a84e7047f3dba74f23529a305fb9af2f700beda724"
+    },
+    {
+      "path": "cosmos_framework/configs/base/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/config.py",
+      "size_bytes": 4062,
+      "sha256": "sha256:9531372f8ab4ee13cce41b0f4057f6e7bddfc75896424c2d8a0de87ad74efc8b"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/activation_checkpointing.py",
+      "size_bytes": 2924,
+      "sha256": "sha256:d100faeccb8c7020a613b3deba918bf719f9e773b56ce6b2294d3afd48acd8e0"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/callbacks.py",
+      "size_bytes": 8964,
+      "sha256": "sha256:7664b51bb15026f5f6bd32ccbb950ceb42b925f09d7314bce3e77a642da09a15"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/checkpointer.py",
+      "size_bytes": 4521,
+      "sha256": "sha256:28ae8b211f052f1ac83c9bc4619a6f61c01ce78605a637d90ee96d61f08b7a6f"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/compile.py",
+      "size_bytes": 2334,
+      "sha256": "sha256:3e43b65af3c50765050262bf429a8c0d70f064f82b13a9fafda059637f5a6920"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/ema.py",
+      "size_bytes": 605,
+      "sha256": "sha256:11a13500c846036a86bf18437a6af201de2b9ea4f288211050ddff7009f6afec"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/model.py",
+      "size_bytes": 1206,
+      "sha256": "sha256:279a36f1c86f1310570d1d0bbf9138ec97db498e65df51dd9a52e5b4f9b90634"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/model_config.py",
+      "size_bytes": 14358,
+      "sha256": "sha256:37f53592f858a251a737b2bfba699c261c6e8ca80f4c83c8b8fc6200065b6fa9"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/open_source_dataloader.py",
+      "size_bytes": 7709,
+      "sha256": "sha256:4a691261b51c6ff0f05b2d5910cd032dabee2603a01ec23be7cea6cefc10b8c4"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/optimizer.py",
+      "size_bytes": 6044,
+      "sha256": "sha256:c606963dfed248198256791cf48513f588d76f18c1f3e5f2ca99f970b6619180"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/parallelism.py",
+      "size_bytes": 2748,
+      "sha256": "sha256:d953ca96f5a6a9694ff0b46f6010e44dd191208dd328db3dc3e98ab5f3323db7"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/quantization.py",
+      "size_bytes": 2189,
+      "sha256": "sha256:5f53aad876e306cb35add5e98b47d8177fd910bd95faa96c028420a81e988244"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/reasoner.py",
+      "size_bytes": 40075,
+      "sha256": "sha256:d38698a585c2f4d877d4ba894e494b53fbbe0dc4eac199631408a554888c5add"
+    },
+    {
+      "path": "cosmos_framework/configs/base/defaults/tokenizer.py",
+      "size_bytes": 10782,
+      "sha256": "sha256:74f6dca4df0411b08ac96bd5c903fb1a9439a68f689614bde26c376b82579440"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/action/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/action/posttrain_config/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/action/posttrain_config/action_fd_droid_posttrain.py",
+      "size_bytes": 8686,
+      "sha256": "sha256:0c7bb5c7c3fc9b8998d3594ca80710da24d16c724d8855bf3adb15f568dc03eb"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/action/posttrain_config/action_policy_droid_nano.py",
+      "size_bytes": 11556,
+      "sha256": "sha256:bf60327828893b1a0d2dd330df587b5c206099f6d0ae27ffb74dbbe2acdfd587"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/action/posttrain_config/action_policy_libero_all_nano.py",
+      "size_bytes": 10415,
+      "sha256": "sha256:cda509dfc289fc5b9b07220c09f44b5ed830f585dc01bbd703257d407e107347"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/action/posttrain_config/action_policy_libero_nano.py",
+      "size_bytes": 10465,
+      "sha256": "sha256:091fb0419e34577b524693733af94120185780a27d83de213573e1bdac35b2d8"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/action/pretrained_config/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/distillation/__init__.py",
+      "size_bytes": 227,
+      "sha256": "sha256:8602c50590e36043fad1ab059523ae8bf455be4d31deac6740e2f061506df358"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/distillation/dmd2_config.py",
+      "size_bytes": 6380,
+      "sha256": "sha256:0e59ea1c8333a81bf34eaf1922edf5fb8a6377a59c27dd6ef60c131de3041cb8"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/distillation/dmd2_config_test.py",
+      "size_bytes": 2097,
+      "sha256": "sha256:44b26f3e390cf58abca34259f735da08b80c9fbef22f39d00164f5d94d560a3f"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/posttrain_video/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/sft/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/sft/models/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/sft/models/edge_model_config.py",
+      "size_bytes": 7632,
+      "sha256": "sha256:dcdbbbbce3d9864a39144ad1abbe6c1a64c699d9da9ed75ed5cf0404c82089b5"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/sft/models/nano_model_config.py",
+      "size_bytes": 5160,
+      "sha256": "sha256:5a4a166efb66086216f445fe1b57ec8df501115484eab18728307a8dd8c864d0"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/sft/models/super_model_config.py",
+      "size_bytes": 5829,
+      "sha256": "sha256:37d503cbda9ab71c6eac65114b06398fce0f189a07e30872fd77beafce59a24c"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/sft/vision_sft_edge.py",
+      "size_bytes": 12492,
+      "sha256": "sha256:5c6feeee0e4650d86ca02c3ffc63265f05b60957b7ec091a51b8e7751a95727a"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/sft/vision_sft_nano.py",
+      "size_bytes": 14754,
+      "sha256": "sha256:40664eff08edd5484f36a281c5da30314d2929b4ca26d959cb69afd75c5d7571"
+    },
+    {
+      "path": "cosmos_framework/configs/base/experiment/sft/vision_sft_super.py",
+      "size_bytes": 12964,
+      "sha256": "sha256:871246d042b59aba0dcaf3edee28a95214d3cc1190d39ea292957c4ce22ca681"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/config.py",
+      "size_bytes": 2146,
+      "sha256": "sha256:7252164cfc25b91a7b8207a69debe7dcaef0a38d919bbda2532cf8baae66d5ee"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/defaults/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/defaults/callbacks.py",
+      "size_bytes": 3950,
+      "sha256": "sha256:b39816636b6ab1240f0a1efe2f107531aea67a8c122248842e792885cb66eb92"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/defaults/checkpointer.py",
+      "size_bytes": 2934,
+      "sha256": "sha256:811f0df01882f161a36fa0f309b8638708257c6c5bbd7eabf1b94de113c46757"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/defaults/config.py",
+      "size_bytes": 2799,
+      "sha256": "sha256:4dc85e11317fb4326d7a0d528a91d58561fc0bb3262d3871a06ea37a7a2d9de7"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/defaults/model.py",
+      "size_bytes": 957,
+      "sha256": "sha256:f2c00083746a83b05af95a4b17d94db7edc531fafeb488d82e2f8674dbcb018d"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/defaults/optimizer.py",
+      "size_bytes": 1462,
+      "sha256": "sha256:0e1785bbd9722c0d6de33aeb4b3fcb6f797ca188a9c6428dc59f6e929f512215"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/defaults/policy_config.py",
+      "size_bytes": 2842,
+      "sha256": "sha256:d904697d9bb2bdeff04dd088fc34e2c3584a31b179dc6b8084c1722db77296a6"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/defaults/vlm_policy.py",
+      "size_bytes": 5753,
+      "sha256": "sha256:5122ac08d361b3181181afc4fcec239b365b820f71c21358f3c75fcd31d80df6"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/experiment/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/experiment/dataflow_roles.py",
+      "size_bytes": 8643,
+      "sha256": "sha256:8a1f013b66c75a581579dcd7e755ed8e2870e727b127bac8ea6dccb5b1634363"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/experiment/llava_ov_vlm.py",
+      "size_bytes": 12165,
+      "sha256": "sha256:12a5676b2d2423b16fdb6bc8b43cbda17c9249453719b6372d464d6125c663ba"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/experiment/utils.py",
+      "size_bytes": 444,
+      "sha256": "sha256:8a212aa69e6343ae64abeb588708e7a5ea580bd5acc0575455ba8153a4e31754"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/experiment/videophy2_dataflow_roles.py",
+      "size_bytes": 6161,
+      "sha256": "sha256:870eb82865d0e0e1daaa34d4b59c51535257076052b453de215eddd610734e64"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/experiment/videophy2_sft_edge.py",
+      "size_bytes": 9747,
+      "sha256": "sha256:4d127eacdfe95f5e892b9e1dd9df2bf1ed6c3973da7f1576230be85a5d0ac42e"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/experiment/videophy2_sft_nano.py",
+      "size_bytes": 9398,
+      "sha256": "sha256:64b7e2a5f123db7dc28ca579f57dda5ac0b53e4d7f66aa61f068b4ed21d27a2a"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/experiment/videophy2_sft_super.py",
+      "size_bytes": 3255,
+      "sha256": "sha256:30ec1048f527917e930a1e3edb02d453bff983d4d478ffc8c7b8f31a90f20890"
+    },
+    {
+      "path": "cosmos_framework/configs/base/reasoner/freeze_config.py",
+      "size_bytes": 1288,
+      "sha256": "sha256:c7683da765f64a20c7e219dca50684a929de5e27157884cde037b59767441406"
+    },
+    {
+      "path": "cosmos_framework/configs/toml_config/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/configs/toml_config/sft_config.py",
+      "size_bytes": 29745,
+      "sha256": "sha256:5e6dd98660033c8e720f5f9c8f9acb3b3c203dfa6d3187378a6641f6e5484836"
+    },
+    {
+      "path": "cosmos_framework/configs/toml_config/sft_config_test.py",
+      "size_bytes": 8697,
+      "sha256": "sha256:9bf20f2c050dd69b262b65ca375489bb46e2c91c99b3646c810861aed1ad2423"
+    },
+    {
+      "path": "cosmos_framework/configs/toml_config/toml_config_helper.py",
+      "size_bytes": 9696,
+      "sha256": "sha256:a30581355e5030a88afc8b13c3775bc5b8bff846b5f4b02a2333187bd7a48dbd"
+    },
+    {
+      "path": "cosmos_framework/data/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/data/generator/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/action_normalization.py",
+      "size_bytes": 2075,
+      "sha256": "sha256:39dc58152afb69413fce1e983585be170f78be90d59c968aea8a3cec136556c7"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/action_normalization_test.py",
+      "size_bytes": 5344,
+      "sha256": "sha256:e3cc88daf08de359a8c0aa72d134105dc5e4506e5c4258a211e21b24a9756b29"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/action_processing.py",
+      "size_bytes": 16335,
+      "sha256": "sha256:57433b5fce2a75200abd2d47704bf0ed052aa28884d12e5288c29f1898f48ef0"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/action_spec.py",
+      "size_bytes": 7565,
+      "sha256": "sha256:831aab578cafd852aa0eb5a7fb4fdb77b04c6ed0ea671cd68e4c1ba61b1bfcfd"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/agibot_fk.py",
+      "size_bytes": 16988,
+      "sha256": "sha256:095540ee353a7b17d0a4e8afd264b24986d692fb1f3410d01037c6fb40d545ed"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/agibot_spec.py",
+      "size_bytes": 4905,
+      "sha256": "sha256:3a4b4e571574d750b2988353ad966e3f5071e611de67be8a6a021afa0e96e45d"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/__init__.py",
+      "size_bytes": 1915,
+      "sha256": "sha256:8f390eae692d70d381c15de3deb10cd3a987d15da39070bf9630d7a1beb99b24"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/action_sft_dataset.py",
+      "size_bytes": 11158,
+      "sha256": "sha256:f7e6bdae2830fe1c78bfb1571f086bf12510373d860a2ed518f43ad0f511d5aa"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/agibotworld_beta_lerobot_dataset.py",
+      "size_bytes": 12341,
+      "sha256": "sha256:a9c2574bf8e83a6b9f4a9532d4fc6c31c7eebb3b8b5fb1ec1e6807c12565685f"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/base_dataset.py",
+      "size_bytes": 8438,
+      "sha256": "sha256:c3fb2d57a106be6965e4bfe456f43cad7afa1d5484870fa88a6da5e34f9c6f33"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/bridge_orig_lerobot_dataset.py",
+      "size_bytes": 5684,
+      "sha256": "sha256:16b9604360140fdf0074465ad52eddf8444c267973c45b441c920b475693ce87"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/cosmos3_action_lerobot.py",
+      "size_bytes": 44436,
+      "sha256": "sha256:7ea85004e62486e10749f10ece92e1290650d3858ac6f730ce9abf40b26dc018"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/droid_lerobot_dataset.py",
+      "size_bytes": 23641,
+      "sha256": "sha256:418fc30908ff485a0f1f23cf021339247b58c90b40790f0e53f21833c65ba5bb"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/droid_lerobot_dataset_config.py",
+      "size_bytes": 3805,
+      "sha256": "sha256:e3a857ca49a2a7e3e43829acbb6f6a393d725a147ca6f9420df4e07ed9b80684"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/droid_merged_lerobot_dataset.py",
+      "size_bytes": 3768,
+      "sha256": "sha256:b6656c00ff50a245f902ee3ebba07920188f63fc5b4d124576939c38bd12de8a"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/fractal_lerobot_dataset.py",
+      "size_bytes": 7889,
+      "sha256": "sha256:73c099e8c2bb851844cd52ec57553e8eeef7d52a8a83d509c7705596935b8152"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/human_hand_pose_lerobot_dataset.py",
+      "size_bytes": 9628,
+      "sha256": "sha256:63cfe4f26c736d2e6dbb4468c39e5b6049dd4eb060dea5264dd3b9b310e4636c"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/libero_lerobot_dataset.py",
+      "size_bytes": 16413,
+      "sha256": "sha256:dc13cf02ab5c69e324022caf87b03eb4e34486c3b5aefcd29a1e5fa5999c1b4c"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/robomind_franka_dataset.py",
+      "size_bytes": 11904,
+      "sha256": "sha256:1fa2bbcf842101d785831ce327bfb0627b7233b99f8e171e4ce930ecb1f38393"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/robomind_ur_dataset.py",
+      "size_bytes": 8238,
+      "sha256": "sha256:9c0089a531c0373d92b150d1cfa83a7a29843c9b6f1cfc30311ef2d6a74c436b"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/datasets/umi_lerobot_dataset.py",
+      "size_bytes": 7549,
+      "sha256": "sha256:85474433a83ed17e0958a8297a5ea70067cbdabfcaf117db4cc2d1be78edf219"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/domain_utils.py",
+      "size_bytes": 2774,
+      "sha256": "sha256:139e2929c86ad591d613a43b590884adb7ec37f19c1affaeb6bd3cde27a6ad19"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/json_formatter.py",
+      "size_bytes": 14711,
+      "sha256": "sha256:86498ec00b23683655ae3ccdd3055660326a05eb9037e8f54ff7c94c8665db1b"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/libero_pose_utils.py",
+      "size_bytes": 2552,
+      "sha256": "sha256:135c2944897bb4eeecebeb91516a6c7c07a07dd4795c8832b1d11b89e0ee63a1"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/agibotworld_beta_lerobot_stats.json",
+      "size_bytes": 663,
+      "sha256": "sha256:fb42efd7ae4594573996d91c049f98acb0be85d2cff326dc9cdc23a9b666c284"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/bridge_orig_lerobot_stats.json",
+      "size_bytes": 245,
+      "sha256": "sha256:e673c112e9809a2dc3ac4fffd42896c0a3c7538d4808eae35d62059af65cb267"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/droid_lerobot_stats.json",
+      "size_bytes": 232,
+      "sha256": "sha256:be878e8972d51ed3b35586deecf2aa51a88c68a5e688dad594d44b46ed14e411"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/fractal_lerobot_stats.json",
+      "size_bytes": 232,
+      "sha256": "sha256:598978deaaf863dccb208b34d519a14e4853cb2217df2c12f14362da0f4454a3"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/human_hand_pose_lerobot_stats.json",
+      "size_bytes": 1640,
+      "sha256": "sha256:2545af09c0286a1f4b2cb110740eba8bc9d7a8e4681acb93381e0a1f0945142a"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/libero_native_frame_wise_relative_rot6d.json",
+      "size_bytes": 2398,
+      "sha256": "sha256:bf20cb010fad4ee5754ad83dafab0fce509fc99594d75a3a151d07cf81c905ac"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/robomind_franka_dual_stats.json",
+      "size_bytes": 465,
+      "sha256": "sha256:5eaadbcf91a985306cf6585ba8b95014f6e1acd7eb4d3898592127f9efe9d3e7"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/robomind_franka_stats.json",
+      "size_bytes": 232,
+      "sha256": "sha256:02aa88afe6042c3c3bdcb622e65671baaba9f5f8d3aaf7e2ed8c8aab566a8059"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/robomind_ur_stats.json",
+      "size_bytes": 232,
+      "sha256": "sha256:f6dd1692da7680d1e26ceab23be1714cfc068d1a3c426a1b1036ff7ddc994519"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/normalizer_stats/umi_lerobot_stats.json",
+      "size_bytes": 465,
+      "sha256": "sha256:6afb7579f555c2890aa95087fe8e71c47a4ea84d79bef3c343a947bda8fabbe6"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/pose_utils.py",
+      "size_bytes": 31209,
+      "sha256": "sha256:c3039f9c5b7c13fc65ffbef67331ae2261f941686065073ef5eac28a6dac31d0"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/pose_utils_test.py",
+      "size_bytes": 7051,
+      "sha256": "sha256:de84ef58955c1d1ffe07c5de9a3b3c4e4ab589d057bd24ee9fa11416c4333c55"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/robot_assets/G1_omnipicker_calibrated.urdf",
+      "size_bytes": 54378,
+      "sha256": "sha256:81e763e4690e2fca1cffb6da18439697b8a37c663916f60e1a2f06f4c22027f1"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/robot_assets/ur5e_robotiq_2f85.xml",
+      "size_bytes": 18583,
+      "sha256": "sha256:e3124cebc0703a75c807a3d77a15eac8607052057de7f40901309746461c458a"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/transforms.py",
+      "size_bytes": 32707,
+      "sha256": "sha256:9efd26f6934aaec206014ed1f0c4535b464214e77b89ccb0e48a8bcf54e9212d"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/transforms_test.py",
+      "size_bytes": 11922,
+      "sha256": "sha256:b03d02f790dbfa81f1735051c4149c413ed3531a076a774c33ed6365eec90d3e"
+    },
+    {
+      "path": "cosmos_framework/data/generator/action/viewpoint_utils.py",
+      "size_bytes": 5052,
+      "sha256": "sha256:84d626b8401cef1a51401c17d829a36b9db5624b7e476dd0facfc0a4c51d87ad"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentor_provider.py",
+      "size_bytes": 62550,
+      "sha256": "sha256:641732205cf246bc7cae67f1d5d826f6f044968f2c650694b5965c44425efdc3"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/append_fps_frames_for_image.py",
+      "size_bytes": 931,
+      "sha256": "sha256:131af5808957ad7eb78e53fa7c3c2fe396a1a7b0bd29fecd3693e995ceb59bc0"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/audio_caption.py",
+      "size_bytes": 4110,
+      "sha256": "sha256:2c73e5ecbc1b90e742458136e54fd19171fe7b55ec2dc2f705dc1e7f1435c9ad"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/audio_parsing.py",
+      "size_bytes": 5997,
+      "sha256": "sha256:dfe391b528be1581f883a643a7b4f93b191db4f8f479015dd28ee8328d6a5cff"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/caption_embedding_keys.py",
+      "size_bytes": 1091,
+      "sha256": "sha256:e51b3c8c1e66badff8d6116f98eec1168efc2360cadcaecca0a33d512eaab9ff"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/caption_filter.py",
+      "size_bytes": 6686,
+      "sha256": "sha256:7e2b6a2efab7961bbcceb802b4efcb10da41c72e58167221771296c0b6a07e21"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/cropping.py",
+      "size_bytes": 3355,
+      "sha256": "sha256:8f5e2003f8f5d0fefb2ddb65f9bb324a0f4e472e0b402c76f13bdcdaf9b79ea4"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/duration_fps_text_timestamps.py",
+      "size_bytes": 5705,
+      "sha256": "sha256:bc1847150259fd785942e3f6d41cacf35d1d8919f965c8092dcb1e80c477eb42"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/idle_frames_text_info.py",
+      "size_bytes": 7498,
+      "sha256": "sha256:bba818081ae0abbc3a8fc7108925a06312ed23c4173faed71beea0f427c97d3e"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/image_editing_transform.py",
+      "size_bytes": 20279,
+      "sha256": "sha256:dbb83d4cada1331f9a466944ab82d2c18c1990edb486e04f5531dd28ee6aeb8d"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/image_editing_transform_test.py",
+      "size_bytes": 5049,
+      "sha256": "sha256:4faf49e49f6e4b917a5690dd649a61cade9492b226a2aaffcf818b98ca064b15"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/image_resolution_filter.py",
+      "size_bytes": 2002,
+      "sha256": "sha256:48323ada36c0b1e1f7aff16ce0ad114958fa564cd3e0f800db683156e95297f5"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/interleaved_image_transform.py",
+      "size_bytes": 14855,
+      "sha256": "sha256:a78ff399e5d99b44e58da603a26657498400425ee2b511931fa8d6c6a0baf42f"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/interleaved_image_transform_test.py",
+      "size_bytes": 1519,
+      "sha256": "sha256:8e9215c873ffac40993509b602dcf4f2d3912d47da405d23607607e6063a5cd6"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/interleaved_video_parsing.py",
+      "size_bytes": 25345,
+      "sha256": "sha256:ad1e75ff1b9cffc5a6829d5b8cd085452b084f82407678e07e8188a9375ef923"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/merge_datadict.py",
+      "size_bytes": 2906,
+      "sha256": "sha256:51c120239e29165bd252939cc26f301a1b678847ecbc21f6daa73eb73de36900"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/multi_reference_transform.py",
+      "size_bytes": 18281,
+      "sha256": "sha256:bf22e4fc364259eb7bd5cd9578e91a2485ae6e4ea06897ecad4c5dc3b973b794"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/pkl_to_media.py",
+      "size_bytes": 13966,
+      "sha256": "sha256:529639f2b8317adcade3eb0f7ec7c03d1750fa5c652f5ec096a911d87c0b68c3"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/bytes_to_media.py",
+      "size_bytes": 14694,
+      "sha256": "sha256:dd14ac040f4c67e79b065cc6143879c25b2cee79b5c0d7942e007d3d22eb04a3"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/filter_output_key.py",
+      "size_bytes": 1996,
+      "sha256": "sha256:e6e7e67fef8ccabc3095f13427c9c041c8516f2a53cddabc5e158c0b5dd86a81"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/filter_seq_length.py",
+      "size_bytes": 3073,
+      "sha256": "sha256:08a833bf955184c707b668158442f5d172ee4af6341a681f291636034f3689af"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/floating_number_format.py",
+      "size_bytes": 2914,
+      "sha256": "sha256:f41d41a90ae9ce5e0d42160fa97d5e6a3ac0903fe37c477eb29e20e011f1a46e"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/format_describe_anything.py",
+      "size_bytes": 11030,
+      "sha256": "sha256:f98933e3c8ac605e02a61630fe2ac30bf8ab96bcc21b1cd14ef0dc01aa8ddb40"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/nvlm_data_to_conversation.py",
+      "size_bytes": 10885,
+      "sha256": "sha256:b751d487f99335f324b5edf1b4b0d8ed9e3a15124cb187747ca2a2e80a782463"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/prompt_format.py",
+      "size_bytes": 5508,
+      "sha256": "sha256:5e5f4ff5514f883da23f10125473798ef90db464a85f4d2b3de03b34c1282c47"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/shuffle_text_media_order.py",
+      "size_bytes": 1774,
+      "sha256": "sha256:19b1c1233dac32afbc717e8eaddd098626318e9578c3b8219bdcec5a3eadb60a"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/timestamp.py",
+      "size_bytes": 22262,
+      "sha256": "sha256:054ca77e41943dd51d4039da3c4877dcdedc311a2d9e46e3712b265cec2d5455"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/timestamp_with_subject_tracking.py",
+      "size_bytes": 19376,
+      "sha256": "sha256:ad40c1d80cf5dc6bb7a8a1b9eacaafe5d795babb806dc7e6be7837257faa5385"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/timestamp_without_augment_message.py",
+      "size_bytes": 9013,
+      "sha256": "sha256:5ef35481f85947abb78857998bf973c642898e4497c0c6bc92e66c17f8aeac37"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/timestamp_without_end_time.py",
+      "size_bytes": 13663,
+      "sha256": "sha256:0664b37c408f1c3016b3297fb3edbb3b4ce023287498f140d57095fcf1a7e98f"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/tokenize_data.py",
+      "size_bytes": 18291,
+      "sha256": "sha256:60012f408dcbf33d527b4d3a2afcd9c9488fd503776911d41d385885dc5fbcac"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/user_prompt_caption_general.json",
+      "size_bytes": 4820,
+      "sha256": "sha256:215de7aab2cef3202055302fa717f000f453be107511593841e7e4e75f0e1796"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/reasoner/user_prompt_ocr.json",
+      "size_bytes": 5333,
+      "sha256": "sha256:69fe970a1054762018dacba21a5e1a1222042b1cba2d8278628fe38f362fa54a"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/resolution_text_info.py",
+      "size_bytes": 5750,
+      "sha256": "sha256:6822e58e0210c5b35f15680f64eb29c97a8d851376e661c5c415d38f670fd09a"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/sequence_plan.py",
+      "size_bytes": 8740,
+      "sha256": "sha256:3510bc0d1604ea227bc8f5f80df59a9181e828dab345bef4b7ab4feb288d91f1"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/sound_sequence_plan.py",
+      "size_bytes": 3953,
+      "sha256": "sha256:2a7a92daff5ce2920bdc3777f37ccfc31da8a527efed0b8b765c660ce84c8a99"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/text_tokenizer.py",
+      "size_bytes": 4336,
+      "sha256": "sha256:e2e515ea4b4ff27648a148dcb2b10910b8e093b21b08fb4b05c2d058fd2822d1"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/text_transforms_for_image.py",
+      "size_bytes": 15223,
+      "sha256": "sha256:c4ab643afdf729cea4603a2b9540ced2f8e8cc151b2119e689cfe2b014e3aa53"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/text_transforms_for_video.py",
+      "size_bytes": 34209,
+      "sha256": "sha256:095a8f1d298908100bfe72b63de459147d80b5e90879ba8b63deb3ee4cf9effc"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/torchcodec_callers_test.py",
+      "size_bytes": 7231,
+      "sha256": "sha256:8edbddcef1fb20595990db054d7734cf785c41b2ea5d65d41ed6ee37f74193b6"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/transfer_control_input/__init__.py",
+      "size_bytes": 419,
+      "sha256": "sha256:7ddee8108e4160204c8fbcee48cf3de4eedc917e429c5f497179aa46bb8ff117"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/transfer_control_input/blur.py",
+      "size_bytes": 9493,
+      "sha256": "sha256:a6c246775904770dab8687129fe8e4b32a40acfbe80ad2a087085798751ca53a"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/transfer_control_input/control_input.py",
+      "size_bytes": 30622,
+      "sha256": "sha256:62fa317a372d320dc906275806ef3ff9fe01281119e471008615ea5cd5a1fec6"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/transfer_control_input/fast_blur.py",
+      "size_bytes": 3332,
+      "sha256": "sha256:76cb96be500ab4750129f899b60ee0dc03e7316d68a8e370f7bb05dc082b0ae0"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/transfer_control_input/seg.py",
+      "size_bytes": 6318,
+      "sha256": "sha256:47b1bbdd16364618cf23de858c4963da356340bbfba8df6ffdb1b5be0c8465a3"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/transfer_control_transform.py",
+      "size_bytes": 14691,
+      "sha256": "sha256:3b7fcf181d2e16c5656ae16a4201792874c4a93ed8b39824881df73cd4434783"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/video_parsing.py",
+      "size_bytes": 45934,
+      "sha256": "sha256:2a25bacf6a84e5db42cc71b7c1402615dddaa3cf49260ec1c024cc7414d0c954"
+    },
+    {
+      "path": "cosmos_framework/data/generator/augmentors/video_parsing_test.py",
+      "size_bytes": 3186,
+      "sha256": "sha256:44e016d93125ccab43022eb8bab26fdf167787f8d4c1e33b3d41aa947a73799f"
+    },
+    {
+      "path": "cosmos_framework/data/generator/dataflow/__init__.py",
+      "size_bytes": 1426,
+      "sha256": "sha256:15a9aef246b9ca59e5ea0ce4978a5c582a2c1c335e986f6a0648eeac8c08c252"
+    },
+    {
+      "path": "cosmos_framework/data/generator/dataflow/base.py",
+      "size_bytes": 2115,
+      "sha256": "sha256:89cf7e7645da44eff901bef0aab2414550ae92f7e91812406ee5794cb8470948"
+    },
+    {
+      "path": "cosmos_framework/data/generator/dataflow/batchers.py",
+      "size_bytes": 14190,
+      "sha256": "sha256:4825d613be5f37b6cad220b01de6616c37e174a50ea2f3d89b190efaff00846f"
+    },
+    {
+      "path": "cosmos_framework/data/generator/dataflow/collators.py",
+      "size_bytes": 9001,
+      "sha256": "sha256:d36a603bbb6336a0cb54179dcd63d46ac216228d986d8e186752c62966b039d2"
+    },
+    {
+      "path": "cosmos_framework/data/generator/dataflow/distributors.py",
+      "size_bytes": 6851,
+      "sha256": "sha256:863b7dbd70c44fad3ebdb44d97199ee3758781ff0ce63a350a5e2a6f9dae1f21"
+    },
+    {
+      "path": "cosmos_framework/data/generator/dataflow/golden_vfm_test.py",
+      "size_bytes": 12295,
+      "sha256": "sha256:5d2330578c8c222100ee975db944744e599943b2b1f9439fb83da54759b9c549"
+    },
+    {
+      "path": "cosmos_framework/data/generator/dataflow/loader.py",
+      "size_bytes": 11094,
+      "sha256": "sha256:495557daa110c479f69836b9b931337ff0ade3e0ea80b0635bf2dbc691a6bf49"
+    },
+    {
+      "path": "cosmos_framework/data/generator/dataflow/processors.py",
+      "size_bytes": 509,
+      "sha256": "sha256:3074edcf14b23690b2c8e4b5e7cefcda2af5d1b2f2f734c56ff5943553b16536"
+    },
+    {
+      "path": "cosmos_framework/data/generator/dataflow/resume_test.py",
+      "size_bytes": 1629,
+      "sha256": "sha256:a7c7ef02a136c3dfd1145670022e832013cb0c7900084108201e7c492b58bfdc"
+    },
+    {
+      "path": "cosmos_framework/data/generator/joint_dataloader.py",
+      "size_bytes": 57871,
+      "sha256": "sha256:e9f56bcf67d98e2e51534444da67626dfd5d8ebb88db8ae9c9763bb2d0ab275c"
+    },
+    {
+      "path": "cosmos_framework/data/generator/local_datasets/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/data/generator/local_datasets/helper.py",
+      "size_bytes": 7663,
+      "sha256": "sha256:428b6062b3b73301b0197d8ac452b61b344f2796cf413a03c6815aa054d8af2c"
+    },
+    {
+      "path": "cosmos_framework/data/generator/local_datasets/sft_dataset.py",
+      "size_bytes": 32177,
+      "sha256": "sha256:4463142dcf48d448f109716cbe013ea5f005556e3a86726b64f522508b15f36e"
+    },
+    {
+      "path": "cosmos_framework/data/generator/local_datasets/sft_dataset_caption_test.py",
+      "size_bytes": 2188,
+      "sha256": "sha256:481836670d0ef16754bedbb1721bda59ef86b62aac6eb45f675108f330efb88a"
+    },
+    {
+      "path": "cosmos_framework/data/generator/local_datasets/transfer_sft_dataset.py",
+      "size_bytes": 16087,
+      "sha256": "sha256:f3e0bf6e54f17788f576130c734c45ea09337d17f110eb5a8aca40f2e20519cd"
+    },
+    {
+      "path": "cosmos_framework/data/generator/packing_iterable_dataset.py",
+      "size_bytes": 10347,
+      "sha256": "sha256:cea891a1715391227c419366d0818c81e257497d340a968062f93cb57d0070a6"
+    },
+    {
+      "path": "cosmos_framework/data/generator/processors/__init__.py",
+      "size_bytes": 9211,
+      "sha256": "sha256:ef931df5d42aaee967019fb9d847c81eb29d7850cf6ea53d3ea110fc25b890fd"
+    },
+    {
+      "path": "cosmos_framework/data/generator/processors/base.py",
+      "size_bytes": 8630,
+      "sha256": "sha256:7e1a191fe8281d9f2cae3d2213c0c4db18a9e5ad88e3e223f74c59548a718bf5"
+    },
+    {
+      "path": "cosmos_framework/data/generator/processors/cosmos3_edge_processing.py",
+      "size_bytes": 26882,
+      "sha256": "sha256:0d835e6161e6a4328c38a44815be112082179139441c544c1834701f2a891b44"
+    },
+    {
+      "path": "cosmos_framework/data/generator/processors/cosmos3_edge_processing_test.py",
+      "size_bytes": 8020,
+      "sha256": "sha256:6a84a865cb402634839b9fcd133bae834ac9df0fa3d79101d0e010050dab90e8"
+    },
+    {
+      "path": "cosmos_framework/data/generator/processors/nemotron3densevl_processor.py",
+      "size_bytes": 8975,
+      "sha256": "sha256:bc06ad5a0303f48b66b7cc9cb5f93afd41a0065d35cfabb2a45ef8634fd052a9"
+    },
+    {
+      "path": "cosmos_framework/data/generator/processors/nemotronvl_processor.py",
+      "size_bytes": 21136,
+      "sha256": "sha256:1ba3778ee2fe9340d2d76877e707dc6c51f58ec8becd55f4e60389a39d7976ff"
+    },
+    {
+      "path": "cosmos_framework/data/generator/processors/qwen3vl_processor.py",
+      "size_bytes": 9650,
+      "sha256": "sha256:aa7f99cc9d4972d7992a54dd3da96dd362da75ec292e2e85b871c704e7925b18"
+    },
+    {
+      "path": "cosmos_framework/data/generator/reasoner/video_decoder_qwen.py",
+      "size_bytes": 11137,
+      "sha256": "sha256:c175ae931a9aae37cc21a53d3fab859f26c26ed5a4fe07cdfca374344ab08e13"
+    },
+    {
+      "path": "cosmos_framework/data/generator/recipe_database_api.py",
+      "size_bytes": 2904,
+      "sha256": "sha256:fa9439bd30386d0984353106d0f6b3370c6fc6e8e16d6a16b143a491f4d0e10e"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/__init__.py",
+      "size_bytes": 670,
+      "sha256": "sha256:c22cb8955903d8eb3109956425d867e38904ce6d4ee5ac148dbd5f15c55df732"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/modalities.py",
+      "size_bytes": 23888,
+      "sha256": "sha256:074225e14f326afac63b8ac844501fe086b4a5605ce54daa49007aeb56489fbd"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/modality.py",
+      "size_bytes": 11153,
+      "sha256": "sha256:8ada9d183128816b9fce2a6e193e147b1e37ce4b31753078ff4e5279829b02a3"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/mrope.py",
+      "size_bytes": 11117,
+      "sha256": "sha256:4f0e1dd70183a8834328cda816e921903a9594115fb88839f3356e2830677ef2"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/natten.py",
+      "size_bytes": 22400,
+      "sha256": "sha256:921256a0f316a10622294f2d6ace710a998ae7686182f6635fe332ee3ed0067f"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/packers.py",
+      "size_bytes": 23638,
+      "sha256": "sha256:9a208f91fa86d278f0c2689bfea156e3f0cf10bed87b34d30d5d6f43aff883e9"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/runtime.py",
+      "size_bytes": 20955,
+      "sha256": "sha256:1ab37d79813e5f24f4e4f178299acb69e62e75ca94011a5e45ae2315c9b008eb"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/sequence.py",
+      "size_bytes": 49731,
+      "sha256": "sha256:51b0ed4f47168c95a2d0e35089b904023dd308d7740d7d2c2bd443baa2af475c"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/temporal_causal.py",
+      "size_bytes": 14838,
+      "sha256": "sha256:cc69a6b01ee63e5ace308c4fdb526b683116e5f3800378865802dfc449e17666"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sequence_packing/types.py",
+      "size_bytes": 20356,
+      "sha256": "sha256:36a3bea4b01160c1a53c6cb62ae462f2baef030ad39c972c258ddc461a66d654"
+    },
+    {
+      "path": "cosmos_framework/data/generator/sound_data_utils.py",
+      "size_bytes": 4271,
+      "sha256": "sha256:ab2a139d183029b04d6e488aaf2cf77bfc099b65618f072986c8fc647fcb768a"
+    },
+    {
+      "path": "cosmos_framework/data/generator/utils.py",
+      "size_bytes": 9665,
+      "sha256": "sha256:9bf541b01d010d4efd424cc0f2c8f459a0b0c5ed73ecc0a34b763a1b70f0fc90"
+    },
+    {
+      "path": "cosmos_framework/data/generator/watchdog.py",
+      "size_bytes": 10625,
+      "sha256": "sha256:f238f49d0e51866d64fd066f0cf98832e391088b64125e1d11e9fb8bbc983497"
+    },
+    {
+      "path": "cosmos_framework/data/imaginaire/webdataset/augmentors/augmentor.py",
+      "size_bytes": 1829,
+      "sha256": "sha256:e03c2e2c672e0ec6695d9ee59f2af38633317e9f0d047f254c31008f74be81ee"
+    },
+    {
+      "path": "cosmos_framework/data/imaginaire/webdataset/augmentors/image/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/data/imaginaire/webdataset/augmentors/image/cropping.py",
+      "size_bytes": 6114,
+      "sha256": "sha256:1337e4959e71f3d6d004496a0addf92e9147c5805f6f6df7398cac8312aac915"
+    },
+    {
+      "path": "cosmos_framework/data/imaginaire/webdataset/augmentors/image/flip.py",
+      "size_bytes": 1138,
+      "sha256": "sha256:9a4150a453e292ec0490664e314f337e128578f751c04939c1e89fad1ce1721a"
+    },
+    {
+      "path": "cosmos_framework/data/imaginaire/webdataset/augmentors/image/misc.py",
+      "size_bytes": 1822,
+      "sha256": "sha256:171ac9d79bb56fc64b0e17ce874d4629dfdd4a95e05a4a6fa31f102781d850c4"
+    },
+    {
+      "path": "cosmos_framework/data/imaginaire/webdataset/augmentors/image/normalize.py",
+      "size_bytes": 1351,
+      "sha256": "sha256:d2432f8874f7f35c87073e8753fd1d0f80d73ab8b9caae1b2afe5708bbbaec36"
+    },
+    {
+      "path": "cosmos_framework/data/imaginaire/webdataset/augmentors/image/padding.py",
+      "size_bytes": 2638,
+      "sha256": "sha256:0f2c3d1396f954f00ce93b78cd4ccb8865a4ae5f488b5fb7156277c081d0fadd"
+    },
+    {
+      "path": "cosmos_framework/data/imaginaire/webdataset/augmentors/image/resize.py",
+      "size_bytes": 7345,
+      "sha256": "sha256:af7745e7fed1e9f48bde09f29bfdad4da0a6d56f31a1f9ff1eaad01522130f59"
+    },
+    {
+      "path": "cosmos_framework/data/imaginaire/webdataset/augmentors/v3_text_transforms.py",
+      "size_bytes": 7085,
+      "sha256": "sha256:56ac28098804cb73e1393c11a6cce2ad58c03dc4124f7389b3d26140999ff084"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/data_sources_videophy2/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/data_sources_videophy2/data_weight/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/data_sources_videophy2/data_weight/default.py",
+      "size_bytes": 640,
+      "sha256": "sha256:5218dd8aef1a74876c944a9d0dcf09c50b37e71b7fda04c3a5c26087e98f326e"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/data_sources_videophy2/videophy2.py",
+      "size_bytes": 1903,
+      "sha256": "sha256:ee598d826a58ab6b38113393f532eabd1181fe33e8f1c61ebdec49ac548a797d"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/local_dataset_utils.py",
+      "size_bytes": 1581,
+      "sha256": "sha256:5386ed78abd3ea844a9a359e4dbb84004283f0079fcd418cc6d40521afc5a8c4"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/local_sft_dataset.py",
+      "size_bytes": 15573,
+      "sha256": "sha256:9fbdbb53f8042c96c3c44b66b6437cb9108bb0abfc4a31f59c851df08b4685b2"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/processors/__init__.py",
+      "size_bytes": 1487,
+      "sha256": "sha256:29ee95abc868678303d4203baf28eec7e2b67307e882a8af9939bb483adf0fbb"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/processors/nemotron3densevl_processor.py",
+      "size_bytes": 12242,
+      "sha256": "sha256:de79e8932bb3c599a3f7415f705af2f26bc12e79e2a6fe9bbf6dfa4efb0d7c5e"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/processors/nemotronvl_processor.py",
+      "size_bytes": 24609,
+      "sha256": "sha256:70746297d5efb05a152b073416055c686512bfe28544261680b9b51a45de6e27"
+    },
+    {
+      "path": "cosmos_framework/data/reasoner/processors/qwen3vl_processor.py",
+      "size_bytes": 14025,
+      "sha256": "sha256:7948b96f6dee9d32e4209761e3c16f89970ebbd2057f20a2cc62781ff86f4eea"
+    },
+    {
+      "path": "cosmos_framework/inference/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/inference/_test/dcp_checkpoint.sh",
+      "size_bytes": 407,
+      "sha256": "sha256:e4fce6b2a3d73ca63e56f8334d364cdac0bce03b3c81a9468226964de073878e"
+    },
+    {
+      "path": "cosmos_framework/inference/_test/distilled.sh",
+      "size_bytes": 360,
+      "sha256": "sha256:82cbc28c69e8b5c4561b9fd6d30bb538330ab81867af5b54bc7c0a9270665a10"
+    },
+    {
+      "path": "cosmos_framework/inference/_test/latency.sh",
+      "size_bytes": 362,
+      "sha256": "sha256:68144331e53134630777371dda7822f4c5f12aa9f3e252e4a83248439cf6da78"
+    },
+    {
+      "path": "cosmos_framework/inference/_test/omni-super.sh",
+      "size_bytes": 361,
+      "sha256": "sha256:8c0e0315d5403fc0415366472c0a43a09a9b544bb04c099d8f2db9fe4364f213"
+    },
+    {
+      "path": "cosmos_framework/inference/_test/omni.sh",
+      "size_bytes": 363,
+      "sha256": "sha256:563625f329a18c781dd7dfbc3b6bfa1fc66729e2811defec0a7e847751cd429c"
+    },
+    {
+      "path": "cosmos_framework/inference/_test/omni_param.sh",
+      "size_bytes": 172,
+      "sha256": "sha256:993bc2a31eaa93570b4e975621633d6029e60ec8c09a7afc633b268b32befb25"
+    },
+    {
+      "path": "cosmos_framework/inference/_test/reasoner.sh",
+      "size_bytes": 367,
+      "sha256": "sha256:ff8e75834d7c140f34adad9d7fd8330f7187759d5945d769c29e38a2212c86df"
+    },
+    {
+      "path": "cosmos_framework/inference/_test/sft.sh",
+      "size_bytes": 1093,
+      "sha256": "sha256:f2d70a2ebe88bccf3db4e4c2522b792298e24579c5971bbb2ffd6a09482375e9"
+    },
+    {
+      "path": "cosmos_framework/inference/_test/sft_param.sh",
+      "size_bytes": 374,
+      "sha256": "sha256:635ed5ec13c27e8c40e6706036a93a65785cf44c3ba60e4a3e190eb414973b55"
+    },
+    {
+      "path": "cosmos_framework/inference/action.py",
+      "size_bytes": 6800,
+      "sha256": "sha256:39d7a84cb8c83f8451baf415300257fe2e2f9385e930d58ee4f1b822196d7123"
+    },
+    {
+      "path": "cosmos_framework/inference/args.py",
+      "size_bytes": 61200,
+      "sha256": "sha256:79ca29e0e5ba47ce78e0c3ffb5da4152e1d4d6e629c3055bfaf54823192e9574"
+    },
+    {
+      "path": "cosmos_framework/inference/args_test.py",
+      "size_bytes": 14183,
+      "sha256": "sha256:1f4b4cd9510097fb4750336daa5035345b25c73571dd5a8772076ac0153b40fc"
+    },
+    {
+      "path": "cosmos_framework/inference/common/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/inference/common/args.py",
+      "size_bytes": 37378,
+      "sha256": "sha256:519670d3fa04780467a24830a694f8f3ea99da2f3f97c99c00512c7af6b43ffe"
+    },
+    {
+      "path": "cosmos_framework/inference/common/args_test.py",
+      "size_bytes": 5347,
+      "sha256": "sha256:11cc198cbc3e07c9827e92b716919400bf9a00f0c0337da0c74726139bc75007"
+    },
+    {
+      "path": "cosmos_framework/inference/common/checkpoints.py",
+      "size_bytes": 13681,
+      "sha256": "sha256:aebf163e71ee859e661001d375f7e86ceeffb3734f93c9f7efa4550a60097fcc"
+    },
+    {
+      "path": "cosmos_framework/inference/common/config.py",
+      "size_bytes": 22821,
+      "sha256": "sha256:3def9370077c4bf8dcd5629e5dda8a6bc9b9c5ba556afce171ef3beab94e6de5"
+    },
+    {
+      "path": "cosmos_framework/inference/common/config_test.py",
+      "size_bytes": 4116,
+      "sha256": "sha256:024e997e3a783377fa99dac73b8bdef72d029d6390ae3c3f5e8d0b8fc17237c5"
+    },
+    {
+      "path": "cosmos_framework/inference/common/distillation_export.py",
+      "size_bytes": 5294,
+      "sha256": "sha256:98439394d03e8397efe345910c1590ad81305c6ca307e5770ca5c06e47b201c0"
+    },
+    {
+      "path": "cosmos_framework/inference/common/distillation_export_test.py",
+      "size_bytes": 11295,
+      "sha256": "sha256:a29ecb443dd41ef8275f02c720e0e43e7efdb48991c147869d3e7f948287b70b"
+    },
+    {
+      "path": "cosmos_framework/inference/common/inference.py",
+      "size_bytes": 13276,
+      "sha256": "sha256:44d4ce88a509a727ea36a19614967095e6dfaa4fd66155c89fe75f98e76ba2ee"
+    },
+    {
+      "path": "cosmos_framework/inference/common/inference_test.py",
+      "size_bytes": 8410,
+      "sha256": "sha256:70b736f8356d63953ec8e15c0e6b98cbb2fc467806b3f47021b10c0842541491"
+    },
+    {
+      "path": "cosmos_framework/inference/common/init.py",
+      "size_bytes": 7151,
+      "sha256": "sha256:f2fa1958eacc5c3138d76aca38ecbcdd81234a16fb0d9aadd591bff9881f4e46"
+    },
+    {
+      "path": "cosmos_framework/inference/common/public_model_config.py",
+      "size_bytes": 15758,
+      "sha256": "sha256:e92190a35d6773ecb2d68900227a2518b415910ba6465b88f75a0977daf3c8bd"
+    },
+    {
+      "path": "cosmos_framework/inference/common/public_model_config_test.py",
+      "size_bytes": 3629,
+      "sha256": "sha256:e3f27ac6fbe57bd4a482b8ee4b12018872f6d69f4c585a9e8a8c3be9e4e0d5ab"
+    },
+    {
+      "path": "cosmos_framework/inference/configs/checkpoint/local.yaml",
+      "size_bytes": 913,
+      "sha256": "sha256:0989a04a248d3a5fe133e91079992a86995f2179d5a46c871662941d2c45348f"
+    },
+    {
+      "path": "cosmos_framework/inference/configs/model/Cosmos3-Edge.yaml",
+      "size_bytes": 6013,
+      "sha256": "sha256:3769529debceea27dd016cad333503ef5bef50a65e1fba11c4b23f1b896c2fb3"
+    },
+    {
+      "path": "cosmos_framework/inference/configs/model/Cosmos3-Nano.yaml",
+      "size_bytes": 6510,
+      "sha256": "sha256:bc4db17f3dc7d9fd235e4b89c514f869f39fa5dfd54bc4641e1e04bcf5d1d6e3"
+    },
+    {
+      "path": "cosmos_framework/inference/configs/model/Cosmos3-Super.yaml",
+      "size_bytes": 6512,
+      "sha256": "sha256:7e956ed13a8a95276ee4c6c3900d0b4f9b13fa201a1b8c4844e8404a8626c3d6"
+    },
+    {
+      "path": "cosmos_framework/inference/dataset.py",
+      "size_bytes": 16495,
+      "sha256": "sha256:20f76c9c9693a5912d64ce440b6634e42a4956a12943c0e7899363a9fe466349"
+    },
+    {
+      "path": "cosmos_framework/inference/dataset_samples.py",
+      "size_bytes": 6440,
+      "sha256": "sha256:ac923e59f4942b8657ef648ec8666094ed83b65007c0f57f7c2706e16a1bea7e"
+    },
+    {
+      "path": "cosmos_framework/inference/dataset_samples_test.py",
+      "size_bytes": 1455,
+      "sha256": "sha256:f84e2a78498df54d26514aa7a0162b3adfbf47e54166270de27fd40e60aabf26"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/audio_image2video/sample_args.json",
+      "size_bytes": 822,
+      "sha256": "sha256:dcbe1f97ac29075a5a810036583511e9f92d8d38354dd9febe9a192e2efcd6d8"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/forward_dynamics/sample_args.json",
+      "size_bytes": 848,
+      "sha256": "sha256:d6c92c054a673bb360b06dfb03224b96c526ee43e0d45680944d15f8a4427ac5"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/image2image/sample_args.json",
+      "size_bytes": 721,
+      "sha256": "sha256:75c2e1f86e6e70de026623284d7abdd7b87301e335bfea9764ff8d0bf79ba09b"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/image2video/sample_args.json",
+      "size_bytes": 823,
+      "sha256": "sha256:112224d934abb03970a9e112aab53c9f8dc00b7aa64c44f1baa88bc96a5a00d0"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/inverse_dynamics/sample_args.json",
+      "size_bytes": 848,
+      "sha256": "sha256:d6c92c054a673bb360b06dfb03224b96c526ee43e0d45680944d15f8a4427ac5"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/neg_prompts.json",
+      "size_bytes": 15593,
+      "sha256": "sha256:5ef32d9dcedfd5099be30d4dc9d5e959ad40da77f4d5daad782b40b195dbbb54"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/prompt_upsampler.txt",
+      "size_bytes": 3739,
+      "sha256": "sha256:11772689159268c8b7c683af7626cd095b1dd2746eab901e4f2cd481eb8596e7"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/reasoner/sample_args.json",
+      "size_bytes": 230,
+      "sha256": "sha256:9f74b81a65066ef6ae7c904cca00acdb19864a898f32c64d0942ceb76c230d76"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/text2image/sample_args.json",
+      "size_bytes": 769,
+      "sha256": "sha256:d61cf06c472eb4433260d50c3c848826a697ee5fb491adbb45187df95264eb4b"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/text2video/sample_args.json",
+      "size_bytes": 823,
+      "sha256": "sha256:112224d934abb03970a9e112aab53c9f8dc00b7aa64c44f1baa88bc96a5a00d0"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/video2video/sample_args.json",
+      "size_bytes": 823,
+      "sha256": "sha256:112224d934abb03970a9e112aab53c9f8dc00b7aa64c44f1baa88bc96a5a00d0"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/video_captioner.txt",
+      "size_bytes": 5779,
+      "sha256": "sha256:b59e07f03ab61996e4d0e1ffb76796b3e0c80528dc009583fc7cbee33fdc72c7"
+    },
+    {
+      "path": "cosmos_framework/inference/defaults/wam/sample_args.json",
+      "size_bytes": 848,
+      "sha256": "sha256:d6c92c054a673bb360b06dfb03224b96c526ee43e0d45680944d15f8a4427ac5"
+    },
+    {
+      "path": "cosmos_framework/inference/fixtures/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/inference/fixtures/args.py",
+      "size_bytes": 2085,
+      "sha256": "sha256:459325e6762eba05b7a67d852b36a8466e5bf63b1c99043f2a810f0349e4ee81"
+    },
+    {
+      "path": "cosmos_framework/inference/fixtures/script.py",
+      "size_bytes": 11951,
+      "sha256": "sha256:7a5cf084a6b17c49e114448658f9b04af9ff1667b63c711363c35ae0b0f8a270"
+    },
+    {
+      "path": "cosmos_framework/inference/inference.py",
+      "size_bytes": 95752,
+      "sha256": "sha256:b4400926af6727dbc5c252b4ab6e5b6a791ecc157af5f515915e60eed6c83b30"
+    },
+    {
+      "path": "cosmos_framework/inference/inference_test.py",
+      "size_bytes": 14372,
+      "sha256": "sha256:5ede70e3a0bc51ae8681084df3fcccb9c6b766a6ce38e2b0f6eca42a622da31a"
+    },
+    {
+      "path": "cosmos_framework/inference/local_first_test.py",
+      "size_bytes": 16372,
+      "sha256": "sha256:f8fdd192d8b87f104f3f8467d49cde1f5594e99a7334fa3400459116e27e1cc8"
+    },
+    {
+      "path": "cosmos_framework/inference/metrics.py",
+      "size_bytes": 25129,
+      "sha256": "sha256:0aeb1fdf12cff18cca5be9fb6da076fe951df98c4feba11786eb9875b658efe7"
+    },
+    {
+      "path": "cosmos_framework/inference/model.py",
+      "size_bytes": 26440,
+      "sha256": "sha256:8fb46157f38080efc7b32419fe509abc4994b59f8f07e1cac377a1f82e87f3e1"
+    },
+    {
+      "path": "cosmos_framework/inference/model_test.py",
+      "size_bytes": 7051,
+      "sha256": "sha256:d3e60c1e3995755445b539086b098281f69d5bdebb1235416354b66e286c956b"
+    },
+    {
+      "path": "cosmos_framework/inference/prompt_upsampling.py",
+      "size_bytes": 42198,
+      "sha256": "sha256:9e120a0436403ae3f82f22b5158d4409987e9453c2eb69654ca382e179c74942"
+    },
+    {
+      "path": "cosmos_framework/inference/prompt_upsampling_test.py",
+      "size_bytes": 13257,
+      "sha256": "sha256:4b3ded0e7ccd7230532794f3a7f295919194bd6b1df3337665030f63d08ed1ea"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/external_api/posttrained_i2v_json_schema.json",
+      "size_bytes": 252,
+      "sha256": "sha256:8e29618763e55c67543ed428de4214a9a6633686a2dcbf44e86caef85f1c2df9"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/external_api/posttrained_i2v_prompt.txt",
+      "size_bytes": 7418,
+      "sha256": "sha256:d684dc34c85c9f2a3bd0a7f422435539a73854d7f55bd0d69094eba56364dcc5"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/external_api/t2i_json_schema.json",
+      "size_bytes": 3607,
+      "sha256": "sha256:a70a00e9989adde2602f78d903219f2d866f3ecfbc99db1a227ebf48078d434e"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/external_api/t2i_prompt.txt",
+      "size_bytes": 2134,
+      "sha256": "sha256:6677144c07dcf579d294bb86d4a3d36b7ca1ea98907013e2b05d61db4a8304b9"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/external_api/t2v_i2v_video_json_schema.json",
+      "size_bytes": 4410,
+      "sha256": "sha256:71dec36058538e5b99649fcc81d2c19fd48cb0a701e0510af1f443552052c797"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/external_api/t2v_i2v_video_prompt.txt",
+      "size_bytes": 2103,
+      "sha256": "sha256:bc96ddc77589ad6bd67868bbbc01e9cc881bb13e9b267c77f93aa79d15e32948"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/reasoner/reasoner_i2v_json_schema.json",
+      "size_bytes": 4450,
+      "sha256": "sha256:8d7c21e7e78916ee6d66638fd7135912eec3307a991f365cd725a4ac26b6d202"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/reasoner/reasoner_i2v_prompt.txt",
+      "size_bytes": 5956,
+      "sha256": "sha256:795444631d82040eb89fe039126a843ded91472ad83b605f48cd746505c76c0a"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/reasoner/reasoner_t2i_json_schema.json",
+      "size_bytes": 3442,
+      "sha256": "sha256:5eebebabe0162820cf243e1644bdb4f044bfa1a3a214ac4f209967ea7d85c0aa"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/reasoner/reasoner_t2i_prompt.txt",
+      "size_bytes": 5682,
+      "sha256": "sha256:5d4c8e5e43f618213227e1bc80e0a88ec41decfbaafe7866fb990f5b4252f465"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/reasoner/reasoner_t2v_json_schema.json",
+      "size_bytes": 5262,
+      "sha256": "sha256:1896507c7651c31bf5d06d96bfdcb684fb565b912db0c15058cdd3059caff0e3"
+    },
+    {
+      "path": "cosmos_framework/inference/prompting_templates/reasoner/reasoner_t2v_prompt.txt",
+      "size_bytes": 6081,
+      "sha256": "sha256:2f2e2c6362b6ad86fbfad55714bb3d0945da17814fe822cb8e2cb63086408a4d"
+    },
+    {
+      "path": "cosmos_framework/inference/ray/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/inference/ray/configs/latency.yaml",
+      "size_bytes": 523,
+      "sha256": "sha256:132123b9fac7f9d029e4af5f9deac104afacf1390cae5f1ad144f06800d1b73d"
+    },
+    {
+      "path": "cosmos_framework/inference/ray/configs/throughput.yaml",
+      "size_bytes": 526,
+      "sha256": "sha256:13f0155ab696fa064c0009d377ac4a5c0b9ed9333f1d0aa65723084e3339b783"
+    },
+    {
+      "path": "cosmos_framework/inference/ray/gradio.py",
+      "size_bytes": 8690,
+      "sha256": "sha256:37929f12eecfb58b30888dc295d6ecac6d50be3afcc3be8fa0dd2df62a15f850"
+    },
+    {
+      "path": "cosmos_framework/inference/ray/serve.py",
+      "size_bytes": 9818,
+      "sha256": "sha256:d279727d4562218746558d19aa2997962e41caa0e98324204b544a8388a8755c"
+    },
+    {
+      "path": "cosmos_framework/inference/ray/serve_test.py",
+      "size_bytes": 5046,
+      "sha256": "sha256:7153d59c5c7f63e03082f059c4827ccebdeb5d7b01af671f17c37a0f90330ef2"
+    },
+    {
+      "path": "cosmos_framework/inference/ray/submit.py",
+      "size_bytes": 3505,
+      "sha256": "sha256:ad353a480ea8c1e30c4ca2dd2181720bf0d1354d48a2425d3907dcd40133ae68"
+    },
+    {
+      "path": "cosmos_framework/inference/sound.py",
+      "size_bytes": 10426,
+      "sha256": "sha256:144a1d89c56d19922dd1b9c8a4537f8856244055f4de907e63b32727e51be9f6"
+    },
+    {
+      "path": "cosmos_framework/inference/sound_test.py",
+      "size_bytes": 3100,
+      "sha256": "sha256:e6cb3f6a663ba2b0829026ffc578de2fad34241401a3aabcca8b6bc7e39bcf75"
+    },
+    {
+      "path": "cosmos_framework/inference/structured_caption.py",
+      "size_bytes": 9021,
+      "sha256": "sha256:90f33209843834dd4e2cffd387b3b324434eb1f97a6ec518cd038df8b8147781"
+    },
+    {
+      "path": "cosmos_framework/inference/structured_caption_test.py",
+      "size_bytes": 3823,
+      "sha256": "sha256:4c4ad713079ec70db2b30775526eb960ec5ce4bd1791c2e3444591cad5e24f34"
+    },
+    {
+      "path": "cosmos_framework/inference/transfer.py",
+      "size_bytes": 26045,
+      "sha256": "sha256:aa183312b91a2b8de9a2eb4b78abdf6710e4d4e4106b79d874b34cd9deaa0cc6"
+    },
+    {
+      "path": "cosmos_framework/inference/vision.py",
+      "size_bytes": 11334,
+      "sha256": "sha256:fbac3057f62c5dcbfe0ad7f2629ddbc074184ba2d21eca76b120db23feea292e"
+    },
+    {
+      "path": "cosmos_framework/model/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/model/_base.py",
+      "size_bytes": 5073,
+      "sha256": "sha256:1c827d8283bfd94050eed2d370313801d2ff47bb95065b1612e8ec03e24e63b3"
+    },
+    {
+      "path": "cosmos_framework/model/attention/__init__.py",
+      "size_bytes": 607,
+      "sha256": "sha256:37a3211ce1f65896dd00412bcebb34e37b9d2e7c4a7ae73e48073d13ff78eb42"
+    },
+    {
+      "path": "cosmos_framework/model/attention/backends.py",
+      "size_bytes": 13696,
+      "sha256": "sha256:14df4c86ff8087ba7d4097018210477bb5653c09601ba02ec154d8c2c5ddd232"
+    },
+    {
+      "path": "cosmos_framework/model/attention/benchmarks/benchmark_fmha.py",
+      "size_bytes": 25105,
+      "sha256": "sha256:5cccd9e178d46aedc4aaa75303c3bffef3647bcf1601fe1aabd35fbe7943d6db"
+    },
+    {
+      "path": "cosmos_framework/model/attention/benchmarks/benchmark_fmha_head_sharding.py",
+      "size_bytes": 14530,
+      "sha256": "sha256:d108a5c22c9960d8c1df30ecf3eb9dc4493805274abaa5b70af9b06a242c0389"
+    },
+    {
+      "path": "cosmos_framework/model/attention/checks.py",
+      "size_bytes": 23179,
+      "sha256": "sha256:bf15172604e6ae029cf3de3a4ae70e4f35f961d47a9b7cb190917c7a0bc4a24d"
+    },
+    {
+      "path": "cosmos_framework/model/attention/cudnn/__init__.py",
+      "size_bytes": 2467,
+      "sha256": "sha256:facfd109b657b823e5ed7902e1fb742871c76a1e4c6b17e90e83da7230ea44f9"
+    },
+    {
+      "path": "cosmos_framework/model/attention/cudnn/checks.py",
+      "size_bytes": 8584,
+      "sha256": "sha256:3f33c574793ce1156c917cdbea4a7de40a15be6d79d78fcf9dad7c3fd5279b4f"
+    },
+    {
+      "path": "cosmos_framework/model/attention/cudnn/cudnn_forward.py",
+      "size_bytes": 15589,
+      "sha256": "sha256:1cf1f168cbaab66b517813bf118d18f3e18dc98241b61c68baaf8712fd6834d3"
+    },
+    {
+      "path": "cosmos_framework/model/attention/cudnn/functions.py",
+      "size_bytes": 9085,
+      "sha256": "sha256:94d1e933c72526d5e145b1d0134b716e1583b0ae0ab7dcf9dff20142b0e43512"
+    },
+    {
+      "path": "cosmos_framework/model/attention/cudnn/meta.py",
+      "size_bytes": 3455,
+      "sha256": "sha256:b4d551eafe9daa7d7bdd2d29439d3a092a5c5c2d7747ab1829b5564cec77cf16"
+    },
+    {
+      "path": "cosmos_framework/model/attention/cudnn/stubs.py",
+      "size_bytes": 1080,
+      "sha256": "sha256:84c729361cdaf9b1e992ed093ee03e18b634edb0570699069cd87d881c97ce2e"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash2/__init__.py",
+      "size_bytes": 2416,
+      "sha256": "sha256:f08bc949a4feba6f34912bb460df7877705b4837508ccea06ea1448e670cb56c"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash2/checks.py",
+      "size_bytes": 4203,
+      "sha256": "sha256:3230ec518f84c814e958f1a8c80c07086cafb470deecaca7233c89ef5b16f639"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash2/functions.py",
+      "size_bytes": 7625,
+      "sha256": "sha256:1a223a74326791c0d37910519281a700ad32f5f0b52db6952d640b5db423fba1"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash2/meta.py",
+      "size_bytes": 1637,
+      "sha256": "sha256:420be8b2493ec75bc61d31f1837e937a6bd0b8f4b0d8a1e839cfda5f383b26ba"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash2/stubs.py",
+      "size_bytes": 1106,
+      "sha256": "sha256:c4c890a5ab1ad63bd86b43cd8c339860db31c82e413731ebd5a644df3ce8442f"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash3/__init__.py",
+      "size_bytes": 2018,
+      "sha256": "sha256:05bd86bb7ee28ae3ed16167bf86fd48ffcb5858f86e54015c4031e732d653ec3"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash3/checks.py",
+      "size_bytes": 4737,
+      "sha256": "sha256:339615a2f19cd76e56113953f08707a5daa9a557a9be28a9b52ed5632f822e52"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash3/functions.py",
+      "size_bytes": 8525,
+      "sha256": "sha256:48ce928b94135ca535efecbe2227e36c08ade418380c104c01763a1194c11c8b"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash3/meta.py",
+      "size_bytes": 1589,
+      "sha256": "sha256:407796014fe84d3d8fca14ffb918a0b8896e9604fdfe7fe7c8215242d4525fed"
+    },
+    {
+      "path": "cosmos_framework/model/attention/flash3/stubs.py",
+      "size_bytes": 1106,
+      "sha256": "sha256:d66a99cd77bbba3855a46243fb83eebb059305f4463d44f1b6af82a8fdeb5c57"
+    },
+    {
+      "path": "cosmos_framework/model/attention/frontend.py",
+      "size_bytes": 33043,
+      "sha256": "sha256:2706f4004161e31f984ca6487c777055d15fb64e79252bef8df764b0cbc0d33e"
+    },
+    {
+      "path": "cosmos_framework/model/attention/masks.py",
+      "size_bytes": 972,
+      "sha256": "sha256:b6af93e93e91509d64be0fff5f5f10e5cb977d894dc295ba92a175cfcefe5eb7"
+    },
+    {
+      "path": "cosmos_framework/model/attention/natten/__init__.py",
+      "size_bytes": 3502,
+      "sha256": "sha256:7abb2adcfa2eb37574150e923e9e8b7de3c5ec712a7a392c3d1bbae43ecd0f6a"
+    },
+    {
+      "path": "cosmos_framework/model/attention/natten/checks.py",
+      "size_bytes": 19740,
+      "sha256": "sha256:4285820d21839b4e2f3652ffa520e19db3f16d55691bf83a017f953b8a68f731"
+    },
+    {
+      "path": "cosmos_framework/model/attention/natten/functions.py",
+      "size_bytes": 16458,
+      "sha256": "sha256:38038495e2d93091d9f899172f17eca0e970b2f312d8cc07add32f659e40c7b5"
+    },
+    {
+      "path": "cosmos_framework/model/attention/natten/meta.py",
+      "size_bytes": 1738,
+      "sha256": "sha256:f5492ea7550b3a47026fcf0c9bd5a3a0ebae286bd45361cacf65b995c663a21f"
+    },
+    {
+      "path": "cosmos_framework/model/attention/natten/stubs.py",
+      "size_bytes": 2159,
+      "sha256": "sha256:ee785adf62e554071616205c5bfbdfc3c34800ccee59134c14f4cacddfa03d62"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/__init__.py",
+      "size_bytes": 2561,
+      "sha256": "sha256:3428c7c1bbbca57058f50181c8e03b0899186e60c930f04745c78a1bc7e70c78"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/backend_filter_test.py",
+      "size_bytes": 11571,
+      "sha256": "sha256:2396f614e2c4626e0584f2538be7860f69129f0e4df0c3d8922a1e4243327369"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/determinism.py",
+      "size_bytes": 837,
+      "sha256": "sha256:4fd1a499d8df80e2efdd4f09d03a571ac351cf30c8e02a90aa208148ba444ffc"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/determinism_test.py",
+      "size_bytes": 9201,
+      "sha256": "sha256:7c16bd48cef6f00158831f5681dc4a174f9397261c0b67ace98abfef06554491"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/environment.py",
+      "size_bytes": 4871,
+      "sha256": "sha256:85d307efd00363222c2431885f6a91c34c0c396d5fffc678780d5b98dc79af04"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/safe_ops/__init__.py",
+      "size_bytes": 464,
+      "sha256": "sha256:3b69185edf0eb1d8ceac60343bb9200bf072f1d7726ec500924565acc6d93515"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/safe_ops/functools.py",
+      "size_bytes": 1959,
+      "sha256": "sha256:f45a66579427a499900cd6400de918798b9ad1f3d8ba4596efc3a89495125c84"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/safe_ops/log.py",
+      "size_bytes": 1626,
+      "sha256": "sha256:4da59779cd98e2f3047d056a6f5aef57df189238912b128e7227673c1af1fd1c"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/safe_ops/safe_lru_cache_test.py",
+      "size_bytes": 4483,
+      "sha256": "sha256:c728b83c226f48bdafdd7cd6aa912b0b2deb0992195c3f5e7978b044b21da242"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/version.py",
+      "size_bytes": 1289,
+      "sha256": "sha256:6426108158e1d98dad937dcb852652175b1932b5341d71ad98eb73bb69d87f03"
+    },
+    {
+      "path": "cosmos_framework/model/attention/utils/version_test.py",
+      "size_bytes": 5188,
+      "sha256": "sha256:721f2d072df0505918ca3796c82e75c5cf4481bd10e6e681108cf996f747e8c8"
+    },
+    {
+      "path": "cosmos_framework/model/attention/varlen.py",
+      "size_bytes": 8504,
+      "sha256": "sha256:7fcc6f37fabc4e8d2b6045a78c3daaa14c89c380227052b8fd517ce41de68439"
+    },
+    {
+      "path": "cosmos_framework/model/generator/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/model/generator/algorithm/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/algorithm/loss/__init__.py",
+      "size_bytes": 857,
+      "sha256": "sha256:87bc8b242c6c7855188b404820a5d109d36aa491661da0c1bc8c0650803dbb1d"
+    },
+    {
+      "path": "cosmos_framework/model/generator/algorithm/loss/cross_entropy.py",
+      "size_bytes": 6719,
+      "sha256": "sha256:a9c79a40a6311439ab756edf49149c0e09affdc907b9004a58ab97d1ed86f454"
+    },
+    {
+      "path": "cosmos_framework/model/generator/algorithm/loss/flow_matching.py",
+      "size_bytes": 4455,
+      "sha256": "sha256:d365ec5356561e67993df3a923473eab524c50f534b451a47c2e4a951ab7cfac"
+    },
+    {
+      "path": "cosmos_framework/model/generator/algorithm/loss/load_balancing.py",
+      "size_bytes": 3406,
+      "sha256": "sha256:251bf9c9590f4f9b13c5646e37d8b0cfeb9735768e0852b8d4daa9e1c837545d"
+    },
+    {
+      "path": "cosmos_framework/model/generator/algorithm/loss/time_weight.py",
+      "size_bytes": 877,
+      "sha256": "sha256:d9834268c3d689aca00b96eb5309e5a75e84507f65abf9707f76a22ffd2e2023"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/rectified_flow.py",
+      "size_bytes": 10060,
+      "sha256": "sha256:62667ad11f30aae44b79665051273960f668f1d14f8c28923c7269409cacad98"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/samplers/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/samplers/edm.py",
+      "size_bytes": 10647,
+      "sha256": "sha256:beaa2e2509251de53e7ac43b70d995cb252b04847dcc4a0193857300ec0d79c3"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/samplers/fixed_step.py",
+      "size_bytes": 6598,
+      "sha256": "sha256:9cde014addbc88e15cbe844877948e6f826d7d6d25c134fe5a03a1c044c83e68"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/samplers/fixed_step_test.py",
+      "size_bytes": 4268,
+      "sha256": "sha256:cbf036658252461f57c76eb2b3e22bf797ac7ebd1eb8953fa4af1b87d6c4d596"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/samplers/fm_solvers_unipc.py",
+      "size_bytes": 32871,
+      "sha256": "sha256:03aef1959f273b704ca4954f69b2a34df0fdd412f6acc8ab91625eeed78cf4fe"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/samplers/unipc.py",
+      "size_bytes": 4766,
+      "sha256": "sha256:d64663166ee32e71dc2119d7fdd7114de67d059e3ecc99bf78d2ae99981aac7d"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/samplers/utils.py",
+      "size_bytes": 2604,
+      "sha256": "sha256:18ab6c760b71d2354397ea7019e35e7718381e1ee015a0d8833f970d4227b713"
+    },
+    {
+      "path": "cosmos_framework/model/generator/diffusion/samplers/utils_test.py",
+      "size_bytes": 3969,
+      "sha256": "sha256:273056bf371ad88d2855832903ade61659639f2f11869cac1961ec4a1658182d"
+    },
+    {
+      "path": "cosmos_framework/model/generator/distillation/__init__.py",
+      "size_bytes": 216,
+      "sha256": "sha256:ef283f1c7487164e26dd6e5422ccd02a49348669940cde996a17c0987e09a569"
+    },
+    {
+      "path": "cosmos_framework/model/generator/distillation/common_loss.py",
+      "size_bytes": 7737,
+      "sha256": "sha256:4a58d71dd3809982b7949e51b1bef3c76cfa9776d1d3972c8e251ff8fbdde27d"
+    },
+    {
+      "path": "cosmos_framework/model/generator/distillation/common_loss_test.py",
+      "size_bytes": 9855,
+      "sha256": "sha256:a35dc1b004387338f2c439808a082b95b81b41a3230681ad40c5492e92fdbb95"
+    },
+    {
+      "path": "cosmos_framework/model/generator/distillation/dmd2_rf.py",
+      "size_bytes": 63757,
+      "sha256": "sha256:a33430b8900529e3c911356f25e1210358c2feed0183ec37d2c8834e95ee4775"
+    },
+    {
+      "path": "cosmos_framework/model/generator/distillation/dmd2_rf_test.py",
+      "size_bytes": 68398,
+      "sha256": "sha256:b101c1a52007536f11afdcecc90008e0fcef22c5c9343c8ef58215a7cd34e635"
+    },
+    {
+      "path": "cosmos_framework/model/generator/distillation/optimizer.py",
+      "size_bytes": 4320,
+      "sha256": "sha256:6ca69c2a6453536b9c185536734a4869e99aeb30c60e1ab842dd0affb6d1bd38"
+    },
+    {
+      "path": "cosmos_framework/model/generator/distillation/optimizer_test.py",
+      "size_bytes": 10094,
+      "sha256": "sha256:5144805cbedd47352bc40b4a1944612ecdc91b8150025012bbf9e76692fd1e9b"
+    },
+    {
+      "path": "cosmos_framework/model/generator/hf_model.py",
+      "size_bytes": 18744,
+      "sha256": "sha256:578e57c75e672efaa040d8b36ef6d7a09fc5918b969ee8a5de4ed43a51877339"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/attention.py",
+      "size_bytes": 30074,
+      "sha256": "sha256:34527c7dfc184c2abf3d4f5e6715f85b75ecb64cf4c33ce29189908cfbe951c7"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/attention_test.py",
+      "size_bytes": 17095,
+      "sha256": "sha256:add4baf823c3087d1c444e5aec0b45eca99b9c80fb3e178f406c792f6da34e14"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/cfgp_ar_test.py",
+      "size_bytes": 8655,
+      "sha256": "sha256:6b02644957ef75d40431dd088d47dcb4b9578d9140b15a033a70bd252bf2dc7f"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/context_parallel_test.py",
+      "size_bytes": 32877,
+      "sha256": "sha256:c20bcf8af398a538438375c0343f0a85e0e5d210b637c9cef258a32f00995759"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/context_parallel_utils.py",
+      "size_bytes": 19288,
+      "sha256": "sha256:1c9ec80f6a9403db6745135d88646337d9f6b456378bcd4818cebde97735b305"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/cosmos3_vfm_network.py",
+      "size_bytes": 57305,
+      "sha256": "sha256:85ef8e23ba472b0429ad0829435729c6543fc5439d45ac823355c069e36467a9"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/domain_aware_linear.py",
+      "size_bytes": 3145,
+      "sha256": "sha256:ece44fdbcbffa94c39e4782c1929f995e38646a9322804891e501cc41de8da16"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/dot_product_attention.py",
+      "size_bytes": 12952,
+      "sha256": "sha256:81037791ca3a03634134b99aec580bdd21e403b9a31545792be54ddd88ee49d9"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/flex_attention.py",
+      "size_bytes": 13115,
+      "sha256": "sha256:6f9b0b0c86c39d95d604143e6314c062418a9459da4b9b58b81a49f141a16917"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/flex_attention_test.py",
+      "size_bytes": 12118,
+      "sha256": "sha256:92bffe122db775b3edf144fb96ee8834a2c7244e7c5106f4bb7e36260c36c7cb"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/inference_text_kv_memory.py",
+      "size_bytes": 8014,
+      "sha256": "sha256:de58a6ad4c09ec65d88e4333da3f36a60a505b85a8368fe21dd62a2e94983176"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/modeling_utils.py",
+      "size_bytes": 3597,
+      "sha256": "sha256:145725f4ccda2ee5bee1cfd0fb676ad7c3fee4a5b27dbc9f12fdbb08d07e4a48"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/parallelize_unified_mot.py",
+      "size_bytes": 19278,
+      "sha256": "sha256:f074fb5869f18fc75e667ca447fb6d4708690666486553fb6e4ca70d7d364874"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/parallelize_vfm_network.py",
+      "size_bytes": 5574,
+      "sha256": "sha256:5f66de5d65ac1ee2250dedc2c34a14feaf4696f2cb1c049688d1079511185e48"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/qwen3_vl_unified_mot.py",
+      "size_bytes": 895,
+      "sha256": "sha256:44e19284f17d87dc283aa88e8bdbb6626e7a79b571c6fe82d8dc9455c2ec3e96"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/und_k_norm_example_test.py",
+      "size_bytes": 12626,
+      "sha256": "sha256:9c4592dbd84dbba039d53451d951338e9bb901889c5d90f0ef0cf90cf6a3d486"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/unified_mot.py",
+      "size_bytes": 122753,
+      "sha256": "sha256:f0e92fe7beb9deaeb3dab9d0731e916cea2da338e7d8fc2c0da2edcac939bdcb"
+    },
+    {
+      "path": "cosmos_framework/model/generator/mot/unified_mot_test.py",
+      "size_bytes": 39445,
+      "sha256": "sha256:73ad2d13614e1d9adbfbf413899452bf20d0da32bff237c8d5c6ac2e4ae6b36e"
+    },
+    {
+      "path": "cosmos_framework/model/generator/omni_mot_model.py",
+      "size_bytes": 269019,
+      "sha256": "sha256:cfb81f355302593b8c038ab8b338fce8d642fdcdedb9e2e1c3c57ae081d23fe8"
+    },
+    {
+      "path": "cosmos_framework/model/generator/parallelize_vlm.py",
+      "size_bytes": 11278,
+      "sha256": "sha256:b4a834d7f8520f4dd6ee4aba3b485bee7aff745f96ff5942ce8603ca7e411cb9"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/cosmos3_edge/__init__.py",
+      "size_bytes": 1423,
+      "sha256": "sha256:f80eeb1fd00048c1e460a786ca06f770a9737176dad118dc740bdc0160af00ed"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/cosmos3_edge/configuration_cosmos3_edge.py",
+      "size_bytes": 7567,
+      "sha256": "sha256:89405cdc99c4330fcab2f8b8f6d6b5748eb67397c86c5fd4b035b46c5b1e051e"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/cosmos3_edge/modeling_cosmos3_edge.py",
+      "size_bytes": 39464,
+      "sha256": "sha256:e8f34c2ecb60eecf167482fc13500e51cf9e57680b44e89491a1fac62bae1173"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/nemotron_3_dense_vl/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/nemotron_3_dense_vl/configs/Nemotron-2B-Dense-VL.json",
+      "size_bytes": 768,
+      "sha256": "sha256:82c9e49b23076a2dd5ae12162abd2e81e540c58f6719c8fd0fa54c9ffd591e9a"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/nemotron_3_dense_vl/configuration_nemotron_3_dense_vl.py",
+      "size_bytes": 3355,
+      "sha256": "sha256:23737d9edc82911c82357be487757a86a7dfe9c56035610d0169df2b12d812ae"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/nemotron_3_dense_vl/nemotron_3_dense_vl.py",
+      "size_bytes": 6695,
+      "sha256": "sha256:d1a0743e3c8a699e7b6ed7c000a5c89f72608436759cee22c7138943eb1a07a0"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/nemotron_3_dense_vl/reasoner_multimodal_utils.py",
+      "size_bytes": 5858,
+      "sha256": "sha256:43388cf842837d7dec3ed8a0a82b6724b3f2afff410198a71eaa642163d35037"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/nemotron_3_dense_vl/vision_siglip2.py",
+      "size_bytes": 18356,
+      "sha256": "sha256:17bb62868bc7f996a1cea1a4c5523167cb643394cd61a5ea22fe5cad0eb60cc0"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/configs/Qwen3-VL-2B-Instruct.json",
+      "size_bytes": 1505,
+      "sha256": "sha256:bec4b3d446efa05807365c9e1cec03ac590836879d02f3a6da879971154bdd3b"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/configs/Qwen3-VL-32B-Instruct.json",
+      "size_bytes": 1474,
+      "sha256": "sha256:d2dd0c60d01b9e195d9447c52da61c7302d28828524914c044d9c6e1b81d0427"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/configs/Qwen3-VL-4B-Instruct.json",
+      "size_bytes": 1629,
+      "sha256": "sha256:25d84986deee613b285debea8fa02209d23d474d59271a99d3e2106dbc839621"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/configs/Qwen3-VL-8B-Instruct.json",
+      "size_bytes": 1474,
+      "sha256": "sha256:5cd452860dc1e9c29dd71cc3cef7f39b338b7a40793f7a260655c2d3568f3661"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/configs/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/configuration_qwen3_vl.py",
+      "size_bytes": 13723,
+      "sha256": "sha256:2f97f7429d6f64add944ab72a2845b34d2735f23808c61da5da89e4acf6747e3"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/qwen3_vl.py",
+      "size_bytes": 68980,
+      "sha256": "sha256:f746c3e1b50a0e921bcac0f86b2355b0a7c457662e03c1da1fe0ecb3395efd13"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/utils.py",
+      "size_bytes": 28519,
+      "sha256": "sha256:3f78a2960ad7e0db1807443b05654ea4747726ec5ba9c71256ce23472e710c71"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl/video_processing_qwen3_vl.py",
+      "size_bytes": 11962,
+      "sha256": "sha256:367f3bcf78ae361b491ff7b77333b8950a8ecf4e3c38c9fc1ff4042654b16204"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/configs/Qwen3-VL-235B-A22B-Instruct.json",
+      "size_bytes": 1663,
+      "sha256": "sha256:a9b0434bf1bb5de21786cb3dc3abf95e7254a1e131557c911d7271d2fb63e476"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/configs/Qwen3-VL-30B-A3B-Instruct.json",
+      "size_bytes": 1661,
+      "sha256": "sha256:6129b3f54d517a18553cf7525ff4886be6831c5806fc094d632b8ef38d859912"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/configs/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/configuration_qwen3_vl_moe.py",
+      "size_bytes": 16041,
+      "sha256": "sha256:22b60a4500d5199b07f40be5132a919aa45a6e464216e8c89709a1f717261178"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/cosine_router_test.py",
+      "size_bytes": 22805,
+      "sha256": "sha256:0391991730d6d3196940351cee4834f01ff819b1b61b928bd0388bd4d2d917dd"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/moe.py",
+      "size_bytes": 11844,
+      "sha256": "sha256:7291ea27588885ec9d9050eefbcb297fd5568bcde675c45e0b3618b1164afa19"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/moe_bench.py",
+      "size_bytes": 14330,
+      "sha256": "sha256:7df521a5bcd2d22967e47a4a2b3668f595d2a8106ce92bf8ddb8c8d59986512e"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/moe_kernels.py",
+      "size_bytes": 7148,
+      "sha256": "sha256:93dff7a19639756e8b434ee7054a4ade2369c199db0697f28a3eda488a749212"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/moe_test.py",
+      "size_bytes": 6324,
+      "sha256": "sha256:320316284b652cab724c2c9526efa67a2a6ba41ba23e3bdf2ce4ed770730551f"
+    },
+    {
+      "path": "cosmos_framework/model/generator/reasoner/qwen3_vl_moe/qwen3_vl_moe.py",
+      "size_bytes": 107920,
+      "sha256": "sha256:620efb5c9beedb4a0d597d86ac071036398582470ba542397049ec04ee5caa35"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae.py",
+      "size_bytes": 24793,
+      "sha256": "sha256:06ad55a0f475507b1f469388b31ddbd18bca655cfa0aa37371f099035675f5c3"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/__init__.py",
+      "size_bytes": 565,
+      "sha256": "sha256:6f03cc7d31fb4b770521c43948bc105c6b0e400023001d1ae38ba793de347a87"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/activations.py",
+      "size_bytes": 5552,
+      "sha256": "sha256:3e2de96aa015a5cf8b5ca4e100dc5ae4ec78a6353590516cb186d68d7bb3c5d5"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/alias_free_torch/__init__.py",
+      "size_bytes": 508,
+      "sha256": "sha256:77561aa2f0d21bc8451d0adc7f59faa56f0b06f90aa618673688fe77bd104ee9"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/alias_free_torch/act.py",
+      "size_bytes": 933,
+      "sha256": "sha256:d709d5cbc09dac03a2d45ce4212b271205c96f46c7ca1c357e31652c3f5005ac"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/alias_free_torch/filter.py",
+      "size_bytes": 3556,
+      "sha256": "sha256:fc4c3dbb93dc76c4b66650dec8142149af7caea922174a09906c34cd36f793d2"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/alias_free_torch/resample.py",
+      "size_bytes": 1927,
+      "sha256": "sha256:d7425f5b9f647664d7e5dca9d187058f8dd0b6b12bc73268a6ff8ba153f62f65"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/bottlenecks.py",
+      "size_bytes": 3945,
+      "sha256": "sha256:f2941d7463f2c52107255874fcca5104840ed263fab26f8b99a33097553f3290"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/env.py",
+      "size_bytes": 416,
+      "sha256": "sha256:d0b174cc877097bc71a0d0982ac35923701d29ee32638ca7c4bb4df84fd90d2c"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/models.py",
+      "size_bytes": 25276,
+      "sha256": "sha256:ea4acbf4189e792c3465e7c7a54a476a7c6ccf6280360aeeb6a8259c37f3eb32"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/modules.py",
+      "size_bytes": 13561,
+      "sha256": "sha256:0edd203351694539daff79e128b20d793b668518e774a1d0f99772b5ae76db56"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/audio/avae_utils/modules_encodec.py",
+      "size_bytes": 12296,
+      "sha256": "sha256:ef9d65ed94119d66ebf2519ab134096c9fa975f854c495fabaa3b0590e707a5b"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/dc_ae/__init__.py",
+      "size_bytes": 443,
+      "sha256": "sha256:a68ad5581029b91a739edde65831ecbbf6c906666e23eba52939a2e16e791949"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/dc_ae/convert_pt_to_distcp.py",
+      "size_bytes": 1069,
+      "sha256": "sha256:6d1c6387c480757a98895237154a628ed93b7ecf6c27d2496bd87c78a1d6e56e"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/dc_ae/dc_ae_4x32x32.py",
+      "size_bytes": 7615,
+      "sha256": "sha256:2f1b4fb4a3daabc66d2aeaa7a72ac877688aa7a9a3e023dac651132138f9b171"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/dc_ae/dc_ae_v.py",
+      "size_bytes": 41434,
+      "sha256": "sha256:cacc3f32011737eaa6925318532f6a715655fc0ab4edad097c0535f105d1d6a0"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/dc_ae/dc_ae_v_ops.py",
+      "size_bytes": 31830,
+      "sha256": "sha256:d5d71ba410b51b9ec156df4ef5374fd9cdb3c70749d328faa7b1f22fce0e320b"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/dc_ae/dc_ae_v_triton_rms_norm.py",
+      "size_bytes": 6185,
+      "sha256": "sha256:b5d64ade8cc2aad9f6cf1ba335826879368add2981ca1d59bd3f5ae90e5e3237"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/flux_vae_8x8.py",
+      "size_bytes": 18623,
+      "sha256": "sha256:decb6f4b66d3547ec539567e5cce636a0ffcd8e1c357b313fbd9b338a1520f9d"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/interface.py",
+      "size_bytes": 7726,
+      "sha256": "sha256:358e7bd4ffbd3ea7b5761e8dbe7c12ab6c2c9e3440446f277fdc370f3e55bf8f"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/stable_diffusion_vae_8x8.py",
+      "size_bytes": 8792,
+      "sha256": "sha256:ae07ccbae38902dc522f9dbc78b2c43d1f63939932ac2464153223ebef74c0ac"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/tokenization_qwen2.py",
+      "size_bytes": 13573,
+      "sha256": "sha256:65d5e868d7863af83168f7cb71046a98c19d5c161306b0d67d4ab775aa75a5b5"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/uniae/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/uniae/frame_math.py",
+      "size_bytes": 15036,
+      "sha256": "sha256:c1b7b7ce3e51b01065db2e363f68b766ed428de65d06d26243a45e732f5e8142"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/uniae/frame_math_test.py",
+      "size_bytes": 1102,
+      "sha256": "sha256:afa55126de6777b8a6c52883162fa7c373935a00662c834c9be48293a7719069"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/uniae/noncausal_4x16x16.py",
+      "size_bytes": 33128,
+      "sha256": "sha256:f60f375b8450d98c62ddb4628e0a39c54a38c429bbd9d8175c9ab02c71b7f4af"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/wan2pt1_vae_4x8x8.py",
+      "size_bytes": 31497,
+      "sha256": "sha256:84cc0f971ee4ade5125f71cc5a1774d9bc47ec9f9d2bd17933abab4b64ec5192"
+    },
+    {
+      "path": "cosmos_framework/model/generator/tokenizers/wan2pt2_vae_4x16x16.py",
+      "size_bytes": 71450,
+      "sha256": "sha256:78dc3a403370e477014010bdcc23d93b24b9f11fa6086582fbb8df7e0908514c"
+    },
+    {
+      "path": "cosmos_framework/model/generator/upsampler/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/upsampler/prompts.py",
+      "size_bytes": 92616,
+      "sha256": "sha256:6785f1c1de76c39beb1490f4ca252db88ab958aa668e682a3efe6eb357f61701"
+    },
+    {
+      "path": "cosmos_framework/model/generator/utils/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/model/generator/utils/data_and_condition.py",
+      "size_bytes": 7704,
+      "sha256": "sha256:3219528e969d18fd05743ce8e7b522d38f568fe1daaeb53fd1bf9a6563607e8c"
+    },
+    {
+      "path": "cosmos_framework/model/generator/utils/memory.py",
+      "size_bytes": 3783,
+      "sha256": "sha256:e72ae974d18d55648772a1b76cead78433a4782e0271e4e24f0867b4dbaafd55"
+    },
+    {
+      "path": "cosmos_framework/model/generator/utils/moe_utils.py",
+      "size_bytes": 3225,
+      "sha256": "sha256:42d4399d257a14e0a9a07c96a50ff7fbc1293ba3646f36807dbf8c984be4b295"
+    },
+    {
+      "path": "cosmos_framework/model/generator/utils/safetensors_loader.py",
+      "size_bytes": 78667,
+      "sha256": "sha256:1bfff2fa6756b60d5c9926fe7d8dfea67d256325ecd331ba75190da0a0d530a2"
+    },
+    {
+      "path": "cosmos_framework/model/generator/utils/safetensors_loader_indexed_test.py",
+      "size_bytes": 20693,
+      "sha256": "sha256:2a43638cd4f0e9fd9434231b997fd29615f460e6f65ff37c18a829de58e7d6ea"
+    },
+    {
+      "path": "cosmos_framework/model/generator/utils/safetensors_loader_test.py",
+      "size_bytes": 28250,
+      "sha256": "sha256:d7e526cafdb99f09f2bc8f91198fe5313f2d190471b57651950a39bcb6a95a9b"
+    },
+    {
+      "path": "cosmos_framework/model/generator/utils/taylorseer.py",
+      "size_bytes": 5583,
+      "sha256": "sha256:ba4eb5d40227ac700936f702ca715f98e8d350532bc2788f5a25377121d531bc"
+    },
+    {
+      "path": "cosmos_framework/model/generator/vlm_model.py",
+      "size_bytes": 28624,
+      "sha256": "sha256:59b418593e58040aad47bc9b54aec75a79887e6ba178e9919ba200bf59514863"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/checkpoint_identity.py",
+      "size_bytes": 7311,
+      "sha256": "sha256:b49a71ce1c8db90ae21184ec936343d2b79133e1df82f0929acf112b1610e115"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/checkpoint_io.py",
+      "size_bytes": 13250,
+      "sha256": "sha256:0ba17dc207e530a16cf3ec41b27fff77809c16c2eaf62d56ef9bc5d3c7c06aba"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/evaluation/lpips_cache.py",
+      "size_bytes": 5839,
+      "sha256": "sha256:bb3435f6d839cb242de4ade2fb8a19b2879d9d9d2676ed5d9cf1d16239dea42d"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/evaluation/metric.py",
+      "size_bytes": 17139,
+      "sha256": "sha256:3e56bd74d0db05417dcedb7cf62c80d4eda172b18d66f8ced9c5787bb9b231cd"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/evaluation/reconstruction_metrics.py",
+      "size_bytes": 16107,
+      "sha256": "sha256:8a0e9af123036eda8f039fdd6043745e5318c8276a2dbbc7c2b7c22e78bbb05c"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/__init__.py",
+      "size_bytes": 2058,
+      "sha256": "sha256:09aaab43face962de8e5eaa872c9631d4fa5027a94faa01deccd8bf8a381da40"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/architecture.py",
+      "size_bytes": 1728,
+      "sha256": "sha256:c7420fe26afd97fccab65fa21864d45b65a56ccacecfe9864f0113306923bd0a"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/dense_backends.py",
+      "size_bytes": 13407,
+      "sha256": "sha256:463630ca1a95fdfa8547da97982d07300f88f17cc40b5232758a5a550950668b"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/dense_runtime.py",
+      "size_bytes": 51586,
+      "sha256": "sha256:f5fbdbb98af48399542c5c1fd03a7d3c2216af9bbe7a36c0e9e8524bce8f5b16"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/latent_denoising.py",
+      "size_bytes": 7229,
+      "sha256": "sha256:4468b95c4d6c069e2d4eb0cc030f3ecf6ad521065df91ab0cf1db745827ca981"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/__init__.py",
+      "size_bytes": 6779,
+      "sha256": "sha256:b0dcdf2c69920db959ab274555c644dd43e85cb83604f83cb907387e3b082287"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/attention/__init__.py",
+      "size_bytes": 545,
+      "sha256": "sha256:4985a4e41fb36859d725b0fa95d40d4ce108d6d356e80f37eecf0e446a130008"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/attention/full_attn.py",
+      "size_bytes": 23061,
+      "sha256": "sha256:e71518b1999cbf2185d5535a28f526fef1409c6786aabfa23f6868490036ac0a"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/attention/modules.py",
+      "size_bytes": 54701,
+      "sha256": "sha256:cbd6ab7038b37336e8d2ffc00bf0fade75631d9a80ba96f5db0a49e9ea8d4082"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/quantizers/__init__.py",
+      "size_bytes": 802,
+      "sha256": "sha256:c85f0349bbfa625b6777aed0170c3bafddbb525bac8cf814b04dd40704c34ea7"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/quantizers/fsq.py",
+      "size_bytes": 9907,
+      "sha256": "sha256:4753492b62b3c28a675b5b27cad4c0b8703976972713857a6c87481a411174bb"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/quantizers/lfq.py",
+      "size_bytes": 16837,
+      "sha256": "sha256:cd465c804383014c06833a7647eac79367555c5f15906abc0a4d5cd2aa8b44ec"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/quantizers/residual_vq.py",
+      "size_bytes": 24264,
+      "sha256": "sha256:8c88b2895f637601a15aa485a659e1ec11a2b6c902d48ff50e7fcba2b56e7f74"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/sparse_ops.py",
+      "size_bytes": 34860,
+      "sha256": "sha256:6adf5407d6dce20b524bb19cd307d86e4c7dd401c350865e7eaa563b13835381"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/sparse_tensor.py",
+      "size_bytes": 74548,
+      "sha256": "sha256:f29f65e8fc5fd8b4b1645db41f436a4348f5a01e6df8169a4130c6f27ebea474"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/transformer/__init__.py",
+      "size_bytes": 1440,
+      "sha256": "sha256:54690eec1dcefe9dcaca9790b2bab6f35f46cf56b631ecbbcc8002c1fc02cda7"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/transformer/blocks.py",
+      "size_bytes": 46250,
+      "sha256": "sha256:54d63215b37d3f3b0c4432d1c6c57f36aa187387f55ab4e52c1d79484b032990"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/modules/transformer/modulated.py",
+      "size_bytes": 9138,
+      "sha256": "sha256:caa342a792a1d9eb3f861f6230d3c1f863d2a4b88143aef364d4105d29ab3f6e"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/sparse_autoencoder.py",
+      "size_bytes": 102112,
+      "sha256": "sha256:49570074e2b98fada29592fc7c3097cd65c477467714604d1415713ecc05ea46"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/text_decoder.py",
+      "size_bytes": 89977,
+      "sha256": "sha256:15a4691c8b28660678f72917461c26f7792035a1d79b74a748b7b669062d616d"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/models/utils.py",
+      "size_bytes": 23629,
+      "sha256": "sha256:778c360a1beaea3157cda001f942081192e231b6a281a90fbae440de6e6616b5"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/utils/__init__.py",
+      "size_bytes": 543,
+      "sha256": "sha256:78de4f57c83e94700d308ea83152c9eea40551558a3ba5facd21dc55c334895f"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/utils/hf.py",
+      "size_bytes": 7383,
+      "sha256": "sha256:b347dd083bdfc7682407487bc4899cbf49a2e79bf1eb51b3ac49c912d7191629"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/utils/tensors.py",
+      "size_bytes": 2947,
+      "sha256": "sha256:ebbdc9de4a521774e20e6deb1be2d330456800ce3dbf1cd2bc2d59347a1b817d"
+    },
+    {
+      "path": "cosmos_framework/model/tokenizer/utils/vlm_prompt_format.py",
+      "size_bytes": 1028,
+      "sha256": "sha256:59f44e48b574e1e865498a110a325c90af06879524f5dbdfa0730cff6a22e7cc"
+    },
+    {
+      "path": "cosmos_framework/scripts/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/scripts/_convert_model_to_diffusers.py",
+      "size_bytes": 76869,
+      "sha256": "sha256:78b18e0a4fdffe99743cac5718cffee3aece0703c0b777b4acc001a522971e4c"
+    },
+    {
+      "path": "cosmos_framework/scripts/_export_model_helpers.py",
+      "size_bytes": 19161,
+      "sha256": "sha256:3ac0548da5aa49080d872408909757d4ad5300b0722b59db641a2ea73729d561"
+    },
+    {
+      "path": "cosmos_framework/scripts/_test/convert_model_to_dcp.sh",
+      "size_bytes": 855,
+      "sha256": "sha256:f7d3cd4047b30533b8d006c2f0b3222fb20350c2122a06fba44825ea1ae04709"
+    },
+    {
+      "path": "cosmos_framework/scripts/_test/convert_model_to_diffusers.sh",
+      "size_bytes": 576,
+      "sha256": "sha256:d67f2351d1ea07bf0caaa651b07f779b35e74097af0034a99eeba4bb16925b64"
+    },
+    {
+      "path": "cosmos_framework/scripts/_test/export_config.sh",
+      "size_bytes": 304,
+      "sha256": "sha256:ec68d7ba4a9373e2810fe852ed834088a144a0cbf7189ee929096fa2ccbb31bf"
+    },
+    {
+      "path": "cosmos_framework/scripts/_test.py",
+      "size_bytes": 521,
+      "sha256": "sha256:0e82a11a5ed33e858d81f6289371d1fcc6753ad71236e5af5c15fb653bd0ed79"
+    },
+    {
+      "path": "cosmos_framework/scripts/_train.py",
+      "size_bytes": 6052,
+      "sha256": "sha256:d7f8aa063a24c7d1fc8750f9b0ecdcfec0fce103bf442978302dd91cb2e7eab1"
+    },
+    {
+      "path": "cosmos_framework/scripts/action_policy_server_libero.py",
+      "size_bytes": 59759,
+      "sha256": "sha256:ccae8c1680816403fbef7afe6c6230e962599300a655e7d86c75c960e3617687"
+    },
+    {
+      "path": "cosmos_framework/scripts/action_policy_server_robolab.py",
+      "size_bytes": 29795,
+      "sha256": "sha256:0ea7c258e5e3250ffa9e259151fc856ab767164d94a05040518409e4a7e31423"
+    },
+    {
+      "path": "cosmos_framework/scripts/action_policy_server_robolab_test.py",
+      "size_bytes": 6106,
+      "sha256": "sha256:1582e1271f15798af4ff45cb918529404a5937f8e4c6c4998e2551be7e2daed0"
+    },
+    {
+      "path": "cosmos_framework/scripts/action_policy_server_utils.py",
+      "size_bytes": 3563,
+      "sha256": "sha256:079dcbef37f2c4b2e9f8b374aa4e89c63ba29b80fc9895caddab8effa7a3bab9"
+    },
+    {
+      "path": "cosmos_framework/scripts/caption_from_video.py",
+      "size_bytes": 12973,
+      "sha256": "sha256:5ec3304f8e139a6e7d9301aea3095f06552b55c7efa43f4065a99d110843f47c"
+    },
+    {
+      "path": "cosmos_framework/scripts/caption_from_video_test.py",
+      "size_bytes": 2891,
+      "sha256": "sha256:4d42e79aba14438b2542c5e6a0afd6c5deee2aa77dcc29a7d97636d7a34ec67d"
+    },
+    {
+      "path": "cosmos_framework/scripts/captions_to_sft_jsonl.py",
+      "size_bytes": 9386,
+      "sha256": "sha256:7f98f9d1c1be10d16cedcd39ba0b3abd47f54e90cb00d2c89344b510fdab200c"
+    },
+    {
+      "path": "cosmos_framework/scripts/captions_to_sft_jsonl_test.py",
+      "size_bytes": 5328,
+      "sha256": "sha256:4356e679a295a5eac60c7a0f3cee09625aef95aa9dfc72a5781831a7032287b2"
+    },
+    {
+      "path": "cosmos_framework/scripts/convert_model_to_dcp.py",
+      "size_bytes": 3683,
+      "sha256": "sha256:fd9fb5c09ee24605bf19915b17ee52e7b218defe23610122f083ecc8e9891339"
+    },
+    {
+      "path": "cosmos_framework/scripts/convert_model_to_diffusers.py",
+      "size_bytes": 20987,
+      "sha256": "sha256:93461938f1c688fe405d0a85d498e55e2eb79baa5c7dc50afc487a1209451241"
+    },
+    {
+      "path": "cosmos_framework/scripts/convert_model_to_vlm_safetensors.py",
+      "size_bytes": 7192,
+      "sha256": "sha256:91fd27e5fea8a9c9595bc52a077f172ddb38c83ac0ccc09394fff4e1752a21d3"
+    },
+    {
+      "path": "cosmos_framework/scripts/curator_to_sft_jsonl.py",
+      "size_bytes": 17767,
+      "sha256": "sha256:2986a6a3d311858ed02cdeff7d02a4d3b0fa75384aa902bf813b41f58bbb7833"
+    },
+    {
+      "path": "cosmos_framework/scripts/curator_to_sft_jsonl_test.py",
+      "size_bytes": 27306,
+      "sha256": "sha256:a2bad3f3d571714e2f27f18ca86d7a9ed90c6ecb0de614e1974f46cc9b498426"
+    },
+    {
+      "path": "cosmos_framework/scripts/dataset_utils.py",
+      "size_bytes": 10655,
+      "sha256": "sha256:03912086702e8535e4061d3fc13d5513a20aa6986f77ac0f079ca41cfb162892"
+    },
+    {
+      "path": "cosmos_framework/scripts/export_config.py",
+      "size_bytes": 1977,
+      "sha256": "sha256:7016717e741d3af81e4a78ed8377eadf9b0246e94d6c8196a934cdea0ec94339"
+    },
+    {
+      "path": "cosmos_framework/scripts/export_config_store.py",
+      "size_bytes": 2956,
+      "sha256": "sha256:c4e9f6dd40ece13016529fb28b851c99128c5b1d8e93fa4f41997354bef61527"
+    },
+    {
+      "path": "cosmos_framework/scripts/export_model.py",
+      "size_bytes": 27310,
+      "sha256": "sha256:a503a4261816532cf6697956c3a5851922a637582ac6fb190461fb366070bc31"
+    },
+    {
+      "path": "cosmos_framework/scripts/export_model_test.py",
+      "size_bytes": 26248,
+      "sha256": "sha256:833c3a2da857b7f622b77c0217e091da83d3d6ef95cd7099a40895a4b5c3e6de"
+    },
+    {
+      "path": "cosmos_framework/scripts/export_schemas.py",
+      "size_bytes": 2577,
+      "sha256": "sha256:bb64902791b08e171e215b4dceb84136ea185e70dafe1fc00b114a1d4086f935"
+    },
+    {
+      "path": "cosmos_framework/scripts/export_schemas_test.py",
+      "size_bytes": 1254,
+      "sha256": "sha256:252a82d612594024b93dc20cda927745b43a7bc22d450b1c83b0dff9a5ae0982"
+    },
+    {
+      "path": "cosmos_framework/scripts/export_train_config.py",
+      "size_bytes": 3205,
+      "sha256": "sha256:ac1097faa7776bbaf9d37f65fb5ca582d21888030d851b2fccbf24689295c7e6"
+    },
+    {
+      "path": "cosmos_framework/scripts/hydra.py",
+      "size_bytes": 619,
+      "sha256": "sha256:dd4e3afde39a6ff4eaa777378ba8fa61a7b818c9a06fded6f38631e2114709dd"
+    },
+    {
+      "path": "cosmos_framework/scripts/inference.py",
+      "size_bytes": 3233,
+      "sha256": "sha256:5cb5e6feb129407c93c78344abecb2914760647e11eaf36e429db13336b3ab87"
+    },
+    {
+      "path": "cosmos_framework/scripts/inference_prompts_to_json.py",
+      "size_bytes": 3671,
+      "sha256": "sha256:9a7c54b9fd158a1d1c89a0f0066bb76e72071fabbb5bcfb195e35c28a0c14913"
+    },
+    {
+      "path": "cosmos_framework/scripts/inference_prompts_to_json_test.py",
+      "size_bytes": 2695,
+      "sha256": "sha256:338d97083b458255c8a4ea1f71ac70ed7e4d4c7aefc8ab1478e07b6187ca4b50"
+    },
+    {
+      "path": "cosmos_framework/scripts/prefetch_hf_checkpoints.py",
+      "size_bytes": 1386,
+      "sha256": "sha256:84b96460e551dc17c47e188e6e6876b09b5e52995c738798f0face9c93eba627"
+    },
+    {
+      "path": "cosmos_framework/scripts/reasoner/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/scripts/reasoner/eval_videophy2.py",
+      "size_bytes": 16153,
+      "sha256": "sha256:263110fd6e212009e49eafb18eb096ad1d23c4288399a732ea55985d20ddbe77"
+    },
+    {
+      "path": "cosmos_framework/scripts/reasoner/eval_videophy2_test.py",
+      "size_bytes": 3085,
+      "sha256": "sha256:1d95545e2b893412fc3b0b7277ee00e15ffeeaec86820fd0bb519cd058c78fde"
+    },
+    {
+      "path": "cosmos_framework/scripts/reasoner/prepare_videophy2_from_hf.py",
+      "size_bytes": 16525,
+      "sha256": "sha256:5f441242394a564f38304aee68b16002a14f0df1bd9423a5b7d06c968cf826e9"
+    },
+    {
+      "path": "cosmos_framework/scripts/train.py",
+      "size_bytes": 12869,
+      "sha256": "sha256:6ddd518230480185f300302f0febc6b10423efb25a456ebb19ef4d2802775811"
+    },
+    {
+      "path": "cosmos_framework/scripts/upsample_prompts.py",
+      "size_bytes": 8628,
+      "sha256": "sha256:09d4c839a9d882a0790fb2fe1832f128ce200f4a97dd529ba7037feab01c25b6"
+    },
+    {
+      "path": "cosmos_framework/scripts/video_metadata.py",
+      "size_bytes": 2315,
+      "sha256": "sha256:d3cd37c1912089ff934e410beb781efff6c31ffcd7ba7db82590b5e6acf79f65"
+    },
+    {
+      "path": "cosmos_framework/simulation/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/simulation/libero/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/simulation/libero/closed_loop_eval.py",
+      "size_bytes": 52318,
+      "sha256": "sha256:a52eeb570613d71e1b18c2d9508114a5b40d51242cfa66a510edd8c8238152e6"
+    },
+    {
+      "path": "cosmos_framework/tools/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/tools/flops/__init__.py",
+      "size_bytes": 790,
+      "sha256": "sha256:1edf628030b5e0b626c758cda9cc773ea6a774c854b580c06c7998db8dd1da72"
+    },
+    {
+      "path": "cosmos_framework/tools/flops/omni_mot.py",
+      "size_bytes": 20695,
+      "sha256": "sha256:1c20aee578a27f8ea085638d17ce48f5b5170f91935ff16ce05fbaf57f31b34e"
+    },
+    {
+      "path": "cosmos_framework/tools/flops/qwen3_vl.py",
+      "size_bytes": 27356,
+      "sha256": "sha256:68aa6df679c16e05abbe5e73bbb87d5a88f107b701b1807fb455b01d25f34728"
+    },
+    {
+      "path": "cosmos_framework/tools/flops/test_qwen3_vl.py",
+      "size_bytes": 5136,
+      "sha256": "sha256:3e0d320f8c79474936b758e57103a0f65f7c2d5b9ee9d2b64e0dd3276ce2902e"
+    },
+    {
+      "path": "cosmos_framework/tools/flops/wan_vae.py",
+      "size_bytes": 4803,
+      "sha256": "sha256:b917cc69630d1e535ee7d7a6b86cb87ca5980d009409da24406372b32aa3413b"
+    },
+    {
+      "path": "cosmos_framework/tools/visualize/__init__.py",
+      "size_bytes": 233,
+      "sha256": "sha256:31f80244923001738d6fbdf8af7046d5ed98b116b2184205fbf33148137a34fe"
+    },
+    {
+      "path": "cosmos_framework/tools/visualize/img.py",
+      "size_bytes": 5726,
+      "sha256": "sha256:c799bb5180e0d89d1c6bb4ae6c635cf177bc186de1dbf1b9a6bcd0716ca80a39"
+    },
+    {
+      "path": "cosmos_framework/tools/visualize/video.py",
+      "size_bytes": 2819,
+      "sha256": "sha256:5131869ba2ec6ce849515a6879522bf01ce85431dacc7dd645fe1b6eb2bea8b3"
+    },
+    {
+      "path": "cosmos_framework/trainer/__init__.py",
+      "size_bytes": 22934,
+      "sha256": "sha256:2d74e9dd80ca81061ea6221a3b0e4c096f9ff317b20545debdaa8a03cf39fdae"
+    },
+    {
+      "path": "cosmos_framework/trainer/distillation.py",
+      "size_bytes": 12186,
+      "sha256": "sha256:b3750bc3acbc66e7887fbd9a53c9223bde398fa8ada7eca6c8660082d249ea26"
+    },
+    {
+      "path": "cosmos_framework/trainer/distillation_test.py",
+      "size_bytes": 22143,
+      "sha256": "sha256:937a46c8f23850ceb63b31e5605727b5abca53eb8c8b231c13ffc4d216970362"
+    },
+    {
+      "path": "cosmos_framework/utils/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/utils/callback.py",
+      "size_bytes": 25258,
+      "sha256": "sha256:3924db2bebf101075aca0b6fbeb9ced87f41fdcd0ee7bda3e200363a94b23ea1"
+    },
+    {
+      "path": "cosmos_framework/utils/callback_test.py",
+      "size_bytes": 2122,
+      "sha256": "sha256:099def303146b983816389f81022a71b047d6db3e8ff5d7000172717b222719f"
+    },
+    {
+      "path": "cosmos_framework/utils/checkpoint_db.py",
+      "size_bytes": 15560,
+      "sha256": "sha256:6765706fbc3a28f5cda589e49037a064dc36df713dc5ef8730065728a2a83d93"
+    },
+    {
+      "path": "cosmos_framework/utils/checkpointer.py",
+      "size_bytes": 24316,
+      "sha256": "sha256:7ca361e5041acd4c8c266daac2aaf99e39f6e7ea2e7b62b43a745abe2d1fe662"
+    },
+    {
+      "path": "cosmos_framework/utils/cluster_env.py",
+      "size_bytes": 5682,
+      "sha256": "sha256:c864852c725bc2ca58ae3eb0cdd648cca54fb573ca42e802687be41af0ea1fa6"
+    },
+    {
+      "path": "cosmos_framework/utils/config.py",
+      "size_bytes": 21847,
+      "sha256": "sha256:346e651194f520f312865cb9d450a7503c84d6a2626c44c925ba4de8d9ced06c"
+    },
+    {
+      "path": "cosmos_framework/utils/config_helper.py",
+      "size_bytes": 8698,
+      "sha256": "sha256:98f2d26291b08158cac54d1e4fa1767ec30b2e19356819e668066918d05b9b71"
+    },
+    {
+      "path": "cosmos_framework/utils/configs/lr_scheduler.py",
+      "size_bytes": 524,
+      "sha256": "sha256:26c147ee4a1f1ed3273f4bedd777ee89a4c392555a99470f22026adf6765e745"
+    },
+    {
+      "path": "cosmos_framework/utils/context_managers.py",
+      "size_bytes": 2065,
+      "sha256": "sha256:7d957525d899e1d76df22a9f6b4e7031e16a005d13964d679a165fd4c1653dc6"
+    },
+    {
+      "path": "cosmos_framework/utils/count_params.py",
+      "size_bytes": 428,
+      "sha256": "sha256:84e05613a60efaa4d9f826d2b891d606f5bb87648191050764684711ff7a7012"
+    },
+    {
+      "path": "cosmos_framework/utils/device.py",
+      "size_bytes": 4255,
+      "sha256": "sha256:75b81bbd15a63f952b965478e7a35c51f71dec41384971c9d648e562cba0bb62"
+    },
+    {
+      "path": "cosmos_framework/utils/distributed.py",
+      "size_bytes": 29272,
+      "sha256": "sha256:9684a30e4a8a14d67173b98ad4b791d382c6e5259b31ec0c2b79016a8c7005c9"
+    },
+    {
+      "path": "cosmos_framework/utils/distributed_test.py",
+      "size_bytes": 9879,
+      "sha256": "sha256:ec75ad8a0ad1ef13e8fee1cb3e36ea4bfe1162f438924bf086c1670cba6ae2ed"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/README.md",
+      "size_bytes": 208,
+      "sha256": "sha256:ecbcffef8e65b07bd7fe2e452751e63b81af656ac414023a45674932c5b4b34c"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/backends/__init__.py",
+      "size_bytes": 935,
+      "sha256": "sha256:e264f0aa3566794cb9b70542177b824a53fe3e1476f668d6543a0bea93e5b2d8"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/backends/auto_auth.py",
+      "size_bytes": 2076,
+      "sha256": "sha256:b3a0680d74899622604794c3dd1e896e14268c8c8cd3fde92b885b689e9a3487"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/backends/base_backend.py",
+      "size_bytes": 3787,
+      "sha256": "sha256:ded5753ef981050bf12542a8e83c97dbd6bd095c3788ac77dbb0aa1b7b7cc4ce"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/backends/boto3_backend.py",
+      "size_bytes": 31088,
+      "sha256": "sha256:d87d4a8dc08759c4206c12e7cbb6a97af66b7522c4555730d8f76ce9247dffde"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/backends/boto3_client.py",
+      "size_bytes": 25895,
+      "sha256": "sha256:cc675846ca858e9e4884c36b138ef1d28225571b7a9dff8cae8927351dea2d16"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/backends/http_backend.py",
+      "size_bytes": 7755,
+      "sha256": "sha256:616903b86a83c3f0b7b1e6a096b237d611bff082d826d7fc348fe7247d5104cf"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/backends/local_backend.py",
+      "size_bytes": 19910,
+      "sha256": "sha256:5fef2748462f519f75b96c6aefc3ea77eee667831411cb2c2a07f214054b8da0"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/backends/msc_backend.py",
+      "size_bytes": 43805,
+      "sha256": "sha256:ea8685a255e9172a5b1dcc50882314dfca5c3ae48d472304d2536c8f7a7c50d6"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/backends/registry_utils.py",
+      "size_bytes": 4353,
+      "sha256": "sha256:ba38a6d71f4151c4bcece8a49ef495ded5c6efd472b5c21e8ff8e25d5a6f2944"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/easy_io.py",
+      "size_bytes": 36735,
+      "sha256": "sha256:a2e0332b7162147f2d0f2b949e913fc1b67dda6ab61624267d4cd873f1d7a878"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/file_client.py",
+      "size_bytes": 16303,
+      "sha256": "sha256:6467951ef17fde90650f154ed70467d37466dc7ad0dd079cc630299dd116ad6a"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/__init__.py",
+      "size_bytes": 688,
+      "sha256": "sha256:0584837aba867d3d740f5462b9e183f5defc5b5a4f255d9475174bd960dcabc5"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/base.py",
+      "size_bytes": 1084,
+      "sha256": "sha256:7d359316fe8a3e483a76233b3f881d0524b0b0c507bc47293b3a33d901c3cb7e"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/byte_handler.py",
+      "size_bytes": 685,
+      "sha256": "sha256:d076373f5d2904ac42cd890fc6684ee47a5d510984c5bce830478ae14db7f2c6"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/csv_handler.py",
+      "size_bytes": 968,
+      "sha256": "sha256:1db40008decb465a838abd6b7958e2f7aa232f511388e1120f6367777b651b68"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/gzip_handler.py",
+      "size_bytes": 658,
+      "sha256": "sha256:2d35c5aa9d336ed2ad59b688486a7c1fcf661e372ec78311d7683ed938be8cc8"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/imageio_video_handler.py",
+      "size_bytes": 8106,
+      "sha256": "sha256:22d659c4e3f665c2375e7e1139218bfd3307b0bcc4aa0c55f352ded54eb89cee"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/imageio_video_handler_test.py",
+      "size_bytes": 1960,
+      "sha256": "sha256:12d45be4776a962e8d6c1ccf6870834e28efe1cf953561dc27aecb2c4e021dc5"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/json_handler.py",
+      "size_bytes": 1197,
+      "sha256": "sha256:81a03295a9d0e50623103f09cfa6ca6dcc8d99af7d4fc2b73b745c8ee1dc003a"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/jsonl_handler.py",
+      "size_bytes": 2334,
+      "sha256": "sha256:57ca8e3a68ebcba4009ca7fe48750dc4f0e672957d29e8738e6acbe8d2f4cc04"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/np_handler.py",
+      "size_bytes": 2523,
+      "sha256": "sha256:2c50e521984e6362283bbdbd54eb4721979e4a8a4cef7e8db9cf1791874e4675"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/pandas_handler.py",
+      "size_bytes": 615,
+      "sha256": "sha256:aae67ca78f2af16212bbfcacde688531c30014e3acde8af1a75a592099c02f7a"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/pickle_handler.py",
+      "size_bytes": 968,
+      "sha256": "sha256:5c65b45da6c22e71c3a54f06d6055c7a0361de055531af0fc63545578b4173ae"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/pil_handler.py",
+      "size_bytes": 3106,
+      "sha256": "sha256:2db9600a1e5e056e844e74d98a2fd4861df06f43974a08d8122c13d8b0eb63c4"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/registry_utils.py",
+      "size_bytes": 3375,
+      "sha256": "sha256:82751d47543ffcb531e60f6d0577b619048f95b1112a7004379787c6fc044c70"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/tarfile_handler.py",
+      "size_bytes": 921,
+      "sha256": "sha256:778b5501fa300cf677bcc4251f8e7a0fcd46f3c225c851572116842300bf2492"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/torch_handler.py",
+      "size_bytes": 594,
+      "sha256": "sha256:01e6d58c1de4f55baef7adf0d9f4c09516115291e2ec81efd357cce4ae233e9d"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/torchjit_handler.py",
+      "size_bytes": 605,
+      "sha256": "sha256:035f5a879b3bccf2adbeea03812c862039cb2627cc3238e380a127915116b7ef"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/trimesh_handler.py",
+      "size_bytes": 713,
+      "sha256": "sha256:ef85cedea3e67c5a08f29436dee519e5ae07fe3a7586fc08540b300946d685e4"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/txt_handler.py",
+      "size_bytes": 649,
+      "sha256": "sha256:e7cf5665f149d1cb5f16e7a3c6c2bb0a9d05229404cfd92455e4e756484a5185"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/handlers/yaml_handler.py",
+      "size_bytes": 862,
+      "sha256": "sha256:8bb8fcb7d0be7fc6e43f4df3dcf22c161795f22b13093ecc97673b80b12e65e0"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/transient_retry.py",
+      "size_bytes": 4925,
+      "sha256": "sha256:64f317f4d4c299a03feb1630b00644409ebd21d919a04fb4ce181ed2c1481a86"
+    },
+    {
+      "path": "cosmos_framework/utils/easy_io/transient_retry_test.py",
+      "size_bytes": 3653,
+      "sha256": "sha256:c3a30e2160c10a5bdcbe35c9a9cbfee90b5cc8f70398cf44bc14e6aa7f3f9d18"
+    },
+    {
+      "path": "cosmos_framework/utils/ema.py",
+      "size_bytes": 16215,
+      "sha256": "sha256:f9887798c81311a38758c1533a05c4df37317149c09f7b0b2dd37c202ed53021"
+    },
+    {
+      "path": "cosmos_framework/utils/env_parsers/cred_env_parser.py",
+      "size_bytes": 3288,
+      "sha256": "sha256:5d10bddc430dbff45d743bb343e9589ebfe5870a8b316a2cdb84337a1aa64007"
+    },
+    {
+      "path": "cosmos_framework/utils/env_parsers/customization_env_parser.py",
+      "size_bytes": 727,
+      "sha256": "sha256:32c0f6b5795fc95b4a6196453d28158e10e399b450ef73cee6fafbb3bc1b6cd2"
+    },
+    {
+      "path": "cosmos_framework/utils/env_parsers/env_parser.py",
+      "size_bytes": 3780,
+      "sha256": "sha256:146b54d2b568fd0678cac74117c27086c46c7929e21504ff6c1d9473659fab33"
+    },
+    {
+      "path": "cosmos_framework/utils/env_parsers/inference_env_parser.py",
+      "size_bytes": 1048,
+      "sha256": "sha256:48a376d4cc8478c7620923f426968003e99eb51fb3277c568cd2e6064af53ddb"
+    },
+    {
+      "path": "cosmos_framework/utils/flags.py",
+      "size_bytes": 2134,
+      "sha256": "sha256:606418361750aeaa2e0d419a48aa897e138094007b1c2f75ae4ce0c29c1e5cb1"
+    },
+    {
+      "path": "cosmos_framework/utils/functional/batch_ops.py",
+      "size_bytes": 1532,
+      "sha256": "sha256:6f4d05aa980fd927e4ca49d6f175bf2729e9bd67feea369d24dfb772c4c17c7a"
+    },
+    {
+      "path": "cosmos_framework/utils/functional/lr_scheduler.py",
+      "size_bytes": 9958,
+      "sha256": "sha256:3c8005b9f119a31bb8a3e9fe810e6956c4933fda366f8bf94fa910884ac914d2"
+    },
+    {
+      "path": "cosmos_framework/utils/functional/multi_step.py",
+      "size_bytes": 1345,
+      "sha256": "sha256:ce591372e872b748c6b6aa554403fb288ad9bb4860d0d3432b5eba413f2a58b6"
+    },
+    {
+      "path": "cosmos_framework/utils/functional/runge_kutta.py",
+      "size_bytes": 9619,
+      "sha256": "sha256:1200b211ca5fef0a0f9778c30d3aed4208a423fe22054a02b69203d51d04fd33"
+    },
+    {
+      "path": "cosmos_framework/utils/fused_adam.py",
+      "size_bytes": 16286,
+      "sha256": "sha256:2669983f75309388aa4d6c5b122096f9303b3e3aaea92a21d5800ee6f2e87317"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/aux_optimizer_utils.py",
+      "size_bytes": 14800,
+      "sha256": "sha256:b9979a664bcc504262f66368173d3fbdb3e5085a3ecbcc887c125ed9233eee85"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/data_utils.py",
+      "size_bytes": 6690,
+      "sha256": "sha256:b7d4635899cca1e984ca31b844f7e26a214ba5a64818c330086e92c93f7a6b7e"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/dion2_with_aux_adamw.py",
+      "size_bytes": 55606,
+      "sha256": "sha256:dcd947bdc587006d033e1624366bce39ced50f9830ef2dc17e1629201184df8c"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/dtensor_helper.py",
+      "size_bytes": 2220,
+      "sha256": "sha256:c0646804438ffcfb37e05030430561bd7d6b84234d44cc206507c3960cb21a82"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/flash_attn.py",
+      "size_bytes": 2164,
+      "sha256": "sha256:c990b62d0727c374f5754603690a078fa25baabffa5d39ee73b3ab74bf3d2320"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/fused_adam.py",
+      "size_bytes": 17033,
+      "sha256": "sha256:49a8d6cc3a6115172f2b05427ddbec9f17aa1a207f5653f0752c641361022f58"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/hf_attention_cosmos.py",
+      "size_bytes": 4243,
+      "sha256": "sha256:a396b6c37cd05670ca34ccb902d66fe00a7f6c46950cb5fc4b9385a653f80c80"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/image_resize.py",
+      "size_bytes": 2422,
+      "sha256": "sha256:556cc559f76cacdd866e2d973d008d46726b0c58247ed751232040326f5da3b7"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/image_resize_test.py",
+      "size_bytes": 1618,
+      "sha256": "sha256:ba93d101ece8be71cab4fff0ef3d2eb47f3623937a9936c4a54fb17cfaf7def3"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/lora.py",
+      "size_bytes": 7217,
+      "sha256": "sha256:65a69ec06dff1e744d4042f012732240cb50791c73d8c97f270989228bf307db"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/model_loader.py",
+      "size_bytes": 22781,
+      "sha256": "sha256:3e4b2ede031d46105db323d6ff51abdfdf7f74e3d240d01f3b5cca565a7f4ab2"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/model_weights_stats.py",
+      "size_bytes": 1698,
+      "sha256": "sha256:5c23fbfc5de974b895fe9dc102e9647a58d367350e202de500f3f15743dfdeea"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/monkey_patch.py",
+      "size_bytes": 12231,
+      "sha256": "sha256:39b74023435e59b38d933cd846b7d77b7808fb25ed76148e99e44e89378e6bac"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/muon_with_aux_adamw.py",
+      "size_bytes": 40709,
+      "sha256": "sha256:a473e4ab56e2242b7db85f025b4559b120c7cc093bd21654ee9736dbae85620a"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/optimizer.py",
+      "size_bytes": 34188,
+      "sha256": "sha256:5273847960d1c00daea11535b4f79aa355665387f2c820e460268691e749d4d8"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/parallelism.py",
+      "size_bytes": 11112,
+      "sha256": "sha256:81050d3b7571f19113819b62d46c05595d302edbfc5025757e5ccb18855db266"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/quantization.py",
+      "size_bytes": 10150,
+      "sha256": "sha256:ea24b54b54dc5cce1b0a81dfb0f00f2353ae1049484590ec344efc296acd1ecf"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/rand_state.py",
+      "size_bytes": 5665,
+      "sha256": "sha256:13ae66d895eb6b9b91d0e46095897f5ad852cd735df700db1d6fa9df59f5d6c8"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/reasoner/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/reasoner/constant.py",
+      "size_bytes": 916,
+      "sha256": "sha256:ecd12c13e9c7162a3d13653f0e27f4685e7f7f5693197befcd51da328887fc35"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/reasoner/create_position_ids.py",
+      "size_bytes": 12869,
+      "sha256": "sha256:a57e6321fc572bbd27c0db754b0091fd24e6da1057e6e697bd4adeb0da23c709"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/reasoner/flop_calculator.py",
+      "size_bytes": 8012,
+      "sha256": "sha256:205ac040e3db259f04006e53903c702f0278ca7e86914096c7801d3ee9cc7591"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/reasoner/pretrained_models_downloader.py",
+      "size_bytes": 9569,
+      "sha256": "sha256:a93ca645b4a6fb1d2bfb3320b8ff5d7e7e9470fac66a2b4d0067ce467f4c7b62"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/torchcodec_video.py",
+      "size_bytes": 6496,
+      "sha256": "sha256:76056090ae88c6f612a13fc032c727241d86098b6dd3ed006f5bcc7fedbf9ff5"
+    },
+    {
+      "path": "cosmos_framework/utils/generator/video_preprocess.py",
+      "size_bytes": 1146,
+      "sha256": "sha256:d4ad478cbe7230d7bc1965265859b9ff09df9b1e2c9fec206fdd915a4a8e728c"
+    },
+    {
+      "path": "cosmos_framework/utils/launch.py",
+      "size_bytes": 8197,
+      "sha256": "sha256:a7cff269378d4f839eeb69045b71a240fabe975fa8a3c043e094ec569c028322"
+    },
+    {
+      "path": "cosmos_framework/utils/lazy_config/__init__.py",
+      "size_bytes": 2519,
+      "sha256": "sha256:1b8e67cc132b805c3d2e54ab5d84c042b970de123b67b6fdcbd1bcaf26ba0b3b"
+    },
+    {
+      "path": "cosmos_framework/utils/lazy_config/file_io.py",
+      "size_bytes": 462,
+      "sha256": "sha256:83572c72ee58c1b1410f1f6a857c9dead4d79bf2596da0f2b35fcf8b494b9d83"
+    },
+    {
+      "path": "cosmos_framework/utils/lazy_config/instantiate.py",
+      "size_bytes": 3842,
+      "sha256": "sha256:58b2d21af844543d6830617e19696aa99d7ff7a0acfe9938418c21baaeba0017"
+    },
+    {
+      "path": "cosmos_framework/utils/lazy_config/lazy.py",
+      "size_bytes": 16231,
+      "sha256": "sha256:6d6591d5273bceed119bbb96f4452ddcf3d5f12754e22f152ebfb22f1254dc1c"
+    },
+    {
+      "path": "cosmos_framework/utils/lazy_config/lazy_call.py",
+      "size_bytes": 2330,
+      "sha256": "sha256:dcc214f46660366424c3e28f800bf1d891e68958ce0af99804c432397713c3b5"
+    },
+    {
+      "path": "cosmos_framework/utils/lazy_config/lazy_test.py",
+      "size_bytes": 381,
+      "sha256": "sha256:586b22bc7c3041082d365cf8213fb8a63b17c15a875e0755756e816d131557d1"
+    },
+    {
+      "path": "cosmos_framework/utils/lazy_config/omegaconf_patch.py",
+      "size_bytes": 2097,
+      "sha256": "sha256:d3fa9c3262fb1700764cbdd3ab47e3b2adf2f60580f8e531c1de4dee20b21638"
+    },
+    {
+      "path": "cosmos_framework/utils/lazy_config/registry.py",
+      "size_bytes": 2358,
+      "sha256": "sha256:6d0cb378584840e7bd91514bbffd8625547afe10813255ad2cfc03230939ff10"
+    },
+    {
+      "path": "cosmos_framework/utils/log.py",
+      "size_bytes": 4241,
+      "sha256": "sha256:355bd251e55c39956dafbfad27024377644ae4974b9a607ea034fe777889030e"
+    },
+    {
+      "path": "cosmos_framework/utils/misc.py",
+      "size_bytes": 25422,
+      "sha256": "sha256:ca1cb71d01ce4f3d630dbdb6f3cc8f508e3ba8effe9b69b5c1b64709b65e4cb7"
+    },
+    {
+      "path": "cosmos_framework/utils/object_store.py",
+      "size_bytes": 14983,
+      "sha256": "sha256:e272da95af068440902311f2f2b5584ef42c420048b47921c11cca2e787661f0"
+    },
+    {
+      "path": "cosmos_framework/utils/one_logger/one_logger_context_managers.py",
+      "size_bytes": 1588,
+      "sha256": "sha256:972ce265b42b245f093e0c5473fa5d707847196e9b468cabe9282a3518d81a11"
+    },
+    {
+      "path": "cosmos_framework/utils/one_logger/one_logger_global_vars.py",
+      "size_bytes": 2509,
+      "sha256": "sha256:a2eb452c849d0cf6450b943c6498faa64925da8c06b211fe076a56e2b1c43349"
+    },
+    {
+      "path": "cosmos_framework/utils/one_logger/one_logger_override_utils.py",
+      "size_bytes": 2221,
+      "sha256": "sha256:10f31993f5cb7ebe5134b2adef0773cc0891d127ec8cb3fc6dc5ab5a53c25efb"
+    },
+    {
+      "path": "cosmos_framework/utils/one_logger/one_logger_utils.py",
+      "size_bytes": 67428,
+      "sha256": "sha256:ae497788bbe13c1e8cbf38343306ac2413afa4bc6a44cd9d42f3782f92f5a329"
+    },
+    {
+      "path": "cosmos_framework/utils/optim_instantiate.py",
+      "size_bytes": 2151,
+      "sha256": "sha256:b9e07ba94b783c8309705a24ecec041f8eac1e310a9eb8eb6dd1eaee8b7489eb"
+    },
+    {
+      "path": "cosmos_framework/utils/profiling.py",
+      "size_bytes": 8112,
+      "sha256": "sha256:b01ae3d9b147116c03c6ea8fb931e83e6fcaa432c64fd4124d2db952770e4493"
+    },
+    {
+      "path": "cosmos_framework/utils/progress_bar.py",
+      "size_bytes": 2097,
+      "sha256": "sha256:5c9f4504885cef39107ce5f609543f23503ceff402fb935d21c27ed4001661eb"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/compute_flops_qwen3vl.py",
+      "size_bytes": 26583,
+      "sha256": "sha256:a55e2bbbfed6a329211a7f857c3f76c3af9f951d4d6397d3aa0fe4bd4efc3f87"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/configs_defaults/__init__.py",
+      "size_bytes": 139,
+      "sha256": "sha256:717a1b9838b948a88d2fb5106069db57dce81dc54854cf2be5fb54150c7ac652"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/configs_defaults/checkpointer.py",
+      "size_bytes": 3984,
+      "sha256": "sha256:0d981680456a27317eb0c0046da43433fa6ddff3800359637dc284247d45de02"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/constant.py",
+      "size_bytes": 535,
+      "sha256": "sha256:e4b4569273ce7a23cdc73bb24856beb3e971053e23e2b71e307a5a735d07c279"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/create_position_ids.py",
+      "size_bytes": 7717,
+      "sha256": "sha256:0d6f919759f5ad985262e88e517b27388349c1dacb307392f33fb14345ea6f99"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/dcp_checkpointer.py",
+      "size_bytes": 22188,
+      "sha256": "sha256:579623748f3538ffc2980ac60cc5d51166463880403c471e767cce27ad981ffc"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/distributed.py",
+      "size_bytes": 14925,
+      "sha256": "sha256:bba266e2eefba37309fa8c7c13f8a631d2fb29ede815920041f1a2e0faa3f56b"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/flop_calculator.py",
+      "size_bytes": 7240,
+      "sha256": "sha256:8ff1a776a1040e44152132d3cb79e2da6fda352b6a9d4ffd73ae173922b34f58"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/fused_adam.py",
+      "size_bytes": 18023,
+      "sha256": "sha256:96b631794f67e2c8c0566deac7d5fb0949b0877f75e3538aa32addd3f052632c"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/model_wrapper.py",
+      "size_bytes": 1089,
+      "sha256": "sha256:b914392beb46b831d29cdab0fc85209ba7ab6bc6b7dcf934ee6e46ed3e60bffd"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/optimizer.py",
+      "size_bytes": 13002,
+      "sha256": "sha256:04831467d1480d78647f911fc0abdcab0e2e5a54655d00c8c68021cadf12002f"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/planner.py",
+      "size_bytes": 5786,
+      "sha256": "sha256:e1ed5d983130df18aeb3871fc2b59181d6748697eb5a518ff3312480763e4a95"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/pretrained_models_downloader.py",
+      "size_bytes": 7682,
+      "sha256": "sha256:4bf4201f92f1f4c0b946d4b7d36cf5a536cbcef1d33f016532bd7c6fbabc5384"
+    },
+    {
+      "path": "cosmos_framework/utils/reasoner/video_preprocess.py",
+      "size_bytes": 1271,
+      "sha256": "sha256:952a9dc75597764b620b6d004ac8ca042b6c4acbd1cdc6df0b0256a9cd635c1f"
+    },
+    {
+      "path": "cosmos_framework/utils/serialization.py",
+      "size_bytes": 14969,
+      "sha256": "sha256:c9ad1e2b011a31be5205e9a1daa5f286206696722c739c6ee2e9d22af67b3383"
+    },
+    {
+      "path": "cosmos_framework/utils/timer.py",
+      "size_bytes": 8471,
+      "sha256": "sha256:ffa1133db66ba6b3b723ca7acca31dd7d6de366f47368aeed97e4338e273a4a6"
+    },
+    {
+      "path": "cosmos_framework/utils/training_telemetry/__init__.py",
+      "size_bytes": 138,
+      "sha256": "sha256:f0b3bb691d1a6a3168fe9a9d3d7ea1e718c545ce71f6c6f245f38b3071a24075"
+    },
+    {
+      "path": "cosmos_framework/utils/training_telemetry/callback.py",
+      "size_bytes": 12743,
+      "sha256": "sha256:da81dcdb98544ff2da3869b5a65621917ff5e413dbb4ab7ed4a5cfdd85025f8a"
+    },
+    {
+      "path": "cosmos_framework/utils/training_telemetry/context_managers.py",
+      "size_bytes": 1347,
+      "sha256": "sha256:a0bf3fe40774ed7bfbd90baf6e2d40822f59c24b05a79dd263da24f5bb29802d"
+    },
+    {
+      "path": "cosmos_framework/utils/training_telemetry/telemetry.py",
+      "size_bytes": 3489,
+      "sha256": "sha256:a5c829a121014eb709c3dbd5b9a662c908996c366de8751d904f29924bdc27fb"
+    },
+    {
+      "path": "cosmos_framework/utils/training_telemetry/utils.py",
+      "size_bytes": 6140,
+      "sha256": "sha256:4f96441be9de7b54597457520b23c11b195fe204b2fedd34e408c9c87373187a"
+    },
+    {
+      "path": "cosmos_framework/utils/validator.py",
+      "size_bytes": 17106,
+      "sha256": "sha256:a58e5f21f86bc649727d82a86ed67f8b9ba5e40bb77e08514baca6d05885cddb"
+    },
+    {
+      "path": "cosmos_framework/utils/wandb_util.py",
+      "size_bytes": 6158,
+      "sha256": "sha256:b036983ad0b9a6fb8e9954fa1ab927962d11844c8c3b34e8fe93470cdf9ae15f"
+    },
+    {
+      "path": "docker/.gitkeep",
+      "size_bytes": 0,
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docker/README.md",
+      "size_bytes": 826,
+      "sha256": "sha256:20681512e57c7cd72ef48870a5e79c1e6c3f1f39ef4ff173e8f918dbe66117ce"
+    },
+    {
+      "path": "docker/ci.Dockerfile",
+      "size_bytes": 1808,
+      "sha256": "sha256:7e74ad5cfa677c8bd78a3cdf95a5cf5dbda0c217872ce088a5499485ef32cd83"
+    },
+    {
+      "path": "docker/entrypoint.sh",
+      "size_bytes": 246,
+      "sha256": "sha256:7299324de2e52b502c55afea58338971d1c877d049237a15e695d51f3622f8e5"
+    },
+    {
+      "path": "docker/nightly.Dockerfile",
+      "size_bytes": 1537,
+      "sha256": "sha256:fb947947f4d6e4aa24b30df4d0b789aa2f24f510584adb2ed5827083940df82f"
+    },
+    {
+      "path": "docs/.gitkeep",
+      "size_bytes": 0,
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/action_fd_droid_posttrain.md",
+      "size_bytes": 5909,
+      "sha256": "sha256:fc2e2f16d2e8a2b768b0fead57b53ab3811319d0b561755edcee2298380e028a"
+    },
+    {
+      "path": "docs/action_policy_droid_posttrain.md",
+      "size_bytes": 8430,
+      "sha256": "sha256:20dff36cefd9d2d6d35d6cc57fd0e1f710c81309f52fdc41f1bb0ba9cdcc4b10"
+    },
+    {
+      "path": "docs/action_policy_droid_server.md",
+      "size_bytes": 3329,
+      "sha256": "sha256:e5c0367573935bd09e107305ec4df882d8547bdbd1bcaaecf72785bd37e43dae"
+    },
+    {
+      "path": "docs/action_policy_libero_posttrain.md",
+      "size_bytes": 7553,
+      "sha256": "sha256:61c83518c12e5e37285e0a92ff3b2cc4171bd3f0da98a10e0ed98041b856847f"
+    },
+    {
+      "path": "docs/code_structure.md",
+      "size_bytes": 15873,
+      "sha256": "sha256:122e144a829a6127332a377cf2421abbb3b69beb6e2744a28631e0413e7e0ee3"
+    },
+    {
+      "path": "docs/custom_dataset.md",
+      "size_bytes": 21456,
+      "sha256": "sha256:2bb7524c1b19dc5c7aa50ec379ae7667f2d5e29ef0b53ac76436859ecd42b6d3"
+    },
+    {
+      "path": "docs/dataset_jsonl.md",
+      "size_bytes": 13368,
+      "sha256": "sha256:89f38561bbf459718e5730d01afb02ceff84664903d6b72c854af3c4d0c66914"
+    },
+    {
+      "path": "docs/environment_variables.md",
+      "size_bytes": 799,
+      "sha256": "sha256:1dd50bc630685fde06c3a38f4c67e343b20becf5cef71e5402c0db8c00a9c0a8"
+    },
+    {
+      "path": "docs/faq.md",
+      "size_bytes": 15107,
+      "sha256": "sha256:e6fc829e40ef0c6c228a26436f3ebcd242edb4eeaba0cc6b8e14849e52a60194"
+    },
+    {
+      "path": "docs/inference.md",
+      "size_bytes": 18822,
+      "sha256": "sha256:4b666eab3b7a2860ba43d380d1c7792480eca09188e3b06f5a4e953fe616fc1e"
+    },
+    {
+      "path": "docs/prompt_upsampling.md",
+      "size_bytes": 9587,
+      "sha256": "sha256:9d91fa87bb1c0f5c973df16b0e53e3c87a4a77bf9df3094bd456d8d03c81ba23"
+    },
+    {
+      "path": "docs/setup.md",
+      "size_bytes": 13326,
+      "sha256": "sha256:a3c68ad91037a5804d42c8c5a5c663cb72feea8339a6626e139272d885ea8665"
+    },
+    {
+      "path": "docs/sft_config.md",
+      "size_bytes": 38587,
+      "sha256": "sha256:bcd0fc62dd276aaf04a406b17d45663771f437d3732d928492b63c286faa5817"
+    },
+    {
+      "path": "docs/training.md",
+      "size_bytes": 33115,
+      "sha256": "sha256:4194f6e62f09fc7e22e3b10f27db1558797b75dea1b907038d6159c080b938fc"
+    },
+    {
+      "path": "examples/.gitkeep",
+      "size_bytes": 0,
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "examples/README.md",
+      "size_bytes": 2095,
+      "sha256": "sha256:d5eff8c55a10c5a768ecab2098d5e8d48a932227c0f70897141857c58e6b70e9"
+    },
+    {
+      "path": "examples/_sft_launcher_common.sh",
+      "size_bytes": 5489,
+      "sha256": "sha256:37f51b28c88fe0de4ebc21676ea6b822495a99f2658a78b67f41504d862447ca"
+    },
+    {
+      "path": "examples/_test/inference.sh",
+      "size_bytes": 168,
+      "sha256": "sha256:5be0f63e4eaf56424a8cb71ba4c5eed40203089dcbc2031bcac65f575c924551"
+    },
+    {
+      "path": "examples/_test/inference_pipeline.sh",
+      "size_bytes": 177,
+      "sha256": "sha256:e9b115fbfe834e5c876ab40d109234b8311326af676cbcff1bcaac0c0f05774b"
+    },
+    {
+      "path": "examples/_test.py",
+      "size_bytes": 553,
+      "sha256": "sha256:f544c2e03a0fb8052b542195324ff4c7138421ead0ab5c7e2a73af7572022daf"
+    },
+    {
+      "path": "examples/inference.py",
+      "size_bytes": 2580,
+      "sha256": "sha256:6eb51c11ac86c814428c8a9149059d56c36fa2836dfe22fb34943dbcdfd375d8"
+    },
+    {
+      "path": "examples/inference_pipeline.py",
+      "size_bytes": 1362,
+      "sha256": "sha256:242632a75bb8f67fdd571f3eb7c873bfd8a6474d6b5483c8814a2f3055052126"
+    },
+    {
+      "path": "examples/integration/README.md",
+      "size_bytes": 17701,
+      "sha256": "sha256:0734d69cb7e82d2c873a24efbe1e31a6c27b2d8d86ce5b1113eeb4809f80dd66"
+    },
+    {
+      "path": "examples/integration/net_level.py",
+      "size_bytes": 26516,
+      "sha256": "sha256:92a549ede2083f9370e59d87723931f4a8b7801335ce2e1eacf695ecef08cf29"
+    },
+    {
+      "path": "examples/integration/trainer_level_inference.py",
+      "size_bytes": 14926,
+      "sha256": "sha256:db75922b5f6ebf45e7c34df64ae4f5574732e56878afcdfa027741d31c413fc2"
+    },
+    {
+      "path": "examples/integration/trainer_level_training.py",
+      "size_bytes": 21375,
+      "sha256": "sha256:766266c82b54a4feb56d28129e970412fd9448142cac0492da7ff0ce816f1c21"
+    },
+    {
+      "path": "examples/launch_sft_action_fd_droid_posttrain.sh",
+      "size_bytes": 2421,
+      "sha256": "sha256:a179379704cbeaf56eec931ba9cbed362138aa77fa55db08a5c601b1beb57be8"
+    },
+    {
+      "path": "examples/launch_sft_action_policy_droid_nano.sh",
+      "size_bytes": 2667,
+      "sha256": "sha256:54367dbb6cb40c69bc20a65449edb2ec2f31a90b502bc4346e806a27d386f1fa"
+    },
+    {
+      "path": "examples/launch_sft_action_policy_libero_10_nano.sh",
+      "size_bytes": 2573,
+      "sha256": "sha256:fc426f088a61c08891ddc964bac770fb7514df70eb5ffcf407aef3218ab0f5fb"
+    },
+    {
+      "path": "examples/launch_sft_action_policy_libero_all_nano.sh",
+      "size_bytes": 2832,
+      "sha256": "sha256:572d37585c29231d29a536adcb8ad833f64965a2cb0516ce12a53a479cb02dbc"
+    },
+    {
+      "path": "examples/launch_sft_llava_ov.sh",
+      "size_bytes": 1919,
+      "sha256": "sha256:d46f16434ead49ee6f2e0f7fc754c1b62f17a0f205da3e2af8470e88376b3df0"
+    },
+    {
+      "path": "examples/launch_sft_llava_ov_mapstyle_dataloader.sh",
+      "size_bytes": 1689,
+      "sha256": "sha256:a60ba16d00a07004cd04c3a25a265f632545d79430149b7f7546f335549ecaae"
+    },
+    {
+      "path": "examples/launch_sft_videophy2_edge.sh",
+      "size_bytes": 3260,
+      "sha256": "sha256:fc6e1ef02b404568df56968bd521acebada342032d44d9d33ccaf2de0b78b374"
+    },
+    {
+      "path": "examples/launch_sft_videophy2_nano.sh",
+      "size_bytes": 2119,
+      "sha256": "sha256:f104bfe901c20a8a9ef8fd72ade43ca676683d40d9278e486add84b33db98b17"
+    },
+    {
+      "path": "examples/launch_sft_videophy2_super.sh",
+      "size_bytes": 3008,
+      "sha256": "sha256:7b973863e768358e42ecc859ec671bedee3f4901f484befaacf349c47a8f64a4"
+    },
+    {
+      "path": "examples/launch_sft_vision_edge.sh",
+      "size_bytes": 1612,
+      "sha256": "sha256:d5be5a21a4fff8f981fc988aa59081fe9536d83cbcc55818c00414893b5b33b1"
+    },
+    {
+      "path": "examples/launch_sft_vision_nano.sh",
+      "size_bytes": 1514,
+      "sha256": "sha256:1f57d926870b4c8461c89d9e61b67fd8a4dceeca0d9083511c083f1993684b93"
+    },
+    {
+      "path": "examples/launch_sft_vision_nano_cosmosdataloader.sh",
+      "size_bytes": 1492,
+      "sha256": "sha256:fa5661709425bb69bad6dc053de69a2f883cd4a423e285f0f6a620bcc88e6667"
+    },
+    {
+      "path": "examples/launch_sft_vision_super.sh",
+      "size_bytes": 1854,
+      "sha256": "sha256:11b0f1f8b51afd09a618f9f2ab8f6c7afafb0b8c06085ad07ae8ea774542f2d5"
+    },
+    {
+      "path": "examples/toml/sft_config/action_fd_droid_posttrain.toml",
+      "size_bytes": 1282,
+      "sha256": "sha256:97183023c01d0607428b716d3da7b6b5099584091d7751bacc78c4cacbf8decc"
+    },
+    {
+      "path": "examples/toml/sft_config/action_policy_droid_nano.toml",
+      "size_bytes": 2438,
+      "sha256": "sha256:d1d95170f6514cb815b065b47727eb9a445464c9d4ba993dee56ebfbf789cdea"
+    },
+    {
+      "path": "examples/toml/sft_config/action_policy_libero_10_nano.toml",
+      "size_bytes": 1302,
+      "sha256": "sha256:ba074de8536dedf0c000259d67ba9e6a932dbb355acad0abf69959391a3b5b6c"
+    },
+    {
+      "path": "examples/toml/sft_config/action_policy_libero_all_nano.toml",
+      "size_bytes": 1537,
+      "sha256": "sha256:26e9943eedc407927ef995ad202241b592d03f5a0c547c442c6cf79b61d2e00d"
+    },
+    {
+      "path": "examples/toml/sft_config/llava_ov.toml",
+      "size_bytes": 4474,
+      "sha256": "sha256:92d5537c565bc8370ef1b7c9de81447ab429a7681afcff296da6d842bfd3e6e7"
+    },
+    {
+      "path": "examples/toml/sft_config/llava_ov_mapstyle_dataloader.toml",
+      "size_bytes": 4039,
+      "sha256": "sha256:119ff4f080845cdd0095f1f3bf026641bf5648ab44f96a943657f36ef1fc65ec"
+    },
+    {
+      "path": "examples/toml/sft_config/videophy2_sft_edge.toml",
+      "size_bytes": 3228,
+      "sha256": "sha256:8dc2331c041d9679faec332ca710fa208cf3b2854f742c804278209a6a81101d"
+    },
+    {
+      "path": "examples/toml/sft_config/videophy2_sft_nano.toml",
+      "size_bytes": 2800,
+      "sha256": "sha256:460b59e2d6ae2aca5a87d1b0c63fb9987c28085107470b89c113de63e54b9072"
+    },
+    {
+      "path": "examples/toml/sft_config/videophy2_sft_super.toml",
+      "size_bytes": 3410,
+      "sha256": "sha256:e8ac993122f35395a972be24e0389945e99ab10d84a892ebbd89b95116e0cee0"
+    },
+    {
+      "path": "examples/toml/sft_config/vision_sft_edge.toml",
+      "size_bytes": 2968,
+      "sha256": "sha256:38814b830017cfdf1f39dbab6a917ee32feab98b752275d802f7a82c94a953da"
+    },
+    {
+      "path": "examples/toml/sft_config/vision_sft_nano.toml",
+      "size_bytes": 2883,
+      "sha256": "sha256:795dff40ec2349e3f9e4f34de5a4928dc9067a29f81835a8377fe809bdeef3bc"
+    },
+    {
+      "path": "examples/toml/sft_config/vision_sft_nano_mapstyle_dataloader.toml",
+      "size_bytes": 3081,
+      "sha256": "sha256:c3da6630f34eef0995dfdd923ca07748f3b7090ec0bf680cb5f72cb2a64bbf7c"
+    },
+    {
+      "path": "examples/toml/sft_config/vision_sft_super.toml",
+      "size_bytes": 3124,
+      "sha256": "sha256:b75d6ff6ae4bfcb711335849d83feb58ca31e5578c97837de3116ae3c47f942b"
+    },
+    {
+      "path": "inputs/omni/action_forward_dynamics_av.json",
+      "size_bytes": 621,
+      "sha256": "sha256:6eea0d3eb289d3cd8f283390af928750b3c081147b444154063a2cfca4f3f25c"
+    },
+    {
+      "path": "inputs/omni/action_forward_dynamics_batch.jsonl",
+      "size_bytes": 14224,
+      "sha256": "sha256:92c1a7b8ad411756cdef91fa0fc690a41bb2d574f809efcc1ff1377e6aa415dd"
+    },
+    {
+      "path": "inputs/omni/action_forward_dynamics_camera.json",
+      "size_bytes": 769,
+      "sha256": "sha256:2516e490978c81e4b2927eaaca2ab1b67807c0aa42808de40ecc009f0dca58c2"
+    },
+    {
+      "path": "inputs/omni/action_forward_dynamics_robot.json",
+      "size_bytes": 637,
+      "sha256": "sha256:2961dbc5a5ba27a5c4f20b7b5b31d8fde30a137d2fe20acc3444d05be26ed8c2"
+    },
+    {
+      "path": "inputs/omni/action_inverse_dynamics_av.json",
+      "size_bytes": 629,
+      "sha256": "sha256:49581cbc4466f1ad31e4f471cb7be2edda900256da89157ad0213020d20c37e3"
+    },
+    {
+      "path": "inputs/omni/action_inverse_dynamics_batch.jsonl",
+      "size_bytes": 13654,
+      "sha256": "sha256:f550575b28e4d32210f6b4992c543fc1821644600cd26b49530c475bbd4d9432"
+    },
+    {
+      "path": "inputs/omni/action_inverse_dynamics_robot.json",
+      "size_bytes": 800,
+      "sha256": "sha256:4750ba58ca8e4573b122349a8bb6440577cff39c5fd4a8419d4d1e5d7141beb9"
+    },
+    {
+      "path": "inputs/omni/action_policy_av.json",
+      "size_bytes": 790,
+      "sha256": "sha256:adab3f9fbb5ef651ad18cac98c87a9cf34035f1e427ee6f8247d32e4ce1e5654"
+    },
+    {
+      "path": "inputs/omni/action_policy_batch.jsonl",
+      "size_bytes": 15224,
+      "sha256": "sha256:4936363c1796d2b424ae932d4d88eeed0b9fa009abb84e9e320b56bd1a778ba4"
+    },
+    {
+      "path": "inputs/omni/action_policy_robot.json",
+      "size_bytes": 806,
+      "sha256": "sha256:3dca5b6fe7257ba80ee584dc5713b2525523d5b87b45cd01a85dd84eb219ebcd"
+    },
+    {
+      "path": "inputs/omni/i2v.json",
+      "size_bytes": 9768,
+      "sha256": "sha256:bd79607b35d7c70e3f062cbcf2efdd2888315ff762ac81ec2c0e2aa7811551e2"
+    },
+    {
+      "path": "inputs/omni/i2vs.json",
+      "size_bytes": 7918,
+      "sha256": "sha256:1105026e5b048f1c4404fa71f6dc176e78fb8dc43e80783533829c01f0853d45"
+    },
+    {
+      "path": "inputs/omni/t2i.json",
+      "size_bytes": 10487,
+      "sha256": "sha256:747b88895754fcecb0613e8541af82d7c11145c45f8d6be500e21298de60aa45"
+    },
+    {
+      "path": "inputs/omni/t2v.json",
+      "size_bytes": 7287,
+      "sha256": "sha256:9d76c0bd968d84fbd7408d07903aa61a0bc50f5ad7ff22235e62d57079cdfe49"
+    },
+    {
+      "path": "inputs/omni/t2vs.json",
+      "size_bytes": 8196,
+      "sha256": "sha256:0aad2cb6db5e6118f6b7ed6911d2c56b3472b521ab919e4ce75846fd0ef03fb6"
+    },
+    {
+      "path": "inputs/omni/v2v.json",
+      "size_bytes": 1470,
+      "sha256": "sha256:348216e7ad144356d6f205ab608acdccdc4aa6cdb87e62b10fc5ddc41c688ea3"
+    },
+    {
+      "path": "inputs/prompt_upsampler/image_inputs/car_driving.jpg",
+      "size_bytes": 131,
+      "sha256": "sha256:e6985f9eb1f8c66c89d0ab5b97bd27ad6b85c48bdd1eadbab5a878bd02098377"
+    },
+    {
+      "path": "inputs/prompt_upsampler/image_inputs/humanoid_robot.jpg",
+      "size_bytes": 131,
+      "sha256": "sha256:f9a05db68a73ce759592bdd1f78e23481b010db5026929cff69a56fffd7b4e8e"
+    },
+    {
+      "path": "inputs/prompt_upsampler/images.txt",
+      "size_bytes": 108,
+      "sha256": "sha256:0b4a5c1db1bc8c6e3e6aaf830977e40ce6ae2121592d6529fc98b2b6cb9600d6"
+    },
+    {
+      "path": "inputs/prompt_upsampler/prompts_i2v.txt",
+      "size_bytes": 131,
+      "sha256": "sha256:5c11b334b21cf395b8e0123c0eb587d8ea4d8c623c801f8b9f31532a02b29b9c"
+    },
+    {
+      "path": "inputs/prompt_upsampler/prompts_t2i.txt",
+      "size_bytes": 104,
+      "sha256": "sha256:2f2c24279a941efc11440575a4830759fc4e3b251b3a79101d85c6e917a4b125"
+    },
+    {
+      "path": "inputs/prompt_upsampler/prompts_t2v.txt",
+      "size_bytes": 104,
+      "sha256": "sha256:2f2c24279a941efc11440575a4830759fc4e3b251b3a79101d85c6e917a4b125"
+    },
+    {
+      "path": "inputs/reasoner/reasoner.json",
+      "size_bytes": 114,
+      "sha256": "sha256:ad2f5cc3fac51bd56bb5936d05233d3494bf960668e446564e1e55857b8c17d7"
+    },
+    {
+      "path": "inputs/reasoner/reasoner_image.json",
+      "size_bytes": 256,
+      "sha256": "sha256:86e0ba012f22a3c77ec804397f41048560e94a6b67b38a6eb266e4cbf403241c"
+    },
+    {
+      "path": "inputs/reasoner/reasoner_video.json",
+      "size_bytes": 260,
+      "sha256": "sha256:811ff63085ad583ec605107529ed16fb5548d37ac2fafe62c97eef5d11a835bd"
+    },
+    {
+      "path": "justfile",
+      "size_bytes": 6803,
+      "sha256": "sha256:a2e893a782e8749395744b568d9c78477ee65deb18d4adcdef38b680c5e351c6"
+    },
+    {
+      "path": "packages/transformers-cosmos3/README.md",
+      "size_bytes": 503,
+      "sha256": "sha256:6e7f457f564f308c1d86ba662b58fd5b8cd2e73e10d44b7fcc2ce40bab430978"
+    },
+    {
+      "path": "packages/transformers-cosmos3/pyproject.toml",
+      "size_bytes": 404,
+      "sha256": "sha256:4862361fab26d8a021dc4ac8e3b68d7f26ecce76e1c1463bf04c7eee4d9726c2"
+    },
+    {
+      "path": "packages/transformers-cosmos3/scripts/inference_example.py",
+      "size_bytes": 2411,
+      "sha256": "sha256:64e40a7d058d01807ce51d90b254d92867417d4dcebbf4e0b789d7090e212194"
+    },
+    {
+      "path": "packages/transformers-cosmos3/scripts/inference_example.py.lock",
+      "size_bytes": 245229,
+      "sha256": "sha256:3c379f99063a9690fd6c513fe661f0abc1c364105754a94b3f6cb4f2b3c2a342"
+    },
+    {
+      "path": "packages/transformers-cosmos3/transformers_cosmos3/__init__.py",
+      "size_bytes": 530,
+      "sha256": "sha256:8f8b24e2458f2c31439c8c5fbf1511adab5f7ccfcc6c79884dc4d520a3e7376e"
+    },
+    {
+      "path": "packages/transformers-cosmos3/transformers_cosmos3/config.py",
+      "size_bytes": 558,
+      "sha256": "sha256:002982501692343a5be7a61fa23989a03426b996f84b44beac5d96275f9c03d7"
+    },
+    {
+      "path": "packages/transformers-cosmos3/transformers_cosmos3/model.py",
+      "size_bytes": 3087,
+      "sha256": "sha256:63274213b628c1ccf9925c16a1443400d5981a3e7c23d973226b58d755a2cb2b"
+    },
+    {
+      "path": "packages/transformers-cosmos3/transformers_cosmos3/model_test.py",
+      "size_bytes": 3561,
+      "sha256": "sha256:79ff91c34503ed3d620278069473cedc4513d1e2581f0854ce5a7de17c9b80d2"
+    },
+    {
+      "path": "packages/transformers-cosmos3/uv.lock",
+      "size_bytes": 135244,
+      "sha256": "sha256:e40c319190576f0429d0d4ead576245d3d7f97c1f76b24254299bafe9b90e0a7"
+    },
+    {
+      "path": "packages/vllm-cosmos3/README.md",
+      "size_bytes": 1512,
+      "sha256": "sha256:a4429c5236201f090b148be88bede6ed6eaa9786bac9277f964007cfaab34122"
+    },
+    {
+      "path": "packages/vllm-cosmos3/pyproject.toml",
+      "size_bytes": 601,
+      "sha256": "sha256:1083a05773aec120bc2c60af2dd053e0376860a1110289b4c877096b71e24e10"
+    },
+    {
+      "path": "packages/vllm-cosmos3/uv.lock",
+      "size_bytes": 1300765,
+      "sha256": "sha256:62669d93331cd2eed70a2b2602795efb0a00fc55fa1095ef4cf984804fd562d0"
+    },
+    {
+      "path": "packages/vllm-cosmos3/vllm_cosmos3/__init__.py",
+      "size_bytes": 781,
+      "sha256": "sha256:020ce16fb2fca46021d110460e92e7a0707603f4a7a0f9a6feb22081e2be2490"
+    },
+    {
+      "path": "packages/vllm-cosmos3/vllm_cosmos3/model.py",
+      "size_bytes": 1979,
+      "sha256": "sha256:264308b28ad3124ce600b7b6b43a64daa4c38447403acbf674b8517a0777d2c2"
+    },
+    {
+      "path": "pyproject.toml",
+      "size_bytes": 11647,
+      "sha256": "sha256:06fdbbd83dd4caa16652e98ecaae8fabd3e1ef11807acfed7b97c0a2109e754e"
+    },
+    {
+      "path": "pyrefly.toml",
+      "size_bytes": 2138,
+      "sha256": "sha256:1fdb95ac3aec1cdda1e7fe17653afae140ac642ab33902f415401a011c6a2998"
+    },
+    {
+      "path": "sitecustomize.py",
+      "size_bytes": 2243,
+      "sha256": "sha256:b80f9d0a2f876a4a66bd02dcc097ba7a7efb1ac46321a0cecb4fbffee3dbdf74"
+    },
+    {
+      "path": "tests/.gitkeep",
+      "size_bytes": 0,
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tests/_reasoner_logits_probe.py",
+      "size_bytes": 2700,
+      "sha256": "sha256:d83c63f60386278926432fe75fdd0c5899a3e4929b712ff6fd940baed4585674"
+    },
+    {
+      "path": "tests/_stage_h100_inputs.sh",
+      "size_bytes": 6446,
+      "sha256": "sha256:2609c62ef183dad7d30839ae18f3e950dd18083980e3f8cb0b1bfc2fd4cb6e2f"
+    },
+    {
+      "path": "tests/action_policy_regression_test.py",
+      "size_bytes": 18965,
+      "sha256": "sha256:6e39ab38185ad27af6f9e89252af8975fd32ff0d83478b7edf995342d1729550"
+    },
+    {
+      "path": "tests/data/nano_reasoner_inference_smoke_test/first_token_logits_golden.pt",
+      "size_bytes": 609398,
+      "sha256": "sha256:c7b80789966f125aa5e6cc4c4557c0cb14c2dcc236833aba73fcd70db87463c6"
+    },
+    {
+      "path": "tests/data/nano_reasoner_inference_smoke_test/first_token_logits_image_golden.pt",
+      "size_bytes": 609398,
+      "sha256": "sha256:fed9e5a5e288fcd9c3bda0c7acb1d5df3877e5c0c50b1efa11aeeeaca72f0e73"
+    },
+    {
+      "path": "tests/distilled_inference_smoke_test.py",
+      "size_bytes": 8092,
+      "sha256": "sha256:a9f8a6d4495ab350f0586f9e6a14f41975e3fa65064910ebb66f81e2762d84ea"
+    },
+    {
+      "path": "tests/edge_inference_smoke_test.py",
+      "size_bytes": 11339,
+      "sha256": "sha256:604e658da3a265802c95006c09d1cf0c4e614be0cf54d48f7f3d475d2fda83cb"
+    },
+    {
+      "path": "tests/edge_reasoner_inference_smoke_test.py",
+      "size_bytes": 8287,
+      "sha256": "sha256:09a99d5da403543a2b93fb3b80b9b1defe31034cf36d2475cdf3d6e16d0300ba"
+    },
+    {
+      "path": "tests/launch_regression_test.py",
+      "size_bytes": 44704,
+      "sha256": "sha256:cfd9eae11082a6c0b2f8760d39b74ef327ecc53fdcb4c9c408df95a0c913c87b"
+    },
+    {
+      "path": "tests/launch_sft_vision_nano_5iter.sh",
+      "size_bytes": 926,
+      "sha256": "sha256:0f08d2e858feb604170295cdcf768847635158471a93ae70177b139e60cf3fea"
+    },
+    {
+      "path": "tests/nano_inference_smoke_test.py",
+      "size_bytes": 22049,
+      "sha256": "sha256:8c75d7f908b1f20ab7c8a1a765259ad2d08975517d59f2ead8fd2cea4d82eb59"
+    },
+    {
+      "path": "tests/nano_reasoner_inference_smoke_test.py",
+      "size_bytes": 8051,
+      "sha256": "sha256:e61f86f7cc211b16384df4ca4c6e0a541580e14ad21ac9b95d0fe92b8e2e4bd7"
+    },
+    {
+      "path": "tests/nano_training_smoke_test.py",
+      "size_bytes": 24012,
+      "sha256": "sha256:06a1b3d7d322e49f5d9f9da256a83899299b86bc971522fa0fa5ee859826b613"
+    },
+    {
+      "path": "tests/vision_sft_nano_5iter.toml",
+      "size_bytes": 3047,
+      "sha256": "sha256:8e05bb0cd4f5ec0e570b97e8edc9ca9617179dda3645ca5a77448f2a2aca218d"
+    },
+    {
+      "path": "tools/.gitkeep",
+      "size_bytes": 0,
+      "sha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "uv.lock",
+      "size_bytes": 4487409,
+      "sha256": "sha256:f5ec25154f3dc63f49680c91c0dee807b02ea6b846833d6f204bc5659f67e555"
+    }
+  ]
+}

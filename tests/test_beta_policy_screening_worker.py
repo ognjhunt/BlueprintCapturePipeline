@@ -203,11 +203,28 @@ def test_completed_scene_is_planned_and_durably_queued_once_across_timer_ticks(t
         "capture_id": request["capture_id"], "task_id": request["task_id"],
         "task_context_digest": world["context"]["context_digest"], "scene_revision_digest": request["scene_revision_digest"]}
     assert plan["site_id"] == "site-job1" and plan["campaign_id"] == adopted["campaign_id"]
-    assert {row["candidate_id"] for row in plan["candidates"] if row["status"] == "selected"} == {
-        "pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}
+    selected = [row for row in plan["candidates"] if row["status"] == "selected"]
+    selected_ids = {row["candidate_id"] for row in selected}
+    assert selected_ids == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid",
+                            "cosmos3_nano_policy_droid", "molmoact2_droid"}
+    assert plan["maximum_planned_cost_usd"] == "10.00" and plan["budget_usd"] == "15.00"
+    assert all(row["max_cost_usd"] == row["cost_quote"]["maximum_cost_usd"] == "2.00" for row in selected)
+    assert all(row["blockers"] for row in plan["candidates"] if row["status"] != "selected")
     [publication] = coordinator.pending_publications(queue_root=world["screening_queue"])
     assert publication["source"] == plan["source"] and publication["status"] == "queued"
     assert publication["budget"]["committed_upper_bound_usd"] == "0"
+    published = {row["candidate_id"]: row for row in publication["candidates"]}
+    assert set(published) == {row["candidate_id"] for row in plan["candidates"]}
+    for row in plan["candidates"]:
+        actual = published[row["candidate_id"]]
+        assert actual["status"] == ("pending" if row["candidate_id"] in selected_ids else row["status"])
+        if row["candidate_id"] in selected_ids:
+            assert actual["blockers"] == []
+        else:
+            # Public delivery retains typed reasons while omitting private
+            # details such as the name of an unavailable credential.
+            assert actual["blockers"] and set(actual["blockers"]) <= set(row["blockers"])
+        assert actual["episodes_scored"] == 0 and actual["success_rate"] is None
     ledger_bytes = (world["screening_queue"] / coordinator.LEDGER_FILENAME).read_bytes()
     for _ in range(3):
         [replay] = worker.enqueue_prepared_scenes(**kwargs)["sources"]

@@ -13,6 +13,8 @@ INTERFACES = {
     "openpi_droid.v1": "pi05_droid",
     "groot_n17_droid.v1": "groot_n17_droid",
     "cosmos_edge_droid.v1": "cosmos3_edge_policy_droid",
+    "molmoact2_droid_joint8.v1": "molmoact2_droid",
+    "cosmos_nano_droid.v1": "cosmos3_nano_policy_droid",
     "openpi_droid_https.v1": "pi05_droid",
     # A team's own robot and cameras (``team_embodiment``); no frozen candidate shares it.
     "blueprint_policy_https.v1": "team_embodiment",
