@@ -120,6 +120,7 @@ def test_dollars_and_requests_share_one_forecast_without_counting_bought_work_tw
       'expires_at_epoch': 2, 'authorization_digest': 'sha256:amended'}, True),
     ({'maximum_requests': None}, True),
     ({'maximum_requests': 39}, False),
+    ({'maximum_cost_usd': '40'}, False),
     ({'maximum_cost_usd': 39}, False),
     ({'maximum_requests': 60, 'source_video_digest': 'other'}, False),
     ({'maximum_requests': 60, 'provider_training_authorized': True}, False),

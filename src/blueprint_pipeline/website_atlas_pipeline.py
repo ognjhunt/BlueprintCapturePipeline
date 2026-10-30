@@ -48,7 +48,9 @@ def _same_authority(stored, current):
             != {k: v for k, v in current.items() if k not in amendable}):
         return False
     # A limit the owner removed is raised; dollars stay bounded by WebApp admission.
-    return all(key not in current or (type(current[key]) in (int, float) and current[key] >= stored[key])
+    return all(key not in current or current[key] == stored[key]
+               or (type(current[key]) in (int, float) and type(stored[key]) in (int, float)
+                   and current[key] >= stored[key])
                for key in _RAISABLE_LIMITS if key in stored)
 
 
