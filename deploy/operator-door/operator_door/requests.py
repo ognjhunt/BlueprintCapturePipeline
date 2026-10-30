@@ -72,6 +72,7 @@ _SCOPES = {
     "public-embodiment-preparation": "operate",
     "install-public-piper-policy": "operate",
     "install-public-yam-policy": "operate",
+    "install-public-franka-policy": "operate",
     "install-scripted-robot-baselines": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
@@ -82,7 +83,7 @@ if DISPATCHER_HOLD_ONLY:
     # job status/requeue; the legacy inspect mode stays refused.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-scripted-robot-baselines"}}
+                           "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -198,7 +199,7 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
     required_scope(kind)
-    if kind in {"install-public-piper-policy", "install-public-yam-policy", "install-scripted-robot-baselines"}:
+    if kind in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines"}:
         _only(body, ("kind", "request"))
         try:
             request = validate_public_policy_registration(body.get("request"), operation=kind)

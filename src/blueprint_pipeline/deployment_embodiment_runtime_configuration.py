@@ -64,6 +64,9 @@ _PROFILES = {
         fingers={f"{side}_finger_1_joint": [-.044, 0.0]},
         contacts=[f"{side}_finger_1", f"{side}_finger_2"], width=.088) for side in ("left", "right")],
 }
+_PROFILES["franka_research_3_robotiq_2f85_sim"] = [_arm("fr3_link0", "robotiq_85_base_link", 7, tcp="grasp_link",
+    fingers={"robotiq_85_left_knuckle_joint": [0.0, .7929]},
+    contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)]
 _PROFILES["kinova_gen3_bimanual"] = deepcopy(_PROFILES["kinova_gen3"])
 _PROFILES["ufactory_xarm7_bimanual"] = [
     {**deepcopy(_PROFILES["ufactory_xarm7"][0]), "source_prefix": prefix} for prefix in ("L_", "R_")]
@@ -334,6 +337,7 @@ def prepare_runtime_configuration(source_bundle: str | Path, output_dir: str | P
 
 
 def verify_runtime_configuration(directory: str | Path) -> dict[str, Any]:
+    from .deployment_embodiment_runtime_compatibility import is_exact_predecessor, verify_predecessor_metadata
     root = Path(directory)
     _require(not any(p.is_symlink() for p in (root, *root.parents)), "symlink_refused")
     source = verify_source_bundle(root)
@@ -353,7 +357,7 @@ def verify_runtime_configuration(directory: str | Path) -> dict[str, Any]:
              and record.get("source_bundle_digest") == source["bundle_digest"]
              and record.get("embodiment_id") == source["embodiment_id"]
              and model_identity_matches
-             and record.get("generator_module_sha256") == _sha(Path(__file__))
+             and (record.get("generator_module_sha256") == _sha(Path(__file__)) or is_exact_predecessor(record))
              and record.get("configuration_digest") == cross_runtime_canonical_digest(record, digest_field="configuration_digest"),
              "receipt_changed")
     seen = set()
@@ -368,6 +372,8 @@ def verify_runtime_configuration(directory: str | Path) -> dict[str, Any]:
     actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
               and not p.is_relative_to(root / "source") and p not in {root / RECEIPT, root / "source-bundle.json"}}
     _require(seen == actual, "generated_inventory_changed")
+    if is_exact_predecessor(record):
+        verify_predecessor_metadata(root, source, record)
     return record
 
 

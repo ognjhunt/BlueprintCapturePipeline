@@ -331,30 +331,30 @@
     },
     {
       "candidate_id": "openwam_alpha_franka",
-      "configuration_digest": "sha256:6b4f07b1e8d35ff60f20dd8fa64c5db43847903ca8a054edcb9f15b6042cd28c",
-      "display_name": "OpenWAM Alpha Franka",
+      "configuration_digest": "sha256:a7e367db984a0f92584042be518e319c0ccb9231c7501f6e21d2f26683b4500d",
+      "display_name": "OpenWAM Alpha single FR3 \u2014 nominal Robotiq2F85 simulation",
       "eligibility": {
         "blockers": [
-          "checkpoint_bytes_not_verified",
-          "exact_embodiment_contract_unverified",
-          "beta_runtime_integration_unverified"
+          "prepared_robot_policy_registration_missing"
         ],
         "commercial_use": "allowed_with_conditions",
         "enabled": false,
         "license_id": "apache-2.0",
-        "license_note": "Published source is discovery evidence only; exact deployed artifact, component terms and runtime contract require independent admission.",
+        "license_note": "Apache-2.0 verified in the pinned public checkpoint card. EEF10/15Hz/two-view adapter is implemented for the separate FR3+nominal Robotiq2F85 simulation profile; exact publisher tool/calibration remain unknown. Registration requires retained imported body bytes; checkpoint bytes are verified before worker load, with no native inference claim.",
         "requires_credentials": []
       },
       "interface": null,
       "policy": {
-        "digest": null,
-        "digest_kind": "unverified",
+        "digest": "sha256:cbaa156f2f3daa535cc5ef0b09c4c881820dcc9de639375c9767ae0b22477900",
+        "digest_kind": "pinned_runtime_file_inventory",
         "kind": "checkpoint",
-        "revision": null,
+        "revision": "e75522eb38f9b4148d5ecb985ab80c490ddb3854",
         "source": "https://huggingface.co/OpenWAM/OpenWAM-Alpha-Real-Single-Arm-Franka"
       },
       "runtime": null,
-      "supported_task_kinds": []
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
     },
     {
       "candidate_id": "physical_intelligence_pi_api",
@@ -3085,8 +3085,8 @@
       "supported_task_kinds": []
     }
   ],
-  "catalog_digest": "sha256:22d2b97e4536fb3e86e2c7026ac18e8af56b0641d2eead6ea3f4a9c5acf225b5",
+  "catalog_digest": "sha256:b121363541663aa3e8735acabb599c9a3f7cf8f031a8af8f9339662f181ba273",
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-30.2-public-droid-expansion",
+  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1",
   "schema_version": "beta_policy_candidate_catalog.v1"
 }

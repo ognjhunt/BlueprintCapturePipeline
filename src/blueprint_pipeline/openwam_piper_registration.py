@@ -45,6 +45,9 @@ def prepare(request: dict, *, state_root: Path = STATE_ROOT, model_root: Path = 
     if request["schema_version"] == _contract.YAM_SCHEMA:
         from .molmoact2_yam_runtime import build_policy_spec, configure_prepared_inputs
         prepared = configure_prepared_inputs(prepared)
+    elif request["schema_version"] == _contract.FRANKA_SCHEMA:
+        from .openwam_franka_runtime import build_policy_spec, configure_prepared_inputs
+        prepared = configure_prepared_inputs(prepared)
     else:
         from .openwam_piper_runtime import build_policy_spec
     require(prepared["robot_embodiment"] == expected_manifest(original["robot_embodiment"], profile), "native_binding_changed")

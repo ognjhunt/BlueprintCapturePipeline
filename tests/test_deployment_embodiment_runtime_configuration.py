@@ -124,7 +124,9 @@ def _fake_sdk_from_urdf(monkeypatch):
             for joint in root.findall("joint"):
                 if joint.get("type") != "fixed":
                     UsdPhysics.RevoluteJoint.Define(usd, "/robot/" + runtime._name(joint.get("name")))
-            UsdPhysics.FixedJoint.Define(usd, "/robot/anchor").CreateBody1Rel().SetTargets(["/robot/blueprint_station"])
+            children = {joint.find("child").get("link") for joint in root.findall("joint")}
+            base = next(link.get("name") for link in root.findall("link") if link.get("name") not in children)
+            UsdPhysics.FixedJoint.Define(usd, "/robot/anchor").CreateBody1Rel().SetTargets(["/robot/" + runtime._name(base)])
             usd.GetRootLayer().Save()
             self.usd_path = str(path)
     sdk = SimpleNamespace(UrdfConverterCfg=Config, UrdfConverter=Converter)

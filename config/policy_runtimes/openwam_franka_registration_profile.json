@@ -1,0 +1,72 @@
+{
+  "candidate_id": "openwam_alpha_franka",
+  "checkpoint_id": "openwam-alpha-franka-e75522eb",
+  "deployment": {
+    "companies": [],
+    "configuration_id": "franka_research_3_robotiq_2f85_sim",
+    "evidence_url": "https://huggingface.co/OpenWAM/OpenWAM-Alpha-Real-Single-Arm-Franka",
+    "policy_route_id": "customer_controller",
+    "relationship": "public_controller_integration"
+  },
+  "display_name": "OpenWAM Alpha \u2014 single FR3 + nominal Robotiq2F85 simulation",
+  "minimum_gpu_memory_gb": 80,
+  "model_card_sha256": "sha256:456ba724d1f54e86ea92a9349042d5b4548af59cce39845038fe6883e8812461",
+  "model_card_url": "https://huggingface.co/OpenWAM/OpenWAM-Alpha-Real-Single-Arm-Franka/blob/e75522eb38f9b4148d5ecb985ab80c490ddb3854/README.md",
+  "policy_profile": "openwam_alpha_real_franka.v1",
+  "policy_spec_template": {
+    "action_chunk_rows": 1,
+    "action_hz": 15,
+    "binding": {
+      "camera_names": [
+        "overhead",
+        "arm_wrist"
+      ],
+      "configuration_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "control_hz": 15,
+      "execution_horizon": 8,
+      "frame_binding_reference": "initial_simulation_assumption:FR3_Robotiq2F85_zero_offset_mount_at_link8;nominal_134mm_grasp_TCP_as_recorded_EEF;publisher_SKU_mount_TCP_calibration_unknown;source_camera_poses_90deg_optics_not_training_calibration;dataset_policy15Hz_native60Hz",
+      "native_tcp_from_policy_tcp": {
+        "arm": {
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "policy_base_from_native_base": {
+        "arm": {
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      }
+    },
+    "camera_names": [
+      "overhead",
+      "arm_wrist"
+    ],
+    "embodiment_id": "franka_research_3_robotiq_2f85_sim",
+    "model_identity_digest": "sha256:cbaa156f2f3daa535cc5ef0b09c4c881820dcc9de639375c9767ae0b22477900",
+    "open_loop_horizon": 1,
+    "policy_id": "openwam_alpha_real_franka.v1",
+    "policy_interface_id": "openwam_franka_eef10.v1",
+    "source_revision": "3950b6d9ea848dc980a82a89b4554af2c082544a"
+  },
+  "schema_version": "openwam_franka_registration_profile.v1",
+  "team_id": "blueprint-public-models"
+}

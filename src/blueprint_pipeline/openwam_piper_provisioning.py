@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from urllib.parse import quote
+from types import SimpleNamespace
 
 from .openwam_piper_assets import EXPECTED_FILES, verify_checkpoint_directory
 from .openwam_piper_policy import MODEL_ID, MODEL_REVISION, OpenWAMPiperPolicyClient
@@ -27,11 +28,19 @@ from .local_policy_provisioning import (
 )
 
 
+def _components():
+    return SimpleNamespace(expected_files=EXPECTED_FILES, model_id=MODEL_ID, model_revision=MODEL_REVISION,
+        verifier=verify_checkpoint_directory, validate_spec=validate_execution_spec, binding=policy_binding,
+        serialized_binding=serialized_binding, client=OpenWAMPiperPolicyClient,
+        server_module="blueprint_pipeline.openwam_piper_policy_server")
+
+
 def _start_server(*, python: Path, runtime: Path, output: Path, root: Path,
-                  spec: dict, deadline: float) -> dict:
+                  spec: dict, deadline: float, _profile=None) -> dict:
+    profile = _profile or _components()
     binding_path = root / "binding.json"
-    binding_path.write_text(json.dumps(serialized_binding(spec["policy_spec"]), sort_keys=True))
-    command = [str(python), "-m", "blueprint_pipeline.openwam_piper_policy_server",
+    binding_path.write_text(json.dumps(profile.serialized_binding(spec["policy_spec"]), sort_keys=True))
+    command = [str(python), "-m", profile.server_module,
                "--checkpoint", str(root / "checkpoint"), "--source-root", str(root / "source"),
                "--source-manifest", str(runtime / SOURCE_MANIFEST), "--binding", str(binding_path)]
     env = {key: value for key, value in os.environ.items()
@@ -58,7 +67,7 @@ def _start_server(*, python: Path, runtime: Path, output: Path, root: Path,
             if process.poll() is not None:
                 raise ValueError("openwam_server_exited_before_ready")
             seconds = remaining_seconds(readiness_deadline)
-            client = OpenWAMPiperPolicyClient(binding=policy_binding(spec["policy_spec"]),
+            client = profile.client(binding=profile.binding(spec["policy_spec"]),
                                               timeout_seconds=min(10, seconds))
             try:
                 client._open()
@@ -85,14 +94,15 @@ def _start_server(*, python: Path, runtime: Path, output: Path, root: Path,
         raise
 
 
-def provision(runtime: Path, output: Path, spec: dict, *, root: Path = Path("/opt/blueprint-openwam-piper")) -> dict:
+def provision(runtime: Path, output: Path, spec: dict, *, root: Path = Path("/opt/blueprint-openwam-piper"), _profile=None) -> dict:
     from .openwam_piper_dependencies import verified_dependency_manifest
 
-    validate_execution_spec(spec)
+    profile = _profile or _components()
+    profile.validate_spec(spec)
     deadline = float(os.environ.get(DEADLINE_ENV, "nan"))
     remaining_seconds(deadline)
     dependencies = verified_dependency_manifest(runtime / "openwam-piper-dependencies.v1.json")
-    budget = TransferBudget(dependencies["total_download_bytes"] + sum(size for size, _ in EXPECTED_FILES.values()))
+    budget = TransferBudget(dependencies["total_download_bytes"] + sum(size for size, _ in profile.expected_files.values()))
     root.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
     source = extract_source(runtime / SOURCE_ARCHIVE, runtime / SOURCE_MANIFEST, root / "source")
@@ -123,19 +133,23 @@ def provision(runtime: Path, output: Path, spec: dict, *, root: Path = Path("/op
         shutil.copyfile(wheels / row["filename"], client_wheels / row["filename"])
     from .openwam_piper_client_dependencies import activate_client_dependencies
     activate_client_dependencies(runtime)
-    for name, (size, digest) in EXPECTED_FILES.items():
-        row = {"url": f"https://huggingface.co/{MODEL_ID}/resolve/{MODEL_REVISION}/{quote(name)}?download=true",
+    for name, (size, digest) in profile.expected_files.items():
+        row = {"url": f"https://huggingface.co/{profile.model_id}/resolve/{profile.model_revision}/{quote(name)}?download=true",
                "size_bytes": size, "sha256": "sha256:" + digest}
         downloads.append(fetch_exact(row, root / "checkpoint" / name, deadline=deadline, budget=budget))
-    verify_checkpoint_directory(root / "checkpoint", deadline_epoch=deadline)
+    profile.verifier(root / "checkpoint", deadline_epoch=deadline)
     remaining_seconds(deadline)
-    server = _start_server(python=python, runtime=runtime, output=output, root=root, spec=spec, deadline=deadline)
+    server = _start_server(python=python, runtime=runtime, output=output, root=root, spec=spec, deadline=deadline, _profile=profile)
     return {"status": "ready", "source_directory": str(source), "checkpoint_bytes_verified": True,
             "download_receipts": downloads, "server": server, "peak_gpu_memory_measured": False,
             "maximum_download_bytes": budget.maximum_bytes, "attempted_download_bytes": budget.attempted_bytes}
 
 
 def main(argv: list[str] | None = None) -> int:
+    return _main(argv, provisioner=provision, receipt_name="openwam_piper_provisioning.v1.json")
+
+
+def _main(argv, *, provisioner, receipt_name):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runtime", required=True)
     parser.add_argument("--output", required=True)
@@ -144,14 +158,14 @@ def main(argv: list[str] | None = None) -> int:
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     try:
-        result = provision(Path(args.runtime), output, json.loads(Path(args.spec).read_text()))
+        result = provisioner(Path(args.runtime), output, json.loads(Path(args.spec).read_text()))
     except Exception as exc:
         # Provider URL/query or secret values never enter the public result.
         reason = str(exc)
         code = reason if re.fullmatch(r"(?:openwam|local_policy)_[a-z0-9_]{1,120}", reason) else "openwam_provisioning_failed:" + type(exc).__name__
         result = {"status": "blocked", "blockers": [code],
                   "candidate_policy_queried": False}
-    (output / "openwam_piper_provisioning.v1.json").write_text(json.dumps(result, sort_keys=True))
+    (output / receipt_name).write_text(json.dumps(result, sort_keys=True))
     return 0 if result["status"] == "ready" else 2
 
 

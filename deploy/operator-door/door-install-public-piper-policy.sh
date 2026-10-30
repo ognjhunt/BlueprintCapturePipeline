@@ -5,7 +5,7 @@ umask 022
 . "$(dirname "$0")/door-common.sh"
 operation="${DOOR_PUBLIC_POLICY_OPERATION:-install-public-piper-policy}"
 case "$operation" in
-  install-public-piper-policy|install-public-yam-policy) builder=blueprint_pipeline.openwam_piper_registration ;;
+  install-public-piper-policy|install-public-yam-policy|install-public-franka-policy) builder=blueprint_pipeline.openwam_piper_registration ;;
   install-scripted-robot-baselines) builder=blueprint_pipeline.scripted_robot_registration_install ;;
   *) echo "unsupported fixed public policy operation" >&2; exit 2 ;;
 esac

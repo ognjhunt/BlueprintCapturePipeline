@@ -23,9 +23,9 @@ def test_catalog_and_existing_compatibility_identities_have_explicit_source_stat
     assert set(rows) == {row["embodiment_id"] for row in catalog["embodiments"]} | {
         "droid_franka_robotiq_2f85", "unitree_g1_dex3_v1", "boston_dynamics_atlas",
         "universal_robots_ur10e", "fanuc_crx_10ia", "abb_gofa_crb15000",
-        "kinova_gen3", "ufactory_xarm7",
+        "kinova_gen3", "ufactory_xarm7", "franka_research_3_robotiq_2f85_sim",
     }
-    assert len(rows) == 24
+    assert len(rows) == 25
     for row in rows.values():
         assert row["status"] in {"source_available", "source_unavailable", "existing_runtime"}
         assert bool(row["source"]) == (row["status"] == "source_available")

@@ -1,5 +1,9 @@
 # Operator door
 
+The fixed [`install-public-franka-policy` operation](research/openwam-franka-integration-2026-10-30.md)
+installs OpenWAM Alpha on the distinct single-FR3 + nominal Robotiq2F85 simulation
+body from retained imported assets, with pinned public license evidence and no compute.
+
 The fixed [`install-scripted-robot-baselines` operation](scripted_robot_baseline_registration.md)
 registers all supported scripted configurations from one exact retained public
 robot preparation batch, with individual unavailable reasons and no compute.

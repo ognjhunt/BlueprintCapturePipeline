@@ -101,7 +101,7 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
     minimum_gpu_ram_mb(payload)
     shape = _shape(payload)
     candidates = payload.get("candidate_ids")
-    openwam = payload.get("team_policy_interface_id") == "openwam_piper_eef20.v1"
+    openwam = payload.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}
     scripted = (payload.get("team_policy_interface_id") == "blueprint_scripted_pick_place.v1"
                 and payload.get("model_delivery") == "scripted_in_process"
                 and payload.get("learned_policy_rollout_count") == 0
@@ -115,8 +115,8 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
                 or minimum_gpu_ram_mb(payload) < contract["minimum_gpu_memory_gb"] * 1000):
             raise ValueError("cosmos_gpu_memory_or_candidate_binding_invalid")
     if openwam:
-        from .openwam_piper_bundle import validate_runtime_contract
-        validate_runtime_contract(payload.get("openwam_runtime") or {})
+        from .team_local_policy import openwam_bundle_for_interface
+        openwam_bundle_for_interface(payload["team_policy_interface_id"]).validate_runtime_contract(payload.get("openwam_runtime") or {})
         if minimum_gpu_ram_mb(payload) < 80_000:
             raise ValueError("openwam_gpu_memory_floor_invalid")
     molmoact2 = payload.get("team_policy_interface_id") == "molmoact2_yam_joint14.v1"
@@ -208,10 +208,11 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
         required = {f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json"}
         if manifest.get("team_policy_interface_id") == "blueprint_scripted_pick_place.v1":
             required.add("provider_runtime/blueprint_pipeline/policy_execution_evidence.py")
-        if manifest.get("team_policy_interface_id") == "openwam_piper_eef20.v1":
-            from .openwam_piper_bundle import RUNTIME_MODULES, validate_runtime_contract
-            contract = validate_runtime_contract(manifest["openwam_runtime"])
-            required.update("provider_runtime/blueprint_pipeline/" + name for name in RUNTIME_MODULES)
+        if manifest.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}:
+            from .team_local_policy import openwam_bundle_for_interface
+            selected = openwam_bundle_for_interface(manifest["team_policy_interface_id"])
+            contract = selected.validate_runtime_contract(manifest["openwam_runtime"])
+            required.update("provider_runtime/blueprint_pipeline/" + name for name in selected.RUNTIME_MODULES)
             required.update("provider_runtime/" + name for name in contract["required_entries"])
             required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
                              "provider_runtime/adp009d_policy_server_worker.py",
@@ -278,7 +279,7 @@ def run_kind_entrypoint_blockers(manifest: Mapping[str, Any], entrypoint_text: s
         valid = ("blueprint_beta_screening" in entrypoint_text
                  and "adp_arena_provider_runner.py" in entrypoint_text
                  and "trap teardown_servers EXIT INT TERM HUP" in entrypoint_text)
-        if manifest.get("team_policy_interface_id") == "openwam_piper_eef20.v1":
+        if manifest.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}:
             valid = valid and ('openwam_client:$RUNTIME_DIR' in entrypoint_text
                                and '--terminate-ready-server' in entrypoint_text)
         if manifest.get("team_policy_interface_id") in {"molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1"}:

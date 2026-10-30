@@ -28,14 +28,14 @@ EXPECTED_FILES = {
 }
 
 
-def _verify_checkpoint_file_closure(root: Path) -> None:
+def _verify_checkpoint_file_closure(root: Path, expected_files: dict | None = None) -> None:
     """Bound all loader-visible files, including optional tokenizer sidecars.
 
     Only parent directories of the fixed inventory are traversed. Symlinks,
     special files and extra directories cannot hide unverified model inputs.
     Runtime/download receipts belong outside this checkpoint directory.
     """
-    expected = set(EXPECTED_FILES)
+    expected = set(EXPECTED_FILES if expected_files is None else expected_files)
     directories = {str(parent) for name in expected for parent in Path(name).parents
                    if parent != Path(".")}
     if not root.is_dir():
@@ -59,11 +59,19 @@ def _verify_checkpoint_file_closure(root: Path) -> None:
 
 def verify_checkpoint_directory(directory: str | Path, *, deadline_epoch: float | None = None) -> dict[str, Any]:
     """Verify exactly the deployed inputs before upstream's NumPy/checkpoint load."""
+    _verify_checkpoint_inventory(directory, EXPECTED_FILES, deadline_epoch=deadline_epoch)
+    return {"model_id": MODEL_ID, "model_revision": MODEL_REVISION, "weight_sha256": WEIGHT_SHA256,
+            "checkpoint_bytes_verified": True, "files_verified": len(EXPECTED_FILES),
+            "license_basis": "pinned_model_card_apache_2.0", "inference_performed": False}
+
+
+def _verify_checkpoint_inventory(directory: str | Path, expected_files: dict, *, deadline_epoch: float | None = None) -> None:
+    """Shared complete byte closure; callers supply only their fixed release inventory."""
     root = Path(directory).resolve(strict=True)
     if deadline_epoch is not None and (not math.isfinite(deadline_epoch) or deadline_epoch <= time.time()):
         raise ValueError("openwam_checkpoint_verification_deadline_exceeded")
-    _verify_checkpoint_file_closure(root)
-    for name, (size, expected) in EXPECTED_FILES.items():
+    _verify_checkpoint_file_closure(root, expected_files)
+    for name, (size, expected) in expected_files.items():
         path = root / name
         if (not path.is_file() or path.is_symlink() or root not in path.resolve().parents
                 or path.stat().st_size != size):
@@ -76,10 +84,7 @@ def verify_checkpoint_directory(directory: str | Path, *, deadline_epoch: float 
                 digest.update(block)
         if digest.hexdigest() != expected:
             raise ValueError(f"openwam_checkpoint_digest_mismatch:{name}")
-    _verify_checkpoint_file_closure(root)
-    return {"model_id": MODEL_ID, "model_revision": MODEL_REVISION, "weight_sha256": WEIGHT_SHA256,
-            "checkpoint_bytes_verified": True, "files_verified": len(EXPECTED_FILES),
-            "license_basis": "pinned_model_card_apache_2.0", "inference_performed": False}
+    _verify_checkpoint_file_closure(root, expected_files)
 
 
 def verify_source_checkout(directory: str | Path) -> Path:

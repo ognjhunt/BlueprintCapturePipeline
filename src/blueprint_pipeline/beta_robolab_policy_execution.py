@@ -45,9 +45,9 @@ def validate_robolab_policy_execution_spec(spec: Mapping[str, Any], *,
     if interface == "molmoact2_droid_joint8.v1":
         from .molmoact2_droid_runtime import validate_execution_spec
         validate_execution_spec(value)
-    if interface == "openwam_piper_eef20.v1":
-        from .openwam_piper_runtime import validate_execution_spec
-        validate_execution_spec(value)
+    if interface in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}:
+        from .team_local_policy import runtime_for_interface
+        runtime_for_interface(interface).validate_execution_spec(value)
     if interface in TEAM_HTTPS_INTERFACES:
         endpoint = value.get("policy_endpoint")
         if (not isinstance(endpoint, dict) or set(endpoint) != {"credential_env"}

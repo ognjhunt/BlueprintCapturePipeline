@@ -557,6 +557,8 @@ def _embodiment_preparation_request(path: str, *, public_policy: str | None = No
             schema, id_key = "openwam_piper_policy_install_request.v1", "installation_id"
             if public_policy == "yam":
                 schema = "molmoact2_yam_policy_install_request.v1"
+            elif public_policy == "franka":
+                schema = "openwam_franka_policy_install_request.v1"
             elif public_policy == "scripted":
                 schema = "scripted_robot_baseline_install_request.v1"
                 fields -= {"candidate_id", "checkpoint_id"}
@@ -710,6 +712,7 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     preparation.description = "Wait observes durable grant enqueue only; inspect retained batch results for simulation preparation outcomes."
     for public_command, public_name in (("install-public-piper-policy", "OpenWAM PiPER"),
                                        ("install-public-yam-policy", "MolmoAct2 YAM"),
+                                       ("install-public-franka-policy", "OpenWAM single-FR3"),
                                        ("install-scripted-robot-baselines", "Blueprint scripted robot baselines")):
         policy_install = commands.add_parser(public_command,
             help=f"install the fixed public {public_name} registration from retained assets; launches no compute")
@@ -809,9 +812,10 @@ def run(args: argparse.Namespace) -> int:
         if not args.operation_key:
             args.operation_key = "public-embodiment-preparation-" + request["authorization_id"]
         return _submit({"kind": command, "request": request}, args)
-    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-scripted-robot-baselines"}:
+    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines"}:
         request = _embodiment_preparation_request(args.request_file,
             public_policy={"install-public-yam-policy": "yam", "install-public-piper-policy": "piper",
+                           "install-public-franka-policy": "franka",
                            "install-scripted-robot-baselines": "scripted"}[command])
         if not args.operation_key:
             args.operation_key = command + "-" + request["installation_id"]
