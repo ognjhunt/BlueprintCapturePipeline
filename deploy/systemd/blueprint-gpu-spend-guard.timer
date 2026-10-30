@@ -3,10 +3,15 @@ Description=Run Blueprint GPU spend guard periodically
 
 [Timer]
 OnBootSec=1min
+# A deploy pauses this timer; refresh as soon as it is started again rather than
+# leaving paid admission on a report older than its five-minute limit.
+OnActiveSec=15s
 # Slow refreshes must finish before the next interval starts, leaving workers
-# ordered after the guard a chance to run with its fresh admission report.
-OnUnitInactiveSec=2min
-RandomizedDelaySec=20s
+# ordered after the guard a chance to run with its fresh admission report. A slow
+# run plus this wait stays within that five-minute limit (2 min + 20 s did not:
+# capture-4b60431e saw atlas_current_budget_admission_blocked each cycle).
+OnUnitInactiveSec=1min
+RandomizedDelaySec=10s
 Persistent=true
 Unit=blueprint-gpu-spend-guard.service
 
