@@ -3,6 +3,7 @@ import fcntl
 import hashlib
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -732,3 +733,203 @@ def test_the_preview_checkpoint_accepts_the_details_a_stage_reports(monkeypatch,
            "enqueued_at_epoch": 1000, "next_attempt_at_epoch": 0, "state": "processing"}
     result = preview._step(job, job_dir=tmp_path, capture_root=tmp_path, now=lambda: 1001)
     assert reached == [True] and result["state"] == "processing" and "last_transient_reason" not in result
+
+
+# capture-447ae4f4 (2026-10-30): every tick re-adopted the retained work, so a
+# pass that advanced a job then idled for the timer's 60 s before the next step.
+
+
+def _tick(site, world, *, budget=480, stop=lambda: None, clock=None):
+    return preview.tick(site.storage, now=world.now, continue_seconds=budget, stop_reason=stop,
+                        **({"clock": clock} if clock is not None else {}))
+
+
+def _submission(kwargs, status, relative="refined/native"):
+    record = kwargs["output_root"] / relative / "atlas_pose/submission.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({"status": status, "operation_id": "op1"}))
+
+
+def test_a_pass_that_advances_a_job_steps_it_again_at_once(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"},
+                                      {"status": "processing", "stage": "pose"},
+                                      {"status": "processing", "stage": "pose"}])
+    assert _tick(site, world) == {"processing": 1}
+    assert len(world.runs) == 3 and _job(site)["stage"] == "pose"
+
+
+def test_a_pass_without_progress_returns_for_the_timer(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "queued"}])
+    assert _tick(site, world) == {"processing": 1} and len(world.runs) == 1
+
+
+def test_a_tick_without_a_budget_steps_each_job_once(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"}])
+    assert preview.tick(site.storage, now=world.now) == {"processing": 1} and len(world.runs) == 1
+
+
+def test_a_collected_provider_result_is_progress(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [
+        lambda kwargs: _submission(kwargs, "submitted") or {"status": "processing", "stage": "refined_splat"},
+        lambda kwargs: _submission(kwargs, "completed") or {"status": "processing", "stage": "refined_splat"},
+        {"status": "processing", "stage": "refined_splat"}])
+    assert _tick(site, world, budget=0) == {"processing": 1}  # the timer's tick that submits
+    assert _tick(site, world) == {"processing": 1}
+    assert len(world.runs) == 3  # collected (same stage), then one more step
+
+
+@pytest.mark.parametrize("waiting", ["paid_admission_wait", "capacity_wait", "submitted", "submitting",
+                                     "capacity_wait_submission"])
+def test_a_job_waiting_on_an_admission_budget_or_provider_is_left_to_the_timer(monkeypatch, site, waiting):
+    _enqueue(site)
+
+    def step(kwargs):
+        if waiting in {"paid_admission_wait", "capacity_wait"}:
+            return {"status": "processing", "stage": waiting}
+        _submission(kwargs, waiting.removesuffix("_submission"))
+        return {"status": "processing", "stage": "refined_splat", "operation_id": "op1"}
+    world = World(monkeypatch, site, [step, step])
+    assert _tick(site, world) == {"processing": 1} and len(world.runs) == 1
+
+
+def test_a_job_backing_off_after_a_transient_failure_is_not_stepped_again(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"}, OSError("disk"), OSError("disk")])
+    assert _tick(site, world) == {"processing": 1}
+    assert len(world.runs) == 2 and _job(site)["transient_failures"] == 1
+
+
+def test_the_continuation_budget_is_enforced(monkeypatch, site):
+    _enqueue(site)
+    stages = iter(["plan", "pose", "generated_rgbd", "mesh", "automation", "refined_splat"])
+    world = World(monkeypatch, site, [lambda _kwargs: {"status": "processing", "stage": next(stages)}] * 6)
+    readings = iter(range(0, 1000, 100))  # every pass takes 100 s
+    assert _tick(site, world, budget=250, clock=lambda: next(readings)) == {"processing": 1}
+    assert len(world.runs) == 3 and _job(site)["stage"] == "generated_rgbd"
+
+
+def test_an_operator_hold_or_a_deploy_quiesce_stops_the_continuation(monkeypatch, site, tmp_path):
+    import subprocess
+    hold = tmp_path / "holds" / f"{preview.TRIGGER_UNIT}.json"
+    timer = {"active": True}
+    asked = []
+
+    def systemctl(argv, **_):
+        asked.append(argv)
+        return SimpleNamespace(returncode=0 if timer["active"] else 3)
+    monkeypatch.setattr(subprocess, "run", systemctl)
+    monkeypatch.delenv(preview.RELEASE_ENV, raising=False)
+    stop = preview.trigger_stop_reason(hold_record=hold)
+    assert stop() is None and asked[-1] == ["systemctl", "is-active", "--quiet", preview.TRIGGER_UNIT]
+    _enqueue(site)
+
+    def holding(_kwargs):
+        hold.parent.mkdir()
+        hold.write_text("{}")
+        return {"status": "processing", "stage": "plan"}
+    world = World(monkeypatch, site, [holding, {"status": "processing", "stage": "pose"}])
+    assert _tick(site, world, stop=stop) == {"processing": 1} and len(world.runs) == 1
+    assert stop() == "operator_hold"
+    hold.unlink()
+
+    def quiescing(_kwargs):
+        timer["active"] = False  # the deploy stops the timer before it moves the release
+        return {"status": "processing", "stage": "pose"}
+    world.steps = [quiescing, {"status": "processing", "stage": "mesh"}]
+    assert _tick(site, world, stop=stop) == {"processing": 1} and len(world.runs) == 2
+    assert stop() == "trigger_inactive"
+
+
+def test_a_new_release_or_an_unknown_timer_state_stops_the_continuation(monkeypatch, tmp_path):
+    import subprocess
+    releases = [tmp_path / "release-a", tmp_path / "release-b"]
+    for release in releases:
+        release.mkdir()
+    active = tmp_path / "active"
+    active.symlink_to(releases[0])
+    monkeypatch.setenv(preview.RELEASE_ENV, str(active))
+    monkeypatch.setattr(subprocess, "run", lambda argv, **_: SimpleNamespace(returncode=0))
+    stop = preview.trigger_stop_reason(hold_record=tmp_path / "no-hold.json")
+    assert stop() is None
+    active.unlink()
+    active.symlink_to(releases[1])  # a finished deploy re-armed the timer on a new release
+    assert stop() == "release_changed"
+
+    def missing(argv, **_):
+        raise FileNotFoundError(argv[0])
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert preview.trigger_stop_reason(hold_record=tmp_path / "no-hold.json")() == "trigger_state_unknown"
+    # No bus to ask (exit 1) is not proof the timer runs either.
+    monkeypatch.setattr(subprocess, "run", lambda argv, **_: SimpleNamespace(returncode=1))
+    assert preview.trigger_stop_reason(hold_record=tmp_path / "no-hold.json")() == "trigger_state_unknown"
+
+
+def test_each_further_pass_still_takes_the_job_lock(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"},
+                                      {"status": "processing", "stage": "pose"}])
+    held = []
+
+    def another_worker_takes_the_job():
+        lock = (site.job.parent / "preview.lock").open("a")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        held.append(lock)
+    assert _tick(site, world, stop=lambda: another_worker_takes_the_job()) == {"busy": 1}
+    assert len(world.runs) == 1
+    held[0].close()
+
+
+@pytest.mark.parametrize(("value", "seconds"), [(None, 480), ("", 480), ("120", 120), ("0", 0), ("-5", 480),
+                                                ("soon", 480), ("nan", 480), ("inf", 480), ("100000", 3600)])
+def test_the_continuation_budget_setting(monkeypatch, value, seconds):
+    if value is None:
+        monkeypatch.delenv(preview.CONTINUE_SECONDS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(preview.CONTINUE_SECONDS_ENV, value)
+    assert preview.continue_seconds_from_environment() == seconds
+
+
+def test_the_tick_command_turns_the_budget_off_with_zero(monkeypatch, site, capsys):
+    from blueprint_pipeline import owned_capture_atlas_worker
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"}])
+    monkeypatch.setattr(owned_capture_atlas_worker, "tick_from_environment", lambda: {})
+    monkeypatch.setenv(preview.CONTINUE_SECONDS_ENV, "0")
+    assert preview.main(["tick", "--storage-root", str(site.storage)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"processing": 1} and len(world.runs) == 1
+
+
+def test_the_digest_cache_is_invisible_to_the_job_and_still_catches_a_changed_file(monkeypatch, site):
+    import time
+    from blueprint_pipeline import file_digest_cache
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    monkeypatch.setattr(file_digest_cache, "RACY_NANOSECONDS", -60 * 10**9)  # the capture is long settled
+    _enqueue(site)
+    source = site.capture / "raw/walkthrough.mov"
+    retained = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+
+    def verify(_kwargs):
+        if _sha256_file(source) != retained:
+            raise ValueError("atlas_runtime_source_changed")
+        return {"status": "processing", "stage": "plan"}
+    world = World(monkeypatch, site, [verify, verify, verify])
+    assert world.advance() == "processing"
+    first = _job(site)
+    world.clock += 60
+    assert world.advance() == "processing"
+    sidecar = site.job.parent / file_digest_cache.SIDECAR
+    assert set(json.loads(sidecar.read_text())["entries"]) == {str(source)}
+    assert {key: value for key, value in _job(site).items() if key not in {"last_tick_epoch", "updated_at_epoch",
+            "next_attempt_at_epoch"}} == {key: value for key, value in first.items() if key not in {
+            "last_tick_epoch", "updated_at_epoch", "next_attempt_at_epoch"}}
+    assert not set(_job(site)) & {"file_digest_cache", "entries"}
+    original = source.stat()
+    time.sleep(.05)
+    source.write_bytes(b"VIDEO")  # same size, mtime put back: only ctime tells
+    os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+    world.clock += 60
+    assert world.advance() == "failed" and _job(site)["reason"] == "atlas_runtime_source_changed"

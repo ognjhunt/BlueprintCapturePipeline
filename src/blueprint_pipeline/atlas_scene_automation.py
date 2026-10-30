@@ -103,9 +103,13 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
             raise ValueError("atlas_fallback_rgb_changed")
         dst = input_root / f"{i:04d}.png"
         source = source_root / f"{i:04d}{src.suffix.lower()}"
-        if source.exists() and _sha256_file(source) != row["image_digest"]:
-            raise ValueError("atlas_fallback_rgb_changed")
-        shutil.copyfile(src, source)
+        if source.exists():
+            # Rewriting identical bytes every tick only changed the file's
+            # fingerprint, so its unchanged digest was recomputed each time.
+            if _sha256_file(source) != row["image_digest"]:
+                raise ValueError("atlas_fallback_rgb_changed")
+        else:
+            shutil.copyfile(src, source)
         with Image.open(source) as image:
             padded, transform = square_pad(np.asarray(image.convert("RGB")))
         if dst.exists():
