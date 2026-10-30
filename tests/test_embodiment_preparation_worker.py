@@ -37,6 +37,14 @@ def batch(tmp_path, monkeypatch):
         return {"bundle_digest": source_digests[path.name]}
 
     monkeypatch.setattr(assets, "verify_source_bundle", verify_source)
+    # This suite isolates scheduling. Real checkpoint/source/model verification
+    # and the terminating SDK subprocess are covered by the parent-smoke tests.
+    monkeypatch.setattr(worker, "verified_import_checkpoint",
+                        lambda body, _identity: worker.read(body / "import-checkpoint.json")["body_result"])
+    from blueprint_pipeline import deployment_embodiment_native_smoke as smoke
+    monkeypatch.setattr(smoke, "run_bounded_smoke_process", lambda *_args, **_kwargs: {
+        "status": "failed", "process_digest": "sha256:" + "0" * 64, "smoke_digest": None,
+        "reasons": ["development_only_no_native_diagnostic"]})
     monkeypatch.setenv("BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH", "10000")
 
     def inputs(*, ids=IDS, unavailable=(), expires=20000.0):
@@ -80,10 +88,10 @@ def imported(command, *, size=32):
     body = Path(command[command.index("--output") + 1])
     (body / "prepared").mkdir(parents=True)
     (body / "prepared" / "robot.usd").write_bytes(b"x" * size)
-    (body / "body-result.json").write_text(json.dumps({
+    (body / "import-checkpoint.json").write_text(json.dumps({"body_result": {
         "embodiment_id": identity, "status": "imported", "native_import_executed": True,
         "task_executed": False, "policy_executed": False,
-    }))
+    }}))
     return SimpleNamespace(returncode=0)
 
 
@@ -175,8 +183,10 @@ def test_output_limit_skips_oversize_robot_but_keeps_smaller_later_robot(batch, 
     batch.inputs()
     # Preserve the production log/receipt reservation while shrinking the model
     # capacity; no large fixture or real importer is needed to test scheduling.
-    monkeypatch.setattr(worker, "MAX_OUTPUT_BYTES", 64 * 1024**2 + 2048)
-    sizes = dict(zip(IDS, [1024, 2048, 16], strict=True))
+    # Both the import checkpoint and final diagnostic-bearing body receipt are
+    # retained now, so the small fixture budget includes their real bytes.
+    monkeypatch.setattr(worker, "MAX_OUTPUT_BYTES", 64 * 1024**2 + 4096)
+    sizes = dict(zip(IDS, [1024, 8192, 16], strict=True))
 
     def run(command, **_options):
         return imported(command, size=sizes[command[-1]])
@@ -187,7 +197,7 @@ def test_output_limit_skips_oversize_robot_but_keeps_smaller_later_robot(batch, 
     assert not (batch.output / "bodies" / IDS[1]).exists()
     assert (batch.output / "bodies" / IDS[0]).is_dir()
     assert (batch.output / "bodies" / IDS[2]).is_dir()
-    assert sum(row["size_bytes"] for row in result["files"]) <= 2048
+    assert sum(row["size_bytes"] for row in result["files"]) <= 4096
 
 
 def test_failed_process_logs_keep_a_bounded_tail_and_no_success_claim(batch):
@@ -215,7 +225,7 @@ def test_zero_exit_without_readable_import_receipt_is_individual_failure(batch, 
             if receipt_fault == "invalid_json":
                 body = Path(command[command.index("--output") + 1])
                 body.mkdir(parents=True)
-                (body / "body-result.json").write_text("incomplete result {")
+                (body / "import-checkpoint.json").write_text("incomplete result {")
             return SimpleNamespace(returncode=0)
         return imported(command)
 
