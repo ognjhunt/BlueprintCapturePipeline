@@ -87,15 +87,19 @@ def _world_triangles(path: Path, offset: list[float]) -> tuple[Any, Any]:
 
 def _strikes(points: Any, *, base: Any, yaw: float, root: float, footprint: list[float],
              robot_id: str, margin_m: float) -> bool:
-    """Whether moving-part samples enter the station's mount or the robot's fixed volumes on it."""
+    """Whether moving-part samples enter the station's mount or the robot's fixed volumes on it.
+
+    A robot with no measured fixed volumes keeps only its mount (or footprint) clear; its own body is unassessed.
+    """
 
     import numpy as np
 
-    from .scene_physics_preflight import robot_fixed_volume_extent, robot_fixed_volume_mask
+    from .scene_physics_preflight import ROBOT_FIXED_VOLUMES, robot_fixed_volume_extent, robot_fixed_volume_mask
 
     if points is None or not len(points):
         return False
-    reach = max(robot_fixed_volume_extent(robot_id), math.hypot(*footprint)) + margin_m
+    modeled = robot_id in ROBOT_FIXED_VOLUMES
+    reach = max(robot_fixed_volume_extent(robot_id) if modeled else 0.0, math.hypot(*footprint)) + margin_m
     near = points[(np.abs(points[:, 0] - base[0]) <= reach) & (np.abs(points[:, 1] - base[1]) <= reach)]
     if not len(near):
         return False
@@ -105,7 +109,7 @@ def _strikes(points: Any, *, base: Any, yaw: float, root: float, footprint: list
                   cos_yaw * relative[:, 1] - sin_yaw * relative[:, 0], relative[:, 2]]
     mount = ((np.abs(local[:, 0]) <= footprint[0] + margin_m) & (np.abs(local[:, 1]) <= footprint[1] + margin_m)
              & (local[:, 2] >= -root - margin_m) & (local[:, 2] <= margin_m))
-    return bool(mount.any() or robot_fixed_volume_mask(robot_id, local, margin_m).any())
+    return bool(mount.any() or (modeled and robot_fixed_volume_mask(robot_id, local, margin_m).any()))
 
 
 def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[float],

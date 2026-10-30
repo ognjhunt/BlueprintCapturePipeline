@@ -826,7 +826,8 @@ def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
     approach are the task's interaction affordance: the point on the contact link, the outward approach
     and the pre-contact clearance, the same contact the placement trajectory plans. The arm starts from
     the plan's reset pose. The static scene is the plan's one scene collision asset, the one the
-    simulator loads. A plan that moves no part is not applicable.
+    simulator loads. A plan that moves no part is not applicable. A robot this module has no arm model of
+    (a team's own) is unassessed: never measured with the Franka's model, never refused for lacking one.
     """
     import json
 
@@ -836,8 +837,8 @@ def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
     root = Path(packet_dir)
     plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
 
-    def not_applicable(reason: str) -> dict[str, Any]:
-        result = {"schema_version": SCHEMA_VERSION, "status": "not_applicable", "reason": reason,
+    def unmeasured(reason: str, status: str = "not_applicable") -> dict[str, Any]:
+        result = {"schema_version": SCHEMA_VERSION, "status": status, "reason": reason,
                   "arena_scene_plan_digest": plan.get("plan_digest"), "blockers": [], "report_digest": ""}
         result["report_digest"] = digest(result, digest_field="report_digest")
         return result
@@ -846,10 +847,10 @@ def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
     if not articulated:
         spec = plan.get("task_spec") or {}
         if spec.get("manipulation_strategy") != "pick_and_place":
-            return not_applicable("no_articulated_object")
+            return unmeasured("no_articulated_object")
         report = _packet_rigid_clearance(root, plan, spec)
         if report is None:
-            return not_applicable("robot_arm_unmodeled")
+            return unmeasured("robot_arm_unmodeled", "unassessed")
         report = {**report, "arena_scene_plan_digest": plan.get("plan_digest"), "report_digest": ""}
         report["report_digest"] = digest(report, digest_field="report_digest")
         return report
@@ -858,7 +859,9 @@ def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
     except ScenePhysicsPreflightError as exc:
         raise RobotArmPathClearanceError(f"robot_arm_path_task_range_unknown:{exc}") from exc
     if not ranges:
-        return not_applicable("task_moves_no_part")
+        return unmeasured("task_moves_no_part")
+    if str((plan.get("robot") or {}).get("robot_id")) not in ARM_LINK_BOUNDS:
+        return unmeasured("robot_arm_unmodeled", "unassessed")
     subjects = [o for o in articulated if o.get("task_subject") is True or o.get("semantic_role") == "task_object"]
     if len(subjects) != 1 or len(ranges) != 1:
         raise RobotArmPathClearanceError("robot_arm_path_task_subject_ambiguous")

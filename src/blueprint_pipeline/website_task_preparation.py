@@ -484,8 +484,23 @@ def _runtime_bounds(bounds: Mapping[str, Any], matrix: np.ndarray) -> tuple[list
     return moved.min(axis=0).tolist(), moved.max(axis=0).tolist()
 
 
+def embodiment_grippers(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """A registered body's tools (``team_embodiment``) as ``screen_physics`` grippers.
+
+    A manifest declares each tool's opening but no grip force, so the force stays unknown, never a reference value.
+    """
+    from .team_embodiment import gripper_channels
+
+    return [{"model": f"{manifest['embodiment_id']}/{channel['name']}", "full_stroke_m": float(channel["max_width_m"]),
+             "grip_force_n": None, "source": "registered_embodiment_manifest"}
+            for channel in gripper_channels(manifest)]
+
+
 def screen_physics(dimensions_m: Sequence[float], *, gripper: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Estimate object properties; test grasp sensitivity only for an explicitly supplied gripper."""
+    """Estimate object properties; test grasp sensitivity only for an explicitly supplied gripper.
+
+    A gripper without a declared grip force has its opening checked and its hold left unassessed.
+    """
     volume = float(np.prod(dimensions_m))
     density, fill = PHYSICS_PRIORS["density_kg_m3"], PHYSICS_PRIORS["envelope_fill"]
     mass = [max(0.005, volume * density[0] * fill[0]), max(0.01, volume * density[1] * fill[1])]
@@ -499,7 +514,7 @@ def screen_physics(dimensions_m: Sequence[float], *, gripper: Mapping[str, Any] 
     gravity, safety = 9.81, 2.0
     best = mass[0] * gravity * safety / (2 * bounds["static_friction"][1])
     worst = mass[1] * gravity * safety / (2 * bounds["static_friction"][0])
-    available = gripper["grip_force_n"]["upper"]
+    available = (gripper["grip_force_n"] or {}).get("upper")
     sorted_dims = sorted(dimensions_m)
     grasp_width_upper = sorted_dims[0] * (1 + DIMENSION_RELATIVE_ERROR)
     escalation = None
@@ -507,6 +522,8 @@ def screen_physics(dimensions_m: Sequence[float], *, gripper: Mapping[str, Any] 
         sensitivity = "blocked_by_estimate"
         escalation = {"property": "smallest_dimension_m", "instrument": "tape_measure",
                       "reason": "The estimated object width may exceed the reference gripper stroke."}
+    elif available is None:
+        sensitivity = "hold_unassessed_grip_force_not_declared"
     elif worst <= available:
         sensitivity = "robust_within_range"
     elif best <= available:

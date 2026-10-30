@@ -111,10 +111,73 @@ def test_unregistered_bodies_stay_unassessed_never_infeasible(tmp_path, monkeypa
     plan, facts = _plan(tmp_path, monkeypatch, scene_half="team_scene")
     feasibility = candidate_feasibility(scene_plan=facts["scene"]["native_scene_plan"], catalog=load_default_catalog(),
                                         profile=profile_for_capture(str(tmp_path / "capture")))
-    assert {row["status"] for row in feasibility["candidates"].values()} == {"unassessed"}
+    # A job with no registered team body (Franka-only) keeps exactly the rows it had: nothing is added.
+    assert all(row == {"status": "unassessed", "blockers": ["embodiment_reach_manifest_not_registered"]}
+               for row in feasibility["candidates"].values())
     assert facts["capabilities"]["candidate_infeasible"] == {}
     assert "infeasible" not in {row["status"] for row in plan["candidates"]}
     assert len(plan["candidates"]) == len(load_default_catalog()["candidates"])
+
+
+def test_each_body_is_measured_from_its_own_station_and_an_unmodelled_one_stays_unassessed(tmp_path):
+    from blueprint_pipeline.team_embodiment import (
+        apply_team_embodiment,
+        read_model_structure,
+        team_embodiment_binding,
+        verify_model_file,
+    )
+    from blueprint_pipeline.team_scene_packet import materialize_team_scene
+    from blueprint_pipeline.website_candidate_feasibility import infeasible_blockers, station_scene_plan
+    from tests.test_team_scene_packet import _scene, bodies
+
+    scene = _scene(tmp_path, strategy="pick_and_place")
+    body = bodies(tmp_path)
+    compiled = materialize_team_scene(
+        **{key: value for key, value in scene.items() if key not in ("profile", "store", "revision_reference")},
+        output_root=tmp_path / "team-scene", embodiment_manifests=list(body.values()))
+    record = json.loads(Path(compiled["path"]).read_text())
+    scene_plan = json.loads((Path(record["base_native_packet"]["path"]).parent
+                             / "native_task_arena_scene_plan.v1.json").read_text())
+
+    def registered(name):
+        path = launch._write(tmp_path / f"{name}.manifest.json", body[name])
+        return {"robot_policy": {"manifest": launch._record(path)}}
+
+    profile = {"team_scene_inputs_path": compiled["path"], "screening_candidates": {
+        "long_arm": registered("long"), "short_arm": registered("short"), "rover": registered("wheeled"),
+        "g1_humanoid": {"native_g1": {"registered": "with its own scene packet"}}}}
+    catalog = {"candidates": [{"candidate_id": key}
+                              for key in ("long_arm", "short_arm", "rover", "g1_humanoid", "pi05_droid")]}
+    feasibility = candidate_feasibility(scene_plan=scene_plan, catalog=catalog, profile=profile)
+    rows, own = feasibility["candidates"], record["embodiment_stations"]
+    long = rows["long_arm"]
+    assert (long["status"], long["blockers"], long["station_basis"]) == ("feasible", [], "embodiment_own_station")
+    assert long["station"] == own[body["long"]["embodiment_digest"]]["station"]
+    # Measured from the short arm's own best station on this scene, not the Franka's: infeasible, by name.
+    assert rows["short_arm"]["status"] == "infeasible"
+    assert infeasible_blockers(feasibility) == {"short_arm": ["team_embodiment_station_out_of_reach"]}
+    # A free base has its own floor station but declares no reach; a body without a manifest is not modelled.
+    assert rows["rover"]["status"] == "unassessed"
+    assert rows["rover"]["blockers"] == ["embodiment_free_base_reach_not_modeled"]
+    assert rows["rover"]["station"] == own[body["wheeled"]["embodiment_digest"]]["station"]
+    for key in ("g1_humanoid", "pi05_droid"):
+        assert rows[key] == {"status": "unassessed", "blockers": ["embodiment_reach_manifest_not_registered"]}
+    # The run built from the station plan holds the long arm where it was measured.
+    placed = station_scene_plan(scene_plan, long)
+    assert placed["robot"]["base_pose_world"]["position_world_m"] == long["station"]["position_world_m"]
+    assert placed["plan_digest"] == canonical_digest(placed, digest_field="plan_digest")
+    assert station_scene_plan(scene_plan, rows["rover"]) == scene_plan
+    model = tmp_path / "robot.usda"
+    binding = team_embodiment_binding(body["long"], model_record=verify_model_file(body["long"], model),
+                                      structure=read_model_structure(model), scene_plan=placed)
+    run = apply_team_embodiment(placed, binding)
+    assert run["robot"]["base_mode"] == "fixed_at_station"
+    assert run["robot"]["base_pose_world"] == placed["robot"]["base_pose_world"]
+    # A scene compiled for another plan is not read for this one: the packet's own station is measured, and said.
+    other = candidate_feasibility(scene_plan={**scene_plan, "plan_digest": "sha256:" + "0" * 64}, catalog=catalog,
+                                  profile=profile)
+    assert other["candidates"]["long_arm"]["station_basis"] == "scene_packet_station"
+    assert "station" not in other["candidates"]["long_arm"]
 
 
 def test_priority_orders_registered_robots_and_the_budget_decides_how_far(tmp_path, monkeypatch):

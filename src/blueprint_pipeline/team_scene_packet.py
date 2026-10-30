@@ -19,9 +19,14 @@ compiled here straight into the scene half a team run reads:
   fixture), at the closest clear floor spot facing the task
   (``team_embodiment_stance``). For a jointed part the station also stays out
   of the part's path to success and out of any fall gravity carries it
-  through, preferring a spot the part never reaches. A team's own fixed arm
-  takes the same station and must reach the task from it; a free base finds
-  its own stance; a team on the DROID interface runs this Franka;
+  through, preferring a spot the part never reaches. A team on the DROID
+  interface runs this Franka; a team's own fixed arm is bound to the packet's
+  station unless its run takes its own (below);
+- a station per registered team body, when the scene is compiled with their
+  manifests: each chosen from that body's own manifest (base, footprint,
+  declared reach) on the same floor, task and moving part, never with the
+  Franka's model or numbers; what a body declares no model for stays
+  unassessed (``_embodiment_stations``, recorded as ``embodiment_stations``);
 - the right exterior camera, for DROID policies that read both exteriors,
   where a pose beside the station sees the task clear of the captured scene
   (``droid_exterior_cameras``); the packet is then compiled once more with it,
@@ -151,6 +156,68 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
                                   "blockers": report["blockers"]} for row, report in attempts]}
 
 
+def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mapping[str, Any],
+                         points: Sequence[Sequence[float]],
+                         grasp: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    """Each registered body's own station on this scene, from its own manifest, keyed by its digest.
+
+    ``place`` is the Franka station's search (``ground_stance``): the same floor, task and moving part. A fixed
+    base stands on the station's pedestal level with the task's support and takes the closest clear stance
+    from which its declared ``reach_m`` covers every task point; with none, the closest stands, out of reach.
+    A free base stands on its own footprint at its own root height and declares no reach. No Franka model or
+    number enters: a moving part is kept off the mount or footprint, and the body itself, its reach without
+    one, and a grip force no manifest declares stay unassessed. Each declared tool is screened against the
+    ``grasp`` (``website_task_preparation.screen_physics``, or the handle screen for a jointed part).
+    """
+    from .team_embodiment import ROBOT_ID, TeamEmbodimentError, validate_embodiment_manifest
+    from .team_embodiment_stance import GRID_STEP_M, SEARCH_RADIUS_M, ground_stance
+    from .website_task_preparation import embodiment_grippers, screen_articulated_physics, screen_physics
+
+    every =(2 * math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9) + 1) ** 2  # every clear stance searched
+    rows: dict[str, dict[str, Any]] = {}
+    for raw in manifests:
+        manifest = validate_embodiment_manifest(raw)
+        base, motion = manifest["base"], place.get("task_motion")
+        unassessed = ["embodiment_body_task_motion_clearance_unmodeled"] if motion else []
+        row: dict[str, Any] = {"embodiment_id": manifest["embodiment_id"],
+                               "embodiment_digest": manifest["embodiment_digest"], "base_mode": base["mode"],
+                               "status": "unassessed", "station": None, "blockers": [], "reach": None}
+        search = {**place, **({"task_motion": {**motion, "robot_id": ROBOT_ID}} if motion else {})}
+        try:
+            if base["mode"] == "fixed":
+                stances = ground_stance(**search, ranked=every)
+                reach = float(manifest["reach_m"])
+                farthest = [max(math.dist(stance["position_world_m"], point) for point in points)
+                            for stance in stances]
+                index = next((i for i, distance in enumerate(farthest) if distance <= reach), 0)
+                within = farthest[index] <= reach
+                row.update(status="chosen" if within else "out_of_reach", station=stances[index],
+                           blockers=[] if within else ["team_embodiment_station_out_of_reach"],
+                           mount="station_pedestal_level_with_task_support",
+                           reach={"rule": "closest_clear_stance_within_declared_reach", "reach_m": reach,
+                                  "task_points_world_m": [list(point) for point in points],
+                                  "farthest_task_point_m": farthest[index], "clear_stances_measured": len(stances)})
+            else:
+                station = ground_stance(**{**search, "root_world_z_m": None,
+                                           "root_height_m": float(base["root_height_m"]),
+                                           "footprint_half_extent_m": list(base["footprint_half_extent_m"])})
+                row.update(status="chosen", station=station, mount="own_footprint_on_floor_at_root_height")
+                unassessed.append("embodiment_free_base_reach_not_modeled")
+        except TeamEmbodimentError as exc:
+            row["blockers"] = list(exc.blockers)
+        except (KeyError, TypeError, ValueError):
+            row["blockers"] = ["team_scene_embodiment_station_inputs_invalid"]
+        if grasp is not None:
+            tools = embodiment_grippers(manifest)
+            row["grippers"] = [
+                screen_physics(grasp["dimensions_m"], gripper=tool) if grasp["joint_type"] is None
+                else screen_articulated_physics(grasp["dimensions_m"], joint_type=grasp["joint_type"], gripper=tool)
+                for tool in tools]
+            unassessed += [] if tools else ["embodiment_gripper_not_declared"]
+        rows[manifest["embodiment_digest"]] = {**row, "unassessed": unassessed}
+    return rows
+
+
 def _cameras(profile: Mapping[str, Any], *, base: list[float], start: list[float],
              target: list[float], whole_region: bool = False) -> list[dict[str, Any]]:
     from .task_evaluation_diagnostic_native_arena_compiler import _world_camera
@@ -271,9 +338,13 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            droid_profile_digest: str, runtime_source_receipt_path: str | Path,
                            output_root: str | Path,
                            destination_placement_qualification_path: str | Path | None = None,
-                           native_appearance_materializer: Callable[..., Mapping[str, Any]] | None = None
-                           ) -> dict[str, Any]:
-    """Compile the revision's scene half under ``output_root`` and seal its team scene inputs."""
+                           native_appearance_materializer: Callable[..., Mapping[str, Any]] | None = None,
+                           embodiment_manifests: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+    """Compile the revision's scene half under ``output_root`` and seal its team scene inputs.
+
+    Each of ``embodiment_manifests`` (registered team bodies) also gets its own station on the same scene
+    (``_embodiment_stations``); without any, the record is exactly the Franka-only one.
+    """
 
     from . import task_evaluation_configured_controls_deferred_inputs as deferred
     from . import task_evaluation_native_arena_episode_compiler as compiler
@@ -326,7 +397,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         adapter, definition, task_spec = task["adapter"], task["definition"], task["task_spec"]
         task_row, state_binding, motion = task["row"], task["task_state_binding"], task["task_motion"]
         start, target, support_top = task["start"], task["target"], task["support_top_z_m"]
-        subject_bounds = (task["subject_minimum"], task["subject_maximum"])
+        subject_bounds = object_bounds = (task["subject_minimum"], task["subject_maximum"])
     else:
         adapter = adapt_rigid_relocation_task_template(configured_revision=revision,
                                                        materialized_references=references)
@@ -365,7 +436,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         target = [float(v) for v in task_spec["target_position_world_m"]]
         support_top = float(adapter["source_documents"]["documents"]["support_plane"]["top_z_m"])
         subject = _read(documents[SOURCE_OBJECT_CONTRACT_PATH], "team_scene_subject_bounds_invalid")
-        subject_bounds = (subject.get("aabb_min_xyz_m"), subject.get("aabb_max_xyz_m"))
+        subject_bounds = object_bounds = (subject.get("aabb_min_xyz_m"), subject.get("aabb_max_xyz_m"))
         destination_support = adapter["source_documents"]["documents"]["definition"].get("destination_support_plane")
         if destination_support is not None:
             # The object ends on another surface (floor to desk): the mount is level with the
@@ -396,19 +467,29 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     carry = not articulated and task_spec.get("manipulation_strategy") == "pick_and_place"
     from .robot_arm_path_clearance import CARRY_STATIONS
     try:
-        station = ground_stance(
+        place = dict(
             collision_path=assets["collision"], collision_sha256=_sha256(assets["collision"]), offset=[0.0, 0.0, 0.0],
             subject_center=stance_center if whole_region else start,
             subject_minimum=[float(v) for v in subject_bounds[0]],
             subject_maximum=[float(v) for v in subject_bounds[1]],
             footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
-            task_motion=motion, ranked=CARRY_STATIONS if carry else 0)
+            task_motion=motion)
+        station = ground_stance(**place, ranked=CARRY_STATIONS if carry else 0)
     except (KeyError, TypeError, ValueError) as exc:
         raise TeamScenePacketError("team_scene_station_inputs_invalid") from exc
     except TeamEmbodimentError as exc:
         raise TeamScenePacketError(",".join(exc.errors)) from exc
     station, station_search = (_carrying_station(station, task_spec=task_spec, collision=assets["collision"],
                                                  profile=profile) if carry else (station, None))
+    stations: dict[str, dict[str, Any]] = {}
+    if embodiment_manifests:
+        # The object a tool holds: a rigid carry's own extent, or an articulated part's handle (its joint's kind).
+        joints = (task_spec.get("articulation_graph") or {}).get("joints") or []
+        grasp = None if not (carry or articulated) else {
+            "dimensions_m": [float(b) - float(a) for a, b in zip(*object_bounds, strict=True)],
+            "joint_type": next((str(row.get("joint_type")) for row in joints if row.get("role") == "target"),
+                               "unknown") if articulated else None}
+        stations = _embodiment_stations(embodiment_manifests, place=place, points=[start, target], grasp=grasp)
     base = {"position_world_m": station["position_world_m"], "orientation_xyzw": station["orientation_xyzw"]}
     request: dict[str, Any] = {
         "schema_version": "native_task_arena_packet_request.v1", "scene_id": scene_id, "task_id": task_id,
@@ -471,6 +552,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         "execution_authority": dict(EXECUTION_AUTHORITY), "control_diagnostic": dict(PENDING_CONTROLS),
         "robot_station": station, "camera_layout": camera_layout, "droid_profile_digest": droid_profile_digest,
         **({"robot_station_search": station_search} if station_search is not None else {}),
+        **({"embodiment_stations": stations} if stations else {}),
         "inputs_digest": ""}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
     path = root / RECORD_FILENAME
@@ -496,6 +578,23 @@ def read_team_scene_inputs(path: str | Path) -> dict[str, Any]:
             raise TeamScenePacketError(f"team_scene_inputs_{field}_changed")
     return {**{key: value[key] for key in SCENE_INPUT_FIELDS if key in value},
             "control_diagnostic": dict(value["control_diagnostic"])}
+
+
+def recorded_embodiment_stations(path: str | Path | None, *, plan_digest: Any) -> dict[str, dict[str, Any]]:
+    """The registered bodies' own stations a scene half was compiled with, keyed by embodiment digest.
+
+    Empty when the half has none, cannot be read, or was compiled for another scene plan.
+    """
+
+    if not path:
+        return {}
+    try:
+        read_team_scene_inputs(path)
+        value = _read(Path(path), "team_scene_inputs_invalid")
+    except (OSError, ValueError, KeyError):
+        return {}
+    stations = value.get("embodiment_stations")
+    return dict(stations) if value.get("plan_digest") == plan_digest and isinstance(stations, Mapping) else {}
 
 
 def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenario_id: str,
@@ -564,6 +663,7 @@ __all__ = [
     "materialize_team_scene",
     "prepare_team_scene",
     "read_team_scene_inputs",
+    "recorded_embodiment_stations",
 ]
 
 

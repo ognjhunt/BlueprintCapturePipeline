@@ -538,6 +538,27 @@ def test_physics_screen_escalates_the_smallest_missing_measurement():
     assert all(row["basis"] == "estimated" for row in [medium])
 
 
+def test_a_registered_bodys_gripper_is_screened_on_its_own_opening_and_its_hold_stays_unassessed(tmp_path):
+    from blueprint_pipeline.team_embodiment import validate_embodiment_manifest
+    from tests.test_team_embodiment import manifest, write_robot_usd
+
+    body = validate_embodiment_manifest(manifest(write_robot_usd(tmp_path / "robot.usda")))
+    [tool] = preparation.embodiment_grippers(body)
+    # The manifest's own 80 mm opening; it declares no grip force, so no reference force stands in for it.
+    assert tool == {"model": "acme-arm-v2/gripper", "full_stroke_m": 0.08, "grip_force_n": None,
+                    "source": "registered_embodiment_manifest"}
+    narrow = preparation.screen_physics([0.06, 0.06, 0.6], gripper=tool)
+    assert narrow["sensitivity"] == "hold_unassessed_grip_force_not_declared"
+    assert narrow["measurement_escalation"] is None and narrow["gripper"] == tool
+    wide = preparation.screen_physics([0.1, 0.1, 0.1], gripper=tool)
+    assert wide["sensitivity"] == "blocked_by_estimate"
+    assert wide["measurement_escalation"]["property"] == "smallest_dimension_m"
+    # The Robotiq reference's verdict on the narrow object is unchanged.
+    assert preparation.screen_physics([0.06, 0.06, 0.6], gripper=preparation.GRIPPER)["sensitivity"] == (
+        "outcome_depends_on_estimate")
+    assert preparation.embodiment_grippers({**body, "gripper": None}) == []
+
+
 def test_capture_consent_does_not_invent_paid_execution_permission(tmp_path):
     value = _compile(tmp_path, spend={key: val for key, val in SPEND.items() if key not in {"owner", "consent"}})
     assert value["status"] == "needs_input"
