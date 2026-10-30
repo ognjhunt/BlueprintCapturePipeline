@@ -5,10 +5,11 @@ candidate policies under one persistent **$15 per site** screening allowance.
 The default catalog contains 84 candidate rows: ten original policy candidates
 and one for each of the 74 recorded embodiment–policy routes. The latter span
 16 robot configurations and remain individual planning candidates until their
-exact policy identity, rights, robot, interface and runtime are bound. pi05-DROID,
-GR00T N1.7-DROID and Cosmos 3 Edge DROID have default runtime implementations;
-that does not establish a completed simulation on the current task. Every other
-row reports its specific availability, licensing, adapter or credential reason.
+exact policy identity, rights, robot, interface and runtime are bound. Five DROID
+candidates have default runtime implementations: pi05, GR00T N1.7, Cosmos 3 Edge,
+Cosmos 3 Nano and MolmoAct2. That does not establish a completed simulation on
+the current task. Every other row reports its specific availability, licensing,
+adapter or credential reason.
 Catalog entries alone never authorize a run.
 
 `deployment.configuration_id` identifies the exact body and

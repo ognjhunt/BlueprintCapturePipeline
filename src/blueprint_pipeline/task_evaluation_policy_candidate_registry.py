@@ -161,24 +161,27 @@ REGISTRY: tuple[PolicyCandidate, ...] = (
         checkpoint_digest="sha256:c33efc98a197940e29aeaa8bc1caaa63d20bdc9e085a73e9c8368099c6bc8fb2",
         checkpoint_digest_kind="hub_tree_listing",
         checkpoint_total_bytes=21_781_603_004,
-        license_id="apache-2.0-research-intent",
-        commercial_use="under_review",
+        license_id="apache-2.0",
+        commercial_use="allowed",
         license_note=(
-            "Weights stated as Apache-2.0 but 'intended for research and educational use'; "
-            "the Molmo2 base card notes non-commercial training data. Needs legal review."
+            "Apache-2.0 per Ai2's molmoact2 README at "
+            "6070080a20321b4f498ab30f28e1d09ac465edb7, which explicitly lists this checkpoint. "
+            "The publisher also states research and educational intended use."
         ),
-        status="license_review_pending",
+        status="integration_pending",
         adapter_id="molmoact2_droid_fastapi_v0",
         observation_schema_id=TWO_CAMERA_OBSERVATION,
         action_schema_id=ABSOLUTE_JOINT_POSITION_ACTION,
         minimum_gpu_memory_gb=16,
         blockers=(
-            "license_review_pending",
             "canary_runtime_serving_path_missing",
             "checkpoint_bytes_not_downloaded_and_verified",
             "integration_canary_receipt_missing",
         ),
-        reason="Not offered yet. Its license is being reviewed for use in a paid service.",
+        reason=(
+            "Implemented in beta policy screening; unavailable in this frozen-pair evaluation "
+            "lane until its runtime and integration receipt are admitted."
+        ),
     ),
     PolicyCandidate(
         candidate_id="flux3_action_droid",
