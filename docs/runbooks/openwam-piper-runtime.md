@@ -40,8 +40,12 @@ independent watchdog and teardown remain authoritative. An unaffordable offer,
 missing compatible GPU, native failure, startup timeout or model failure stays
 an individual candidate result/reason. No default budget or rate is raised.
 
-The sealed bundle contains the exact upstream source archive and all541 source
-file hashes. It does not need a Git checkout on the GPU. The isolated server
+The sealed bundle contains the exact upstream source archive and all 541 source
+file hashes. It does not need a Git checkout on the GPU. The source archive
+is retained in eight source leaves of at most 1 MiB so the privileged
+release verifier's existing file limit remains unchanged. Bundle preparation
+reassembles and verifies the original archive before publishing any source.
+The isolated server
 interpreter and inference dependencies have a fixed file inventory, byte sizes
 and SHA256 hashes; there is no package resolver or source build on the provider.
 The worker fetches only those dependency files and the eight fixed checkpoint

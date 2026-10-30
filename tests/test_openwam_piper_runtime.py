@@ -158,6 +158,42 @@ def test_source_archive_verifies_without_git_and_rejects_tamper(tmp_path):
         source.verify_source_directory(extracted, tmp_path / source.SOURCE_MANIFEST)
 
 
+def test_retained_source_fits_privileged_release_leaf_budget():
+    from blueprint_pipeline import openwam_piper_source as source
+    from scripts import release_source_manifest
+
+    vendor = Path(source.__file__).parent / "_vendor"
+    retained = list(vendor.glob("openwam-source-*"))
+    assert retained
+    assert all(path.stat().st_size <= release_source_manifest.MAX_LEAF_BYTES for path in retained)
+    assert sum(path.stat().st_size for path in retained) == source.SOURCE_ARCHIVE_BYTES
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed", "oversized"])
+def test_retained_source_damage_is_rejected_before_bundle_publication(tmp_path, monkeypatch, damage):
+    import shutil
+    from blueprint_pipeline import openwam_piper_source as source
+
+    package = tmp_path / "package"
+    vendor = package / "_vendor"
+    vendor.mkdir(parents=True)
+    original = Path(source.__file__).parent / "_vendor"
+    for name in (source.SOURCE_MANIFEST, *source.SOURCE_PARTS):
+        shutil.copyfile(original / name, vendor / name)
+    part = vendor / source.SOURCE_PARTS[0]
+    if damage == "missing":
+        part.unlink()
+    else:
+        raw = part.read_bytes()
+        part.write_bytes(raw + b"extra" if damage == "oversized" else bytes([raw[0] ^ 1]) + raw[1:])
+    monkeypatch.setattr(source, "__file__", str(package / "openwam_piper_source.py"))
+    output = tmp_path / "runtime"
+    output.mkdir()
+    with pytest.raises(ValueError, match="openwam_source_archive_changed"):
+        source.stage_source(output)
+    assert list(output.iterdir()) == []
+
+
 def test_download_is_exact_bounded_and_does_not_retry_or_publish_bad_bytes(tmp_path):
     import time
     from blueprint_pipeline.openwam_piper_provisioning import fetch_exact, TransferBudget
