@@ -87,7 +87,12 @@ def test_two_arbitrary_hosted_candidates_have_inclusive_caps_and_private_sealed_
             "provider_runtime/adp_arena_provider_manifest.json")))
         assert manifest["team_credential_env"] == "BLUEPRINT_BETA_POLICY_TOKEN_FILE"
         assert manifest["secret_material_bundled"] is False
-        assert not any("policy_provisioning" in name for name in archive.namelist())
+        assert not any("policy_provisioning" in name and name.endswith(".sh") for name in archive.namelist())
+        entrypoint = archive.read("provider_runtime/run_adp_arena_provider_runtime.sh").decode()
+        assert "adp009d_policy_provisioning." not in entrypoint
+        assert "local_policy_provisioning" not in entrypoint
+        assert "blueprint_pipeline.openwam_piper_provisioning" not in entrypoint
+        assert "blueprint_pipeline.molmoact2_yam_provisioning" not in entrypoint
         assert all(TOKEN.encode() not in archive.read(name) for name in archive.namelist())
     preflight = _blueprint_bundle_preflight(job_dir=tmp_path / "transport-preflight", generated_at="fixed",
         enable_blueprint_bundle=True, enable_isaac_smoke=True,
