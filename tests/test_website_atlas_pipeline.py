@@ -614,3 +614,13 @@ def test_resume_checks_current_remaining_allowance_before_any_more_planning(tmp_
     with pytest.raises(ValueError,match="atlas_runtime_budget_insufficient"):
         pipeline.run_atlas_pipeline(source_video=video,output_root=root,task_context={"capture_id":"c","context_digest":"ctx"})
     assert json.loads((root / "configuration.json").read_text())==saved
+
+
+def test_later_stages_read_the_current_allowance_with_every_review_cap_the_job_ran_under(monkeypatch):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    current = {"authority": {"id": "a"}, "policy": {"maximum_review_cost_usd": 4}, "remaining_cost_usd": 22.9}
+    monkeypatch.setattr(pipeline, "load_configuration", lambda *_, **kw: dict(current))
+    resumed = {**current, "remaining_cost_usd": 25, pipeline.REVIEW_CAPS: [1, 4]}
+    # Automation and completion reviews bought under $1 before the raise must be found again.
+    assert pipeline._current_configuration({}, "sha256:v", resumed) == {**current, pipeline.REVIEW_CAPS: [1, 4]}
+    assert pipeline._current_configuration({}, "sha256:v", current) == current

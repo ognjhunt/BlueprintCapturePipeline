@@ -51,6 +51,12 @@ def resumed_policy(stored, current):
     return {"policy": current["policy"], REVIEW_CAPS: caps} if len(caps) > 1 else {"policy": current["policy"]}
 
 
+def _current_configuration(task_context, source_digest, resumed):
+    """The current allowance for a later stage, keeping every review cap the job ran under."""
+    value = load_configuration(task_context, source_digest)
+    return {**value, REVIEW_CAPS: resumed[REVIEW_CAPS]} if REVIEW_CAPS in resumed else value
+
+
 def _require_current_price_review(policy) -> None:
     """Frame selection and posing refuse a stale price review; refuse it before buying a review."""
     from datetime import datetime, timezone
@@ -302,7 +308,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
             completion = run_sponsored_website_atlas_automation(preserved_capture=True,
                 pose_root=source_root, pose=pose, frames=frames, review=review,
                 root=output_root / 'preserved_completion', job_root=output_root, context=task_context,
-                configuration=load_configuration(task_context, source_digest), splat_root=splat_root,
+                configuration=_current_configuration(task_context, source_digest, configuration), splat_root=splat_root,
                 source_survey_path=source_survey_path, checkpoint=completion_checkpoint,
                 experimental=experimental, max_polls=max_polls)
             write_json(output_root / 'preserved_completion/controller_state.json', completion)
@@ -546,7 +552,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             output=output_root / 'capture_source_survey.json')
         return _preserved_scene(pose_root=pose_root, output_root=output_root, inputs=inputs, review=review,
             policy=policy, task_context=task_context, source_digest=source_digest,
-            configuration=load_configuration(task_context, source_digest), check=check,
+            configuration=_current_configuration(task_context, source_digest, config), check=check,
             experimental=experimental, max_polls=max_polls, model=receipt["model"],
             source_survey_path=source_survey)
     if takes_reviewed_background(review):
@@ -564,7 +570,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         check("reviewed_background")
         automation = run_sponsored_website_atlas_automation(
             pose_root=None, inputs=inputs, review=review, output_root=output_root / "automation",
-            task_context=task_context, configuration=load_configuration(task_context, source_digest),
+            task_context=task_context, configuration=_current_configuration(task_context, source_digest, config),
             experimental=experimental, max_polls=max_polls, checkpoint=checkpoint, edit_scope=edit_scope,
             source_survey_path=full_source_survey,
             **reuse_options)
@@ -658,7 +664,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         from .paid_resource_allocator import run_sponsored_website_atlas_automation
         automation = run_sponsored_website_atlas_automation(pose_root=pose_root, inputs=inputs, review=review,
             output_root=output_root / "automation", task_context=task_context,
-            configuration=load_configuration(task_context, source_digest), experimental=experimental, max_polls=max_polls,
+            configuration=_current_configuration(task_context, source_digest, config), experimental=experimental,
+            max_polls=max_polls,
             checkpoint=checkpoint, edit_scope=edit_scope, **reuse_options)
         result["automation"] = automation
         result["size_estimates"] = automation.get("measurements")
