@@ -68,6 +68,11 @@ def _run(site, **options):
     assert _tree(site.storage) == before  # the pulled evidence is byte-identical
     assert report["evidence"]["unchanged"] and report["new_paid_calls"] == 0
     assert json.loads(Path(report["report_path"]).read_text())["first_stop"] == report["first_stop"]
+    stop = report["first_stop"]
+    if stop["kind"] == "replay_unsupported":
+        # The mirror cannot redirect retained absolute paths; the job's own stop is underneath.
+        assert stop["code"] == "relocated_replay_cannot_resolve_retained_absolute_paths"
+        report = {**report, "first_stop": stop["underlying"]}
     return report
 
 
@@ -248,3 +253,11 @@ def test_the_command_runs_at_the_capture_roots_own_path_in_a_private_namespace(s
     assert report["overlay"]["mode"] == "bind" and report["evidence"]["unchanged"]
     assert report["first_stop"]["code"] == "atlas_runtime_budget_insufficient"
     assert _tree(site.storage) == before
+
+
+def test_a_relocated_refusal_is_not_presented_as_the_jobs_stop(site, tmp_path):
+    snapshot = tmp_path / "allowance.json"
+    snapshot.write_text(json.dumps({**site.configuration, "remaining_cost_usd": .9}))
+    report = replay.replay(site.job, replay_root=site.replay_root, overlay="relocated", configuration=str(snapshot))
+    assert report["first_stop"]["kind"] == "replay_unsupported"
+    assert report["first_stop"]["underlying"]["code"] == "atlas_runtime_budget_insufficient"
