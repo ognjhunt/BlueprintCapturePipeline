@@ -12,6 +12,7 @@ the catalog's own identity; none of them is evidence that a robot or policy ran.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -143,3 +144,27 @@ def test_shared_builder_is_digest_identical_to_production_entrypoint(tmp_path, m
         assert all(rows[key]["eligibility"]["enabled"] for key in ("team_policy_01", "team_policy_02"))
     else:
         assert ":g1:" in production["revision"] and production["catalog_digest"] != base["catalog_digest"]
+
+
+@pytest.mark.parametrize("kind", ["scripted", "local"])
+def test_intake_preview_profile_path_matches_production_screening_catalog(tmp_path, monkeypatch, kind):
+    from blueprint_pipeline import website_candidate_readiness as preview
+    from blueprint_pipeline.team_candidate_quick10_registry import profile_for_capture
+
+    if kind == "local":
+        from tests.test_openwam_franka_runtime import prepared_registration
+
+        prepared_registration(tmp_path, monkeypatch)
+    else:
+        from tests.test_scripted_robot_baseline_bundle import registered_world
+
+        registered_world(tmp_path, monkeypatch)
+    capture = tmp_path / "capture"
+    # The production path a screening plan is revalidated against (validate_team_candidate_catalog).
+    production = team.current_catalog_for_scene({"screening_capture_root": str(capture)})
+    profile = profile_for_capture(capture)
+    configured, snapshot = preview._profile_snapshot(Path(capture), {"scene_id": profile.get("scene_id")})
+    assert snapshot["profile_source"] == "capture_profile"
+    assert _bytes(effective.catalog_for_profile(configured)) == _bytes(production)
+    registered = set(profile["screening_candidates"])
+    assert registered and all(_rows(production)[key]["eligibility"]["enabled"] for key in registered)

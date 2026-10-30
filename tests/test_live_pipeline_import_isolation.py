@@ -208,3 +208,13 @@ def test_shared_registry_and_effective_catalog_stay_off_the_hot_lane() -> None:
             leaked[seed] = sorted(reached)
     assert not leaked, f"Shared catalog modules reach the hot lane: {leaked}"
     assert "team_candidate_rights" in _transitive_local_modules(("beta_policy_effective_catalog",))
+
+
+def test_candidate_readiness_preview_reads_only_the_shared_catalog() -> None:
+    # The intake service serves the preview, so the seed guard above walks it too.
+    assert {"website_candidate_readiness", "beta_policy_effective_catalog",
+            "team_candidate_registry_reader"} <= _transitive_local_modules(SEED_MODULES)
+    for seed in ("website_candidate_readiness", "website_candidate_readiness_http"):
+        reachable = _transitive_local_modules((seed,))
+        assert {"beta_policy_effective_catalog", "team_candidate_registry_reader"} <= reachable, seed
+        assert not reachable & SHARED_CATALOG_FORBIDDEN, (seed, sorted(reachable & SHARED_CATALOG_FORBIDDEN))
