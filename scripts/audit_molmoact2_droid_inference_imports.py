@@ -24,7 +24,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--camera-count", type=int, choices=(2, 3), default=2)
     args = parser.parse_args()
-    
+
 
     from blueprint_pipeline.molmoact2_droid_assets import release_inventory, MODEL_REVISION
     inventory = [{"filename": row["path"], "size_bytes": row["bytes"],

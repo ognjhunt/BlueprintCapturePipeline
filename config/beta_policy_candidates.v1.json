@@ -128,31 +128,50 @@
     },
     {
       "candidate_id": "molmoact2_droid",
-      "configuration_digest": "sha256:53c28e92991ff7a8bfd3ebc6bf396d9397509533e596cda367e4dfae87379960",
+      "configuration_digest": "sha256:81c9f0edcc324ce2c451f3b503607d8bebd21216075b19ab03de20826293c978",
       "display_name": "MolmoAct 2 DROID",
       "eligibility": {
-        "blockers": [
-          "license_review_pending",
-          "canary_runtime_serving_path_missing",
-          "checkpoint_bytes_not_downloaded_and_verified",
-          "integration_canary_receipt_missing"
-        ],
-        "commercial_use": "under_review",
-        "enabled": false,
-        "license_id": "apache-2.0-research-intent",
-        "license_note": "Weights stated as Apache-2.0 but 'intended for research and educational use'; the Molmo2 base card notes non-commercial training data. Needs legal review.",
+        "blockers": [],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": true,
+        "license_id": "Apache-2.0",
+        "license_note": "Official Ai2 README at 6070080a20321b4f498ab30f28e1d09ac465edb7 states the Apache 2.0 model license and research/educational intended use; HF card license metadata is absent. Exact checkpoint files are verified before loading; native GPU execution remains unmeasured.",
         "requires_credentials": []
       },
-      "interface": null,
+      "interface": {
+        "action_horizon": 15,
+        "action_schema_id": "droid_absolute_joint_position_v1",
+        "camera_roles": [
+          "external",
+          "wrist"
+        ],
+        "control_hz": 15,
+        "execution_horizon": 8,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 360,
+        "image_preprocessing": "resize_with_padding",
+        "image_width": 640,
+        "normalization_digest": "sha256:9cc29b5018604be4b785dd6519be3c86d0420675da7364755c58155afccb131d",
+        "observation_profile_id": "molmoact2_droid_two_camera_state8.v1",
+        "policy_interface_id": "molmoact2_droid_joint8.v1",
+        "robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"
+      },
       "policy": {
-        "digest": "sha256:c33efc98a197940e29aeaa8bc1caaa63d20bdc9e085a73e9c8368099c6bc8fb2",
-        "digest_kind": "hub_tree_listing",
+        "digest": "sha256:490acab7b2adc11d8b3b765bfcaa05dd92edef4e12f7d33f22a606ac0a5cd365",
+        "digest_kind": "pinned_runtime_file_inventory",
         "kind": "checkpoint",
         "revision": "d8c1abd8a27d8e859455bbe514df2bcc617db0fb",
         "source": "https://huggingface.co/allenai/MolmoAct2-DROID"
       },
-      "runtime": null,
-      "supported_task_kinds": []
+      "runtime": {
+        "backend": "robolab.v1",
+        "minimum_gpu_memory_gb": 48,
+        "runtime_id": "native_task_arena_policy_canary.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
     },
     {
       "candidate_id": "flux3_action_droid",
@@ -3047,7 +3066,7 @@
       "supported_task_kinds": []
     }
   ],
-  "catalog_digest": "sha256:aba58daf7ece15fd42bd61fb65dda3d43a0ae7d4118081add73fb5ebe6793882",
+  "catalog_digest": "sha256:096fb83d3254f78e0da9e453f6d7858d134843ee4b311a1c9238bbe0157b8237",
   "catalog_id": "blueprint-beta-policies",
   "revision": "2026-10-29.1-all-embodiment-policy-routes",
   "schema_version": "beta_policy_candidate_catalog.v1"

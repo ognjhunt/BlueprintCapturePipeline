@@ -339,7 +339,7 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
     if candidate["eligibility"]["commercial_use"] not in {"allowed", "allowed_with_conditions"}:
         blockers.append("commercial_use_not_admitted")
     pinned_runtime = (candidate["policy"]["digest_kind"] == "pinned_runtime_file_inventory"
-                      and (candidate.get("interface") or {}).get("policy_interface_id") in {"openwam_piper_eef20.v1", "molmoact2_yam_joint14.v1"})
+                      and (candidate.get("interface") or {}).get("policy_interface_id") in {"openwam_piper_eef20.v1", "molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1"})
     if candidate["policy"]["digest_kind"] not in {"downloaded_snapshot_inventory", "provider_metadata"} and not pinned_runtime:
         blockers.append("policy_identity_not_verified")
     if not candidate["policy"]["digest"] or not candidate["policy"]["revision"]:

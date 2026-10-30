@@ -96,4 +96,3 @@ def verify_checkpoint_directory(directory: str | Path, *, deadline_epoch: float 
             "files_verified": len(present), "license": manifest["license"],
             "license_evidence_url": manifest["license_evidence_url"],
             "inference_performed": False}
-

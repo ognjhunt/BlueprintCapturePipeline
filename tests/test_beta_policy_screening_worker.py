@@ -204,7 +204,7 @@ def test_completed_scene_is_planned_and_durably_queued_once_across_timer_ticks(t
         "task_context_digest": world["context"]["context_digest"], "scene_revision_digest": request["scene_revision_digest"]}
     assert plan["site_id"] == "site-job1" and plan["campaign_id"] == adopted["campaign_id"]
     assert {row["candidate_id"] for row in plan["candidates"] if row["status"] == "selected"} == {
-        "pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}
+        "pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "molmoact2_droid"}
     [publication] = coordinator.pending_publications(queue_root=world["screening_queue"])
     assert publication["source"] == plan["source"] and publication["status"] == "queued"
     assert publication["budget"]["committed_upper_bound_usd"] == "0"

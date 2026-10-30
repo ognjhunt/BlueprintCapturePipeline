@@ -451,6 +451,13 @@ def _policy_client(
     from .policy_interface_binding import resolve_policy_interface
     interface = resolve_policy_interface(spec)
     endpoint = spec["policy_endpoint"]
+    if interface == "molmoact2_droid_joint8.v1":
+        from blueprint_pipeline.molmoact2_droid_policy import MolmoAct2DROIDPolicyClient
+        from blueprint_pipeline.molmoact2_droid_runtime import policy_binding, validate_execution_spec
+        validate_execution_spec(spec)
+        client = MolmoAct2DROIDPolicyClient(binding=policy_binding(spec["policy_spec"]))
+        client.execution_binding_digest = spec["execution_spec_digest"]
+        return client
     if interface == "cosmos_edge_droid.v1":
         from blueprint_pipeline.cosmos_edge_beta_runtime import CosmosEdgeSimulatorClient, validate_execution_spec
 

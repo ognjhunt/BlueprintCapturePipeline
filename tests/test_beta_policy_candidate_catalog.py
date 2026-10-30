@@ -19,7 +19,7 @@ def test_default_catalog_records_all_named_candidates_and_only_existing_initial_
     value = load_default_catalog()
     assert len(value["candidates"]) == 84
     enabled = {row["candidate_id"] for row in value["candidates"] if row["eligibility"]["enabled"]}
-    assert enabled == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}
+    assert enabled == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "molmoact2_droid"}
     company_rows = [row for row in value["candidates"] if row.get("deployment")]
     assert len(company_rows) == 74
     assert all(row["eligibility"]["blockers"] for row in company_rows)

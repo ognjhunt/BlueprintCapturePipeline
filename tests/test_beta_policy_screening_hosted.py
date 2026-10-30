@@ -93,6 +93,7 @@ def test_two_arbitrary_hosted_candidates_have_inclusive_caps_and_private_sealed_
         assert "local_policy_provisioning" not in entrypoint
         assert "blueprint_pipeline.openwam_piper_provisioning" not in entrypoint
         assert "blueprint_pipeline.molmoact2_yam_provisioning" not in entrypoint
+        assert "blueprint_pipeline.molmoact2_droid_provisioning" not in entrypoint
         assert all(TOKEN.encode() not in archive.read(name) for name in archive.namelist())
     preflight = _blueprint_bundle_preflight(job_dir=tmp_path / "transport-preflight", generated_at="fixed",
         enable_blueprint_bundle=True, enable_isaac_smoke=True,

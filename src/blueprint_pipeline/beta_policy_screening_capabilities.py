@@ -36,6 +36,12 @@ def _interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any]) -
     if interface in TEAM_ROBOT_INTERFACES:
         from .beta_policy_screening_team import team_interface_matches
         return team_interface_matches(configured, spec)
+    if interface == "molmoact2_droid_joint8.v1":
+        from .molmoact2_droid_runtime import interface_contract, validate_execution_spec, MINIMUM_GPU_MEMORY_GB
+        validate_execution_spec(spec)
+        return (configured.get("interface") == interface_contract() and configured.get("runtime") == {
+            "backend": "robolab.v1", "runtime_id": "native_task_arena_policy_canary.v1",
+            "minimum_gpu_memory_gb": MINIMUM_GPU_MEMORY_GB})
     if interface == "cosmos_edge_droid.v1":
         from .cosmos_edge_beta_runtime import interface_contract, validate_execution_spec, MINIMUM_GPU_MEMORY_GB
         validate_execution_spec(spec)
@@ -184,6 +190,16 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             code = str(exc).split(":", 1)[0]
             template_failures["cosmos3_edge_policy_droid"] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
                                                             else "cosmos_edge_runtime_template_unavailable")
+    if not family and any(row["candidate_id"] == "molmoact2_droid" for row in catalog["candidates"]):
+        from .molmoact2_droid_runtime import candidate_execution_spec
+        try:
+            templates["molmoact2_droid"] = (candidate_execution_spec(scene_plan={**scene_plan,
+                "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
+                contract=inputs["task_success_contract"], source_commit=commit), None)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            code = str(exc).split(":", 1)[0]
+            template_failures["molmoact2_droid"] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
+                                                   else "molmoact2_droid_runtime_template_unavailable")
     bindings, quotes, candidate_blockers = {}, {}, {}
     selection = scene_plan.get("policy_selection") if family else None
     if selection is not None:

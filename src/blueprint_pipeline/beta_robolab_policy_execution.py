@@ -39,6 +39,9 @@ def validate_robolab_policy_execution_spec(spec: Mapping[str, Any], *,
                                    task_kind=task_kind_of_contract(value["task_success_contract"]),
                                    require_confirmed=False)
     interface = resolve_policy_interface(value)
+    if interface == "molmoact2_droid_joint8.v1":
+        from .molmoact2_droid_runtime import validate_execution_spec
+        validate_execution_spec(value)
     if interface == "openwam_piper_eef20.v1":
         from .openwam_piper_runtime import validate_execution_spec
         validate_execution_spec(value)
