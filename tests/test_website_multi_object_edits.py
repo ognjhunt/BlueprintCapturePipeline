@@ -192,16 +192,15 @@ def test_edit_prompt_names_every_object_and_the_view_showing_most_objects_anchor
     assert all(call["prompt"] == prompt for call in calls)
 
 
-# Retained paid edits and reviews are content addressed, so a prompt change is
-# deliberate. 2026-10-29: the prompts name roles, never a kind of object (owner
-# rule), and edits keep only the removal zone; earlier receipts are not reused.
+# Retained v1 paid edits and unchanged role-based prompts keep their byte pins
+# when fresh edits adopt the explicitly versioned v2 cleanup policy.
 SINGLE_BINDING_DIGEST = "sha256:245a78a0958bbeded2208c0c50d67cd70382c44e2b551ca1f8521d032c780193"
 SINGLE_REPAIR_BINDING_DIGEST = "sha256:914d6283367ff4485d9a870a694e83d36e842cb7be0a5ff0ad4dd69d1f486191"
 REVIEW_PROMPT_SHA256 = "5ff92c802eeb52156f7220512861e255435f9e77d3d0d08697507a8f92103b20"
 PROMPT_SHA256 = "b097d4151e62cf690386c603cd534d53a2c71177d123a200b94607265e2fef48"
 
 
-def test_single_object_edit_and_review_requests_are_byte_identical_to_before(tmp_path):
+def test_single_object_prompts_and_retained_v1_requests_remain_byte_identical(tmp_path):
     frames = [{"frame_id": f"decoded-{i:09d}", "image_digest": "sha256:" + str(i) * 64,
                "remaining_mask_digest": "sha256:" + "ab" * 32, "edge_feather_pixels": 3,
                "remaining_pixel_count": 10 * i} for i in range(3)]
@@ -213,10 +212,14 @@ def test_single_object_edit_and_review_requests_are_byte_identical_to_before(tmp
                {"target_id": "counter", "semantic_label": "counter", "task_effect": "static_contact",
                 "disposition": "keep", "target_class": "fixed_clutter"}]
     assert canonical_digest(completion.completion_binding(
-        frames, task_digest="task", backend_digest="backend", targets=targets)) == SINGLE_BINDING_DIGEST
+        frames, task_digest="task", backend_digest="backend", targets=targets,
+        output_policy=completion.LEGACY_REMOVAL_ZONE_BINDING)) == SINGLE_BINDING_DIGEST
     assert canonical_digest(completion.completion_binding(
         frames, task_digest="task", backend_digest="backend", targets=targets, repair_instruction="Keep the mat",
-        reference_digest="sha256:ref")) == SINGLE_REPAIR_BINDING_DIGEST
+        reference_digest="sha256:ref", output_policy=completion.LEGACY_REMOVAL_ZONE_BINDING)) == SINGLE_REPAIR_BINDING_DIGEST
+    assert canonical_digest(completion.completion_binding(
+        frames, task_digest="task", backend_digest="backend", targets=targets)) == (
+            "sha256:d397275b97f4281f834379faf0ea7ff86229f47cd31da8551667cb8404ec5dc0")
     assert hashlib.sha256(completion.PROMPT.encode()).hexdigest() == PROMPT_SHA256
     assert hashlib.sha256(completion.REVIEW_PROMPT.encode()).hexdigest() == REVIEW_PROMPT_SHA256
     assert completion._review_prompt(targets) is completion.REVIEW_PROMPT

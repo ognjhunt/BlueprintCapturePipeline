@@ -245,36 +245,50 @@ def _anchor_rank(frame: Mapping[str, Any]) -> tuple[int, int]:
 # capture-4b60431e it also erased an unrelated object behind the removed one.
 # Keep its pixels only close around the removed objects and the photographed
 # pixels everywhere else. Pasting back through the bare silhouette left the
-# object's outline, shadow and reflections (2026-09-24), so the zone reaches a
-# quarter of the removed region's size past the mask, with a soft edge. A trace
-# beyond it is the review's to find: that view then uses its full edited frame.
-REMOVAL_ZONE_POLICY = "removal_zone_composite_v1"
+# object's outline, contents, shadow and reflections, so the zone reaches past
+# the observed mask span with a bounded soft edge. Retained v1 batches keep
+# their area-derived reach. A trace beyond it still requires independent review.
+REMOVAL_ZONE_POLICY = "removal_zone_composite_v2"
 REMOVAL_ZONE_REACH_FRACTION = 0.25
 REMOVAL_ZONE_MIN_REACH_PIXELS = 16
 REMOVAL_ZONE_MAX_REACH_PIXELS = 120
 REMOVAL_ZONE_FEATHER_PIXELS = 16
 # Bound into every request, so a changed zone never reuses an earlier composite.
-REMOVAL_ZONE_BINDING = {"name": REMOVAL_ZONE_POLICY, "reach_fraction_of_mask_size": REMOVAL_ZONE_REACH_FRACTION,
+LEGACY_REMOVAL_ZONE_BINDING = {"name": "removal_zone_composite_v1", "reach_fraction_of_mask_size": REMOVAL_ZONE_REACH_FRACTION,
                         "min_reach_pixels": REMOVAL_ZONE_MIN_REACH_PIXELS,
                         "max_reach_pixels": REMOVAL_ZONE_MAX_REACH_PIXELS,
                         "feather_pixels": REMOVAL_ZONE_FEATHER_PIXELS,
                         "composite_when": "edited_view_camera_unchanged_features"}
+REMOVAL_ZONE_BINDING = {**LEGACY_REMOVAL_ZONE_BINDING, "name": REMOVAL_ZONE_POLICY,
+                        "reach_basis": "maximum_mask_span", "reach_fraction_of_mask_size": 0.5}
 
 
-def removal_zone_alpha(editable: np.ndarray) -> np.ndarray:
+def removal_zone_alpha(editable: np.ndarray, *, policy=None) -> np.ndarray:
     """1 over the mask and its reach, 0 beyond, and a linear edge between."""
     from scipy.ndimage import distance_transform_edt
 
-    reach = min(REMOVAL_ZONE_MAX_REACH_PIXELS,
-                max(REMOVAL_ZONE_MIN_REACH_PIXELS,
-                    REMOVAL_ZONE_REACH_FRACTION * math.sqrt(int(np.count_nonzero(editable)))))
+    policy = REMOVAL_ZONE_BINDING if policy is None else policy
+    if policy not in (REMOVAL_ZONE_BINDING, LEGACY_REMOVAL_ZONE_BINDING):
+        raise ValueError("website_image_completion_removal_zone_policy_invalid")
+    if not editable.any():
+        return np.zeros(editable.shape, dtype=float)
+    size = math.sqrt(int(np.count_nonzero(editable)))
+    if policy.get("reach_basis") == "maximum_mask_span":
+        # Thin or partial masks understate an object's extent when measured by
+        # sqrt(area). Keep cleanup around the observed mask span, including
+        # nearby contents and effects, with the same bounded reach and soft edge.
+        y, x = np.nonzero(editable)
+        size = max(int(y.max() - y.min() + 1), int(x.max() - x.min() + 1))
+    reach = min(policy["max_reach_pixels"],
+                max(policy["min_reach_pixels"], policy["reach_fraction_of_mask_size"] * size))
     distance = distance_transform_edt(~editable)
-    return np.clip((reach + REMOVAL_ZONE_FEATHER_PIXELS - distance) / REMOVAL_ZONE_FEATHER_PIXELS, 0.0, 1.0)
+    feather = policy["feather_pixels"]
+    return np.clip((reach + feather - distance) / feather, 0.0, 1.0)
 
 
 def composite_removal_zone(source: Image.Image, generated: Image.Image,
-                           editable: np.ndarray) -> tuple[Image.Image, int]:
-    alpha = removal_zone_alpha(editable)[..., None]
+                           editable: np.ndarray, *, policy=None) -> tuple[Image.Image, int]:
+    alpha = removal_zone_alpha(editable, policy=policy)[..., None]
     blended = (np.asarray(source, dtype=np.float32) * (1.0 - alpha)
                + np.asarray(generated, dtype=np.float32) * alpha)
     return (Image.fromarray(np.rint(blended).clip(0, 255).astype(np.uint8)),
@@ -283,7 +297,8 @@ def composite_removal_zone(source: Image.Image, generated: Image.Image,
 
 def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str, backend_digest: str,
                        targets: Sequence[Mapping[str, Any]] = (), repair_instruction: str | None = None,
-                       reference_digest: str | None = None, mask_guidance: bool = False) -> dict[str, Any]:
+                       reference_digest: str | None = None, mask_guidance: bool = False,
+                       output_policy=None) -> dict[str, Any]:
     prompt = _completion_prompt(targets)
     if repair_instruction is not None:
         # A targeted repair adds to the rules; it never replaces them.
@@ -301,7 +316,7 @@ def completion_binding(frames: Sequence[Mapping[str, Any]], *, task_digest: str,
     per_object = any("removed_task_object_ids" in frame for frame in frames)
     binding = {"schema_version": "website_image_completion_request.v2", "task_digest": task_digest,
                "backend_digest": backend_digest, "prompt": prompt, "edit_region": "full_frame",
-               "output_policy": REMOVAL_ZONE_BINDING,
+               "output_policy": REMOVAL_ZONE_BINDING if output_policy is None else output_policy,
                "reference_policy": ("fixed_repair_reference" if repair_instruction is not None
                                     else "edited_anchor_most_task_objects" if per_object
                                     else "edited_anchor_largest_removal"),
@@ -429,15 +444,34 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
         fixed_reference = Path(repair_reference_path).read_bytes()
     reference_digest = "sha256:" + sha256(fixed_reference).hexdigest() if fixed_reference is not None else None
     edited_indices = [i for i, frame in enumerate(frames) if frame["remaining_pixel_count"]]
+    zone_policy = REMOVAL_ZONE_BINDING
 
-    def bound(backend_id: str, guidance: bool = mask_guidance) -> tuple[dict[str, Any], str, dict[str, Any], str]:
+    def bound(backend_id: str, guidance: bool = mask_guidance, *, policy=None) -> tuple[dict[str, Any], str, dict[str, Any], str]:
         _backend, execution, backend_digest = _validated_backend(REGISTRY_PATH, backend_id=backend_id)
         binding = completion_binding(frames, task_digest=task_digest, backend_digest=backend_digest, targets=targets,
                                      repair_instruction=repair_instruction, reference_digest=reference_digest,
-                                     mask_guidance=guidance)
+                                     mask_guidance=guidance, output_policy=zone_policy if policy is None else policy)
         if source_video_digest is not None:
             binding["source_video_digest"] = source_video_digest
         return execution, backend_digest, binding, canonical_digest(binding)
+
+    # Policy is part of the paid request identity. A new composite policy must
+    # never hide a retained v1 edit or uncertain intent behind a fresh digest.
+    def retained(backend, guidance, policy):
+        candidate = output_root / bound(backend, guidance, policy=policy)[3][7:]
+        return any((candidate / f"{i}.json").exists() for i in edited_indices)
+
+    retained_policies = []
+    for policy in (REMOVAL_ZONE_BINDING, LEGACY_REMOVAL_ZONE_BINDING):
+        found = any(retained(backend, guidance, policy)
+                    for backend in (BACKEND_ID, *LEGACY_BACKEND_IDS)
+                    for guidance in ((True, False) if mask_guidance else (False,)))
+        if found:
+            retained_policies.append(policy)
+    if len(retained_policies) > 1:
+        raise ValueError("website_image_completion_removal_zone_requires_reconciliation")
+    if retained_policies:
+        zone_policy = retained_policies[0]
 
     execution, backend_digest, binding, request_digest = bound(BACKEND_ID)
     if mask_guidance and not any((output_root / request_digest[7:] / f"{i}.json").exists()
@@ -631,7 +665,7 @@ def complete_background_images(*, frames: Sequence[Mapping[str, Any]], task_dige
                 camera = (camera_check.get("reason", "kept") if camera_check["status"] == "kept"
                           else camera_check["status"])
                 if camera == "unchanged_features":
-                    output, generated_pixels = composite_removal_zone(source, generated, editable)
+                    output, generated_pixels = composite_removal_zone(source, generated, editable, policy=zone_policy)
                     region = "removal_zone"
                 else:
                     output, generated_pixels, region = generated, source.width * source.height, "full_frame"
