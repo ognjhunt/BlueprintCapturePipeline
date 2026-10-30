@@ -62,15 +62,30 @@ def test_generation_is_priced_validated_and_gap_limited_before_purchase(tmp_path
         return {'status': 'processing', 'operation_id': 'retained'}
     args = dict(frames=frames, selected=pool, candidates=pool, root=tmp_path / 'completion',
         pose={'digest': 'pose', 'binding': {'source_video_digest': 'source'}}, context={},
-        configuration={'remaining_cost_usd': 1.59, 'policy': {'rgbd_view_cost_usd': .05,
+        configuration={'remaining_cost_usd': 1.59, 'remaining_requests': 40, 'policy': {'rgbd_view_cost_usd': .05,
             'mesh_export_cost_usd': .5, 'rate_card_reference': 'rates', 'reviewed_by': 'test', 'reviewed_on': '2026-10-23'}},
         task_runner=task, max_polls=1)
     with pytest.raises(ValueError, match='remaining_budget_insufficient'):
         generate.generate_rgbd_completion(**args)
     assert not calls
     args['configuration']['remaining_cost_usd'] = 2.
+    args['configuration']['remaining_requests'] = 2
+    with pytest.raises(ValueError, match='request_budget_insufficient:required=5,remaining=2'):
+        generate.generate_rgbd_completion(**args)
+    assert not calls
+    import json
+    forecast = json.loads((args['root'] / 'request-budget-preflight.json').read_text())
+    assert forecast['minimum_remaining_requests'] == 5 and not forecast['reservation_created']
+    args['configuration']['remaining_requests'] = 40
     value, result = generate.generate_rgbd_completion(**args)
     assert value is None and result['operation_id'] == 'retained'
+    # Polling a retained operation must not depend on request headroom for new work.
+    submission = args['root'] / 'generated/0/atlas_pose/submission.json'
+    submission.parent.mkdir(parents=True)
+    submission.write_text(json.dumps({'status': 'submitted', 'operation_id': 'retained'}))
+    args['configuration']['remaining_requests'] = 0
+    value, result = generate.generate_rgbd_completion(**args)
+    assert value is None and result['operation_id'] == 'retained' and len(calls) == 2
     # Native completion must reach source-priority admission, not stop at downloads.
     returned = []
     for frame, target in zip(frames, pool, strict=True):
@@ -126,7 +141,7 @@ def test_feedback_sends_all_reviewed_rgbd_and_does_not_freeze_a_photographed_exp
     generate.generate_rgbd_completion(frames=frames, reference_frames=[*frames, reference],
         geometry_frames=frames, exported_gap_feedback=True, selected=[target], candidates=pool,
         root=root, pose={'digest': 'pose', 'binding': {'source_video_digest': 'source'}}, context={},
-        configuration={'remaining_cost_usd': 5, 'policy': {'rgbd_view_cost_usd': .05,
+        configuration={'remaining_cost_usd': 5, 'remaining_requests': 40, 'policy': {'rgbd_view_cost_usd': .05,
             'mesh_export_cost_usd': .5, 'rate_card_reference': 'rates',
             'reviewed_by': 'test', 'reviewed_on': '2026-10-23'}}, task_runner=task, max_polls=1)
     import json

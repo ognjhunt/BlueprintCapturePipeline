@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from .common import write_json
-from .atlas_pricing import render_cost, final_output_cost
+from .atlas_pricing import render_cost, final_output_cost, completion_request_preflight
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -145,6 +145,15 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
               *[Path(row[key]) for row in rows for key in ('image_path', 'keep_mask_path', 'completion_gap_mask_path')]]
     generated, images, roots, digests, receipts, seen = [], [], [], [], [], set()
     for batch_index, (group, request, stage, quote) in enumerate(specs):
+        if not (stage / 'atlas_pose/submission.json').exists() and not (stage / 'result.json').exists():
+            forecast = completion_request_preflight(configuration,
+                generation_roots=[spec[2] for spec in specs[batch_index:]],
+                final_output_root=root.parent, context=context,
+                source_digest=pose['binding']['source_video_digest'])
+            write_json(root / 'request-budget-preflight.json', forecast)
+            if not forecast['sufficient_for_known_calls']:
+                raise ValueError('atlas_completion_request_budget_insufficient:'
+                    f"required={forecast['minimum_remaining_requests']},remaining={forecast['remaining_requests']}")
         if checkpoint:
             checkpoint('automation_completion_generate_rgbd')
         state = task_runner(task='atlasGenerate', request=request, uploads=uploads, output_root=stage,

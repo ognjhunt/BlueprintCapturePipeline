@@ -57,3 +57,46 @@ def admitted_final_outputs(root: Path) -> frozenset:
         if task in ("posedImages2Splats", "splats2Mesh") and state.get("status") not in ("failed", "rejected"):
             found.add(task)
     return frozenset(found)
+
+
+def completion_request_preflight(configuration, *, generation_roots, final_output_root,
+                                 context, source_digest):
+    """Forecast the known unfinished calls before buying optional novel views.
+
+    This is a lower bound, not a grant: semantic-mask corrections and provider
+    failures can require more calls. Canonical admission still checks every call.
+    Retained submissions always reach their adapter for polling/reconciliation,
+    even when no new requests remain; this forecast never resets their accounting.
+    """
+    pending = sum(not (root / 'atlas_pose/submission.json').exists()
+                  and not (root / 'result.json').exists() for root in generation_roots)
+    if not pending:
+        return None
+    if configuration.get('schema_version') in {
+            'website_atlas_configuration.v1', 'owned_capture_atlas_configuration.v1'}:
+        from .website_task_context import load_atlas_configuration
+        from .website_atlas_pipeline import resumed_policy
+
+        # The planner and earlier stages have consumed requests since the caller
+        # loaded its snapshot. A noncreating read cannot issue more authority.
+        current = load_atlas_configuration(context, source_digest, create=False)
+        resumed_policy(configuration, current)
+        remaining = current.get('remaining_requests')
+    else:
+        remaining = configuration.get('remaining_requests')
+    if type(remaining) is not int or remaining < 0:
+        raise ValueError('atlas_completion_remaining_requests_invalid')
+    policy = configuration['policy']
+    admitted = admitted_final_outputs(final_output_root)
+    stages = {'novel_view_batches': pending, 'independent_image_review': 1,
+              'task_surface_plan': 1, 'task_surface_review': 1}
+    if 'refined_splat_cost_usd' in policy and 'posedImages2Splats' not in admitted:
+        stages['refined_splat'] = 1
+    if 'mesh_export_cost_usd' in policy and 'splats2Mesh' not in admitted:
+        stages['mesh_export'] = 1
+    required = sum(stages.values())
+    return {'schema_version': 'atlas_completion_request_preflight.v1',
+            'remaining_requests': remaining, 'minimum_remaining_requests': required,
+            'unfinished_stages': stages, 'sufficient_for_known_calls': remaining >= required,
+            'additional_mask_or_retry_calls': 'not_yet_known',
+            'reservation_created': False}

@@ -221,6 +221,22 @@ def test_source_reconstruction_refusal_keeps_its_own_stage_and_reason(monkeypatc
     assert world.published == []
 
 
+@pytest.mark.parametrize('blocker', [
+    'website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted',
+    'atlas_completion_request_budget_insufficient:required=6,remaining=2',
+    'atlas_completion_visual_review_required',
+])
+def test_preparation_blocker_is_not_replaced_with_a_background_review_request(monkeypatch, site, blocker):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{'status': 'needs_input', 'download': None,
+                                      'blockers': [blocker], 'digest': 'sha256:retained'}])
+    assert world.advance() == 'needs_input'
+    job = _job(site)
+    assert job['reason'] == preview._reason(ValueError(blocker))
+    assert job['stage'] == 'preparation' and job['archive'] is None
+    assert world.published == []
+
+
 def test_a_partial_source_download_does_not_hide_a_completion_geometry_stop(monkeypatch, site):
     _enqueue(site)
     reason = 'atlas_preserved_completion_no_exportable_geometry'
