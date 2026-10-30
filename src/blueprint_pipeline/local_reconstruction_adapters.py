@@ -30,6 +30,7 @@ from .arkit_reconstruction_dataset import (
     compile_arkit_reconstruction_dataset,
 )
 from .decision_evidence_contracts import canonical_digest
+from .file_digest_cache import file_sha256
 from .reconstruction_frame_dataset import (
     ReconstructionFrameDatasetError,
     compile_frozen_frame_dataset,
@@ -69,12 +70,9 @@ def _sha256_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
+# The shared file hash. Inside an Atlas job's step it reuses a digest while the
+# file's stat fingerprint is unchanged (file_digest_cache); elsewhere it hashes.
+_sha256_file = file_sha256
 
 
 def _is_digest(value: Any) -> bool:

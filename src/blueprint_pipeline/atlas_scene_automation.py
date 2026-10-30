@@ -87,7 +87,7 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
     # Keep v2's native receipts intact. Its unpadded portrait images lost
     # context on the backend's native square raster, then cropped again at
     # targetResolution. v3 pads first; the final portrait crop removes padding.
-    from .atlas_context_fov import square_pad, verify_pose_context_fov
+    from .atlas_context_fov import square_pad, square_pad_transform, verify_pose_context_fov, verify_square_padding
     from PIL import Image
     import numpy as np
 
@@ -103,16 +103,20 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
             raise ValueError("atlas_fallback_rgb_changed")
         dst = input_root / f"{i:04d}.png"
         source = source_root / f"{i:04d}{src.suffix.lower()}"
-        if source.exists() and _sha256_file(source) != row["image_digest"]:
-            raise ValueError("atlas_fallback_rgb_changed")
-        shutil.copyfile(src, source)
-        with Image.open(source) as image:
-            padded, transform = square_pad(np.asarray(image.convert("RGB")))
-        if dst.exists():
-            with Image.open(dst) as image:
-                if not np.array_equal(np.asarray(image.convert("RGB")), padded):
-                    raise ValueError("atlas_context_padding_changed")
+        if source.exists():
+            # Rewriting identical bytes every tick only changed the file's
+            # fingerprint, so its unchanged digest was recomputed each time.
+            if _sha256_file(source) != row["image_digest"]:
+                raise ValueError("atlas_fallback_rgb_changed")
         else:
+            shutil.copyfile(src, source)
+        if dst.exists():
+            with Image.open(source) as image:  # the header only: the size fixes the padding
+                transform = square_pad_transform(*image.size)
+            verify_square_padding(source, row["image_digest"], dst, transform)
+        else:
+            with Image.open(source) as image:
+                padded, transform = square_pad(np.asarray(image.convert("RGB")))
             Image.fromarray(padded).save(dst)
         sources.append({"frame_id": row["frame_id"], "image_path": str(source),
                         "image_digest": row["image_digest"], "padding": transform})
