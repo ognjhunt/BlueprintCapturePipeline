@@ -14,6 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .common import write_json
+from .atlas_pricing import render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -224,7 +225,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
         validate_task_request('atlasChisel', request)
         stage = root / 'generated' / str(index)
         # Reviewed RGBD rate already includes depth; charge output views once.
-        cost = round(len(group) * policy['rgbd_view_cost_usd'], 6)
+        cost = render_cost(policy, len(group))
         quote = {'schema_version': 'website_atlas_task_price_review.v1', 'task': 'atlasChisel',
                  'request_digest': canonical_digest(request), 'maximum_cost_usd': cost,
                  **{k: policy[k] for k in ('rate_card_reference', 'reviewed_by', 'reviewed_on')}}
@@ -233,7 +234,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
         else:
             remaining += cost
         specs.append((group, request, uploads, stage, quote))
-    if remaining + policy.get('mesh_export_cost_usd', 0) + 1 > configuration['remaining_cost_usd']:
+    if remaining + final_output_cost(policy) + 1 > configuration['remaining_cost_usd']:
         raise ValueError('atlas_completion_remaining_budget_insufficient')
     binding = {'schema_version': 'atlas_chisel_completion_plan.v1', 'source_pose_digest': pose['digest'],
                'selected_camera_ids': [row['camera_id'] for row in selected], 'source_photographs': sources,

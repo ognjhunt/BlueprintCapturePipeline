@@ -12,6 +12,7 @@ import numpy as np
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
+from .atlas_depth_splat import restrict_frame
 
 
 def _retained_native_repair(root):
@@ -91,7 +92,7 @@ def reviewed_reference_frames(reviewed_views, region_plan):
             continue
         rgb = frame['rgb'].copy()
         rgb[~mask] = 127
-        references.append({**frame, 'rgb': rgb, 'confidence': frame['confidence'] * mask})
+        references.append(restrict_frame(frame, mask, rgb=rgb))
     return references
 
 

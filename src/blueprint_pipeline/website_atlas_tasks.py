@@ -1,8 +1,7 @@
 """Durable admitted Atlas generation, editing and mesh tasks. ADP-040 / Day 28.
 
 Reuses the existing pose adapter's audited transport, uploads, locking and
-retention. Posing remains the original producer. There is no splat-creation
-endpoint in the public beta contract; splats2Mesh requires an admitted splat.
+retention. Posing, native refined splats and mesh extraction share one ledger.
 """
 from __future__ import annotations
 
@@ -20,7 +19,7 @@ from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .paid_resource_admission import require_paid_resource_admission_grant
 
-TASKS = frozenset({"atlasGenerate", "atlasMasked", "atlasChisel", "atlasTextToImage", "splats2Mesh"})
+TASKS = frozenset({"atlasGenerate", "atlasMasked", "atlasChisel", "atlasTextToImage", "posedImages2Splats", "splats2Mesh"})
 MIMES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
          ".exr": "image/x-exr", ".ply": "application/octet-stream", ".spz": "application/octet-stream"}
 _CAPACITY_CODES = frozenset({"RATE_LIMIT_EXCEEDED", "CONCURRENCY_LIMIT_EXCEEDED", "TASK_UNAVAILABLE"})
@@ -96,6 +95,20 @@ def validate_task_request(task: str, request: Mapping[str, Any]) -> None:
         elif isinstance(value, float) and not math.isfinite(value):
             raise ValueError("atlas_task_nonfinite_value")
     visit(request)
+    if task == "posedImages2Splats":
+        frames = request["posedFrames"]
+        grids = set()
+        for frame in frames:
+            k, e = frame["camera"]["intrinsics"], frame["camera"]["extrinsics"]
+            grids.add((k["width"], k["height"]))
+            if not (frame.get("depth") or {}).get("depthAsset"):
+                raise ValueError("atlas_splat_linear_depth_required")
+            if not math.isclose(sum(v * v for v in e["quaternion"]), 1, abs_tol=1e-3):
+                raise ValueError("atlas_task_camera_quaternion_invalid")
+            if k["fx"] <= 0 or k["fy"] <= 0:
+                raise ValueError("atlas_splat_focal_length_invalid")
+        if len(grids) != 1:
+            raise ValueError("atlas_splat_image_grids_must_match")
     for camera in request.get("targetCameras", []):
         if (camera["intrinsics"]["width"], camera["intrinsics"]["height"]) != (1280, 720):
             raise ValueError("atlas_task_target_grid_invalid")
@@ -170,6 +183,10 @@ def _replace_uploads(value: Any, uploaded: Mapping[str, str]) -> Any:
 def _collect(client: pose.AtlasClient, operation: Mapping[str, Any], root: Path) -> list[dict[str, Any]]:
     refs = []
     response = operation["response"]
+    for count, ref in (response.get("refinedSplats") or {}).items():
+        if not isinstance(count, str) or not count.isdecimal() or int(count) <= 0:
+            raise ValueError("atlas_splat_count_invalid")
+        refs.append((f"refinedSplats-{count}", pose._safe_id(ref.get("assetId"))))
     if response.get("mesh"):
         refs.append(("mesh", pose._safe_id(response["mesh"].get("assetId"))))
     for index, frame in enumerate(response.get("frames") or []):
@@ -183,7 +200,8 @@ def _collect(client: pose.AtlasClient, operation: Mapping[str, Any], root: Path)
     retained = []
     for role, asset_id in refs:
         url = client.call("POST", f"/assets/{asset_id}:createReadUrl").get("readUrl")
-        data = client.fetch_bytes(url, max_bytes=pose.MAX_MESH_OUTPUT_BYTES if role == "mesh" else pose.MAX_OUTPUT_BYTES)
+        is_splat = role.startswith("refinedSplats-")
+        data = client.fetch_bytes(url, max_bytes=pose.MAX_MESH_OUTPUT_BYTES if role == "mesh" or is_splat else pose.MAX_OUTPUT_BYTES)
         asset = client.call("GET", f"/assets/{asset_id}")
         if asset.get("id") != asset_id:
             raise ValueError("atlas_task_asset_identity_mismatch")
@@ -194,10 +212,24 @@ def _collect(client: pose.AtlasClient, operation: Mapping[str, Any], root: Path)
             import struct
             if len(data) < 12 or data[:4] != b"glTF" or struct.unpack("<II", data[4:12]) != (2, len(data)):
                 raise ValueError("atlas_task_mesh_not_glb")
+        if is_splat:
+            import gzip
+            import io
+            import struct
+            try:
+                with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
+                    header = compressed.read(16)
+                magic, _version, count = struct.unpack_from("<III", header)
+            except (OSError, EOFError, struct.error):
+                raise ValueError("atlas_task_splat_not_spz") from None
+            if magic != 0x5053474E or count != int(role.split("-")[-1]):
+                raise ValueError("atlas_task_splat_count_mismatch")
         mime = asset.get("mimeType", "")
         suffix = {"image/png": ".png", "image/jpeg": ".jpg", "image/x-exr": ".exr",
                   "model/gltf-binary": ".glb"}.get(mime, ".bin")
-        if data.startswith(b"glTF"):
+        if is_splat:
+            suffix = ".spz"
+        elif data.startswith(b"glTF"):
             suffix = ".glb"
         elif data.startswith(pose._EXR_MAGIC):
             suffix = ".exr"
@@ -229,6 +261,8 @@ def _validate_response(task: str, request: Mapping[str, Any], response: Mapping[
         jsonschema.Draft202012Validator({**schema, "$ref": schema["x-response-schema"]}).validate(response)
     except jsonschema.ValidationError:
         raise ValueError("atlas_task_response_schema_invalid") from None
+    if task == "posedImages2Splats" and not response.get("refinedSplats"):
+        raise ValueError("atlas_task_refined_splats_missing")
     if "targetCameras" in request:
         frames = response.get("frames")
         if not isinstance(frames, list) or len(frames) != len(request["targetCameras"]):

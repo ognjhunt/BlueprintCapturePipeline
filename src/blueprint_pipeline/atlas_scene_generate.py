@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from .common import write_json
+from .atlas_pricing import render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -112,7 +113,7 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
                    'prompt': caption, 'enhancePrompt': False, 'returnDepth': True}
         validate_task_request('atlasGenerate', request)
         stage = root / 'generated' / str(index)
-        cost = round(len(group) * policy['rgbd_view_cost_usd'], 6)
+        cost = render_cost(policy, len(group))
         quote = {'schema_version': 'website_atlas_task_price_review.v1', 'task': 'atlasGenerate',
                  'request_digest': canonical_digest(request), 'maximum_cost_usd': cost,
                  **{key: policy[key] for key in ('rate_card_reference', 'reviewed_by', 'reviewed_on')}}
@@ -127,7 +128,7 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
     source_ids = {frame['frame_id'] for frame in frames}
     registration_images = sum(photo['source_frame_id'] in source_ids for photo in photos) + len(selected_by_id)
     registration_quote = registration_images * policy.get('pose_input_cost_usd', 0)
-    if needed + registration_quote + policy.get('mesh_export_cost_usd', 0) + 1 > configuration['remaining_cost_usd']:
+    if needed + registration_quote + final_output_cost(policy) + 1 > configuration['remaining_cost_usd']:
         raise ValueError('atlas_completion_remaining_budget_insufficient')
     binding = {'schema_version': 'atlas_generate_completion_plan.v1', 'source_pose_digest': pose['digest'],
                'source_photographs': photos, 'prepared_views': rows, 'native_keep_masks_sent': False,

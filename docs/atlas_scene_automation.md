@@ -4,7 +4,14 @@ This is the ADP-040 / Day 28 development-only capture preparation adapter. It
 extends the existing source-video planner and canonical paid-resource allocator;
 it does not create a separate agent service or replace original capture evidence.
 
+A reviewed `refined_splat_cost_usd` adds one final step to the flow below:
+once the depth-fused draft (with any gap completion and geometry recovery) is
+built, the same frames and fused pixels are posted once to `posedImages2Splats`
+and its SPZ replaces the draft for meshing, export and scene handoff. The draft
+stays the gap evidence; the draft-only coverage-repair pass is skipped. See [native Atlas splats](atlas-native-splats.md).
+
 The production Atlas controller runs the following for a new scene plan:
+
 
 1. The configured Agents SDK model considers candidate frames, task objects,
    surrounding room/access space, static state, and reconstruction gaps. It

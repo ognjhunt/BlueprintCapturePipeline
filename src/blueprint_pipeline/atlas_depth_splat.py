@@ -188,6 +188,16 @@ def write_exr_depth(path: Path, depth: np.ndarray) -> Path:
     return path
 
 
+def restrict_frame(frame: Mapping[str, Any], mask, **changes: Any) -> dict[str, Any]:
+    """Exclude pixels outside a review mask from fusion, and keep that mask for refined splats.
+
+    Fusion confidence is exactly ``confidence * mask``. ``keep_mask`` separates the
+    review's admission from Atlas's own depth confidence, which stays per pixel.
+    """
+    keep = (np.asarray(mask) > 0) & frame.get("keep_mask", True)
+    return {**frame, **changes, "confidence": frame["confidence"] * mask, "keep_mask": keep}
+
+
 def posed_frame(*, frame_id: str, rgb: np.ndarray, depth: np.ndarray, confidence: np.ndarray,
                 camera: Mapping[str, Any]) -> dict[str, Any]:
     """Bind one returned image/depth/confidence bundle to the camera Atlas returned with it."""
@@ -794,8 +804,10 @@ def splats2mesh_attempt(splat_root: Path, mesh_root: Path) -> tuple[dict[str, An
     a merged input gets its own attempt root.
     """
     spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
-    manifest = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
-    if (manifest.get("gaussian_count", 0) <= SPLATS2MESH_MAX_GAUSSIANS
+    from .atlas_native_splat import load_splat_manifest
+    manifest = load_splat_manifest(splat_root)
+    if (manifest.get("task") == "posedImages2Splats"
+            or manifest.get("gaussian_count", 0) <= SPLATS2MESH_MAX_GAUSSIANS
             or (mesh_root.exists() and not _failed_attempt(mesh_root))):
         return spec, mesh_root
     source = spec["uploads"]["splat"]

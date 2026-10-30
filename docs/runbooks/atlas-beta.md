@@ -273,17 +273,17 @@ The output bundle keeps RGB, camera-to-world XYZW poses, depth and confidence
 together on the returned grid. Do not substitute original RGB after posing.
 Copy the retained run into authorized company object storage before closeout.
 
-As of the 2026-10-21 documentation, the public API exposes images2PosedRGBD,
-atlasGenerate, atlasMasked, atlasChisel, atlasTextToImage and splats2Mesh.
-Posing returns cameras/depth, not a Gaussian splat. `splats2Mesh` needs an
-existing splat. A splat-creation price on the platform is not a published API
-endpoint. Preserve this distinction when planning the full appearance and mesh
-package. Both need independent scale and collision/articulation validation.
+The October 29 beta API adds `posedImages2Splats`. Posing still returns
+aligned cameras/depth; native splat creation is a separate admitted task.
+Use the [native splat flow](../atlas-native-splats.md) and its reviewed rate
+fields to select it. Historical policies retain the draft-fusion route and
+original receipt identities. Neither native splats nor their mesh establish
+metric scale, collision or physical fidelity.
 
 ## Generation, editing, and mesh API tasks
 
 Use the same operator with `--task-spec SPEC.json` for `atlasGenerate`,
-`atlasMasked`, `atlasChisel`, `atlasTextToImage`, or `splats2Mesh`. The spec
+`atlasMasked`, `atlasChisel`, `atlasTextToImage`, `posedImages2Splats`, or `splats2Mesh`. The spec
 contains `task`, `request`, `source_video_digest`, and optional `uploads`.
 Local uploads are a map of label to `{path, sha256}`; reference them in the
 request as `{assetId: "upload:label"}`. Existing inputs use private project
@@ -307,11 +307,10 @@ target cameras; output depth needs translated targets. Their exact constraints
 are documented in the corresponding task guides.
 
 `splats2Mesh` consumes an existing `.spz` and returns a GLB. Its adapter refuses
-an image masquerading as a mesh. There is no images-to-splat task in the live
-2026-10-21 public OpenAPI contract. World Labs staff also report that Atlas
-splat generation/export is not available yet; a visible Studio splat control
-does not establish availability. Do not silently fall back to that control or
-to the incompatible legacy Marble world API. Required generated RGBD views
+an image masquerading as a mesh. `posedImages2Splats` accepts ordered posed
+RGBD frames and returns a map of SPZ assets keyed by count. It uses the same
+reservation, idempotency, polling and asset cleanup contracts. Native creation
+is not a legacy Marble world-generation request. Required generated RGBD views
 are budgeted before selecting or purchasing pose inputs.
 
 Export a completed pose run with `python -m blueprint_pipeline.atlas_result_bundle

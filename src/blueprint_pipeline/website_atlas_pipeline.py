@@ -23,6 +23,7 @@ import time
 from .website_task_context import load_atlas_configuration as load_configuration
 from .common import write_json
 from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
+from .atlas_pricing import render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .atlas_preparation_context import requires_task_semantic_analysis
@@ -502,8 +503,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # The saved configuration preserves the original authority and prices;
     # completed purchases and held unknown calls consume today's allowance.
     budget = (current["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
-              - policy.get("mesh_export_cost_usd", 0))
-    if budget < 2 * policy["pose_input_cost_usd"] + 2 * policy["rgbd_view_cost_usd"]:
+              - final_output_cost(policy))
+    if budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
         raise ValueError("atlas_runtime_budget_insufficient")
     if selection_path.exists():
         selection = json.loads(selection_path.read_text())
@@ -618,7 +619,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             model=receipt["model"], edit_scope=edit_scope)
     count = len(inputs["frames"])
     target_count = len({key for group in review["coverage_requirements"] for key in group["required_frame_ids"]})
-    planned_cost = round(count * policy["pose_input_cost_usd"] + target_count * policy["rgbd_view_cost_usd"], 6)
+    planned_cost = round(count * policy["pose_input_cost_usd"] + render_cost(policy, target_count), 6)
     if planned_cost > budget + 1e-9:
         raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
     pose_quote = {"schema_version": "website_atlas_pose_price_review.v1", "endpoint": "/api/v2/tasks:images2PosedRGBD",
@@ -634,7 +635,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         return {"status": "processing", "stage": "pose", "operation_id": posed.get("operation_id")}
     pose = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
     request = generation_request(pose=pose, inputs=inputs, review=review)
-    cost = round(len(request["targetCameras"]) * policy["rgbd_view_cost_usd"], 6)
+    cost = render_cost(policy, len(request["targetCameras"]))
     quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "atlasGenerate",
         "request_digest": canonical_digest(request), "maximum_cost_usd": cost,
         **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
@@ -724,7 +725,8 @@ def finalize_background_result(*, output_root, source_digest, task_context, auto
               "task_and_surrounding_scene_covered": True, "model": model,
               "blockers": (["metric_scene_registration_unproven"] if complete else
                            [background.get("reason", "atlas_background_review_required")]),
-              "splat_available": complete, "splat_kind": "depth_fused_draft" if complete else None,
+              "splat_available": complete,
+              "splat_kind": background.get("splat_kind", "depth_fused_draft") if complete else None,
               "splat_manifest_digest": background.get("splat_manifest_digest"),
               "mesh_available": background.get("mesh_available", False),
               "scene_measurements": automation.get("measurements"),

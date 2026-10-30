@@ -1077,7 +1077,7 @@ def test_passed_edit_constructs_and_exports_generated_splat_after_review(tmp_pat
             kw["generated_result_digests"] == ["edited-task"]
             and kw["visual_review_digest"] == "review"
         )
-        return {"digest": "generated-splat"}
+        return {"digest": "generated-splat", "splat_kind": "depth_fused_draft"}
 
     monkeypatch.setattr(atlas_depth_splat, "write_depth_splat", build)
     monkeypatch.setattr(

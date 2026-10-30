@@ -1,0 +1,465 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$ref": "#/components/schemas/PosedImages2SplatsRequest",
+  "components": {
+    "schemas": {
+      "PosedImages2SplatsRequest": {
+        "properties": {
+          "webhookUrl": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "purgeContentOnOperationCompletion": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "prompt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "enhancePrompt": {
+            "type": "boolean",
+            "default": true
+          },
+          "posedFrames": {
+            "items": {
+              "$ref": "#/components/schemas/PosedRGBDAsset"
+            },
+            "type": "array",
+            "minItems": 2
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "posedFrames"
+        ]
+      },
+      "PosedImages2SplatsResponseOperation": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "done": {
+            "type": "boolean"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OperationError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expiresAtSecs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAtSecs": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "response": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PosedImages2SplatsResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "name": {
+            "type": "string",
+            "readOnly": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "ownerId",
+          "done",
+          "name"
+        ]
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PosedRGBDAsset": {
+        "properties": {
+          "imageAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          },
+          "maskAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "camera": {
+            "$ref": "#/components/schemas/PinholeCamera"
+          },
+          "depth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LogDepthBufferAsset"
+              },
+              {
+                "$ref": "#/components/schemas/LinearDepthBufferAsset"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "imageAsset",
+          "camera",
+          "depth"
+        ]
+      },
+      "OperationError": {
+        "properties": {
+          "code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "details": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "PosedImages2SplatsResponse": {
+        "properties": {
+          "refinedSplats": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TaskAsset"
+            },
+            "type": "object"
+          }
+        },
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "msg": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "input": {},
+          "ctx": {
+            "type": "object"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ]
+      },
+      "TaskAsset": {
+        "properties": {
+          "assetId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "base64": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object"
+      },
+      "PinholeCamera": {
+        "properties": {
+          "extrinsics": {
+            "$ref": "#/components/schemas/CoordinateFrame"
+          },
+          "intrinsics": {
+            "$ref": "#/components/schemas/PinholeCameraIntrinsics"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "extrinsics",
+          "intrinsics"
+        ]
+      },
+      "LogDepthBufferAsset": {
+        "properties": {
+          "confidenceAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "logDepthAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          },
+          "zMin": {
+            "type": "number"
+          },
+          "zMax": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "logDepthAsset",
+          "zMin",
+          "zMax"
+        ]
+      },
+      "LinearDepthBufferAsset": {
+        "properties": {
+          "confidenceAsset": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TaskAsset"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "depthAsset": {
+            "$ref": "#/components/schemas/TaskAsset"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "depthAsset"
+        ]
+      },
+      "CoordinateFrame": {
+        "properties": {
+          "position": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 3,
+            "minItems": 3,
+            "items": {
+              "type": "number"
+            }
+          },
+          "quaternion": {
+            "prefixItems": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "number"
+              }
+            ],
+            "type": "array",
+            "maxItems": 4,
+            "minItems": 4,
+            "items": {
+              "type": "number"
+            }
+          },
+          "coordinateSystem": {
+            "type": "string",
+            "enum": [
+              "rub",
+              "rdf"
+            ],
+            "default": "rub"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "position",
+          "quaternion"
+        ]
+      },
+      "PinholeCameraIntrinsics": {
+        "properties": {
+          "fx": {
+            "type": "number"
+          },
+          "fy": {
+            "type": "number"
+          },
+          "cx": {
+            "type": "number"
+          },
+          "cy": {
+            "type": "number"
+          },
+          "width": {
+            "type": "integer"
+          },
+          "height": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "fx",
+          "fy",
+          "cx",
+          "cy",
+          "width",
+          "height"
+        ]
+      }
+    },
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "WLT-Api-Key"
+      }
+    }
+  },
+  "x-source-url": "https://docs.atlas-beta.worldlabs.ai/api-reference/posed-images2-splats",
+  "x-source-document-sha256": "f1c0657c3009a8b5af39bc737ab6a02f1814a550420cc794ab9d923b255b8b0f",
+  "x-retrieved-on": "2026-10-29",
+  "x-response-schema": "#/components/schemas/PosedImages2SplatsResponse"
+}

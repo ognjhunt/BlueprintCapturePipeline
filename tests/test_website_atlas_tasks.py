@@ -27,6 +27,9 @@ def request():
 class Fake:
     def __init__(self):
         self.posts = self.polls = self.reservations = 0
+        self.task = "atlasGenerate"
+        self.response = None
+        self.asset_bytes = {}
         self.admission = None
         self.uncertain = False
         self.pending = False
@@ -43,8 +46,9 @@ class Fake:
                           "blockers": [], "external_disclosure_allowed": True, "expires_at_epoch": 1e12}
         return self.admission
 
-    @staticmethod
-    def content(asset_id):
+    def content(self, asset_id):
+        if asset_id in self.asset_bytes:
+            return self.asset_bytes[asset_id]
         return (pose._EXR_MAGIC if "depth" in asset_id else b"\x89PNG\r\n\x1a\n") + asset_id.encode()
 
     def transport(self, method, url, headers, data):
@@ -52,7 +56,7 @@ class Fake:
             assert "WLT-Api-Key" not in headers
             return 200, self.content(url.rsplit("/", 1)[-1])
         path = url.split("/api/v2")[1]
-        if path == "/tasks:atlasGenerate":
+        if path == "/tasks:" + self.task:
             self.posts += 1
             assert headers["Idempotency-Key"].startswith("bp-atlas-task-")
             if isinstance(self.outcome, int):
@@ -66,7 +70,7 @@ class Fake:
             value = {"operations": [{"id": "op_task_1", "metadata": None, "done": False}] if self.bought else [],
                      "nextPageToken": None}
         elif path == "/operations/op_task_1:trace":
-            value = {"operationId": "op_task_1", "taskName": "atlasGenerate", "taskVersion": "v1",
+            value = {"operationId": "op_task_1", "taskName": self.task, "taskVersion": "v1",
                      "request": {**self.bought[0], "modelParameters": {"seed": 42}}, "response": None, "error": None}
         elif path == "/operations/op_task_1":
             self.polls += 1
@@ -74,6 +78,8 @@ class Fake:
                      "response": {"frames": [{"imageAsset": {"assetId": "asset_output"}, "camera": camera(.1),
                        "depth": {"depthAsset": {"assetId": "asset_depth"},
                                  "confidenceAsset": {"assetId": "asset_confidence"}}}], "promptUsed": "same kitchen"}}
+            if self.response is not None:
+                value["response"] = self.response
         elif path.endswith(":createReadUrl"):
             value = {"readUrl": "https://read.example.test/" + path.split("/")[-1].split(":")[0]}
         elif path.startswith("/assets/"):
@@ -96,6 +102,7 @@ def case(tmp_path, monkeypatch):
     context = {"schema_version": "website_site_task_context.v1", "request_id": "r", "scene_id": "s", "capture_id": "c",
                "description": "Inspect the dishwasher", "purpose": "scene_preparation", "confirmed": False, "confirmed_at": None}
     context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    fake.context = context
     body = request()
     review = {"schema_version": "website_atlas_task_price_review.v1", "task": "atlasGenerate",
               "request_digest": canonical_digest(body), "maximum_cost_usd": .05,

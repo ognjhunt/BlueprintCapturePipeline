@@ -513,7 +513,9 @@ def run_automation(
                     or {row["frame_id"] for row in splat.get("frames", [])}
                     != {row["frame_id"] for row in derived_frames}):
                 raise ValueError("atlas_completion_splat_did_not_consume_generated_depth")
-            if recovery is not None and reviewed_views:
+            # Coverage repair measures gaps in the draft. A refined splat is the final
+            # appearance instead, so it follows the up-front completion directly.
+            if recovery is not None and reviewed_views and "refined_splat_cost_usd" not in policy:
                 from .atlas_scene_coverage import refine_scene_coverage
 
                 refined, coverage = refine_scene_coverage(
@@ -555,6 +557,18 @@ def run_automation(
                 value['digest'] = canonical_digest(value, digest_field='digest')
                 write_json(output_root / 'export_replays' / (splat['digest'][7:23] + '.json'), value)
                 return value
+            if "refined_splat_cost_usd" in policy:
+                # Atlas's refined splat replaces the draft as the final appearance;
+                # the draft above stays the gap and coverage evidence.
+                from .atlas_native_splat import run_native_splat
+                native = run_native_splat(frames=derived_frames, result=effective_pose, draft=splat,
+                    output_root=splat_root.parent / f"{splat_root.name}-refined", policy=policy,
+                    task_context=task_context, task_runner=task_runner, max_polls=max_polls,
+                    checkpoint=checkpoint)
+                if native["status"] != "completed":
+                    return native
+                splat_root, splat = Path(native["splat_root"]), native["splat_manifest"]
+                recovery_suffix += "-refined-" + splat["digest"][7:23]
             mesh_root = None
             from .atlas_result_bundle import retained_mesh_for_splat, find_retained_mesh_root
 
@@ -573,8 +587,8 @@ def run_automation(
                 from .atlas_depth_splat import splats2mesh_attempt
 
                 spec, mesh_root = splats2mesh_attempt(splat_root, output_root / (
-                    (f"background_completed_mesh-{COMPLETION_REVISION}" + recovery_suffix)
-                    if completion else "background_mesh"))
+                    (f"background_completed_mesh-{COMPLETION_REVISION}" if completion else "background_mesh")
+                    + recovery_suffix))
                 quote = {
                     "schema_version": "website_atlas_task_price_review.v1",
                     "task": "splats2Mesh",
@@ -638,6 +652,7 @@ def run_automation(
             background.update(
                 status="completed",
                 download=bundle,
+                splat_kind=splat.get("splat_kind", "depth_fused_draft"),
                 splat_manifest_digest=splat["digest"],
                 mesh_available=mesh_root is not None,
             )

@@ -185,7 +185,8 @@ def test_worker_densifies_reviews_then_resumes_pose_without_replanning(tmp_path,
         (splat_root / "splats2mesh_task_spec.json").write_text(json.dumps({
             "request": {"splatAsset": {"assetId": "upload:splat"}},
             "uploads": {"splat": {"path": str(splat_root / "atlas_depth_splat.spz"), "sha256": "sha256:" + "0" * 64}}}))
-        manifest = {"splat_kind": "depth_fused_draft", "digest": "splat"}
+        manifest = {"splat_kind": "depth_fused_draft"}
+        manifest["digest"] = canonical_digest(manifest, digest_field="digest")
         (splat_root / "atlas_depth_splat_manifest.json").write_text(json.dumps(manifest))
         return manifest
     monkeypatch.setattr(depth_splat, "build_depth_splat", splat)
