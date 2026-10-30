@@ -3299,10 +3299,418 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ]
+    },
+    {
+      "candidate_id": "openwam_alpha_piper_bimanual",
+      "configuration_digest": "sha256:c3f57ba2401b29ad1d1dba0812b178f190bae196e5527a9a93cacc4142121205",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "agilex_piper_bimanual",
+        "evidence_url": "https://huggingface.co/OpenWAM/OpenWAM-Alpha-Real-RoboDojo-Piper/tree/12bfca6fb289174ab5a0f4f7eb363dc77ed265f0",
+        "policy_route_id": "customer_controller",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "OpenWAM Alpha \u00b7 PiPER bimanual (public baseline)",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0",
+        "license_note": "Apache-2.0 verified in the pinned public checkpoint card. The PiPER adapter uses explicit simulation camera, TCP and cadence assumptions. A source-verified imported body and policy registration are still required; checkpoint bytes are verified before worker load. No native inference or task success is claimed.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:74f4dee3a5fb8b2900aed0fdd2cf49a4edf1f980f3839ead4c240999be936187",
+        "digest_kind": "pinned_runtime_file_inventory",
+        "kind": "checkpoint",
+        "revision": "12bfca6fb289174ab5a0f4f7eb363dc77ed265f0",
+        "source": "https://huggingface.co/OpenWAM/OpenWAM-Alpha-Real-RoboDojo-Piper"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "molmoact2_bimanual_yam",
+      "configuration_digest": "sha256:bae49f8e326af32b1b70d256fffe6f839bf320b4954d1e5d0c96857ca611d4b7",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "i2rt_yam_bimanual",
+        "evidence_url": "https://huggingface.co/allenai/MolmoAct2-BimanualYAM/tree/8dcbed66f2380e4393189c303ea72488eb9e63c2",
+        "policy_route_id": "customer_controller",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "MolmoAct2 \u00b7 YAM bimanual (public baseline)",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0",
+        "license_note": "Official pinned Ai2 README explicitly licenses this checkpoint under Apache 2.0; its card alone has no license field. YAM camera optics and cadence remain simulation assumptions. A source-verified imported body and policy registration are still required; checkpoint bytes are verified before worker load. No native inference or task success is claimed.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:8f0d8d7767f4e20d0e6a721b95ffb7111ca1b5f1fcd180e4a94c23492bbb7317",
+        "digest_kind": "pinned_runtime_file_inventory",
+        "kind": "checkpoint",
+        "revision": "8dcbed66f2380e4393189c303ea72488eb9e63c2",
+        "source": "https://huggingface.co/allenai/MolmoAct2-BimanualYAM"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_agilex_piper_bimanual",
+      "configuration_digest": "sha256:0cc8d437d4d0174c4e8784437bbf22710b714d5820087e25570ec35172979863",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "agilex_piper_bimanual",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 agilex_piper_bimanual",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_almond_axol",
+      "configuration_digest": "sha256:5c9df3ff6fe3f213a5c4b42d2eabcec4d883ab4e709ab88c55719a72761adfda",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "almond_axol",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 almond_axol",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_franka_research_3_bimanual",
+      "configuration_digest": "sha256:ed33cc31a57e83c097392689e42144748e740c59f7477097eb4a842a51d1d5e1",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "franka_research_3_bimanual",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 franka_research_3_bimanual",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_i2rt_yam_bimanual",
+      "configuration_digest": "sha256:775ded38bb07eff4b7ecbed2495f7bdf160beee8eb08e7607af985914c6e2390",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "i2rt_yam_bimanual",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 i2rt_yam_bimanual",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_kinova_gen3",
+      "configuration_digest": "sha256:3737bcf5e435dff3f682a3e6ecbe091fa777202e47d8517fc6aa40c00e412ca4",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "kinova_gen3",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 kinova_gen3",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_kinova_gen3_bimanual",
+      "configuration_digest": "sha256:0f0e76f2c99c31d2c848cec1fbf19d42fd958d87c6b0b44724a0a111f667cba9",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "kinova_gen3_bimanual",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 kinova_gen3_bimanual",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_trlc_dk1_bimanual",
+      "configuration_digest": "sha256:e7567408ae4bc9469faf4ffeea5a0bbdb7442f176541ecf6f7bbce98e38016d3",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "trlc_dk1_bimanual",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 trlc_dk1_bimanual",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_ufactory_xarm7",
+      "configuration_digest": "sha256:ecb13d12540e7890ef600f86e21855183ea7e1228b859a9ddbc4823eabc1f571",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "ufactory_xarm7",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 ufactory_xarm7",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_ufactory_xarm7_bimanual",
+      "configuration_digest": "sha256:845918366782788e429c6e8c290bef845e14deaec22c668c52eb468117ab4cd2",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "ufactory_xarm7_bimanual",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 ufactory_xarm7_bimanual",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_universal_robots_ur5e_bimanual",
+      "configuration_digest": "sha256:50ea027f3a1c4d8e1892eae8090a589e3bb764b401d4ad720041ea2b29f9f0ed",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "universal_robots_ur5e_bimanual",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u2014 universal_robots_ur5e_bimanual",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
     }
   ],
-  "catalog_digest": "sha256:0ac304dbb4a430fdf2f48c93e416b8954b8489c7cb2f5c6b108d682514a80549",
+  "catalog_digest": "sha256:3385cab253b9f95aba908a240bbd459a059373b3eafb8ed6abcf621aaff0383e",
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal",
+  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility",
   "schema_version": "beta_policy_candidate_catalog.v1"
 }

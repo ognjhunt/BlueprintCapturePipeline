@@ -14,6 +14,26 @@ price or missing account stays visible as an unavailable or deferred candidate.
 Enabling a row does not grant runtime admission. The launch bridge must validate
 its exact native policy artifacts and prepared scene independently.
 
+The default also keeps the fixed public PiPER/OpenWAM and YAM/MolmoAct2 routes,
+the existing single-FR3/OpenWAM route, and all ten Blueprint scripted pick/place
+configurations visible before their first registration. They are disabled with
+`prepared_robot_policy_registration_missing`, with no runnable interface or
+runtime binding. Pinned checkpoint inventories and controller-source identities
+describe what would run; they do not claim downloaded weights, a usable robot
+import, native inference or task success. Scripted rows remain explicitly
+separate from learned policies, and public integrations claim no private vendor
+policy or company endorsement.
+
+The fixed operator-door installers bind the same candidate IDs, so successful
+registration replaces one catalog row rather than adding a duplicate. A failed
+first installation leaves the missing-registration reason visible. The scripted
+installation receipt retains each body's precise import/tool failure; it does
+not manufacture a registration for that body. A malformed existing registration
+keeps its specific catalog validation reason. Task planning and publication
+preserve these per-candidate reasons once an authorized task scene is available;
+catalog rows alone do not create a scene or campaign. A custom operator catalog
+still replaces the default and must explicitly include any desired candidates.
+
 Hosted execution also needs an admitted adapter, an operator private credential
 file where required, and a reviewable price per HTTP request with a bounded
 request count. The launch descriptor reserves the simulator provider cap plus

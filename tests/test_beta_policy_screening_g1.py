@@ -158,7 +158,7 @@ def test_no_registration_retains_each_g1_reason_without_displacing_existing_cand
     value = build_screening_plan(catalog, scene(), campaign_id="unavailable", now=NOW,
         capabilities={"candidate_blockers": {key: ["g1_beta_scene_packet_missing"] for key in g1.CANDIDATES}})
     rows = {r["candidate_id"]: r for r in value["candidates"]}
-    assert len(rows) == 88
+    assert set(rows) == {candidate["candidate_id"] for candidate in catalog["candidates"]}
     for candidate in g1.CANDIDATES:
         assert rows[candidate]["status"] == "unavailable"
         assert "g1_beta_scene_packet_missing" in rows[candidate]["blockers"]

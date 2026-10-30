@@ -76,7 +76,7 @@ def test_registered_local_checkpoint_retains_all_routes_and_builds_real_sealed_b
 
     base, profile, _ = prepared_registration(tmp_path, monkeypatch)
     catalog = catalog_for_profile(profile)
-    assert len(catalog["candidates"]) == len(load_default_catalog()["candidates"]) + 1
+    assert len(catalog["candidates"]) == len(load_default_catalog()["candidates"])
     row = next(row for row in catalog["candidates"] if row["candidate_id"] == CANDIDATE_ID)
     assert row["eligibility"]["enabled"] and row["eligibility"]["requires_credentials"] == []
     assert row["deployment"]["policy_route_id"] == "customer_controller"
@@ -144,6 +144,9 @@ def test_invalid_local_binding_keeps_individual_reason_and_frozen_candidates(tmp
     row = next(row for row in catalog["candidates"] if row["candidate_id"] == CANDIDATE_ID)
     assert not row["eligibility"]["enabled"] and row["eligibility"]["blockers"]
     for original in load_default_catalog()["candidates"]:
+        if original["candidate_id"] == CANDIDATE_ID:
+            assert row["eligibility"]["blockers"] != original["eligibility"]["blockers"]
+            continue
         assert next(row for row in catalog["candidates"] if row["candidate_id"] == original["candidate_id"]) == original
 
 
