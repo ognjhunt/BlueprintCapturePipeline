@@ -663,7 +663,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.report:
         Path(args.report).write_text(text + "\n", encoding="utf-8")
     print(text)
-    return {"refusal": 3, "missing_input": 4, "error": 2}.get((report.get("first_stop") or {}).get("kind"), 0)
+    return {"refusal": 3, "missing_input": 4, "error": 2, "replay_unsupported": 5}.get(
+        (report.get("first_stop") or {}).get("kind"), 0)
 
 
 __all__ = ["ReplayStop", "SCHEMA", "main", "replay", "run_steps"]

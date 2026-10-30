@@ -261,3 +261,11 @@ def test_a_relocated_refusal_is_not_presented_as_the_jobs_stop(site, tmp_path):
     report = replay.replay(site.job, replay_root=site.replay_root, overlay="relocated", configuration=str(snapshot))
     assert report["first_stop"]["kind"] == "replay_unsupported"
     assert report["first_stop"]["underlying"]["code"] == "atlas_runtime_budget_insufficient"
+
+
+def test_an_unsupported_relocated_replay_exits_nonzero(site, tmp_path, capsys):
+    snapshot = tmp_path / "allowance.json"
+    snapshot.write_text(json.dumps({**site.configuration, "remaining_cost_usd": .9}))
+    status = replay.main(["--job", str(site.job), "--relocated", "--configuration", str(snapshot),
+                          "--replay-root", str(site.replay_root)])
+    assert status == 5 and json.loads(capsys.readouterr().out)["first_stop"]["kind"] == "replay_unsupported"
