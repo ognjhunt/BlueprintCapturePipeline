@@ -20,7 +20,58 @@ def test_runtime_execution_graph_is_refused_before_normalized_output(tmp_path):
     with pytest.raises(ValueError, match="completed_mesh_prim_type_not_supported"):
         normalize_completed_mesh(source=source, original_filename=source.name,
             coordinate_frame={"meters_per_unit": 1.0, "up_axis": "Z"}, output_root=tmp_path / "out")
-    assert not (tmp_path / "out/normalized_scene.usda").exists()
+    assert not list(tmp_path.glob("out/normalized_scene.*"))
+
+
+def test_normalized_layer_is_crate_and_earlier_text_receipts_still_read_back(tmp_path):
+    # 2026-10-30 capture-447ae4f4: a 70.6 MB Atlas GLB wrote 292 MB of text USDA; as crate it is 87 MB.
+    import json
+    import trimesh
+    from pxr import Sdf
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.provided_scene_mesh import inspect_mesh
+
+    source = tmp_path / "atlas.glb"
+    source.write_bytes(trimesh.Scene({"shelf": trimesh.creation.icosphere(subdivisions=4)}).export(file_type="glb"))
+    frame, frame_z = {"meters_per_unit": 1.0, "up_axis": "Y"}, {"meters_per_unit": 1.0, "up_axis": "Z"}
+    normalized = normalize_completed_mesh(source=source, original_filename=source.name,
+                                          coordinate_frame=frame, output_root=tmp_path / "new")
+    output = tmp_path / "new" / normalized["output"]["relative_path"]
+    assert output.name == "normalized_scene.usdc" and output.read_bytes()[:8] == b"PXR-USDC"
+    assert output.stat().st_size < len(Sdf.Layer.FindOrOpen(str(output)).ExportToString())
+
+    def read_back_from_cas(layer, receipt):
+        # Launch preparation materializes the layer under its digest, with no suffix;
+        # completed-scene inputs alias it by the receipt's recorded name.
+        cas = tmp_path / "cas" / receipt["output"]["sha256"][7:]
+        cas.parent.mkdir(exist_ok=True)
+        shutil.copyfile(layer, cas)
+        return cas, inspect_mesh(cas, original_filename=receipt["output"]["relative_path"],
+                                 coordinate_frame_declaration=frame_z)
+
+    cas, inspected = read_back_from_cas(output, normalized)
+    assert inspected == normalized["normalized_inspection"]
+    with pytest.raises(Exception, match="not a valid usda"):
+        inspect_mesh(cas, original_filename="normalized_scene.usda", coordinate_frame_declaration=frame_z)
+
+    # A receipt written before this change names a text layer; it is reused as recorded.
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir()
+    legacy_layer = legacy_root / "normalized_scene.usda"
+    assert Sdf.Layer.FindOrOpen(str(output)).Export(str(legacy_layer))
+    assert legacy_layer.read_bytes().startswith(b"#usda")
+    legacy = json.loads(json.dumps(normalized))
+    legacy["normalized_inspection"] = inspect_mesh(legacy_layer, original_filename=legacy_layer.name,
+                                                   coordinate_frame_declaration=frame_z)
+    legacy["output"] = {"relative_path": legacy_layer.name, "size_bytes": legacy_layer.stat().st_size,
+                        "sha256": legacy["normalized_inspection"]["asset_digest"]}
+    legacy["normalization_digest"] = canonical_digest(legacy, digest_field="normalization_digest")
+    (legacy_root / "mesh_normalization.v1.json").write_text(
+        json.dumps(legacy, sort_keys=True, separators=(",", ":")) + "\n")
+    assert normalize_completed_mesh(source=source, original_filename=source.name,
+                                    coordinate_frame=frame, output_root=legacy_root) == legacy
+    assert not (legacy_root / "normalized_scene.usdc").exists()
+    assert read_back_from_cas(legacy_layer, legacy)[1] == legacy["normalized_inspection"]
 
 
 def test_y_up_centimeter_mesh_retains_world_geometry_and_material_through_extraction(tmp_path):

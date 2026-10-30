@@ -156,7 +156,10 @@ def _normalize_completed_mesh(*, source: Path, original_filename: str, coordinat
                 "completed_mesh_normalization_conflict")
         checked_file(output_root / prior["output"]["relative_path"], prior["output"])
         return prior
-    output = output_root / "normalized_scene.usda"
+    # Binary crate layer: several times smaller than text (a 70.6 MB GLB gave
+    # 292 MB of USDA, 87 MB of USDC). Readers take the layer's name from this
+    # receipt, so receipts written before keep their recorded .usda path.
+    output = output_root / "normalized_scene.usdc"
     require(not output.exists(), "completed_mesh_partial_normalization_requires_replay")
     scale, axis = float(coordinate_frame["meters_per_unit"]), coordinate_frame["up_axis"]
     with mesh_filename(source, original_filename) as named:
