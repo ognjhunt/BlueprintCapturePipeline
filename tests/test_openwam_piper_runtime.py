@@ -54,6 +54,7 @@ def prepared_registration(tmp_path, monkeypatch):
 
 
 def test_registered_local_checkpoint_retains_all_routes_and_builds_real_sealed_bundle(tmp_path, monkeypatch):
+    from blueprint_pipeline.beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from blueprint_pipeline.policy_canary_session_bundle_identity import validate_policy_canary_provider_manifest
     from blueprint_pipeline.openwam_piper_bundle import transfer_byte_budget
     from blueprint_pipeline.team_candidate_policy_client import canary_policy_client
@@ -74,6 +75,12 @@ def test_registered_local_checkpoint_retains_all_routes_and_builds_real_sealed_b
     candidate = next(row for row in plan["candidates"] if row["candidate_id"] == CANDIDATE_ID)
     assert candidate["status"] == "selected", candidate["blockers"]
     spec = launch._read(launch._bound_path(candidate["execution_spec"]["policy_execution_spec"]))
+    assert validate_robolab_policy_execution_spec(spec, candidate_id=CANDIDATE_ID) == spec
+    altered = deepcopy(spec)
+    altered["policy_spec"]["source_revision"] = "0" * 40
+    altered["execution_spec_digest"] = canonical_digest(altered, digest_field="execution_spec_digest")
+    with pytest.raises(ValueError, match="openwam_runtime_policy_identity_invalid"):
+        validate_robolab_policy_execution_spec(altered, candidate_id=CANDIDATE_ID)
     dependency_activations = []
     monkeypatch.setattr(client_dependencies, "activate_client_dependencies", lambda: dependency_activations.append(True))
     client = canary_policy_client(spec)

@@ -117,7 +117,7 @@ def _check_quote(plan: Mapping[str, Any], candidate: Mapping[str, Any]) -> None:
 def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
                       attempt_dir: Path) -> dict[str, Any]:
     """Build and static-preflight a sealed provider bundle; never allocate."""
-    from .beta_robolab_runtime import validate_robolab_policy_execution_spec
+    from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .native_task_arena_policy_canary_bundle import (
         build_policy_canary_session_bundle, preflight_sealed_policy_canary_bundle,
     )
