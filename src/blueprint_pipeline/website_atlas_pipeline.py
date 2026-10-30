@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import inspect
 from copy import deepcopy
 import json
 import os
@@ -382,11 +383,35 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
     return result
 
 
+def _checkpoint_with_details(checkpoint):
+    """Keep stage-only source checks compatible with diagnostic progress details."""
+    if checkpoint is None:
+        return None
+    try:
+        signature = inspect.signature(checkpoint)
+    except (TypeError, ValueError):
+        signature = None  # Opaque callables retain the documented stage-only contract.
+
+    def check(stage, **details):
+        if details and signature is not None:
+            try:
+                signature.bind(stage, **details)
+            except TypeError:
+                pass
+            else:
+                return checkpoint(stage, **details)
+        # Never catch/retry an exception from the actual source/withdrawal check.
+        return checkpoint(stage)
+
+    return check
+
+
 def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, experimental=False,
                        invoker=None, max_polls=2, refinement_feedback: Path | None = None, checkpoint=None,
                        edit_scope: str | None = None):
     # ``checkpoint(stage)`` runs before every paid stage; raising there (a
     # withdrawal) stops the job before it buys or uploads anything more.
+    checkpoint = _checkpoint_with_details(checkpoint)
     check = checkpoint or (lambda _stage: None)
     from .atlas_video_inputs import survey_video, prepare_video_inputs, takes_reviewed_background
     from .atlas_scene_planner import proposal_review
