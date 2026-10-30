@@ -26,8 +26,10 @@ uses the existing cross-runtime canonical format.
 
 WebApp consumes this bounded companion only inside its existing authenticated
 job workflow. It rechecks current preparation authority before and after the
-read, emits fixed plain-English reasons, and removes preview IDs that have a
-genuine current screening publication. Historical publications do not suppress
+read, emits fixed plain-English reasons, and removes a preview row only when its stable ID and
+configuration digest match a genuine current screening publication. Changed or
+unidentified configurations retain their preparation row with an explanatory
+note; existing results remain untouched. Historical publications do not suppress
 new preparation. Preview failure is optional and does not invalidate actual
 results. Live Firestore RobotTeam matching remains unchanged: catalog candidate
 identity is not a company/body route inventory identifier.
