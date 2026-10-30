@@ -297,7 +297,8 @@ POLICY_RUNTIME_MODULE_NAMES = tuple(
 # dependency downloader the entrypoint runs, plus the modules every native
 # bundle carries; tests/test_rigid_robot_free_probe_lane.py pins the closure.
 RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES = (
-    *CAMERA_RUNTIME_MODULE_NAMES,
+    # This probe uses rendering helpers but does not invoke the separate diagnostic process.
+    "native_task_runtime_capabilities.py", "native_task_pink_compatibility.py", "native_task_official_nurec.py",
     "adp009d_contact_envelope.py", "adp009d_droid_action_execution.py", "adp009d_droid_observation.py", "adp009d_groot_worker_identity.py",
     "adp009d_isaac_episode_adapter.py", "adp009d_newton_gripper_drive.py",
     "adp009d_physics_backend_comparison.py", "adp009d_task_scoring.py", "adp_rigid_retreat_scoring.py",
