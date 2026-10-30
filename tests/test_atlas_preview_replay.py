@@ -1,6 +1,7 @@
 """A pulled Atlas preview job replays its next controller steps against this tree and buys nothing."""
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -237,22 +238,26 @@ def test_the_inner_overlay_never_mounts_outside_a_private_namespace(site, tmp_pa
     assert mounted == [] and not (tmp_path / "inner.json").exists()
 
 
-def test_the_command_runs_at_the_capture_roots_own_path_in_a_private_namespace(site, tmp_path):
+def test_the_command_runs_in_a_private_namespace_or_says_it_could_not(site, tmp_path):
     tmp_path.joinpath("probe").mkdir()
-    if replay._namespace_prefix(tmp_path / "probe") is None:
-        pytest.skip("this host permits no private mount namespace")
+    namespace = replay._namespace_prefix(tmp_path / "probe") is not None
     snapshot = tmp_path / "allowance.json"
     snapshot.write_text(json.dumps({**site.configuration, "remaining_cost_usd": .9}))
     before = _tree(site.storage)
     completed = subprocess.run(
         [sys.executable, "-m", "blueprint_pipeline.atlas_preview_replay", "--job", str(site.job),
          "--configuration", str(snapshot), "--replay-root", str(site.replay_root), "--report", str(tmp_path / "r.json")],
-        capture_output=True, text=True, cwd=ROOT, env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(ROOT / "src")})
+        capture_output=True, text=True, cwd=ROOT, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONPATH": str(ROOT / "src")})
     report = json.loads((tmp_path / "r.json").read_text())
-    assert completed.returncode == 3, completed.stderr
-    assert report["overlay"]["mode"] == "bind" and report["evidence"]["unchanged"]
-    assert report["first_stop"]["code"] == "atlas_runtime_budget_insufficient"
-    assert _tree(site.storage) == before
+    assert report["evidence"]["unchanged"] and _tree(site.storage) == before
+    if namespace:  # The replay ran at the capture root's own path, so its refusal is the job's.
+        assert completed.returncode == 3, completed.stderr
+        assert report["overlay"]["mode"] == "bind"
+        assert report["first_stop"]["code"] == "atlas_runtime_budget_insufficient"
+    else:  # Hosts without the kernel feature (CI runners) get the mirror, and the report says so.
+        assert completed.returncode == 5, completed.stderr
+        assert report["overlay"]["mode"] == "relocated" and report["first_stop"]["kind"] == "replay_unsupported"
+        assert report["first_stop"]["underlying"]["code"] == "atlas_runtime_budget_insufficient"
 
 
 def test_a_relocated_refusal_is_not_presented_as_the_jobs_stop(site, tmp_path):
