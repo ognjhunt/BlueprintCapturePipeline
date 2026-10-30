@@ -498,13 +498,13 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     survey = json.loads(survey_path.read_text())
     if survey["source_video_digest"] != source_digest:
         raise ValueError("atlas_runtime_source_changed")
-    # Reserve room for a second review, depth views and the mesh export. These are
-    # dollar allowances, not arbitrary limits on the number of source images.
-    # The saved configuration preserves the original authority and prices;
-    # completed purchases and held unknown calls consume today's allowance.
+    # Forecast the initial selection's reviews and final outputs. Once selected,
+    # those purchases may already consume today's allowance: do not charge the
+    # forecast again before retained tasks can reconcile. Every later purchase
+    # still requires its own exact reservation against the current shared cap.
     budget = (current["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
               - final_output_cost(policy))
-    if budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
+    if not selection_path.exists() and budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
         raise ValueError("atlas_runtime_budget_insufficient")
     if selection_path.exists():
         selection = json.loads(selection_path.read_text())
