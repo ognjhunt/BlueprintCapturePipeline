@@ -107,7 +107,7 @@ def validate_request(value: Mapping[str, Any], *, now: float | None = None,
 
 
 def resource_name(request: Mapping[str, Any]) -> str:
-    return INSTANCE_PREFIX + hashlib.sha256(request["authorization_id"].encode()).hexdigest()[:24]
+    return INSTANCE_PREFIX + hashlib.sha256(request["authorization_id"].encode()).hexdigest()[:32]
 
 
 def validate_preparation_result(value: Mapping[str, Any], *, expected_inputs_digest: str | None = None,

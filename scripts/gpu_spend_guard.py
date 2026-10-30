@@ -67,6 +67,7 @@ VAST_API = "https://console.vast.ai/api/v0"
 DEFAULT_MAX_BOOT_SECONDS = 480
 DEFAULT_MAX_BOOTED_ORPHAN_SECONDS = 4 * 60 * 60
 DEFAULT_WARM_LEASE_SECONDS = 15 * 60
+EMBODIMENT_PREPARATION_WORK_ROOT = Path("/mnt/blueprint-work/embodiment-preparation")
 PROVIDERS = ("runpod", "vast", "digitalocean", "gcp", "aws")  # AWS retained only for explicit historical/required scopes.
 MAX_BILLING_EXPORT_BYTES = 1024 * 1024
 # The official billing reconciler is intentionally sandboxed as the Blueprint
@@ -1452,9 +1453,10 @@ def find_protected_pod_ids(
 
 
 def _task_evaluation_watchdog_owned_ids(
-    output_roots: Iterable[Path | str], *, process_cmdlines: Sequence[str], now: float
+    output_roots: Iterable[Path | str], *, process_cmdlines: Sequence[str], now: float,
+    preparation_only: bool = False,
 ) -> set[str]:
-    """Protect Task Evaluation allocations only while their exact watchdog lives.
+    """Protect admitted allocations only while their exact watchdog lives.
 
     These jobs use the canonical bounded Vast watchdog, not the historical G1
     qualification manifest. An id file alone never protects an orphan. Match
@@ -1462,8 +1464,10 @@ def _task_evaluation_watchdog_owned_ids(
     expired or terminal watchdog records confer no protection.
     """
     protected: set[str] = set()
+    pattern = "groot_oscar_runpod_canary_watchdog.json" if preparation_only else (
+        "**/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json")
     for root in output_roots:
-        for path in Path(root).glob("**/independent_vast_watchdog/groot_oscar_runpod_canary_watchdog.json"):
+        for path in Path(root).glob(pattern):
             text = _read_bounded_regular_text(path, max_bytes=MAX_QUALIFICATION_MANIFEST_BYTES)
             if text is None or any(p.is_symlink() for p in path.parents):
                 continue
@@ -1475,7 +1479,11 @@ def _task_evaluation_watchdog_owned_ids(
                 continue
             deadline = value.get("deadline_epoch")
             prefix = value.get("pod_name_prefix")
-            if (value.get("schema_version") != "groot_oscar_runpod_canary_watchdog.v1"
+            preparation = isinstance(prefix, str) and re.fullmatch(
+                r"blueprint-embodiment-preparation-[0-9a-f]{32}", prefix
+            ) is not None and value.get("resource_name_exact") == prefix
+            if ((preparation_only and not preparation)
+                    or value.get("schema_version") != "groot_oscar_runpod_canary_watchdog.v1"
                     or value.get("status") != "armed" or value.get("provider") != "vast"
                     or value.get("independent_process") is not True
                     or value.get("pre_deadline_provider_mutation_allowed") is not False
@@ -1483,7 +1491,7 @@ def _task_evaluation_watchdog_owned_ids(
                     or value.get("watchdog_out_dir") != str(path.parent.resolve())
                     or not (type(deadline) is int or type(deadline) is float) or not now < deadline < now + 86400
                     or not isinstance(prefix, str)
-                    or not (prefix.startswith("blueprint-task-evaluation-")
+                    or not (preparation or prefix.startswith("blueprint-task-evaluation-")
                             or prefix.startswith("blueprint-adp009d-")
                             or prefix == "blueprint-native-task-policy-canary-"
                             or (prefix.startswith("blueprint-native-task-policy-canary-")
@@ -1501,6 +1509,7 @@ def _task_evaluation_watchdog_owned_ids(
                 and _cmd_option_references_exact_value(cmd, "--provider", "vast")
                 and _cmd_option_references_exact_value(cmd, "--pod-name-prefix", prefix)
                 and _cmd_option_references_exact_value(cmd, "--deadline-epoch", str(deadline))
+                and (not preparation or _cmd_option_references_exact_value(cmd, "--resource-name-exact", prefix))
                 and _cmd_option_references_exact_path(
                     cmd, "--out-dir", str(path.parent), candidate_targets=(str(path.parent),)
                 )
@@ -1508,6 +1517,16 @@ def _task_evaluation_watchdog_owned_ids(
             ):
                 protected.add(launched_id.strip())
     return protected
+
+
+def find_embodiment_preparation_watchdog_ids(*, process_cmdlines: Sequence[str], now: float) -> set[str]:
+    """Read only canonical allocator watchdogs, never cached source/warm markers."""
+    roots = EMBODIMENT_PREPARATION_WORK_ROOT.glob(
+        "*/allocator/attempts/attempt_[0-9][0-9][0-9]/independent_vast_watchdog"
+    )
+    return _task_evaluation_watchdog_owned_ids(
+        roots, process_cmdlines=process_cmdlines, now=now, preparation_only=True
+    )
 
 
 def _cmd_references_exact_token(cmd: str, target: str) -> bool:
@@ -2094,6 +2113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "ownership (repeatable; defaults to ./output and the repo output dir)"
         ),
     )
+    parser.add_argument("--embodiment-preparation-watchdogs", action="store_true",
+        help="Read exact allocator watchdogs under the fixed public-robot preparation workspace.")
     parser.add_argument("--timeout", type=int, default=30, help="per-request timeout seconds")
     parser.add_argument(
         "--require-provider",
@@ -2258,7 +2279,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     roots = [Path(p) for p in (args.output_root or default_output_roots())]
-    protected = find_protected_pod_ids(roots, process_cmdlines=list_process_cmdlines())
+    cmdlines = list_process_cmdlines()
+    protected = find_protected_pod_ids(roots, process_cmdlines=cmdlines)
+    if args.embodiment_preparation_watchdogs:
+        protected |= find_embodiment_preparation_watchdog_ids(process_cmdlines=cmdlines, now=now)
     serve_pods = find_expected_serve_pod_ids(
         roots,
         now=now,

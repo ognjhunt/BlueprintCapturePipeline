@@ -46,6 +46,12 @@ preparation uses `/mnt/blueprint-work/embodiment-preparation` with
 disk reservations; verified models are published under the operator model store.
 Keep the same authorization ID when recovering a lost response. A restarted
 controller reconciles retained execution state without allocating another GPU.
+Allocation labels use `blueprint-embodiment-preparation-` plus the first 32 hex
+characters of the authorization ID's SHA-256. The independent watchdog requires
+that exact name for arming and teardown. The fleet guard reads only canonical
+allocator attempt watchdogs in the fixed preparation workspace, with a matching
+live process and deadline; staged sources and warm-worker marker files do not
+establish ownership for this lane.
 
 To rebuild only the sealed preparation bundle from an existing grant and native
 runtime source receipt, use the artifact CLI. This command allocates no compute:
