@@ -1,0 +1,399 @@
+{
+  "bodies": {
+    "agilex_piper_bimanual": "piper",
+    "almond_axol": "axol",
+    "franka_research_3_bimanual": "fr3",
+    "i2rt_yam_bimanual": "yam",
+    "kinova_gen3": "kinova",
+    "kinova_gen3_bimanual": "kinova",
+    "trlc_dk1_bimanual": "trlc",
+    "ufactory_xarm7": "xarm",
+    "ufactory_xarm7_bimanual": "xarm",
+    "universal_robots_ur5e_bimanual": "robotiq_ur"
+  },
+  "checkpoint_id": "blueprint-scripted-pick-place-v1",
+  "frames": {
+    "axol": {
+      "approach": [
+        0.0,
+        0.0,
+        -1.0
+      ],
+      "assumptions": [
+        "Symmetric distal pad-envelope centre rounded to10micrometres; small source left/right asymmetries are ignored."
+      ],
+      "basis": "Standalone collision tips extend toward -Z, distal bounds Z[-.1495394,-.1355384]; prismatic jaws travel X. q=-.044 opens, q=0 closes.",
+      "contacts": [
+        "finger_1",
+        "finger_2"
+      ],
+      "dof": 7,
+      "jaw": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "jaws": {
+        "finger_1_joint": [
+          -0.044,
+          0.0
+        ],
+        "finger_2_joint": [
+          -0.044,
+          0.0
+        ]
+      },
+      "position": [
+        0.0,
+        0.0,
+        -0.14254
+      ],
+      "tool": "gripper",
+      "url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf"
+    },
+    "fr3": {
+      "approach": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "assumptions": [
+        "Publisher-authored nominal TCP, without site/tool calibration or measured contact proof."
+      ],
+      "basis": "Authored fr3_hand_tcp at103.4mm; opposing prismatic axes Y; distal pad boxes span Z[.0944,.1129].",
+      "contacts": [
+        "fr3_leftfinger",
+        "fr3_rightfinger"
+      ],
+      "dof": 7,
+      "jaw": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "jaws": {
+        "fr3_finger_joint1": [
+          0.04,
+          0.0
+        ],
+        "fr3_finger_joint2": [
+          0.04,
+          0.0
+        ]
+      },
+      "position": [
+        0.0,
+        0.0,
+        0.1034
+      ],
+      "tool": "fr3_hand",
+      "url": "https://github.com/frankarobotics/franka_description/tree/7aeeddc449edf8d62b594f9e36a81da53e7796f9/end_effectors/franka_hand"
+    },
+    "kinova": {
+      "approach": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "assumptions": [
+        "Fixed open-pad midpoint; pad centre advances about13.9mm in Z during closure.",
+        "The source tool_frame at120mm and yaw-1.57rad is separately transformed; it is not the pad midpoint."
+      ],
+      "basis": "Open pad-box centre from source transforms: .054904-.0041+.0471+.03242=.130324m; opposing pad centres Y=+/- .0461807553m.",
+      "contacts": [
+        "left_inner_finger_pad",
+        "right_inner_finger_pad"
+      ],
+      "dof": 7,
+      "jaw": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "jaws": {
+        "finger_joint": [
+          0.0,
+          0.8
+        ],
+        "left_inner_finger_joint": [
+          0.0,
+          -0.8
+        ],
+        "left_inner_knuckle_joint": [
+          0.0,
+          0.8
+        ],
+        "right_inner_finger_joint": [
+          0.0,
+          -0.8
+        ],
+        "right_inner_knuckle_joint": [
+          0.0,
+          0.8
+        ],
+        "right_outer_knuckle_joint": [
+          0.0,
+          0.8
+        ]
+      },
+      "position": [
+        0.0,
+        0.0,
+        0.130324
+      ],
+      "tool": "robotiq_arg2f_base_link",
+      "url": "https://github.com/Kinovarobotics/ros_kortex/tree/c3280d8a6a6b5d96590d51538e3f265710a6c77d/kortex_description/grippers/robotiq_2f_85"
+    },
+    "piper": {
+      "approach": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "assumptions": [
+        "Symmetric centre of distal 20mm collision-mesh vertex envelopes, not the tip-end frame at135.8mm."
+      ],
+      "basis": "gripper_joint1/2 origins Z=.1358 with Rx(pi/2); distal collision bounds Z[.1163463,.1358], jaw travel Y.",
+      "contacts": [
+        "gripper_link1",
+        "gripper_link2"
+      ],
+      "dof": 6,
+      "jaw": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "jaws": {
+        "gripper_joint1": [
+          0.05,
+          0.0
+        ],
+        "gripper_joint2": [
+          -0.05,
+          0.0
+        ]
+      },
+      "position": [
+        0.0,
+        0.0,
+        0.126073
+      ],
+      "tool": "gripper_base",
+      "url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper"
+    },
+    "robotiq_ur": {
+      "additional_source": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+      "approach": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "assumptions": [
+        "Nominal reference from a separately pinned example, not calibrated Dream hardware.",
+        "Fixed grasp position ignores about13.5mm of finger-pad Z travel during closure."
+      ],
+      "basis": "Opposing Robotiq finger tips separate along source X. Position follows the pinned PickNik134mm grasp_link reference; its yaw is not the task's Y-jaw convention.",
+      "contacts": [
+        "robotiq_85_left_finger_tip_link",
+        "robotiq_85_right_finger_tip_link"
+      ],
+      "dof": 6,
+      "jaw": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "jaws": {
+        "robotiq_85_left_finger_tip_joint": [
+          0.0,
+          -0.7929
+        ],
+        "robotiq_85_left_inner_knuckle_joint": [
+          0.0,
+          0.7929
+        ],
+        "robotiq_85_left_knuckle_joint": [
+          0.0,
+          0.7929
+        ],
+        "robotiq_85_right_finger_tip_joint": [
+          0.0,
+          0.7929
+        ],
+        "robotiq_85_right_inner_knuckle_joint": [
+          0.0,
+          -0.7929
+        ],
+        "robotiq_85_right_knuckle_joint": [
+          0.0,
+          -0.7929
+        ]
+      },
+      "position": [
+        0.0,
+        0.0,
+        0.134
+      ],
+      "tool": "robotiq_85_base_link",
+      "url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/tree/a74d007d8f2f06dc6a503ad21038ba869d4999a6/robotiq_description"
+    },
+    "trlc": {
+      "approach": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "assumptions": [
+        "Symmetric distal-mesh envelope centre, not calibrated contact geometry.",
+        "Full closed command overlaps distal envelopes by about10mm; native contact response and nominal width are unmeasured."
+      ],
+      "basis": "Distal collision pads X[.1480064,.1576931], jaws Y. Source tool0 atX=.158 has its own rotated basis; q=0 opens, negative q closes.",
+      "contacts": [
+        "finger_left",
+        "finger_right"
+      ],
+      "dof": 6,
+      "jaw": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "jaws": {
+        "gripper_left": [
+          0.0,
+          -0.045
+        ],
+        "gripper_right": [
+          0.0,
+          -0.045
+        ]
+      },
+      "position": [
+        0.15285,
+        0.0,
+        0.0
+      ],
+      "tool": "link6_7",
+      "url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf"
+    },
+    "xarm": {
+      "approach": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "assumptions": [
+        "Symmetric centre of the open/closed distal-mesh overlap, not calibrated contact geometry.",
+        "Authored link_tcp at172mm lies beyond the open finger tips; script uses a pad reference instead."
+      ],
+      "basis": "Opposing STL fingers travel Y. Distal20mm envelope common to open/closed spans Z[.1545213,.1621402]; its centre is158.331mm.",
+      "contacts": [
+        "left_finger",
+        "right_finger"
+      ],
+      "dof": 7,
+      "jaw": [
+        0.0,
+        1.0,
+        0.0
+      ],
+      "jaws": {
+        "drive_joint": [
+          0.0,
+          0.85
+        ],
+        "left_finger_joint": [
+          0.0,
+          0.85
+        ],
+        "left_inner_knuckle_joint": [
+          0.0,
+          0.85
+        ],
+        "right_finger_joint": [
+          0.0,
+          0.85
+        ],
+        "right_inner_knuckle_joint": [
+          0.0,
+          0.85
+        ],
+        "right_outer_knuckle_joint": [
+          0.0,
+          0.85
+        ]
+      },
+      "position": [
+        0.0,
+        0.0,
+        0.158331
+      ],
+      "tool": "xarm_gripper_base_link",
+      "url": "https://github.com/xArm-Developer/xarm_ros2/tree/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description"
+    },
+    "yam": {
+      "approach": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "assumptions": [
+        "Symmetric centre of distal 20mm mesh vertex envelopes; visual geometry is not a measured collision pad."
+      ],
+      "basis": "Distal tip visual mesh bounds, source joint7/8 transforms: Z[.1291924,.1468425], jaw travel X.",
+      "contacts": [
+        "tip_left",
+        "tip_right"
+      ],
+      "dof": 6,
+      "jaw": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "jaws": {
+        "joint7": [
+          0.04695,
+          0.0
+        ],
+        "joint8": [
+          0.04695,
+          0.0
+        ]
+      },
+      "position": [
+        0.0,
+        0.0,
+        0.138017
+      ],
+      "tool": "gripper",
+      "url": "https://github.com/i2rt-robotics/i2rt/blob/120c3c81400171174604e503943f8d1ebc891058/i2rt/robot_models/station/yam_station_linear_4310_d405/yam_station_linear_4310_d405.urdf"
+    }
+  },
+  "license_evidence": {
+    "path": "BlueprintCapturePipeline:LICENSE",
+    "sha256": "sha256:7d1ed722a23878384036453aa95845ead7d0e646bdb33af460a751869d8e9a40",
+    "size_bytes": 1071
+  },
+  "policy_profile": "blueprint_scripted_pick_place.v1",
+  "schema_version": "scripted_robot_baseline_registration_profile.v1",
+  "source_identity": {
+    "files": [
+      {
+        "path": "scripted_robot_baseline.py",
+        "sha256": "sha256:73b092973d2cfa922b38182729449cf7e06932a9fecbda00392356296c6ea6be"
+      },
+      {
+        "path": "scripted_robot_baseline_runtime.py",
+        "sha256": "sha256:923f2cac576a982acf9d0a5e0d65ad4da653428b2c2da4dd99bdcb33928fbe25"
+      },
+      {
+        "path": "scripted_robot_grasp_frames.py",
+        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+      }
+    ],
+    "schema_version": "blueprint_scripted_controller_source.v1"
+  },
+  "team_id": "blueprint-owned-baselines"
+}

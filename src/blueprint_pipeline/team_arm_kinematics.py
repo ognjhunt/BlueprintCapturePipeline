@@ -230,6 +230,16 @@ class LiveArmKinematics:
                 raise ValueError("team_arm_native_joint_influence_undeclared")
         return jacobians
 
+    def scripted_base_world_state(self) -> dict[str, Any]:
+        """Privileged frame readback, exposed only to the explicit owned script."""
+        self._live_jacobians()
+        poses = self.array(self.robot.data.body_pose_w)[0]
+        if poses.shape != (len(self.bodies), 7) or not np.isfinite(poses).all():
+            raise ValueError("team_arm_native_pose_invalid")
+        return {arm["name"]: {"position_m": poses[self.bodies.index(arm["base_link"]), :3].tolist(),
+                              "orientation_xyzw": poses[self.bodies.index(arm["base_link"]), 3:].tolist()}
+                for arm in self.arms}
+
     def joint_targets(self, *, positions: Any, orientations: Any) -> tuple[dict[str, float], list[dict[str, Any]]]:
         q = self.array(self.robot.data.joint_pos)[0]
         poses = self.array(self.robot.data.body_pose_w)[0]

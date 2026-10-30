@@ -23,13 +23,15 @@ INTERFACES = {
     "dreamlabs_dream1.v1": "team_embodiment",
     "openwam_piper_eef20.v1": "team_embodiment",
     "molmoact2_yam_joint14.v1": "team_embodiment",
+    "blueprint_scripted_pick_place.v1": "team_embodiment",
     "task_family_policy_https.v1": "task_family_native",
 }
 # Written out, not inverted: two interfaces share pi05_droid's contract, and
 # only the pinned OpenPI one may ever serve the frozen pi05_droid candidate.
 LEGACY_INTERFACES = {"pi05_droid": "openpi_droid.v1", "groot_n17_droid": "groot_n17_droid.v1"}
 TEAM_LOCAL_INTERFACES = frozenset({"openwam_piper_eef20.v1", "molmoact2_yam_joint14.v1"})
-TEAM_ROBOT_INTERFACES = frozenset({"blueprint_policy_https.v1", "dreamlabs_dream1.v1", *TEAM_LOCAL_INTERFACES})
+TEAM_SCRIPTED_INTERFACES = frozenset({"blueprint_scripted_pick_place.v1"})
+TEAM_ROBOT_INTERFACES = frozenset({"blueprint_policy_https.v1", "dreamlabs_dream1.v1", *TEAM_LOCAL_INTERFACES, *TEAM_SCRIPTED_INTERFACES})
 TEAM_HTTPS_INTERFACES = frozenset({"openpi_droid_https.v1", "task_family_policy_https.v1",
                                  "blueprint_policy_https.v1", "dreamlabs_dream1.v1"})
 

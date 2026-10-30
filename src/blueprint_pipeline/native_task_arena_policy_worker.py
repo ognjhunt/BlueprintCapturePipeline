@@ -36,6 +36,7 @@ _EPISODE_PROGRESS_BOOLEAN_FIELDS = (
     "multicamera_policy_observation_retained",
     "candidate_policy_query_attempted",
     "candidate_policy_queried",
+    "scripted_controller_invoked",
     "candidate_action_returned",
     "candidate_action_shape_validated",
     "candidate_action_finite_validated",
@@ -79,6 +80,8 @@ _EPISODE_PROGRESS_EVIDENCE_FIELDS = (
     "candidate_exact_policy_input_frames",
     "policy_inference_evidence",
     "prestart_readiness",
+    "execution_evidence_kind",
+    "action_source",
 )
 
 
@@ -510,8 +513,13 @@ class _PolicyQueryTracker:
     def __init__(self, client: Any) -> None:
         self._client = client
         self.candidate_policy_queried = False
+        self.scripted_controller_invoked = False
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
+        from blueprint_pipeline.policy_execution_evidence import SCRIPTED
+        if getattr(self._client, "execution_evidence_kind", None) == SCRIPTED:
+            self.scripted_controller_invoked = True
+            return self._client.infer(observation)
         try:
             response = self._client.infer(observation)
         except BaseException:  # noqa: BLE001 - preserve paid-run query truth

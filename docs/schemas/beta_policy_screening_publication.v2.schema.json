@@ -48,7 +48,147 @@
     "candidates": {
       "items": {
         "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "execution_evidence_kind": {
+                  "const": "scripted_simulator_state_baseline"
+                }
+              },
+              "required": [
+                "execution_evidence_kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action_source": {
+                  "const": "scripted_simulator_state"
+                },
+                "candidate_policy_queried": {
+                  "const": false
+                },
+                "learned_policy_rollout_count": {
+                  "const": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "execution_evidence_kind": {
+                  "const": "learned_policy"
+                }
+              },
+              "required": [
+                "execution_evidence_kind"
+              ]
+            },
+            "then": {
+              "properties": {
+                "action_source": {
+                  "const": "learned_policy"
+                },
+                "scripted_controller_invoked": {
+                  "const": false
+                },
+                "scripted_rollout_count": {
+                  "const": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "scripted_controller_invoked": {
+                  "const": true
+                }
+              },
+              "required": [
+                "scripted_controller_invoked"
+              ]
+            },
+            "then": {
+              "properties": {
+                "scripted_rollout_count": {
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "candidate_policy_queried": {
+                  "const": true
+                }
+              },
+              "required": [
+                "candidate_policy_queried"
+              ]
+            },
+            "then": {
+              "properties": {
+                "learned_policy_rollout_count": {
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        ],
+        "dependentRequired": {
+          "action_source": [
+            "execution_evidence_kind",
+            "scripted_rollout_count",
+            "learned_policy_rollout_count",
+            "scripted_controller_invoked",
+            "candidate_policy_queried"
+          ],
+          "candidate_policy_queried": [
+            "execution_evidence_kind",
+            "action_source",
+            "scripted_rollout_count",
+            "learned_policy_rollout_count",
+            "scripted_controller_invoked"
+          ],
+          "execution_evidence_kind": [
+            "action_source",
+            "scripted_rollout_count",
+            "learned_policy_rollout_count",
+            "scripted_controller_invoked",
+            "candidate_policy_queried"
+          ],
+          "learned_policy_rollout_count": [
+            "execution_evidence_kind",
+            "action_source",
+            "scripted_rollout_count",
+            "scripted_controller_invoked",
+            "candidate_policy_queried"
+          ],
+          "scripted_controller_invoked": [
+            "execution_evidence_kind",
+            "action_source",
+            "scripted_rollout_count",
+            "learned_policy_rollout_count",
+            "candidate_policy_queried"
+          ],
+          "scripted_rollout_count": [
+            "execution_evidence_kind",
+            "action_source",
+            "learned_policy_rollout_count",
+            "scripted_controller_invoked",
+            "candidate_policy_queried"
+          ]
+        },
         "properties": {
+          "action_source": {
+            "enum": [
+              "learned_policy",
+              "scripted_simulator_state"
+            ]
+          },
           "blockers": {
             "items": {
               "pattern": "^[a-z][a-z0-9_:.=-]{0,199}$",
@@ -61,6 +201,9 @@
             "maxLength": 192,
             "minLength": 1,
             "type": "string"
+          },
+          "candidate_policy_queried": {
+            "type": "boolean"
           },
           "configuration_digest": {
             "pattern": "^sha256:[0-9a-f]{64}$",
@@ -88,6 +231,24 @@
             "type": "integer"
           },
           "episodes_void": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "execution_evidence_kind": {
+            "enum": [
+              "learned_policy",
+              "scripted_simulator_state_baseline"
+            ]
+          },
+          "learned_policy_rollout_count": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "scripted_controller_invoked": {
+            "type": "boolean"
+          },
+          "scripted_rollout_count": {
+            "description": "Retained scripted episode records, including pre-invocation failures; not an invocation count.",
             "minimum": 0,
             "type": "integer"
           },
