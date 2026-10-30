@@ -76,8 +76,8 @@ def build_controlled_native_environment(*, runtime_root: Path, configuration: Ma
     try:
         simulation_app, launch = launch_native_task_isaaclab(
             evidence_root / "native_task_runtime_source_provisioning.v1.json",
-            device=NATIVE_TASK_ARENA_DEVICE, appearance_render_path=appearance_render_path_from_plan(plan))
-        deps = preflight_native_dependency_matrix(robot_id=str(plan["robot"]["robot_id"]))
+            device=NATIVE_TASK_ARENA_DEVICE, controller_backend="pink_franka", appearance_render_path=appearance_render_path_from_plan(plan))
+        deps = preflight_native_dependency_matrix(robot_id=str(plan["robot"]["robot_id"]), controller_backend="pink_franka")
         preconstruction = prepare_native_task_arena_preconstruction(expected_device=NATIVE_TASK_ARENA_DEVICE)
         if deps.get("all_required_available") is not True or preconstruction.get("passed") is not True:
             raise ValueError("controlled_native_runtime_preflight_failed")

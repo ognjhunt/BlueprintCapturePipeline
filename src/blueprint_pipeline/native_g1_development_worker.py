@@ -174,7 +174,7 @@ def _launch_scene(
 
     return launch_native_task_isaaclab(
         request["runtime_provisioning_receipt_path"],
-        device=request["device"],
+        device=request["device"], controller_backend="g1_joint",
         appearance_render_path=appearance_render_path_from_plan(plan),
     )
 
@@ -191,7 +191,7 @@ def _build_scene(
     from .native_task_arena_preconstruction import prepare_native_task_arena_preconstruction
     from .native_task_arena_runtime import build_native_task_arena_environment
 
-    dependencies = preflight_native_dependency_matrix(robot_id="unitree_g1")
+    dependencies = preflight_native_dependency_matrix(robot_id="unitree_g1", controller_backend="g1_joint")
     dependency_receipt_path.write_text(
         json.dumps(dependencies, indent=2, sort_keys=True, allow_nan=False) + "\n",
         encoding="utf-8",

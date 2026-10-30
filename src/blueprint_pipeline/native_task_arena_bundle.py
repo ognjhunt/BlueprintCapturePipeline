@@ -729,6 +729,9 @@ def build_native_task_arena_bundle(
         )
     runtime_root_rows: list[dict[str, Any]] = []
     extra_files = dict(runtime_extra_files or {})
+    if "native_task_official_nurec.py" in module_names:
+        from .native_task_official_nurec import runtime_data_files
+        extra_files.update(runtime_data_files())
     if is_policy_mode:
         package_source = Path(__file__).resolve().parent
         extra_files.update({"blueprint_pipeline/" + name: package_source / name

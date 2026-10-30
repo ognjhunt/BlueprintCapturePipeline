@@ -15,8 +15,14 @@ from collections.abc import Mapping
 PROVIDER_STATUS_FILENAME = "native_task_arena_policy_canary_status.v1.json"
 PROVIDER_STATUS_SCHEMA = "native_task_arena_policy_canary_status.v1"
 
+CAMERA_RUNTIME_MODULE_NAMES = (
+    "native_task_runtime_capabilities.py", "native_task_pink_compatibility.py",
+    "native_task_official_nurec.py", "native_camera_runtime_diagnostic.py",
+    "scene_component_process.py",
+)
 
 CONSTRUCTION_RUNTIME_MODULE_NAMES = (
+    *CAMERA_RUNTIME_MODULE_NAMES,
     "native_task_camera_start_configuration.py",
     "franka_kinematics.py",
     "articulation_graph_contract.py",
@@ -107,6 +113,7 @@ DESTINATION_QUALIFICATION_RUNTIME_MODULE_NAMES = tuple(
 )
 
 CONTROLS_RUNTIME_MODULE_NAMES = (
+    *CAMERA_RUNTIME_MODULE_NAMES,
     "native_task_camera_start_configuration.py",
     "franka_kinematics.py",
     "policy_scientific_reset.py",
@@ -290,6 +297,7 @@ POLICY_RUNTIME_MODULE_NAMES = tuple(
 # dependency downloader the entrypoint runs, plus the modules every native
 # bundle carries; tests/test_rigid_robot_free_probe_lane.py pins the closure.
 RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES = (
+    *CAMERA_RUNTIME_MODULE_NAMES,
     "adp009d_contact_envelope.py", "adp009d_droid_action_execution.py", "adp009d_droid_observation.py", "adp009d_groot_worker_identity.py",
     "adp009d_isaac_episode_adapter.py", "adp009d_newton_gripper_drive.py",
     "adp009d_physics_backend_comparison.py", "adp009d_task_scoring.py", "adp_rigid_retreat_scoring.py",
@@ -547,9 +555,14 @@ def required_archive_entries(execution_mode: str) -> set[str]:
     contract = EXECUTION_MODE_CONTRACTS.get(str(execution_mode))
     if contract is None:
         return set()
+    names = set(contract.runtime_module_names)
+    if "native_task_official_nurec.py" in names:
+        names.update({"config/isaacsim_nurec_601/manifest.json", "config/isaacsim_nurec_601/rendering_setup.py",
+                      "config/isaacsim_nurec_601/config/nurec_config.yaml", "config/isaacsim_nurec_601/LICENSE",
+                      "config/isaacsim_pink_601.json"})
     return {
         f"provider_runtime/blueprint_pipeline/{name}"
-        for name in contract.runtime_module_names
+        for name in names
     }
 
 

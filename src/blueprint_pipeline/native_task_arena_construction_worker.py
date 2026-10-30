@@ -223,7 +223,7 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
+def preflight_native_dependency_matrix(*, robot_id: str, controller_backend: str = "joint") -> dict[str, Any]:
     """Probe all worker imports and media tools in one retained receipt."""
     imports, blockers = [], []
     try:
@@ -240,9 +240,8 @@ def preflight_native_dependency_matrix(*, robot_id: str) -> dict[str, Any]:
             "traceback": traceback.format_exc(),
         }
         blockers.append(f"native_task_arena_embodiment_scope_failed:{robot_id}")
-    for name in DEPENDENCY_IMPORTS:
-        if name in G1_ONLY_DEPENDENCY_IMPORTS and robot_id != "unitree_g1":
-            continue
+    from .native_task_runtime_capabilities import controller_imports
+    for name in controller_imports(DEPENDENCY_IMPORTS, G1_ONLY_DEPENDENCY_IMPORTS, robot_id=robot_id, controller_backend=controller_backend):
         try:
             module = importlib.import_module(name)
             imports.append(
@@ -1294,14 +1293,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         simulation_app, launch_receipt = launch_native_task_isaaclab(
             output_root / "native_task_runtime_source_provisioning.v1.json",
-            device=NATIVE_TASK_ARENA_DEVICE,
+            device=NATIVE_TASK_ARENA_DEVICE, controller_backend="pink_franka",
             appearance_render_path=appearance_render_path_from_plan(plan),
         )
         result["isaaclab_launch"] = launch_receipt
         _announce("simulation_app", "completed")
         _announce("dependency_matrix")
         dependency_matrix = preflight_native_dependency_matrix(
-            robot_id=str(plan["robot"]["robot_id"])
+            robot_id=str(plan["robot"]["robot_id"]), controller_backend="pink_franka"
         )
         result["dependency_matrix"] = dependency_matrix
         if not dependency_matrix["all_required_available"]:

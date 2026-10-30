@@ -83,7 +83,7 @@ def run_control_sweep_worker(
     try:
         simulation_app, _launch_receipt = launch_native_task_isaaclab(
             provisioning_receipt_path,
-            device=NATIVE_TASK_ARENA_DEVICE,
+            device=NATIVE_TASK_ARENA_DEVICE, controller_backend="joint",
             # A sealed sweep plan omits the site appearance (validated above);
             # only a plan that composes one derives the path from the scene.
             appearance_render_path=(

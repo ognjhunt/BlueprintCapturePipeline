@@ -277,7 +277,7 @@ def setup_and_warm_native_nurec_renderer(
         }
     try:
         if setup_for_rendering_factory is None:
-            from isaacsim.replicator.nurec_utils.rendering_setup import (
+            from blueprint_pipeline.native_task_official_nurec import (
                 setup_for_rendering,
             )
 
