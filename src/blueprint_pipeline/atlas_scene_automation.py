@@ -240,11 +240,6 @@ def run_automation(
     retained_only = replay_exports_only or finalize_retained_exports
     if replay_exports_only and finalize_retained_exports:
         raise ValueError('atlas_export_mode_ambiguous')
-    if "refined_splat_cost_usd" in configuration.get("policy", {}) and not retained_only:
-        legacy_background = output_root / "background/prepared_background.json"
-        if prior_background_path is None and legacy_background.is_file():
-            prior_background_path = legacy_background
-        output_root = output_root / "native_splats_v1"
     if retained_only:
         task_runner = planner_runner = _offline_provider_call
         pose_runner = _retained_pose_runner
@@ -277,12 +272,6 @@ def run_automation(
     if edit_scope == "all_selected_views":
         requested = [row["frame_id"] for row in frames]
     selected_ids = [row["frame_id"] for row in frames if row["frame_id"] in requested] if requested else None
-    native_splat = "refined_splat_cost_usd" in policy and not retained_only
-    if native_splat:
-        from .atlas_splat_source_selection import select_splat_sources
-        selected_ids, splat_selection = select_splat_sources(frames=frames, inputs=inputs, review=review,
-                                                           output_root=output_root)
-        requested = selected_ids
     if requested and set(selected_ids) != set(requested):
         raise ValueError("atlas_background_reviewed_selection_missing")
     if pose_root is None and selected_ids is not None:
@@ -351,7 +340,7 @@ def run_automation(
             recovery = None
             coverage = None
             recovery_suffix = ""
-            if background["status"] == "fallback_prepared" and "rgbd_view_cost_usd" in policy and not native_splat:
+            if background["status"] == "fallback_prepared" and "rgbd_view_cost_usd" in policy:
                 from .atlas_scene_completion import complete_scene, COMPLETION_REVISION
                 from .atlas_scene_gaps import retained_completion, completion_plan_path
 
@@ -503,36 +492,22 @@ def run_automation(
                 background["completion"] = completion
                 background["reconstruction_frame_count"] = len(derived_frames)
                 background["generated_completion_frame_count"] = len(generated)
-            if native_splat:
-                from .atlas_native_splat import run_native_splat
-                native = run_native_splat(frames=derived_frames, result=effective_pose,
-                    output_root=output_root / "refined_splat", policy=policy, task_context=task_context,
-                    task_runner=task_runner, max_polls=max_polls, generated_result_digests=provenance,
-                    visual_review_digest=visual_digest, checkpoint=checkpoint)
-                if native["status"] != "completed":
-                    return native
-                splat_root, splat = Path(native["splat_root"]), native["splat_manifest"]
-                background.update(splat_source_selection=splat_selection,
-                    reconstruction_frame_count=len(derived_frames), generated_completion_frame_count=0,
-                    native_refinement_performed=True, source_geometry_preservation_proven=False)
-                recovery_suffix = "-native-" + splat["digest"][7:23]
-            else:
-                # Retain the earlier baseline rather than letting its existing
-                # manifest silently bypass the newly generated geometry.
-                splat_root = output_root / ((f"background_completed_splat-{COMPLETION_REVISION}" + recovery_suffix)
-                                            if completion else "background_splat")
-                manifest_path = splat_root / "atlas_depth_splat_manifest.json"
-                splat = (
-                    json.loads(manifest_path.read_text())
-                    if manifest_path.is_file()
-                    else write_depth_splat(
-                        frames=derived_frames,
-                        result=effective_pose,
-                        output_root=splat_root,
-                        generated_result_digests=provenance,
-                        visual_review_digest=visual_digest,
-                    )
+            # Retain the earlier baseline rather than letting its existing
+            # manifest silently bypass the newly generated geometry.
+            splat_root = output_root / ((f"background_completed_splat-{COMPLETION_REVISION}" + recovery_suffix)
+                                        if completion else "background_splat")
+            manifest_path = splat_root / "atlas_depth_splat_manifest.json"
+            splat = (
+                json.loads(manifest_path.read_text())
+                if manifest_path.is_file()
+                else write_depth_splat(
+                    frames=derived_frames,
+                    result=effective_pose,
+                    output_root=splat_root,
+                    generated_result_digests=provenance,
+                    visual_review_digest=visual_digest,
                 )
+            )
             if completion is not None and (
                     splat.get("generated_result_digests") != provenance
                     or {row["frame_id"] for row in splat.get("frames", [])}
@@ -580,6 +555,18 @@ def run_automation(
                 value['digest'] = canonical_digest(value, digest_field='digest')
                 write_json(output_root / 'export_replays' / (splat['digest'][7:23] + '.json'), value)
                 return value
+            if "refined_splat_cost_usd" in policy:
+                # Atlas's refined splat replaces the draft as the final appearance;
+                # the draft above stays the gap and coverage evidence.
+                from .atlas_native_splat import run_native_splat
+                native = run_native_splat(frames=derived_frames, result=effective_pose, draft=splat,
+                    output_root=splat_root.parent / f"{splat_root.name}-refined", policy=policy,
+                    task_context=task_context, task_runner=task_runner, max_polls=max_polls,
+                    checkpoint=checkpoint)
+                if native["status"] != "completed":
+                    return native
+                splat_root, splat = Path(native["splat_root"]), native["splat_manifest"]
+                recovery_suffix += "-refined-" + splat["digest"][7:23]
             mesh_root = None
             from .atlas_result_bundle import retained_mesh_for_splat, find_retained_mesh_root
 
@@ -598,8 +585,8 @@ def run_automation(
                 from .atlas_depth_splat import splats2mesh_attempt
 
                 spec, mesh_root = splats2mesh_attempt(splat_root, output_root / (
-                    (f"background_completed_mesh-{COMPLETION_REVISION}" + recovery_suffix)
-                    if completion else "background_mesh"))
+                    (f"background_completed_mesh-{COMPLETION_REVISION}" if completion else "background_mesh")
+                    + recovery_suffix))
                 quote = {
                     "schema_version": "website_atlas_task_price_review.v1",
                     "task": "splats2Mesh",
@@ -663,7 +650,7 @@ def run_automation(
             background.update(
                 status="completed",
                 download=bundle,
-                splat_kind=splat["splat_kind"],
+                splat_kind=splat.get("splat_kind", "depth_fused_draft"),
                 splat_manifest_digest=splat["digest"],
                 mesh_available=mesh_root is not None,
             )

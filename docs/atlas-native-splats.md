@@ -1,58 +1,52 @@
 # Native Atlas splats
 
-ADP-040 / day 28 appearance construction and the existing beta preparation
-journey. The completion artifact is a retained `posedImages2Splats` operation,
-its original SPZ, decoded standard PLY, input binding and portable bundle.
-These are development-only appearance, with unproven metric scale, output
-geometry preservation, collision and physics.
+ADP-040 / day 28 appearance construction. World Labs' Atlas beta API added
+`posedImages2Splats` on 2026-10-29: posed RGBD frames in, refined Gaussian
+splats (SPZ, keyed by count) out. It replaces our depth-fused draft as the
+final appearance of a website scene. The result is development-only: it does
+not prove metric scale, source-geometry preservation, collision or physics.
 
-The previous Atlas adapter could only fuse estimated depth into draft splats.
-The new beta API reconstructs and refines splats directly from posed RGBD.
-Use the existing allocator and durable task runner; do not submit a separate
-untracked CLI request or replace the original capture.
+## Where it runs
 
-## Flow
+`atlas_scene_automation.run_automation` (the object-removal background flow)
+keeps every existing step: removal edits and review, fallback pose, gap
+completion for uncaptured regions, geometry recovery and coverage repair. Those
+steps still fuse a local draft, because gap detection and coverage review
+project it. When the reviewed policy carries `refined_splat_cost_usd`, one step
+follows the final draft:
 
-1. Reuse the admitted dense survey and its existing quality, static-state,
-   privacy and overlap selection. The splat input selection grows beyond the
-   minimal edit set to a target of 16–30 useful, distributed real views. That
-   target is not an API requirement: fewer distinct qualified views remain
-   usable and their coverage limitation is recorded. The API minimum is two.
-2. Pass object-free frames through unchanged. Frames showing a removal target
-   use the existing exact-view visibility check, composited edit and independent
-   review. Missing masks are checked before editing. Existing approved edits
-   can be adopted; the historical three-view run stays intact.
-3. Pose the approved views with `images2PosedRGBD`. Keep each returned image,
-   linear EXR depth and camera together. Mixed grids use the existing calibrated
-   photograph tiler. Source observations never become generated evidence.
-4. Submit one `posedImages2Splats` operation. It is the first reconstruction
-   attempt; local depth fusion and the old up-front gap-generation campaign are
-   not prerequisites. Atlas performs its own internal rendering and refinement.
-   Do not count those internal generated views as additional real observations.
-   Additional explicit generation must address gaps absent from the recording,
-   through the existing source-first review/recovery seam.
-5. Persist the operation ID before polling. Pending and uncertain submissions
-   resume through the same task runner, reservation and idempotency key. A
-   30-minute operation is supported; it does not require a held-open request.
-   The existing preparation watchdog and withdrawal checks remain in force.
-6. Retain all returned SPZ variants and select the highest published count for
-   the final appearance. Verify byte counts, SPZ header/count and digests, then
-   decode through the existing pinned `splat-transform` runtime. Decoder
-   availability is checked before purchasing. The SPZ is kept unchanged.
-   Optional `splats2Mesh` consumes this exact native splat; the legacy
-   depth-disc reduction must not rewrite it.
+1. `atlas_native_splat.prepare_splat_request` posts exactly the frames the
+   draft fused, each with its camera, linear depth and an alpha mask of the
+   pixels the draft used (finite depth, confidence > 0). Frames on one grid go
+   unchanged; mixed grids (portrait source beside landscape generated views)
+   use the ray-preserving photograph tiler, with the mask taken from the
+   projected depth. Generated gap views therefore enter the refined splat only
+   where their review admitted them.
+2. `run_native_splat` reserves the reviewed price, submits through the shared
+   admitted task runner, and resumes a pending operation by ID (an operation
+   takes about 20–30 minutes; each controller pass returns `processing`).
+3. The largest returned count is kept. Its original SPZ is retained and decoded
+   in Python (`atlas_depth_splat.decode_spz`; Atlas publishes SPZ v2 with
+   degree-0 colour, bit-identical to `splat-transform` on a 2M-Gaussian Atlas
+   splat) into a standard 3DGS PLY. Any other layout fails closed with the paid
+   SPZ kept, so a retry never buys twice.
+4. `atlas_refined_splat_manifest.json` binds the pose, the draft manifest, the
+   generated-result digests, the request and every upload. Mesh registration
+   keeps the draft's fusion grid as its tolerance. `splats2Mesh`, registration,
+   the download bundle and scene handoff read either manifest.
 
-`atlas_refined_splat_manifest.json` distinguishes native refined splats from
-`atlas_depth_splat_manifest.json`. Export, mesh registration and scene handoff
-read either contract. The download includes the native receipt, original SPZ
-variants, selected SPZ/PLY and input binding. Native refinement does not prove
-that the provider preserved source geometry.
+The refined root sits beside the draft (`<draft root>-refined`), and its mesh
+root carries the refined digest, so a new draft gets its own purchase and a
+legacy mesh is never adopted for a refined splat.
+
+Preserved-capture scenes and the plain pose-and-generate route keep the draft
+for now. Choosing more real views for the splat (16–30 overlapping frames) is a
+separate change: it alters which views are edited and posed.
 
 ## Reviewed runtime policy
 
-The signed WebApp policy remains the rate-card authority. Add these fields to
-the existing reviewed policy, retaining the same owner/source grant and total
-allowance:
+The signed WebApp policy (`BLUEPRINT_WEBSITE_ATLAS_RUNTIME_POLICY_JSON`) is the
+rate-card authority. These optional fields are accepted by the WebApp:
 
 ```json
 {
@@ -64,30 +58,14 @@ allowance:
 }
 ```
 
-Also record the current `rate_card_reference`, `reviewed_by` and `reviewed_on`.
-The `refined_splat_cost_usd` field selects the native path. Historical policies
-and their completed receipts retain the legacy route and original quotes.
-Native background runs use a separate `automation/native_splats_v1` root and
-may adopt approved edits from the preceding background.
+`refined_splat_cost_usd` selects the refined splat. The additional-frame rates
+apply World Labs' 2026-10-29 pricing: the first frame of each request keeps its
+rate, and each further frame in the same request costs the additional rate (30
+RGBD frames in one request reserve $0.34). Policies without them keep their
+original quotes and receipt identities. Update `rate_card_reference`,
+`reviewed_by` and `reviewed_on` with the change.
 
-Each render request costs its first-frame rate plus its additional-frame rate
-times the remaining output frames. For example, 30 RGBD output frames in one
-request reserve $0.34. Starting another request charges another first frame.
-Pose inputs, edits, reviews, native splats and optional meshing continue to
-share the existing source-bound allowance. Reserve the final splat/mesh costs
-before buying upstream work. Estimated reservations are not provider bills.
-
-The current OpenAPI request schema does not expose the guide's optional draft
-switch. This adapter uses the refined default rather than sending an
-undocumented `refine` field.
-
-The existing `website_atlas_operator --task-spec` entry point accepts
-`posedImages2Splats` with the usual task-context, reviewed request digest,
-retention decision and admission. A valid World Labs key alone does not replace
-Blueprint source/spend authority. Keep ordinary worker routing and timer
-ownership unchanged while another lane is advancing an existing capture.
-
-Sources checked October 29, 2026:
+Sources checked 2026-10-29:
 [posed images to splats](https://docs.atlas-beta.worldlabs.ai/posed-images-to-splats),
 [request/response reference](https://docs.atlas-beta.worldlabs.ai/api-reference/posed-images2-splats),
 [splat guidance](https://docs.atlas-beta.worldlabs.ai/splat-best-practices),

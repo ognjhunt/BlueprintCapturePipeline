@@ -327,8 +327,7 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         validate_preserved_completion(report=completion_admission, job_root=job_dir,
             source_pose_digest=source['digest'], source_video_digest=result['source_video_digest'],
             task_context_digest=result['task_context_digest'], splat=splat_manifest)
-    elif preserved and (splat_manifest.get('generated_result_digests')
-                        or splat_manifest.get('generated_content') and splat_manifest.get('task') != 'posedImages2Splats'):
+    elif preserved and splat_manifest.get('generated_content'):
         raise ValueError('atlas_preserved_completion_not_bound')
     background_root = pose_root
     if splat_manifest["pose_result_digest"] == source["digest"]:

@@ -4,15 +4,13 @@ This is the ADP-040 / Day 28 development-only capture preparation adapter. It
 extends the existing source-video planner and canonical paid-resource allocator;
 it does not create a separate agent service or replace original capture evidence.
 
-A reviewed `refined_splat_cost_usd` selects the [native Atlas path](atlas-native-splats.md):
-select useful real views beyond the minimal edit set, pass object-free views
-through unchanged, review composited removal edits, pose them and submit
-`posedImages2Splats` directly. The 16–30-view target is guidance, not a minimum
-or a provider capacity limit. Native refinement performs its own rendering;
-the depth-fused draft and the legacy up-front gap campaign below are not
-prerequisites. Its SPZ/PLY, operation and input binding remain development-only.
+A reviewed `refined_splat_cost_usd` adds one final step to the flow below:
+once the depth-fused draft (and any gap completion and coverage repair) is
+built, the same frames and fused pixels are posted once to `posedImages2Splats`
+and its SPZ replaces the draft for meshing, export and scene handoff. The draft
+stays the gap and coverage evidence. See [native Atlas splats](atlas-native-splats.md).
 
-The retained depth-fused policy runs the following steps:
+The production Atlas controller runs the following for a new scene plan:
 
 
 1. The configured Agents SDK model considers candidate frames, task objects,

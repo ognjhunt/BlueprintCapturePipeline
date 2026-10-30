@@ -1,4 +1,4 @@
-"""Native splat schema, durable admission, decoding and source-selection contracts."""
+"""Refined-splat schema, durable admission, decoding and final-appearance contracts."""
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,7 +40,8 @@ def test_native_request_retains_exact_returned_grid_and_linear_depth(tmp_path):
     for i, (context, original) in enumerate(zip(request["posedFrames"], frames, strict=True)):
         assert context["camera"] == {"intrinsics": original["intrinsics"], "extrinsics": original["extrinsics"]}
         assert np.array_equal(depth.read_exr_depth(Path(uploads[f"frame-{i}-depth"]["path"])), original["depth"])
-        assert provenance[i]["source_frame_id"] == original["frame_id"]
+        assert provenance[i]["frame_id"] == original["frame_id"]
+        assert "maskAsset" not in context  # Every pixel of these frames is fused.
     assert "refine" not in request  # Only the documented, refined-default OpenAPI contract.
 
 
@@ -51,36 +52,6 @@ def test_native_request_refuses_misaligned_depth_before_runner(tmp_path):
         native.prepare_splat_request(frames=frames, root=tmp_path)
 
 
-@pytest.mark.parametrize("count", [2, 42])
-def test_real_source_selection_expands_minimal_edit_set_without_hidden_or_blurry_views(tmp_path, monkeypatch, count):
-    from PIL import Image
-    from blueprint_pipeline import atlas_video_inputs as selection
-    from blueprint_pipeline.atlas_splat_source_selection import select_splat_sources
-    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
-    rng = np.random.default_rng(11)
-    rows = []
-    for i in range(count):
-        path = tmp_path / f"{i}.png"
-        pixels = (np.full((64, 64, 3), 100, np.uint8) if i == 11 else
-                  rng.integers(20, 230, (64, 64, 3), dtype=np.uint8))
-        Image.fromarray(pixels).save(path)
-        rows.append({"frame_id": str(i), "timestamp_seconds": float(i),
-                     "image_path": str(path), "image_digest": _sha256_file(path)})
-    inputs = {"heldout_pixels_included": False, "frames": rows, "digest": "input"}
-    review = {"anchor_frame_id": "0", "coverage_requirements": [
-        {"role": "task_object", "label": "task", "required_frame_ids": ["0"]},
-        {"role": "surrounding_scene", "label": "whole room", "required_frame_ids": [str(count - 1)]}]}
-    monkeypatch.setattr(selection, "_features", lambda row, rotation: int(Path(row["source_image_path"]).stem))
-    monkeypatch.setattr(selection, "_overlap", lambda a, b: (50, 25.) if abs(a - b) <= 6 else (0, 0.))
-    ids, receipt = select_splat_sources(frames=rows, inputs=inputs, review=review, output_root=tmp_path / "selection")
-    assert min(16, count) <= len(ids) <= min(30, count) and {"0", str(count - 1)} <= set(ids)
-    assert "11" not in ids and set(ids) <= {row["frame_id"] for row in rows}
-    assert receipt["generated_views_count_as_real"] is False
-    assert receipt["minimum_recommended_views_met"] is (len(ids) >= 16)
-    assert select_splat_sources(frames=rows, inputs=inputs, review=review,
-                                output_root=tmp_path / "selection")[0] == ids
-
-
 def test_native_schema_refuses_empty_result_and_published_count_mismatch(case, tmp_path):
     fake, request, run = native_case(case, tmp_path)
     with pytest.raises(ValueError, match="refined_splats_missing"):
@@ -89,15 +60,6 @@ def test_native_schema_refuses_empty_result_and_published_count_mismatch(case, t
     with pytest.raises(ValueError, match="splat_count_mismatch"):
         run()
     assert fake.posts == 1
-
-
-def test_native_splat_missing_decoder_refuses_before_purchase(tmp_path, monkeypatch):
-    from blueprint_pipeline import gaussian_splat_decode
-    monkeypatch.setattr(gaussian_splat_decode, "find_splat_transform_cli", lambda *_: None)
-    with pytest.raises(ValueError, match="decoder_required_before_purchase"):
-        native.run_native_splat(frames=source_frames(), result={"digest": "pose",
-            "binding": {"source_video_digest": "source"}}, output_root=tmp_path, policy={},
-            task_context={}, task_runner=lambda **_: pytest.fail("must not purchase"))
 
 
 def native_case(case, tmp_path):
@@ -147,43 +109,6 @@ def test_native_lost_response_adopts_operation_without_a_second_purchase(case, t
     assert fake.posts == fake.reservations == 1
 
 
-def test_native_controller_uses_real_views_without_legacy_fusion_or_upfront_gap_generation(tmp_path, monkeypatch):
-    from blueprint_pipeline import atlas_scene_automation as worker
-    from blueprint_pipeline import atlas_scene_measurements, atlas_background_automation, atlas_scene_completion
-    from blueprint_pipeline import atlas_splat_source_selection, atlas_result_bundle
-    from tests.test_atlas_scene_automation import view, plan
-    frames = [view(tmp_path), view(tmp_path, "b", .1)]
-    pose = {"digest": "pose", "binding": {"source_video_digest": "video"}}
-    inputs = {"digest": "inputs", "frames": [{k: f[k] for k in ("frame_id", "image_path", "image_digest")}
-                                              for f in frames]}
-    monkeypatch.setattr(atlas_scene_measurements, "load_views", lambda *_: (pose, frames))
-    monkeypatch.setattr(atlas_scene_measurements, "estimate_sizes", lambda **_: {})
-    monkeypatch.setattr(atlas_splat_source_selection, "select_splat_sources",
-                        lambda **_: (["a", "b"], {"selected_real_frame_count": 2}))
-    monkeypatch.setattr(atlas_background_automation, "run_background", lambda **_: {
-        "status": "passed", "stage_roots": [], "result_digests": [], "visual_review_digest": "review"})
-    monkeypatch.setattr(worker, "_edited_frames", lambda _: frames)
-    monkeypatch.setattr(depth, "write_depth_splat", lambda **_: pytest.fail("legacy fusion must not gate native Atlas"))
-    monkeypatch.setattr(atlas_scene_completion, "complete_scene", lambda **_: pytest.fail("do not buy gap views upfront"))
-    observed = []
-
-    def run(**kw):
-        observed.append(kw)
-        return {"status": "completed", "splat_root": str(tmp_path / "native"),
-                "splat_manifest": {"digest": "native", "splat_kind": "atlas_refined"}}
-    monkeypatch.setattr(native, "run_native_splat", run)
-    monkeypatch.setattr(atlas_result_bundle, "export_pose_bundle", lambda **kw: {"directory": str(kw["splat_root"])})
-    result = worker.run_automation(pose_root=tmp_path, inputs=inputs,
-        review={"automation": plan(), "coverage_requirements": [{"required_frame_ids": ["a"]}]},
-        output_root=tmp_path / "out", task_context={},
-        configuration={"policy": {"refined_splat_cost_usd": 5, "rgbd_view_cost_usd": .05}},
-        task_runner=None, pose_runner=None, release_blockers=None)
-    assert result["status"] == "completed"
-    assert observed[0]["frames"] == frames
-    assert result["background"]["splat_kind"] == "atlas_refined"
-    assert result["background"]["splat_source_selection"]["selected_real_frame_count"] == 2
-
-
 def test_native_splat_invalid_output_is_never_published(case, tmp_path):
     fake, _, run = native_case(case, tmp_path)
     fake.asset_bytes["asset_splat"] = b"not a splat"
@@ -206,7 +131,6 @@ def test_native_schema_refuses_invalid_input_before_purchase(case, tmp_path, cha
     assert fake.posts == fake.reservations == 0
 
 
-@pytest.mark.slow
 def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path):
     frames = source_frames()
     splat, _ = depth.fuse_posed_frames(frames)
@@ -237,7 +161,8 @@ def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path):
             {"status": "completed", "result_digest": state["digest"]}))
         return state
 
-    result = native.run_native_splat(frames=frames, result=pose, output_root=tmp_path, policy=policy,
+    draft = {"digest": "sha256:" + "c" * 64, "voxel_size": .01, "generated_result_digests": ["generated"]}
+    result = native.run_native_splat(frames=frames, result=pose, draft=draft, output_root=tmp_path, policy=policy,
                                     task_context={"context_digest": "sha256:" + "d" * 64}, task_runner=runner)
     manifest = result["splat_manifest"]
     assert (tmp_path / "atlas_refined_splat.spz").read_bytes() == blob
@@ -247,10 +172,78 @@ def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path):
     assert manifest["metric_measurement_proven"] is manifest["simulation_qualified"] is False
     assert calls[0]["task"] == "posedImages2Splats"
     assert (tmp_path / "splats2mesh_task_spec.json").is_file()
-    resumed = native.run_native_splat(frames=frames, result=pose, output_root=tmp_path, policy=policy,
+    # Registration keeps the draft's grid; the draft and its generated inputs stay bound.
+    assert manifest["voxel_size"] == .01 and manifest["draft_splat_manifest_digest"] == draft["digest"]
+    assert manifest["generated_result_digests"] == ["generated"]
+    resumed = native.run_native_splat(frames=frames, result=pose, draft=draft, output_root=tmp_path, policy=policy,
         task_context={"context_digest": "sha256:" + "d" * 64}, task_runner=runner)
     assert resumed == result and len(calls) == 1
+    assert np.array_equal(decoded.xyz, depth.decode_spz(blob).xyz)
     (tmp_path / "atlas_refined_splat.spz").write_bytes(b"changed")
     with pytest.raises(ValueError, match="output_changed"):
-        native.run_native_splat(frames=frames, result=pose, output_root=tmp_path, policy=policy,
+        native.run_native_splat(frames=frames, result=pose, draft=draft, output_root=tmp_path, policy=policy,
             task_context={"context_digest": "sha256:" + "d" * 64}, task_runner=runner)
+
+
+def test_refined_request_masks_exactly_the_pixels_the_draft_would_not_fuse(tmp_path):
+    from PIL import Image
+    frames = source_frames()
+    frames[1]["confidence"][:, :10] = 0
+    # A recovered view can repeat a generated view's ID; each is posted on its own.
+    frames[1]["frame_id"] = frames[0]["frame_id"]
+    request, uploads, provenance = native.prepare_splat_request(frames=frames, root=tmp_path)
+    assert len(request["posedFrames"]) == 2 and "maskAsset" not in request["posedFrames"][0]
+    assert request["posedFrames"][1]["maskAsset"] == {"assetId": "upload:frame-1-mask"}
+    mask = np.asarray(Image.open(uploads["frame-1-mask"]["path"]))
+    assert np.array_equal(mask == 255, frames[1]["confidence"] > 0) and set(np.unique(mask)) == {0, 255}
+    assert provenance[1]["mask_sha256"] == uploads["frame-1-mask"]["sha256"]
+
+
+def test_mixed_grids_are_posted_on_one_grid_with_their_rays(tmp_path):
+    portrait, landscape = camera(), camera((.2, 0, 0), width=64, height=36)
+    frames = [frame(portrait, plane_depth(portrait), "portrait"), frame(landscape, plane_depth(landscape), "landscape")]
+    request, uploads, provenance = native.prepare_splat_request(frames=frames, root=tmp_path)
+    assert {(c["camera"]["intrinsics"]["width"], c["camera"]["intrinsics"]["height"])
+            for c in request["posedFrames"]} == {(1280, 720)}
+    assert {row["frame_id"] for row in provenance} == {"portrait", "landscape"}
+    assert len(uploads) >= 2 * len(request["posedFrames"])
+
+
+@pytest.mark.parametrize("state", ["completed", "processing"])
+def test_refined_splat_replaces_the_draft_as_the_final_appearance(tmp_path, monkeypatch, state):
+    from blueprint_pipeline import atlas_scene_automation as worker, atlas_result_bundle
+    from blueprint_pipeline import atlas_background_automation as edits, atlas_scene_measurements as sizes
+    from tests.test_atlas_scene_automation import view, plan
+    f = view(tmp_path)
+    pose = {"digest": "pose", "binding": {"source_video_digest": "source"}}
+    monkeypatch.setattr(sizes, "load_views", lambda *a: (pose, [f]))
+    monkeypatch.setattr(edits, "run_background", lambda **_: {
+        "status": "passed", "provider": "atlas", "stage_roots": [], "result_digests": ["edited-task"],
+        "visual_review_digest": "review", "batch_frame_ids": []})
+    monkeypatch.setattr(worker, "_edited_frames", lambda _: [f])
+    draft = {"digest": "draft", "splat_kind": "depth_fused_draft"}
+    # The draft is still built: it is the gap and coverage evidence.
+    monkeypatch.setattr(depth, "write_depth_splat", lambda **_: draft)
+    observed, exported = [], []
+
+    def refined(**kw):
+        observed.append(kw)
+        if state == "processing":
+            return {"status": "processing", "stage": "refined_splat", "operation_id": "op"}
+        return {"status": "completed", "splat_root": str(tmp_path / "refined"),
+                "splat_manifest": {"digest": "refined", "splat_kind": "atlas_refined"}}
+    monkeypatch.setattr(native, "run_native_splat", refined)
+    monkeypatch.setattr(atlas_result_bundle, "export_pose_bundle",
+                        lambda **kw: exported.append(kw) or {"zip_path": "refined.zip"})
+    result = worker.run_automation(pose_root=tmp_path, inputs={}, review={"automation": plan()},
+        output_root=tmp_path / "out", task_context={}, configuration={"policy": {"refined_splat_cost_usd": 5}},
+        task_runner=lambda **_: pytest.fail("the refined splat is bought through run_native_splat"),
+        pose_runner=None, release_blockers=lambda: ("commit", []))
+    assert observed[0]["frames"] == [f] and observed[0]["draft"] is draft
+    assert observed[0]["output_root"] == tmp_path / "out/background_splat-refined"
+    if state == "processing":
+        assert result == {"status": "processing", "stage": "refined_splat", "operation_id": "op"} and not exported
+        return
+    assert result["status"] == "completed" and exported[0]["splat_root"] == tmp_path / "refined"
+    assert result["background"]["splat_kind"] == "atlas_refined"
+    assert result["background"]["splat_manifest_digest"] == "refined"

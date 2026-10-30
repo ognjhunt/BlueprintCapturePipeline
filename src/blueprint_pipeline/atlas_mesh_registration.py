@@ -192,7 +192,7 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
     if _sha256_file(ply) != next(row["sha256"] for row in splat_manifest["outputs"] if row["role"] == "splat_ply"):
         raise ValueError("atlas_mesh_splat_changed")
     splat = read_standard_3dgs_ply(ply)
-    voxel = float(splat_manifest.get("registration_tolerance_world_units", splat_manifest.get("voxel_size", 0)))
+    voxel = float(splat_manifest["voxel_size"])
     if not np.isfinite(voxel) or voxel <= 0:
         raise ValueError("atlas_mesh_voxel_size_invalid")
     vertices, faces = read_glb_triangles(glb)
