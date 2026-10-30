@@ -271,7 +271,7 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
     marker = job.get("refined_splat")
     if type(marker) is dict and marker.get("gap_preserving_form_untried") is True:
         # The only ready job atlas-retry reopens: its minimal refined splat left
-        # admitted gap views out, and a gap-preserving form was never sent.
+        # generated views out, and the reviewed whole-view form was never tried.
         left = marker.get("left_out_admitted_view_ids")
         value["job"]["gap_preserving_upgrade"] = {
             "left_out_admitted_view_count": len(left) if type(left) is list else None}

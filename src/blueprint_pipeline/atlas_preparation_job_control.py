@@ -83,8 +83,8 @@ def retry_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]
         source_check(job)
         if request_id is not None and any(row.get("request_id") == request_id for row in job.get("retries", [])):
             return job
-        # A finished job reopens only to send the gap-preserving refined-splat
-        # forms its adopted minimal splat left untried; any other ready job stays.
+        # A finished job reopens only to try the reviewed whole-view refined-splat
+        # form its adopted minimal splat left untried; any other ready job stays.
         marker = job.get("refined_splat")
         upgrade = (job["state"] == "ready" and isinstance(marker, Mapping)
                    and marker.get("gap_preserving_form_untried") is True)

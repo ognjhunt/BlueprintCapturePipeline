@@ -498,8 +498,8 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
     unfinished stage, so the survey, plans and other receipts already bought are
     reused, not bought again. A job stopped for input (a background that needs
     review) resumes the same way. A ready job reopens only when its minimal
-    refined splat left admitted gap views out and a gap-preserving form was never
-    sent; that form is then tried once. A withdrawn capture, a job that only a new
+    refined splat left generated views out and the reviewed whole-view form was
+    never tried; that form is then tried once. A withdrawn capture, a job that only a new
     capture can help, or one that cannot recover, is refused.
     """
     def source_check(_job):

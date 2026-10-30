@@ -684,7 +684,7 @@ def test_a_ready_job_reopens_once_to_send_the_gap_views_its_minimal_splat_left_o
     assert (job["state"], job["revision"]) == ("processing", ready["revision"] + 1)
     assert job["retries"] == [{"reason": "refined_splat_gap_preserving_form_untried", "at_epoch": world.clock}]
     request = json.loads((Path(marker["splat_root"]) / native.UPGRADE).read_text())
-    assert request["roots"] == ["background_splat-refined", "background_splat-refined-masks"]
+    assert request["roots"] == ["background_splat-refined-whole"]
     assert world.advance() == "ready" and len(world.runs) == 2
     assert _job(site)["refined_splat"] == tried and _job(site)["archive"] == ready["archive"]
     # The upgrade was spent: the finished job is not reopened again.
