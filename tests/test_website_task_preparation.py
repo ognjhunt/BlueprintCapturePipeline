@@ -657,7 +657,7 @@ def test_a_destination_on_the_same_or_another_fitted_surface_is_bound(tmp_path, 
     args = _arguments(tmp_path)
     calls = []
 
-    def fitted(mesh, lower, upper, *, up, meters_per_unit, up_sign=1):
+    def fitted(mesh, lower, upper, *, up, meters_per_unit, up_sign=1, placement_residual_m=None):
         start = 0 if not calls else shift
         calls.append(start)
         return {"top_runtime_units": float(lower[up]), "aabb_min": list(lower), "aabb_max": list(upper),
@@ -1063,3 +1063,55 @@ def test_generated_world_past_the_footage_keeps_the_anchored_pose(tmp_path, monk
     assert rotated and all(row["score_m"] * 1.2 < report["score_m"] for row in rotated)
     assert all(row["forward_score_m"] > 0.1 for row in rotated)
     assert {round(row["rotation_from_anchored_degrees"]) for row in rotated} == {90}
+
+
+@pytest.mark.parametrize("residual_m,found", [(0.07, True), (0.01, False)])
+def test_subject_estimated_into_its_support_is_snapped_within_the_measured_residual(tmp_path, monkeypatch,
+                                                                                   residual_m, found):
+    # capture-447ae4f4: the estimated tray bottom sat 4 cm into the counter, and the
+    # registration's residual near the task was 7.2 cm.
+    arguments = _arguments(tmp_path)
+    assert arguments["base_scene"]["up_axis"] == "Y"
+    mpu = arguments["base_scene"]["meters_per_unit"]
+    real_bounds, real_registration = preparation.estimate_target_bounds, preparation.register_source_to_runtime
+
+    def into_support(*args, **kwargs):
+        value = real_bounds(*args, **kwargs)
+        # The table top is runtime y = 1.75 (test_registered_estimates_compile_into_an_intake_ready_request).
+        shift = (1.75 - 0.04 / mpu) - value["minimum"][1]
+        value["minimum"][1] += shift
+        value["maximum"][1] += shift
+        return value
+
+    def measured(**kwargs):
+        value = real_registration(**kwargs)
+        return {**value, "task_region": {**(value.get("task_region") or {}), "trimmed_rmse_m": residual_m}}
+
+    monkeypatch.setattr(preparation, "estimate_target_bounds", into_support)
+    monkeypatch.setattr(preparation, "register_source_to_runtime", measured)
+    value = preparation.compile_website_scene_preparation(**arguments)
+    if not found:
+        assert "support_surface_not_found_under_subject" in value["blockers"]
+        return
+    assert "support_surface_not_found_under_subject" not in value["blockers"]
+    assert value["support"]["search_window_m"] == pytest.approx(0.07)
+    assert value["support"]["search_window_basis"] == "registration_task_region_residual"
+    assert abs(value["support"]["subject_snap_m"]) == pytest.approx(0.04, abs=1e-6)
+    assert value["support"]["subject_snap_basis"] == "estimate"
+    # Snapped back onto the same table top as the unshifted estimate.
+    assert value["subject"]["aabb_min_xyz"][2] == pytest.approx(3.5, abs=1e-6)
+
+
+def test_the_destination_support_is_searched_within_the_same_measured_residual(tmp_path, monkeypatch):
+    # capture-447ae4f4: the destination on the same counter was refused over a 0.4 cm mesh gap
+    # at the default window, while the subject's support used the 7.2 cm residual.
+    real, calls = preparation.support_under, []
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs.get("placement_residual_m"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preparation, "support_under", recording)
+    value = _compile(tmp_path)
+    assert value["status"] == "intake_ready", value["blockers"]
+    assert calls == [value["registration"]["task_region"]["trimmed_rmse_m"]] * 2

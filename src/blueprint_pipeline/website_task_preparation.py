@@ -859,7 +859,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
     if synthetic is None:
         support = (None if independent_object else
-                   support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign))
+                   support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign,
+                                 placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m")))
     # A rebuilt, floor-standing assembly rarely shows its
     # lowest band, and a generated world often leaves the empty bay without a
     # floor: its body reaches down to the floor the footage observed.
@@ -888,6 +889,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         snap = support["top_runtime_units"] - (subject_min if up_sign == 1 else subject_max)[up]
         subject_min[up] += snap
         subject_max[up] += snap
+        # The estimated subject now rests on the estimated surface: an estimate, not a contact measurement.
+        support = {**support, "subject_snap_m": float(snap * mpu), "subject_snap_basis": "estimate"}
     sim_min, sim_max = _runtime_bounds({"minimum": subject_min, "maximum": subject_max}, runtime_to_sim)
     dimensions_m = [sim_max[i] - sim_min[i] for i in range(3)]
     sim_support = (_runtime_bounds({"minimum": support["aabb_min"], "maximum": support["aabb_max"]}, runtime_to_sim)
@@ -948,8 +951,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             height = subject_max[up] - subject_min[up]
             destination_min[up] = position[up] - (height if up_sign == -1 else 0)
             destination_max[up] = position[up] + (height if up_sign == 1 else 0)
+            # The destination is placed by the same registration as the subject.
             destination_support = support_under(collider, destination_min, destination_max, up=up,
-                                                meters_per_unit=mpu, up_sign=up_sign)
+                meters_per_unit=mpu, up_sign=up_sign,
+                placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"))
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
