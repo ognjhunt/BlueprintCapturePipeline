@@ -262,8 +262,9 @@ def test_nontransient_terminal_failure_never_retries(case, monkeypatch):
 
 @pytest.mark.parametrize("code,reason,resubmitted", [
     (8, "THROTTLED", True), (4, "EXECUTION_TIMEOUT", True),
-    # The provider says to investigate an execution failure before resubmitting it.
-    (13, "EXECUTION_FAILED", False),
+    # The provider says to investigate an execution failure before resubmitting it; it
+    # gets one separate resubmission (capture-4b60431e), never the full allowance.
+    (13, "EXECUTION_FAILED", True),
     # A reason is resubmittable only with its documented code; code 4 alone can mean expiry.
     (4, "THROTTLED", False), (8, "EXECUTION_TIMEOUT", False)])
 def test_documented_resubmittable_failures_retry_with_new_spend(case, monkeypatch, code, reason, resubmitted):
@@ -275,6 +276,14 @@ def test_documented_resubmittable_failures_retry_with_new_spend(case, monkeypatc
         with pytest.raises(ValueError, match="atlas_task_operation_failed"):
             run()
         assert fake.posts == fake.reservations == 1
+
+
+def test_an_execution_failure_is_resubmitted_once_across_restarts(case, monkeypatch):
+    fake, run = transient_case(case, monkeypatch, failures=9, code=13, reason="EXECUTION_FAILED")
+    for _ in range(2):
+        with pytest.raises(ValueError, match="atlas_task_operation_failed"):
+            run()
+        assert fake.posts == fake.reservations == len(set(fake.keys)) == 2
 
 
 def test_transient_retry_requires_new_budget_and_release_admission(case, monkeypatch):
