@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import json
 import random
+from types import SimpleNamespace
+
+import pytest
 
 from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
 from blueprint_pipeline import website_candidate_selection as selection
 from blueprint_pipeline.beta_policy_candidate_catalog import catalog_candidate, load_default_catalog
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
 from blueprint_pipeline.deployment_embodiment_support import support_catalog
 from tests.test_beta_policy_screening_coordinator import Backend, native_result, plan as coordinator_plan, publication
 
@@ -81,7 +84,8 @@ def test_choice_is_deterministic_by_published_scores_with_priority_breaking_ties
     again = selection.select_candidate(publication=published, plan=plan, catalog=load_default_catalog(),
                                        catalog_basis="campaign_catalog", support=support_catalog())
     assert again["chosen"] == chosen and again["tied_with"] == value["tied_with"]
-    assert value["selection_digest"] == canonical_digest(value, digest_field="selection_digest")
+    # The WebApp recomputes the digest, so it is the cross-runtime canonical form.
+    assert value["selection_digest"] == cross_runtime_canonical_digest(value, digest_field="selection_digest")
 
 
 def test_more_scored_episodes_then_fewer_void_episodes_break_equal_success_rates():
@@ -136,3 +140,45 @@ def test_the_plans_own_effective_catalog_is_retained_for_the_partner_match(tmp_p
     assert selection._campaign_catalog(tmp_path, plan) == (catalog, "campaign_catalog")
     changed = {**plan, "catalog_digest": SHA}
     assert selection._campaign_catalog(tmp_path, changed)[1] == "current_default_catalog_not_campaign_catalog"
+
+
+def test_signed_selection_delivery_requires_the_exact_selection_ack(monkeypatch):
+    from blueprint_pipeline import safe_outbound_http, task_evaluation_launch_webapp_sync
+    value = choose([result_row("pi05_droid", succeeded=4, scored=8)])
+    ack = {"status": "created", "run_id": "campaign-1", "publication_revision": 4,
+           "selection_digest": value["selection_digest"]}
+    requests = []
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://app.example.test/api/internal/pipeline/sync")
+    monkeypatch.setattr(task_evaluation_launch_webapp_sync, "load_pipeline_sync_token", lambda: "unit-test-key")
+
+    def send(url, **kwargs):
+        requests.append((url, kwargs))
+        return SimpleNamespace(body=json.dumps(ack).encode())
+    monkeypatch.setattr(safe_outbound_http, "request", send)
+    assert selection.publish_selection(value) == ack
+    assert requests[0][0] == ("https://app.example.test/api/internal/pipeline/beta-policy-screening-runs/"
+                              "campaign-1/candidate-selection")
+    assert json.loads(requests[0][1]["data"]) == value
+    assert requests[0][1]["headers"]["X-Blueprint-Pipeline-Signature"].startswith("sha256=")
+    ack["selection_digest"] = SHA
+    with pytest.raises(ValueError, match="selection_ack_invalid"):
+        selection.publish_selection(value)
+
+
+def test_selection_delivery_retries_until_acknowledged_and_resends_only_a_changed_record(tmp_path):
+    directory = tmp_path / "selections"
+    directory.mkdir()
+    value = choose([result_row("pi05_droid", succeeded=4, scored=8)])
+    (directory / "campaign-1.json").write_text(json.dumps(value))
+
+    def unavailable(_):
+        raise OSError("temporary network failure")
+    assert selection.deliver_selections(queue_root=tmp_path, transport=unavailable) == {"acknowledged": 0, "pending": 1}
+    received = []
+    assert selection.deliver_selections(queue_root=tmp_path, transport=received.append) == {"acknowledged": 1, "pending": 0}
+    assert selection.deliver_selections(queue_root=tmp_path, transport=received.append) == {"acknowledged": 0, "pending": 0}
+    assert received == [value]
+    changed = choose([result_row("pi05_droid", succeeded=5, scored=8)])
+    (directory / "campaign-1.json").write_text(json.dumps(changed))
+    assert selection.deliver_selections(queue_root=tmp_path, transport=received.append) == {"acknowledged": 1, "pending": 0}
+    assert received == [value, changed]

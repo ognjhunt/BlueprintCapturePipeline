@@ -19,19 +19,26 @@ The rule:
 4. No eligible candidate: ``no_evaluated_candidate``, with every reason. Eligible
    candidates without a success: ``no_successful_candidate``. Nothing is chosen.
 
-The record is a simulation estimate, never physical or ADP evidence.
+The record is a simulation estimate, never physical or ADP evidence. The worker
+delivers it to the WebApp's job over the signed screening transport; the WebApp
+checks it against the result it accepted.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
+import os
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
+from urllib.parse import quote, urlsplit
 
-from .decision_evidence_contracts import canonical_digest
+from .decision_evidence_contracts import cross_runtime_canonical_digest
 
 SCHEMA_VERSION = "website_candidate_selection.v1"
 RULE_ID = "success_rate_then_scored_then_void_then_priority_then_identifier.v1"
 SELECTION_DIRECTORY = "selections"
+ACKNOWLEDGED_DIRECTORY = "acknowledged"
 CATALOG_FILENAME = "effective_catalog.json"
 SCRIPTED = "scripted_simulator_state_baseline"
 TERMINAL = frozenset({"completed", "blocked"})
@@ -105,7 +112,8 @@ def select_candidate(*, publication: Mapping[str, Any], plan: Mapping[str, Any],
              "status": ("chosen" if chosen else "no_successful_candidate" if eligible else "no_evaluated_candidate"),
              "chosen": chosen, "tied_with": tied, "candidates": rows,
              "claim_ceiling": publication["claim_ceiling"], "selection_digest": ""}
-    value["selection_digest"] = canonical_digest(value, digest_field="selection_digest")
+    # The WebApp recomputes this digest, so it uses the cross-runtime canonical form.
+    value["selection_digest"] = cross_runtime_canonical_digest(value, digest_field="selection_digest")
     return value
 
 
@@ -171,4 +179,56 @@ def retain_selections(*, queue_root: str | Path | None = None) -> dict[str, Any]
     return {"written": written, "terminal_published": len(published)}
 
 
-__all__ = ["RULE_ID", "SCHEMA_VERSION", "retain_campaign_catalog", "retain_selections", "select_candidate"]
+def publish_selection(selection: Mapping[str, Any]) -> dict[str, Any]:
+    """Send one selection to its job's run over the signed Pipeline transport the result uses."""
+    from .safe_outbound_http import pinned_api_policy, request
+    from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
+    from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
+
+    configured = os.getenv("PIPELINE_SYNC_WEBAPP_URL", "").strip()
+    if not configured:
+        raise ValueError("website_candidate_selection_webapp_url_missing")
+    parsed = urlsplit(validated_https_sync_url(configured))
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    path = f"/api/internal/pipeline/beta-policy-screening-runs/{quote(selection['campaign_id'], safe='')}/candidate-selection"
+    body = json.dumps(selection, separators=(",", ":"), allow_nan=False).encode()
+    try:
+        response = request(f"{origin}{path}", method="POST", data=body,
+            headers=_pipeline_sync_headers(load_pipeline_sync_token(), body), timeout_seconds=15,
+            policy=pinned_api_policy(origin, max_response_bytes=100_000), max_response_bytes=100_000)
+    except HTTPError as exc:
+        code = exc.code
+        exc.close()
+        raise ValueError(f"website_candidate_selection_http_{code}") from None
+    value = json.loads(response.body)
+    if (not isinstance(value, dict) or value.get("status") not in {"created", "updated", "replayed"}
+            or value.get("run_id") != selection["campaign_id"]
+            or value.get("selection_digest") != selection["selection_digest"]):
+        raise ValueError("website_candidate_selection_ack_invalid")
+    return value
+
+
+def deliver_selections(*, queue_root: str | Path | None = None, transport=None) -> dict[str, Any]:
+    """Deliver each retained selection until the WebApp acknowledges its exact digest; unpaid."""
+    from .beta_policy_screening_coordinator import _read, _root, _write
+
+    directory = _root(queue_root) / SELECTION_DIRECTORY
+    acknowledged = directory / ACKNOWLEDGED_DIRECTORY
+    sent = failed = 0
+    for path in sorted(directory.glob("*.json")):
+        receipt = acknowledged / path.name
+        try:
+            selection = _read(path)
+            if receipt.exists() and _read(receipt).get("selection_digest") == selection["selection_digest"]:
+                continue
+            (transport or publish_selection)(selection)
+            acknowledged.mkdir(exist_ok=True, mode=0o700)
+            _write(receipt, {"selection_digest": selection["selection_digest"]})
+            sent += 1
+        except (OSError, ValueError, RuntimeError, KeyError):
+            failed += 1
+    return {"acknowledged": sent, "pending": failed}
+
+
+__all__ = ["RULE_ID", "SCHEMA_VERSION", "deliver_selections", "publish_selection", "retain_campaign_catalog",
+           "retain_selections", "select_candidate"]
