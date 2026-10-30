@@ -46,6 +46,7 @@ _REMOTE_ARCHIVE_BY_BUNDLE_KIND = {
     "native_task_arena_policy_canary_session": "/workspace/adp_arena_provider_runtime_output.zip",
     "native_g1_development_campaign": "/workspace/adp_arena_provider_runtime_output.zip",
     "native_g1_team_policy": "/workspace/adp_arena_provider_runtime_output.zip",
+    "native_g1_beta_screening": "/workspace/adp_arena_provider_runtime_output.zip",
     "paired_target_native_import": "/workspace/adp_arena_provider_runtime_output.zip",
 }
 
@@ -124,6 +125,12 @@ def recover_provider_output_before_teardown(
 
     recovery_started = time.monotonic()
     remote_path = _REMOTE_ARCHIVE_BY_BUNDLE_KIND.get(provider_bundle_kind)
+    if provider_bundle_kind == "native_g1_beta_screening":
+        # Keep the sealed session's transfer budget on the recovery path too.
+        if maximum_size_bytes is None:
+            maximum_size_bytes = 4 * 1024**3
+        elif type(maximum_size_bytes) is int and maximum_size_bytes > 0:
+            maximum_size_bytes = min(maximum_size_bytes, 4 * 1024**3)
     if stage_checkpoint:
         if provider_bundle_kind != "task_evaluation_scene_configuration":
             return {"status": "blocked", "blockers": ["stage_checkpoint_recovery_kind_invalid"],
@@ -302,6 +309,7 @@ def recover_provider_output_before_teardown(
         "task_evaluation_scene_configuration",
         "native_g1_development_campaign",
         "native_g1_team_policy",
+        "native_g1_beta_screening",
     } and not zipfile.is_zipfile(partial):
         partial.unlink(missing_ok=True)
         return {"status": "blocked", "blockers": ["provider_output_ssh_recovery_archive_invalid"],

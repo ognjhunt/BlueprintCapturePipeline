@@ -41,6 +41,13 @@ def arena_provider_output_packaging_script(provider_bundle_kind: str) -> str:
         "asset_preparation_output = "
         + repr(provider_bundle_kind == "embodiment_asset_preparation")
         + "\n"
+        "g1_beta_output = "
+        + repr(provider_bundle_kind == "native_g1_beta_screening")
+        + "\n"
+        "if g1_beta_output:\n"
+        "    for path in output_dir.rglob('*'):\n"
+        "        if path.is_symlink() or not (path.is_file() or path.is_dir()):\n"
+        "            raise SystemExit('g1_beta_output_not_regular')\n"
         "if asset_preparation_output:\n"
         "    total_output_bytes = 0\n"
         "    for path in output_dir.rglob('*'):\n"
@@ -85,6 +92,9 @@ def arena_provider_output_packaging_script(provider_bundle_kind: str) -> str:
         "            raise SystemExit('policy_canary_required_terminal_result_archive_size_mismatch')\n"
         "if asset_preparation_output and output_zip.stat().st_size > 4 * 1024**3:\n"
         "    raise SystemExit('embodiment_preparation_archive_bound_exceeded')\n"
+        "if g1_beta_output and output_zip.stat().st_size > 4 * 1024**3:\n"
+        "    output_zip.unlink()\n"
+        "    raise SystemExit('g1_beta_archive_bound_exceeded')\n"
         "print('BLUEPRINT_VAST_PROVIDER_OUTPUT_ZIP_WRITTEN:%d' % output_zip.stat().st_size)\n"
         "PY\n"
     )
