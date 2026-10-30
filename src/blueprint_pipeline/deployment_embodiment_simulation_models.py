@@ -3,6 +3,9 @@ from . import deployment_embodiment_gofa_model as gofa
 
 
 def for_identity(identity):
+    from . import deployment_embodiment_hc20_model as hc20
+    if identity in hc20.VARIANTS:
+        return hc20
     from . import deployment_embodiment_kuka_model as kuka
     if identity == kuka.IDENTITY:
         return kuka

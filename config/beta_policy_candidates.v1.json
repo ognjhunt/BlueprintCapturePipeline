@@ -4609,10 +4609,293 @@
         "rigid_pick_place"
       ],
       "configuration_digest": "sha256:dc085bf74204124b707cb69c1c1145e553eabdf906e45a3cbea35a1b9e7da68b"
+    },
+    {
+      "candidate_id": "blueprint_scripted_fanuc_m10id_12_robotiq_2f85_sim",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "fanuc_m10id_12_robotiq_2f85_sim",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u00b7 fanuc_m10id_12_robotiq_2f85_sim",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation. The Robotiq2F85 on this body is a simulation stand-in, and this Blueprint-owned baseline is never a deployment company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:df281bd17bc6d47c02d8be8011e3f7f54cbffa6bddec98aabffebecfb6dbd8c3",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ],
+      "configuration_digest": "sha256:8fff97e329a513f00e6a1e39d7cc2015d807b94177c524c9c3e5b7d8216b4d07"
+    },
+    {
+      "candidate_id": "blueprint_scripted_yaskawa_hc20_robotiq_2f85_sim",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "yaskawa_hc20_robotiq_2f85_sim",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u00b7 yaskawa_hc20_robotiq_2f85_sim",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation. The Robotiq2F85 on this body is a simulation stand-in, and this Blueprint-owned baseline is never a deployment company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:df281bd17bc6d47c02d8be8011e3f7f54cbffa6bddec98aabffebecfb6dbd8c3",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ],
+      "configuration_digest": "sha256:24b854feebe95c5676950516d371cb61b4f463c636a62d28c5ee97d58a5c8a57"
+    },
+    {
+      "candidate_id": "blueprint_scripted_agile_robots_diana_7_robotiq_2f85_sim",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "agile_robots_diana_7_robotiq_2f85_sim",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u00b7 agile_robots_diana_7_robotiq_2f85_sim",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation. The Robotiq2F85 on this body is a simulation stand-in, and this Blueprint-owned baseline is never a deployment company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:df281bd17bc6d47c02d8be8011e3f7f54cbffa6bddec98aabffebecfb6dbd8c3",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ],
+      "configuration_digest": "sha256:e1fee1b81105d46efb329ffd8ee4f10a256634278da6961a8b1ac7b565c4e302"
+    },
+    {
+      "candidate_id": "sewts_fanuc_m10id_12_velum",
+      "deployment": {
+        "companies": [
+          "sewts"
+        ],
+        "configuration_id": "fanuc_m10id_12",
+        "evidence_url": "https://www.fanuc.eu/eu-en/news/intelligent-robots-commercial-laundries",
+        "relationship": "company_deployment"
+      },
+      "display_name": "sewts FANUC M-10iD/12 \u00b7 VELUM textile handling",
+      "eligibility": {
+        "blockers": [
+          "sewts_velum_policy_private_no_access",
+          "textile_gripper_and_vision_system_not_modeled",
+          "deformable_textile_task_not_modeled_as_rigid_pick_place",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.fanuc.eu/eu-en/news/intelligent-robots-commercial-laundries"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:de8f11f78eda28a6c2fb81aced9986501ab08260d9dba0a6636029210e909000"
+    },
+    {
+      "candidate_id": "formic_yaskawa_hc20_palletizing",
+      "deployment": {
+        "companies": [
+          "Formic"
+        ],
+        "configuration_id": "yaskawa_hc20",
+        "evidence_url": "https://www.casestudies.com/company/formic-technologies/case-study/georgia-nut-and-formic-deploy-first-robot-in-companys-history",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Formic Yaskawa HC20 \u00b7 palletizing",
+      "eligibility": {
+        "blockers": [
+          "formic_palletizing_controller_private_no_access",
+          "deployed_hc20_variant_unconfirmed",
+          "palletizing_tool_not_modeled",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.casestudies.com/company/formic-technologies/case-study/georgia-nut-and-formic-deploy-first-robot-in-companys-history"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:d5b496824f8bc4c1c5d587738fffe0bc323cff0fa2da7f04b7c7aca1d361d75d"
+    },
+    {
+      "candidate_id": "agile_robots_diana_7_controller",
+      "deployment": {
+        "companies": [
+          "Agile Robots"
+        ],
+        "configuration_id": "agile_robots_diana_7",
+        "evidence_url": "https://github.com/AgileRobots-APAC/diana_description",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Agile Robots Diana 7 \u00b7 Agile Robots controller",
+      "eligibility": {
+        "blockers": [
+          "agile_robots_controller_or_policy_private_no_access",
+          "publisher_status_of_new_description_repository_unconfirmed",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://github.com/AgileRobots-APAC/diana_description"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:0fcafd942ac9a5efcb673cd8ad61afef76ee2554436cbb02e30ac8a04528dd7c"
+    },
+    {
+      "candidate_id": "diligent_moxi_kinova_jaco2",
+      "deployment": {
+        "companies": [
+          "Diligent Robotics"
+        ],
+        "configuration_id": "kinova_jaco2_j2n6s300",
+        "evidence_url": "https://www.therobotreport.com/diligent-robotics-raises-seed-funding-launches-moxi-robot/",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Diligent Robotics Moxi \u00b7 Kinova Gen2 arm (variant unconfirmed)",
+      "eligibility": {
+        "blockers": [
+          "diligent_moxi_policy_private_no_access",
+          "moxi_kinova_variant_and_tool_unconfirmed",
+          "press_reports_robotiq_gripper_not_source_three_finger_hand",
+          "moxi_mobile_base_not_modeled_fetch_description_is_non_commercial",
+          "three_finger_hand_runtime_profile_not_registered",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.therobotreport.com/diligent-robotics-raises-seed-funding-launches-moxi-robot/"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:31f85a6c04244053a26d7bb99caf42f6b4239387dad2557546fd8fbb744e2074"
+    },
+    {
+      "candidate_id": "contoro_kuka_kr_iontec_adaptai",
+      "deployment": {
+        "companies": [
+          "Contoro Robotics"
+        ],
+        "configuration_id": "kuka_kr_iontec_variant_unconfirmed",
+        "evidence_url": "https://www.kuka.com/en-us/industries/solutions-database/2026/04/robots-unload-truck-trailers",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Contoro Robotics KUKA KR IONTEC \u00b7 AdaptAI trailer unloading",
+      "eligibility": {
+        "blockers": [
+          "contoro_adaptai_policy_private_no_access",
+          "deployed_kr_iontec_variant_not_public",
+          "suction_end_effector_and_mobile_platform_not_modeled",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.kuka.com/en-us/industries/solutions-database/2026/04/robots-unload-truck-trailers"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:1d0dd8c145e3564594aacec0169e1f5afea746c8e62b98f6ea7fdcb3a7c54381"
     }
   ],
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility:trlc-community-pi05:single-ur-robotiq-scripted:openpi-polaris-droid-variants",
+  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility:trlc-community-pi05:single-ur-robotiq-scripted:public-fixed-arms-batch1:openpi-polaris-droid-variants",
   "schema_version": "beta_policy_candidate_catalog.v1",
-  "catalog_digest": "sha256:7b040cddd8c6e4c4c6c839ab34cb2a179174e9102d7185cd47e2d18f695454ac"
+  "catalog_digest": "sha256:62ae002345dc9c257ac16df9447c158d4318eb253e6d2b0ef455b31e939de1fd"
 }

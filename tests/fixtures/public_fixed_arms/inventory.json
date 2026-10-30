@@ -1,0 +1,1278 @@
+{
+  "fanuc_m10id_12": {
+    "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+    "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2",
+    "files": [
+      {
+        "path": "LICENSES/Apache-2.0.txt",
+        "size_bytes": 10280,
+        "git_blob_sha": "137069b823873b8bcf42979bcf8e9371052d26a2",
+        "sha256": "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "README.md",
+        "size_bytes": 2324,
+        "git_blob_sha": "d7de4757024b210740155adf08137faf7d489880",
+        "sha256": "sha256:c6bf9b06c9e49780787ea57539e85a79ea5230a448ffcf83640e4f0634dcacf3",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/collision/base.stl",
+        "size_bytes": 73384,
+        "git_blob_sha": "b5c26dd209d33f754865f6002ca12cde16afe64e",
+        "sha256": "sha256:095076e010e6b03f95b659b49c01848b06a3c58ed2d7c6ef5311f186673f99c9",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/collision/j1.stl",
+        "size_bytes": 123284,
+        "git_blob_sha": "0f42df0f0b6aae3cb828ab34076f654465bf6b4f",
+        "sha256": "sha256:4d88e21f567fd9775235309549ad54f202424581eed37b1f6a902feb1ec61e66",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/collision/j2.stl",
+        "size_bytes": 130184,
+        "git_blob_sha": "d65b1017d991fc74ccd25d1742e4371733ef9eae",
+        "sha256": "sha256:046cb4e48bd7cdfd2b2795134c2f24c0a69ab03f948c5688fb988496dcb7f457",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/collision/j3.stl",
+        "size_bytes": 72084,
+        "git_blob_sha": "0f85f59a2e1d1ee12e3f3e50f8bc14acfae7a6f7",
+        "sha256": "sha256:5d702874c2ec28d22bbbc89a6480ff22fac06dacfab1bccbc5615baf90db2cc2",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/collision/j4.stl",
+        "size_bytes": 46684,
+        "git_blob_sha": "969db31390c1ce01d258ca1bd799be3edbdc9f3e",
+        "sha256": "sha256:a534322c5ce9545a0eca85be2878e7d31810cc94242c8e83cc2fdb9ef01f5577",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/collision/j5.stl",
+        "size_bytes": 20184,
+        "git_blob_sha": "98c58fe8d160ae794b547a93ae187af356968fc8",
+        "sha256": "sha256:5c87763367c86d0b83ec49b5fa7b0303c408838650006195860a4867934994b7",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/collision/j6.stl",
+        "size_bytes": 12884,
+        "git_blob_sha": "38223ecc32c82551e9ab5e8b6ce734b265e3b9f0",
+        "sha256": "sha256:f80dbf3333a7ece9258634e6aeeb8a8642b1babdb2468ccde117ee39c921599f",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/visual/base.dae",
+        "size_bytes": 780949,
+        "git_blob_sha": "a2113aaf2ce85c9b5c8a28047b932ccf1400affe",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/visual/j1.dae",
+        "size_bytes": 1547864,
+        "git_blob_sha": "5139816cc1b25dea1728ff61691a05ea813e78a8",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/visual/j2.dae",
+        "size_bytes": 1287471,
+        "git_blob_sha": "13314c61d974b0f77507a7885ab284f61c695e97",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/visual/j3.dae",
+        "size_bytes": 1197049,
+        "git_blob_sha": "ff0ab39b0cbfb9f81aac6997b69fb476c0d96673",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/visual/j4.dae",
+        "size_bytes": 585599,
+        "git_blob_sha": "7bbd605faff9e0e15cbbd8170ebcd44f193d8991",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/visual/j5.dae",
+        "size_bytes": 200032,
+        "git_blob_sha": "50488cc80301e037abdfaf4ce48d5db2f3820974",
+        "sha256": "sha256:38a7d3f28d0452c50feca8430f9c7c89e6149cb8f7d2401caac051232f3306b4",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/meshes/m10_12_14d/visual/j6.dae",
+        "size_bytes": 102675,
+        "git_blob_sha": "8cde77553f863d0a48744adce26e10ab56c97d2a",
+        "sha256": "sha256:1148004c690df8ce2b76d249912c9acab2c95708acfd7eff751aca3eefa72f60",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "fanuc_m10_description/package.xml",
+        "size_bytes": 994,
+        "git_blob_sha": "37d9cef3ff38d2f497de8733f1b7dd210b5cca04",
+        "sha256": "sha256:68e191412dce19270f2233a6d405a20b718606bfb0c4dc7f746e393d63e23098",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "fanuc_m10_description/robot/m10_12_14d.urdf.xacro",
+        "size_bytes": 374,
+        "git_blob_sha": "863e652c3497905eeef9864def31d38d1cfb1ca5",
+        "sha256": "sha256:e535672ce96ed78b1a3a193ef53bdd72ec08c06091638b9ae196e36378980998",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "fanuc_m10_description/urdf/m10_12_14d_urdf_macro.xacro",
+        "size_bytes": 11624,
+        "git_blob_sha": "6e6d83d7aa1fdcae51e0684e71ee32ec53d94de8",
+        "sha256": "sha256:302049fe335248751f4415e58862a7832d7dbb2747048cdcf2d2a585584dfd01",
+        "synthetic_geometry_in_tests": false
+      }
+    ]
+  },
+  "yaskawa_hc20": {
+    "repository_url": "https://github.com/ros-industrial/motoman",
+    "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+    "files": [
+      {
+        "path": "motoman_hc20_support/meshes/hc20/collision/base_link.stl",
+        "size_bytes": 22984,
+        "git_blob_sha": "8d6c15cdaea801f7b1330a7081b54c9cd27ce6fd",
+        "sha256": "sha256:3fc1c087f3b926b90d3eabfed502c674ade8d29a8459e5ebf105119a9f86060e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/collision/link_1_s.stl",
+        "size_bytes": 133684,
+        "git_blob_sha": "ab0b76f39c26d160a249f7cf4281efc85c12fef6",
+        "sha256": "sha256:66a1d9fe6ace48590c83ceb85a2c4f9458e82018bad42d3f95540d63f322386c",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/collision/link_2_l.stl",
+        "size_bytes": 158384,
+        "git_blob_sha": "43aab6e916f5ef3e8d01ca41bfe486e42f05270a",
+        "sha256": "sha256:fdda9dcf2c4ca2683e8aa1342628fa640327420bfae7bc2fe92ae74973c5babc",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/collision/link_3_u.stl",
+        "size_bytes": 154984,
+        "git_blob_sha": "b1613f36fb29f35405117a5daa603830ac56ebf5",
+        "sha256": "sha256:0583914cceed5e3254c1c1182f867d5baa13c5166059e363ec02de441b49c22d",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/collision/link_4_r.stl",
+        "size_bytes": 129784,
+        "git_blob_sha": "0a48b9d6095e5bd84c63f6a435b87aafbb863c14",
+        "sha256": "sha256:96b6acbb8ebd7794328afc4da55cf789015d8cbcf129f5c334fa3570d8665b70",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/collision/link_5_b.stl",
+        "size_bytes": 216684,
+        "git_blob_sha": "b3b8fd0f7aad8fff2b44e61e3eed0008400b95af",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/collision/link_6_t.stl",
+        "size_bytes": 125084,
+        "git_blob_sha": "328a8228ad50daf6b1ef296edce5be1349d50dde",
+        "sha256": "sha256:55be307955074d0aeedc72306f9d1fd139e603578b95e9ae2baa533be1f8531d",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/visual/base_link.dae",
+        "size_bytes": 544588,
+        "git_blob_sha": "61d3ff78ba385cb23a0b0edb16c8d03bee272836",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/visual/link_1_s.dae",
+        "size_bytes": 438497,
+        "git_blob_sha": "a2918b5bf7bf14384a3817820e283f4c12fe5913",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/visual/link_2_l.dae",
+        "size_bytes": 320942,
+        "git_blob_sha": "7159053570aa08f48b077f8bbc55bfef94d1f95d",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/visual/link_3_u.dae",
+        "size_bytes": 407067,
+        "git_blob_sha": "60d4134048d78c87666d14c55c3b3334179a98d3",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/visual/link_4_r.dae",
+        "size_bytes": 385152,
+        "git_blob_sha": "5fe5e9d91561635355c31f78c7369eab3ea39705",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/visual/link_5_b.dae",
+        "size_bytes": 347358,
+        "git_blob_sha": "d4ee65d6f649cb8005357c1799dadfc22c2a5a15",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/meshes/hc20/visual/link_6_t.dae",
+        "size_bytes": 419899,
+        "git_blob_sha": "7ffdc6136fe48cdf4c2dde1feec6ace49fdbde6a",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_hc20_support/package.xml",
+        "size_bytes": 3076,
+        "git_blob_sha": "2f7394e25547e17af5011eaafa6363bab7b4a6ba",
+        "sha256": "sha256:a17b326eb9789b98b99fa6f48096f9e732e2b112b7e6d03d3622cce432e45407",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_hc20_support/urdf/hc20.xacro",
+        "size_bytes": 216,
+        "git_blob_sha": "7ca9409a7fecce3f42f8ca8992387db8f331bb60",
+        "sha256": "sha256:587972bea01ba3743e85cff879b4cf9cb6b37a1d08587eb5e88afd7e9612e921",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_hc20_support/urdf/hc20_macro.xacro",
+        "size_bytes": 6167,
+        "git_blob_sha": "2e47a06e4a4691740df59eb2f7c4e327325507cc",
+        "sha256": "sha256:dd9fea203c57465e11d450cccd94ab3af968333f4e8793ab8061d6acd62b88aa",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/CMakeLists.txt",
+        "size_bytes": 190,
+        "git_blob_sha": "3d01fa3842a108b01885f0c3a00c444e4a254a9f",
+        "sha256": "sha256:c65941d28b8da428365e45e793b3bdfa6aa03eaf108ac779fd574e7377f01836",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/package.xml",
+        "size_bytes": 1158,
+        "git_blob_sha": "a003b39b877e316f670d35407ac82ef372eece86",
+        "sha256": "sha256:bf191795822fef539ba1d78b10f16a31ca7f6dc23c8634c8b6921a29760763db",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/urdf/common_colors.xacro",
+        "size_bytes": 516,
+        "git_blob_sha": "34740e9d17b9569792fdb655dd37503b70183b06",
+        "sha256": "sha256:921f55628ebbc6e7ff076b1d9457e7ca517446334b63a2cb4a9d90ee78d1355f",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/urdf/common_materials.xacro",
+        "size_bytes": 893,
+        "git_blob_sha": "f9c8fd2495ad0dda13295f5e51dbead46688d4f1",
+        "sha256": "sha256:c4eb63b25899e02005a1662072cb54770dcb760638625ce4bfcc2ac8d9169fcc",
+        "synthetic_geometry_in_tests": false
+      }
+    ]
+  },
+  "agile_robots_diana_7": {
+    "repository_url": "https://github.com/AgileRobots-APAC/diana_description",
+    "revision": "92786660df762ff4cb803ab508d28a935ae87e96",
+    "files": [
+      {
+        "path": "LICENSE",
+        "size_bytes": 12926,
+        "git_blob_sha": "d20a48b115694fa05de521256f87beaf5024fd83",
+        "sha256": "sha256:4b25434e6ec2012e28a484f1d7924a0fd1a8bf232c2be2d50d584d299d04d6d6",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "NOTICE",
+        "size_bytes": 1806,
+        "git_blob_sha": "3b3e11c794acb6be2ccd2a5a42b559da6e427a09",
+        "sha256": "sha256:baa0de9762d03515b3303336caa76ca24354b4433ff7333379d5a4f760c3f6c2",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "end_effectors/common/ee_with_one_link.xacro",
+        "size_bytes": 1746,
+        "git_blob_sha": "29c9fbd9304ee49ee6bad202cee1dcfa23778012",
+        "sha256": "sha256:86902944848feb41ead6265f16370ce2e009d14beb1cf9df77d6ebe1fe900e2b",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "end_effectors/common/utils.xacro",
+        "size_bytes": 5516,
+        "git_blob_sha": "c5e3406a974a98e0cf221e007ee904e01520a5a4",
+        "sha256": "sha256:fd8fea6725d397b29d8a2908795366db4bada8b6cd3e48f1db8edf474355b9cd",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "meshes/robots/diana7/collision/link0.stl",
+        "size_bytes": 22584,
+        "git_blob_sha": "e475ed621f9db9f69758e2833e5309f9ac227e77",
+        "sha256": "sha256:14cd5e1ac438580715a1c743ad56cc329f81ae8c45b67ce29fb30116d525f404",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/collision/link1.stl",
+        "size_bytes": 22584,
+        "git_blob_sha": "e9d620c2f71dad0a5ffbed72293c44f494564714",
+        "sha256": "sha256:34006be3f52a05c1d970997ed78d918f9dd4cff93b9202c82674cd1f1402d0f8",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/collision/link2.stl",
+        "size_bytes": 22584,
+        "git_blob_sha": "2c013948c3cbaac3cc007d85b07a8957983c8cdb",
+        "sha256": "sha256:36d5ec9daf92cd97d583c80af732c296679df0fe9986658dbb5ef3ec9acf4e53",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/collision/link3.stl",
+        "size_bytes": 25084,
+        "git_blob_sha": "2004683045e48440eee164be6a098ba855f4dc59",
+        "sha256": "sha256:00737a4564ecc2b78fdc697cfc1e7244c5361d22535ee9a1e9ea8c95d28c847c",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/collision/link4.stl",
+        "size_bytes": 20084,
+        "git_blob_sha": "40b8687d84580f922646e4ac5805638e9c2631a0",
+        "sha256": "sha256:b2902b877ccae0bbd6bd08930ea23e01c12875afcd7feed15fe360b71182c6e1",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/collision/link5.stl",
+        "size_bytes": 25084,
+        "git_blob_sha": "eb5c7130e9e90ee3ed5c030a5b5547d7f900ca95",
+        "sha256": "sha256:1572bd72ad00928790186e198d8bb2f92186f04f886d1322d6b6ba35088cd0ff",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/collision/link6.stl",
+        "size_bytes": 25084,
+        "git_blob_sha": "976505601b92494ac654588706cf354b0043b73a",
+        "sha256": "sha256:03309a468da5cd72b5dbd0bbb0ce73ccc9754bcf1a87c8cf343c1f1d287a762f",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/collision/link7.stl",
+        "size_bytes": 22534,
+        "git_blob_sha": "58e8f9c477a4e91ea55d6484fd2b46eb9037f729",
+        "sha256": "sha256:eb6a041220ee4c2478687402a7e8ef0ebbf8cc745056118833ee14f0e93e4c83",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/visual/link0.stl",
+        "size_bytes": 444784,
+        "git_blob_sha": "e274cf09bc3a13f40e0cc1940212d5f96da5d1d8",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/visual/link1.stl",
+        "size_bytes": 1233384,
+        "git_blob_sha": "a4f9ce795587878e927cee1851f5aac1a2bfe4cf",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/visual/link2.stl",
+        "size_bytes": 584984,
+        "git_blob_sha": "b473c2dfd95abc1d19eaa0154578a8847939a59e",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/visual/link3.stl",
+        "size_bytes": 2083684,
+        "git_blob_sha": "c518b922e84025f0a079a85f7a09241253c11430",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/visual/link4.stl",
+        "size_bytes": 777184,
+        "git_blob_sha": "c55145ae24ca28f21274e68e863f42a7ea0f02ad",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/visual/link5.stl",
+        "size_bytes": 2558984,
+        "git_blob_sha": "a7851792e838f19750f8b4df179a754b74db93e4",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/visual/link6.stl",
+        "size_bytes": 3661084,
+        "git_blob_sha": "e12a225802619ae438106246a3a9b74110874c84",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "meshes/robots/diana7/visual/link7.stl",
+        "size_bytes": 913784,
+        "git_blob_sha": "9efe2d1bd479bf0bc708fc2d165f1c3fde975689",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "package.xml",
+        "size_bytes": 948,
+        "git_blob_sha": "3e87f5e1c781ae6c1c256c1315b179286c5e7f2e",
+        "sha256": "sha256:6f3f13dd915d9aad0a711a8f877652a99bd4fed722e150be9af44634fff2020c",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/common/diana_arm.srdf.xacro",
+        "size_bytes": 2970,
+        "git_blob_sha": "b5db6d184962d45e552ce584f800254ddc39afca",
+        "sha256": "sha256:1122231f95aafb39a431885fedbb21ea3ac4ace253a38937f6becfd78ca804d1",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/common/diana_arm.xacro",
+        "size_bytes": 9361,
+        "git_blob_sha": "e4fa9c83332e2aa137a32b2cb44fa29662d857fe",
+        "sha256": "sha256:2b3f81a6d2755859fb7afbcaf21b76331bb28f9f95d4e1b32ce8a6523aca34b1",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/common/diana_duo.xacro",
+        "size_bytes": 3108,
+        "git_blob_sha": "68fa09ec569c9786afddc21c9902ecf78471e829",
+        "sha256": "sha256:6d919f91be1206eaec6819764f30b4cf05db15446e63de96851784c02172465e",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/common/diana_robot.xacro",
+        "size_bytes": 5375,
+        "git_blob_sha": "370ca774413aa4197ea110ce28f924e63bd9d3fc",
+        "sha256": "sha256:5cc27b2998a68a16845297d931af47b95711517d4e4c997e6558fc50116301e7",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/common/group_definition.xacro",
+        "size_bytes": 1219,
+        "git_blob_sha": "36f9a2c9fdb02c558949e9604e436553563a2c42",
+        "sha256": "sha256:e42d2133040e15c50a7ce0251812f43b7ec607750838affb08a7d885dada6fc0",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/common/utils.xacro",
+        "size_bytes": 13515,
+        "git_blob_sha": "b10dc6e7fd47b42b5ad7460df454640f34c8b614",
+        "sha256": "sha256:1852d3f845c540a71a70f51ea7a0a81490ee9d62f92a21144665c07536159f87",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/diana7/accelerometers.yaml",
+        "size_bytes": 4,
+        "git_blob_sha": "c86c3f3551ecf43bef6ab92d43ddc1e193a55398",
+        "sha256": "sha256:140bedbf9c3f6d56a9846d2ba7088798683f4da0c248231336e6a05679e4fdfe",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/diana7/collision_capsule.yaml",
+        "size_bytes": 693,
+        "git_blob_sha": "40030b4d1cab53a0cb66e835f29125828f2d9b24",
+        "sha256": "sha256:5434021421c0d5de44b5a3cc7daf7a3decbb4d21d14cd1ff5ef66a07d99577f4",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/diana7/diana7.srdf.xacro",
+        "size_bytes": 869,
+        "git_blob_sha": "bb7cb6870ed3af6c4eec898cbf62a5dff85c7b55",
+        "sha256": "sha256:853ad38cf7a25b1551b281e7ab936df914567529efb7d11f3fe156b63eacb872",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/diana7/diana7.urdf.xacro",
+        "size_bytes": 2883,
+        "git_blob_sha": "9d8c78c9d5fc3480214708637129c0c143ad7cdf",
+        "sha256": "sha256:f95ab066a9ca8d580a59e9dab3274b80b9857b5779555880bfe0ec976005345a",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/diana7/dynamics.yaml",
+        "size_bytes": 1171,
+        "git_blob_sha": "f75c9e87090b0718cb634841048c37d6d3453ff6",
+        "sha256": "sha256:8a290ee1025fe4ee794e039d300731df9c028a9ecbbf52669cec9b8095282c1e",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/diana7/inertials.yaml",
+        "size_bytes": 1538,
+        "git_blob_sha": "6e90767f29bbadbe7bc9f041ce4a6e199fa7935c",
+        "sha256": "sha256:1da6f91c5326acb42936aa2c8b12e3739ea76f9fba08c53d7f92b27395a06534",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/diana7/joint_limits.yaml",
+        "size_bytes": 1393,
+        "git_blob_sha": "152e2b6ae4dab211aabfc29ca1c1efd560d88b29",
+        "sha256": "sha256:bb14ee52a2ff1b7d5724aff75eb5d5ffa0e759ed15e33852e475df7b9eb5840b",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "robots/diana7/kinematics.yaml",
+        "size_bytes": 898,
+        "git_blob_sha": "52e19e015d817444e1d2c45700d399d4b0705d10",
+        "sha256": "sha256:60d9ef300afbd65de3c1896332986dec7750885c5c7cd44527663e366fc93d30",
+        "synthetic_geometry_in_tests": false
+      }
+    ]
+  },
+  "kinova_jaco2_j2n6s300": {
+    "repository_url": "https://github.com/Kinovarobotics/kinova-ros",
+    "revision": "924781d3dfe241b2b94b3c72a804b80d3658cf02",
+    "files": [
+      {
+        "path": "LICENSE",
+        "size_bytes": 1545,
+        "git_blob_sha": "75c99ff2dda7d712f7268dc14ebb3b3816c9084f",
+        "sha256": "sha256:fa6e45356518c17cef29a3d570a64e48c4961af64f29a157dc41ee4e9382db14",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kinova_description/meshes/arm.dae",
+        "size_bytes": 645873,
+        "git_blob_sha": "c62899de1b8eb18df04f78f9226a11b03d84edd5",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/meshes/base.dae",
+        "size_bytes": 1336047,
+        "git_blob_sha": "5de6e7bda8b62454e6f0f5278c38f39467e7c9c0",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/meshes/finger_distal.dae",
+        "size_bytes": 141699,
+        "git_blob_sha": "0792282039f0a5c5d8cd8dcc950c11c393e58355",
+        "sha256": "sha256:73f6662e0e9c47e43b9f3018069cf6285f40e163d3555a6928607f058ed7cffb",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/meshes/finger_proximal.dae",
+        "size_bytes": 200973,
+        "git_blob_sha": "a2b2daf1ed01cad663855aa2996e6db02976a48c",
+        "sha256": "sha256:ce16acaa3571b4023c131c7310744fc28894c9703c9833a3d274bb38a704fa33",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/meshes/forearm.dae",
+        "size_bytes": 547752,
+        "git_blob_sha": "18175e1f1532f606d44a6f9e3f1ff83477f60aa8",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/meshes/hand_3finger.dae",
+        "size_bytes": 2286771,
+        "git_blob_sha": "5995dc968fb3ad7ef465aa949c6af78254a5641d",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/meshes/ring_big.dae",
+        "size_bytes": 34042,
+        "git_blob_sha": "cbe68c8c3af85aacddef75fd65008b4e517730f3",
+        "sha256": "sha256:ddd3db4dd2e64ef0673b90a0b2aead433c65ee81fa485a64c169356dcea2b952",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/meshes/ring_small.dae",
+        "size_bytes": 35177,
+        "git_blob_sha": "d770d2f18ba2990e5380fe0da1869cf7daca5784",
+        "sha256": "sha256:cf4d3b83ed06116b66c6d33a7e2d5e2d2643b7a822147c44bfbba80b5b27a234",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/meshes/shoulder.dae",
+        "size_bytes": 643584,
+        "git_blob_sha": "20c7f933413c3fc8b8e458ca6b982639e01a2dc4",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/meshes/wrist.dae",
+        "size_bytes": 290082,
+        "git_blob_sha": "80d1c3ac0a8a98dc95cc6757f2b2fbae83938b1e",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kinova_description/package.xml",
+        "size_bytes": 636,
+        "git_blob_sha": "31f09c5a8c445e0859f5ba0fda5ad8f847ee9e2d",
+        "sha256": "sha256:4f9a8b78fd1ee4abbfa53dd597fb16042584bd240ffc8e6243545aac2b64f0c1",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kinova_description/urdf/j2n6s300.xacro",
+        "size_bytes": 11677,
+        "git_blob_sha": "3224c434f1a9074fe0a3d5b6cabe0ed30ad13c39",
+        "sha256": "sha256:9108bddb2d4bb35d70f2b6aec9b45e86455d2f7f1f7ef9167e2b7074ec3386ea",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kinova_description/urdf/j2n6s300_standalone.xacro",
+        "size_bytes": 1491,
+        "git_blob_sha": "148159677d4c50ec894000a0a3d6023ad7417346",
+        "sha256": "sha256:4e65a52ee79f703b2bc697a9208b391d5d3407fac4e09b8ec47f51852ba8985a",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kinova_description/urdf/kinova.gazebo",
+        "size_bytes": 489,
+        "git_blob_sha": "372bc9f846f2f79cc223c48330d745ea8d924b0a",
+        "sha256": "sha256:aa041bc83b2bf78e12510e4b85c6e9bf01ee4b06401f56de7095de2921a0434f",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kinova_description/urdf/kinova_common.xacro",
+        "size_bytes": 9096,
+        "git_blob_sha": "4803581da62326bbe205b31df650a6ae2977632f",
+        "sha256": "sha256:feb57531f65206f9b8e9f461b3f47818b1d74033d665724462acf4673427b4d1",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kinova_description/urdf/kinova_finger_set.xacro",
+        "size_bytes": 2785,
+        "git_blob_sha": "1d5223437799d1b6d7cd633987b1cec3d7b60c90",
+        "sha256": "sha256:868344d57ae2e829e6674533e3121364d57674b4884932a850969f8e1808e6d5",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kinova_description/urdf/kinova_inertial.xacro",
+        "size_bytes": 6453,
+        "git_blob_sha": "fc93e0da58cbbe09287cf8fba0ff8c8dd9b2160b",
+        "sha256": "sha256:bee07459be0cab180b046d057f818faef879827cc5f227ceb56a9b557c4e2d69",
+        "synthetic_geometry_in_tests": false
+      }
+    ]
+  },
+  "kuka_kr_iontec": {
+    "repository_url": "https://github.com/kuka-ros/kuka_robot_descriptions",
+    "revision": "5ddbc41ce8726fd680bcc19562d78bcabfbdf96d",
+    "files": [
+      {
+        "path": "LICENSE",
+        "size_bytes": 11348,
+        "git_blob_sha": "56c8efd693a39183feab67ae762c9b692847d2fd",
+        "sha256": "sha256:b246743db2810348d271c24bbfb2824bb37543bc97ddbe52216e40a30c9e9f05",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_gazebo/gazebo/kuka_gazebo.xacro",
+        "size_bytes": 584,
+        "git_blob_sha": "b880e304fd796993fb0aa452684d8270eb9a2683",
+        "sha256": "sha256:a52cce4459e9b315260fcb42d953d9475e8970a31481c2c53a04d386cecea000",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_gazebo/package.xml",
+        "size_bytes": 1221,
+        "git_blob_sha": "795aa871146f6d026fb8c1318cb5c36e4186bfb4",
+        "sha256": "sha256:122dad91ae3ca1bc2dd44aedf386924aa375fa40e8544ae66da5ac5f79cbc7b1",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/collision/base_link.stl",
+        "size_bytes": 81084,
+        "git_blob_sha": "edd99cf07544f146e4a3e534b8f750bd7e6ca131",
+        "sha256": "sha256:36daaa6fa9a84badd4fdc692b6f4d42c6ffa824dd2fbab3c6c16bba2562ff416",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/collision/link_1.stl",
+        "size_bytes": 211784,
+        "git_blob_sha": "c8a6c68d2dd461779a313ed4042cd13446f3914b",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/collision/link_2.stl",
+        "size_bytes": 25284,
+        "git_blob_sha": "de0fb7aef800f639629919e118c91ad762466575",
+        "sha256": "sha256:80e82bbdbdd70a1538f999569a9f6d14c7bb1ec952db966e0af54a4be7a9932e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/collision/link_3.stl",
+        "size_bytes": 50684,
+        "git_blob_sha": "c0ad120c9f4435942e9adb528b4d4296d71a992c",
+        "sha256": "sha256:a24b5629fc4379edd01476719375da4c7bcac68e7114e7bde56dc111ba057ad0",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/collision/link_4.stl",
+        "size_bytes": 50884,
+        "git_blob_sha": "86ed60a157e4ed3a0faa2bf02d08313a69282726",
+        "sha256": "sha256:e4e6d07b96b47193dd5d1169fbcb6e221566f27abcaa5ac5ed7ac27abd79e896",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/collision/link_5.stl",
+        "size_bytes": 101184,
+        "git_blob_sha": "51f4c3cdbea75d1b42d57d6ff5b205dd8d36eaa9",
+        "sha256": "sha256:478aa75911bebd07fd785d0b7d39825d062058dca42200850e0a7aee156119b4",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/collision/link_6.stl",
+        "size_bytes": 162784,
+        "git_blob_sha": "7e2fefe0503db77334a9529619f682909606746f",
+        "sha256": "sha256:2f927811a283fdc268c099418cf71e8a379f8c84a32b9bd035279aa87e844761",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/visual/base_link.dae",
+        "size_bytes": 1955303,
+        "git_blob_sha": "ffda498ff797452b3d0a4607fce9a937d971811c",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/visual/link_1.dae",
+        "size_bytes": 5080998,
+        "git_blob_sha": "174e5451f5290abf9cfea6376cd6b649a7d1ac3a",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/visual/link_2.dae",
+        "size_bytes": 1485575,
+        "git_blob_sha": "3fc714ba119d60b6888eb134d69d207b1a2134de",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/visual/link_3.dae",
+        "size_bytes": 2420801,
+        "git_blob_sha": "8aa23cd66def1858aa394bfcd9105ae295bc19e6",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/visual/link_4.dae",
+        "size_bytes": 1293939,
+        "git_blob_sha": "0409a9285478b26659d8bc2e1e51ffd41ea1a04a",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/visual/link_5.dae",
+        "size_bytes": 1170937,
+        "git_blob_sha": "d63ba9021b577634415ba804c7d4fd0164586158",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr20_r3100/visual/link_6.dae",
+        "size_bytes": 182946,
+        "git_blob_sha": "30ef8a10df0e0bf3b9328b21b910495fc8fb4bd4",
+        "sha256": "sha256:c6c4a67d264957b9e6b14924e1f4665c497c3cc6a8c0145a553f8475c241a81e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/collision/base_link.stl",
+        "size_bytes": 80884,
+        "git_blob_sha": "b9784cfa548bd5d1d17dec8e908be8c0e8b46eae",
+        "sha256": "sha256:45a9312496e0b13fb90214d5b6e8bdec85147fee3480346ffd18141566207e6f",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/collision/link_1.stl",
+        "size_bytes": 209484,
+        "git_blob_sha": "085a0bffc102f38a5072819ca4f0a8585570d955",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/collision/link_2.stl",
+        "size_bytes": 50584,
+        "git_blob_sha": "c9b866c706673e3a67bd08a97a8632d9e3bfa4ac",
+        "sha256": "sha256:0c6e378edf7d47a04499a2a9560fdc0a207752d31dc214bbfbabbc8c4a9cc44e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/collision/link_3.stl",
+        "size_bytes": 101284,
+        "git_blob_sha": "a7bf347c116e82f69dc77a2532db3378258149c6",
+        "sha256": "sha256:30ed117b27a543f69877e3b4810c555edaab1999e5640845faa3f76554d0db42",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/collision/link_4.stl",
+        "size_bytes": 25284,
+        "git_blob_sha": "c7750b07008c06798bccd08d21c9370274ee6ea9",
+        "sha256": "sha256:330af9659c471be0afaba50c15c045966e7e746896cf414ba286ef65bc502afa",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/collision/link_5.stl",
+        "size_bytes": 156984,
+        "git_blob_sha": "09e368283a8921599fdc1e862b6012f6c42b9f21",
+        "sha256": "sha256:544d72a063c3e1b143a90397c601920ce30a16f26ac6cf051f7c53c15bc13d20",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/collision/link_6.stl",
+        "size_bytes": 16184,
+        "git_blob_sha": "2c8e31333990b67e87d8b0d76426311b355ab6be",
+        "sha256": "sha256:ab3aa41032b019d8993c3525beddd976cf2d34954af85da00a0f779a802e9a8f",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/visual/base_link.dae",
+        "size_bytes": 1958762,
+        "git_blob_sha": "d807b90e2231d2c3f32b0899b962ce4ab62a77a1",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/visual/link_1.dae",
+        "size_bytes": 5005129,
+        "git_blob_sha": "9ad46708806b4911fd3aaa51b54f66fca3ec139e",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/visual/link_2.dae",
+        "size_bytes": 1457103,
+        "git_blob_sha": "979eee972a602956a32d6cda8fb980c95e09bb9e",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/visual/link_3.dae",
+        "size_bytes": 1407636,
+        "git_blob_sha": "d742d9661a6acc089defeab864a9ceec7eccf5eb",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/visual/link_4.dae",
+        "size_bytes": 1761872,
+        "git_blob_sha": "def5cfb0a1a16df062c97370e6d016112972404a",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/visual/link_5.dae",
+        "size_bytes": 742727,
+        "git_blob_sha": "a767315dc07454c3bbfe4c13a0816eb70115c8e0",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr30_r2100/visual/link_6.dae",
+        "size_bytes": 172964,
+        "git_blob_sha": "4ea482c4687f7cf516548098caf0c0e19846d54b",
+        "sha256": "sha256:9c0075b7f2efe015182ffe51fbe62548192c6ea24a0ec16c91bd6a51c81f804d",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/collision/base_link.stl",
+        "size_bytes": 80884,
+        "git_blob_sha": "b9784cfa548bd5d1d17dec8e908be8c0e8b46eae",
+        "sha256": "sha256:45a9312496e0b13fb90214d5b6e8bdec85147fee3480346ffd18141566207e6f",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/collision/link_1.stl",
+        "size_bytes": 209484,
+        "git_blob_sha": "f6ed8d31fd12050e4683ea39785a2ee041d0b3aa",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/collision/link_2.stl",
+        "size_bytes": 50584,
+        "git_blob_sha": "c9b866c706673e3a67bd08a97a8632d9e3bfa4ac",
+        "sha256": "sha256:0c6e378edf7d47a04499a2a9560fdc0a207752d31dc214bbfbabbc8c4a9cc44e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/collision/link_3.stl",
+        "size_bytes": 101284,
+        "git_blob_sha": "a7bf347c116e82f69dc77a2532db3378258149c6",
+        "sha256": "sha256:30ed117b27a543f69877e3b4810c555edaab1999e5640845faa3f76554d0db42",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/collision/link_4.stl",
+        "size_bytes": 25284,
+        "git_blob_sha": "c7750b07008c06798bccd08d21c9370274ee6ea9",
+        "sha256": "sha256:330af9659c471be0afaba50c15c045966e7e746896cf414ba286ef65bc502afa",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/collision/link_5.stl",
+        "size_bytes": 156984,
+        "git_blob_sha": "09e368283a8921599fdc1e862b6012f6c42b9f21",
+        "sha256": "sha256:544d72a063c3e1b143a90397c601920ce30a16f26ac6cf051f7c53c15bc13d20",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/collision/link_6.stl",
+        "size_bytes": 235984,
+        "git_blob_sha": "4e1489d2e51e5830b77ab9725810e0118ebd578c",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/visual/base_link.dae",
+        "size_bytes": 1960679,
+        "git_blob_sha": "52cedc30b6ef9810a5e356eb3ac14760174b64ea",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/visual/link_1.dae",
+        "size_bytes": 4995259,
+        "git_blob_sha": "546b02de64c689e3294801de60598b71ae360f6e",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/visual/link_2.dae",
+        "size_bytes": 1455499,
+        "git_blob_sha": "8c8ac3ad6c264e88d30763e96fcd874f3a312e6c",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/visual/link_3.dae",
+        "size_bytes": 1405287,
+        "git_blob_sha": "b3274d657f8d3cb59eee4570c7f37d38b982aa0c",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/visual/link_4.dae",
+        "size_bytes": 1758663,
+        "git_blob_sha": "9f2ed1eaa40c9f1c9bf5095b95daa1c687b9cfa1",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/visual/link_5.dae",
+        "size_bytes": 740114,
+        "git_blob_sha": "560c2c0f40bfe4538567a585947c7bc25d189367",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2100/visual/link_6.dae",
+        "size_bytes": 169609,
+        "git_blob_sha": "b0b34957e9bf10a9c1a867a773710b5cea1bb6df",
+        "sha256": "sha256:ba647cec1376ed2ad0cfd77e7c807b80babba9387978c35182460483c7f6aa79",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/collision/base_link.stl",
+        "size_bytes": 80884,
+        "git_blob_sha": "b9784cfa548bd5d1d17dec8e908be8c0e8b46eae",
+        "sha256": "sha256:45a9312496e0b13fb90214d5b6e8bdec85147fee3480346ffd18141566207e6f",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/collision/link_1.stl",
+        "size_bytes": 211784,
+        "git_blob_sha": "f0ebfe65a1b014047ab5f2c04fad71e08835b1d0",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/collision/link_2.stl",
+        "size_bytes": 25284,
+        "git_blob_sha": "6629be31d6fae04dbbf37ddf965ba789403e17df",
+        "sha256": "sha256:036e49bb5ce193ab832144c00ee66da8138f03f06996f05510e57eb0f9d5de08",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/collision/link_3.stl",
+        "size_bytes": 101384,
+        "git_blob_sha": "228b1b4c47e42152558cbbbaf33e5e52bbbd8bd0",
+        "sha256": "sha256:578e55ef6c90d9eecbfc13dd9d5f54da9d43a781f822fa3248d248aa39e2104a",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/collision/link_4.stl",
+        "size_bytes": 25284,
+        "git_blob_sha": "4f8aec65bc622e4c8cfa1864699588b431cd4d89",
+        "sha256": "sha256:dde9816f81d62c9a79627ae0f684c945b51ac9629a685075c5b449cdc4288ac2",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/collision/link_5.stl",
+        "size_bytes": 129284,
+        "git_blob_sha": "99f04447c76562a3d579d4e1a43de2ff3b4da134",
+        "sha256": "sha256:1c08714ce4320a4084c277b6658358686cce06bb6fcb7b58beb1022255a1c884",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/collision/link_6.stl",
+        "size_bytes": 202484,
+        "git_blob_sha": "102e05c673d289ae63d04166ffeadce5364201f9",
+        "sha256": "sha256:0864623b2b4fdf8010c63fb4fe5a8ae9ad5b148f77c54ae2cbd776a0ed27efe8",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/visual/base_link.dae",
+        "size_bytes": 1961331,
+        "git_blob_sha": "19a8b1b403a20c8410512b46c611803c3200626f",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/visual/link_1.dae",
+        "size_bytes": 5005050,
+        "git_blob_sha": "56c6a51a801f24fbab4a88ef3fdf2b3a29bcd914",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/visual/link_2.dae",
+        "size_bytes": 1496636,
+        "git_blob_sha": "0bb0b31853805b31a48d070bd4625a927d96ce49",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/visual/link_3.dae",
+        "size_bytes": 1408671,
+        "git_blob_sha": "1ac54b876bf905719ad976894d3c79ffb42d4611",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/visual/link_4.dae",
+        "size_bytes": 1759696,
+        "git_blob_sha": "2efac7346dfd4858b62d6e0ebbd4dea726704bbc",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/visual/link_5.dae",
+        "size_bytes": 740198,
+        "git_blob_sha": "900ccbf4e48c1d32c17ffdbc4cdc5507fdd7d856",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr50_r2500/visual/link_6.dae",
+        "size_bytes": 167562,
+        "git_blob_sha": "9fb41dccfd4d390bbf266280bb44d358bb63bb45",
+        "sha256": "sha256:86c3735e8f80cc0be73631cf6df42a8900430f9472d802a1ca191db92d8dc07d",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/collision/base_link.stl",
+        "size_bytes": 80884,
+        "git_blob_sha": "b9784cfa548bd5d1d17dec8e908be8c0e8b46eae",
+        "sha256": "sha256:45a9312496e0b13fb90214d5b6e8bdec85147fee3480346ffd18141566207e6f",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/collision/link_1.stl",
+        "size_bytes": 211784,
+        "git_blob_sha": "48237d14e5a26e79f968ba565857a6190f432b3c",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/collision/link_2.stl",
+        "size_bytes": 50584,
+        "git_blob_sha": "c9b866c706673e3a67bd08a97a8632d9e3bfa4ac",
+        "sha256": "sha256:0c6e378edf7d47a04499a2a9560fdc0a207752d31dc214bbfbabbc8c4a9cc44e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/collision/link_3.stl",
+        "size_bytes": 101284,
+        "git_blob_sha": "a7bf347c116e82f69dc77a2532db3378258149c6",
+        "sha256": "sha256:30ed117b27a543f69877e3b4810c555edaab1999e5640845faa3f76554d0db42",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/collision/link_4.stl",
+        "size_bytes": 25284,
+        "git_blob_sha": "c7750b07008c06798bccd08d21c9370274ee6ea9",
+        "sha256": "sha256:330af9659c471be0afaba50c15c045966e7e746896cf414ba286ef65bc502afa",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/collision/link_5.stl",
+        "size_bytes": 156984,
+        "git_blob_sha": "9bfd880093c4569ad98299828028943476ee8746",
+        "sha256": "sha256:a3f1286db9fa19e7b63b099b9915f6dd45490ef8e82ed94a7e302fe77c930c0a",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/collision/link_6.stl",
+        "size_bytes": 213984,
+        "git_blob_sha": "74ef65e1544dc376eea8b852afd546d3949427ec",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/visual/base_link.dae",
+        "size_bytes": 1960778,
+        "git_blob_sha": "246c90526a69f829b0245dbae601f950eb8a8c10",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/visual/link_1.dae",
+        "size_bytes": 5000151,
+        "git_blob_sha": "7d9ad66720651121a0f6fe2cdbe7d9e6fc951de9",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/visual/link_2.dae",
+        "size_bytes": 1455143,
+        "git_blob_sha": "269c54ab364c112179e742498f1f5df0c314fbee",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/visual/link_3.dae",
+        "size_bytes": 1399553,
+        "git_blob_sha": "38ac7ef8c65370311a361c0889a48e62508370f5",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/visual/link_4.dae",
+        "size_bytes": 1756734,
+        "git_blob_sha": "9d592e91783b53bd9895e1e48df34b4205e6adf8",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/visual/link_5.dae",
+        "size_bytes": 739477,
+        "git_blob_sha": "cc9aa945d8170be0c4551854621d63c58a4e2d20",
+        "sha256": null,
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/meshes/kr70_r2100/visual/link_6.dae",
+        "size_bytes": 169609,
+        "git_blob_sha": "18ce0f254a6b0c70fb06f31d93368923b36060ee",
+        "sha256": "sha256:0d8f77b048204af095f1ca6b140369639274d00cbe0eaebf2683cf2f1b7f37d8",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "kuka_iontec_support/package.xml",
+        "size_bytes": 833,
+        "git_blob_sha": "e0deefe43643e5a1242d928190f1add5a775d335",
+        "sha256": "sha256:ec35a84f0aeeafc378e78a0950fdad0fbf41027e3153b3377398343e57ed85fd",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr20_r3100.urdf.xacro",
+        "size_bytes": 2381,
+        "git_blob_sha": "71ff5e9047c9ff450fcedca8db72b5b4ecd57db1",
+        "sha256": "sha256:27d02c96d004cbc3c81c951c56a6c35aee8eae570c624e4cdbff7c001ed16410",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr20_r3100_macro.xacro",
+        "size_bytes": 9577,
+        "git_blob_sha": "eb6108a5cb575c6b975d830a970a2a0a1f0f9515",
+        "sha256": "sha256:b70abf209d0122033bc18b3edb020619c104e5bf8100d68c5fe39d9dfdd70b09",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr30_r2100.urdf.xacro",
+        "size_bytes": 2381,
+        "git_blob_sha": "19a83a49c2217d222b3efd58e46dc351ddfbcaa1",
+        "sha256": "sha256:49fa27c603255b7fb5c2230560ec08aef54dc22665324073da2b73e1aa41c30b",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr30_r2100_macro.xacro",
+        "size_bytes": 9768,
+        "git_blob_sha": "c477b4d491c65da89080bd779abbf6417a92da72",
+        "sha256": "sha256:e34da61ccbc3bbfdcd7cfbd84e2264e43f5084988261c540cc788e28d9a468f2",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr50_r2100.urdf.xacro",
+        "size_bytes": 2381,
+        "git_blob_sha": "15065ecb58363d65ac80ab3ac5a2a27f6c998da6",
+        "sha256": "sha256:ecf920a71a895f641821bcf76fa6e5469144fd0b9419513f875ebda8696805e4",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr50_r2100_macro.xacro",
+        "size_bytes": 9799,
+        "git_blob_sha": "973c0ed4d76eb78b866a2f2f855914e9c7a6931b",
+        "sha256": "sha256:564d086b1e0d2a036e00bc3f7b6ce5c76281356adda8e2083003be0b074a4930",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr50_r2500.urdf.xacro",
+        "size_bytes": 2381,
+        "git_blob_sha": "5d75f3fd3cccf0574772b2330dce66536c6a4523",
+        "sha256": "sha256:750d6cbde1b5a77d3ac0bfce28c6053077ad398f25fdf38607a71f1666709ad0",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr50_r2500_macro.xacro",
+        "size_bytes": 9746,
+        "git_blob_sha": "df3edf94f8288d18803b1fd151dded85ead3fa53",
+        "sha256": "sha256:84273299a6d04f81233135f3c0a0c41dde37cd7c17cb5d426edc02b28e65ad81",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr70_r2100.urdf.xacro",
+        "size_bytes": 2381,
+        "git_blob_sha": "8f12826db67ecf8fcdae74ae5fb6281189bfea1f",
+        "sha256": "sha256:fc5253326a558446dfbe5c03a33da0a1eec24cda8cb31648c8e0a379a6f7cd34",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr70_r2100_macro.xacro",
+        "size_bytes": 9900,
+        "git_blob_sha": "ecb820b5ab69b92b994b769df538f92b7d78f28e",
+        "sha256": "sha256:4b046c80634bdbabaa2d93af57e9e24da32faa465b20ba21fe7e99e68ae1a1f5",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "kuka_iontec_support/urdf/kr_iontec_ros2_control_macro.xacro",
+        "size_bytes": 7285,
+        "git_blob_sha": "30a23f8e53f5e4de74562e0cd60b835d655e4ccd",
+        "sha256": "sha256:a8d8688bc0f170ea1a85d693abb49675c3807b472ae4ea4becca4f6bc59daf33",
+        "synthetic_geometry_in_tests": false
+      }
+    ]
+  }
+}

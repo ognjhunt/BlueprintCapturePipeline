@@ -235,7 +235,7 @@ def test_original28_profiles_34_recipes_109_rows_18_policy_identities_unchanged(
             "candidates"
         ]
     }
-    assert (len(recipes), len(rows), len(runtime._PROFILES)) == (37, 128, 31)
+    assert (len(recipes), len(rows), len(runtime._PROFILES)) == (49, 136, 42)
     for name, expected in previous["recipes"].items():
         assert canonical_digest(recipes[name]) == expected
     for name, expected in previous["catalog"].items():
@@ -251,7 +251,7 @@ def test_original28_profiles_34_recipes_109_rows_18_policy_identities_unchanged(
         assert (
             {b: current[key][b] for b in expected} if key == "bodies" else current[key]
         ) == expected
-    assert len(current["bodies"]) == 21
+    assert len(current["bodies"]) == 24
     previous_runtime()
 
 

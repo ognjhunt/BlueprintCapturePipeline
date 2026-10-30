@@ -17,7 +17,7 @@ from blueprint_pipeline.task_evaluation_policy_candidate_registry import validat
 
 def test_default_catalog_records_all_named_candidates_and_only_existing_initial_interfaces():
     value = load_default_catalog()
-    assert len(value["candidates"]) == 128
+    assert len(value["candidates"]) == 136
     enabled = {row["candidate_id"] for row in value["candidates"] if row["eligibility"]["enabled"]}
     from blueprint_pipeline.beta_policy_screening_g1 import CANDIDATES
     from blueprint_pipeline.openpi_droid_policy_runtime import BETA_POLARIS_VARIANT_CANDIDATE_IDS
@@ -26,7 +26,8 @@ def test_default_catalog_records_all_named_candidates_and_only_existing_initial_
     company_rows = [row for row in value["candidates"] if row.get("deployment") and row["candidate_id"] not in CANDIDATES
                     and not (row["deployment"]["relationship"] == "public_controller_integration"
                              and not row["deployment"]["companies"])]
-    assert len(company_rows) == 74
+    # 74 packaged routes plus 5 public fixed-arm deployment associations without a route.
+    assert len(company_rows) == 79
     assert all(row["eligibility"]["blockers"] for row in company_rows)
     assert {row["deployment"]["configuration_id"] for row in company_rows
             if row["deployment"]["relationship"] == "publisher_demonstrated"} == {

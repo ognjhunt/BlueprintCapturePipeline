@@ -1,0 +1,26 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="diana7">
+
+  <xacro:include filename="$(find diana_description)/robots/common/diana_arm.srdf.xacro" />
+
+  <xacro:arg name="robot_type" default="diana7" />
+
+  <xacro:arg name="arm_prefix" default="" />
+
+  <xacro:arg name="no_prefix" default="false"/>
+
+  <xacro:arg name="hand" default="false" />
+
+  <xacro:arg name="ee_id" default="" />
+
+  <xacro:property name="prefix" value="$(arg arm_prefix)" />
+  <xacro:property name="modified_prefix" value="${prefix + '_' if prefix else ''}" />
+
+  <xacro:diana_arm_srdf robot_type="$(arg robot_type)"
+                        hand="$(arg hand)"
+                        ee_id="$(arg ee_id)"
+                        no_prefix="$(arg no_prefix)"
+                        arm_prefix="${modified_prefix}">
+  </xacro:diana_arm_srdf>
+
+</robot>

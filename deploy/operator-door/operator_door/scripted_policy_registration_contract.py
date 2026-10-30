@@ -25,6 +25,10 @@ YASKAWA_CODE_FILES = ("scripted_robot_baseline.py", "scripted_robot_grasp_frames
 YASKAWA_BODIES = frozenset({"yaskawa_gp12_robotiq_2f85_sim", "yaskawa_gp20_robotiq_2f85_sim"})
 KUKA_CODE_FILES = ("scripted_robot_baseline.py", "scripted_robot_grasp_frames.py", "scripted_robot_kuka_robotiq_runtime.py")
 KUKA_BODIES = frozenset({'kuka_lbr_iiwa_14_robotiq_2f85_sim'})
+PUBLIC_ARM_CODE_FILES = ("scripted_robot_baseline.py", "scripted_robot_grasp_frames.py",
+                         "scripted_robot_public_arm_robotiq_runtime.py")
+PUBLIC_ARM_BODIES = frozenset({"fanuc_m10id_12_robotiq_2f85_sim", "yaskawa_hc20_robotiq_2f85_sim",
+                               "agile_robots_diana_7_robotiq_2f85_sim"})
 EVIDENCE_KIND = "scripted_simulator_state_baseline"
 ACTION_SOURCE = "scripted_simulator_state"
 UNAVAILABLE_REASONS = {"prepared_body_unavailable", "prepared_body_verification_failed", "source_or_import_verification_failed",
@@ -36,6 +40,12 @@ def load_profile(profile_root: Path, *, source_root: Path | None = None, license
     require(profile["policy_profile"] == common.SCRIPTED_PROFILE_ID and profile["team_id"] == common.SCRIPTED_TEAM_ID
             and profile["checkpoint_id"] == CHECKPOINT_ID and list(profile["bodies"]) == sorted(common.SCRIPTED_BODIES),
             "fixed_script_profile_changed")
+    public_arm = profile["public_arm_source_identity"]
+    require(profile["public_arm_policy_profile"] == "blueprint_scripted_pick_place_public_arm_robotiq.v1"
+            and set(profile["public_arm_bodies"]) == PUBLIC_ARM_BODIES
+            and public_arm["schema_version"] == "blueprint_scripted_controller_source.v1"
+            and [row["path"] for row in public_arm["files"]] == list(PUBLIC_ARM_CODE_FILES),
+            "script_public_arm_inventory_changed")
     kuka = profile["kuka_source_identity"]
     require(profile["kuka_policy_profile"] == "blueprint_scripted_pick_place_kuka_robotiq.v1"
             and set(profile["kuka_bodies"]) == KUKA_BODIES
@@ -61,8 +71,9 @@ def load_profile(profile_root: Path, *, source_root: Path | None = None, license
             and [row["path"] for row in identity["files"]] == list(CODE_FILES), "script_source_inventory_changed")
     if source_root is None:
         source_root = profile_root / "scripted-baseline-source"
-        require({p.name for p in source_root.iterdir()} == set(CODE_FILES) | set(VARIANT_CODE_FILES) | set(INDUSTRIAL_CODE_FILES) | set(YASKAWA_CODE_FILES) | set(KUKA_CODE_FILES), "script_source_inventory_changed")
-    for row in [*identity["files"], *variant["files"], *industrial["files"], *yaskawa["files"], *kuka["files"]]:
+        require({p.name for p in source_root.iterdir()} == set(CODE_FILES) | set(VARIANT_CODE_FILES) | set(INDUSTRIAL_CODE_FILES) | set(YASKAWA_CODE_FILES) | set(KUKA_CODE_FILES) | set(PUBLIC_ARM_CODE_FILES), "script_source_inventory_changed")
+    for row in [*identity["files"], *variant["files"], *industrial["files"], *yaskawa["files"], *kuka["files"],
+                *public_arm["files"]]:
         require(set(row) == {"path", "sha256"} and common.file_record(source_root / row["path"])["sha256"] == row["sha256"],
                 "script_source_changed")
     actual = common.file_record(license_path or profile_root / "scripted_robot_baseline_license.txt")
@@ -72,6 +83,8 @@ def load_profile(profile_root: Path, *, source_root: Path | None = None, license
 
 
 def source_identity(profile: dict, body: str) -> dict:
+    if body in PUBLIC_ARM_BODIES:
+        return profile["public_arm_source_identity"]
     if body in KUKA_BODIES:
         return profile["kuka_source_identity"]
     if body in YASKAWA_BODIES:
@@ -123,7 +136,7 @@ def validated_policy(manifest: dict, policy: dict, profile: dict) -> dict:
             "fixed_manifest_changed")
     frame = profile["frames"][profile["bodies"][body]]
     arms = manifest.get("arms", [])
-    names = ["arm"] if body in {"kinova_gen3", "ufactory_xarm7"} | VARIANT_BODIES | INDUSTRIAL_BODIES | YASKAWA_BODIES | KUKA_BODIES else ["left", "right"]
+    names = ["arm"] if body in {"kinova_gen3", "ufactory_xarm7"} | VARIANT_BODIES | INDUSTRIAL_BODIES | YASKAWA_BODIES | KUKA_BODIES | PUBLIC_ARM_BODIES else ["left", "right"]
     require([arm["name"] for arm in arms] == names and len(manifest["grippers"]) == len(names), "script_source_tool_changed")
     channels = {row["name"]: row for row in manifest["grippers"]}
     bindings = policy.get("grasp_bindings")
@@ -160,7 +173,8 @@ def validated_policy(manifest: dict, policy: dict, profile: dict) -> dict:
                 and all(math.isclose(p[i]+sum(a[i][k]*t[k] for k in range(3)), frame["position"][i], rel_tol=0, abs_tol=1e-9)
                         for i in range(3)), "script_grasp_transform_changed")
     expected = {"policy_interface_id": common.SCRIPTED_PROFILE_ID,
-        "policy_id": (profile["kuka_policy_profile"] if body in KUKA_BODIES else
+        "policy_id": (profile["public_arm_policy_profile"] if body in PUBLIC_ARM_BODIES else
+                      profile["kuka_policy_profile"] if body in KUKA_BODIES else
                       profile["yaskawa_policy_profile"] if body in YASKAWA_BODIES else
                       profile["industrial_policy_profile"] if body in INDUSTRIAL_BODIES else
                       profile["variant_policy_profile"] if body in VARIANT_BODIES else common.SCRIPTED_PROFILE_ID),

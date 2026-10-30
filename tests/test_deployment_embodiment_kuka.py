@@ -330,7 +330,7 @@ def test_original30_profiles_36_recipes_111_rows_20_policy_identities_unchanged(
             "candidates"
         ]
     }
-    assert (len(recipes), len(catalog), len(runtime._PROFILES)) == (37, 128, 31)
+    assert (len(recipes), len(catalog), len(runtime._PROFILES)) == (49, 136, 42)
     for name, expected in previous["recipes"].items():
         assert canonical_digest(recipes[name]) == expected
     for name, expected in previous["catalog"].items():
@@ -346,7 +346,7 @@ def test_original30_profiles_36_recipes_111_rows_20_policy_identities_unchanged(
         assert (
             {b: current[key][b] for b in expected} if key == "bodies" else current[key]
         ) == expected
-    assert len(current["bodies"]) == 21
+    assert len(current["bodies"]) == 24
     path = FIXTURE / "runtime_configuration_c596.py"
     assert (
         "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()

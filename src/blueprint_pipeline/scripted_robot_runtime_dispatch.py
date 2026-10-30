@@ -3,6 +3,9 @@ from __future__ import annotations
 
 
 def runtime_for_policy(policy):
+    from . import scripted_robot_public_arm_robotiq_runtime as public_arm
+    if policy.get("policy_id") == public_arm.PROFILE_ID:
+        return public_arm
     from . import scripted_robot_kuka_robotiq_runtime as kuka
     if policy.get("policy_id") == kuka.PROFILE_ID:
         return kuka
@@ -22,6 +25,9 @@ def runtime_for_policy(policy):
 
 
 def runtime_for_manifest(manifest):
+    from . import scripted_robot_public_arm_robotiq_runtime as public_arm
+    if manifest.get("embodiment_id") in public_arm.BODIES:
+        return public_arm
     from . import scripted_robot_kuka_robotiq_runtime as kuka
     if manifest.get("embodiment_id") in kuka.BODIES:
         return kuka
