@@ -17,7 +17,6 @@ from .native_g1_beta_session import (BUNDLE_SCHEMA, ENTRYPOINT, MANIFEST, REQUIR
 from .native_g1_provider_bundle import (_contract_dependency, _files, _runtime_code_files,
     _review_g1_runtime_wheels, _verify_embedded_pi_tokenizer)
 from .native_g1_publisher_source_stage import verify_g1_publisher_source, SOURCE_REPOSITORY
-from .native_g1_pi_tokenizer_assets import verify_tokenizer_assets
 from .native_task_arena_bundle import verify_native_task_arena_packet
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .native_task_runtime_source_packet import verify_native_task_runtime_source_packet
@@ -97,13 +96,8 @@ def build_bundle(*, job_dir: Path, authority, spec, implementation_commit: str,
     assets = selected_asset_inventory(candidates)
     tokenizer = None
     if needs_pi_tokenizer(candidates):
-        if tokenizer_dir is None:
-            value = os.environ.get("BLUEPRINT_G1_PI_TOKENIZER_DIR")
-            if not value:
-                raise ValueError("g1_beta_selected_pi_tokenizer_missing")
-            tokenizer_dir = Path(value)
-        tokenizer = verify_tokenizer_assets(inventory_path=repository / "configs/g1_paligemma_tokenizer_inventory.v1.json",
-                                           asset_dir=tokenizer_dir)
+        from .native_g1_beta_tokenizer import resolve_selected_tokenizer
+        tokenizer_dir, tokenizer = resolve_selected_tokenizer(candidates, explicit_dir=tokenizer_dir)
     job = Path(job_dir)
     if not job.is_absolute() or job.exists() or job.is_symlink() or not job.parent.is_dir():
         raise ValueError("g1_beta_bundle_destination_invalid")

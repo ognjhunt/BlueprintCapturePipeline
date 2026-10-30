@@ -235,6 +235,8 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                     raise ValueError("g1_beta_native_rigid_task_required")
                 if not override or not override.get("native_g1"):
                     raise ValueError("g1_beta_scene_packet_missing")
+                from .native_g1_beta_tokenizer import resolve_selected_tokenizer
+                resolve_selected_tokenizer([key])
                 spec = candidate_execution_spec(candidate_id=key, registration=override["native_g1"],
                     scene_plan=scene_plan, base_packet=inputs["base_native_packet"], source=source,
                     contract=inputs["task_success_contract"], site_id=scene["site_id"])

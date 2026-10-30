@@ -198,3 +198,20 @@ are distinct. Only scoped controller closeout authorizes result projection.
 
 Git must be present in the pinned image before source verification. Its absence
 produces a per-cell bootstrap reason; the lane never installs it with apt.
+
+Pi readiness uses an explicit tokenizer directory when supplied, then the
+existing `BLUEPRINT_G1_PI_TOKENIZER_DIR` override, then the retained model-only
+cache at
+`/var/lib/blueprint/task-evaluation-inputs/g1-841757-development/pi-tokenizer-f1eaa13`.
+Planning and bundle preparation recheck the exact reviewed six-file inventory;
+the directory name alone establishes neither current bytes nor task authority.
+An absent or inaccessible directory yields
+`g1_beta_selected_pi_tokenizer_unavailable`; changed files or inventory yield
+`g1_beta_selected_pi_tokenizer_invalid`. An invalid configured override never
+silently falls back. DP does not inspect these assets. This path performs no
+credential read, gated download, environment edit or allocation.
+
+On the provider, source verification recomputes the actual clean checkout and
+all publisher file identities. Only the `source_root` location and resulting
+receipt digest may differ from the sealed controller receipt; the original
+receipt stays retained unchanged and every other field must match exactly.

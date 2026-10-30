@@ -55,6 +55,20 @@ def _inputs(root):
     return authority, spec, packet
 
 
+def _verify_relocated_publisher(root):
+    """Retain controller provenance while verifying identical provider bytes."""
+    from .native_g1_publisher_source_stage import verify_g1_publisher_source
+    observed = verify_g1_publisher_source(root / "publisher-source")
+    staged = _json(root / "publisher-source/native_g1_publisher_source_stage.v1.json")
+    if staged.get("receipt_digest") != canonical_digest(staged, digest_field="receipt_digest"):
+        raise ValueError("g1_beta_runtime_publisher_changed")
+    relocated = {**staged, "source_root": str(root / "publisher-source/source")}
+    relocated["receipt_digest"] = canonical_digest(relocated, digest_field="receipt_digest")
+    if relocated != observed:
+        raise ValueError("g1_beta_runtime_publisher_changed")
+    return observed
+
+
 def _result(authority, episodes, *, stage, blockers):
     admission = authority["beta_screening_admission"]
     # Ship references to the retained native JSON, not multiple copies of every
@@ -240,10 +254,7 @@ def run_session(root: Path, output: Path, *, failure_only: str | None = None):
         stage = "publisher_source"
         if shutil.which("git") is None:
             raise ValueError("g1_beta_image_git_unavailable")
-        from .native_g1_publisher_source_stage import verify_g1_publisher_source
-        publisher = verify_g1_publisher_source(root / "publisher-source")
-        if publisher != _json(root / "publisher-source/native_g1_publisher_source_stage.v1.json"):
-            raise ValueError("g1_beta_runtime_publisher_changed")
+        _verify_relocated_publisher(root)
         stage = "native_provisioning"
         provision = _json(output / "native_task_runtime_source_provisioning.v1.json")
         source = _json(root / "native_task_runtime_sources/native_task_runtime_source_packet.v1.json")
