@@ -1575,6 +1575,85 @@
           "mount_kind": "ideal_fixed_simulation_mount"
         }
       }
+    },
+    {
+      "embodiment_id": "kuka_lbr_iiwa_14_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/google-deepmind/mujoco_menagerie",
+        "revision": "cda5236f98383f6fbaa4820c6b18dba892cd087f",
+        "entry_path": "kuka_iiwa_14/iiwa14.xml",
+        "format": "mjcf",
+        "license_id": "BSD-3-Clause",
+        "license_path": "kuka_iiwa_14/LICENSE",
+        "license_url": "https://github.com/google-deepmind/mujoco_menagerie/blob/cda5236f98383f6fbaa4820c6b18dba892cd087f/kuka_iiwa_14/LICENSE",
+        "license_note": "DeepMind Menagerie conversion; model LICENSE retains Drake BSD-3-Clause. This is not a manufacturer-supported Isaac runtime, nor a gripper-equipped workcell.",
+        "include_paths": [
+          "kuka_iiwa_14",
+          "kuka_iiwa_14/LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {},
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established"
+      ],
+      "reason": "Exact public iiwa14 plus licensed Robotiq2F85 simulation assembly. Source home/dynamics/contact exclusions retained; finite effort/velocity caps are declared simulation estimates, not manufacturer limits. Native execution and hardware fit remain unproven.",
+      "composition": {
+        "schema_version": "iiwa14_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "kuka_lbr_iiwa_14",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "Exact pinned MJCF arm converted to generated URDF preserving source body/inertia/sphere/OBJ frames; attachment_site at link7+45mmZ, identity ideal tool mount, no UR adapter.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "attachment_site",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
     }
   ]
 }
