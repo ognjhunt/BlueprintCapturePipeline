@@ -72,6 +72,19 @@ def completion_request_preflight(configuration, *, generation_roots, final_outpu
                   and not (root / 'result.json').exists() for root in generation_roots)
     if not pending:
         return None
+    return request_headroom(configuration, stages={
+        'novel_view_batches': pending, 'independent_image_review': 1,
+        'task_surface_plan': 1, 'task_surface_review': 1},
+        final_output_root=final_output_root, context=context, source_digest=source_digest)
+
+
+def request_headroom(configuration, *, stages, final_output_root, context, source_digest):
+    """Whether the current request allowance covers ``stages`` plus unbought final outputs.
+
+    The one forecast every optional paid step uses before it spends requests the
+    finished scene still needs. A configuration without a request allowance
+    (no schema, no ``remaining_requests``) has nothing to forecast.
+    """
     if configuration.get('schema_version') in {
             'website_atlas_configuration.v1', 'owned_capture_atlas_configuration.v1'}:
         from .website_task_context import load_atlas_configuration
@@ -82,14 +95,15 @@ def completion_request_preflight(configuration, *, generation_roots, final_outpu
         current = load_atlas_configuration(context, source_digest, create=False)
         resumed_policy(configuration, current)
         remaining = current.get('remaining_requests')
+    elif 'remaining_requests' not in configuration:
+        return None
     else:
         remaining = configuration.get('remaining_requests')
     if type(remaining) is not int or remaining < 0:
         raise ValueError('atlas_completion_remaining_requests_invalid')
     policy = configuration['policy']
-    admitted = admitted_final_outputs(final_output_root)
-    stages = {'novel_view_batches': pending, 'independent_image_review': 1,
-              'task_surface_plan': 1, 'task_surface_review': 1}
+    admitted = admitted_final_outputs(final_output_root) if final_output_root else frozenset()
+    stages = dict(stages)
     if 'refined_splat_cost_usd' in policy and 'posedImages2Splats' not in admitted:
         stages['refined_splat'] = 1
     if 'mesh_export_cost_usd' in policy and 'splats2Mesh' not in admitted:
@@ -100,3 +114,16 @@ def completion_request_preflight(configuration, *, generation_roots, final_outpu
             'unfinished_stages': stages, 'sufficient_for_known_calls': remaining >= required,
             'additional_mask_or_retry_calls': 'not_yet_known',
             'reservation_created': False}
+
+
+def require_request_headroom(forecast, path: Path):
+    """Retain the forecast and stop before spending requests the scene cannot finish with."""
+    if forecast is None:
+        return
+    from .common import write_json
+
+    write_json(path, forecast)
+    if not forecast['sufficient_for_known_calls']:
+        raise ValueError('atlas_completion_request_budget_insufficient:'
+                         f"required={forecast['minimum_remaining_requests']},"
+                         f"remaining={forecast['remaining_requests']}")

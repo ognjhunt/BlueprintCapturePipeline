@@ -147,6 +147,8 @@ def plan_task_regions(*, frames, reviewed_views, pose, context, configuration, r
                "sources": [_frame_binding(f) for f in frames],
                "native": [{**{k: v for k, v in row.items() if k != "frame"},
                            "frame": _frame_binding(row["frame"])} for row in reviewed_views]}
+    # Final outputs are bought beside this stage; their admission is not counted twice.
+    final_output_root = root.parent
     root = root / canonical_digest(binding)[7:23]
     root.mkdir(parents=True, exist_ok=True)
     saved = root / "task-regions.json"
@@ -196,7 +198,8 @@ def plan_task_regions(*, frames, reviewed_views, pose, context, configuration, r
         proposal=planned["proposal"], reviewed_views=reviewed_views,
         survey_path=root / "survey.json", context=context, configuration=configuration,
         root=root / "segmentation", source_digest=pose["binding"]["source_video_digest"],
-        planner_runner=planner_runner, segmenter=segmenter, checkpoint=checkpoint)
+        planner_runner=planner_runner, segmenter=segmenter, checkpoint=checkpoint,
+        final_output_root=final_output_root)
     plan["digest"] = canonical_digest(plan, digest_field="digest")
     task_region_masks(plan, reviewed_views)
     write_json(root / "task-regions.json", plan)

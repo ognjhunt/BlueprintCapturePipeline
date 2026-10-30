@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from pydantic import BaseModel, ConfigDict, Field
 
+from .atlas_pricing import request_headroom, require_request_headroom
 from .atlas_scene_task_regions import TaskSurfaceProposal, TaskSurfaceRegion
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -158,7 +159,7 @@ def _previews(frames, candidates, root):
 
 def segment_and_review_surfaces(*, proposal, reviewed_views, survey_path, context,
                                 configuration, root, source_digest, planner_runner,
-                                segmenter=None, checkpoint=None):
+                                segmenter=None, checkpoint=None, final_output_root=None):
     from .meta_sam31 import run_meta_sam31
     from .website_task_masks import decode_track_mask
     from .atlas_scene_preservation import _save_image
@@ -180,11 +181,8 @@ def segment_and_review_surfaces(*, proposal, reviewed_views, survey_path, contex
     if type(rounds) is not int or rounds < 1:
         raise ValueError("atlas_surface_mask_review_limit_invalid")
     for attempt in range(rounds):
-        added_prompts = 0
+        work = []
         for view in pending:
-            frame_id = view["frame_id"]
-            frame = frames[frame_id]
-            h, w = frame["rgb"].shape[:2]
             for region in view["regions"]:
                 if region["decision"] == "unresolved":
                     continue
@@ -192,43 +190,53 @@ def segment_and_review_surfaces(*, proposal, reviewed_views, survey_path, contex
                 if not prompt or (region["decision"] == "include"
                                   and region["purpose"] in {"unrelated", "uncertain"}):
                     raise ValueError("atlas_surface_segmentation_concept_required")
-                identity = (frame_id, prompt.casefold())
+                identity = (view["frame_id"], prompt.casefold())
                 if identity in tried:
                     continue
                 tried.add(identity)
-                added_prompts += 1
-                key = canonical_digest({"frame_id": frame_id, "concept": prompt.casefold()})[7:23]
-                frame_root = root / key
-                frame_root.mkdir(exist_ok=True)
-                image = frame_root / "source.png"
-                _save_image(image, frame["rgb"])
-                if checkpoint:
-                    checkpoint("automation_completion_segment_surfaces")
-                result = segmenter(
-                    frame_registry=[{"source_frame_id": frame_id, "width": w, "height": h}],
-                    frame_artifacts=[{"source_frame_id": frame_id, "path": str(image),
-                                      "sha256": _sha256_file(image)}],
-                    prompts=[{"prompt_id": key, "output_label": key, "text": prompt}],
-                    output_root=frame_root / "sam", admission={}, task_context=context,
-                    source_video_digest=source_digest)
-                receipts.append({"frame_id": frame_id, "prompt": prompt,
-                                 "binding_digest": result["binding_digest"],
-                                 "profile": result["profile"], "responses": result["responses"]})
-                for track_index, track in enumerate(result["tracks"]):
-                    observations = track["observations"]
-                    if len(observations) != 1 or observations[0]["source_frame_id"] != frame_id:
-                        raise ValueError("atlas_surface_segmentation_frame_invalid")
-                    mask = decode_track_mask(observations[0])
-                    if mask.shape != (h, w):
-                        raise ValueError("atlas_surface_mask_dimensions_invalid")
-                    if not mask.any():
-                        continue
-                    path = frame_root / f"mask-{track_index:03d}.png"
-                    _save_image(path, mask.astype(np.uint8) * 255)
-                    candidates.append({"mask_id": f"{key}-{track_index}", "frame_id": frame_id,
-                        "concept": prompt, "label": region["label"], "priority": region["priority"],
-                        "path": str(path), "sha256": _sha256_file(path), "pixel_count": int(mask.sum())})
-        if attempt and not added_prompts:
+                key = canonical_digest({"frame_id": view["frame_id"], "concept": prompt.casefold()})[7:23]
+                work.append((view["frame_id"], region, prompt, key))
+        # Corrections are optional spend: buy them only while the scene can still finish.
+        new_calls = sum(not any((root / key / "sam").glob("*/response-*.json")) for *_, key in work)
+        if new_calls:
+            require_request_headroom(request_headroom(configuration, stages={
+                "surface_mask_segmentation": new_calls, "task_surface_review": 1},
+                final_output_root=final_output_root, context=context, source_digest=source_digest),
+                root / f"request-budget-{attempt:02d}.json")
+        for frame_id, region, prompt, key in work:
+            frame = frames[frame_id]
+            h, w = frame["rgb"].shape[:2]
+            frame_root = root / key
+            frame_root.mkdir(exist_ok=True)
+            image = frame_root / "source.png"
+            _save_image(image, frame["rgb"])
+            if checkpoint:
+                checkpoint("automation_completion_segment_surfaces")
+            result = segmenter(
+                frame_registry=[{"source_frame_id": frame_id, "width": w, "height": h}],
+                frame_artifacts=[{"source_frame_id": frame_id, "path": str(image),
+                                  "sha256": _sha256_file(image)}],
+                prompts=[{"prompt_id": key, "output_label": key, "text": prompt}],
+                output_root=frame_root / "sam", admission={}, task_context=context,
+                source_video_digest=source_digest)
+            receipts.append({"frame_id": frame_id, "prompt": prompt,
+                             "binding_digest": result["binding_digest"],
+                             "profile": result["profile"], "responses": result["responses"]})
+            for track_index, track in enumerate(result["tracks"]):
+                observations = track["observations"]
+                if len(observations) != 1 or observations[0]["source_frame_id"] != frame_id:
+                    raise ValueError("atlas_surface_segmentation_frame_invalid")
+                mask = decode_track_mask(observations[0])
+                if mask.shape != (h, w):
+                    raise ValueError("atlas_surface_mask_dimensions_invalid")
+                if not mask.any():
+                    continue
+                path = frame_root / f"mask-{track_index:03d}.png"
+                _save_image(path, mask.astype(np.uint8) * 255)
+                candidates.append({"mask_id": f"{key}-{track_index}", "frame_id": frame_id,
+                    "concept": prompt, "label": region["label"], "priority": region["priority"],
+                    "path": str(path), "sha256": _sha256_file(path), "pixel_count": int(mask.sum())})
+        if attempt and not work:
             raise ValueError("atlas_surface_mask_correction_has_no_new_concept")
         review_root = root / f"review-{attempt:02d}"
         review_root.mkdir(exist_ok=True)
