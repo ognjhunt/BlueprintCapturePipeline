@@ -1,0 +1,40 @@
+link0: []
+link1:
+  - xyz: "0.0 0.0 0.17124"
+    length: 0.200
+    radius: 0.098
+    direction: "z"
+link2:
+  - xyz: "0.0 0.0 0.0"
+    length: 0.11
+    radius: 0.09
+    direction: "z"
+link3:
+  - xyz: "0.0 0.0 0.2186"
+    length: 0.34
+    radius: 0.09
+    direction: "z"
+link4:
+  - xyz: "0.0 0.0 0.0"
+    length: 0.13
+    radius: 0.075
+    direction: "z"
+link5:
+  - xyz: "0.0 0.0 0.31015"
+    length: 0.24
+    radius: 0.070
+    direction: "z"
+  - xyz: "-0.0122 0.08 0.1296"
+    length: 0.12
+    radius: 0.05
+    direction: "z"
+link6:
+  - xyz: "0.0 0.0 0.0"
+    length: 0.11
+    radius: 0.06
+    direction: "z"
+link7:
+  - xyz: "0.0 0.0 0.086"
+    length: 0.12
+    radius: 0.065
+    direction: "z"

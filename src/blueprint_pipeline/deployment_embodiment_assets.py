@@ -50,6 +50,9 @@ def _path(value: str) -> str:
 
 
 def _composition_module(recipe):
+    if recipe["composition"].get("schema_version") == "public_arm_robotiq2f85_sim_composition.v1":
+        from . import deployment_embodiment_public_arm_composition
+        return deployment_embodiment_public_arm_composition
     if recipe["composition"].get("schema_version") == "iiwa14_robotiq2f85_sim_composition.v1":
         from . import deployment_embodiment_kuka_composition
         return deployment_embodiment_kuka_composition
@@ -166,10 +169,14 @@ def verify_source_bundle(directory: str | Path, *, embodiment_id: str | None = N
     from .deployment_embodiment_industrial_composition import COMPOSITE_SCHEMA as INDUSTRIAL_SCHEMA, verify_composite as verify_industrial
     from .deployment_embodiment_kuka_composition import COMPOSITE_SCHEMA as KUKA_SCHEMA, verify_composite as verify_kuka
     from .deployment_embodiment_yaskawa_composition import COMPOSITE_SCHEMA as YASKAWA_SCHEMA, verify_composite as verify_yaskawa
+    from .deployment_embodiment_public_arm_composition import (
+        COMPOSITE_SCHEMA as PUBLIC_ARM_SCHEMA, verify_composite as verify_public_arm)
     root = Path(directory)
     _refuse_symlink_ancestors(root / RECEIPT)
     if (root / RECEIPT).is_file() and (root / RECEIPT).stat().st_size <= MAX_RECEIPT_BYTES:
         value = json.loads((root / RECEIPT).read_text())
+        if isinstance(value, dict) and value.get("schema_version") == PUBLIC_ARM_SCHEMA:
+            return verify_public_arm(root, embodiment_id=embodiment_id)
         if isinstance(value, dict) and value.get("schema_version") == YASKAWA_SCHEMA:
             return verify_yaskawa(root, embodiment_id=embodiment_id)
         if isinstance(value, dict) and value.get("schema_version") == KUKA_SCHEMA:

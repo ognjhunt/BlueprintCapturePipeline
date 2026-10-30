@@ -10,3 +10,9 @@ tests/fixtures/industrial_robotiq/abb_gofa_crb15000_12_127/abb_crb15000_support/
 # Exact pinned Yaskawa publisher source fixtures; preserve inventoried bytes.
 tests/fixtures/yaskawa_robotiq/yaskawa_gp12/** -text whitespace=-trailing-space,-blank-at-eof
 tests/fixtures/yaskawa_robotiq/yaskawa_gp20/** -text whitespace=-trailing-space,-blank-at-eof
+# Exact pinned public fixed-arm batch-1 source fixtures; preserve inventoried publisher bytes (incl. FANUC CRLF).
+tests/fixtures/public_fixed_arms/fanuc_m10id_12/** -text whitespace=-trailing-space,-blank-at-eof,cr-at-eol
+tests/fixtures/public_fixed_arms/yaskawa_hc20/** -text whitespace=-trailing-space,-blank-at-eof
+tests/fixtures/public_fixed_arms/agile_robots_diana_7/** -text whitespace=-trailing-space,-blank-at-eof
+tests/fixtures/public_fixed_arms/kinova_jaco2_j2n6s300/** -text whitespace=-trailing-space,-blank-at-eof,cr-at-eol
+tests/fixtures/public_fixed_arms/kuka_kr_iontec/** -text whitespace=-trailing-space,-blank-at-eof
