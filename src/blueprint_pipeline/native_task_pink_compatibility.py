@@ -32,7 +32,10 @@ def _manifest():
 
 def _verify_blob(path, row):
     data = path.read_bytes()
-    blob = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
+    # Match upstream Git object IDs; release authenticity is verified separately.
+    blob = hashlib.sha1(
+        b"blob " + str(len(data)).encode() + b"\0" + data, usedforsecurity=False
+    ).hexdigest()
     if len(data) != row["size_bytes"] or blob != row["git_blob_sha1"]:
         raise ValueError("pink_sdk_source_changed:" + row["path"])
 
