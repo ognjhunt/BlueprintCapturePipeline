@@ -233,3 +233,22 @@ def test_zero_exit_without_readable_import_receipt_is_individual_failure(batch, 
     assert [row["status"] for row in result["results"]] == ["import_failed", "imported"]
     assert not (batch.output / "bodies" / IDS[0]).exists()
     assert (batch.output / "bodies" / IDS[1] / "prepared" / "robot.usd").is_file()
+
+
+def test_zero_exit_after_traceback_publishes_the_logged_failure_code_only(batch):
+    """Isaac's fast shutdown exited 0 after each batch05 traceback; rows said only ValueError."""
+    batch.inputs(ids=IDS[:2])
+
+    def run(command, **options):
+        if command[-1] == IDS[0]:
+            options["stdout"].write(
+                b"Traceback (most recent call last):\n  File \"x.py\", line 1, in import_one\n"
+                b"blueprint_pipeline.deployment_embodiment_assets.AssetPreparationError: "
+                b"asset_import_unbound_dependency:OmniGlass.mdl\n[Warning] later shutdown noise\n")
+            return SimpleNamespace(returncode=0)
+        options["stdout"].write(b"ValueError: Not A Code with /host/path\n")
+        return SimpleNamespace(returncode=0)
+
+    result = batch.execute(run)
+    assert [(row["status"], row["reason"]) for row in result["results"]] == [
+        ("import_failed", "asset_import_unbound_dependency"), ("import_failed", "ValueError")]

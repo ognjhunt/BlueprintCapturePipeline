@@ -333,7 +333,7 @@ def test_disk_reservation_accounts_for_actual_runtime_packet_before_build(tmp_pa
         return {"status": "development_only"}
     monkeypatch.setattr(controller, "process_entry", process)
     controller.process_reserved_entry(item, root=tmp_path, store=tmp_path / "models", commit=COMMIT)
-    assert calls[0][1]["expected_bytes"] == 2 * packet_size + 2 * contract.MAX_OUTPUT_BYTES + 4 * 1024**3
+    assert calls[0][1]["expected_bytes"] == 2 * packet_size + 4 * 1024**3
     assert calls[1][1]["expected_bytes"] == contract.MAX_OUTPUT_BYTES
     evidence = contract.read(job / "disk-admission.json")
     assert evidence["authorization_id"] == grant["authorization_id"]

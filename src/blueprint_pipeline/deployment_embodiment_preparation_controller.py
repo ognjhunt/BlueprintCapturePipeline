@@ -222,11 +222,13 @@ def process_reserved_entry(item: Path, *, root: Path, store: Path, commit: str) 
     resumed = (job / "allocator_launch_intent.json").exists() or (job / "allocator_result.json").exists()
     runtime = None if resumed else runtime_source_receipt()
     packet = None if resumed else verify_native_task_runtime_source_packet(runtime)
-    # Native packet staging + compressed bundle, returned ZIP + extraction, plus
-    # source cache/staging and program overhead. Extraction takes its own exact
-    # temporary reservation too; this deliberately retains conservative headroom.
+    # Native packet staging + compressed bundle, plus source cache/staging and
+    # program overhead. The returned ZIP and its extraction each take their own
+    # exact reservation when they arrive. Holding them here as well counted this
+    # job's own hold against its download, so even a 50 KB result was refused
+    # once the bundle was written (public-robot-imports-20261030-05).
     peak = (MAX_OUTPUT_BYTES if resumed else
-            2 * packet["packet_size_bytes"] + 2 * MAX_OUTPUT_BYTES + 4 * 1024**3)
+            2 * packet["packet_size_bytes"] + 4 * 1024**3)
     ledger = os.environ.get("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT") or DEFAULT_RESERVATION_ROOT
     with reserve_control_plane_disk("embodiment_preparation", target_root=workspace, expected_bytes=peak,
             reservation_root=ledger, workspace=workspace, ttl_seconds=6 * 3600) as work_hold:
