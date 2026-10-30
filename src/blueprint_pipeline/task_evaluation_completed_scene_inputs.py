@@ -58,7 +58,8 @@ def validate_completed_scene_inputs(*, envelope: dict, configurations: dict,
     # CAS filenames do not necessarily retain the source format. The normalized
     # layer is always USDA; inspect_mesh keeps its exact bytes under an alias.
     inspected = inspect_mesh(collision_path, original_filename="normalized_scene.usda",
-        coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"})
+        coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"},
+        normalized_output=True)
     require(inspected == normalization.get("normalized_inspection"), "completed_scene_geometry_readback_changed")
     objects = {row["source_object_id"]: row for row in inspected["objects"]}
     object_row = objects.get(subject.get("runtime_prim_path"))
