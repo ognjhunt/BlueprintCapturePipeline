@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +66,7 @@ def import_one(runtime: Path, output: Path, identity: str) -> dict:
         # code. Preserve its exact diagnostic in the parent's bounded log.
         import traceback
         traceback.print_exc()
+        print_imported_structure(output / "prepared")
         sys.stderr.flush()
         raise
     finally:
@@ -73,6 +75,22 @@ def import_one(runtime: Path, output: Path, identity: str) -> dict:
         # the checkpoint above; nothing required may follow this close.
         app.close()
     return row
+
+
+def print_imported_structure(prepared: Path) -> None:
+    """A binding mismatch is diagnosable only from the names the importer produced.
+
+    Failed bodies are not retained, so their bounded log carries the imported
+    body paths, joint names and world anchors (public asset names only).
+    """
+    import json
+    try:
+        structure = json.loads((prepared / "asset-import.json").read_text(encoding="utf-8"))["structure"]
+        summary = {key: list(structure.get(key) or [])[:400]
+                   for key in ("body_paths", "joint_names", "world_anchor_links")}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return
+    print("imported_structure " + json.dumps(summary, sort_keys=True), file=sys.stderr)
 
 
 def verified_import_checkpoint(body: Path, identity: str) -> dict:
@@ -96,6 +114,23 @@ def verified_import_checkpoint(body: Path, identity: str) -> dict:
             and row["import_digest"] == provenance["import_digest"]
             and row["source_bundle_digest"] == provenance["source_bundle_digest"], "import_checkpoint_identity_changed")
     return row
+
+
+_LOGGED_FAILURE = re.compile(rb"^[A-Za-z_.]*(?:Error|Exception): ([a-z][a-z0-9_]{1,127})(?=[:\s]|$)", re.M)
+
+
+def logged_failure(log: Path) -> str | None:
+    """Isaac's fast shutdown can exit 0 after a traceback; keep its fixed code.
+
+    Only a lowercase error code is published, never the message detail after it.
+    """
+    try:
+        with log.open("rb") as stream:
+            stream.seek(max(0, log.stat().st_size - 256 * 1024))
+            found = _LOGGED_FAILURE.findall(stream.read())
+    except OSError:
+        return None
+    return found[-1].decode() if found else None
 
 
 def recover_import_checkpoint(body: Path, identity: str, reason: str) -> dict:
@@ -155,7 +190,9 @@ def run_batch(runtime: Path, output: Path, *, run=subprocess.run, now=time.monot
             except subprocess.TimeoutExpired:
                 row = {"embodiment_id": identity, "status": "import_failed", "reason": "isaac_import_timeout", "log": log.name}
             except (OSError, ValueError, KeyError, TypeError) as exc:
-                row = {"embodiment_id": identity, "status": "import_failed", "reason": type(exc).__name__, "log": log.name}
+                reason = (logged_failure(log) if not (body / "import-checkpoint.json").exists() else None)
+                row = {"embodiment_id": identity, "status": "import_failed", "reason": reason or type(exc).__name__,
+                       "log": log.name}
             if row["status"] != "imported" and (body / "import-checkpoint.json").is_file():
                 try:
                     row = recover_import_checkpoint(body, identity, row["reason"])

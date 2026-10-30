@@ -157,6 +157,51 @@ def test_importer_internalizes_source_texture_and_rejects_unbound_paths(tmp_path
     assert not (tmp_path / "unbound").exists()
 
 
+def test_isaac_builtin_mdl_is_recorded_as_runtime_dependency_and_reverified(tmp_path, monkeypatch):
+    """Isaac binds URDF colours to Kit's OmniPBR.mdl; batch05 refused all such imports."""
+    source = _source(tmp_path, monkeypatch)
+    _sdk(monkeypatch, asset="OmniPBR.mdl")
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True)
+    assert result["runtime_builtin_assets"] == ["OmniPBR.mdl"]
+    assert [row["path"] for row in result["dependency_closure"]["files"]] == ["robot.usda"]
+    assert "@OmniPBR.mdl@" in (prepared / "robot.usda").read_text()
+    assert importer.verify_prepared_asset_directory(prepared) == result
+    # A recorded runtime dependency cannot be dropped by re-digesting the receipt.
+    receipt = json.loads((prepared / importer.RECEIPT).read_text())
+    receipt["runtime_builtin_assets"] = []
+    receipt["import_digest"] = cross_runtime_canonical_digest(receipt, digest_field="import_digest")
+    (prepared / importer.RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n")
+    with pytest.raises(assets.AssetPreparationError, match="dependency_changed"):
+        importer.verify_prepared_asset_directory(prepared)
+
+
+@pytest.mark.parametrize("asset", ["OmniUnlisted.mdl", "materials/OmniPBR.mdl"])
+def test_unlisted_or_pathed_mdl_remains_unbound_and_names_the_file(tmp_path, monkeypatch, asset):
+    source = _source(tmp_path, monkeypatch)
+    _sdk(monkeypatch, asset=asset)
+    expected = "unbound_dependency:" + Path(asset).name.replace(".", r"\.")
+    with pytest.raises(assets.AssetPreparationError, match=expected):
+        importer.import_source_asset(source, tmp_path / "prepared", fix_base=True)
+
+
+def test_builtin_name_with_a_sibling_file_is_checked_as_that_file_not_the_runtime(tmp_path):
+    from pxr import Sdf, Usd
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "OmniPBR.mdl").write_bytes(b"mdl 1.4;\n")
+    stage = Usd.Stage.CreateNew(str(staged / "robot.usda"))
+    stage.DefinePrim("/robot").CreateAttribute("material", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("OmniPBR.mdl"))
+    stage.GetRootLayer().Save()
+    builtins = set()
+    # The local file shadows Kit's module, so the ordinary file closure applies
+    # (and an MDL file closure remains unsupported).
+    with pytest.raises(assets.AssetPreparationError, match="input_format_dependency_unsupported"):
+        importer._dependencies(staged / "robot.usda", staged=staged, builtins=builtins)
+    assert builtins == set()
+
+
 def test_published_textured_model_loads_after_source_and_preparation_move(tmp_path, monkeypatch):
     """Exercise a real USD asset value after both original roots disappear."""
     from pxr import Sdf, Usd
