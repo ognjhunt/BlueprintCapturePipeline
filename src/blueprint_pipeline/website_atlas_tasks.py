@@ -326,7 +326,13 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
     with pose._locked(root):
         state = json.loads(state_path.read_text()) if state_path.is_file() else None
         if state and state.get("request_digest") != request_digest:
-            raise ValueError("atlas_task_binding_changed")
+            # A renewed review record of the same request and price (capture-4b60431e) does not
+            # change what was bought: keep the retained binding. Anything else refuses.
+            retained = state.get("binding") or {}
+            if (canonical_digest(retained) != state.get("request_digest")
+                    or {**retained, "price_review_digest": None} != {**binding, "price_review_digest": None}):
+                raise ValueError("atlas_task_binding_changed")
+            binding, request_digest = retained, state["request_digest"]
         if state and state.get("status") == "completed":
             result = json.loads((root / "result.json").read_text())
             if result.get("digest") != canonical_digest(result, digest_field="digest") or result["digest"] != state["result_digest"]:
