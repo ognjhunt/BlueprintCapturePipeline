@@ -345,6 +345,9 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
     if (preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
             or preparation["digest"] != runtime["preparation_digest"]):
         raise ValueError("website_native_construction_preparation_changed")
+    if not isinstance(preparation.get("support"), Mapping):
+        # Compile flagged support_surface_not_found_under_subject: nothing to assemble the subject on.
+        raise ValueError("website_native_construction_support_missing")
     first, second = prepare_appearance_stage(runtime_inputs_path), prepare_collision_stage(runtime_inputs_path)
     third = derived_stage_three_configuration(runtime=runtime, preparation=preparation)
     identity = third["replacement_identity"]
