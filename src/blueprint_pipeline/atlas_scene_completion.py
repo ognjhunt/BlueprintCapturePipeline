@@ -350,6 +350,7 @@ def complete_scene(*, pose_root, pose, frames, review, root, context, configurat
         feedback = saved
     else:
         feedback["remaining_budget_usd_at_plan"] = configuration["remaining_cost_usd"]
+        feedback["remaining_requests_at_plan"] = configuration.get("remaining_requests")
         write_json(feedback_path, feedback)
     if checkpoint:
         checkpoint("automation_completion_plan")

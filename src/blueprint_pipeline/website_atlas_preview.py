@@ -254,11 +254,14 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
             return _transition(job, current, 'needs_input', reason,
                                stage='preserved_scene_completion', result_digest=result.get('digest'))
         if not result.get("download"):
+            blockers = result.get('blockers') or []
             reason = (_reason(ValueError(result["reason"]))
                       if result.get("stage") in {"source_pose", "target_correction"} and result.get("reason")
+                      else _reason(ValueError(blockers[0])) if blockers
                       else "atlas_background_review_required")
             return _transition(job, current, "needs_input", reason,
-                               stage=result.get("stage", "background_review"), result_digest=result.get("digest"))
+                               stage=result.get("stage", "preparation" if blockers else "background_review"),
+                               result_digest=result.get("digest"))
         # The last paid-stage checkpoint is behind the final provider call, fusion and export.
         checkpoint("archive")
         archive = _archive(job, result)
