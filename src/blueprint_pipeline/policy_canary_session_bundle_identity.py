@@ -98,6 +98,14 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
     shape = _shape(payload)
     candidates = payload.get("candidate_ids")
     openwam = payload.get("team_policy_interface_id") == "openwam_piper_eef20.v1"
+    cosmos = isinstance(candidates, list) and len(candidates) == 1 and candidates[0] in {
+        "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}
+    if cosmos:
+        from .cosmos_droid_bundle import validate_runtime_contract
+        contract = validate_runtime_contract(payload.get("cosmos_runtime") or {})
+        if (contract["candidate_id"] != candidates[0]
+                or minimum_gpu_ram_mb(payload) < contract["minimum_gpu_memory_gb"] * 1000):
+            raise ValueError("cosmos_gpu_memory_or_candidate_binding_invalid")
     if openwam:
         from .openwam_piper_bundle import validate_runtime_contract
         validate_runtime_contract(payload.get("openwam_runtime") or {})
@@ -128,7 +136,7 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
             and _SHA.fullmatch(str(payload.get("family_static_readiness_digest") or "")) is not None
         ) if family else (
             (("team_credential_env" not in payload and isinstance(candidates, list) and candidates
-              and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid"])
+              and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"])
              or ((openwam or molmoact2 or molmoact2_droid) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
              or (payload.get("team_policy_interface_id") in {
                      "openpi_droid_https.v1", "blueprint_policy_https.v1", "dreamlabs_dream1.v1"}
@@ -211,12 +219,12 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
             required.update("provider_runtime/" + name for name in contract["required_entries"])
             required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
                              "provider_runtime/adp009d_policy_server_worker.py"})
-        if candidate == "cosmos3_edge_policy_droid":
-            required.update({"provider_runtime/cosmos_edge_policy_snapshot_manifest.json",
-                             "provider_runtime/adp009d_policy_provisioning.cosmos3_edge_policy_droid.sh",
-                             "provider_runtime/blueprint_pipeline/cosmos_edge_beta_runtime.py",
-                             "provider_runtime/blueprint_pipeline/cosmos_edge_droid_policy_server.py",
-                             "provider_runtime/blueprint_pipeline/cosmos_edge_droid_policy_runtime.py"})
+        if candidate in {"cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
+            from .cosmos_droid_bundle import RUNTIME_MODULES, validate_runtime_contract
+            contract = validate_runtime_contract(manifest.get("cosmos_runtime") or {})
+            required.update("provider_runtime/blueprint_pipeline/" + name for name in RUNTIME_MODULES)
+            required.update("provider_runtime/" + name for name in contract["required_entries"])
+            required.add(f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh")
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             required.update("provider_runtime/blueprint_pipeline/" + name for name in (
                 "task_family_native_runtime.py", "task_family_native_contracts.py", "task_family_native_controls.py",

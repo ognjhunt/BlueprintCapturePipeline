@@ -132,6 +132,8 @@ def verify_local_policy_snapshot(
     spec: CosmosEdgeDroidPolicySpec,
     snapshot_dir: str | Path,
     snapshot_manifest_path: str | Path,
+    expected_schema: str = SNAPSHOT_MANIFEST_SCHEMA,
+    require_exact_files: bool = False,
 ) -> dict[str, Any]:
     """Hash every frozen runtime file before the policy model is loaded."""
 
@@ -146,7 +148,7 @@ def verify_local_policy_snapshot(
     if recorded_digest != actual_digest or actual_digest != spec.snapshot_manifest_sha256:
         raise ValueError("cosmos_edge_policy_snapshot_manifest_digest_mismatch")
     if (
-        payload.get("schema_version") != SNAPSHOT_MANIFEST_SCHEMA
+        payload.get("schema_version") != expected_schema
         or payload.get("model_id") != spec.policy_id
         or payload.get("model_revision") != spec.model_revision
     ):
@@ -154,6 +156,11 @@ def verify_local_policy_snapshot(
     files = payload.get("required_files")
     if not isinstance(files, list) or not files:
         raise ValueError("cosmos_edge_policy_snapshot_required_files_missing")
+    if require_exact_files:
+        expected_paths = {row.get("path") for row in files if isinstance(row, Mapping)}
+        actual_paths = {path.relative_to(snapshot).as_posix() for path in snapshot.rglob("*") if not path.is_dir()}
+        if (actual_paths != expected_paths or any(path.is_symlink() for path in snapshot.rglob("*"))):
+            raise ValueError("cosmos_policy_snapshot_file_closure_changed")
     verified: list[dict[str, Any]] = []
     seen: set[str] = set()
     for row in files:

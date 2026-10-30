@@ -36,6 +36,7 @@ CANDIDATE_VIEW_SHAPES: dict[str, tuple[int, int]] = {
     "groot_n17_droid": (180, 320),
     "cosmos3_edge_policy_droid": (224, 224),
     "molmoact2_droid": (360, 640),
+    "cosmos3_nano_policy_droid": (224, 224),
 }
 
 DROID_WRIST_VIEW = "observation/wrist_image_left"
@@ -52,6 +53,7 @@ CANDIDATE_REQUIRED_VIEWS: dict[str, tuple[str, ...]] = {
     "pi05_droid": (DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW),
     "molmoact2_droid": (DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW),
     "groot_n17_droid": (DROID_EXTERIOR_VIEW_1, DROID_WRIST_VIEW),
+    "cosmos3_nano_policy_droid": (DROID_WRIST_VIEW, DROID_EXTERIOR_VIEW_1, DROID_EXTERIOR_VIEW_2),
     "cosmos3_edge_policy_droid": (
         DROID_WRIST_VIEW,
         DROID_EXTERIOR_VIEW_1,

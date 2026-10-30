@@ -42,12 +42,13 @@ def _interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any]) -
         return (configured.get("interface") == interface_contract() and configured.get("runtime") == {
             "backend": "robolab.v1", "runtime_id": "native_task_arena_policy_canary.v1",
             "minimum_gpu_memory_gb": MINIMUM_GPU_MEMORY_GB})
-    if interface == "cosmos_edge_droid.v1":
-        from .cosmos_edge_beta_runtime import interface_contract, validate_execution_spec, MINIMUM_GPU_MEMORY_GB
-        validate_execution_spec(spec)
-        return (configured.get("interface") == interface_contract() and configured.get("runtime") == {
+    if interface in {"cosmos_edge_droid.v1", "cosmos_nano_droid.v1"}:
+        from .cosmos_droid_bundle import profile
+        selected = profile(spec["candidate_id"])
+        selected.validate_execution_spec(spec)
+        return (configured.get("interface") == selected.interface_contract() and configured.get("runtime") == {
             "backend": "robolab.v1", "runtime_id": "native_task_arena_policy_canary.v1",
-            "minimum_gpu_memory_gb": MINIMUM_GPU_MEMORY_GB})
+            "minimum_gpu_memory_gb": selected.MINIMUM_GPU_MEMORY_GB})
     if interface not in {"openpi_droid.v1", "groot_n17_droid.v1", "openpi_droid_https.v1"}:
         return False
     family = "groot_n17_droid" if interface == "groot_n17_droid.v1" else "pi05_droid"
@@ -180,16 +181,18 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         except (ValueError, OSError, KeyError, TypeError):
             template_failures.update({key: "beta_screening_baseline_runtime_template_unavailable"
                                       for key in ("pi05_droid", "groot_n17_droid")})
-    if not family and any(row["candidate_id"] == "cosmos3_edge_policy_droid" for row in catalog["candidates"]):
-        from .cosmos_edge_beta_runtime import candidate_execution_spec
+    from .cosmos_droid_bundle import CANDIDATES, profile as cosmos_profile
+    for candidate in CANDIDATES:
+        if family or not any(row["candidate_id"] == candidate for row in catalog["candidates"]):
+            continue
         try:
-            templates["cosmos3_edge_policy_droid"] = (candidate_execution_spec(scene_plan={**scene_plan,
+            templates[candidate] = (cosmos_profile(candidate).candidate_execution_spec(scene_plan={**scene_plan,
                 "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
                 contract=inputs["task_success_contract"], source_commit=commit), None)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             code = str(exc).split(":", 1)[0]
-            template_failures["cosmos3_edge_policy_droid"] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
-                                                            else "cosmos_edge_runtime_template_unavailable")
+            template_failures[candidate] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
+                                            else "cosmos_runtime_template_unavailable")
     if not family and any(row["candidate_id"] == "molmoact2_droid" for row in catalog["candidates"]):
         from .molmoact2_droid_runtime import candidate_execution_spec
         try:

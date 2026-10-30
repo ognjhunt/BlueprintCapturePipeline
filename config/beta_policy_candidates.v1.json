@@ -98,33 +98,52 @@
     },
     {
       "candidate_id": "cosmos3_nano_policy_droid",
-      "configuration_digest": "sha256:81c48b00e23218df84bee4723a496570628ec9d4c909aa1f8b8e2c400c04355c",
+      "configuration_digest": "sha256:57110bad4acd656e7793553d4755e185e0aaefe0481c32a0d7d5bc1dcee6ef86",
       "display_name": "Cosmos 3 Nano Policy DROID",
       "eligibility": {
-        "blockers": [
-          "canary_runtime_serving_path_missing",
-          "second_exterior_camera_not_in_policy_views",
-          "absolute_joint_position_plus_gripper_mapping_missing",
-          "session_gpu_memory_below_co_resident_requirement",
-          "checkpoint_bytes_not_downloaded_and_verified",
-          "integration_canary_receipt_missing"
-        ],
+        "blockers": [],
         "commercial_use": "allowed",
-        "enabled": false,
+        "enabled": true,
         "license_id": "openmdw-1.1",
-        "license_note": "OpenMDW-1.1 per the model card: ready for commercial and non-commercial use.",
+        "license_note": "OpenMDW-1.1 commercial-use publisher statement. Exact CPU import/tokenizer/preprocessing proof retained; checkpoint and CUDA inference are verified only during bounded provider execution.",
         "requires_credentials": []
       },
-      "interface": null,
+      "interface": {
+        "action_horizon": 32,
+        "action_schema_id": "droid_absolute_joint_position_v1",
+        "camera_roles": [
+          "external",
+          "wrist",
+          "exterior_right"
+        ],
+        "control_hz": 15,
+        "execution_horizon": 8,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 224,
+        "image_preprocessing": "resize_with_padding",
+        "image_width": 224,
+        "normalization_digest": null,
+        "observation_profile_id": "droid_three_camera_robot_state_v1",
+        "policy_interface_id": "cosmos_nano_droid.v1",
+        "robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"
+      },
       "policy": {
-        "digest": "sha256:efcf09c97b0382aba67ccf4c3311671b999511fc545b8e553cce60eb4a8710d4",
-        "digest_kind": "hub_tree_listing",
+        "digest": "sha256:1f87ceffb8f1db9e0a3b6cf76e23d64e2d01047c8e39ffe92691f386aa2a3e88",
+        "digest_kind": "pinned_runtime_file_inventory",
         "kind": "checkpoint",
         "revision": "805c0d6d46196ecdc789213a6de72303c383895b",
         "source": "https://huggingface.co/nvidia/Cosmos3-Nano-Policy-DROID"
       },
-      "runtime": null,
-      "supported_task_kinds": []
+      "runtime": {
+        "backend": "robolab.v1",
+        "minimum_gpu_memory_gb": 80,
+        "runtime_id": "native_task_arena_policy_canary.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place",
+        "articulated_open_close"
+      ]
     },
     {
       "candidate_id": "molmoact2_droid",
@@ -3066,8 +3085,8 @@
       "supported_task_kinds": []
     }
   ],
-  "catalog_digest": "sha256:096fb83d3254f78e0da9e453f6d7858d134843ee4b311a1c9238bbe0157b8237",
+  "catalog_digest": "sha256:22d2b97e4536fb3e86e2c7026ac18e8af56b0641d2eead6ea3f4a9c5acf225b5",
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-29.1-all-embodiment-policy-routes",
+  "revision": "2026-10-30.2-public-droid-expansion",
   "schema_version": "beta_policy_candidate_catalog.v1"
 }
