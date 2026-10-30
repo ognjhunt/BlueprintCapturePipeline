@@ -693,3 +693,26 @@ def test_cleanup_covers_duplicate_purchases_that_reconciliation_found(tmp_path):
         "reconciliations": [{"outcome": "bought", "operation_id": "op_kept",
                              "duplicate_operation_ids": ["op_duplicate"]}]}))
     assert preview._pending_operations(tmp_path) == ["op_kept", "op_duplicate"]
+
+
+def test_the_preview_checkpoint_accepts_the_details_a_stage_reports(monkeypatch, tmp_path):
+    # capture-4b60431e (2026-10-30): coverage refinement reports its export digest with
+    # its stage name; the preview's checkpoint took only the name, so every tick failed
+    # as atlas_preview_typeerror at the scene completion stage.
+    from blueprint_pipeline import website_task_context as context_reader
+
+    monkeypatch.setattr(preview, "_withdrawn", lambda _root: False)
+    monkeypatch.setattr(context_reader, "load_current_website_task_context", lambda **_: {"context_digest": "c"})
+    reached = []
+
+    def advance(job, *, checkpoint, **_):
+        checkpoint("automation_export_coverage", export_digest="sha256:" + "b" * 64,
+                   gaussian_count=3, completed_repair_passes=0)
+        reached.append(True)
+        return job
+
+    monkeypatch.setattr(preview, "advance_preparation_step", advance)
+    job = {"request_id": "r", "scene_id": "s", "capture_id": "c", "source_video": "raw/walkthrough.mp4",
+           "enqueued_at_epoch": 1000, "next_attempt_at_epoch": 0, "state": "processing"}
+    result = preview._step(job, job_dir=tmp_path, capture_root=tmp_path, now=lambda: 1001)
+    assert reached == [True] and result["state"] == "processing" and "last_transient_reason" not in result

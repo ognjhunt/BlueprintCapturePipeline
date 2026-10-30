@@ -204,7 +204,9 @@ def _step(job: dict[str, Any], *, job_dir: Path, capture_root: Path, now: Callab
         return _transition(job, current, "failed", "atlas_preview_expired")
     from .website_task_context import load_current_website_task_context
 
-    def checkpoint(_stage: str) -> None:
+    # Stages may report details with their name (coverage refinement passes its
+    # export digest); capture-4b60431e failed every tick on that call.
+    def checkpoint(_stage: str, **_details: Any) -> None:
         if _withdrawn(capture_root):
             raise _Withdrawn()
     try:
