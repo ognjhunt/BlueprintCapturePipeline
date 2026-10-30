@@ -21,6 +21,8 @@ VARIANT_BODIES = frozenset({"universal_robots_ur5e_robotiq_2f85_sim", "universal
                           "franka_research_3_robotiq_2f85_sim"})
 INDUSTRIAL_CODE_FILES = ("scripted_robot_baseline.py", "scripted_robot_grasp_frames.py", "scripted_robot_industrial_robotiq_runtime.py")
 INDUSTRIAL_BODIES = frozenset({'fanuc_crx_10ia_robotiq_2f85_sim', 'abb_gofa_crb15000_5_95_robotiq_2f85_sim', 'fanuc_m710ic_45m_robotiq_2f85_sim', 'abb_gofa_crb15000_12_127_robotiq_2f85_sim', 'fanuc_crx_10ia_l_robotiq_2f85_sim'})
+YASKAWA_CODE_FILES = ("scripted_robot_baseline.py", "scripted_robot_grasp_frames.py", "scripted_robot_yaskawa_robotiq_runtime.py")
+YASKAWA_BODIES = frozenset({"yaskawa_gp12_robotiq_2f85_sim", "yaskawa_gp20_robotiq_2f85_sim"})
 EVIDENCE_KIND = "scripted_simulator_state_baseline"
 ACTION_SOURCE = "scripted_simulator_state"
 UNAVAILABLE_REASONS = {"prepared_body_unavailable", "prepared_body_verification_failed", "source_or_import_verification_failed",
@@ -32,6 +34,11 @@ def load_profile(profile_root: Path, *, source_root: Path | None = None, license
     require(profile["policy_profile"] == common.SCRIPTED_PROFILE_ID and profile["team_id"] == common.SCRIPTED_TEAM_ID
             and profile["checkpoint_id"] == CHECKPOINT_ID and list(profile["bodies"]) == sorted(common.SCRIPTED_BODIES),
             "fixed_script_profile_changed")
+    yaskawa = profile["yaskawa_source_identity"]
+    require(profile["yaskawa_policy_profile"] == "blueprint_scripted_pick_place_yaskawa_robotiq.v1"
+            and set(profile["yaskawa_bodies"]) == YASKAWA_BODIES
+            and yaskawa["schema_version"] == "blueprint_scripted_controller_source.v1"
+            and [row["path"] for row in yaskawa["files"]] == list(YASKAWA_CODE_FILES), "script_yaskawa_inventory_changed")
     industrial = profile["industrial_source_identity"]
     require(profile["industrial_policy_profile"] == "blueprint_scripted_pick_place_industrial_robotiq.v1"
             and set(profile["industrial_bodies"]) == INDUSTRIAL_BODIES
@@ -47,8 +54,8 @@ def load_profile(profile_root: Path, *, source_root: Path | None = None, license
             and [row["path"] for row in identity["files"]] == list(CODE_FILES), "script_source_inventory_changed")
     if source_root is None:
         source_root = profile_root / "scripted-baseline-source"
-        require({p.name for p in source_root.iterdir()} == set(CODE_FILES) | set(VARIANT_CODE_FILES) | set(INDUSTRIAL_CODE_FILES), "script_source_inventory_changed")
-    for row in [*identity["files"], *variant["files"], *industrial["files"]]:
+        require({p.name for p in source_root.iterdir()} == set(CODE_FILES) | set(VARIANT_CODE_FILES) | set(INDUSTRIAL_CODE_FILES) | set(YASKAWA_CODE_FILES), "script_source_inventory_changed")
+    for row in [*identity["files"], *variant["files"], *industrial["files"], *yaskawa["files"]]:
         require(set(row) == {"path", "sha256"} and common.file_record(source_root / row["path"])["sha256"] == row["sha256"],
                 "script_source_changed")
     actual = common.file_record(license_path or profile_root / "scripted_robot_baseline_license.txt")
@@ -58,6 +65,8 @@ def load_profile(profile_root: Path, *, source_root: Path | None = None, license
 
 
 def source_identity(profile: dict, body: str) -> dict:
+    if body in YASKAWA_BODIES:
+        return profile["yaskawa_source_identity"]
     if body in INDUSTRIAL_BODIES:
         return profile["industrial_source_identity"]
     return profile["variant_source_identity"] if body in VARIANT_BODIES else profile["source_identity"]
@@ -105,7 +114,7 @@ def validated_policy(manifest: dict, policy: dict, profile: dict) -> dict:
             "fixed_manifest_changed")
     frame = profile["frames"][profile["bodies"][body]]
     arms = manifest.get("arms", [])
-    names = ["arm"] if body in {"kinova_gen3", "ufactory_xarm7"} | VARIANT_BODIES | INDUSTRIAL_BODIES else ["left", "right"]
+    names = ["arm"] if body in {"kinova_gen3", "ufactory_xarm7"} | VARIANT_BODIES | INDUSTRIAL_BODIES | YASKAWA_BODIES else ["left", "right"]
     require([arm["name"] for arm in arms] == names and len(manifest["grippers"]) == len(names), "script_source_tool_changed")
     channels = {row["name"]: row for row in manifest["grippers"]}
     bindings = policy.get("grasp_bindings")
@@ -142,7 +151,8 @@ def validated_policy(manifest: dict, policy: dict, profile: dict) -> dict:
                 and all(math.isclose(p[i]+sum(a[i][k]*t[k] for k in range(3)), frame["position"][i], rel_tol=0, abs_tol=1e-9)
                         for i in range(3)), "script_grasp_transform_changed")
     expected = {"policy_interface_id": common.SCRIPTED_PROFILE_ID,
-        "policy_id": (profile["industrial_policy_profile"] if body in INDUSTRIAL_BODIES else
+        "policy_id": (profile["yaskawa_policy_profile"] if body in YASKAWA_BODIES else
+                      profile["industrial_policy_profile"] if body in INDUSTRIAL_BODIES else
                       profile["variant_policy_profile"] if body in VARIANT_BODIES else common.SCRIPTED_PROFILE_ID),
         "model_identity_digest": digest(source_identity(profile, body)), "source_revision": "1", "embodiment_id": body,
         "configuration_digest": manifest["embodiment_digest"], "action_chunk_rows": 1, "open_loop_horizon": 1,

@@ -180,7 +180,7 @@ def test_original23_profiles_29_recipes_104_rows_and13_policy_sources_are_unchan
     root = package.parents[1]
     recipes = {r['embodiment_id']: r for r in assets.asset_recipes()['recipes']}
     catalog = {r['candidate_id']: r for r in json.loads((root/'config/beta_policy_candidates.v1.json').read_text())['candidates']}
-    assert len(recipes) == 34 and len(catalog) == 109 and len(runtime._PROFILES) == 28
+    assert len(recipes) == 36 and len(catalog) == 111 and len(runtime._PROFILES) == 30
     assert len(previous['recipes']) == 29 and len(previous['catalog']) == 104
     for name, expected in previous['recipes'].items():
         assert canonical_digest(recipes[name]) == expected
@@ -189,7 +189,7 @@ def test_original23_profiles_29_recipes_104_rows_and13_policy_sources_are_unchan
     for name, expected in previous['modules'].items():
         assert 'sha256:'+hashlib.sha256((package/name).read_bytes()).hexdigest() == expected
     current = json.loads((root/'config/policy_runtimes/scripted_robot_baseline_registration_profile.json').read_text())
-    assert len(current['bodies']) == 18 and len(previous['registration_profile']['bodies']) == 13
+    assert len(current['bodies']) == 20 and len(previous['registration_profile']['bodies']) == 13
     for key, expected in previous['registration_profile'].items():
         if key == 'bodies':
             assert {body: current[key][body] for body in expected} == expected

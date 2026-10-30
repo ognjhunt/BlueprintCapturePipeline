@@ -1,0 +1,399 @@
+{
+  "yaskawa_gp12": {
+    "repository_url": "https://github.com/ros-industrial/motoman",
+    "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+    "files": [
+      {
+        "path": "motoman_gp12_support/CMakeLists.txt",
+        "size_bytes": 334,
+        "git_blob_sha": "e9e7344a35754ee42093fd44319b24ae000f0611",
+        "sha256": "sha256:ed8525ad4a2ac4b7ec498d15db00e45e3bc30db8b6186680e819d48e836c4988",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp12_support/config/joint_names_gp12.yaml",
+        "size_bytes": 103,
+        "git_blob_sha": "c23d10d4b845380d5a2053998f69333a8e3ac958",
+        "sha256": "sha256:cef5431deee190e69e59d2254fbfda41cdf421112097d254ff2d5f825f8f29d3",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp12_support/launch/load_gp12.launch",
+        "size_bytes": 134,
+        "git_blob_sha": "548063325cfd1e7507e3ec8c6cb722c4f2f5885e",
+        "sha256": "sha256:a3ad4ebcfead808f00edd6f1979fd6714c726a3cca45f933103d24988b110629",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp12_support/launch/robot_interface_streaming_gp12.launch",
+        "size_bytes": 605,
+        "git_blob_sha": "e29ce1a0679ce0a65a6fce2c778c244e3e312670",
+        "sha256": "sha256:4297ed5093fa23fb08e46d8385d8f4a25567724535cff1cd2dd99f965482fad5",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp12_support/launch/robot_state_visualize_gp12.launch",
+        "size_bytes": 889,
+        "git_blob_sha": "40609b40aa6e33bdfa3765656b0dcf20f11f62c3",
+        "sha256": "sha256:7fd2e4995b38903aeb244635eddfb5a08f547ec7d1f32ba0cab04a93e28056f3",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp12_support/launch/test_gp12.launch",
+        "size_bytes": 438,
+        "git_blob_sha": "3dacdde617404795e5218e642ff00bd8f39ddead",
+        "sha256": "sha256:87b085fca2898ef69ec7eb637362330375c1cfa8b53571b803990d07f3a9a0af",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp12_support/meshes/collision/gp12_base_link.stl",
+        "size_bytes": 25084,
+        "git_blob_sha": "4fabb3b416d18bb6a3b8c6c3d087d61f1a4e1e9c",
+        "sha256": "sha256:e0a78c19d9495df7430a4a3fc03232c3ebb4857536eb961bb55de47af998d2c2",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/collision/gp12_link_1_s.stl",
+        "size_bytes": 41284,
+        "git_blob_sha": "ef65cc6e4c6aac068bc9e05d00d74a2ca94137f9",
+        "sha256": "sha256:6fafcaa7eb5420543501970315192cda044344b73aa8aa19357709a013a3c2b7",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/collision/gp12_link_2_l.stl",
+        "size_bytes": 51284,
+        "git_blob_sha": "119d753c6e2a83cc0e7561689628b269f432d2d0",
+        "sha256": "sha256:e9d64c8f2be0e95ce5143adbffb304710b1a3b07743b0178e1a88d0cbb38ec3e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/collision/gp12_link_3_u.stl",
+        "size_bytes": 48484,
+        "git_blob_sha": "507e5ddf140b51ead71be2f22ef4864f895cea9d",
+        "sha256": "sha256:acc10b364ae85f196ffcf37faf1bf63f67fdb43f1405f1f5ca1f083fc3dde504",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/collision/gp12_link_4_r.stl",
+        "size_bytes": 81184,
+        "git_blob_sha": "ede67a1cc09bf848e433a300feafe436e919e342",
+        "sha256": "sha256:32259cd02c1553c3edb1de14024aa16a77380065089d0bd0fb5c0345b5442e40",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/collision/gp12_link_5_b.stl",
+        "size_bytes": 29384,
+        "git_blob_sha": "fe5b9756afdcc4f1337f1b51ed1c7296287cfad0",
+        "sha256": "sha256:c0a9e25712dbe9d9fbc76db0a1d971838b2b1078a92aead5d55e719b54129aac",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/collision/gp12_link_6_t.stl",
+        "size_bytes": 16684,
+        "git_blob_sha": "1e4158f92051165b24a2c7ef8014f621d071bb6e",
+        "sha256": "sha256:9aa17885e44fa99ac91407573dd612991371f056c01973b2bc9099192b3532f7",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/visual/gp12_base_link.stl",
+        "size_bytes": 461584,
+        "git_blob_sha": "180bec5c863304b548229a4c81251a64a2925f45",
+        "sha256": "sha256:db524d029ddf112457a13a4bfb8ecb679c73e847136503068262b0f350fb2d18",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/visual/gp12_link_1_s.stl",
+        "size_bytes": 903284,
+        "git_blob_sha": "1280bae3a62a9b335c0afca6128bec8b3306f7df",
+        "sha256": "sha256:6aef34cffc9a0128eefc1f1efe94ab7e7dff40cb8da00f9334100990669dd6cd",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/visual/gp12_link_2_l.stl",
+        "size_bytes": 810984,
+        "git_blob_sha": "27f4e5cf121fcfeae1fd2576861a452f4e208eab",
+        "sha256": "sha256:e4376c5b707348a34cf86acba0ee0233c1221dde98ccc0c13aa14d60cabc8eb8",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/visual/gp12_link_3_u.stl",
+        "size_bytes": 812384,
+        "git_blob_sha": "e1202580982207bdd552cd413a2cd741141db765",
+        "sha256": "sha256:93e493803db8a3619a67703973a571dd7e3969219175b564e75dffefd0e174c1",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/visual/gp12_link_4_r.stl",
+        "size_bytes": 710384,
+        "git_blob_sha": "1644d71b8a80561c6d6e5f20f4a813a8ae4c8f02",
+        "sha256": "sha256:affa1d3ba9ed8805117fb9aa55072899951a9d350240357eb95317b6d093271f",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/visual/gp12_link_5_b.stl",
+        "size_bytes": 245784,
+        "git_blob_sha": "b17c4c49f5dd21a9b8793d238f99a48e15d1a43c",
+        "sha256": "sha256:c947358839a57ac2aba29ba4bc908def4d03f50c6901f474fe1f1d95076f411b",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/meshes/visual/gp12_link_6_t.stl",
+        "size_bytes": 56284,
+        "git_blob_sha": "4e7cac335e8358212568b39718bcdd27cdbab6cb",
+        "sha256": "sha256:45848ec278f7d789cdcbebd578e02abe227ac76073a520cacc8f196bb06a1582",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp12_support/package.xml",
+        "size_bytes": 2006,
+        "git_blob_sha": "cbef6e5682531b5bd23852a78058e39f857902c3",
+        "sha256": "sha256:cca228bd9124052ee142499c0ba228a45607193712af01345e2e87a0bb14fbfe",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp12_support/test/launch_test.xml",
+        "size_bytes": 1833,
+        "git_blob_sha": "eac07e7274c7ae2c24c10f0b7db01609145389c3",
+        "sha256": "sha256:ac1a417f721bcc54a195d0d4b218d870d0921d52fee455cee54a9076ae3a1049",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp12_support/urdf/gp12.xacro",
+        "size_bytes": 223,
+        "git_blob_sha": "f4845d4b1cc0ac577d03d18d479158df1388ccd6",
+        "sha256": "sha256:444ccdeea2818756addec85a32d8836bfc1906a46071ab0896f243690890b263",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp12_support/urdf/gp12_macro.xacro",
+        "size_bytes": 5987,
+        "git_blob_sha": "91b028b8d473bf9056b74a4417527fec3f7d9905",
+        "sha256": "sha256:6aefca9916a433aede9e12736a4ae3abc9274a2b464e4caa72abdcbb6df5c4a3",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/CMakeLists.txt",
+        "size_bytes": 190,
+        "git_blob_sha": "3d01fa3842a108b01885f0c3a00c444e4a254a9f",
+        "sha256": "sha256:c65941d28b8da428365e45e793b3bdfa6aa03eaf108ac779fd574e7377f01836",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/package.xml",
+        "size_bytes": 1158,
+        "git_blob_sha": "a003b39b877e316f670d35407ac82ef372eece86",
+        "sha256": "sha256:bf191795822fef539ba1d78b10f16a31ca7f6dc23c8634c8b6921a29760763db",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/urdf/common_colors.xacro",
+        "size_bytes": 516,
+        "git_blob_sha": "34740e9d17b9569792fdb655dd37503b70183b06",
+        "sha256": "sha256:921f55628ebbc6e7ff076b1d9457e7ca517446334b63a2cb4a9d90ee78d1355f",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/urdf/common_materials.xacro",
+        "size_bytes": 893,
+        "git_blob_sha": "f9c8fd2495ad0dda13295f5e51dbead46688d4f1",
+        "sha256": "sha256:c4eb63b25899e02005a1662072cb54770dcb760638625ce4bfcc2ac8d9169fcc",
+        "synthetic_geometry_in_tests": false
+      }
+    ]
+  },
+  "yaskawa_gp20": {
+    "repository_url": "https://github.com/ros-industrial/motoman",
+    "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+    "files": [
+      {
+        "path": "motoman_gp25_support/meshes/gp25/collision/base_link.stl",
+        "size_bytes": 11184,
+        "git_blob_sha": "69f54e260e53c6fd26419cfaead0c3503cf5bdc2",
+        "sha256": "sha256:7f65b2416e005b8d8e4967bd368142c0aeb14813850167d086acf8b566a2af9e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/collision/link_1_s.stl",
+        "size_bytes": 13084,
+        "git_blob_sha": "23d3d37a674fec65fb33712a947f29557323c36b",
+        "sha256": "sha256:569eb4d3b44c8c686563ee174a252a2385ddb4a41a4f89ce2551c5ea70a5a727",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/collision/link_2_l.stl",
+        "size_bytes": 14284,
+        "git_blob_sha": "e100ed2d11ceac8cfb9b847a1e6267d35fddbdb8",
+        "sha256": "sha256:4dc0922207a8aa0f161764220fb2c716b807d4c0a38f8259df59c56d30ec96a1",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/collision/link_3_u.stl",
+        "size_bytes": 21084,
+        "git_blob_sha": "cb205cdc4c4295014e9ea5a8ecce310dd077c0d4",
+        "sha256": "sha256:c720bb9cfd86bc63215d5f3d5570ce8d5fe05257de37f1e5c39b105166f429c0",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/collision/link_4_r.stl",
+        "size_bytes": 27784,
+        "git_blob_sha": "eb714a9afa8f30755ea3dc49738f3b105ada338d",
+        "sha256": "sha256:55f6ff6b28b5c17b7724b648a0df0f8f3e197214979bf6a5c5a40b7170f3e59e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/collision/link_5_b.stl",
+        "size_bytes": 14184,
+        "git_blob_sha": "9530f8b618bb3426c705e32e8a31def1e40f7dd2",
+        "sha256": "sha256:84fe18ce10c026617b4a43d24cbf448be03fea13faf74effe34201837b224f41",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/collision/link_6_t.stl",
+        "size_bytes": 22384,
+        "git_blob_sha": "b33963b15a6dfe3a5537f8617b3dd4d558b9c419",
+        "sha256": "sha256:57a7d892b97390a40edfea8e2561f3bb93c3907c08e4d8466a0b081191ccc46a",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/visual/base_link.dae",
+        "size_bytes": 358764,
+        "git_blob_sha": "f81290a7bb1bd13962fdbc7d5f9563560c368e27",
+        "sha256": "sha256:5f4f92d1e68462bc86bff96f3b2a98d7ded36b6f8ff7b9b3fb63b712b0525858",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/visual/link_1_s.dae",
+        "size_bytes": 744857,
+        "git_blob_sha": "1b71446536a756e6274a8f36d8cc53bc7f8db620",
+        "sha256": "sha256:57ec5df21effad0a3f65ffec64f48d4c51e2ced2aa9225eafec0ada1ea5a779f",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/visual/link_2_l.dae",
+        "size_bytes": 441067,
+        "git_blob_sha": "cd8f773971b462936a2c68378504c1cda4e31e81",
+        "sha256": "sha256:1a75f8c5d16d33aebe9c932baf556cdcc74b47b2e397052bf9612e32154a1eb6",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/visual/link_3_u.dae",
+        "size_bytes": 637667,
+        "git_blob_sha": "dc141b229e72bf914e3b1b800ede3f84fa58ae2f",
+        "sha256": "sha256:81124b506b79e2e4743b0ee79c1d9c494255198330e4c603f3995112b62401ea",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/visual/link_4_r.dae",
+        "size_bytes": 529903,
+        "git_blob_sha": "539fdebdc3f4dea9c169fdf7e68e2cb57d3ee2e4",
+        "sha256": "sha256:7b4b495cbc944a6ca279aa4f8e785d59c570323476bfdf66b0eae586d7e4d249",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/visual/link_5_b.dae",
+        "size_bytes": 473009,
+        "git_blob_sha": "b8ff4fe409af110269d944b0c64ce3dd540c6d9f",
+        "sha256": "sha256:bcc637486825a311632d040890dee15d937b2b2bda9eb4e71114b563059e5a96",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25/visual/link_6_t.dae",
+        "size_bytes": 253075,
+        "git_blob_sha": "9a2757971a5b2144c800b2d0ff87c44c7847115b",
+        "sha256": "sha256:619bf8c9c9cc8fba301762921907e76f4225c2280a01feee2190ef7620e5df4c",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25_20/collision/link_4_r.stl",
+        "size_bytes": 28984,
+        "git_blob_sha": "36d7a90b108fc928d73c2692a3e8cd8ccc1837b6",
+        "sha256": "sha256:c8be1ce232af4650d16f88eb3f9648bcd171083ff75a0798bc1a98445b5a9fbc",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25_20/collision/link_5_b.stl",
+        "size_bytes": 14184,
+        "git_blob_sha": "acc619cb22227779299587601da414e21bcfb668",
+        "sha256": "sha256:81e920b2ac5cf5e57939be3abb756fec5c2feb0b3ee95e399ea865d99ec67fe0",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25_20/collision/link_6_t.stl",
+        "size_bytes": 10884,
+        "git_blob_sha": "53145d79301c51b5a376f3536ab54d0acb3e4199",
+        "sha256": "sha256:8b0be2a0e29135dc862614bfc04b3844165a3ee142a01a801067ee0aaf661a75",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25_20/visual/link_4_r.dae",
+        "size_bytes": 279911,
+        "git_blob_sha": "8a7fcb42a7ade771c55ab6513e63c22218590a6b",
+        "sha256": "sha256:31c32927d07b48432ae3d2b7bd8cb64b590a3ab25e1a8d9992fd449d81471449",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25_20/visual/link_5_b.dae",
+        "size_bytes": 243493,
+        "git_blob_sha": "785d92b24627f3258731d0c0257512187f2aa627",
+        "sha256": "sha256:4b427c68a8271491fcf7851f6b1525710458624d8eb581f3fda3ee5d4ca9495e",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/meshes/gp25_20/visual/link_6_t.dae",
+        "size_bytes": 135279,
+        "git_blob_sha": "008ed92c8478125e402219282d54c234b895e7c1",
+        "sha256": "sha256:f8919c3df05aefc164981e9da1887fddfffbfa0126e36c9b9e9aa8635eb14c72",
+        "synthetic_geometry_in_tests": true
+      },
+      {
+        "path": "motoman_gp25_support/package.xml",
+        "size_bytes": 2733,
+        "git_blob_sha": "dd859ad828cafe210754c2d9553937bdd83f0469",
+        "sha256": "sha256:97177a9a4499c8557d351d04e5809044c2cc46dde41a1e028ba9979332a8efbf",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp25_support/urdf/gp25_20.xacro",
+        "size_bytes": 226,
+        "git_blob_sha": "146c507051f47d77d2f21855e63f925e4d25f702",
+        "sha256": "sha256:78308b9d2ab0345c955e0e09cad313954f51c2460a32d59a50d2352c65a658ce",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_gp25_support/urdf/gp25_20_macro.xacro",
+        "size_bytes": 6528,
+        "git_blob_sha": "3525b97193773838eded4b0be96534b26cacc812",
+        "sha256": "sha256:a1e63d2c5d0efdc015d2d026299db8d9e0be5c4bbf766275eca521c74b447e79",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/CMakeLists.txt",
+        "size_bytes": 190,
+        "git_blob_sha": "3d01fa3842a108b01885f0c3a00c444e4a254a9f",
+        "sha256": "sha256:c65941d28b8da428365e45e793b3bdfa6aa03eaf108ac779fd574e7377f01836",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/package.xml",
+        "size_bytes": 1158,
+        "git_blob_sha": "a003b39b877e316f670d35407ac82ef372eece86",
+        "sha256": "sha256:bf191795822fef539ba1d78b10f16a31ca7f6dc23c8634c8b6921a29760763db",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/urdf/common_colors.xacro",
+        "size_bytes": 516,
+        "git_blob_sha": "34740e9d17b9569792fdb655dd37503b70183b06",
+        "sha256": "sha256:921f55628ebbc6e7ff076b1d9457e7ca517446334b63a2cb4a9d90ee78d1355f",
+        "synthetic_geometry_in_tests": false
+      },
+      {
+        "path": "motoman_resources/urdf/common_materials.xacro",
+        "size_bytes": 893,
+        "git_blob_sha": "f9c8fd2495ad0dda13295f5e51dbead46688d4f1",
+        "sha256": "sha256:c4eb63b25899e02005a1662072cb54770dcb760638625ce4bfcc2ac8d9169fcc",
+        "synthetic_geometry_in_tests": false
+      }
+    ]
+  }
+}

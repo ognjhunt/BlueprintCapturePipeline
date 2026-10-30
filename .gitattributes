@@ -7,3 +7,6 @@ tests/fixtures/industrial_robotiq/fanuc_m710ic_45m/fanuc_m710_description/robot/
 tests/fixtures/industrial_robotiq/fanuc_m710ic_45m/fanuc_m710_description/urdf/m710ic_45m_urdf_macro.xacro -text whitespace=cr-at-eol
 tests/fixtures/industrial_robotiq/abb_gofa_crb15000_5_95/abb_crb15000_support/urdf/crb15000_5_95.xacro -text whitespace=-blank-at-eof
 tests/fixtures/industrial_robotiq/abb_gofa_crb15000_12_127/abb_crb15000_support/urdf/crb15000_12_127.xacro -text whitespace=-blank-at-eof
+# Exact pinned Yaskawa publisher source fixtures; preserve inventoried bytes.
+tests/fixtures/yaskawa_robotiq/yaskawa_gp12/** -text whitespace=-trailing-space,-blank-at-eof
+tests/fixtures/yaskawa_robotiq/yaskawa_gp20/** -text whitespace=-trailing-space,-blank-at-eof

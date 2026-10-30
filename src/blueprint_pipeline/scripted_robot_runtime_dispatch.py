@@ -3,6 +3,9 @@ from __future__ import annotations
 
 
 def runtime_for_policy(policy):
+    from . import scripted_robot_yaskawa_robotiq_runtime as yaskawa
+    if policy.get("policy_id") == yaskawa.PROFILE_ID:
+        return yaskawa
     from . import scripted_robot_baseline_runtime as original
     if policy.get("policy_id") == original.PROFILE_ID:
         return original
@@ -16,6 +19,9 @@ def runtime_for_policy(policy):
 
 
 def runtime_for_manifest(manifest):
+    from . import scripted_robot_yaskawa_robotiq_runtime as yaskawa
+    if manifest.get("embodiment_id") in yaskawa.BODIES:
+        return yaskawa
     from . import scripted_robot_industrial_robotiq_runtime as industrial
     if manifest.get("embodiment_id") in industrial.BODIES:
         return industrial
