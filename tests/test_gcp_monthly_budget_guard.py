@@ -15,7 +15,7 @@ from blueprint_pipeline.paid_resource_admission import (
     require_paid_resource_admission_grant,
 )
 
-NOW = datetime.now(timezone.utc)
+NOW = datetime(2026, 10, 24, 12, tzinfo=timezone.utc)
 LOCAL = NOW.astimezone(ZoneInfo("America/Los_Angeles"))
 INTERVAL = LOCAL.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
@@ -31,7 +31,22 @@ def test_admission_reader_shares_policy_without_reaching_monitor_or_provider_cod
 
 
 @pytest.fixture
-def policy(tmp_path, monkeypatch):
+def reader_clock(monkeypatch):
+    # Report timestamps and implicit paid-boundary reads share simulated time,
+    # regardless of how long CI spends between module collection and execution.
+    class Clock(datetime):
+        current = NOW
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz) if tz else cls.current.replace(tzinfo=None)
+
+    monkeypatch.setattr(reader, "datetime", Clock)
+    return Clock
+
+
+@pytest.fixture
+def policy(tmp_path, monkeypatch, reader_clock):
     path = tmp_path / "policy.json"
     path.write_text(json.dumps({
         "project_id": "blueprint-test", "project_number": "123456",
@@ -130,18 +145,13 @@ def test_budget_or_authority_failures_are_not_transient_monitor_waits(policy, ca
     assert guard.stale_report_wait(now=now) is None
 
 
-def test_atlas_controller_returns_processing_for_expired_admitted_monitor(policy, monkeypatch, tmp_path):
+def test_atlas_controller_returns_processing_for_expired_admitted_monitor(policy, monkeypatch, tmp_path, reader_clock):
     from blueprint_pipeline import atlas_scene_automation, paid_resource_allocator
 
     born, _ = _dated_admitted_report(policy)
     current = born + timedelta(minutes=6)
 
-    class Clock(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return current.astimezone(tz)
-
-    monkeypatch.setattr(reader, "datetime", Clock)
+    reader_clock.current = current
     calls, provider_calls = [], []
 
     def stopped_before_provider(**options):
@@ -302,6 +312,32 @@ def test_paid_boundary_rechecks_an_already_issued_grant(policy):
         build_paid_lane_admission(resource_class="provider_reconstruction_api"),
         resource_class="provider_reconstruction_api", expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
     guard.run_guard(policy, client=Client(policy, "110"), now=NOW)
+    with pytest.raises(PaidResourceAdmissionBlocked, match="gcp_monthly_budget_admission_blocked"):
+        require_paid_resource_admission_grant(grant, resource_class="provider_reconstruction_api")
+
+
+@pytest.mark.parametrize("collection_delay", [timedelta(minutes=6), timedelta(days=35)])
+def test_paid_boundary_fresh_fixture_after_delayed_collection_still_expires(policy, reader_clock, collection_delay):
+    guard.run_guard(policy, client=Client(policy), now=NOW)
+    reader_clock.current = NOW + collection_delay
+    admission = build_paid_lane_admission(resource_class="provider_reconstruction_api")
+    # Reproduce the old collection-time timestamp bug without sleeping. A real
+    # stale report must remain refused, including across a billing-month change.
+    with pytest.raises(PaidResourceAdmissionBlocked, match="gcp_monthly_budget_admission_blocked"):
+        require_paid_resource_admission(admission, resource_class="provider_reconstruction_api",
+            expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+
+    current = reader_clock.current
+    client = Client(policy)
+    interval = current.astimezone(ZoneInfo("America/Los_Angeles")).replace(
+        day=1, hour=0, minute=0, second=0, microsecond=0)
+    client.messages = [message(policy, published=current, interval=interval)]
+    assert guard.run_guard(policy, client=client, now=current)["admission_allowed"] is True
+    grant = require_paid_resource_admission(admission, resource_class="provider_reconstruction_api",
+        expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+    reader_clock.current += timedelta(minutes=5)
+    require_paid_resource_admission_grant(grant, resource_class="provider_reconstruction_api")
+    reader_clock.current += timedelta(microseconds=1)
     with pytest.raises(PaidResourceAdmissionBlocked, match="gcp_monthly_budget_admission_blocked"):
         require_paid_resource_admission_grant(grant, resource_class="provider_reconstruction_api")
 
