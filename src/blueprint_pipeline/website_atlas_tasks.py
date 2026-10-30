@@ -59,6 +59,31 @@ def _capacity_refusal(payload: bytes, retry_after: str | None, *, now: float,
             "observed_at_epoch": now, "retry_not_before_epoch": now + delay}
 
 
+MAX_UPLOAD_REFRESHES = 2
+
+
+def refresh_purged_uploads(state: dict[str, Any], status: int, payload: bytes) -> bool:
+    """Start the uploads again when the provider refused a send because one of ours expired.
+
+    Uploads to an account that does not retain them are purged about an hour after
+    they are created, and a long capacity wait can outlive them (capture-4b60431e,
+    2026-10-30: 404 "asset ... not found" 67 minutes after upload). That refusal
+    created nothing, so the same admitted purchase uploads again under a new key.
+    """
+    if status != 404 or state.get("operation_id") or state.get("upload_refreshes", 0) >= MAX_UPLOAD_REFRESHES:
+        return False
+    text = payload.decode("utf-8", "replace")
+    purged = [asset for asset in state.get("created_assets", []) if asset in text]
+    if not purged:
+        return False
+    count = state.get("upload_refreshes", 0) + 1
+    state.update(status="uploading", uploads=[], upload_refreshes=count, purged_assets=purged,
+                 idempotency_key=state["idempotency_key"].split("-u")[0] + f"-u{count}")
+    state.pop("request", None)
+    state.pop("request_body", None)
+    return True
+
+
 def _capacity_pending(state: Mapping[str, Any]) -> dict[str, Any]:
     return {"status": "processing", "operation_id": None, "waiting_for": "provider_capacity",
             "retry_not_before_epoch": state["capacity_refusal"]["retry_not_before_epoch"]}
@@ -447,6 +472,9 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
                     state["sends"][-1]["capacity_refusal"] = refusal
                     pose._write_state(state_path, state)
                     return _capacity_pending(state)
+            if refresh_purged_uploads(state, status, payload):
+                pose._write_state(state_path, state)
+                return {"status": "processing", "operation_id": None, "waiting_for": "upload_refresh"}
             if 400 <= status < 500 and status not in pose._UNCERTAIN_4XX and status != 402:
                 # Any earlier send was reconciled as bought nothing, so a definitive
                 # refusal of this one closes the task without a purchase.

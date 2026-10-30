@@ -306,3 +306,41 @@ def test_refined_splat_follows_gap_completion_without_the_draft_coverage_pass(tm
     # The generated gap views go into the refined splat with the real views.
     assert not coverage and [f["frame_id"] for f in observed[0]["frames"]] == ["a", "gap"]
     assert result["status"] == "completed" and result["background"]["splat_kind"] == "atlas_refined"
+
+
+def test_after_a_provider_failure_the_next_attempt_sends_the_documented_minimal_form(tmp_path):
+    frames = source_frames()
+    keep = np.zeros(frames[1]["depth"].shape, bool)
+    keep[:, 20:] = True
+    frames.append({**depth.restrict_frame(frames[1], keep), "frame_id": "generated"})
+    request, uploads, provenance = native.prepare_splat_request(frames=frames, root=tmp_path / "m", minimal=True)
+    # Whole views only, image + depth + camera, exactly the guide's example.
+    assert [row["frame_id"] for row in provenance] == ["0", "1"]
+    assert all(set(frame) == {"imageAsset", "camera", "depth"} and set(frame["depth"]) == {"depthAsset"}
+               for frame in request["posedFrames"])
+    root = tmp_path / "draft-refined"
+    for path, value in ((root / "native", {"status": "failed", "terminal_operation": {"error": {"code": 13}}}),
+                        (root / "native/retry", {"status": "rejected"})):
+        (path / "atlas_pose").mkdir(parents=True)
+        (path / "atlas_pose/submission.json").write_text(json.dumps(value))
+    seen = []
+
+    def runner(**kw):
+        seen.append(kw)
+        return {"status": "processing", "operation_id": "op"}
+    pose = {"digest": "pose", "operation": {"id": "op_pose"}, "binding": {"source_video_digest": "video"}}
+    policy = {"refined_splat_cost_usd": 5, "rate_card_reference": "https://example.test/card",
+              "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}
+    state = native.run_native_splat(frames=frames, result=pose, draft={"digest": "draft"}, output_root=root,
+                                    policy=policy, task_context={"context_digest": "ctx"}, task_runner=runner)
+    assert state["status"] == "processing"
+    assert seen[0]["output_root"] == tmp_path / "draft-refined-minimal/native"
+    assert len(seen[0]["request"]["posedFrames"]) == 2
+    binding = json.loads((tmp_path / "draft-refined-minimal/input_binding.json").read_text())
+    assert binding["request_form"] == "documented_minimal"
+    # A live attempt keeps the full request.
+    (root / "native/retry/atlas_pose/submission.json").write_text(json.dumps({"status": "capacity_wait"}))
+    seen.clear()
+    native.run_native_splat(frames=frames, result=pose, draft={"digest": "draft"}, output_root=root,
+                            policy=policy, task_context={"context_digest": "ctx"}, task_runner=runner)
+    assert seen[0]["output_root"] == root / "native" and len(seen[0]["request"]["posedFrames"]) == 3
