@@ -1,7 +1,7 @@
 """No provider calls: durable task execution and the public beta schema boundary."""
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -284,6 +284,29 @@ def test_an_execution_failure_is_resubmitted_once_across_restarts(case, monkeypa
         with pytest.raises(ValueError, match="atlas_task_operation_failed"):
             run()
         assert fake.posts == fake.reservations == len(set(fake.keys)) == 2
+
+
+def test_a_renewed_review_record_keeps_the_retained_task(case, monkeypatch):
+    # capture-4b60431e: the owner renewed the price review after a failed purchase; the
+    # replay refused the same request at the same price as a changed binding.
+    fake, run = transient_case(case, monkeypatch, code=3)
+    review = case[2]
+    with pytest.raises(ValueError, match="atlas_task_operation_failed"):
+        run()
+    review["reviewed_by"] = "renewed owner"
+    with pytest.raises(ValueError, match="atlas_task_operation_failed"):
+        run()
+    assert fake.posts == fake.reservations == 1
+    review["maximum_cost_usd"] = .06
+    with pytest.raises(ValueError, match="atlas_task_binding_changed"):
+        run()
+
+
+def test_a_renewed_review_record_replays_a_completed_task_without_purchase(case):
+    fake, _, review, run = case
+    result = run()
+    review["reviewed_on"] = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+    assert run() == result
 
 
 def test_transient_retry_requires_new_budget_and_release_admission(case, monkeypatch):
