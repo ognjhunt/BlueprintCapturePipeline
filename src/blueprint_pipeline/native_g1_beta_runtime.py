@@ -167,13 +167,22 @@ def collect_cell(*, root: Path, cell_root: Path, cell, scene_plan_digest: str,
 
 
 def _retained_bytes(root):
+    from .provider_runtime_bundle_contract import g1_provider_output_contract
+    excluded = g1_provider_output_contract("native_g1_beta_screening")[2]
     total = 0
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            raise ValueError("g1_beta_output_symlink_forbidden")
-        if path.is_file() and not path.relative_to(root).as_posix().startswith((
-                "models/checkpoints/", "models/sonic/", "models/torch/", "policy-runtime-build/policy-runtime/", "policy-runtime-build/wheel-downloads/", "cell_packets/")):
-            total += path.stat().st_size
+    for directory, directories, files in os.walk(root, followlinks=False):
+        # Prune execution inputs before inspecting links. Even venv --copies
+        # creates lib64 -> lib; none of that environment is retained evidence.
+        directories[:] = [name for name in directories if not
+            ((Path(directory) / name).relative_to(root).as_posix() + "/").startswith(excluded)]
+        for name in directories + files:
+            path = Path(directory) / name
+            if (path.relative_to(root).as_posix() + "/").startswith(excluded):
+                continue
+            if path.is_symlink():
+                raise ValueError("g1_beta_output_symlink_forbidden")
+            if path.is_file():
+                total += path.stat().st_size
     return total
 
 
