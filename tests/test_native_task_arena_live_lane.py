@@ -36,6 +36,7 @@ from blueprint_pipeline.native_task_arena_bundle import (
     POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES,
 )
 from blueprint_pipeline.native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from blueprint_pipeline.native_task_official_nurec import runtime_data_files
 from blueprint_pipeline.native_task_arena_policy_bundle import (
     ADP009D_POLICY_READINESS_PATH,
     ADP009D_SCENARIO_SUITE_PATH,
@@ -169,6 +170,7 @@ def _provider_bundle(
         "policy": "policy",
         "policy-diagnostic": "policy_diagnostic",
     }[link]
+    camera_data = runtime_data_files() if link in {"policy", "policy-diagnostic"} else {}
     if link in {"policy", "policy-diagnostic"}:
         with zipfile.ZipFile(bundle, "w") as archive:
             archive.writestr(
@@ -178,6 +180,8 @@ def _provider_bundle(
                     "native_task_arena_policy_execution_spec.v1.json"
                 ].read_bytes(),
             )
+            for name, path in camera_data.items():
+                archive.writestr("provider_runtime/" + name, path.read_bytes())
     else:
         bundle.write_bytes(f"production-shaped-{link}-bundle".encode())
     bound_names = {
@@ -235,6 +239,10 @@ def _provider_bundle(
                     *POLICY_RUNTIME_ROOT_MODULE_NAMES,
                     *("blueprint_pipeline/" + item for item in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES),
                 )
+            ]
+            + [
+                {"relative_path": name, "size_bytes": path.stat().st_size, "sha256": _sha(path)}
+                for name, path in camera_data.items()
             ]
             if link in {"policy", "policy-diagnostic"}
             else []
