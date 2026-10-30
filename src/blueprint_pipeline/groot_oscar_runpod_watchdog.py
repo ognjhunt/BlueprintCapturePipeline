@@ -31,7 +31,9 @@ EVIDENCE_NAME = WATCHDOG_EVIDENCE_NAME
 write_owner_teardown_cancel_request = _write_owner_teardown_cancel_request
 SUPPORTED_PROVIDERS = ("runpod", "vast")
 VAST_STARTED_INSTANCE_ID_NAME = "started_vast_instance_id.txt"
+EMBODIMENT_PREPARATION_NAME_PREFIX = "blueprint-embodiment-preparation-"
 CANARY_NAME_PREFIXES = (
+    EMBODIMENT_PREPARATION_NAME_PREFIX,
     "blueprint-groot-oscar-canary-",
     # SAM 3.1 source-track jobs are bounded Vast canaries with their own
     # exact-prefix instance handoff and teardown scope.
@@ -97,6 +99,21 @@ CAMPAIGN_PENDING_TEARDOWN_LANES = {
     "openpi_policy_ranking": "openpi_policy_ranking_gpu_canary",
     "nvidia_warehouse_native_camera": ("nvidia_warehouse_native_camera_gpu_canary"),
 }
+
+
+def valid_watchdog_exact_resource_name(value: str) -> bool:
+    """Keep the preparation lane's fixed family on the shared 32-hex contract."""
+    if value.startswith(EMBODIMENT_PREPARATION_NAME_PREFIX):
+        return re.fullmatch(re.escape(EMBODIMENT_PREPARATION_NAME_PREFIX) + r"[0-9a-f]{32}", value) is not None
+    return re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", value) is not None
+
+
+def _require_preparation_exact_scope(prefix: str, exact: str) -> None:
+    if (prefix.startswith(EMBODIMENT_PREPARATION_NAME_PREFIX)
+            or exact.startswith(EMBODIMENT_PREPARATION_NAME_PREFIX)) and (
+        prefix != exact or not valid_watchdog_exact_resource_name(exact)
+    ):
+        raise ValueError("watchdog_exact_resource_name_invalid")
 
 
 def _provider_name(value: Any) -> str:
@@ -458,11 +475,8 @@ def arm_watchdog(
     if not pod_name_prefix.startswith(CANARY_NAME_PREFIXES):
         raise ValueError("watchdog_pod_name_prefix_not_canary_scoped")
     exact_name = str(resource_name_exact or "").strip()
-    if exact_name and (
-        exact_name != pod_name_prefix
-        or re.fullmatch(r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", exact_name)
-        is None
-    ):
+    _require_preparation_exact_scope(pod_name_prefix, exact_name)
+    if exact_name and (exact_name != pod_name_prefix or not valid_watchdog_exact_resource_name(exact_name)):
         raise ValueError("watchdog_exact_resource_name_invalid")
     allowed_names = sorted(
         {str(value).strip() for value in allowed_active_resource_names}
@@ -511,6 +525,7 @@ def terminate_canary_resources(
     provider_name: str | None = None,
     resource_name_exact: str | None = None,
 ) -> dict[str, Any]:
+    _require_preparation_exact_scope(pod_name_prefix, str(resource_name_exact or "").strip())
     resolved_provider = _provider_name(
         provider_name or armed.get("provider") or getattr(provider, "name", None)
     )

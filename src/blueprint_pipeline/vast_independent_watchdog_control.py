@@ -383,11 +383,17 @@ def validate_independent_vast_watchdog_names(
     exact_name = str(resource_name_exact or "").strip()
     if not re.fullmatch(r"blueprint-[a-z0-9-]{1,100}-", prefix_base):
         raise ValueError("independent_vast_watchdog_prefix_invalid")
-    if exact_name and not re.fullmatch(
-        r"blueprint-[a-z0-9-]{1,60}-[0-9a-f]{32}", exact_name
+    from .groot_oscar_runpod_watchdog import (
+        CANARY_NAME_PREFIXES, EMBODIMENT_PREPARATION_NAME_PREFIX, valid_watchdog_exact_resource_name,
+    )
+    if exact_name and not valid_watchdog_exact_resource_name(exact_name):
+        raise ValueError("independent_vast_watchdog_exact_resource_name_invalid")
+    if (prefix_base.startswith(EMBODIMENT_PREPARATION_NAME_PREFIX)
+            or exact_name.startswith(EMBODIMENT_PREPARATION_NAME_PREFIX)) and (
+        prefix_base != EMBODIMENT_PREPARATION_NAME_PREFIX
+        or not exact_name.startswith(EMBODIMENT_PREPARATION_NAME_PREFIX)
     ):
         raise ValueError("independent_vast_watchdog_exact_resource_name_invalid")
-    from .groot_oscar_runpod_watchdog import CANARY_NAME_PREFIXES
     if not (exact_name or prefix_base).startswith(CANARY_NAME_PREFIXES):
         raise ValueError("watchdog_pod_name_prefix_not_canary_scoped")
     return prefix_base, exact_name

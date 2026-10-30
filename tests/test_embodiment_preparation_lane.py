@@ -63,7 +63,7 @@ def test_door_enqueue_is_durable_idempotent_and_does_not_launch(tmp_path):
 
 
 def _dispatch_fixture(tmp_path, monkeypatch):
-    from blueprint_pipeline import rigid_robot_free_probe_lane, vast_independent_watchdog_control
+    from blueprint_pipeline import rigid_robot_free_probe_lane
     grant = request()
     root = tmp_path / "state"
     controller.enqueue(grant, root=root, commit=COMMIT)
@@ -74,7 +74,6 @@ def _dispatch_fixture(tmp_path, monkeypatch):
               "inputs_digest": "sha256:" + "b" * 64, "bundle_size_bytes": 4_300_000_000, "container_image": "pinned"}
     monkeypatch.setattr(lane, "load_verified_bundle", lambda *a, **k: bundle)
     monkeypatch.setattr(rigid_robot_free_probe_lane, "driver_ceiling_blockers", lambda: [])
-    monkeypatch.setattr(vast_independent_watchdog_control, "validate_independent_vast_watchdog_names", lambda **k: None)
     args = SimpleNamespace(provider="vast", embodiment_preparation_request=root / "authorizations/development-test.json",
         embodiment_preparation_bundle=root / "bundle.json", embodiment_preparation_job_dir=tmp_path / "bulk",
         admission_out=tmp_path / "admission.json", adapter_output=tmp_path / "output.json", execute=True)
