@@ -5,7 +5,9 @@ an additional-frame rate retain their original quotes and receipt identities.
 """
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 
 
 def render_cost(policy, frame_count: int, *, depth=True, legacy_multiplier=1) -> float:
@@ -30,6 +32,27 @@ def splat_cost(policy) -> float:
     return float(value)
 
 
-def final_output_cost(policy) -> float:
-    return float(policy.get("mesh_export_cost_usd", 0)) + (
-        splat_cost(policy) if "refined_splat_cost_usd" in policy else 0)
+def final_output_cost(policy, admitted=frozenset()) -> float:
+    """The final-output prices to hold back, except tasks whose purchase is already admitted."""
+    return (float(policy.get("mesh_export_cost_usd", 0)) * ("splats2Mesh" not in admitted)
+            + (splat_cost(policy) if "refined_splat_cost_usd" in policy
+               and "posedImages2Splats" not in admitted else 0))
+
+
+def admitted_final_outputs(root: Path) -> frozenset:
+    """Final-output tasks with an admitted purchase that has not failed.
+
+    Its reservation is already deducted from the remaining allowance, so holding
+    its price back again counts it twice. capture-4b60431e 2026-10-30: a live
+    refined-splat retry plus that double count left $0.91 short and failed the job.
+    """
+    found = set()
+    for path in root.rglob("atlas_pose/submission.json"):
+        try:
+            state = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        task = (state.get("binding") or {}).get("task")
+        if task in ("posedImages2Splats", "splats2Mesh") and state.get("status") != "failed":
+            found.add(task)
+    return frozenset(found)

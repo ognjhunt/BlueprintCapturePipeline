@@ -23,7 +23,7 @@ import time
 from .website_task_context import load_atlas_configuration as load_configuration
 from .common import write_json
 from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
-from .atlas_pricing import render_cost, final_output_cost
+from .atlas_pricing import admitted_final_outputs, render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .atlas_preparation_context import requires_task_semantic_analysis
@@ -503,7 +503,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # The saved configuration preserves the original authority and prices;
     # completed purchases and held unknown calls consume today's allowance.
     budget = (current["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
-              - final_output_cost(policy))
+              - final_output_cost(policy, admitted_final_outputs(output_root)))
     if budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
         raise ValueError("atlas_runtime_budget_insufficient")
     if selection_path.exists():
