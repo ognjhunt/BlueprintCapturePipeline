@@ -1,4 +1,4 @@
-"""Prepare fixed ten-body script registrations as blueprint; no registry write or compute."""
+"""Prepare fixed source-bound script registrations as blueprint; no registry write or compute."""
 from __future__ import annotations
 
 import argparse
@@ -20,7 +20,7 @@ _spec.loader.exec_module(contract)
 def prepare(request: dict, *, state_root: Path = common.STATE_ROOT, model_root: Path = common.MODEL_ROOT,
             profile_root: Path = PROFILE_ROOT, release_commit: str | None = None) -> dict:
     from .deployment_embodiment_runtime_configuration import bind_prepared_configuration
-    from .scripted_robot_baseline_runtime import build_policy_spec
+    from .scripted_robot_runtime_dispatch import build_policy_spec
     from .scripted_robot_registration import registration_from_prepared_inputs
     request = common.validate_request(request, operation="install-scripted-robot-baselines")
     actual = release_commit or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()

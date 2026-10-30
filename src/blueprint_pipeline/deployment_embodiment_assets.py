@@ -50,6 +50,9 @@ def _path(value: str) -> str:
 
 
 def _composition_module(recipe):
+    if recipe["composition"].get("schema_version") == "ur_single_robotiq2f85_sim_composition.v1":
+        from . import deployment_embodiment_ur_single_composition
+        return deployment_embodiment_ur_single_composition
     if recipe["composition"].get("schema_version") == "fr3_robotiq2f85_sim_composition.v1":
         from . import deployment_embodiment_fr3_composition
         return deployment_embodiment_fr3_composition
@@ -150,12 +153,15 @@ def _refuse_symlink_ancestors(path: Path) -> None:
 def verify_source_bundle(directory: str | Path, *, embodiment_id: str | None = None) -> dict[str, Any]:
     from .deployment_embodiment_tool_composition import COMPOSITE_SCHEMA, verify_composite
     from .deployment_embodiment_fr3_composition import COMPOSITE_SCHEMA as FR3_SCHEMA, verify_composite as verify_fr3
+    from .deployment_embodiment_ur_single_composition import COMPOSITE_SCHEMA as UR_SINGLE_SCHEMA, verify_composite as verify_ur_single
     root = Path(directory)
     _refuse_symlink_ancestors(root / RECEIPT)
     if (root / RECEIPT).is_file() and (root / RECEIPT).stat().st_size <= MAX_RECEIPT_BYTES:
         value = json.loads((root / RECEIPT).read_text())
         if isinstance(value, dict) and value.get("schema_version") == COMPOSITE_SCHEMA:
             return verify_composite(root, embodiment_id=embodiment_id)
+        if isinstance(value, dict) and value.get("schema_version") == UR_SINGLE_SCHEMA:
+            return verify_ur_single(root, embodiment_id=embodiment_id)
         if isinstance(value, dict) and value.get("schema_version") == FR3_SCHEMA:
             return verify_fr3(root, embodiment_id=embodiment_id)
     return _verify_source_recipe(directory, embodiment_id=embodiment_id)

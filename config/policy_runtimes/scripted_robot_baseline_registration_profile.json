@@ -3,13 +3,16 @@
     "agilex_piper_bimanual": "piper",
     "almond_axol": "axol",
     "franka_research_3_bimanual": "fr3",
+    "franka_research_3_robotiq_2f85_sim": "robotiq_fr3",
     "i2rt_yam_bimanual": "yam",
     "kinova_gen3": "kinova",
     "kinova_gen3_bimanual": "kinova",
     "trlc_dk1_bimanual": "trlc",
     "ufactory_xarm7": "xarm",
     "ufactory_xarm7_bimanual": "xarm",
-    "universal_robots_ur5e_bimanual": "robotiq_ur"
+    "universal_robots_ur10e_robotiq_2f85_sim": "robotiq_ur",
+    "universal_robots_ur5e_bimanual": "robotiq_ur",
+    "universal_robots_ur5e_robotiq_2f85_sim": "robotiq_ur"
   },
   "checkpoint_id": "blueprint-scripted-pick-place-v1",
   "frames": {
@@ -181,6 +184,62 @@
       ],
       "tool": "gripper_base",
       "url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper"
+    },
+    "robotiq_fr3": {
+      "additional_source": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+      "approach": [
+        0.0,
+        0.0,
+        1.0
+      ],
+      "assumptions": [
+        "Nominal reference from a separately pinned example, not calibrated Dream hardware.",
+        "Fixed grasp position ignores about13.5mm of finger-pad Z travel during closure."
+      ],
+      "basis": "Opposing Robotiq finger tips separate along source X. Position follows the pinned PickNik134mm grasp_link reference; its yaw is not the task's Y-jaw convention.",
+      "contacts": [
+        "robotiq_85_left_finger_tip_link",
+        "robotiq_85_right_finger_tip_link"
+      ],
+      "dof": 7,
+      "jaw": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "jaws": {
+        "robotiq_85_left_finger_tip_joint": [
+          0.0,
+          -0.7929
+        ],
+        "robotiq_85_left_inner_knuckle_joint": [
+          0.0,
+          0.7929
+        ],
+        "robotiq_85_left_knuckle_joint": [
+          0.0,
+          0.7929
+        ],
+        "robotiq_85_right_finger_tip_joint": [
+          0.0,
+          0.7929
+        ],
+        "robotiq_85_right_inner_knuckle_joint": [
+          0.0,
+          -0.7929
+        ],
+        "robotiq_85_right_knuckle_joint": [
+          0.0,
+          -0.7929
+        ]
+      },
+      "position": [
+        0.0,
+        0.0,
+        0.134
+      ],
+      "tool": "robotiq_85_base_link",
+      "url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/tree/a74d007d8f2f06dc6a503ad21038ba869d4999a6/robotiq_description"
     },
     "robotiq_ur": {
       "additional_source": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
@@ -395,5 +454,28 @@
     ],
     "schema_version": "blueprint_scripted_controller_source.v1"
   },
-  "team_id": "blueprint-owned-baselines"
+  "team_id": "blueprint-owned-baselines",
+  "variant_bodies": [
+    "franka_research_3_robotiq_2f85_sim",
+    "universal_robots_ur10e_robotiq_2f85_sim",
+    "universal_robots_ur5e_robotiq_2f85_sim"
+  ],
+  "variant_policy_profile": "blueprint_scripted_pick_place_robotiq.v1",
+  "variant_source_identity": {
+    "schema_version": "blueprint_scripted_controller_source.v1",
+    "files": [
+      {
+        "path": "scripted_robot_baseline.py",
+        "sha256": "sha256:73b092973d2cfa922b38182729449cf7e06932a9fecbda00392356296c6ea6be"
+      },
+      {
+        "path": "scripted_robot_grasp_frames.py",
+        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+      },
+      {
+        "path": "scripted_robot_robotiq_runtime.py",
+        "sha256": "sha256:1db4f17f2f4d2246ca734c000012958271d100bb67405edd77f718df11984ec9"
+      }
+    ]
+  }
 }

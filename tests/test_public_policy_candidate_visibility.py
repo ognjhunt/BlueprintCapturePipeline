@@ -9,7 +9,8 @@ from blueprint_pipeline.beta_policy_screening_coordinator import enqueue_screeni
 from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan
 from blueprint_pipeline.beta_policy_screening_team import catalog_for_profile
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-from blueprint_pipeline.scripted_robot_baseline_runtime import candidate_id, source_identity
+from blueprint_pipeline.scripted_robot_baseline_runtime import candidate_id
+from blueprint_pipeline.scripted_robot_runtime_dispatch import runtime_for_manifest
 from tests.test_beta_policy_screening_plan import scene, NOW
 from tests.test_operator_door_public_policy_registration import contract, installer, PROFILE_ROOT, write
 from tests.test_operator_door_scripted_registration import batch as batch  # noqa: F401
@@ -66,7 +67,7 @@ def test_exact_fixed_installer_candidates_exist_without_registration_or_private_
         assert row["deployment"]["companies"] == []
         assert row["policy"]["kind"] == "scripted"
         assert row["policy"]["digest_kind"] == "source_code_inventory"
-        assert row["policy"]["digest"] == canonical_digest(source_identity())
+        assert row["policy"]["digest"] == canonical_digest(runtime_for_manifest({"embodiment_id": body}).source_identity())
         assert row["eligibility"]["license_id"] == "MIT"
     assert catalog["dream1_i2rt_yam_bimanual"]["deployment"]["companies"] == ["Dream Labs"]
     assert catalog["dream1_i2rt_yam_bimanual"]["eligibility"]["enabled"] is False
@@ -123,7 +124,7 @@ def test_successful_binding_replaces_same_row_and_invalid_binding_remains_visibl
     assert "beta_screening_input_bytes_changed" in publication(invalid_catalog, tmp_path)[key]["blockers"]
 
 
-@pytest.mark.parametrize("failed_count", [3, 10])
+@pytest.mark.parametrize("failed_count", [3, len(contract.SCRIPTED_BODIES)])
 def test_partial_or_failed_first_scripted_install_preserves_every_candidate(batch, tmp_path, failed_count):
     # Exercise the real privileged verifier/CAS against private temporary development records.
     for body in contract.SCRIPTED_BODIES[:failed_count]:
@@ -133,8 +134,8 @@ def test_partial_or_failed_first_scripted_install_preserves_every_candidate(batc
         row.update(status="unavailable", reason="tool_profile_unavailable")
     write(batch.destination / "proposal.json", batch.proposal)
     receipt = installer.apply(batch.request, **batch.options)
-    assert receipt["registered_count"] == 10 - failed_count
-    assert len(receipt["results"]) == 10
+    assert receipt["registered_count"] == len(contract.SCRIPTED_BODIES) - failed_count
+    assert len(receipt["results"]) == len(contract.SCRIPTED_BODIES)
     assert all(row["reason"] == "tool_profile_unavailable" for row in receipt["results"][:failed_count])
     registry = json.loads(batch.options["registry_path"].read_text())
     catalog = catalog_for_profile(registry["derived_profiles"]["defaults"])

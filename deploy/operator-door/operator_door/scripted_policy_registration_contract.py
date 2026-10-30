@@ -16,6 +16,9 @@ else:
 require, read, digest = common.require, common.read, common.digest
 CHECKPOINT_ID = "blueprint-scripted-pick-place-v1"
 CODE_FILES = ("scripted_robot_baseline.py", "scripted_robot_baseline_runtime.py", "scripted_robot_grasp_frames.py")
+VARIANT_CODE_FILES = ("scripted_robot_baseline.py", "scripted_robot_grasp_frames.py", "scripted_robot_robotiq_runtime.py")
+VARIANT_BODIES = frozenset({"universal_robots_ur5e_robotiq_2f85_sim", "universal_robots_ur10e_robotiq_2f85_sim",
+                          "franka_research_3_robotiq_2f85_sim"})
 EVIDENCE_KIND = "scripted_simulator_state_baseline"
 ACTION_SOURCE = "scripted_simulator_state"
 UNAVAILABLE_REASONS = {"prepared_body_unavailable", "prepared_body_verification_failed", "source_or_import_verification_failed",
@@ -28,18 +31,27 @@ def load_profile(profile_root: Path, *, source_root: Path | None = None, license
             and profile["checkpoint_id"] == CHECKPOINT_ID and list(profile["bodies"]) == sorted(common.SCRIPTED_BODIES),
             "fixed_script_profile_changed")
     identity = profile["source_identity"]
+    variant = profile["variant_source_identity"]
+    require(profile["variant_policy_profile"] == "blueprint_scripted_pick_place_robotiq.v1"
+            and set(profile["variant_bodies"]) == VARIANT_BODIES
+            and variant["schema_version"] == "blueprint_scripted_controller_source.v1"
+            and [row["path"] for row in variant["files"]] == list(VARIANT_CODE_FILES), "script_variant_inventory_changed")
     require(identity["schema_version"] == "blueprint_scripted_controller_source.v1"
             and [row["path"] for row in identity["files"]] == list(CODE_FILES), "script_source_inventory_changed")
     if source_root is None:
         source_root = profile_root / "scripted-baseline-source"
-        require({p.name for p in source_root.iterdir()} == set(CODE_FILES), "script_source_inventory_changed")
-    for row in identity["files"]:
+        require({p.name for p in source_root.iterdir()} == set(CODE_FILES) | set(VARIANT_CODE_FILES), "script_source_inventory_changed")
+    for row in [*identity["files"], *variant["files"]]:
         require(set(row) == {"path", "sha256"} and common.file_record(source_root / row["path"])["sha256"] == row["sha256"],
                 "script_source_changed")
     actual = common.file_record(license_path or profile_root / "scripted_robot_baseline_license.txt")
     require(all(actual[key] == profile["license_evidence"][key] for key in ("sha256", "size_bytes")),
             "script_license_changed")
     return profile
+
+
+def source_identity(profile: dict, body: str) -> dict:
+    return profile["variant_source_identity"] if body in VARIANT_BODIES else profile["source_identity"]
 
 
 def publication(request: dict, model_root: Path) -> dict:
@@ -84,7 +96,7 @@ def validated_policy(manifest: dict, policy: dict, profile: dict) -> dict:
             "fixed_manifest_changed")
     frame = profile["frames"][profile["bodies"][body]]
     arms = manifest.get("arms", [])
-    names = ["arm"] if body in {"kinova_gen3", "ufactory_xarm7"} else ["left", "right"]
+    names = ["arm"] if body in {"kinova_gen3", "ufactory_xarm7"} | VARIANT_BODIES else ["left", "right"]
     require([arm["name"] for arm in arms] == names and len(manifest["grippers"]) == len(names), "script_source_tool_changed")
     channels = {row["name"]: row for row in manifest["grippers"]}
     bindings = policy.get("grasp_bindings")
@@ -120,8 +132,9 @@ def validated_policy(manifest: dict, policy: dict, profile: dict) -> dict:
                     for i in range(3) for j in range(3))
                 and all(math.isclose(p[i]+sum(a[i][k]*t[k] for k in range(3)), frame["position"][i], rel_tol=0, abs_tol=1e-9)
                         for i in range(3)), "script_grasp_transform_changed")
-    expected = {"policy_interface_id": common.SCRIPTED_PROFILE_ID, "policy_id": common.SCRIPTED_PROFILE_ID,
-        "model_identity_digest": digest(profile["source_identity"]), "source_revision": "1", "embodiment_id": body,
+    expected = {"policy_interface_id": common.SCRIPTED_PROFILE_ID,
+        "policy_id": profile["variant_policy_profile"] if body in VARIANT_BODIES else common.SCRIPTED_PROFILE_ID,
+        "model_identity_digest": digest(source_identity(profile, body)), "source_revision": "1", "embodiment_id": body,
         "configuration_digest": manifest["embodiment_digest"], "action_chunk_rows": 1, "open_loop_horizon": 1,
         "action_hz": manifest["control_hz"], "camera_names": [row["name"] for row in manifest["cameras"]],
         "grasp_bindings": bindings, "execution_evidence_kind": EVIDENCE_KIND, "action_source": ACTION_SOURCE}
@@ -135,8 +148,8 @@ def rights_record(request: dict, profile: dict, body: str) -> dict:
         "candidate_id": "blueprint_scripted_" + body, "team_id": common.SCRIPTED_TEAM_ID, "checkpoint_id": CHECKPOINT_ID,
         "license_to_run_granted": True, "policy_self_grading_permitted": False, "official_ranking_permitted": False,
         "secret_material_recorded": False, "adp_qualified_evidence_permitted": False, "license_id": "MIT",
-        "model_identity_digest": digest(profile["source_identity"]), "license_basis": "blueprint_owned_source_repository_license",
-        "license_evidence": profile["license_evidence"], "controller_source_identity": profile["source_identity"],
+        "model_identity_digest": digest(source_identity(profile, body)), "license_basis": "blueprint_owned_source_repository_license",
+        "license_evidence": profile["license_evidence"], "controller_source_identity": source_identity(profile, body),
         "authorization_basis": "user_instruction_to_run_simulation_baselines",
         "authorization_reference": request["authorization_reference"], "execution_evidence_kind": EVIDENCE_KIND,
         "private_vendor_authorization_claimed": False, "physical_validation_claimed": False}

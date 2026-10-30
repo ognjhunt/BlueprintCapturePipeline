@@ -70,6 +70,8 @@ _PROFILES["franka_research_3_robotiq_2f85_sim"] = [_arm("fr3_link0", "robotiq_85
 _PROFILES["kinova_gen3_bimanual"] = deepcopy(_PROFILES["kinova_gen3"])
 _PROFILES["ufactory_xarm7_bimanual"] = [
     {**deepcopy(_PROFILES["ufactory_xarm7"][0]), "source_prefix": prefix} for prefix in ("L_", "R_")]
+for _identity in ("universal_robots_ur5e_robotiq_2f85_sim", "universal_robots_ur10e_robotiq_2f85_sim"):
+    _PROFILES[_identity] = deepcopy(_PROFILES["universal_robots_ur5e_bimanual"])
 for _identity in ("universal_robots_ur5e", "universal_robots_ur10e"):
     _PROFILES[_identity] = [_arm("base_link_inertia", "wrist_3_link", 6)]
 for _identity in ("fanuc_crx_10ia", "fanuc_crx_10ia_l", "fanuc_m710ic_45m"):

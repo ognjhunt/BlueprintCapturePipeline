@@ -996,6 +996,148 @@
         "physical_calibration_and_validation"
       ],
       "reason": "Exact CRB15000-12/127 public bare arm. Upstream geometry/limits are retained unchanged; simulation-only geometry-derived mass/inertia and drive estimates are explicit and read back after import. The 5/0.95 CAD conversion can differ from hardware; no physical or vendor-policy equivalence."
+    },
+    {
+      "embodiment_id": "universal_robots_ur5e_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description",
+        "revision": "d4042c1f5123c86645cc5dbd650b4f461f697ee9",
+        "entry_path": "urdf/ur.urdf.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/blob/d4042c1f5123c86645cc5dbd650b4f461f697ee9/LICENSE",
+        "license_note": "Publisher README excludes newer UR8LONG/15/18/20/30 meshes from BSD; this recipe includes only the exact UR5e or UR10e BSD source. No gripper is included.",
+        "include_paths": [
+          "urdf",
+          "config/ur5e",
+          "meshes/ur5e",
+          "LICENSE"
+        ],
+        "import_arguments": {
+          "name": "ur5e",
+          "ur_type": "ur5e"
+        },
+        "package_roots": {
+          "ur_description": "."
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established"
+      ],
+      "reason": "Exact single UR5E plus pinned public UR adapter and Robotiq2F85. Nominal simulation mounting/TCP/cameras, not measured hardware or a deployment-company policy.",
+      "composition": {
+        "schema_version": "ur_single_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "universal_robots_ur5e",
+        "tool_component_id": "robotiq_2f85_ur_adapter",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "UR tool0 to public UR adapter at zero yaw; source adapter adds 11mmZ; tool macro at zero transform; no physical camera spacer.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false
+      }
+    },
+    {
+      "embodiment_id": "universal_robots_ur10e_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description",
+        "revision": "d4042c1f5123c86645cc5dbd650b4f461f697ee9",
+        "entry_path": "urdf/ur.urdf.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description/blob/d4042c1f5123c86645cc5dbd650b4f461f697ee9/LICENSE",
+        "license_note": "Publisher README excludes newer UR8LONG/15/18/20/30 meshes from BSD; this recipe includes only the exact UR5e or UR10e BSD source. No gripper is included.",
+        "include_paths": [
+          "urdf",
+          "config/ur10e",
+          "meshes/ur10e",
+          "LICENSE"
+        ],
+        "import_arguments": {
+          "name": "ur10e",
+          "ur_type": "ur10e"
+        },
+        "package_roots": {
+          "ur_description": "."
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established"
+      ],
+      "reason": "Exact single UR10E plus pinned public UR adapter and Robotiq2F85. Nominal simulation mounting/TCP/cameras, not measured hardware or a deployment-company policy.",
+      "composition": {
+        "schema_version": "ur_single_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "universal_robots_ur10e",
+        "tool_component_id": "robotiq_2f85_ur_adapter",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "UR tool0 to public UR adapter at zero yaw; source adapter adds 11mmZ; tool macro at zero transform; no physical camera spacer.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false
+      }
     }
   ]
 }

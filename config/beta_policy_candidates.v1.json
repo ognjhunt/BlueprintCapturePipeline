@@ -3742,10 +3742,112 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ]
+    },
+    {
+      "candidate_id": "blueprint_scripted_franka_research_3_robotiq_2f85_sim",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "franka_research_3_robotiq_2f85_sim",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u00b7 franka_research_3_robotiq_2f85_sim",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:0b5139ef35eb2a5cc28fc7af4ac0bfa77a97d145ab4b573255637bfc53764ecc",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ],
+      "configuration_digest": "sha256:e07811f5fd5b9c7d0f3eeb687ef76652b664361df50e07b6d81b16295c12c4e6"
+    },
+    {
+      "candidate_id": "blueprint_scripted_universal_robots_ur10e_robotiq_2f85_sim",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "universal_robots_ur10e_robotiq_2f85_sim",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u00b7 universal_robots_ur10e_robotiq_2f85_sim",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:0b5139ef35eb2a5cc28fc7af4ac0bfa77a97d145ab4b573255637bfc53764ecc",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ],
+      "configuration_digest": "sha256:e073d6c7969e26386886de259318d25fd07f4ee0f5ae656f795c097f9afcf89e"
+    },
+    {
+      "candidate_id": "blueprint_scripted_universal_robots_ur5e_robotiq_2f85_sim",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "universal_robots_ur5e_robotiq_2f85_sim",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u00b7 universal_robots_ur5e_robotiq_2f85_sim",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:0b5139ef35eb2a5cc28fc7af4ac0bfa77a97d145ab4b573255637bfc53764ecc",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ],
+      "configuration_digest": "sha256:d29454decde2eeef7d589b4cae64fe627ae6fbbcfa3633e0f2e309779b6ea945"
     }
   ],
-  "catalog_digest": "sha256:4c9d63aea00338a52161a4b96d0448ee25782cd89a21cf90cf0d6097b3314def",
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility:trlc-community-pi05",
-  "schema_version": "beta_policy_candidate_catalog.v1"
+  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility:trlc-community-pi05:single-ur-robotiq-scripted",
+  "schema_version": "beta_policy_candidate_catalog.v1",
+  "catalog_digest": "sha256:756086244ef47196e7e612d20858fc00dc782f529148787dc1b1cf84dd4a353a"
 }

@@ -45,7 +45,9 @@ SCRIPTED_PROFILE_ID = "blueprint_scripted_pick_place.v1"
 SCRIPTED_TEAM_ID = "blueprint-owned-baselines"
 SCRIPTED_BODIES = ("i2rt_yam_bimanual", "agilex_piper_bimanual", "franka_research_3_bimanual",
     "universal_robots_ur5e_bimanual", "kinova_gen3", "kinova_gen3_bimanual", "ufactory_xarm7",
-    "ufactory_xarm7_bimanual", "almond_axol", "trlc_dk1_bimanual")
+    "ufactory_xarm7_bimanual", "almond_axol", "trlc_dk1_bimanual",
+    "universal_robots_ur5e_robotiq_2f85_sim", "universal_robots_ur10e_robotiq_2f85_sim",
+    "franka_research_3_robotiq_2f85_sim")
 IDENTITIES = {
     TRLC_SCHEMA: {"candidate_id": TRLC_CANDIDATE_ID, "team_id": TEAM_ID, "checkpoint_id": TRLC_CHECKPOINT_ID,
         "policy_profile": TRLC_PROFILE_ID, "embodiment_id": TRLC_EMBODIMENT_ID,

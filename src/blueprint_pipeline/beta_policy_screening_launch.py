@@ -182,8 +182,8 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
         from .team_local_policy import runtime_for_interface
         runtime_for_interface(native_spec["policy_interface_id"]).validate_execution_spec(native_spec)
     elif native_spec.get("policy_interface_id") == "blueprint_scripted_pick_place.v1":
-        from .scripted_robot_baseline_runtime import validate_execution_spec
-        validate_execution_spec(native_spec)
+        from .scripted_robot_runtime_dispatch import runtime_for_policy
+        runtime_for_policy(native_spec["policy_spec"]).validate_execution_spec(native_spec)
     elif native_spec.get("policy_interface_id") == "molmoact2_droid_joint8.v1":
         from .molmoact2_droid_runtime import validate_execution_spec
         validate_execution_spec(native_spec)

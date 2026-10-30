@@ -1,5 +1,6 @@
 """Development-only prepared candidate through real sealing; no GPU/provider calls."""
 import json
+import pytest
 from pathlib import Path
 import zipfile
 
@@ -10,12 +11,13 @@ from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan
 from blueprint_pipeline.beta_policy_screening_team import catalog_for_profile
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.scripted_robot_baseline import EVIDENCE_KIND
-from blueprint_pipeline.scripted_robot_baseline_runtime import build_policy_spec, candidate_id
+from blueprint_pipeline.scripted_robot_baseline_runtime import candidate_id
+from blueprint_pipeline.scripted_robot_runtime_dispatch import build_policy_spec
 from blueprint_pipeline.team_candidate_quick10_registry import profile_for_capture
 from tests.test_scripted_robot_grasp_frames import development_manifest
 
 
-def registered_world(tmp_path, monkeypatch):
+def registered_world(tmp_path, monkeypatch, identity="agilex_piper_bimanual"):
     from pxr import Usd, UsdPhysics
     from tests import test_native_task_arena_policy_canary_lifecycle_rehearsal as lifecycle
     from tests.test_native_task_construction_plan import _rigid_fixture
@@ -33,7 +35,7 @@ def registered_world(tmp_path, monkeypatch):
     monkeypatch.setattr(lifecycle, "_scene_plan", authored_fixture)
     base, _ = _plan(tmp_path, monkeypatch, scene_half="team_scene")
     profile = profile_for_capture(str(tmp_path / "capture"))
-    declared = development_manifest("agilex_piper_bimanual")
+    declared = development_manifest(identity)
     model = tmp_path / "development-only-robot.usda"
     stage = Usd.Stage.CreateNew(str(model))
     stage.SetDefaultPrim(stage.DefinePrim("/robot", "Xform"))
@@ -50,7 +52,7 @@ def registered_world(tmp_path, monkeypatch):
         UsdPhysics.FixedJoint.Define(stage, "/robot/" + arm["name"] + "_anchor").CreateBody1Rel().SetTargets(
             ["/robot/" + arm["base_link"]])
     stage.GetRootLayer().Save()
-    declared = development_manifest("agilex_piper_bimanual", model)
+    declared = development_manifest(identity, model)
     manifest_path = launch._write(tmp_path / "development-only.manifest.json", declared)
     key = candidate_id(declared["embodiment_id"])
     rights = {"schema_version": "blueprint.team_policy_candidate_rights.v1", "status": "admitted",
@@ -73,12 +75,14 @@ def registered_world(tmp_path, monkeypatch):
     return base, profile, registration, key
 
 
-def test_scripted_candidate_seals_without_checkpoint_server_credentials_or_learned_count(tmp_path, monkeypatch):
+@pytest.mark.parametrize("identity", ["agilex_piper_bimanual", "universal_robots_ur5e_robotiq_2f85_sim",
+    "universal_robots_ur10e_robotiq_2f85_sim", "franka_research_3_robotiq_2f85_sim"])
+def test_scripted_candidate_seals_without_checkpoint_server_credentials_or_learned_count(tmp_path, monkeypatch, identity):
     from blueprint_pipeline.policy_canary_session_bundle_identity import validate_policy_canary_provider_manifest
     from blueprint_pipeline.team_candidate_policy_client import canary_policy_client
     from blueprint_pipeline.vast_provider_adapter import _blueprint_bundle_preflight
 
-    base, profile, _, key = registered_world(tmp_path, monkeypatch)
+    base, profile, _, key = registered_world(tmp_path, monkeypatch, identity)
     catalog = catalog_for_profile(profile)
     configured = next(row for row in catalog["candidates"] if row["candidate_id"] == key)
     assert configured["policy"]["kind"] == "scripted"

@@ -17,7 +17,7 @@ from blueprint_pipeline.task_evaluation_policy_candidate_registry import validat
 
 def test_default_catalog_records_all_named_candidates_and_only_existing_initial_interfaces():
     value = load_default_catalog()
-    assert len(value["candidates"]) == 101
+    assert len(value["candidates"]) == 104
     enabled = {row["candidate_id"] for row in value["candidates"] if row["eligibility"]["enabled"]}
     from blueprint_pipeline.beta_policy_screening_g1 import CANDIDATES
     assert enabled == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "molmoact2_droid", "cosmos3_nano_policy_droid", *CANDIDATES}

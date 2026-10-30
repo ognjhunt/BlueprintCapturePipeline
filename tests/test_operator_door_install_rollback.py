@@ -56,7 +56,8 @@ def test_restricted_installer_preserves_credentials_and_recovers_old_door(
     scripted_sources = [repository / "config/policy_runtimes" / name for name in (
         "scripted_robot_baseline_registration_profile.json", "scripted_robot_baseline_license.txt")]
     scripted_sources += [repository / "src/blueprint_pipeline" / name for name in (
-        "scripted_robot_baseline.py", "scripted_robot_baseline_runtime.py", "scripted_robot_grasp_frames.py")]
+        "scripted_robot_baseline.py", "scripted_robot_baseline_runtime.py", "scripted_robot_grasp_frames.py",
+        "scripted_robot_robotiq_runtime.py")]
     source_before = _credentials(scripted_sources)
     units = tmp_path / "systemd"
     units.mkdir()

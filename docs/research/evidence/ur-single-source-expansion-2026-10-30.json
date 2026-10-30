@@ -1,0 +1,159 @@
+{
+  "claim_ceiling": "verified_source_expansion_only",
+  "results": [
+    {
+      "embodiment_id": "universal_robots_ur5e_robotiq_2f85_sim",
+      "source_bundle_digest": "sha256:4fc25ad1de9df79475bf754592b112ab9a34fc91894238ab2235800e144b7901",
+      "configuration_digest": "sha256:f7250c8212f750ee39972dd0e1cd6fbce05bbe28ed912df64e662d50ae3417d5",
+      "configuration_directory": "/workspace/work/ur-single-source-audit-v2/universal_robots_ur5e_robotiq_2f85_sim-configuration",
+      "arm_joints": [
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint"
+      ],
+      "gripper": {
+        "name": "arm_gripper",
+        "tool_link": "robotiq_85_base_link",
+        "joints": [
+          {
+            "name": "robotiq_85_left_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_finger_tip_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_right_finger_tip_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          }
+        ],
+        "max_width_m": 0.085,
+        "contact_links": [
+          "robotiq_85_left_finger_tip_link",
+          "robotiq_85_right_finger_tip_link"
+        ]
+      },
+      "tool_from_tcp": {
+        "position_m": [
+          3.4675874127211216e-17,
+          -4.44218892503155e-18,
+          0.134
+        ],
+        "orientation_xyzw": [
+          -4.5745677416520486e-35,
+          1.8746997290963376e-33,
+          1.0,
+          6.123233995736766e-17
+        ]
+      },
+      "source_dynamics": {
+        "moving_link_count": 12,
+        "moving_links_without_positive_authored_mass_and_inertia": [],
+        "estimated_inertias_added": false,
+        "simulator_dynamics_validated": false
+      },
+      "native_execution_performed": false,
+      "learned_policy_queried": false,
+      "task_executed": false
+    },
+    {
+      "embodiment_id": "universal_robots_ur10e_robotiq_2f85_sim",
+      "source_bundle_digest": "sha256:3af1536959a54cb52e3c134bd30c7af70fb2e5ef27539d0c18cff726c6bb29ce",
+      "configuration_digest": "sha256:bc4fb9a34b7f0c32057877ade1817be98816594a71ef16e7eac88ea77ecfaad8",
+      "configuration_directory": "/workspace/work/ur-single-source-audit-v2/universal_robots_ur10e_robotiq_2f85_sim-configuration",
+      "arm_joints": [
+        "shoulder_pan_joint",
+        "shoulder_lift_joint",
+        "elbow_joint",
+        "wrist_1_joint",
+        "wrist_2_joint",
+        "wrist_3_joint"
+      ],
+      "gripper": {
+        "name": "arm_gripper",
+        "tool_link": "robotiq_85_base_link",
+        "joints": [
+          {
+            "name": "robotiq_85_left_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_finger_tip_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_right_finger_tip_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          }
+        ],
+        "max_width_m": 0.085,
+        "contact_links": [
+          "robotiq_85_left_finger_tip_link",
+          "robotiq_85_right_finger_tip_link"
+        ]
+      },
+      "tool_from_tcp": {
+        "position_m": [
+          3.785689418886868e-17,
+          3.225948095590176e-18,
+          0.134
+        ],
+        "orientation_xyzw": [
+          -4.5745677416520486e-35,
+          1.8746997290963376e-33,
+          1.0,
+          6.123233995736766e-17
+        ]
+      },
+      "source_dynamics": {
+        "moving_link_count": 12,
+        "moving_links_without_positive_authored_mass_and_inertia": [],
+        "estimated_inertias_added": false,
+        "simulator_dynamics_validated": false
+      },
+      "native_execution_performed": false,
+      "learned_policy_queried": false,
+      "task_executed": false
+    }
+  ]
+}

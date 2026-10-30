@@ -24,10 +24,11 @@ def development_manifest(identity="franka_research_3_bimanual", model=None):
     ``model`` may name a separately authored development-only USD fixture.
     This helper never represents imported source-model or native execution.
     """
-    kind = frames._IDENTITIES[identity]
+    from blueprint_pipeline.scripted_robot_robotiq_runtime import BODIES
+    kind = "robotiq_ur" if identity in BODIES else frames._IDENTITIES[identity]
     frame = frames._FRAMES[kind]
     source = next(row for row in runtime_profiles()["profiles"] if row["embodiment_id"] == identity)
-    names = ["arm"] if identity in {"kinova_gen3", "ufactory_xarm7"} else ["left", "right"]
+    names = ["arm"] if identity in ({"kinova_gen3", "ufactory_xarm7"} | BODIES) else ["left", "right"]
     tcp = {"yam": ([0., 0., 0.], [0., 0., 0., 1.]), "piper": ([0., 0., 0.], [0., 0., 0., 1.]),
            "axol": ([0., 0., 0.], [0., 0., 0., 1.]), "fr3": ([0., 0., .1034], [0., 0., 0., 1.]),
            "robotiq_ur": ([0., 0., .134], [0., 0., 1., 0.]),
