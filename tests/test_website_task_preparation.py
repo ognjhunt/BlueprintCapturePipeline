@@ -1016,3 +1016,50 @@ def test_a_designed_subject_cannot_stand_beside_a_removed_captured_one(tmp_path)
     args["removal_manifest"]["entries"] = list(REMOVAL["entries"])
     with pytest.raises(ValueError, match="website_synthetic_subject_binding_invalid"):
         preparation.compile_website_scene_preparation(**args)
+
+
+def test_generated_world_past_the_footage_keeps_the_anchored_pose(tmp_path, monkeypatch):
+    # 2026-10-30 capture-447ae4f4: the Atlas collider extended far past the observed footage.
+    # Rotated unconstrained poses won the two-way score only by covering more unobserved
+    # surface, and fit the observed source worse; the exact anchor was refused.
+    def grid(a0, a1, b0, b1, step):
+        a, b = np.meshgrid(np.arange(a0, a1 + 1e-9, step), np.arange(b0, b1 + 1e-9, step))
+        return a.ravel(), b.ravel()
+
+    def floor(extent):
+        x, y = grid(0.0, extent, 0.0, extent, 0.1)
+        return np.stack([x, y, np.zeros_like(x)], 1)
+
+    def box(centre, size):
+        x, y = grid(centre - size / 2, centre + size / 2, centre - size / 2, centre + size / 2, 0.05)
+        a, z = grid(centre - size / 2, centre + size / 2, 0.0, size, 0.05)
+        low, high = np.full_like(a, centre - size / 2), np.full_like(a, centre + size / 2)
+        return np.concatenate([np.stack([x, y, np.full_like(x, size)], 1), np.stack([low, a, z], 1),
+                               np.stack([high, a, z], 1), np.stack([a, low, z], 1), np.stack([a, high, z], 1)])
+
+    observed = np.concatenate([floor(2.0), box(1.0, 0.5)])
+    generated = np.concatenate([floor(4.0), box(1.0, 0.5)])
+    turn = preparation._roll(90.0)
+
+    def refine(_source, _target, scale, rotation, translation):
+        if math.isclose(scale, 1.0):
+            return scale, rotation, translation
+        # Every unconstrained seed converges to the observed patch turned and moved to the middle.
+        return 1.0, turn, np.array([2.0, 2.0, 0.0]) - turn @ np.array([1.0, 1.0, 0.0])
+
+    monkeypatch.setattr(preparation, "_source_points", lambda _geometry: observed)
+    monkeypatch.setattr(preparation, "_mesh_vertices", lambda _path: generated)
+    monkeypatch.setattr(preparation, "_refine_registration", refine)
+    mesh = tmp_path / "collider.glb"
+    mesh.write_bytes(b"collider")
+    value = preparation.register_source_to_runtime(
+        source_geometry={"frames": [], "digest": "sha256:" + "0" * 64}, collision_mesh_path=mesh,
+        anchor={"kind": "source_world_alignment", "source_world_to_provider_m": np.eye(4).tolist(),
+                "meters_per_unit": 1.0, "up_axis": "Z", "ground_plane_offset_m": None})
+    report = value["anchor"]
+    assert np.allclose(value["source_to_runtime"], np.eye(4))
+    assert report["forward_score_m"] == pytest.approx(0.0, abs=1e-9)
+    rotated = report["two_way_only_unconstrained"]
+    assert rotated and all(row["score_m"] * 1.2 < report["score_m"] for row in rotated)
+    assert all(row["forward_score_m"] > 0.1 for row in rotated)
+    assert {round(row["rotation_from_anchored_degrees"]) for row in rotated} == {90}

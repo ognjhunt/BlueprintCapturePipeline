@@ -404,21 +404,37 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
             return (_rotation_degrees(row[2], best[2]) <= 10.0 and abs(math.log(row[1] / best[1])) <= math.log(1.1)
                     and float(np.linalg.norm(row[3] - best[3])) <= 0.1 * extent_norm)
         better = [row for row in rows if row[0] < best[0]]
+
+        def forward(row):
+            # Observed source to collider only. A generated world past the
+            # footage adds collider surface the source never saw, and the
+            # two-way score charges that to the true pose.
+            return _trimmed_rmse(target_tree.query(moved_by(row), k=1)[0], 0.8)
+        best_forward = forward(best)
         # An unconstrained pose that fits materially and clearly better than
         # the anchored one means the world does not follow its declared anchor.
         # Only poses at a scale the anchor admits are evidence: a generated
         # world that extends past the observed footage rewards inflated-scale
-        # poses, which the declared scale already refuses.
-        conflicting = [row for row in better if not same_hypothesis(row)
-                       and row[0] * 1.2 < best[0] and best[0] - row[0] > 0.005 * extent_norm
-                       and ANCHOR_SCALE_RATIO_BOUNDS[0] <= row[1] * mpu <= ANCHOR_SCALE_RATIO_BOUNDS[1]]
+        # poses, which the declared scale already refuses, and poses that only
+        # cover more of its unobserved surface, which must also fit the observed
+        # source better to count.
+        two_way = [row for row in better if not same_hypothesis(row)
+                   and row[0] * 1.2 < best[0] and best[0] - row[0] > 0.005 * extent_norm
+                   and ANCHOR_SCALE_RATIO_BOUNDS[0] <= row[1] * mpu <= ANCHOR_SCALE_RATIO_BOUNDS[1]]
+        scored = [(row, forward(row)) for row in two_way]
+        conflicting = [row for row, value in scored if value * 1.2 < best_forward]
+
+        def summary(row, value=None):
+            return {"score_m": float(row[0] * mpu),
+                    "forward_score_m": float((forward(row) if value is None else value) * mpu),
+                    "scale_ratio_to_declared": float(row[1] * mpu),
+                    "rotation_from_anchored_degrees": _rotation_degrees(row[2], best[2]),
+                    "translation_from_anchored_m": float(np.linalg.norm(row[3] - best[3]) * mpu)}
+        two_way_only = [summary(row, value) for row, value in scored if value * 1.2 >= best_forward][:5]
         if conflicting:
-            def summary(row):
-                return {"score_m": float(row[0] * mpu), "scale_ratio_to_declared": float(row[1] * mpu),
-                        "rotation_from_anchored_degrees": _rotation_degrees(row[2], best[2]),
-                        "translation_from_anchored_m": float(np.linalg.norm(row[3] - best[3]) * mpu)}
             raise RegistrationRefusal("website_registration_conflicts_provider_anchor", {
-                "anchored": {"score_m": float(best[0] * mpu), "roll_degrees": roll,
+                "anchored": {"score_m": float(best[0] * mpu), "forward_score_m": float(best_forward * mpu),
+                             "roll_degrees": roll,
                              "scale_ratio_to_declared": float(best[1] * mpu),
                              "hypothesis_axis": "camera_optical" if floor is None else "declared_up",
                              "levelled_tilt_degrees": _rotation_degrees(level, np.eye(3)),
@@ -426,6 +442,7 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
                 "anchored_alternatives": [{"roll_degrees": row[1], "score_m": float(row[0][0] * mpu)}
                                           for row in anchored[1:4]],
                 "conflicting_unconstrained": [summary(row) for row in conflicting[:5]],
+                "two_way_only_unconstrained": two_way_only,
                 "extent_m": extent_norm * mpu, "declared_meters_per_unit": mpu,
                 "source_point_count": int(len(source)), "target_point_count": int(len(target))})
         # The same pose reached from an unconstrained seed is the same
@@ -439,7 +456,9 @@ def register_source_to_runtime(*, source_geometry: Mapping[str, Any], collision_
                          "rotation_deviation_degrees": _rotation_degrees(best[2], prior[1]),
                          "translation_deviation_m": float(np.linalg.norm(best[3] - prior[2]) * mpu),
                          "scale_ratio_to_declared": float(best[1] * mpu),
-                         "declared_meters_per_unit": mpu}
+                         "declared_meters_per_unit": mpu,
+                         "score_m": float(best[0] * mpu), "forward_score_m": float(forward(best) * mpu),
+                         "two_way_only_unconstrained": two_way_only}
         if (anchor_report["rotation_deviation_degrees"] > ANCHOR_MAX_ROTATION_DEGREES
                 or not ANCHOR_SCALE_RATIO_BOUNDS[0] <= anchor_report["scale_ratio_to_declared"] <= ANCHOR_SCALE_RATIO_BOUNDS[1]):
             raise ValueError("website_registration_anchor_deviation")
