@@ -74,7 +74,8 @@ def verify_checkpoint_directory(directory: str | Path, *, deadline_epoch: float 
         digest = hashlib.sha256()
         if not expected:
             expected = row.get("git_blob_id")
-            digest = hashlib.sha1(f"blob {row['bytes']}\0".encode())
+            # Git object-ID compatibility; pinned inference inputs use SHA-256.
+            digest = hashlib.sha1(f"blob {row['bytes']}\0".encode(), usedforsecurity=False)
         if not expected:
             raise ValueError(f"molmoact2_checkpoint_digest_missing:{name}")
         with path.open("rb") as stream:

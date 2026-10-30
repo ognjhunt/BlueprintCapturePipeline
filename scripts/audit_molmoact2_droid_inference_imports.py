@@ -69,9 +69,12 @@ def main() -> None:
 
     if torch.__version__ != "2.11.0+cpu" or torch.cuda.is_available() or transformers.__version__ != "4.57.6":
         raise RuntimeError("molmoact2_cpu_audit_requires_pinned_cpu_environment")
-    config = AutoConfig.from_pretrained(str(checkpoint), trust_remote_code=True, local_files_only=True)
-    processor = AutoProcessor.from_pretrained(str(checkpoint), trust_remote_code=True,
-                                              local_files_only=True, extra_special_tokens={})
+    # Audit inputs were SHA-256 verified above; both offline flags and socket
+    # rejection enforce local-only loading of this pinned checkpoint code.
+    config = AutoConfig.from_pretrained(  # nosec B615 - verified local inputs and network disabled
+        str(checkpoint), trust_remote_code=True, local_files_only=True)
+    processor = AutoProcessor.from_pretrained(  # nosec B615 - verified local inputs and network disabled
+        str(checkpoint), trust_remote_code=True, local_files_only=True, extra_special_tokens={})
     model_class = get_class_from_dynamic_module(config.auto_map["AutoModelForImageTextToText"],
                                                 str(checkpoint), local_files_only=True)
     module = importlib.import_module(model_class.__module__)
