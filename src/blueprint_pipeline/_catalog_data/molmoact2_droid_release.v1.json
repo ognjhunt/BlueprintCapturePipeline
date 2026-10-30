@@ -1,0 +1,209 @@
+{
+  "schema_version": "molmoact2_droid_release.v1",
+  "model_id": "allenai/MolmoAct2-DROID",
+  "model_revision": "d8c1abd8a27d8e859455bbe514df2bcc617db0fb",
+  "source_revision": "6070080a20321b4f498ab30f28e1d09ac465edb7",
+  "total_bytes": 21781603004,
+  "weights_total_bytes": 21768955912,
+  "license": "Apache-2.0",
+  "license_evidence_url": "https://github.com/allenai/molmoact2/blob/6070080a20321b4f498ab30f28e1d09ac465edb7/README.md#7-license",
+  "license_evidence_sha256": "5b3cc2e6780938fbbf5d5f72f43368ff210b69b8d6cc0ff6daff8bfbdeef5909",
+  "license_statement": "This model is licensed under Apache 2.0. It is intended for research and educational use in accordance with Ai2's Responsible Use Guidelines.",
+  "hf_license_metadata_present": false,
+  "model_weights_downloaded": false,
+  "inference_performed": false,
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 1644,
+      "git_blob_id": "eae83712d9de1dbd60cff991b9bfbdbd53e2ed55",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "README.md",
+      "bytes": 8506,
+      "git_blob_id": "9e024123b26caabd50eb09aed1f20c2a444b6881",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "assets/MolmoAct2.svg",
+      "bytes": 7616,
+      "git_blob_id": "4d627afa3187285b335a46bbfed2ad8ebfb1ef83",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "assets/sample_exterior_1_left_rgb.png",
+      "bytes": 113141,
+      "git_blob_id": "8ff5f95aac9edd5b421494062a5301642d42088c",
+      "publisher_lfs_sha256": "205930aaa527786a5f4c25f0f47add891381a840fd3430860bf727895972f008",
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "assets/sample_wrist_left_rgb.png",
+      "bytes": 70166,
+      "git_blob_id": "9d3c4701e2028465d67f1479359f57ac63b6946c",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": null,
+      "required_for_inference": false
+    },
+    {
+      "path": "chat_template.jinja",
+      "bytes": 3169,
+      "git_blob_id": "c1149ea803d36a1b379786becf193259356464b5",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "ec66862fda57dc1aef90a21b2a0f64c18a280e2483206449bd251a73b8993101",
+      "required_for_inference": true
+    },
+    {
+      "path": "config.json",
+      "bytes": 4271,
+      "git_blob_id": "0014ebde55cd743fa207220434151c3faec87ac1",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "80faf9afa5b87b01dd4dceac6c53e5194680b5f965287de213fbce73e0775100",
+      "required_for_inference": true
+    },
+    {
+      "path": "configuration_molmoact2.py",
+      "bytes": 20708,
+      "git_blob_id": "e17786c5b78cc08615847e86b134181d7c8c3223",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "ccc1b24db7ab42b30705414b14de9601b1d82fba6f6d85393b0e9cbe1052fac4",
+      "required_for_inference": true
+    },
+    {
+      "path": "generation_config.json",
+      "bytes": 116,
+      "git_blob_id": "bab1089d8a05e0cb6eaabb81f0d3c9b0783cb86d",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "52ed940eef55d9a7e41adc8cac3408b01e26727ef828309c962f0ae5890cd281",
+      "required_for_inference": true
+    },
+    {
+      "path": "image_processing_molmoact2.py",
+      "bytes": 22359,
+      "git_blob_id": "e28471c185d83f9c23e2e003b9162d6f73464721",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "bb623a013e7f897ffb938990bd02374b61dabcabd87f9f19d59111ec88ecf675",
+      "required_for_inference": true
+    },
+    {
+      "path": "inference.py",
+      "bytes": 25938,
+      "git_blob_id": "6da66f145d664029e6c42c3b77aea4631dd7e6a6",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "14a328aa9c8094fe5bf6d99aa98d49d0337485ff48f828cc1944bb66318cc67d",
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00001-of-00005.safetensors",
+      "bytes": 4919324120,
+      "git_blob_id": "742a5a43ba8b66624e98daa357c5d629765cc7d8",
+      "publisher_lfs_sha256": "cffbad732630d563be544f0e890603638f161a6e11f701f588d6d5b25a831219",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00002-of-00005.safetensors",
+      "bytes": 4844690992,
+      "git_blob_id": "e44281c14c86f0aed18e8c9cce932bb1decf85db",
+      "publisher_lfs_sha256": "a4186f099ce0bc6f692a04dcb720598d9d4876824b355fec4bd7f793cd2beb14",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00003-of-00005.safetensors",
+      "bytes": 4844691024,
+      "git_blob_id": "0f9afd09716ae615f31c0bff68ece92695b8c6e5",
+      "publisher_lfs_sha256": "2f50d4921ccd35c6ea5cc14da35aa5c40251bfbacd5eee9a69dd051ae9cc19dd",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00004-of-00005.safetensors",
+      "bytes": 4877619536,
+      "git_blob_id": "272cce71cc20f743a04d210db95519b47efcce55",
+      "publisher_lfs_sha256": "57db206cdbc27f37656146de8a60b8d5e1d56c78c1b6dece7efc1f828d8ef13d",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model-00005-of-00005.safetensors",
+      "bytes": 2282630240,
+      "git_blob_id": "50faf14be0aecf873bbe74977ea2bf4a806df321",
+      "publisher_lfs_sha256": "863a18f5c330fc505c5ec18a7a6c7a2a180d9c930126f46ca2b5a74f708ae54b",
+      "locally_verified_sha256": null,
+      "required_for_inference": true
+    },
+    {
+      "path": "model.safetensors.index.json",
+      "bytes": 131529,
+      "git_blob_id": "63c7b98a522f73edb29ab0ad5bd34e6b422c6bf9",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "273799bed0cbdc2c4a7a524c294652a0538c482e5e1148cf403951e836722c06",
+      "required_for_inference": true
+    },
+    {
+      "path": "modeling_molmoact2.py",
+      "bytes": 190994,
+      "git_blob_id": "9c22ac3e5ad4b69ac723fb906053d096f394824a",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "3e0090b8cc045d59911c0a579815ebd17ce0423f9fdd03be887412df5c7b8b49",
+      "required_for_inference": true
+    },
+    {
+      "path": "norm_stats.json",
+      "bytes": 6250,
+      "git_blob_id": "a9d754769bdb360d0957a406a787204ca35a0e5a",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "9cc29b5018604be4b785dd6519be3c86d0420675da7364755c58155afccb131d",
+      "required_for_inference": true
+    },
+    {
+      "path": "processing_molmoact2.py",
+      "bytes": 17254,
+      "git_blob_id": "15b928f078032a2a491fcf75f3ac7625f3c01b6b",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "61ec88c04cf70844dc98ab518d332911ec32cf5f24f052b7413ddd5d61483109",
+      "required_for_inference": true
+    },
+    {
+      "path": "processor_config.json",
+      "bytes": 1853,
+      "git_blob_id": "5e7c55130e1c7a136124bfa2d9dbead2d606fb51",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "bd5ad3ddc456b7534005e075a5c3cb0644da5e4b1aa77f1d74268a9e4c7f071a",
+      "required_for_inference": true
+    },
+    {
+      "path": "tokenizer.json",
+      "bytes": 11983605,
+      "git_blob_id": "4590977d5fb66ae6c07cc5c09e415f574f46cc06",
+      "publisher_lfs_sha256": "d5395aefc9b1b7f0385d8c86a2f1775e5af81bdfbf9f2d97827ea37921d9f862",
+      "locally_verified_sha256": "d5395aefc9b1b7f0385d8c86a2f1775e5af81bdfbf9f2d97827ea37921d9f862",
+      "required_for_inference": true
+    },
+    {
+      "path": "tokenizer_config.json",
+      "bytes": 782,
+      "git_blob_id": "b3b4200316d8af2cd1afeaa4890045d7cd33a145",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "0ffb85ef66d5b354f53a341ff01edc5137c324981bf37928b86bcdee2b265415",
+      "required_for_inference": true
+    },
+    {
+      "path": "video_processing_molmoact2.py",
+      "bytes": 37191,
+      "git_blob_id": "df17335f75f3f0ae045559946638994dd53556a5",
+      "publisher_lfs_sha256": null,
+      "locally_verified_sha256": "8da721aa638da65aaa35e458920037c16b81dca344a623bb08db2b73f9ce9992",
+      "required_for_inference": true
+    }
+  ]
+}
