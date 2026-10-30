@@ -97,6 +97,12 @@ fi
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
   "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-selected-handoff.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh "$source_dir"/door-repair-notifier-binding.sh \
   "$source_dir"/door-public-embodiment-preparation.sh "$source_dir"/door-install-public-piper-policy.sh "$source_dir"/install.sh "$stage/"
+install -m 0644 "$repo_root/config/policy_runtimes/scripted_robot_baseline_registration_profile.json" \
+  "$repo_root/config/policy_runtimes/scripted_robot_baseline_license.txt" "$stage/operator_door/"
+install -d -m 0755 "$stage/operator_door/scripted-baseline-source"
+for scripted_source in scripted_robot_baseline.py scripted_robot_baseline_runtime.py scripted_robot_grasp_frames.py; do
+  install -m 0644 "$repo_root/src/blueprint_pipeline/$scripted_source" "$stage/operator_door/scripted-baseline-source/"
+done
 install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_registration_profile.json" \
   "$stage/operator_door/openwam_piper_registration_profile.json"
 install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_model_card.md" \

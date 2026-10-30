@@ -32,6 +32,15 @@ else:
         retained_body, rights_record, safe_path, validate_request, load_profile, request_identity,
     )
 
+def _scripted_contract():
+    source = Path(__file__).resolve().with_name("scripted_policy_registration_contract.py")
+    spec = importlib.util.spec_from_file_location("_installed_scripted_policy_contract", source)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 AUDIT_ROOT = Path("/var/lib/blueprint-operator-door/policy-registrations")
 
 
@@ -128,20 +137,29 @@ def apply(request: dict, *, registry_path: Path = REGISTRY_PATH, state_root: Pat
                     "audit_identity_conflict")
         else:
             require(registry["registry_digest"] == request["expected_registry_digest"], "registry_compare_failed")
-            registration = verified_registration(request, state_root=state_root, model_root=model_root,
-                                                  profile_root=profile_root)
+            scripted = identity["operation"] == "install-scripted-robot-baselines"
+            if scripted:
+                registrations, results = _scripted_contract().verify_batch(request, state_root=state_root,
+                    model_root=model_root, profile_root=profile_root)
+            else:
+                registrations = {identity["candidate_id"]: verified_registration(request, state_root=state_root,
+                    model_root=model_root, profile_root=profile_root)}
             updated = json.loads(json.dumps(registry))
             defaults = (updated.get("derived_profiles") or {}).get("defaults")
             require(isinstance(defaults, dict), "registry_derived_defaults_missing")
             for settings in [defaults, *updated["profiles"]]:
                 require(isinstance(settings, dict), "registry_profile_invalid")
-                candidates = settings.setdefault("screening_candidates", {})
+                candidates = (settings.setdefault("screening_candidates", {}) if registrations
+                              else settings.get("screening_candidates", {}))
                 require(isinstance(candidates, dict), "registry_candidates_invalid")
-                candidates[identity["candidate_id"]] = {"robot_policy": registration}
+                for candidate_id, registration in registrations.items():
+                    candidates[candidate_id] = {"robot_policy": registration}
             updated["registry_digest"] = digest(updated, "registry_digest")
             intent = {"request_digest": request["request_digest"],
                       "before_registry_digest": registry["registry_digest"],
                       "after_registry_digest": updated["registry_digest"]}
+            if scripted:
+                intent.update(results=results, registered_count=len(registrations))
             _write_once(destination / "before.json", registry)
             _write_once(destination / "after.json", updated)
             _write_once(destination / "intent.json", intent)
@@ -165,11 +183,16 @@ def apply(request: dict, *, registry_path: Path = REGISTRY_PATH, state_root: Pat
             finally:
                 Path(temporary).unlink(missing_ok=True)
         receipt = {"schema_version": identity["receipt_schema"], "status": "installed",
-            "installation_id": request["installation_id"], **intent, "candidate_id": identity["candidate_id"],
+            "installation_id": request["installation_id"], **intent,
             "preparation_authorization_id": request["preparation_authorization_id"],
             "preparation_publication_digest": request["preparation_publication_digest"],
             "native_policy_execution_validated": False, "candidate_policy_queried": False,
             "provider_allocations_performed": 0, "claim_ceiling": "public_policy_registration_only"}
+        if identity["operation"] == "install-scripted-robot-baselines":
+            receipt.update(claim_ceiling="scripted_baseline_registration_only", scripted_controller_invoked=False,
+                execution_evidence_kind="scripted_simulator_state_baseline")
+        else:
+            receipt["candidate_id"] = identity["candidate_id"]
         _write_once(destination / "receipt.json", receipt)
         return receipt
 

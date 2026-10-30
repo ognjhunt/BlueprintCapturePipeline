@@ -68,7 +68,7 @@ TRLC and Axol open/closed corrections must be present in prepared bindings.
 Per-tool receipts distinguish authored nominal TCPs from approximate mesh pad
 centres and retain unknown physical calibration and moving-pad limitations.
 
-## Registration and remaining operational step
+## Registration
 
 `scripted_robot_registration.registration_from_prepared_inputs` constructs
 the ordinary reusable `robot_policy` registration from verified imported model
@@ -76,11 +76,12 @@ bytes, their dependency/source closure, the exact body manifest and an existing
 scoped rights record. It only retains the manifest. It does not change the
 operator registry or launch resources.
 
-Production installation must use a narrow authenticated registration operation
-bound to an exact retained preparation publication, fixed Blueprint script
-profile/body IDs, the installed release's code inventory and the expected
-registry digest. Reuse the existing service-user validation plus privileged
-compare-and-replace/audit path. A Blueprint-owned MIT script is not a grant for
+The [fixed `install-scripted-robot-baselines` operation](scripted_robot_baseline_registration.md)
+registers every supported body from one exact retained preparation publication,
+binding fixed Blueprint script/profile IDs, the installed release's code inventory
+and the current registry digest. It reuses service-user validation plus the
+privileged compare-and-replace/audit path, preserving an individual reason for
+each unavailable body. A Blueprint-owned MIT script is not a grant for
 third-party robot assets: the importer retains those source licenses. Capture
 consent, source revocation checks and site budget authority remain unchanged.
 
