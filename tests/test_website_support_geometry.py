@@ -236,3 +236,42 @@ def test_a_wider_window_seeds_on_the_highest_surface_it_reaches():
     assert found["search_window_m"] == .07
     # The default window does not reach the top from this estimate, as before.
     assert support_under(mesh, lower, upper, up=2, meters_per_unit=1) is None
+
+
+def _counter(x1=.4, hole=None, step=.01):
+    xs, ys = np.arange(-.4, x1 + 1e-9, step), np.arange(-.4, .4 + 1e-9, step)
+    grid = np.array([[x, y, .7] for y in ys for x in xs])
+    n = len(xs)
+    faces = []
+    for j in range(len(ys) - 1):
+        for i in range(n - 1):
+            k = j * n + i
+            for face in ([k, k + 1, k + n + 1], [k, k + n + 1, k + n]):
+                centre = grid[face].mean(axis=0)
+                if hole is None or np.hypot(*(centre[:2] - hole)) > .02:
+                    faces.append(face)
+    return trimesh.Trimesh(vertices=grid, faces=faces, process=False)
+
+
+def test_a_widened_window_accepts_a_probe_over_a_hole_and_records_its_gap():
+    # capture-447ae4f4: a 2-3 cm hole in the counter mesh under the tray's corner, where
+    # the tray itself sat, refused a 31x52 cm tray; the registration's residual was 7.2 cm.
+    mesh = _counter(hole=np.array([-.2, -.2]))
+    lower, upper = [-.2, -.2, .66], [.2, .2, .74]
+    found = support_under(mesh, lower, upper, up=2, meters_per_unit=1, placement_residual_m=.07)
+    assert found is not None and found["top_runtime_units"] == pytest.approx(.7)
+    assert found["probe_gap_basis"] == "registration_task_region_residual"
+    [gap] = found["probe_gaps_m"]
+    assert gap["probe_runtime_units"] == pytest.approx([-.2, -.2])
+    assert 0 < gap["gap_m"] <= .03
+    # The default window keeps refusing the hole, as before.
+    assert support_under(mesh, [-.2, -.2, .7], [.2, .2, .78], up=2, meters_per_unit=1) is None
+
+
+def test_a_widened_window_still_refuses_a_probe_past_the_surface_edge():
+    # The counter ends 1 cm short of the footprint: within the residual, but surface on one side only.
+    mesh = _counter(x1=.19)
+    assert support_under(mesh, [-.2, -.2, .66], [.2, .2, .74], up=2, meters_per_unit=1,
+                         placement_residual_m=.07) is None
+    assert "probe_gaps_m" not in support_under(_counter(), [-.2, -.2, .66], [.2, .2, .74], up=2,
+                                               meters_per_unit=1, placement_residual_m=.07)

@@ -194,7 +194,9 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
         return None
     # A real triangle of this surface lies under every probe (no gap, no edge),
     # and the triangles around it stand near the plane there; the object rests on the highest.
-    pad = FITTED_CONTACT_RADIUS_M / meters_per_unit
+    widened = window_m > 0.03
+    reach = window_m / meters_per_unit
+    pad = (max(FITTED_CONTACT_RADIUS_M, window_m) if widened else FITTED_CONTACT_RADIUS_M) / meters_per_unit
     extent = triangles[faces][:, :, horizontal]
     local = faces[np.all((extent.max(axis=1) >= lower[horizontal] - pad)
                          & (extent.min(axis=1) <= upper[horizontal] + pad), axis=1)]
@@ -204,10 +206,27 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
     determinant = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
     safe = np.abs(determinant) > 1e-12
     spread = np.linspace(-1.0, 1.0, 5) * FITTED_CONTACT_RADIUS_M / meters_per_unit
-    contacts = []
+    corners = triangles[local].reshape(-1, 3)
+
+    def hole(x: float, y: float) -> tuple[float, np.ndarray] | None:
+        # Within the registration's residual a probe may sit over a hole in the
+        # surface (where the removed object itself sat in the mesh), never past
+        # its edge: the surface must lie on every side of it within the residual.
+        if not widened or not len(corners):
+            return None
+        offset = corners[:, horizontal] - np.array([x, y])
+        distance = np.hypot(offset[:, 0], offset[:, 1])
+        near = distance <= reach
+        around = offset[near]
+        if not (len(around) and all((around[:, axis] < 0).any() and (around[:, axis] > 0).any()
+                                    for axis in range(2))):
+            return None
+        return float(distance.min()), corners[near][:, up]
+
+    contacts, gaps = [], []
     for x in np.linspace(lower[horizontal[0]], upper[horizontal[0]], 3):
         for y in np.linspace(lower[horizontal[1]], upper[horizontal[1]], 3):
-            heights = []
+            heights, nearby = [], None
             for dx in spread:
                 for dy in spread:
                     offset = np.array([x + dx, y + dy]) - a
@@ -217,8 +236,14 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
                                   out=np.full_like(determinant, -1.0), where=safe)
                     inside = safe & (u >= -1e-7) & (v >= -1e-7) & (u + v <= 1 + 1e-7)
                     if dx == 0 and dy == 0 and not inside.any():
-                        return None
+                        found = hole(x, y)
+                        if found is None:
+                            return None
+                        gap, nearby = found
+                        gaps.append({"probe_runtime_units": [float(x), float(y)], "gap_m": gap * meters_per_unit})
                     heights.extend((za + u * (zb - za) + v * (zc - za))[inside])
+            if not heights:
+                heights = nearby.tolist()
             plane = middle[up] - (normal[horizontal[0]] * (x - middle[horizontal[0]])
                                   + normal[horizontal[1]] * (y - middle[horizontal[1]])) / normal[up]
             contacts.append(float(np.median(heights)))
@@ -231,7 +256,8 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
     return {"top_runtime_units": top, "aabb_min": points.min(axis=0).tolist(),
             "aabb_max": points.max(axis=0).tolist(), "face_indices": faces.tolist(),
             "basis": "fitted_surface_under_footprint", "fit_rms_m": rms * meters_per_unit,
-            "fit_tilt_degrees": tilt, "physical_measurement": False}
+            "fit_tilt_degrees": tilt, "physical_measurement": False,
+            **({"probe_gaps_m": gaps, "probe_gap_basis": "registration_task_region_residual"} if gaps else {})}
 
 
 def same_support_surface(first: dict[str, Any], second: dict[str, Any]) -> bool:
