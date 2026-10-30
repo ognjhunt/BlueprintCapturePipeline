@@ -199,12 +199,29 @@ def _entry_liveness(
     return active and entry_device == device, amount, active and entry_device != device
 
 
+# A job's own child processes (its provider download and output extraction)
+# write inside the hold the job already took. Their exact reservations must not
+# count that enclosing hold as another writer's as well: it already contains the
+# bytes the job wrote, so it was counted twice and a 50 KB result was refused
+# (public-robot-imports-20261030-05). Only the exact tokens a parent exported to
+# its own process tree are skipped, only for its children's admission; status,
+# projections and every other lane still see the full hold.
+ENCLOSING_RESERVATIONS_ENV = "BLUEPRINT_CONTROL_PLANE_DISK_ENCLOSING_RESERVATIONS"
+
+
+def enclosing_reservation_tokens() -> frozenset[str]:
+    raw = os.environ.get(ENCLOSING_RESERVATIONS_ENV, "")
+    return frozenset(token for token in raw.split(",")
+                     if len(token) == 32 and all(c in "0123456789abcdef" for c in token))
+
+
 def _load_live_reservations(
     root: Path,
     *,
     device: int,
     observed_at: float,
     pid_alive: Callable[[int], bool],
+    enclosing: frozenset[str] = frozenset(),
 ) -> tuple[int, list[str]]:
     # Only ``<token>.json`` entries in the ledger root are reservations; the
     # ``history`` directory and in-flight ``.reservation-*`` temporaries are not.
@@ -221,7 +238,8 @@ def _load_live_reservations(
             pid_alive=pid_alive, strict=True,
         )
         if live:
-            reserved += amount
+            if name[:-len(".json")] not in enclosing:
+                reserved += amount
         elif not foreign_live:
             stale.append(name)
     return reserved, stale
@@ -494,6 +512,7 @@ def _snapshot(
     now: Callable[[], float],
     pid_alive: Callable[[int], bool],
     device_of: Callable[[Path], int] = target_device,
+    enclosing: frozenset[str] = frozenset(),
 ) -> tuple[Path, Any, int, int, list[str]]:
     target = _existing_ancestor(Path(target_root))
     usage = disk_usage(target)
@@ -505,6 +524,7 @@ def _snapshot(
         device=device,
         observed_at=observed_at,
         pid_alive=pid_alive,
+        enclosing=enclosing,
     )
     return ledger, usage, device, reserved, stale
 
@@ -598,6 +618,7 @@ def reserve_control_plane_disk(
             now=now,
             pid_alive=pid_alive,
             device_of=device_of,
+            enclosing=enclosing_reservation_tokens(),
         )
         for name in stale:
             (ledger / name).unlink(missing_ok=True)
