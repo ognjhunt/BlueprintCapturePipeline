@@ -81,13 +81,16 @@ def print_imported_structure(prepared: Path) -> None:
     """A binding mismatch is diagnosable only from the names the importer produced.
 
     Failed bodies are not retained, so their bounded log carries the imported
-    body paths, joint names and world anchors (public asset names only).
+    body paths, joint names, world anchors and any source names the importer
+    recorded for prims it renamed (public asset names only).
     """
     import json
     try:
         structure = json.loads((prepared / "asset-import.json").read_text(encoding="utf-8"))["structure"]
         summary = {key: list(structure.get(key) or [])[:400]
                    for key in ("body_paths", "joint_names", "world_anchor_links")}
+        summary.update({key: dict(list(structure[key].items())[:400])
+                        for key in ("body_source_names", "joint_source_names") if structure.get(key)})
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return
     print("imported_structure " + json.dumps(summary, sort_keys=True), file=sys.stderr)
