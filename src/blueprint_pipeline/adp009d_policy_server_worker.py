@@ -78,6 +78,10 @@ CANDIDATE_TRANSPORTS = {
     "groot_n17_droid": TRANSPORT_GROOT_ZMQ,
     "groot_n16_droid": TRANSPORT_GROOT_ZMQ,
     "cosmos3_edge_policy_droid": TRANSPORT_OPENPI_WEBSOCKET,
+    # Beta PolaRiS variants share pi05_droid's identity-bound OpenPI server.
+    "pi0_droid_jointpos_polaris": TRANSPORT_OPENPI_WEBSOCKET,
+    "pi0_droid_jointpos_100k_polaris": TRANSPORT_OPENPI_WEBSOCKET,
+    "pi0_fast_droid_jointpos_polaris": TRANSPORT_OPENPI_WEBSOCKET,
 }
 CANDIDATE_DEFAULT_PORTS = {
     TRANSPORT_OPENPI_WEBSOCKET: 8000,

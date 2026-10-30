@@ -56,6 +56,27 @@ LOCAL_VERIFICATION_FIELDS = frozenset(
 )
 ARENA_CANDIDATE_POLICY_IDS = {
     "pi05_droid": "pi05_droid_jointpos_polaris",
+    # Beta-only: the other public PolaRiS joint-position checkpoints. Each is a
+    # TrainConfig in openpi's polaris_config.py at OPENPI_SOURCE_REVISION and an
+    # entry of the same frozen GCS inventory as pi05_droid, so this unchanged
+    # server/client serves it. They are not ADP-009D candidates.
+    "pi0_droid_jointpos_polaris": "pi0_droid_jointpos_polaris",
+    "pi0_droid_jointpos_100k_polaris": "pi0_droid_jointpos_100k_polaris",
+    "pi0_fast_droid_jointpos_polaris": "pi0_fast_droid_jointpos_polaris",
+}
+BETA_POLARIS_VARIANT_CANDIDATE_IDS = (
+    "pi0_droid_jointpos_polaris",
+    "pi0_droid_jointpos_100k_polaris",
+    "pi0_fast_droid_jointpos_polaris",
+)
+# ``model.action_horizon`` of each pinned PolaRiS TrainConfig. The server also
+# refuses a mismatch after loading; beta variant specs are checked against
+# this before any spend (see validate_beta_polaris_variant_binding).
+OPENPI_POLICY_ACTION_CHUNK_ROWS = {
+    "pi05_droid_jointpos_polaris": 15,
+    "pi0_droid_jointpos_polaris": 10,
+    "pi0_droid_jointpos_100k_polaris": 10,
+    "pi0_fast_droid_jointpos_polaris": 10,
 }
 
 
@@ -189,6 +210,41 @@ def validate_arena_candidate_policy_binding(
         or spec.config_name != expected_policy_id
     ):
         raise ValueError("policy_execution_spec_candidate_mismatch")
+
+
+def validate_beta_polaris_variant_binding(
+    *, candidate_id: str, spec: OpenPIDroidPolicySpec
+) -> None:
+    """Bind a beta PolaRiS variant to its upstream identity and chunk length."""
+
+    if str(candidate_id) not in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
+        raise ValueError("openpi_beta_polaris_variant_unknown")
+    validate_arena_candidate_policy_binding(candidate_id=candidate_id, spec=spec)
+    if spec.action_chunk_rows != OPENPI_POLICY_ACTION_CHUNK_ROWS[spec.policy_id]:
+        raise ValueError("openpi_beta_polaris_variant_action_chunk_rows_mismatch")
+
+
+def validate_beta_polaris_variant_execution_spec(
+    execution_spec: Mapping[str, Any],
+) -> OpenPIDroidPolicySpec:
+    """A beta variant runs only as a local ``openpi_droid.v1`` RoboLab candidate."""
+
+    if (
+        execution_spec.get("policy_interface_id") != "openpi_droid.v1"
+        or execution_spec.get("evaluation_backend") != "robolab.v1"
+        or not isinstance(execution_spec.get("policy_spec"), Mapping)
+    ):
+        raise ValueError("openpi_beta_polaris_variant_interface_invalid")
+    try:
+        spec = OpenPIDroidPolicySpec(**execution_spec["policy_spec"])
+    except TypeError as exc:
+        raise ValueError("openpi_beta_polaris_variant_policy_spec_invalid") from exc
+    validate_beta_polaris_variant_binding(
+        candidate_id=str(execution_spec.get("candidate_id") or ""), spec=spec
+    )
+    if execution_spec.get("open_loop_horizon") != spec.open_loop_horizon:
+        raise ValueError("openpi_beta_polaris_variant_open_loop_horizon_mismatch")
+    return spec
 
 
 def load_policy_spec(
@@ -839,6 +895,8 @@ if __name__ == "__main__":
 
 __all__ = [
     "ARENA_CANDIDATE_POLICY_IDS",
+    "BETA_POLARIS_VARIANT_CANDIDATE_IDS",
+    "OPENPI_POLICY_ACTION_CHUNK_ROWS",
     "OpenPIDroidPolicySpec",
     "OpenPIWebsocketDroidPolicyClient",
     "load_policy_spec",
@@ -846,5 +904,7 @@ __all__ = [
     "serve_identity_bound_policy",
     "validate_server_metadata",
     "validate_arena_candidate_policy_binding",
+    "validate_beta_polaris_variant_binding",
+    "validate_beta_polaris_variant_execution_spec",
     "verify_local_checkpoint",
 ]

@@ -328,7 +328,7 @@ def test_original31_profiles_37_recipes_112_rows_21_policy_identities_unchanged(
     rows = {r["candidate_id"]: r
             for r in json.loads((root / "config/beta_policy_candidates.v1.json").read_text())["candidates"]}
     assert (len(previous["recipes"]), len(previous["catalog"]), len(previous["modules"])) == (37, 112, 20)
-    assert (len(recipes), len(rows), len(runtime._PROFILES)) == (49, 120, 42)
+    assert (len(recipes), len(rows), len(runtime._PROFILES)) == (49, 136, 42)
     assert set(recipes) == set(previous["recipes"]) | NEW_RECIPES
     for name, expected in previous["recipes"].items():
         assert canonical_digest(recipes[name]) == expected
