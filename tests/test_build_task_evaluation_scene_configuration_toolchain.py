@@ -522,6 +522,9 @@ def test_retiring_the_previous_release_keeps_inodes_a_retained_release_still_lin
     releases = tmp_path / "scene-configuration"
     _first, _account, first_payload = _publish_with_payload(tmp_path, releases, "a" * 40)
     _second, _account, payload = _publish_with_payload(tmp_path, releases, "b" * 40)
+    # Moving a directory to a new parent rewrites its "..": root may through
+    # 0555, the test user needs write on the published root.
+    (releases / ("a" * 40)).chmod(0o755)
     retiring = retirement._stage_aside(releases / ("a" * 40), "test")
     for directory in [retiring, *(path for path in retiring.rglob("*") if path.is_dir())]:
         directory.chmod(0o700)  # root deletes through 0555 directories; the test user cannot
