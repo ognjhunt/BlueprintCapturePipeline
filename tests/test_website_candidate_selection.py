@@ -88,7 +88,7 @@ def test_more_scored_episodes_then_fewer_void_episodes_break_equal_success_rates
     value = choose([result_row("pi05_droid", succeeded=4, scored=8, void=2),
                     result_row("groot_n17_droid", succeeded=5, scored=10)])
     assert value["chosen"]["candidate_id"] == "groot_n17_droid" and value["tied_with"] == []
-    assert value["chosen"]["partner_blockers"] == ["catalog_row_deployment_missing"]
+    assert value["chosen"]["partner_blockers"] == ["no_recorded_deployment_partner_for_configuration"]
     assert value["chosen"]["deployment_companies"] == [] and value["chosen"]["configuration_id"] is None
 
 

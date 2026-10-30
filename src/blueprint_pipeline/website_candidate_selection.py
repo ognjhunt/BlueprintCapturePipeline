@@ -45,10 +45,10 @@ def _partner(catalog_row: Mapping[str, Any] | None, published: Mapping[str, Any]
         blockers.append("catalog_row_unavailable")
     elif catalog_row["configuration_digest"] != published["configuration_digest"]:
         blockers.append("catalog_configuration_changed_since_plan")
-    if catalog_row is not None and not deployment:
-        blockers.append("catalog_row_deployment_missing")
-    elif deployment and not deployment.get("companies"):
-        blockers.append("deployment_companies_not_listed")
+    # A partner is never inferred: no sourced deployment block or company for
+    # this exact configuration means none is named.
+    if catalog_row is not None and not deployment.get("companies"):
+        blockers.append("no_recorded_deployment_partner_for_configuration")
     body = bodies.get(deployment.get("configuration_id")) or {}
     return {"configuration_id": deployment.get("configuration_id"),
             "policy_route_id": deployment.get("policy_route_id"),
