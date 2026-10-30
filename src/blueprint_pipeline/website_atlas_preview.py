@@ -273,9 +273,10 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
         checkpoint("archive_complete")
     except Exception as error:  # noqa: BLE001 - retract a copy overtaken by loss of source authority
         return _failed_step({**job, "archive": archive, "archive_retraction": "pending"}, error, current)
+    # The adopted refined-splat form; a minimal one that left gap views out may be upgraded once.
     return _transition(job, current, "ready", None, stage="archived", archive=archive, transient_failures=0,
                        result_digest=result["digest"], splat_available=bool(result.get("splat_available")),
-                       mesh_available=bool(result.get("mesh_available")))
+                       mesh_available=bool(result.get("mesh_available")), refined_splat=result.get("refined_splat"))
 
 
 def atlas_asset_ids(job_dir: Path) -> list[str]:
@@ -496,7 +497,9 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
     An operator action, never automatic. The next tick resumes at the first
     unfinished stage, so the survey, plans and other receipts already bought are
     reused, not bought again. A job stopped for input (a background that needs
-    review) resumes the same way. A withdrawn capture, a job that only a new
+    review) resumes the same way. A ready job reopens only when its minimal
+    refined splat left admitted gap views out and a gap-preserving form was never
+    sent; that form is then tried once. A withdrawn capture, a job that only a new
     capture can help, or one that cannot recover, is refused.
     """
     def source_check(_job):

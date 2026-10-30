@@ -17,7 +17,12 @@ that draft directly. The later coverage-repair pass is skipped: it measures
 gaps in the draft, which is no longer the final appearance.
 
 1. `atlas_native_splat.prepare_splat_request` posts the views the final draft
-   fused, each with its camera and linear depth. Real frames go in whole, with
+   fused, each once, with its camera and linear depth. Views with the same
+   camera (within 1e-6) and identical RGB are one posed view
+   (`merge_duplicate_views`): a whole duplicate makes it whole, otherwise the
+   masks unite, and depth and confidence take each partial duplicate's values
+   where its review admitted them. The provenance row records the merged
+   positions (`merged_duplicates`). Real frames go in whole, with
    Atlas's own depth confidence as `depth.confidenceAsset`: low depth confidence
    does not make their RGB wrong. A view a review admitted only in part
    (generated gap views, recovered geometry) carries that admission as its alpha
@@ -43,14 +48,37 @@ gaps in the draft, which is no longer the final appearance.
 full request (11 views, masks on 8, confidence on all) with `EXECUTION_FAILED`
 after two minutes; failed runs are free. Two recoveries followed:
 
-- If World Labs fails a refined-splat request and no attempt of it is live,
-  the next attempt sends the guide's documented minimal form from
-  `<draft root>-refined-minimal`: whole views only, image + depth + camera.
-  Partly admitted generated views are then left out; the draft keeps them.
+- If World Labs fails every attempt of a form, the next form follows from its
+  own root: `reviewed_masks_and_confidence` (`<draft root>-refined`), then
+  `reviewed_masks` (`-refined-masks`, masks kept, no confidence assets), then
+  the guide's documented minimal form (`-refined-minimal`: whole views only,
+  image + depth + camera, so partly admitted gap views are left out). A
+  completed splat in any root is adopted, and a bought root is evaluated by
+  what it sent: a request bought before duplicate merging is never re-derived,
+  refused or bought again. No earlier form is newly bought behind a later live
+  or completed one.
 - Uploads to an account that does not retain them are purged about an hour
   after creation. If a send is refused with 404 naming one of the attempt's own
   uploads, nothing was bought, so the same admitted purchase uploads again under
   a new idempotency key (`refresh_purged_uploads`, at most twice).
+
+**Duplicate views (capture-447ae4f4, 2026-10-30).** The full form posted 22
+views, 4 of them twice (recovered views repeating the generation anchors and
+the gap views, with conflicting depth and masks), and failed the same way. The
+fallback then left out the generated gap views the job had paid for. Merging
+removes the duplicates. When the adopted splat is the minimal form and it left
+admitted views out, the result records `refined_splat.left_out_admitted_view_ids`
+and whether a gap-preserving form was never sent (`gap_preserving_form_untried`).
+Only that marker lets an operator retry (`retry_failed_job` or the door's
+atlas-retry) reopen a `ready` job; the retry records
+`refined_splat_gap_preserving_form_untried` and
+`request_gap_preserving_upgrade` names the untried roots: the full form again
+from `-refined-merged` when `-refined` posted duplicates (or `-refined` if never
+sent), then `-refined-masks`. Each is sent at most once. A success supersedes
+the minimal splat (its mesh root is keyed by the new digest, so a new mesh is
+bought and the archive rebuilt); if all fail, the minimal splat is adopted
+again unchanged, the marker clears and the job returns to `ready`. Nothing
+reopens a ready job on its own.
 
 The ledger still holds a reservation for a failed or refused attempt until it is
 settled; the WebApp has no `world_labs_atlas` settlement yet.

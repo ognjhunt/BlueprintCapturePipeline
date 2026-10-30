@@ -659,6 +659,54 @@ def test_a_retry_refuses_an_expired_or_withdrawn_job(monkeypatch, site):
     assert _job(site)["state"] == "failed"
 
 
+def _minimal_splat(root):
+    """An adopted minimal refined splat whose request left a generated gap view out."""
+    from blueprint_pipeline import atlas_native_splat as native
+    root.mkdir(parents=True)
+    manifest = {"schema_version": "atlas_refined_splat.v1", "request_form": "documented_minimal"}
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    (root / native.MANIFEST).write_text(json.dumps(manifest))
+    return {"request_form": "documented_minimal", "splat_root": str(root), "splat_manifest_digest": manifest["digest"],
+            "left_out_admitted_view_ids": ["gap"], "gap_preserving_form_untried": True}
+
+
+def test_a_ready_job_reopens_once_to_send_the_gap_views_its_minimal_splat_left_out(monkeypatch, site):
+    from blueprint_pipeline import atlas_native_splat as native
+    _enqueue(site)
+    marker = _minimal_splat(site.job.parent / "automation/background_splat-refined-minimal")
+    tried = {**marker, "gap_preserving_form_untried": False}
+    world = World(monkeypatch, site, [lambda kw: {**_completed(kw), "refined_splat": marker},
+                                      lambda kw: {**_completed(kw), "refined_splat": tried}])
+    assert world.advance() == "ready" and _job(site)["refined_splat"] == marker
+    ready = _job(site)
+    world.clock += 60
+    job = preview.retry_failed_job(site.job, now=world.now)
+    assert (job["state"], job["revision"]) == ("processing", ready["revision"] + 1)
+    assert job["retries"] == [{"reason": "refined_splat_gap_preserving_form_untried", "at_epoch": world.clock}]
+    request = json.loads((Path(marker["splat_root"]) / native.UPGRADE).read_text())
+    assert request["roots"] == ["background_splat-refined", "background_splat-refined-masks"]
+    assert world.advance() == "ready" and len(world.runs) == 2
+    assert _job(site)["refined_splat"] == tried and _job(site)["archive"] == ready["archive"]
+    # The upgrade was spent: the finished job is not reopened again.
+    with pytest.raises(ValueError, match="requires_recoverable_failure"):
+        preview.retry_failed_job(site.job, now=world.now)
+
+
+def test_a_ready_job_without_an_untried_gap_form_in_its_own_tree_stays_finished(site):
+    _enqueue(site)
+    marker = _minimal_splat(site.job.parent / "automation/background_splat-refined-minimal")
+    for value in ({}, {"refined_splat": {**marker, "gap_preserving_form_untried": False}}):
+        site.job.write_text(json.dumps({**_job(site), "state": "ready", "refined_splat": None, **value}))
+        with pytest.raises(ValueError, match="requires_recoverable_failure"):
+            preview.retry_failed_job(site.job)
+    elsewhere = _minimal_splat(site.capture.parent / "elsewhere-refined-minimal")
+    site.job.write_text(json.dumps({**_job(site), "refined_splat": elsewhere}))
+    before = site.job.read_bytes()
+    with pytest.raises(ValueError, match="upgrade_invalid"):
+        preview.retry_failed_job(site.job)
+    assert site.job.read_bytes() == before
+
+
 def test_cleanup_waits_for_operations_it_never_collected_and_deletes_their_outputs(monkeypatch, site):
     _enqueue(site)
 

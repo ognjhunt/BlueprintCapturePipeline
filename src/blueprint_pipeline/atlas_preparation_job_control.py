@@ -83,7 +83,12 @@ def retry_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]
         source_check(job)
         if request_id is not None and any(row.get("request_id") == request_id for row in job.get("retries", [])):
             return job
-        if (job["state"] not in {"failed", "needs_input"} or job["reason"] in _NOT_RETRYABLE
+        # A finished job reopens only to send the gap-preserving refined-splat
+        # forms its adopted minimal splat left untried; any other ready job stays.
+        marker = job.get("refined_splat")
+        upgrade = (job["state"] == "ready" and isinstance(marker, Mapping)
+                   and marker.get("gap_preserving_form_untried") is True)
+        if ((job["state"] not in {"failed", "needs_input"} and not upgrade) or job["reason"] in _NOT_RETRYABLE
                 or job["reason"] in _NEEDS_NEW_CAPTURE):
             raise ValueError("atlas_preview_retry_requires_recoverable_failure")
         current = int(now())
@@ -97,7 +102,17 @@ def retry_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]
             if current - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
                 raise ValueError("atlas_preview_expired")
             source_check(job)
-        retries = [*job.get("retries", []), {"reason": job["reason"], "at_epoch": current,
+        reason = job["reason"]
+        if upgrade:
+            from .atlas_native_splat import request_gap_preserving_upgrade
+            root = Path(str(marker.get("splat_root")))
+            if (not root.is_absolute() or root.is_symlink()
+                    or not root.resolve().is_relative_to(path.parent.resolve())):
+                raise ValueError("atlas_refined_splat_upgrade_invalid")
+            request_gap_preserving_upgrade(root, splat_manifest_digest=marker.get("splat_manifest_digest"),
+                                           at_epoch=current)
+            reason = "refined_splat_gap_preserving_form_untried"
+        retries = [*job.get("retries", []), {"reason": reason, "at_epoch": current,
                                              **({"request_id": request_id} if request_id is not None else {})}]
         # The failure's own cleanup completed; the resumed run makes new assets,
         # so cleanup is armed again, keeping what was already deleted.
