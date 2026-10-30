@@ -1100,3 +1100,18 @@ def test_subject_estimated_into_its_support_is_snapped_within_the_measured_resid
     assert value["support"]["subject_snap_basis"] == "estimate"
     # Snapped back onto the same table top as the unshifted estimate.
     assert value["subject"]["aabb_min_xyz"][2] == pytest.approx(3.5, abs=1e-6)
+
+
+def test_the_destination_support_is_searched_within_the_same_measured_residual(tmp_path, monkeypatch):
+    # capture-447ae4f4: the destination on the same counter was refused over a 0.4 cm mesh gap
+    # at the default window, while the subject's support used the 7.2 cm residual.
+    real, calls = preparation.support_under, []
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs.get("placement_residual_m"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preparation, "support_under", recording)
+    value = _compile(tmp_path)
+    assert value["status"] == "intake_ready", value["blockers"]
+    assert calls == [value["registration"]["task_region"]["trimmed_rmse_m"]] * 2

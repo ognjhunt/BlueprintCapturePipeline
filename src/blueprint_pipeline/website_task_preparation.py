@@ -951,8 +951,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             height = subject_max[up] - subject_min[up]
             destination_min[up] = position[up] - (height if up_sign == -1 else 0)
             destination_max[up] = position[up] + (height if up_sign == 1 else 0)
+            # The destination is placed by the same registration as the subject.
             destination_support = support_under(collider, destination_min, destination_max, up=up,
-                                                meters_per_unit=mpu, up_sign=up_sign)
+                meters_per_unit=mpu, up_sign=up_sign,
+                placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"))
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
