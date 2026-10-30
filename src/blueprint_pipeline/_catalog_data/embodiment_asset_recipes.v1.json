@@ -1138,6 +1138,443 @@
         "policy_compatibility_established": false,
         "publisher_hardware_match_established": false
       }
+    },
+    {
+      "embodiment_id": "fanuc_crx_10ia_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+        "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2",
+        "entry_path": "fanuc_crx_description/robot/crx10ia.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSES/Apache-2.0.txt",
+        "license_url": "https://github.com/fanuc-corporation/fanuc_description/blob/fb40c9803a826ba68c7c8e28ba904a25efa7fcd2/LICENSES/Apache-2.0.txt",
+        "license_note": "Official FANUC description package and source headers declare Apache-2.0. Preserve exact mesh/source attribution; this is separate from NVIDIA USD asset agreements and driver/hardware access.",
+        "include_paths": [
+          "fanuc_crx_description/robot/crx10ia.urdf.xacro",
+          "fanuc_crx_description/urdf/crx10ia_urdf_macro.xacro",
+          "fanuc_crx_description/meshes/crx10ia",
+          "fanuc_crx_description/package.xml",
+          "README.md",
+          "LICENSES/Apache-2.0.txt"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "fanuc_crx_description": "fanuc_crx_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established"
+      ],
+      "reason": "Exact public fanuc_crx_10ia with licensed Robotiq2F85 at an ideal fixed simulation mount, with no adapter geometry or hardware fit/calibration claim. Authored arm and tool inertias are retained.",
+      "composition": {
+        "schema_version": "industrial_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "fanuc_crx_10ia",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "Identity mount at source fanuc_flange or tool0, preserving the full source flange rotation; no UR adapter/spacer or application hardware equivalence.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "fanuc_flange",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
+    },
+    {
+      "embodiment_id": "fanuc_crx_10ia_l_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+        "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2",
+        "entry_path": "fanuc_crx_description/robot/crx10ia_l.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSES/Apache-2.0.txt",
+        "license_url": "https://github.com/fanuc-corporation/fanuc_description/blob/fb40c9803a826ba68c7c8e28ba904a25efa7fcd2/LICENSES/Apache-2.0.txt",
+        "license_note": "Official FANUC description package and source headers declare Apache-2.0. Preserve exact mesh/source attribution; this is separate from NVIDIA USD asset agreements and driver/hardware access.",
+        "include_paths": [
+          "fanuc_crx_description/robot/crx10ia_l.urdf.xacro",
+          "fanuc_crx_description/urdf/crx10ia_l_urdf_macro.xacro",
+          "fanuc_crx_description/meshes/crx10ia_l",
+          "fanuc_crx_description/package.xml",
+          "README.md",
+          "LICENSES/Apache-2.0.txt"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "fanuc_crx_description": "fanuc_crx_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established"
+      ],
+      "reason": "Exact public fanuc_crx_10ia_l with licensed Robotiq2F85 at an ideal fixed simulation mount, with no adapter geometry or hardware fit/calibration claim. Authored arm and tool inertias are retained.",
+      "composition": {
+        "schema_version": "industrial_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "fanuc_crx_10ia_l",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "Identity mount at source fanuc_flange or tool0, preserving the full source flange rotation; no UR adapter/spacer or application hardware equivalence.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "fanuc_flange",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
+    },
+    {
+      "embodiment_id": "fanuc_m710ic_45m_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+        "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2",
+        "entry_path": "fanuc_m710_description/robot/m710ic_45m.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSES/Apache-2.0.txt",
+        "license_url": "https://github.com/fanuc-corporation/fanuc_description/blob/fb40c9803a826ba68c7c8e28ba904a25efa7fcd2/LICENSES/Apache-2.0.txt",
+        "license_note": "Official FANUC description package and source headers declare Apache-2.0. Preserve exact mesh/source attribution; this is separate from NVIDIA USD asset agreements and driver/hardware access.",
+        "include_paths": [
+          "fanuc_m710_description/robot/m710ic_45m.urdf.xacro",
+          "fanuc_m710_description/urdf/m710ic_45m_urdf_macro.xacro",
+          "fanuc_m710_description/meshes/m710ic_45m",
+          "fanuc_m710_description/package.xml",
+          "README.md",
+          "LICENSES/Apache-2.0.txt"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "fanuc_m710_description": "fanuc_m710_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established"
+      ],
+      "reason": "Exact public fanuc_m710ic_45m with licensed Robotiq2F85 at an ideal fixed simulation mount, with no adapter geometry or hardware fit/calibration claim. Authored arm and tool inertias are retained.",
+      "composition": {
+        "schema_version": "industrial_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "fanuc_m710ic_45m",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "Identity mount at source fanuc_flange or tool0, preserving the full source flange rotation; no UR adapter/spacer or application hardware equivalence.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "fanuc_flange",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
+    },
+    {
+      "embodiment_id": "abb_gofa_crb15000_5_95_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/ros-industrial/abb",
+        "revision": "45f4769d826cf3ac62a65495f2db67b78b0c81df",
+        "entry_path": "abb_crb15000_support/urdf/crb15000_5_95.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "abb_crb15000_support/LICENSE",
+        "license_url": "https://github.com/ros-industrial/abb/blob/45f4769d826cf3ac62a65495f2db67b78b0c81df/abb_crb15000_support/LICENSE",
+        "license_note": "Both abb_crb15000_support and abb_resources are Apache-2.0; retain both licenses and package metadata, shared material/colour closure and the exact referenced cross-variant meshes.",
+        "include_paths": [
+          "abb_crb15000_support/urdf/crb15000_5_95.xacro",
+          "abb_crb15000_support/urdf/crb15000_5_95_macro.xacro",
+          "abb_crb15000_support/meshes/crb15000_5_95",
+          "abb_crb15000_support/LICENSE",
+          "abb_crb15000_support/package.xml",
+          "abb_resources/urdf",
+          "abb_resources/LICENSE",
+          "abb_resources/package.xml"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "abb_crb15000_support": "abb_crb15000_support",
+          "abb_resources": "abb_resources"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established"
+      ],
+      "reason": "Exact public abb_gofa_crb15000_5_95 with licensed Robotiq2F85 at an ideal fixed simulation mount, with no adapter geometry or hardware fit/calibration claim. Arm-only modeled mass remains 28/48 kg; source tool inertias/mass are appended separately.",
+      "composition": {
+        "schema_version": "industrial_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "abb_gofa_crb15000_5_95",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "Identity mount at source fanuc_flange or tool0, preserving the full source flange rotation; no UR adapter/spacer or application hardware equivalence.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "tool0",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
+    },
+    {
+      "embodiment_id": "abb_gofa_crb15000_12_127_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/ros-industrial/abb",
+        "revision": "45f4769d826cf3ac62a65495f2db67b78b0c81df",
+        "entry_path": "abb_crb15000_support/urdf/crb15000_12_127.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "abb_crb15000_support/LICENSE",
+        "license_url": "https://github.com/ros-industrial/abb/blob/45f4769d826cf3ac62a65495f2db67b78b0c81df/abb_crb15000_support/LICENSE",
+        "license_note": "Both abb_crb15000_support and abb_resources are Apache-2.0; retain both licenses and package metadata, shared material/colour closure and the exact referenced cross-variant meshes.",
+        "include_paths": [
+          "abb_crb15000_support/urdf/crb15000_12_127.xacro",
+          "abb_crb15000_support/urdf/crb15000_12_127_macro.xacro",
+          "abb_crb15000_support/meshes/crb15000_12_127",
+          "abb_crb15000_support/LICENSE",
+          "abb_crb15000_support/package.xml",
+          "abb_resources/urdf",
+          "abb_resources/LICENSE",
+          "abb_resources/package.xml",
+          "abb_crb15000_support/meshes/crb15000_5_95/collision/link_3.stl",
+          "abb_crb15000_support/meshes/crb15000_5_95/collision/link_5.stl",
+          "abb_crb15000_support/meshes/crb15000_5_95/collision/link_6.stl",
+          "abb_crb15000_support/meshes/crb15000_5_95/visual/link_3.stl",
+          "abb_crb15000_support/meshes/crb15000_5_95/visual/link_5.stl",
+          "abb_crb15000_support/meshes/crb15000_5_95/visual/link_6.stl"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "abb_crb15000_support": "abb_crb15000_support",
+          "abb_resources": "abb_resources"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established"
+      ],
+      "reason": "Exact public abb_gofa_crb15000_12_127 with licensed Robotiq2F85 at an ideal fixed simulation mount, with no adapter geometry or hardware fit/calibration claim. Arm-only modeled mass remains 28/48 kg; source tool inertias/mass are appended separately.",
+      "composition": {
+        "schema_version": "industrial_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "abb_gofa_crb15000_12_127",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "Identity mount at source fanuc_flange or tool0, preserving the full source flange rotation; no UR adapter/spacer or application hardware equivalence.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "tool0",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
     }
   ]
 }

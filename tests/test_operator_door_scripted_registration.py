@@ -39,7 +39,7 @@ def installed_profile(tmp_path):
         shutil.copyfile(PROFILE_ROOT / name, target / name)
     code = target / "scripted-baseline-source"
     code.mkdir()
-    for name in set(scripts.CODE_FILES) | set(scripts.VARIANT_CODE_FILES):
+    for name in set(scripts.CODE_FILES) | set(scripts.VARIANT_CODE_FILES) | set(scripts.INDUSTRIAL_CODE_FILES):
         shutil.copyfile(ROOT / "src/blueprint_pipeline" / name, code / name)
     return target
 
@@ -108,6 +108,8 @@ def test_installed_profile_is_exact_source_inventory_license_and_all_ten_frames(
     assert {key: batch.profile["bodies"][key] for key in _IDENTITIES} == _IDENTITIES
     from blueprint_pipeline.scripted_robot_robotiq_runtime import source_identity as variant_source
     assert batch.profile["variant_source_identity"] == variant_source()
+    from blueprint_pipeline.scripted_robot_industrial_robotiq_runtime import source_identity as industrial_source
+    assert batch.profile["industrial_source_identity"] == industrial_source()
     assert (PROFILE_ROOT / "scripted_robot_baseline_license.txt").read_bytes() == (ROOT / "LICENSE").read_bytes()
     assert required_scope("install-scripted-robot-baselines") == "operate"
     assert validate_request({"kind": "install-scripted-robot-baselines", "request": batch.request})["request"] == batch.request
@@ -261,7 +263,7 @@ def test_actual_isolated_installer_can_load_scripted_contract_and_profile(batch)
     # run profile validation in an isolated stdlib subprocess, never execute a script.
     code = "import importlib.util; from pathlib import Path; s=importlib.util.spec_from_file_location('installed'," + repr(str(ROOT /
         "deploy/operator-door/operator_door/public_policy_registration.py")) + "); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
-    code += "p=m._scripted_contract().load_profile(Path(" + repr(str(batch.options["profile_root"])) + ")); assert len(p['bodies'])==13"
+    code += "p=m._scripted_contract().load_profile(Path(" + repr(str(batch.options["profile_root"])) + ")); assert len(p['bodies'])==18"
     result = subprocess.run([sys.executable, "-I", "-S", "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 

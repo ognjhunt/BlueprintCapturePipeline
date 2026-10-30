@@ -65,6 +65,7 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "dreamlabs_policy_client.py", "team_arm_kinematics.py",
     "scripted_robot_baseline.py", "scripted_robot_baseline_runtime.py", "scripted_robot_grasp_frames.py",
     "scripted_robot_robotiq_runtime.py", "scripted_robot_runtime_dispatch.py",
+    "scripted_robot_industrial_robotiq_runtime.py",
     "team_policy_episode_outcome.py", "team_evaluation_worker_retention.py",
     "native_task_arena_execution_contract.py",
     "team_embodiment.py", "team_embodiment_runtime.py", "native_task_robot_contact_topology.py",

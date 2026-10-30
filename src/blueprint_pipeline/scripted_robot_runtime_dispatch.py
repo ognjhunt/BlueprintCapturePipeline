@@ -9,10 +9,16 @@ def runtime_for_policy(policy):
     from . import scripted_robot_robotiq_runtime as robotiq
     if policy.get("policy_id") == robotiq.PROFILE_ID:
         return robotiq
+    from . import scripted_robot_industrial_robotiq_runtime as industrial
+    if policy.get("policy_id") == industrial.PROFILE_ID:
+        return industrial
     raise ValueError("scripted_baseline_profile_unsupported")
 
 
 def runtime_for_manifest(manifest):
+    from . import scripted_robot_industrial_robotiq_runtime as industrial
+    if manifest.get("embodiment_id") in industrial.BODIES:
+        return industrial
     from . import scripted_robot_robotiq_runtime as robotiq
     if manifest.get("embodiment_id") in robotiq.BODIES:
         return robotiq

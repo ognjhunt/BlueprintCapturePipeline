@@ -1,7 +1,12 @@
 {
   "bodies": {
+    "abb_gofa_crb15000_12_127_robotiq_2f85_sim": "robotiq_ur",
+    "abb_gofa_crb15000_5_95_robotiq_2f85_sim": "robotiq_ur",
     "agilex_piper_bimanual": "piper",
     "almond_axol": "axol",
+    "fanuc_crx_10ia_l_robotiq_2f85_sim": "robotiq_ur",
+    "fanuc_crx_10ia_robotiq_2f85_sim": "robotiq_ur",
+    "fanuc_m710ic_45m_robotiq_2f85_sim": "robotiq_ur",
     "franka_research_3_bimanual": "fr3",
     "franka_research_3_robotiq_2f85_sim": "robotiq_fr3",
     "i2rt_yam_bimanual": "yam",
@@ -430,6 +435,31 @@
       "url": "https://github.com/i2rt-robotics/i2rt/blob/120c3c81400171174604e503943f8d1ebc891058/i2rt/robot_models/station/yam_station_linear_4310_d405/yam_station_linear_4310_d405.urdf"
     }
   },
+  "industrial_bodies": [
+    "abb_gofa_crb15000_12_127_robotiq_2f85_sim",
+    "abb_gofa_crb15000_5_95_robotiq_2f85_sim",
+    "fanuc_crx_10ia_l_robotiq_2f85_sim",
+    "fanuc_crx_10ia_robotiq_2f85_sim",
+    "fanuc_m710ic_45m_robotiq_2f85_sim"
+  ],
+  "industrial_policy_profile": "blueprint_scripted_pick_place_industrial_robotiq.v1",
+  "industrial_source_identity": {
+    "files": [
+      {
+        "path": "scripted_robot_baseline.py",
+        "sha256": "sha256:73b092973d2cfa922b38182729449cf7e06932a9fecbda00392356296c6ea6be"
+      },
+      {
+        "path": "scripted_robot_grasp_frames.py",
+        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+      },
+      {
+        "path": "scripted_robot_industrial_robotiq_runtime.py",
+        "sha256": "sha256:6cabadf16126185a670aa6be44da714c9b4024fb43ef82cf2a1ac3693795a72d"
+      }
+    ],
+    "schema_version": "blueprint_scripted_controller_source.v1"
+  },
   "license_evidence": {
     "path": "BlueprintCapturePipeline:LICENSE",
     "sha256": "sha256:7d1ed722a23878384036453aa95845ead7d0e646bdb33af460a751869d8e9a40",
@@ -462,7 +492,6 @@
   ],
   "variant_policy_profile": "blueprint_scripted_pick_place_robotiq.v1",
   "variant_source_identity": {
-    "schema_version": "blueprint_scripted_controller_source.v1",
     "files": [
       {
         "path": "scripted_robot_baseline.py",
@@ -476,6 +505,7 @@
         "path": "scripted_robot_robotiq_runtime.py",
         "sha256": "sha256:1db4f17f2f4d2246ca734c000012958271d100bb67405edd77f718df11984ec9"
       }
-    ]
+    ],
+    "schema_version": "blueprint_scripted_controller_source.v1"
   }
 }

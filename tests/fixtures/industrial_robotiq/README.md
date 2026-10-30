@@ -1,0 +1,1 @@
+Exact pinned public XML, metadata and license bytes; original hashes are in inventory.json. Tests replace meshes with explicitly synthetic tetrahedra/COLLADA, never native source geometry proof. Keep source whitespace unchanged. Actual cached public geometry is used only for separately recorded CPU/source checks.

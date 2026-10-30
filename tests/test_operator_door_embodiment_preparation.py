@@ -52,8 +52,16 @@ def test_door_allowlist_and_sealed_bytes_match_actual_worker_contract():
     allowed = ({row["embodiment_id"] for row in runtime_profiles()["profiles"]}
                & {row["embodiment_id"] for row in asset_recipes()["recipes"] if row["status"] == "source_available"})
     assert PUBLIC_EMBODIMENT_IDS == allowed
-    value = grant(embodiment_ids=list(reversed(sorted(allowed))), authorization_reference="development_only café fixture")
-    assert validate_request(body(value)) == body(worker_validate(value))
+    ordered = list(reversed(sorted(allowed)))
+    # Inventory growth does not expand the existing one-grant 24-body bound.
+    for offset in range(0, len(ordered), 24):
+        value = grant(embodiment_ids=ordered[offset:offset+24], authorization_reference="development_only café fixture")
+        assert validate_request(body(value)) == body(worker_validate(value))
+    value = grant(embodiment_ids=ordered[:25])
+    with pytest.raises(RequestRefused, match="catalog_selection_invalid"):
+        validate_request(body(value))
+    with pytest.raises(ValueError, match="catalog_selection_invalid"):
+        worker_validate(value)
     assert required_scope("public-embodiment-preparation") == "operate"
 
 

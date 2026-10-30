@@ -25,9 +25,13 @@ B0_PROFILES = PREDECESSOR_PROFILES | {"franka_research_3_robotiq_2f85_sim"}
 CURRENT_21_GENERATOR = "sha256:d6c0d849fb7d932148480f38bc3a3015750d260128a8d74f586367cbae6f30c1"
 CURRENT_21_PROFILES = B0_PROFILES | {"abb_gofa_crb15000_5_95", "abb_gofa_crb15000_12_127"}
 
+CURRENT_23_GENERATOR = "sha256:4507e03e3d492453ba6e4b194bdffb1a95e9a2551a1bfe6ed37498c7911f5c73"
+CURRENT_23_PROFILES = CURRENT_21_PROFILES | {"universal_robots_ur5e_robotiq_2f85_sim", "universal_robots_ur10e_robotiq_2f85_sim"}
+
+
 def is_exact_predecessor(record: dict) -> bool:
     profiles = {PREDECESSOR_GENERATOR: PREDECESSOR_PROFILES, B0_GENERATOR: B0_PROFILES,
-                CURRENT_21_GENERATOR: CURRENT_21_PROFILES}
+                CURRENT_21_GENERATOR: CURRENT_21_PROFILES, CURRENT_23_GENERATOR: CURRENT_23_PROFILES}
     return record.get("embodiment_id") in profiles.get(record.get("generator_module_sha256"), ())
 
 

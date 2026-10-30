@@ -2,3 +2,8 @@ docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.step wh
 docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_control.usda whitespace=-blank-at-eof
 docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.step whitespace=-trailing-space
 docs/arm_decision_proof_v1/assets/adp009a_840313_canned_beverage_match_v2.usda whitespace=-blank-at-eof
+# Exact pinned public source fixtures: preserve publisher CRLF/terminal blank lines; hashes are tested.
+tests/fixtures/industrial_robotiq/fanuc_m710ic_45m/fanuc_m710_description/robot/m710ic_45m.urdf.xacro -text whitespace=cr-at-eol
+tests/fixtures/industrial_robotiq/fanuc_m710ic_45m/fanuc_m710_description/urdf/m710ic_45m_urdf_macro.xacro -text whitespace=cr-at-eol
+tests/fixtures/industrial_robotiq/abb_gofa_crb15000_5_95/abb_crb15000_support/urdf/crb15000_5_95.xacro -text whitespace=-blank-at-eof
+tests/fixtures/industrial_robotiq/abb_gofa_crb15000_12_127/abb_crb15000_support/urdf/crb15000_12_127.xacro -text whitespace=-blank-at-eof

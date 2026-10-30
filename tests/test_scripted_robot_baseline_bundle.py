@@ -75,7 +75,10 @@ def registered_world(tmp_path, monkeypatch, identity="agilex_piper_bimanual"):
     return base, profile, registration, key
 
 
-@pytest.mark.parametrize("identity", ["agilex_piper_bimanual", "universal_robots_ur5e_robotiq_2f85_sim",
+@pytest.mark.parametrize("identity", [
+    "fanuc_crx_10ia_robotiq_2f85_sim", "fanuc_crx_10ia_l_robotiq_2f85_sim",
+    "fanuc_m710ic_45m_robotiq_2f85_sim", "abb_gofa_crb15000_5_95_robotiq_2f85_sim",
+    "abb_gofa_crb15000_12_127_robotiq_2f85_sim", "agilex_piper_bimanual", "universal_robots_ur5e_robotiq_2f85_sim",
     "universal_robots_ur10e_robotiq_2f85_sim", "franka_research_3_robotiq_2f85_sim"])
 def test_scripted_candidate_seals_without_checkpoint_server_credentials_or_learned_count(tmp_path, monkeypatch, identity):
     from blueprint_pipeline.policy_canary_session_bundle_identity import validate_policy_canary_provider_manifest
