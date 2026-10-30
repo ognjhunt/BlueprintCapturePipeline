@@ -14,13 +14,15 @@ from .native_g1_beta_authority import (
     validate_beta_authority, validate_cell_binding as validate_cell_binding, validate_frozen_cell,
 )
 from .native_g1_beta_authority_composer import compose_beta_authority
+# Candidate identities and the registration catalog revision are shared with
+# the effective catalog, which the CPU intake lane reads.
+from .beta_policy_screening_g1_catalog import CANDIDATES, catalog_for_profile as catalog_for_profile
 
 BACKEND = "native_g1.v1"
 SPEC_SCHEMA = "native_g1_beta_execution_spec.v1"
 RESULT_SCHEMA = "native_g1_beta_session_result.v1"
 INTERFACE = "humanoidarena_semantic_v3"
 MINIMUM_GPU_MEMORY_GB = 48  # Existing native G1 lane floor; not measured peak memory.
-CANDIDATES = tuple(CANDIDATE_DIGESTS)
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
@@ -78,17 +80,6 @@ def catalog_candidates() -> list[dict[str, Any]]:
                 "evidence_url": "https://github.com/William-wAng618/HumanoidArena/tree/" + SOURCE_REVISION},
             "configuration_digest": ""})
     return rows
-
-
-def catalog_for_profile(profile: Mapping[str, Any], catalog: Mapping[str, Any]) -> dict[str, Any]:
-    """A corrected sealed G1 registration replans without resetting site spend."""
-    from .beta_policy_candidate_catalog import seal_catalog
-    configured = profile.get("screening_candidates") or {}
-    registrations = {key: value["native_g1"] for key, value in configured.items()
-                     if key in CANDIDATES and isinstance(value, Mapping) and "native_g1" in value}
-    if not registrations:
-        return dict(catalog)
-    return seal_catalog({**catalog, "revision": catalog["revision"] + ":g1:" + canonical_digest(registrations)[7:]})
 
 
 def frozen_cells(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:

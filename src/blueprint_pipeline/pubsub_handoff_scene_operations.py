@@ -175,19 +175,26 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                     handoff, storage_root=storage_root, storage_client=storage_client,
                     **({"expected_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}))
             except Exception as error:
-                from .capture_delivery_staging import CaptureStagingError, STAGING_REASON_CODES
+                from .capture_delivery_staging import (
+                    CaptureStagingError, STAGING_REASON_CODES, staging_error_description,
+                )
 
-                reason = (str(error) if isinstance(error, (CaptureStagingError, CaptureOwnerObservationError))
-                          and str(error) in STAGING_REASON_CODES else 'capture_staging_unavailable')
+                recognized = (isinstance(error, (CaptureStagingError, CaptureOwnerObservationError,
+                                                 _listener.HandoffStagingCapacityError))
+                              and str(error) in STAGING_REASON_CODES)
+                reason = str(error) if recognized else 'capture_staging_unavailable'
+                # The generic code alone hides which failure it was. Keep the
+                # type and a redacted, trimmed message of an unrecognized one.
+                unexpected = {} if recognized else {'staging_error': staging_error_description(error)}
                 _listener.logger.warning('pubsub_handoff.capture_source_membership_unavailable',
                                          extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
-                                                'staging_reason': reason})
+                                                'staging_reason': reason, **unexpected})
                 return {'schema_version': 'v1',
                         'status': 'capture_source_membership_unavailable_retryable',
                         'queue_disposition': 'retryable', 'bucket': handoff.bucket,
                         'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                         'capture_root': str(capture_root),
-                        'staging_reason': reason,
+                        'staging_reason': reason, **unexpected,
                         'blockers': ['capture_source_membership_unavailable']}
         else:
             return {'schema_version': 'v1', 'status': 'capture_original_birth_unavailable_retryable',

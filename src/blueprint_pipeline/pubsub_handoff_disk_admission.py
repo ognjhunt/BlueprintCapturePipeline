@@ -72,6 +72,12 @@ def download_with_reservation(
                 or any(str(getattr(blob, "generation", "")) != selected_generations.get(str(blob.name))
                        for blob, _ in downloads)):
             raise PipelineError("handoff_source_generation_unproven")
+    if not downloads:
+        # Every member is already staged and verified current, so this pass
+        # writes only its small manifest. Bulk admission guards downloaded
+        # bytes; with none it would refuse a resume of retained staging
+        # whenever the volume's bulk band is exhausted.
+        return
     listed_sizes = {row["name"]: row["size"] or 0 for row in manifest_rows}
     expected_bytes = sum(
         listed_sizes[str(blob.name)] for blob, _destination in downloads

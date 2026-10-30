@@ -529,6 +529,27 @@ def test_native_staging_reason_is_bounded_and_keeps_unknown_charge_accounting(tm
     assert "secret" not in json.dumps(result)
 
 
+def test_native_dispatch_preserves_a_bounded_unrecognized_staging_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    s, _, c, listener, owner, ret, admit, _, _ = fixture(tmp_path)
+    s["mode"] = "dispatch"
+    listener.process_handoff_payload = lambda *a, **kw: {
+        "status": "capture_source_membership_unavailable_retryable",
+        "queue_disposition": "retryable", "staging_reason": "capture_staging_unavailable",
+        "staging_error": {"type": "builtins.PermissionError",
+                          "message": "open https://h/o?sig=abc failed password=hunter2"},
+    }
+    result = recover_selected_handoff(
+        s, storage_root=tmp_path, client=c, listener=listener,
+        owner_reader=owner, retirement_reader=ret, admission_reader=admit,
+        membership_reader=lambda **kw: None,
+    )
+    assert result["staging_reason"] == "capture_staging_unavailable"
+    assert result["staging_error"] == {"type": "builtins.PermissionError",
+                                       "message": "open https://h/o?<redacted> failed password=<redacted>"}
+    assert "hunter2" not in json.dumps(result) and "sig=abc" not in json.dumps(result)
+
+
 def test_selected_staging_recovery_refuses_partial_local_state_before_native_call(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
     root = tmp_path / "capture"

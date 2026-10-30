@@ -238,7 +238,20 @@ def process_reserved_entry(item: Path, *, root: Path, store: Path, commit: str) 
             if not (job / "disk-admission.json").exists():
                 write_once(job / "disk-admission.json", {"workspace": work_hold.receipt(), "models": model_hold.receipt(),
                     "workspace_path": str(workspace), "authorization_id": request["authorization_id"]})
-            return process_entry(item, root=root, store=store, commit=commit, resolve_runtime=lambda: runtime)
+            # The allocator inherits this; its download and extraction write
+            # inside the workspace hold rather than beside it.
+            from .control_plane_disk_budget import ENCLOSING_RESERVATIONS_ENV
+            previous = os.environ.get(ENCLOSING_RESERVATIONS_ENV)
+            token = work_hold.receipt().get("reservation_token")
+            if isinstance(token, str):
+                os.environ[ENCLOSING_RESERVATIONS_ENV] = ",".join(filter(None, (previous, token)))
+            try:
+                return process_entry(item, root=root, store=store, commit=commit, resolve_runtime=lambda: runtime)
+            finally:
+                if previous is None:
+                    os.environ.pop(ENCLOSING_RESERVATIONS_ENV, None)
+                else:
+                    os.environ[ENCLOSING_RESERVATIONS_ENV] = previous
 
 
 def process_entry(item: Path, *, root: Path, store: Path, commit: str, build=build_bundle,
