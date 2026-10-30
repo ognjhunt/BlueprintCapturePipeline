@@ -565,7 +565,7 @@ def run_automation(
                 native = run_native_splat(frames=derived_frames, result=effective_pose, draft=splat,
                     output_root=splat_root.parent / f"{splat_root.name}-refined", policy=policy,
                     task_context=task_context, task_runner=task_runner, max_polls=max_polls,
-                    checkpoint=checkpoint)
+                    checkpoint=checkpoint, retained_only=retained_only)
                 if native["status"] != "completed":
                     return native
                 splat_root, splat = Path(native["splat_root"]), native["splat_manifest"]

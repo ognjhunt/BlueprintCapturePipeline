@@ -196,7 +196,7 @@ def _refined_marker(form, root: Path, manifest, frames, roots) -> dict:
 
 
 def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_context,
-                     task_runner, max_polls=2, checkpoint=None):
+                     task_runner, max_polls=2, checkpoint=None, retained_only=False):
     """Resume one refined-splat operation; publish its original SPZ and lossless decoded PLY.
 
     World Labs documents a posed frame as image, depth and camera only. It
@@ -227,7 +227,8 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
             if form == WHOLE and not _bought(root):
                 review = atlas_whole_view_review.review_whole_views(
                     views=merge_duplicate_views(frames), root=root, task_context=task_context, policy=policy,
-                    source_video_digest=result["binding"]["source_video_digest"], checkpoint=checkpoint)
+                    source_video_digest=result["binding"]["source_video_digest"], checkpoint=checkpoint,
+                    retained_only=retained_only)
                 if not any(verdict["admit_whole"] for verdict in review["verdicts"]):
                     continue  # Real frames only: the minimal form is that same request.
         try:

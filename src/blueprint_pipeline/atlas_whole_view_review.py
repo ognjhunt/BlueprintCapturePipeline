@@ -83,13 +83,16 @@ def _ask(*, prompt, pairs, output_root: Path, binding_digest: str) -> dict:
     return {"complete": answer is not None, "answer": answer}
 
 
-def review_whole_views(*, views, root: Path, task_context, policy, source_video_digest, checkpoint=None) -> dict:
+def review_whole_views(*, views, root: Path, task_context, policy, source_video_digest, checkpoint=None,
+                       retained_only=False) -> dict:
     """Per-view ``admit_whole`` verdicts for the partly admitted (generated) merged views.
 
     ``views`` are ``merge_duplicate_views`` rows. Real frames are references; each
     candidate is compared with the real frames that overlap it most. Priced under
     the reviewed review cap; over it, or after an uncertain earlier call, nothing
     is admitted and nothing more is bought. The verdicts are kept in the root.
+    ``retained_only`` (export replay and retained finalization) adopts a
+    completed review and refuses before any reservation instead of buying one.
     """
     from .clean_plate_removal_analysis_gemini import DEFAULT_MODEL, _api_key
     from .decision_evidence_contracts import canonical_digest
@@ -133,6 +136,8 @@ def review_whole_views(*, views, root: Path, task_context, policy, source_video_
                 checkpoint("refined_splat_whole_view_review")
 
             def preflight():
+                if retained_only:
+                    raise ValueError("atlas_export_replay_cached_stage_missing")
                 if not _api_key()[0]:
                     raise ValueError("atlas_whole_view_review_key_missing")
                 from google import genai  # noqa: F401

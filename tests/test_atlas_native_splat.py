@@ -562,6 +562,21 @@ def test_the_whole_view_review_is_one_retained_receipt_never_bought_again(tmp_pa
     assert len(reviewer.reserved) == 1
 
 
+def test_retained_finalization_adopts_a_completed_review_and_never_buys_one(tmp_path, reviewer):
+    from blueprint_pipeline import atlas_whole_view_review as review
+    views = native.merge_duplicate_views([*source_frames(), gap_view(keep(slice(20, None)))])
+    reviewer.admit = {"candidate-0002"}
+    kwargs = dict(views=views, root=tmp_path, task_context=CONTEXT, policy=splat_policy(),
+                  source_video_digest="video")
+    # Export replay and retained finalization refuse before any reservation.
+    with pytest.raises(ValueError, match="atlas_export_replay_cached_stage_missing"):
+        review.review_whole_views(**kwargs, retained_only=True)
+    assert not reviewer.asked and not reviewer.reserved
+    bought = review.review_whole_views(**kwargs)
+    assert review.review_whole_views(**kwargs, retained_only=True)["verdicts"] == bought["verdicts"]
+    assert len(reviewer.asked) == len(reviewer.reserved) == 1
+
+
 def test_a_view_without_an_overlapping_real_frame_is_never_admitted_or_reviewed(tmp_path, reviewer):
     from blueprint_pipeline import atlas_whole_view_review as review
     away = gap_view(keep(slice(20, None)), position=(0, 0, -50))
