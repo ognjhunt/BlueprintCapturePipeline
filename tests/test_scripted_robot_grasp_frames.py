@@ -27,7 +27,8 @@ def development_manifest(identity="franka_research_3_bimanual", model=None):
     from blueprint_pipeline.scripted_robot_robotiq_runtime import BODIES as ORIGINAL_BODIES
     from blueprint_pipeline.scripted_robot_industrial_robotiq_runtime import BODIES as INDUSTRIAL_BODIES
     from blueprint_pipeline.scripted_robot_yaskawa_robotiq_runtime import BODIES as YASKAWA_BODIES
-    BODIES = ORIGINAL_BODIES | INDUSTRIAL_BODIES | YASKAWA_BODIES
+    from blueprint_pipeline.scripted_robot_kuka_robotiq_runtime import BODIES as KUKA_BODIES
+    BODIES = ORIGINAL_BODIES | INDUSTRIAL_BODIES | YASKAWA_BODIES | KUKA_BODIES
     kind = "robotiq_ur" if identity in BODIES else frames._IDENTITIES[identity]
     frame = frames._FRAMES[kind]
     source = next(row for row in runtime_profiles()["profiles"] if row["embodiment_id"] == identity)

@@ -49,6 +49,7 @@ SCRIPTED_BODIES = ("i2rt_yam_bimanual", "agilex_piper_bimanual", "franka_researc
     "universal_robots_ur5e_robotiq_2f85_sim", "universal_robots_ur10e_robotiq_2f85_sim",
     "franka_research_3_robotiq_2f85_sim",
     "yaskawa_gp12_robotiq_2f85_sim", "yaskawa_gp20_robotiq_2f85_sim",
+    "kuka_lbr_iiwa_14_robotiq_2f85_sim",
     "fanuc_crx_10ia_robotiq_2f85_sim",
     "fanuc_crx_10ia_l_robotiq_2f85_sim",
     "fanuc_m710ic_45m_robotiq_2f85_sim",

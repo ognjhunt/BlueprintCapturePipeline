@@ -12,6 +12,7 @@
     "i2rt_yam_bimanual": "yam",
     "kinova_gen3": "kinova",
     "kinova_gen3_bimanual": "kinova",
+    "kuka_lbr_iiwa_14_robotiq_2f85_sim": "robotiq_fr3",
     "trlc_dk1_bimanual": "trlc",
     "ufactory_xarm7": "xarm",
     "ufactory_xarm7_bimanual": "xarm",
@@ -529,6 +530,27 @@
       {
         "path": "scripted_robot_yaskawa_robotiq_runtime.py",
         "sha256": "sha256:3722b080bab98cea0948356cf86dd2a25240a71fd6b57681f6801deba7930129"
+      }
+    ]
+  },
+  "kuka_policy_profile": "blueprint_scripted_pick_place_kuka_robotiq.v1",
+  "kuka_bodies": [
+    "kuka_lbr_iiwa_14_robotiq_2f85_sim"
+  ],
+  "kuka_source_identity": {
+    "schema_version": "blueprint_scripted_controller_source.v1",
+    "files": [
+      {
+        "path": "scripted_robot_baseline.py",
+        "sha256": "sha256:73b092973d2cfa922b38182729449cf7e06932a9fecbda00392356296c6ea6be"
+      },
+      {
+        "path": "scripted_robot_grasp_frames.py",
+        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+      },
+      {
+        "path": "scripted_robot_kuka_robotiq_runtime.py",
+        "sha256": "sha256:c7f56e29794b5a9b054aa9130fa46db45b8e56e9730730400fad74f39fc484e1"
       }
     ]
   }

@@ -108,7 +108,7 @@ install -m 0644 "$repo_root/config/policy_runtimes/scripted_robot_baseline_regis
 install -m 0644 "$repo_root/config/policy_runtimes/scripted_robot_baseline_license.txt" \
   "$stage/operator_door/scripted_robot_baseline_license.txt"
 install -d -m 0755 "$stage/operator_door/scripted-baseline-source"
-for scripted_source in scripted_robot_baseline.py scripted_robot_baseline_runtime.py scripted_robot_grasp_frames.py scripted_robot_robotiq_runtime.py scripted_robot_industrial_robotiq_runtime.py scripted_robot_yaskawa_robotiq_runtime.py; do
+for scripted_source in scripted_robot_baseline.py scripted_robot_baseline_runtime.py scripted_robot_grasp_frames.py scripted_robot_robotiq_runtime.py scripted_robot_industrial_robotiq_runtime.py scripted_robot_yaskawa_robotiq_runtime.py scripted_robot_kuka_robotiq_runtime.py; do
   install -m 0644 "$repo_root/src/blueprint_pipeline/$scripted_source" "$stage/operator_door/scripted-baseline-source/$scripted_source"
 done
 install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_registration_profile.json" \

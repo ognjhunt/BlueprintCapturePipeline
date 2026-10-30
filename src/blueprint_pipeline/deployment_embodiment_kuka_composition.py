@@ -13,8 +13,9 @@ import tempfile
 from .decision_evidence_contracts import cross_runtime_canonical_digest as digest
 from .immutable_directory_publication import publish_staged_immutable_directory
 
-COMPOSITE_SCHEMA = "embodiment_kuka_composite_source_bundle.v1"
 from . import deployment_embodiment_kuka_bridge as bridge
+
+COMPOSITE_SCHEMA = "embodiment_kuka_composite_source_bundle.v1"
 VARIANTS = {"kuka_lbr_iiwa_14_robotiq_2f85_sim": "kuka_lbr_iiwa_14"}
 ENTRY = "assembly.urdf.xacro"
 ARM_SOURCE_DIGEST = "sha256:df88cbae30a06109def7366679be5cac311786280b3988fa022646a08033a4e1"

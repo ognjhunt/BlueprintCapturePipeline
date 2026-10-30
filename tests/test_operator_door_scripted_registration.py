@@ -39,7 +39,7 @@ def installed_profile(tmp_path):
         shutil.copyfile(PROFILE_ROOT / name, target / name)
     code = target / "scripted-baseline-source"
     code.mkdir()
-    for name in set(scripts.CODE_FILES) | set(scripts.VARIANT_CODE_FILES) | set(scripts.INDUSTRIAL_CODE_FILES) | set(scripts.YASKAWA_CODE_FILES):
+    for name in set(scripts.CODE_FILES) | set(scripts.VARIANT_CODE_FILES) | set(scripts.INDUSTRIAL_CODE_FILES) | set(scripts.YASKAWA_CODE_FILES) | set(scripts.KUKA_CODE_FILES):
         shutil.copyfile(ROOT / "src/blueprint_pipeline" / name, code / name)
     return target
 
@@ -265,7 +265,7 @@ def test_actual_isolated_installer_can_load_scripted_contract_and_profile(batch)
     # run profile validation in an isolated stdlib subprocess, never execute a script.
     code = "import importlib.util; from pathlib import Path; s=importlib.util.spec_from_file_location('installed'," + repr(str(ROOT /
         "deploy/operator-door/operator_door/public_policy_registration.py")) + "); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
-    code += "p=m._scripted_contract().load_profile(Path(" + repr(str(batch.options["profile_root"])) + ")); assert len(p['bodies'])==20"
+    code += "p=m._scripted_contract().load_profile(Path(" + repr(str(batch.options["profile_root"])) + ")); assert len(p['bodies'])==21"
     result = subprocess.run([sys.executable, "-I", "-S", "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 

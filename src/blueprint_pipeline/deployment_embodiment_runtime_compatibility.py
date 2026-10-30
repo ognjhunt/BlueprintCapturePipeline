@@ -33,10 +33,14 @@ CURRENT_28_GENERATOR = 'sha256:1a5c110a25b04daddfad1c280a95ba40a6877dc0eb250f29f
 CURRENT_28_PROFILES = CURRENT_23_PROFILES | {'fanuc_crx_10ia_l_robotiq_2f85_sim', 'fanuc_crx_10ia_robotiq_2f85_sim', 'fanuc_m710ic_45m_robotiq_2f85_sim', 'abb_gofa_crb15000_12_127_robotiq_2f85_sim', 'abb_gofa_crb15000_5_95_robotiq_2f85_sim'}
 
 
+CURRENT_30_GENERATOR = "sha256:fb94386f26a8516680dd136b53884000d0420db47a520700bd920864bdef5f89"
+CURRENT_30_PROFILES = CURRENT_28_PROFILES | {"yaskawa_gp12_robotiq_2f85_sim", "yaskawa_gp20_robotiq_2f85_sim"}
+
+
 def is_exact_predecessor(record: dict) -> bool:
     profiles = {PREDECESSOR_GENERATOR: PREDECESSOR_PROFILES, B0_GENERATOR: B0_PROFILES,
                 CURRENT_21_GENERATOR: CURRENT_21_PROFILES, CURRENT_23_GENERATOR: CURRENT_23_PROFILES,
-                CURRENT_28_GENERATOR: CURRENT_28_PROFILES}
+                CURRENT_28_GENERATOR: CURRENT_28_PROFILES, CURRENT_30_GENERATOR: CURRENT_30_PROFILES}
     return record.get("embodiment_id") in profiles.get(record.get("generator_module_sha256"), ())
 
 

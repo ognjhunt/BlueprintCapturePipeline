@@ -91,6 +91,11 @@ for _identity in (*_INDUSTRIAL_VARIANTS, *_YASKAWA_VARIANTS):
         contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)]
 
 
+_PROFILES["kuka_lbr_iiwa_14_robotiq_2f85_sim"] = [_arm("base", "robotiq_85_base_link", 7, tcp="grasp_link",
+    fingers={"robotiq_85_left_knuckle_joint": [0.0, .7929]},
+    contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)]
+
+
 def runtime_profiles() -> dict[str, Any]:
     """Registered source bindings; this is deliberately not runnable-policy data."""
     return {"schema_version": "embodiment_runtime_profiles.v1", "claim_ceiling": "configuration_only",
