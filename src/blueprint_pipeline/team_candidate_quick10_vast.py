@@ -21,11 +21,9 @@ host itself has no egress firewall here.
 
 from __future__ import annotations
 
-import os
 import math
 import time
 import re
-import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -51,6 +49,7 @@ from .native_task_arena_vast import (
     _validated_policy_provider_runtime_environment,
 )
 from .paid_resource_admission import PaidResourceAdmissionGrant
+from .team_candidate_credential_file import credential_file_blockers
 
 _SECRET_FILE_ENV = re.compile(r"^[A-Z][A-Z0-9_]{2,58}_FILE$")
 # Ten episodes of per-query frames and review media (the pair budgets 8 GB for twenty).
@@ -60,22 +59,6 @@ TEAM_RESULT_UPLOAD_BYTES = 4 * POLICY_RESULT_UPLOAD_BYTES
 def team_result_upload_bytes(episodes: int) -> int:
     """The download budget for one team session, scaled from ten episodes to its own cell count."""
     return TEAM_RESULT_UPLOAD_BYTES * max(1, -(-int(episodes) // 10))
-
-
-def credential_file_blockers(path: str | Path | None) -> list[str]:
-    """The private token file the lane hands to the provider channel: regular, 0600, owned, bounded."""
-
-    if not path:
-        return ["team_candidate_credential_file_missing"]
-    candidate = Path(path)
-    try:
-        status = candidate.lstat()
-    except OSError:
-        return ["team_candidate_credential_file_missing"]
-    if (not candidate.is_absolute() or stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode)
-            or status.st_mode & 0o077 or status.st_uid != os.getuid() or not 0 < status.st_size <= 65_536):
-        return ["team_candidate_credential_file_not_private"]
-    return []
 
 
 def _blocked(blockers: list[str], **extra: Any) -> dict[str, Any]:

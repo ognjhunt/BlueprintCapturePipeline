@@ -68,3 +68,8 @@ def register_website_preparation_status_routes(app: FastAPI, *, require_admissio
         except Exception as exc:
             raise HTTPException(status_code=503, detail="website_preparation_status_unavailable") from exc
         return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+    # Separate opt-in companion: does not extend any v1-v4 receipt or byte cap.
+    from .website_candidate_readiness_http import register_candidate_readiness_routes
+    register_candidate_readiness_routes(app, require_admission=require_admission,
+        manifest_path_provider=manifest_path_provider, resolve_client_root=resolve_client_root)
