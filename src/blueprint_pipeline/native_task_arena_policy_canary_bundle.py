@@ -443,7 +443,8 @@ def build_policy_canary_session_bundle(
     if construction_result_path is None and not family_pending:
         raise ValueError("policy_canary_construction_result_record_invalid")
     from .policy_interface_binding import TEAM_HTTPS_INTERFACES, resolve_policy_interface
-    from .beta_robolab_runtime import stage_robolab_source, validate_robolab_policy_execution_spec
+    from .beta_robolab_runtime import stage_robolab_source
+    from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .task_family_policy_execution import FAMILY_BACKEND, validate_task_family_policy_execution_spec
 
     spec_paths = dict(execution_spec_paths or {})

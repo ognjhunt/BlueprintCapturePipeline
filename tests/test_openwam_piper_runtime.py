@@ -54,6 +54,7 @@ def prepared_registration(tmp_path, monkeypatch):
 
 
 def test_registered_local_checkpoint_retains_all_routes_and_builds_real_sealed_bundle(tmp_path, monkeypatch):
+    from blueprint_pipeline.beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from blueprint_pipeline.policy_canary_session_bundle_identity import validate_policy_canary_provider_manifest
     from blueprint_pipeline.openwam_piper_bundle import transfer_byte_budget
     from blueprint_pipeline.team_candidate_policy_client import canary_policy_client
@@ -74,6 +75,12 @@ def test_registered_local_checkpoint_retains_all_routes_and_builds_real_sealed_b
     candidate = next(row for row in plan["candidates"] if row["candidate_id"] == CANDIDATE_ID)
     assert candidate["status"] == "selected", candidate["blockers"]
     spec = launch._read(launch._bound_path(candidate["execution_spec"]["policy_execution_spec"]))
+    assert validate_robolab_policy_execution_spec(spec, candidate_id=CANDIDATE_ID) == spec
+    altered = deepcopy(spec)
+    altered["policy_spec"]["source_revision"] = "0" * 40
+    altered["execution_spec_digest"] = canonical_digest(altered, digest_field="execution_spec_digest")
+    with pytest.raises(ValueError, match="openwam_runtime_policy_identity_invalid"):
+        validate_robolab_policy_execution_spec(altered, candidate_id=CANDIDATE_ID)
     dependency_activations = []
     monkeypatch.setattr(client_dependencies, "activate_client_dependencies", lambda: dependency_activations.append(True))
     client = canary_policy_client(spec)
@@ -156,6 +163,42 @@ def test_source_archive_verifies_without_git_and_rejects_tamper(tmp_path):
     (extracted / "openwam/deploy/server.py").write_text("changed")
     with pytest.raises(ValueError, match="source_file_changed"):
         source.verify_source_directory(extracted, tmp_path / source.SOURCE_MANIFEST)
+
+
+def test_retained_source_fits_privileged_release_leaf_budget():
+    from blueprint_pipeline import openwam_piper_source as source
+    from scripts import release_source_manifest
+
+    vendor = Path(source.__file__).parent / "_vendor"
+    retained = list(vendor.glob("openwam-source-*"))
+    assert retained
+    assert all(path.stat().st_size <= release_source_manifest.MAX_LEAF_BYTES for path in retained)
+    assert sum(path.stat().st_size for path in retained) == source.SOURCE_ARCHIVE_BYTES
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed", "oversized"])
+def test_retained_source_damage_is_rejected_before_bundle_publication(tmp_path, monkeypatch, damage):
+    import shutil
+    from blueprint_pipeline import openwam_piper_source as source
+
+    package = tmp_path / "package"
+    vendor = package / "_vendor"
+    vendor.mkdir(parents=True)
+    original = Path(source.__file__).parent / "_vendor"
+    for name in (source.SOURCE_MANIFEST, *source.SOURCE_PARTS):
+        shutil.copyfile(original / name, vendor / name)
+    part = vendor / source.SOURCE_PARTS[0]
+    if damage == "missing":
+        part.unlink()
+    else:
+        raw = part.read_bytes()
+        part.write_bytes(raw + b"extra" if damage == "oversized" else bytes([raw[0] ^ 1]) + raw[1:])
+    monkeypatch.setattr(source, "__file__", str(package / "openwam_piper_source.py"))
+    output = tmp_path / "runtime"
+    output.mkdir()
+    with pytest.raises(ValueError, match="openwam_source_archive_changed"):
+        source.stage_source(output)
+    assert list(output.iterdir()) == []
 
 
 def test_download_is_exact_bounded_and_does_not_retry_or_publish_bad_bytes(tmp_path):

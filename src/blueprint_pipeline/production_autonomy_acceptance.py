@@ -364,7 +364,7 @@ def _sealed_execution_spec(entry: Mapping[str, Any], *, root: Path, candidate: M
         attempt: Mapping[str, Any], authority: Mapping[str, Any], runtime: Mapping[str, Any],
         bundle: Mapping[str, Any]) -> dict[str, Any]:
     """Read pinned JSON inside retained ZIP bytes, never import/execute the ZIP."""
-    from .beta_robolab_runtime import validate_robolab_policy_execution_spec
+    from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .beta_policy_screening_hosted import request_limit
 
     spec = validate_robolab_policy_execution_spec(

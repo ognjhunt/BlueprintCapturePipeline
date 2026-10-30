@@ -114,7 +114,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     """
     from .beta_policy_candidate_catalog import validate_catalog, load_catalog
     from .beta_policy_screening_plan import validate_execution_descriptor
-    from .beta_robolab_runtime import validate_robolab_policy_execution_spec
+    from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .robot_free_probe_gate import require_robot_free_probe, retained_probe_receipt, task_success_contract_binding
     from .team_candidate_quick10_registry import scene_facts
     from .task_family_policy_execution import FAMILY_BACKEND, validate_task_family_policy_execution_spec

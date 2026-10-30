@@ -13,6 +13,11 @@ SOURCE_MANIFEST = "openwam-piper-source.v1.json"
 SOURCE_MANIFEST_SHA256 = "d804f8d0e1735f95b7ce51ab2eebfd9b84d2468991f6e04f799dcaf5b91bab68"
 SOURCE_ARCHIVE_SHA256 = "sha256:58e3901bc1b15643828e17350fe27d0f4d2493a0b7076251d3d6b5354c980ab7"
 SOURCE_ARCHIVE_BYTES = 7_417_458
+SOURCE_PART_BYTES = 1024**2
+SOURCE_PARTS = tuple(
+    f"{SOURCE_ARCHIVE}.part-{index:03d}"
+    for index in range((SOURCE_ARCHIVE_BYTES + SOURCE_PART_BYTES - 1) // SOURCE_PART_BYTES)
+)
 
 
 def source_manifest(path: str | Path | None = None) -> dict:
@@ -26,13 +31,26 @@ def source_manifest(path: str | Path | None = None) -> dict:
 def stage_source(runtime: Path) -> dict:
     vendor = Path(__file__).parent / "_vendor"
     manifest = source_manifest()
-    archive = vendor / SOURCE_ARCHIVE
-    data = archive.read_bytes()
+    # Retain the archive in source-admissible leaves. Reassembly preserves the
+    # publisher archive's exact bytes and hash; privileged release limits stay
+    # unchanged, and no network fetch is needed when a bundle is prepared.
+    pieces = []
+    for index, name in enumerate(SOURCE_PARTS):
+        part = vendor / name
+        expected = min(SOURCE_PART_BYTES, SOURCE_ARCHIVE_BYTES - index * SOURCE_PART_BYTES)
+        if part.is_symlink() or not part.is_file() or part.stat().st_size != expected:
+            raise ValueError("openwam_source_archive_changed")
+        with part.open("rb") as stream:
+            data = stream.read(expected + 1)
+        if len(data) != expected:
+            raise ValueError("openwam_source_archive_changed")
+        pieces.append(data)
+    data = b"".join(pieces)
     if (len(data) != manifest["archive_size_bytes"]
             or "sha256:" + hashlib.sha256(data).hexdigest() != manifest["archive_sha256"]):
         raise ValueError("openwam_source_archive_changed")
-    for name in (SOURCE_ARCHIVE, SOURCE_MANIFEST):
-        shutil.copyfile(vendor / name, runtime / name)
+    (runtime / SOURCE_ARCHIVE).write_bytes(data)
+    shutil.copyfile(vendor / SOURCE_MANIFEST, runtime / SOURCE_MANIFEST)
     return {"source_revision": SOURCE_REVISION, "archive_sha256": manifest["archive_sha256"],
             "archive_size_bytes": manifest["archive_size_bytes"],
             "manifest_sha256": "sha256:" + SOURCE_MANIFEST_SHA256}
