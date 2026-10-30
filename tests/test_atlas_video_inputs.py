@@ -342,3 +342,68 @@ def test_frames_the_review_excluded_inside_a_still_interval_never_become_candida
 ])
 def test_only_a_removal_or_a_transient_in_an_edited_view_takes_the_reviewed_background(review, edited):
     assert video.takes_reviewed_background(review) is edited
+
+
+def test_splat_support_views_preserve_quality_connectivity_unique_pixels_and_cover(monkeypatch):
+    rows = [{**row, "source_image_digest": str(i)} for i, row in enumerate(_timeline(40))]
+    rows[10]["sharpness"] = 0
+    rows[11]["clipped_fraction"] = 1
+    rows[12]["source_image_digest"] = rows[0]["source_image_digest"]
+    monkeypatch.setattr(video, "_overlap", lambda a, b: (0, 0) if 13 in (a, b) else (100, 1))
+    kept, added = video.add_overlapping_support_views(frames=rows, features=list(range(40)),
+        selected=[0, 20, 39], minimum_frames=16)
+    assert len(kept) == 16 and {0, 20, 39} <= set(kept)
+    assert not {10, 11, 12, 13} & set(kept)
+    assert len({rows[i]["source_image_digest"] for i in kept}) == 16
+    assert {row["decision"] for row in added} == {"overlapping_support_view"}
+
+
+def test_splat_support_views_report_the_available_set_without_fabricating_a_count(monkeypatch):
+    rows = [{**row, "source_image_digest": str(i)} for i, row in enumerate(_timeline(4))]
+    monkeypatch.setattr(video, "_overlap", lambda *_: (100, 1))
+    kept, added = video.add_overlapping_support_views(frames=rows, features=list(range(4)),
+        selected=[0, 3], minimum_frames=16)
+    assert kept == [0, 1, 2, 3] and len(added) == 2
+
+
+def test_dense_splat_inputs_are_private_digest_bound_and_reused_without_reselection(tmp_path, monkeypatch):
+    from PIL import Image
+    from blueprint_pipeline import atlas_privacy_screen as screen
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    root = tmp_path / "survey"
+    root.mkdir()
+    rows = []
+    for i in range(40):
+        path = root / f"{i}.png"
+        Image.new("RGB", (32, 24), (i, 80, 160)).save(path)
+        rows.append({"frame_id": str(i), "timestamp_seconds": i * .25, "source_image_path": str(path),
+                     "source_image_digest": _sha256_file(path), "sharpness": 100, "clipped_fraction": 0})
+    survey = {"schema_version": video.SURVEY_SCHEMA, "heldout_pixels_included": False, "frames": rows,
+              "display_rotation_degrees": 0, "source_video_digest": "sha256:" + "a" * 64,
+              "sample_count": 40, "heldout_frame_count": 4}
+    survey["digest"] = canonical_digest(survey, digest_field="digest")
+    path = root / "atlas_video_survey.json"
+    path.write_text(json.dumps(survey))
+    review = {"schema_version": video.REVIEW_SCHEMA, "survey_digest": survey["digest"], "moving_people_excluded": True,
+              "same_scene_state": True, "reviewed_by": "test", "scene_state": "unchanged",
+              "static_intervals_seconds": [[0, 10]], "anchor_frame_id": "0", "excluded_frame_ids": ["20"],
+              "coverage_requirements": [
+                  {"role": "task_object", "label": "object", "required_frame_ids": ["0"]},
+                  {"role": "surrounding_scene", "label": "room", "required_frame_ids": ["39"]}],
+              "selection_budget": {"maximum_pose_cost_usd": 1, "input_cost_usd": .01, "rate_card_reference": "test",
+                  "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}}
+    monkeypatch.setattr(video, "_features", lambda row, _: int(row["frame_id"]))
+    monkeypatch.setattr(video, "_overlap", lambda *_: (100, 1))
+    monkeypatch.setattr(screen, "blur_faces", lambda image: (image, []))
+    options = dict(survey_path=path, review=review, output_root=tmp_path / "pose", minimum_frames=16, maximum_frames=30)
+    first = video.prepare_video_inputs(**options)
+    plan = json.loads((options["output_root"] / "atlas_view_selection.json").read_text())
+    assert len(first["frames"]) == 16 and "20" not in {row["frame_id"] for row in first["frames"]}
+    assert first["heldout_pixels_included"] is False and first["heldout_frame_count"] == 4
+    assert plan["frame_policy"]["overlapping_support_views_added"] == 14
+    assert plan["frame_policy"]["distinct_views_added"] == 0
+    assert plan["frame_policy"]["minimum_source_frames_met"] is True
+    monkeypatch.setattr(video, "_features", lambda *_: pytest.fail("retained inputs recomputed"))
+    assert video.prepare_video_inputs(**options) == first
+    with pytest.raises(ValueError, match="retained_video_inputs_invalid"):
+        video.prepare_video_inputs(**{**options, "minimum_frames": 0})

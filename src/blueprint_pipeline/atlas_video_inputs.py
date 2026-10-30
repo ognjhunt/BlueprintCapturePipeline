@@ -340,6 +340,45 @@ def add_distinct_views(*, frames, features, selected, maximum_frames, policy=Non
                           for i, decision in sorted(decisions.items(), key=lambda item: times[item[0]])]
 
 
+def add_overlapping_support_views(*, frames, features, selected, minimum_frames, policy=None):
+    """Densify a valid cover for splat training without calling small motions new viewpoints."""
+    policy = dict(policy or {})
+    kept = set(selected)
+    digests = {frames[i]["source_image_digest"] for i in kept}
+    pending = {i for i, row in enumerate(frames) if i not in kept
+               and row["sharpness"] >= policy.get("minimum_sharpness", 25)
+               and row["clipped_fraction"] <= policy.get("maximum_clipped_fraction", .45)}
+    times = [row["timestamp_seconds"] for row in frames]
+    cache, added = {}, []
+    while pending and len(kept) < minimum_frames:
+        best = None
+        ranked = sorted(pending, key=lambda i: (-min(abs(times[i] - times[k]) for k in kept),
+                                               -frames[i]["sharpness"], i))
+        for i in ranked:
+            if frames[i]["source_image_digest"] in digests:
+                continue
+            neighbours = sorted(kept, key=lambda k: (abs(times[i] - times[k]), k))[:2]
+            connected = False
+            for k in neighbours:
+                pair = tuple(sorted((i, k)))
+                if pair not in cache:
+                    cache[pair] = _overlap(features[pair[0]], features[pair[1]])
+                support, _ = cache[pair]
+                if support >= policy.get("minimum_overlap_inliers", 24):
+                    connected = True
+                    break
+            if connected:
+                best = i
+                break
+        if best is None:
+            break
+        kept.add(best)
+        pending.remove(best)
+        digests.add(frames[best]["source_image_digest"])
+        added.append({"frame_id": frames[best]["frame_id"], "decision": "overlapping_support_view"})
+    return sorted(kept), added
+
+
 def takes_reviewed_background(review: Mapping[str, Any]) -> bool:
     """Whether Atlas may receive only reviewed, edited views (the editor-first path).
 
@@ -373,7 +412,7 @@ def selection_frame_budget(review: Mapping[str, Any]) -> int:
     return count
 
 
-def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_frames):
+def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_frames, minimum_frames=0):
     """Reuse a completed CPU handoff only with its current source/privacy bytes.
 
     A later admission wait must not rerun feature matching and face screening.
@@ -422,14 +461,19 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
             and all(type(value) is int and value >= 0 for value in faces.values())
             and {key: value for key, value in privacy.items() if key != "blurred_faces_by_frame"}
             == screen_identity())
+    selection_profile = {"minimum_source_frames": minimum_frames} if minimum_frames else {}
+    support_count = sum(row.get("decision") == "overlapping_support_view" for row in plan.get("diagnostics", []))
+    require(0 <= support_count <= len(prepared) - cover_count)
     require(inputs.get("binding") == {
         "source_video_digest": survey["source_video_digest"], "maximum_frames": maximum,
         "adapter_version": 3, "survey_digest": survey["digest"],
-        "scene_state_review_digest": canonical_digest(review), "privacy_screen": privacy})
+        "scene_state_review_digest": canonical_digest(review), "privacy_screen": privacy, **selection_profile})
     require(plan.get("maximum_frames") == maximum and plan.get("selected_frame_count") == len(prepared)
             and policy == {"basis": "accuracy_first", "provider_input_capacity": capacity,
                            "frame_target": maximum, "connected_cover_frames": cover_count,
-                           "distinct_views_added": len(prepared) - cover_count}
+                           "distinct_views_added": len(prepared) - cover_count - support_count,
+                           **({**selection_profile, "overlapping_support_views_added": support_count,
+                               "minimum_source_frames_met": len(prepared) >= minimum_frames} if minimum_frames else {})}
             and plan.get("privacy_screen") == privacy
             and plan.get("task_and_surrounding_scene_covered") is (review.get('review_scope') != 'observed_room_only')
             and (review.get('review_scope') != 'observed_room_only' or plan.get('observed_room_only') is True)
@@ -449,7 +493,7 @@ def _retained_video_inputs(*, root, survey, review, frames, capacity, budget_fra
 
 
 def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output_root: Path,
-                         maximum_frames: int | None = None) -> dict[str, Any]:
+                         maximum_frames: int | None = None, minimum_frames: int = 0) -> dict[str, Any]:
     """Build the existing pose producer's pending input from a reviewed survey."""
     from .website_worldlabs import prepare_atlas_pose_inputs
     from .website_scene_geometry import INPUT_SCHEMA
@@ -478,6 +522,8 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     # The connected cover is bounded only by the reviewed dollars (or an operator's
     # explicit lower limit); added views by the provider's configured input capacity.
     capacity = MAX_POSE_INPUT_IMAGES if maximum_frames is None else maximum_frames
+    if type(minimum_frames) is not int or not 0 <= minimum_frames <= capacity:
+        raise ValueError("atlas_selection_minimum_invalid")
     cover_limit = budget_frames if maximum_frames is None else min(maximum_frames, budget_frames)
     # Frames the review judged unusable inside a still interval (someone filling
     # the view, another door state) never become candidates. The direct path
@@ -500,7 +546,8 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
         requirements = [*requirements, {"role": "support_surface", "label": "Reviewed reconstruction gap inputs",
             "required_frame_ids": review["additional_input_frame_ids"]}]
     retained = _retained_video_inputs(root=output_root.resolve(), survey=survey, review=review,
-                                     frames=frames, capacity=capacity, budget_frames=budget_frames)
+                                     frames=frames, capacity=capacity, budget_frames=budget_frames,
+                                     minimum_frames=minimum_frames)
     if retained is not None:
         return retained
     features = [_features(r, rotation) for r in frames]
@@ -517,6 +564,13 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
     selected, added = add_distinct_views(frames=frames, features=features, selected=cover,
                                          maximum_frames=maximum_frames, policy=review.get("selection_policy"))
     diagnostics = [*diagnostics, *added]
+    distinct_count = len(selected) - len(cover)
+    support = []
+    if minimum_frames:
+        selected, support = add_overlapping_support_views(frames=frames, features=features, selected=selected,
+            minimum_frames=minimum_frames, policy=review.get("selection_policy"))
+        support_ids = {row["frame_id"] for row in support}
+        diagnostics = [row for row in diagnostics if row["frame_id"] not in support_ids] + support
     if len(selected) > budget_frames:
         # Dollars only ever refuse the accurate set; they never pose fewer frames.
         raise ValueError("atlas_selection_budget_below_accurate_inputs")
@@ -542,7 +596,8 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
               "binding": {"source_video_digest": survey["source_video_digest"], "maximum_frames": maximum_frames,
                           "adapter_version": 3, "survey_digest": survey["digest"],
                           "scene_state_review_digest": canonical_digest(review),
-                          "privacy_screen": {**screen_identity(), "blurred_faces_by_frame": blurred}},
+                          "privacy_screen": {**screen_identity(), "blurred_faces_by_frame": blurred},
+                          **({"minimum_source_frames": minimum_frames} if minimum_frames else {})},
               "frames": prepared, "source_sample_count": survey["sample_count"],
               "heldout_frame_count": survey["heldout_frame_count"], "heldout_pixels_included": False}
     inputs["digest"] = canonical_digest(inputs, digest_field="digest")
@@ -560,7 +615,10 @@ def prepare_video_inputs(*, survey_path: Path, review: Mapping[str, Any], output
             "maximum_frames": maximum_frames, "diagnostics": diagnostics,
             "frame_policy": {"basis": "accuracy_first", "provider_input_capacity": capacity,
                              "frame_target": maximum_frames,
-                             "connected_cover_frames": len(cover), "distinct_views_added": len(selected) - len(cover)},
+                             "connected_cover_frames": len(cover), "distinct_views_added": distinct_count,
+                             **({"minimum_source_frames": minimum_frames,
+                                 "overlapping_support_views_added": len(support),
+                                 "minimum_source_frames_met": len(selected) >= minimum_frames} if minimum_frames else {})},
             "task_and_surrounding_scene_covered": review.get('review_scope') != 'observed_room_only',
             **({'observed_room_only': True} if review.get('review_scope') == 'observed_room_only' else {}),
             **({"uncaptured_regions": uncaptured} if uncaptured else {}),
