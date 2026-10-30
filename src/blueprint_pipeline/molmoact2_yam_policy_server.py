@@ -112,7 +112,9 @@ class MolmoAct2YAMServer:
 
 def build_server(*, checkpoint: str | Path, binding: MolmoAct2YAMBinding) -> MolmoAct2YAMServer:
     binding.validate()
-    receipt = verify_checkpoint_directory(checkpoint)
+    deadline = os.environ.get("BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH")
+    receipt = (verify_checkpoint_directory(checkpoint, deadline_epoch=float(deadline))
+               if deadline is not None else verify_checkpoint_directory(checkpoint))
     # This entrypoint runs in its own interpreter. No credentials/network lookup
     # or upstream server's mutable-cache BF16 patch is needed for FP32 inference.
     os.environ["HF_HUB_OFFLINE"] = "1"

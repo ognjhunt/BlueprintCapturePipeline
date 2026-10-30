@@ -6,17 +6,13 @@ and model loading use only these staged files. No provider is created here.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
-import tarfile
 import time
 from urllib.parse import quote
 
@@ -25,103 +21,10 @@ from .openwam_piper_policy import MODEL_ID, MODEL_REVISION, OpenWAMPiperPolicyCl
 from .openwam_piper_runtime import policy_binding, serialized_binding, validate_execution_spec
 from .openwam_piper_source import SOURCE_ARCHIVE, SOURCE_MANIFEST, extract_source
 
-DEADLINE_ENV = "BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH"
-ALLOWED_ORIGINS = (
-    "https://huggingface.co", "https://cdn-lfs.huggingface.co", "https://cdn-lfs-us-1.hf.co",
-    "https://cdn-lfs.hf.co", "https://cas-bridge.xethub.hf.co", "https://us.aws.cdn.hf.co",
-    "https://github.com", "https://release-assets.githubusercontent.com", "https://objects.githubusercontent.com",
-    "https://files.pythonhosted.org", "https://download.pytorch.org", "https://download-r2.pytorch.org",
+from .local_policy_provisioning import (
+    DEADLINE_ENV, TransferBudget, fetch_exact, remaining_seconds,
+    _sha256, _command, _extract_interpreter, _install_wheels,
 )
-
-
-def remaining_seconds(deadline: float) -> float:
-    remaining = deadline - time.time()
-    if not math.isfinite(remaining) or remaining <= 0:
-        raise ValueError("openwam_provisioning_deadline_exceeded")
-    return remaining
-
-
-def _sha256(path: Path, *, deadline: float | None = None) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
-            if deadline is not None:
-                remaining_seconds(deadline)
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
-
-
-@dataclass
-class TransferBudget:
-    maximum_bytes: int
-    attempted_bytes: int = 0
-
-    def reserve(self, size: int) -> None:
-        if type(size) is not int or size <= 0 or self.attempted_bytes + size > self.maximum_bytes:
-            raise ValueError("openwam_total_download_bound_exceeded")
-        self.attempted_bytes += size
-
-
-def fetch_exact(row: dict, destination: Path, *, deadline: float, fetch=None,
-                budget: TransferBudget | None = None) -> dict:
-    """No retry, ambient credentials, arbitrary output tree or unbounded reads."""
-    from .core.security_controls import fetch_bounded_https
-
-    size = row["size_bytes"]
-    expected = row["sha256"]
-    if isinstance(expected, str) and re.fullmatch(r"[0-9a-f]{64}", expected):
-        expected = "sha256:" + expected
-    if type(size) is not int or size < 1 or not isinstance(expected, str) or len(expected) != 71:
-        raise ValueError("openwam_download_identity_invalid")
-    if destination.is_symlink() or any(parent.is_symlink() for parent in destination.parents):
-        raise ValueError("openwam_download_path_invalid")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists():
-        if destination.stat().st_size == size and _sha256(destination, deadline=deadline) == expected:
-            return {"status": "verified", "size_bytes": size, "sha256": expected, "cache_hit": True}
-        raise ValueError("openwam_download_existing_file_changed")
-    temporary = destination.with_name(destination.name + ".partial")
-    if temporary.exists() or temporary.is_symlink():
-        raise ValueError("openwam_download_partial_exists")
-    try:
-        if budget is not None:
-            budget.reserve(size)
-        (fetch or fetch_bounded_https)(row["url"], allowed_origins=ALLOWED_ORIGINS,
-            timeout_seconds=max(1, min(600, int(remaining_seconds(deadline)))), max_bytes=size,
-            max_redirects=5, output_path=temporary)
-        remaining_seconds(deadline)
-        if temporary.stat().st_size != size or _sha256(temporary, deadline=deadline) != expected:
-            raise ValueError("openwam_download_bytes_changed")
-        os.replace(temporary, destination)
-        return {"status": "verified", "size_bytes": size, "sha256": expected, "cache_hit": False}
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-def _command(argv: list[str], *, deadline: float, env: dict | None = None) -> None:
-    subprocess.run(argv, check=True, timeout=remaining_seconds(deadline), env=env)
-
-
-def _extract_interpreter(path: Path, destination: Path, *, maximum_bytes: int) -> None:
-    destination.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(path) as archive:
-        members = archive.getmembers()
-        if sum(member.size for member in members) > maximum_bytes:
-            raise ValueError("openwam_interpreter_expansion_exceeds_bound")
-        # Python's data filter refuses outside links, devices and absolute paths.
-        archive.extractall(destination, filter="data")
-
-
-def _install_wheels(python: Path, rows: list[dict], wheels: Path, *, deadline: float,
-                    target: Path | None = None) -> None:
-    requirements = wheels / ("client-requirements.txt" if target else "server-requirements.txt")
-    requirements.write_text("\n".join(str(wheels / row["filename"]) + " --hash=sha256:" + row["sha256"].removeprefix("sha256:")
-                                      for row in rows) + "\n")
-    argv = [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-index", "--no-deps",
-            "--require-hashes", "--no-compile", "-r", str(requirements)]
-    if target is not None:
-        argv += ["--target", str(target)]
-    _command(argv, deadline=deadline)
 
 
 def _start_server(*, python: Path, runtime: Path, output: Path, root: Path,
@@ -245,7 +148,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         # Provider URL/query or secret values never enter the public result.
         reason = str(exc)
-        code = reason if re.fullmatch(r"openwam_[a-z0-9_]{1,120}", reason) else "openwam_provisioning_failed:" + type(exc).__name__
+        code = reason if re.fullmatch(r"(?:openwam|local_policy)_[a-z0-9_]{1,120}", reason) else "openwam_provisioning_failed:" + type(exc).__name__
         result = {"status": "blocked", "blockers": [code],
                   "candidate_policy_queried": False}
     (output / "openwam_piper_provisioning.v1.json").write_text(json.dumps(result, sort_keys=True))

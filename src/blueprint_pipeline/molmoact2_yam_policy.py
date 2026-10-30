@@ -259,7 +259,8 @@ class MolmoAct2YAMPolicyClient:
         return {"policy_id": MODEL_ID, "policy_interface_id": INTERFACE_ID,
                 "candidate_policy_queried": self.candidate_policy_queried,
                 "last_inference_evidence": self.last_inference_evidence() if self._inference_evidence else None,
-                "native_execution_validated": False, "catalog_registered": False}
+                "native_execution_validated": False, "catalog_registration_authority": "sealed_beta_admission",
+                "execution_binding_digest": getattr(self, "execution_binding_digest", None)}
 
     def close(self) -> None:
         self._session = None
