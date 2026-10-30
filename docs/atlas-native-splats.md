@@ -16,14 +16,16 @@ reviewed policy carries `refined_splat_cost_usd`, the refined splat follows
 that draft directly. The later coverage-repair pass is skipped: it measures
 gaps in the draft, which is no longer the final appearance.
 
-
-1. `atlas_native_splat.prepare_splat_request` posts exactly the frames the
-   draft fused, each with its camera, linear depth and an alpha mask of the
-   pixels the draft used (finite depth, confidence > 0). Frames on one grid go
-   unchanged; mixed grids (portrait source beside landscape generated views)
-   use the ray-preserving photograph tiler, with the mask taken from the
-   projected depth. Generated gap views therefore enter the refined splat only
-   where their review admitted them.
+1. `atlas_native_splat.prepare_splat_request` posts the views the final draft
+   fused, each with its camera and linear depth. Real frames go in whole, with
+   Atlas's own depth confidence as `depth.confidenceAsset`: low depth confidence
+   does not make their RGB wrong. A view a review admitted only in part
+   (generated gap views, recovered geometry) carries that admission as its alpha
+   `maskAsset`. `atlas_depth_splat.restrict_frame` records it as `keep_mask`
+   beside the fused `confidence * mask`, and a view with nothing admitted is left
+   out. Frames on one grid go unchanged; mixed grids (portrait source beside
+   landscape generated views) use the ray-preserving photograph tiler, with the
+   admitted region projected into each tile.
 2. `run_native_splat` reserves the reviewed price, submits through the shared
    admitted task runner, and resumes a pending operation by ID (an operation
    takes about 20–30 minutes; each controller pass returns `processing`).

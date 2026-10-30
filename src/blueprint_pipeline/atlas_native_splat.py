@@ -1,10 +1,10 @@
 """Atlas refined splats as the final appearance, behind the admitted task runner.
 
 ADP-040 / day 28. The local depth-fused draft still drives gap detection and
-coverage review. When the reviewed policy prices a refined splat, the frames
-and pixels that draft fused (finite depth and confidence > 0) are posted once
-to posedImages2Splats, and its SPZ replaces the draft for meshing, export and
-scene handoff. Refinement is generated appearance: it never proves metric
+gap review. When the reviewed policy prices a refined splat, the views that
+draft fused are posted once to posedImages2Splats (real frames whole; partly
+admitted generated views only where their review admitted them), and its SPZ
+replaces the draft for meshing, export and scene handoff. Refinement is generated appearance: it never proves metric
 scale, source-geometry preservation or physics.
 """
 from __future__ import annotations
@@ -38,25 +38,34 @@ def load_splat_manifest(root: Path) -> dict:
     return value
 
 
-def _keep_mask(valid, path: Path) -> Path | None:
-    """The fused pixels as an alpha mask (1 kept, 0 excluded); none when every pixel is kept."""
+def _png(values, path: Path) -> Path:
     from PIL import Image
 
-    if valid.all():
-        return None
-    Image.fromarray(np.where(valid, 255, 0).astype(np.uint8)).save(path)
+    Image.fromarray(values.astype(np.uint8)).save(path)
     return path
 
 
+def _admission(frame) -> tuple[bool, object]:
+    """Whether a view enters the splat, and its alpha mask (None: every pixel).
+
+    Real frames go in whole: low Atlas depth confidence does not make their RGB
+    wrong. A review that admitted only part of a view (generated gap views,
+    recovered geometry) recorded that in ``keep_mask``; only those pixels enter.
+    """
+    keep = frame.get("keep_mask")
+    if keep is None or keep.all():
+        return True, None
+    return bool(keep.any()), keep
+
+
 def prepare_splat_request(*, frames, root: Path):
-    """Post every fused frame with its own camera, linear depth and fused-pixel mask.
+    """Post every fused view with its camera, linear depth, Atlas depth confidence and review mask.
 
     One grid is posted unchanged; mixed grids (portrait source beside landscape
     generated views) use the ray-preserving photograph tiler.
     """
     from PIL import Image
     from .atlas_depth_splat import write_exr_depth
-    from .atlas_scene_preservation import _valid
     from .website_atlas_tasks import validate_task_request
 
     root.mkdir(parents=True, exist_ok=True)
@@ -69,41 +78,53 @@ def prepare_splat_request(*, frames, root: Path):
             if (frame["rgb"].shape != (k["height"], k["width"], 3)
                     or frame["depth"].shape != (k["height"], k["width"])):
                 raise ValueError("atlas_splat_frame_grid_changed")
-            key, valid = frame["frame_id"], _valid(frame)
-            if not valid.any():
-                continue  # The draft admitted none of this view's pixels.
+            admitted, keep = _admission(frame)
+            if not admitted:
+                continue  # The review admitted none of this view's pixels.
+            key = frame["frame_id"]
             rgb = root / f"{key}.png"
             Image.fromarray(frame["rgb"]).save(rgb)
+            confidence = np.clip(np.round(np.nan_to_num(frame["confidence"]) * 255), 0, 255)
             views.append((key, rgb, write_exr_depth(root / f"{key}.exr", frame["depth"]),
-                          _keep_mask(valid, root / f"{key}-mask.png"),
+                          None if keep is None else _png(np.where(keep, 255, 0), root / f"{key}-mask.png"),
+                          _png(confidence, root / f"{key}-confidence.png"),
                           {"intrinsics": frame["intrinsics"], "extrinsics": frame["extrinsics"]}))
     else:
         from .atlas_scene_chisel import prepare_source_photographs, project_source_depth
 
-        by_id = {frame["frame_id"]: frame for frame in keyed}
-        for photo in prepare_source_photographs(frames=keyed, root=root / "photographs"):
+        by_id = {}
+        for frame in keyed:
+            admitted, keep = _admission(frame)
+            if admitted:
+                # Project depth over the admitted pixels only (all of a real frame).
+                support = np.ones(frame["depth"].shape, np.float32) if keep is None else keep.astype(np.float32)
+                by_id[frame["frame_id"]] = ({**frame, "confidence": support}, keep is not None)
+        for photo in prepare_source_photographs(frames=[f for f, _ in by_id.values()], root=root / "photographs"):
             key = photo["frame_id"]
-            depth = project_source_depth([by_id[photo["source_frame_id"]]], photo["camera"])
+            source, masked = by_id[photo["source_frame_id"]]
+            depth = project_source_depth([source], photo["camera"])
             valid = np.isfinite(depth) & (depth > 0)
-            if not valid.any():
+            if masked and not valid.any():
                 continue
             views.append((key, Path(photo["image_path"]), write_exr_depth(root / f"{key}.exr", depth),
-                          _keep_mask(valid, root / f"{key}-mask.png"),
-                          photo["camera"]))
+                          _png(np.where(valid, 255, 0), root / f"{key}-mask.png") if masked and not valid.all() else None,
+                          None, photo["camera"]))
     if len(views) < 2:
         raise ValueError("atlas_splat_frames_required")
     contexts, uploads, provenance = [], {}, []
-    for i, (key, rgb, depth, mask, camera) in enumerate(views):
+    for i, (key, rgb, depth, mask, confidence, camera) in enumerate(views):
         context = {"imageAsset": {"assetId": f"upload:frame-{i}-rgb"}, "camera": camera,
                    "depth": {"depthAsset": {"assetId": f"upload:frame-{i}-depth"}}}
         row = {"frame_id": frames[int(key[:4])]["frame_id"], "camera": camera}
-        for role, path in (("rgb", rgb), ("depth", depth), ("mask", mask)):
+        for role, path in (("rgb", rgb), ("depth", depth), ("mask", mask), ("confidence", confidence)):
             if path is None:
                 continue
             uploads[f"frame-{i}-{role}"] = {"path": str(Path(path).resolve()), "sha256": _sha256_file(Path(path))}
             row[f"{role}_sha256"] = uploads[f"frame-{i}-{role}"]["sha256"]
         if mask is not None:
             context["maskAsset"] = {"assetId": f"upload:frame-{i}-mask"}
+        if confidence is not None:
+            context["depth"]["confidenceAsset"] = {"assetId": f"upload:frame-{i}-confidence"}
         contexts.append(context)
         provenance.append(row)
     request = {"posedFrames": contexts}

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .atlas_depth_splat import _rotation_matrix, MAX_MEDIAN_CROSS_VIEW_RESIDUAL
+from .atlas_depth_splat import _rotation_matrix, restrict_frame, MAX_MEDIAN_CROSS_VIEW_RESIDUAL
 from .common import write_json
 from .atlas_pricing import render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
@@ -346,7 +346,7 @@ def preserve_generated_view(*, generated, prepared, references, output_root, nat
         if gap.shape != allowed.shape:
             raise ValueError('atlas_completion_gap_mask_grid_changed')
         allowed &= gap
-    frame = {**generated, 'rgb': composite, 'confidence': generated['confidence'] * allowed}
+    frame = restrict_frame(generated, allowed, rgb=composite)
     image, known_mask, geometry_mask = (output_root / n for n in ('image.png', 'known.png', 'generated-geometry.png'))
     _save_image(image, composite)
     _save_image(known_mask, keep.astype(np.uint8) * 255)

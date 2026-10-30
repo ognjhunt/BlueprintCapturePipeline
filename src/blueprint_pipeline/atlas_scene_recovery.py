@@ -11,6 +11,7 @@ from PIL import Image
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+from .atlas_depth_splat import restrict_frame
 
 RECOVERY_REVISION = "v1"
 
@@ -212,10 +213,9 @@ def recover_reviewed_geometry(*, frames, geometry_frames, reviewed_views, root, 
             if not row.get("exportable_samples"):
                 continue
             native = by_id[row["frame_id"]]["frame"]
-            recovered.append({**native,
-                "rgb": np.asarray(Image.open(row["image_path"]).convert("RGB")),
-                "confidence": native["confidence"] *
-                    (np.asarray(Image.open(row["mask_path"]).convert("L")) > 0)})
+            recovered.append(restrict_frame(native,
+                np.asarray(Image.open(row["mask_path"]).convert("L")) > 0,
+                rgb=np.asarray(Image.open(row["image_path"]).convert("RGB"))))
         return recovered, report
 
     extent = observed_scene_bounds(frames)

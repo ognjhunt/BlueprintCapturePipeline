@@ -188,6 +188,16 @@ def write_exr_depth(path: Path, depth: np.ndarray) -> Path:
     return path
 
 
+def restrict_frame(frame: Mapping[str, Any], mask, **changes: Any) -> dict[str, Any]:
+    """Exclude pixels outside a review mask from fusion, and keep that mask for refined splats.
+
+    Fusion confidence is exactly ``confidence * mask``. ``keep_mask`` separates the
+    review's admission from Atlas's own depth confidence, which stays per pixel.
+    """
+    keep = (np.asarray(mask) > 0) & frame.get("keep_mask", True)
+    return {**frame, **changes, "confidence": frame["confidence"] * mask, "keep_mask": keep}
+
+
 def posed_frame(*, frame_id: str, rgb: np.ndarray, depth: np.ndarray, confidence: np.ndarray,
                 camera: Mapping[str, Any]) -> dict[str, Any]:
     """Bind one returned image/depth/confidence bundle to the camera Atlas returned with it."""

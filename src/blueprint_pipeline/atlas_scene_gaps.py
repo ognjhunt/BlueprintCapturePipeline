@@ -15,6 +15,7 @@ import numpy as np
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
+from .atlas_depth_splat import restrict_frame
 
 
 def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None,
@@ -331,6 +332,5 @@ def retained_completion(*, root, pose_digest):
                 assets[row['role']] = path
             frame['rgb'] = np.asarray(Image.open(assets['composite_rgb']).convert('RGB'))
             mask = np.asarray(Image.open(assets['generated_geometry_mask']).convert('L')) == 255
-            frame['confidence'] = frame['confidence'] * mask
-            frames.append(frame)
+            frames.append(restrict_frame(frame, mask))
     return frames, report

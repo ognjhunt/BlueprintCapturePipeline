@@ -185,24 +185,34 @@ def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path):
             task_context={"context_digest": "sha256:" + "d" * 64}, task_runner=runner)
 
 
-def test_refined_request_masks_exactly_the_pixels_the_draft_would_not_fuse(tmp_path):
+def test_real_views_go_in_whole_and_reviewed_views_only_where_admitted(tmp_path):
     from PIL import Image
     frames = source_frames()
-    frames[1]["confidence"][:, :10] = 0
+    # Atlas's own low depth confidence: the RGB there is still real footage.
+    frames[0]["confidence"][:, :10] = 0
+    keep = np.zeros(frames[1]["depth"].shape, bool)
+    keep[:, 20:] = True
+    reviewed = depth.restrict_frame(frames[1], keep)
+    # Fusion sees exactly confidence * mask, as before.
+    assert np.array_equal(reviewed["confidence"], frames[1]["confidence"] * keep)
     # A recovered view can repeat a generated view's ID; each is posted on its own.
-    frames[1]["frame_id"] = frames[0]["frame_id"]
+    frames[1] = {**reviewed, "frame_id": frames[0]["frame_id"]}
     request, uploads, provenance = native.prepare_splat_request(frames=frames, root=tmp_path)
-    assert len(request["posedFrames"]) == 2 and "maskAsset" not in request["posedFrames"][0]
-    assert request["posedFrames"][1]["maskAsset"] == {"assetId": "upload:frame-1-mask"}
-    mask = np.asarray(Image.open(uploads["frame-1-mask"]["path"]))
-    assert np.array_equal(mask == 255, frames[1]["confidence"] > 0) and set(np.unique(mask)) == {0, 255}
+    real, partial = request["posedFrames"]
+    assert "maskAsset" not in real
+    assert real["depth"]["confidenceAsset"] == {"assetId": "upload:frame-0-confidence"}
+    confidence = np.asarray(Image.open(uploads["frame-0-confidence"]["path"]))
+    assert (confidence[:, :10] == 0).all() and (confidence[:, 10:] == 255).all()
+    assert partial["maskAsset"] == {"assetId": "upload:frame-1-mask"}
+    assert np.array_equal(np.asarray(Image.open(uploads["frame-1-mask"]["path"])) == 255, keep)
     assert provenance[1]["mask_sha256"] == uploads["frame-1-mask"]["sha256"]
-    # A view the draft admitted no pixel of is not posted at all.
-    empty = {**frames[0], "frame_id": "generated", "confidence": np.zeros_like(frames[0]["confidence"])}
+    # A view whose review admitted nothing is not posted; masks compose.
+    empty = depth.restrict_frame({**source_frames()[0], "frame_id": "generated"}, np.zeros_like(keep))
     request, _, provenance = native.prepare_splat_request(frames=[*frames, empty], root=tmp_path / "with-empty")
     assert len(request["posedFrames"]) == 2 and "generated" not in {row["frame_id"] for row in provenance}
     with pytest.raises(ValueError, match="frames_required"):
         native.prepare_splat_request(frames=[frames[0], empty], root=tmp_path / "too-few")
+    assert np.array_equal(depth.restrict_frame(reviewed, ~keep)["keep_mask"], np.zeros_like(keep))
 
 
 def test_mixed_grids_are_posted_on_one_grid_with_their_rays(tmp_path):
