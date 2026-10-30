@@ -233,3 +233,42 @@ def test_zero_exit_without_readable_import_receipt_is_individual_failure(batch, 
     assert [row["status"] for row in result["results"]] == ["import_failed", "imported"]
     assert not (batch.output / "bodies" / IDS[0]).exists()
     assert (batch.output / "bodies" / IDS[1] / "prepared" / "robot.usd").is_file()
+
+
+def test_zero_exit_after_traceback_publishes_the_logged_failure_code_only(batch):
+    """Isaac's fast shutdown exited 0 after each batch05 traceback; rows said only ValueError."""
+    batch.inputs(ids=IDS[:2])
+
+    def run(command, **options):
+        if command[-1] == IDS[0]:
+            options["stdout"].write(
+                b"Traceback (most recent call last):\n  File \"x.py\", line 1, in import_one\n"
+                b"blueprint_pipeline.deployment_embodiment_assets.AssetPreparationError: "
+                b"asset_import_unbound_dependency:OmniGlass.mdl\n[Warning] later shutdown noise\n")
+            return SimpleNamespace(returncode=0)
+        options["stdout"].write(b"ValueError: Not A Code with /host/path\n")
+        return SimpleNamespace(returncode=0)
+
+    result = batch.execute(run)
+    assert [(row["status"], row["reason"]) for row in result["results"]] == [
+        ("import_failed", "asset_import_unbound_dependency"), ("import_failed", "ValueError")]
+
+
+def test_binding_failure_log_carries_imported_structure_names_only(tmp_path, capsys):
+    """Batch05's TRLC binding failed on link names that were never retained."""
+    from blueprint_pipeline import deployment_embodiment_preparation_worker as module
+
+    module.print_imported_structure(tmp_path / "missing")
+    assert capsys.readouterr().err == ""
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    (prepared / "asset-import.json").write_text(json.dumps({"structure": {
+        "body_paths": [f"/station/Geometry/left_link{i}" for i in range(500)],
+        "joint_names": ["left_joint1"], "world_anchor_links": []}, "settings": {"asset_path": "/private/x"}}))
+    module.print_imported_structure(prepared)
+    line = capsys.readouterr().err.strip()
+    assert line.startswith("imported_structure ")
+    summary = json.loads(line.split(" ", 1)[1])
+    assert set(summary) == {"body_paths", "joint_names", "world_anchor_links"}
+    assert len(summary["body_paths"]) == 400 and summary["world_anchor_links"] == []
+    assert "/private/x" not in line
