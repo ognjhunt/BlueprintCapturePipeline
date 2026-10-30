@@ -1,9 +1,9 @@
 """Production Atlas preparation controller for one website capture.
 
-Source review, adaptive inputs, admitted posing, generated RGBD and portable
-downloads run on the worker. The public API cannot create a splat, so the worker
-fuses Atlas's own posed depth into a draft splat and meshes it with splats2Mesh
-once a reviewed mesh price exists; neither becomes a metric or simulator-ready result.
+Source review, adaptive real inputs, admitted posing, native refined splats and
+portable downloads run on the worker. A reviewed native-splat price selects
+posedImages2Splats; historical policies retain the depth-fused draft route.
+Neither route becomes a metric or simulator-ready result.
 Website uploads reach it through the worker in ``website_atlas_preview``. It is
 the capture's only paid reconstruction lane: once its object-removed background
 is complete it also poses the selected original views, and scene preparation
@@ -23,6 +23,7 @@ import time
 from .website_task_context import load_atlas_configuration as load_configuration
 from .common import write_json
 from .atlas_automation_plan import PRESERVED_SCENE_ORIGINS
+from .atlas_pricing import render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .atlas_preparation_context import requires_task_semantic_analysis
@@ -274,7 +275,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                          else "atlas_scene_requires_preserved_capture")
     source_pose = _source_pose(pose_root=pose_root, inputs=inputs, review=review, policy=policy,
         task_context=task_context, check=check, experimental=experimental, max_polls=max_polls,
-        configuration=configuration, **({'allow_scale_review': False} if reconstruction_only else {}))
+        configuration=configuration, **({'allow_scale_review': False}
+            if reconstruction_only or 'refined_splat_cost_usd' in policy else {}))
     if source_pose["status"] == "processing":
         return source_pose
     source_root, _ = prepare_source_pose(pose_root)
@@ -283,10 +285,29 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 "reason": source_pose.get("reason", "atlas_source_pose_unavailable"),
                 "blockers": [source_pose.get("reason", "atlas_source_pose_unavailable")]}
     pose, frames = load_posed_rgbd(source_root)
-    splat_root = output_root / "splat"
-    manifest = splat_root / "atlas_depth_splat_manifest.json"
-    splat = (json.loads(manifest.read_text()) if manifest.is_file()
-             else write_depth_splat(frames=frames, result=pose, output_root=splat_root))
+    native_mode = "refined_splat_cost_usd" in policy
+    if native_mode:
+        from .atlas_splat_source_selection import select_splat_sources
+        ids, _ = select_splat_sources(frames=frames, inputs=inputs, review=review,
+                                     output_root=output_root / "native_source_selection")
+        frames = [frame for frame in frames if frame["frame_id"] in ids]
+    completion_root = output_root / ("preserved_completion_native_v1" if native_mode else "preserved_completion")
+    if native_mode:
+        if source_pose["status"] != "completed":
+            return {"status": "needs_input", "stage": "source_pose", "source_pose": source_pose,
+                    "reason": source_pose.get("reason", "atlas_source_pose_unavailable")}
+        from .atlas_native_splat import run_native_splat
+        native = run_native_splat(frames=frames, result=pose, output_root=output_root / "refined_splat",
+            policy=policy, task_context=task_context, max_polls=max_polls, checkpoint=check,
+            task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw))
+        if native["status"] != "completed":
+            return native
+        splat_root, splat = Path(native["splat_root"]), native["splat_manifest"]
+    else:
+        splat_root = output_root / "splat"
+        manifest = splat_root / "atlas_depth_splat_manifest.json"
+        splat = (json.loads(manifest.read_text()) if manifest.is_file()
+                 else write_depth_splat(frames=frames, result=pose, output_root=splat_root))
     blockers = ["metric_scene_registration_unproven"]
     mesh_root = None
     completion = None
@@ -299,7 +320,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         blockers.append(source_pose.get("reason", "atlas_source_pose_unavailable"))
     elif not reconstruction_only and "mesh_export_cost_usd" not in policy:
         blockers.append("atlas_mesh_export_price_unreviewed")
-    elif 'rgbd_view_cost_usd' in policy and not reconstruction_only:
+    elif 'rgbd_view_cost_usd' in policy and not reconstruction_only and not native_mode:
         if source_survey_path is None:
             completion_stopped = True
             blockers.append('atlas_original_capture_survey_required')
@@ -308,11 +329,11 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 check(stage)
             completion = run_sponsored_website_atlas_automation(preserved_capture=True,
                 pose_root=source_root, pose=pose, frames=frames, review=review,
-                root=output_root / 'preserved_completion', job_root=output_root, context=task_context,
+                root=completion_root, job_root=output_root, context=task_context,
                 configuration=_current_configuration(task_context, source_digest, configuration), splat_root=splat_root,
                 source_survey_path=source_survey_path, checkpoint=completion_checkpoint,
                 experimental=experimental, max_polls=max_polls)
-            write_json(output_root / 'preserved_completion/controller_state.json', completion)
+            write_json(completion_root / 'controller_state.json', completion)
             if completion['status'] == 'processing':
                 return completion
             completion_stopped = completion['status'] != 'completed'
@@ -325,8 +346,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 completion_paths = [Path(p) for p in completion['analysis_paths']]
     if (not reconstruction_only and source_pose['status'] == 'completed' and 'mesh_export_cost_usd' in policy
             and not completion_stopped):
-        mesh_destination = (output_root / 'preserved_completion/mesh' / splat['digest'][7:23]
-                            if admitted_completion else output_root / 'mesh')
+        mesh_destination = (completion_root / 'mesh' / splat['digest'][7:23]
+                            if admitted_completion else output_root / ("native_mesh" if native_mode else "mesh"))
         spec, mesh_root = splats2mesh_attempt(splat_root, mesh_destination)
         quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "splats2Mesh",
             "request_digest": canonical_digest(spec["request"]), "maximum_cost_usd": policy["mesh_export_cost_usd"],
@@ -343,6 +364,8 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
                 splat_root=splat_root, output_root=mesh_root / "registered", reference_frames=frames,
                 reference_pose_digest=pose["digest"])
     analysis = [output_root / "atlas_scene_review.json"]
+    if native_mode:
+        analysis.append(output_root / "native_source_selection/splat_source_selection.json")
     if reconstruction_only and task_evidence_limitation is not None:
         limitation_path = output_root / 'task_evidence_limitation.json'
         write_json(limitation_path, task_evidence_limitation)
@@ -354,7 +377,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         analysis.append(measurement_path)
     analysis.extend(completion_paths)
     if completion is not None:
-        analysis.append(output_root / 'preserved_completion/controller_state.json')
+        analysis.append(completion_root / 'controller_state.json')
     bundle = export_pose_bundle(pose_root=source_root, output_root=output_root / "downloads",
         splat_root=splat_root, mesh_root=mesh_root, analysis_paths=analysis,
         **({'generated_roots': generated_roots} if generated_roots else {}))
@@ -363,6 +386,7 @@ def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_con
         "source_video_digest": source_digest, "task_context_digest": task_context["context_digest"],
         "subject_origin": review["subject_origin"], "captured_scene_preserved": True,
         "object_removal_performed": False, "image_inpainting_performed": False,
+        "native_refinement_performed": native_mode, "source_geometry_preservation_proven": False,
         "generated_completion_performed": bool(native_completion.get('generated_roots')),
         "generated_geometry_admitted": admitted_completion, "uncaptured_regions": review["uncaptured_regions"],
         "geometry_authority": ('captured_rgb_depth_with_bounded_generated_completion_estimates'
@@ -502,8 +526,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # The saved configuration preserves the original authority and prices;
     # completed purchases and held unknown calls consume today's allowance.
     budget = (current["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
-              - policy.get("mesh_export_cost_usd", 0))
-    if budget < 2 * policy["pose_input_cost_usd"] + 2 * policy["rgbd_view_cost_usd"]:
+              - final_output_cost(policy))
+    if budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
         raise ValueError("atlas_runtime_budget_insufficient")
     if selection_path.exists():
         selection = json.loads(selection_path.read_text())
@@ -618,7 +642,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
             model=receipt["model"], edit_scope=edit_scope)
     count = len(inputs["frames"])
     target_count = len({key for group in review["coverage_requirements"] for key in group["required_frame_ids"]})
-    planned_cost = round(count * policy["pose_input_cost_usd"] + target_count * policy["rgbd_view_cost_usd"], 6)
+    planned_cost = round(count * policy["pose_input_cost_usd"] + render_cost(policy, target_count), 6)
     if planned_cost > budget + 1e-9:
         raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
     pose_quote = {"schema_version": "website_atlas_pose_price_review.v1", "endpoint": "/api/v2/tasks:images2PosedRGBD",
@@ -634,7 +658,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         return {"status": "processing", "stage": "pose", "operation_id": posed.get("operation_id")}
     pose = json.loads((pose_root / "atlas_posed_rgbd_result.json").read_text())
     request = generation_request(pose=pose, inputs=inputs, review=review)
-    cost = round(len(request["targetCameras"]) * policy["rgbd_view_cost_usd"], 6)
+    cost = render_cost(policy, len(request["targetCameras"]))
     quote = {"schema_version": "website_atlas_task_price_review.v1", "task": "atlasGenerate",
         "request_digest": canonical_digest(request), "maximum_cost_usd": cost,
         **{k: policy[k] for k in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
@@ -649,6 +673,17 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     splat_manifest = splat_root / "atlas_depth_splat_manifest.json"
     splat = (json.loads(splat_manifest.read_text()) if splat_manifest.exists()
              else build_depth_splat(pose_root, splat_root))
+    if "refined_splat_cost_usd" in policy:
+        from .atlas_native_splat import run_native_splat
+        from .atlas_depth_splat import load_posed_rgbd
+        native_pose, native_frames = load_posed_rgbd(pose_root)
+        native = run_native_splat(frames=native_frames, result=native_pose,
+            output_root=output_root / "refined_splat", policy=policy, task_context=task_context,
+            max_polls=max_polls, checkpoint=check,
+            task_runner=lambda **kw: run_sponsored_website_atlas_task(experimental=experimental, **kw))
+        if native["status"] != "completed":
+            return native
+        splat_root, splat = Path(native["splat_root"]), native["splat_manifest"]
     blockers = ["metric_scene_registration_unproven"]
     mesh_root = None
     if "mesh_export_cost_usd" in policy:
@@ -724,7 +759,8 @@ def finalize_background_result(*, output_root, source_digest, task_context, auto
               "task_and_surrounding_scene_covered": True, "model": model,
               "blockers": (["metric_scene_registration_unproven"] if complete else
                            [background.get("reason", "atlas_background_review_required")]),
-              "splat_available": complete, "splat_kind": "depth_fused_draft" if complete else None,
+              "splat_available": complete,
+              "splat_kind": background.get("splat_kind", "depth_fused_draft") if complete else None,
               "splat_manifest_digest": background.get("splat_manifest_digest"),
               "mesh_available": background.get("mesh_available", False),
               "scene_measurements": automation.get("measurements"),

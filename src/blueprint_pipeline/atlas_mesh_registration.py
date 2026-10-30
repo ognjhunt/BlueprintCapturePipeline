@@ -179,17 +179,20 @@ def register_atlas_mesh(*, glb: Path, splat_root: Path, output_root: Path,
     """Fit the GLB to the observed splat, trim unsupported faces and write the result."""
     from scipy.spatial import cKDTree
 
-    splat_manifest = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
+    from .atlas_native_splat import load_splat_manifest
+    splat_manifest = load_splat_manifest(splat_root)
     if splat_manifest.get("digest") != canonical_digest(splat_manifest, digest_field="digest"):
         raise ValueError("atlas_mesh_splat_manifest_changed")
     if reference_frames is not None and (
             not reference_pose_digest or reference_pose_digest != splat_manifest.get("pose_result_digest")):
         raise ValueError("atlas_mesh_depth_filter_pose_binding_invalid")
-    ply = splat_root / "atlas_depth_splat.ply"
+    ply = splat_root / next(row["path"] for row in splat_manifest["outputs"] if row["role"] == "splat_ply")
+    if ply.is_symlink() or not ply.resolve().is_relative_to(splat_root.resolve()):
+        raise ValueError("atlas_mesh_splat_path_invalid")
     if _sha256_file(ply) != next(row["sha256"] for row in splat_manifest["outputs"] if row["role"] == "splat_ply"):
         raise ValueError("atlas_mesh_splat_changed")
     splat = read_standard_3dgs_ply(ply)
-    voxel = float(splat_manifest["voxel_size"])
+    voxel = float(splat_manifest.get("registration_tolerance_world_units", splat_manifest.get("voxel_size", 0)))
     if not np.isfinite(voxel) or voxel <= 0:
         raise ValueError("atlas_mesh_voxel_size_invalid")
     vertices, faces = read_glb_triangles(glb)

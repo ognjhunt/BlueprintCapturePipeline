@@ -303,7 +303,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         splat_root, registered_root = job_dir / "splat", job_dir / "mesh/registered"
     else:
         splat_root, registered_root = automation_root / "background_splat", automation_root / "background_mesh/registered"
-    splat_manifest = _read(_inside(splat_root / "atlas_depth_splat_manifest.json", job_dir))
+    from .atlas_native_splat import splat_manifest_path
+    splat_manifest = _read(_inside(splat_manifest_path(splat_root), job_dir))
     registration = _read(_inside(registered_root / "atlas_mesh_registration.json", job_dir))
     if (splat_manifest.get("digest") != canonical_digest(splat_manifest, digest_field="digest")
             or splat_manifest["digest"] != background.get("splat_manifest_digest")
@@ -326,7 +327,8 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         validate_preserved_completion(report=completion_admission, job_root=job_dir,
             source_pose_digest=source['digest'], source_video_digest=result['source_video_digest'],
             task_context_digest=result['task_context_digest'], splat=splat_manifest)
-    elif preserved and splat_manifest.get('generated_content'):
+    elif preserved and (splat_manifest.get('generated_result_digests')
+                        or splat_manifest.get('generated_content') and splat_manifest.get('task') != 'posedImages2Splats'):
         raise ValueError('atlas_preserved_completion_not_bound')
     background_root = pose_root
     if splat_manifest["pose_result_digest"] == source["digest"]:

@@ -51,6 +51,13 @@ not published as a ready preview just because a partial source ZIP exists.
 Generated geometry remains a development-only estimate with unproven metric,
 physics and execution status.
 
+With the reviewed native-splat policy, the final appearance instead comes from
+`posedImages2Splats`. The same handoff reads `atlas_refined_splat_manifest.json`
+and its exact PLY/mesh bindings. Capture inputs remain unchanged, but provider
+refinement does not prove preservation of source geometry. Independent scale,
+registration, collision and physics gates remain. Historical draft bundles
+retain their original artifact names and authority.
+
 ## What the job buys, in order
 
 For captured manipulated subjects, the existing replacement route is unchanged:

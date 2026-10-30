@@ -448,7 +448,8 @@ def proposal_review(proposal, *, survey, policy, pose_budget, feedback=None, ref
     # Hold the required RGBD coverage aside before selecting pose inputs.
     # Buying posing alone must not consume the rest of the shared allowance.
     if origin not in PRESERVED_SCENE_ORIGINS:
-        pose_budget = round(pose_budget - len(required) * policy["rgbd_view_cost_usd"], 6)
+        from .atlas_pricing import render_cost
+        pose_budget = round(pose_budget - render_cost(policy, len(required)), 6)
     if pose_budget < 2 * policy["pose_input_cost_usd"]:
         raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
     refinement = ({k: value[k] for k in ("action", "gap_assessment", "additional_input_frame_ids")}

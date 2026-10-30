@@ -18,6 +18,7 @@ from PIL import Image
 from scipy.ndimage import binary_dilation
 
 from .common import write_json
+from .atlas_pricing import render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .atlas_scene_measurements import mapped_pixels
@@ -708,12 +709,14 @@ def run_background(
     groups = max(1, math.ceil(max(0, tile_count - 1) / 14))
     # Reserve forecasting space for repeated shared anchors and independent reviews.
     forecast = round(
-        (tile_count + 2 * groups) * policy["rgbd_view_cost_usd"] * 2
+        sum(render_cost(policy, count, legacy_multiplier=2) for count in
+            ([(tile_count + 2 * groups) // groups] * (groups - 1)
+             + [(tile_count + 2 * groups) - ((tile_count + 2 * groups) // groups) * (groups - 1)]))
         + float(execution["pricing_binding"]["max_cost_per_request_usd"])
         + max(50, len(frames)) * 0.0002 * (len(objects) + len(transients))
         + 0.10
         + groups * 0.10
-        + policy.get("mesh_export_cost_usd", 0),
+        + final_output_cost(policy),
         6,
     )
     write_json(
@@ -912,7 +915,7 @@ def run_background(
     reviewed = []
     for i, rows in enumerate(groups):
         request, uploads = masked_request(rows, automation["removal_instruction"])
-        cost = round(len(rows) * policy["rgbd_view_cost_usd"] * 2, 6)
+        cost = render_cost(policy, len(rows), legacy_multiplier=2)
         quote = {
             "schema_version": "website_atlas_task_price_review.v1",
             "task": "atlasMasked",

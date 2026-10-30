@@ -19,7 +19,7 @@ from .local_reconstruction_adapters import _sha256_file
 from .website_gemini_receipts import gemini_quote, retained_gemini_call
 
 # One call per view, bounded per object; the independent review still checks the edits.
-MAXIMUM_VIEWS = 12
+MAXIMUM_VIEWS = 30
 MINIMUM_CONFIDENCE = 0.8
 PROMPT = (
     "This exact video frame is one view of a room being prepared for a 3D reconstruction without "

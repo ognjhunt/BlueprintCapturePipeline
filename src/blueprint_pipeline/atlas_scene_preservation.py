@@ -13,6 +13,7 @@ import numpy as np
 
 from .atlas_depth_splat import _rotation_matrix, MAX_MEDIAN_CROSS_VIEW_RESIDUAL
 from .common import write_json
+from .atlas_pricing import render_cost, final_output_cost
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -415,7 +416,7 @@ def generate_masked_completion(*, frames, selected, candidates, root, pose, cont
         if request['returnDepth'] is not True:
             raise ValueError('atlas_completion_depth_requires_translation')
         stage = root / 'generated' / str(index)
-        cost = round(len(group) * policy['rgbd_view_cost_usd'] * 2, 6)
+        cost = render_cost(policy, len(group), legacy_multiplier=2)
         quote = {'schema_version': 'website_atlas_task_price_review.v1', 'task': 'atlasMasked',
                  'request_digest': canonical_digest(request), 'maximum_cost_usd': cost,
                  **{k: policy[k] for k in ('rate_card_reference', 'reviewed_by', 'reviewed_on')}}
@@ -424,7 +425,7 @@ def generate_masked_completion(*, frames, selected, candidates, root, pose, cont
         else:
             remaining += cost
         specs.append((group, request, uploads, stage, quote))
-    if remaining + policy.get('mesh_export_cost_usd', 0) + 1 > configuration['remaining_cost_usd']:
+    if remaining + final_output_cost(policy) + 1 > configuration['remaining_cost_usd']:
         raise ValueError('atlas_completion_remaining_budget_insufficient')
     binding = {'schema_version': 'atlas_masked_completion_plan.v1', 'source_pose_digest': pose['digest'],
                'selected_camera_ids': [row['camera_id'] for row in selected],

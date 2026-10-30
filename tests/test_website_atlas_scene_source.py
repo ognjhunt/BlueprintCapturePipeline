@@ -316,6 +316,35 @@ def test_scene_source_uses_the_final_completed_bundle_with_a_stale_baseline_pres
         assert levelling["provider_collision_mesh_digest"] == _sha256_file(glb)
 
 
+def test_scene_source_accepts_native_splat_names_in_the_same_bound_bundle(tmp_path):
+    job_dir = job_fixture(tmp_path)
+    final, bundle, ply, _ = completed_bundle(job_dir)
+    prior_path = final / "splat/atlas_depth_splat_manifest.json"
+    prior = json.loads(prior_path.read_text())
+    native_ply = ply.with_name("atlas_refined_splat.ply")
+    ply.rename(native_ply)
+    prior["outputs"][0]["path"] = native_ply.name
+    prior.update(schema_version="atlas_refined_splat.v1", task="posedImages2Splats",
+                 splat_kind="atlas_refined", source_geometry_preservation_proven=False)
+    native_manifest = digest(prior)
+    write(final / "splat/atlas_refined_splat_manifest.json", native_manifest)
+    # Leave the obsolete manifest present, as it can be in a retained revision.
+    reg_path = final / "mesh/registered/atlas_mesh_registration.json"
+    registration = json.loads(reg_path.read_text())
+    registration["splat_manifest_digest"] = native_manifest["digest"]
+    write(reg_path, digest(registration))
+    bundle.update(splat_manifest_digest=native_manifest["digest"], mesh_registration_digest=registration["digest"])
+    write(final / "manifest.json", digest(bundle))
+    result = json.loads((job_dir / "result.json").read_text())
+    result["automation"]["background"].update(splat_manifest_digest=native_manifest["digest"],
+        download={"directory": str(final), "manifest_digest": bundle["digest"]})
+    write(job_dir / "result.json", digest(result))
+    write(job_dir / "preview_job.json", {"state": "ready", "result_digest": result["digest"]})
+    value = source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    assert value["status"] == "ready"
+    assert value["base_scene"]["levelling"]["provider_splat_path"] == str(native_ply)
+
+
 @pytest.mark.parametrize("change", [None, "video", "context", "source_pose", "digest", "outside",
                                     "missing_path", "missing_digest", "tamper"])
 def test_retained_revision_reuses_only_the_same_capture_observations(tmp_path, change):

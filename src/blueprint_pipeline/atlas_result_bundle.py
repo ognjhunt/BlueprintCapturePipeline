@@ -71,7 +71,8 @@ def retained_mesh_for_splat(*, mesh_root: Path, splat_root: Path,
     and accounting receipts continue to identify the paid request.
     """
     spec = json.loads((splat_root / "splats2mesh_task_spec.json").read_text())
-    splat = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
+    from .atlas_native_splat import load_splat_manifest
+    splat = load_splat_manifest(splat_root)
     mesh = _completed_task(mesh_root, source_video_digest, "mesh")
     state = json.loads((mesh_root / "atlas_pose/submission.json").read_text())
     binding = mesh["binding"]
@@ -134,7 +135,8 @@ def find_retained_mesh_root(*, output_root: Path, splat_root: Path,
     ``retained_mesh_for_splat`` before adoption; matching corrupt state must not
     silently cause a second purchase.
     """
-    splat = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
+    from .atlas_native_splat import load_splat_manifest
+    splat = load_splat_manifest(splat_root)
     for path in sorted(output_root.glob('*/registered/atlas_mesh_registration.json')):
         root = path.parent.parent
         if root.is_symlink() or path.is_symlink() or not (root / 'result.json').is_file():
@@ -181,7 +183,8 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
             raise ValueError("atlas_bundle_mesh_unregistered")
     splat = None
     if splat_root is not None:
-        splat = json.loads((splat_root / "atlas_depth_splat_manifest.json").read_text())
+        from .atlas_native_splat import load_splat_manifest
+        splat = load_splat_manifest(splat_root)
         if (splat.get("digest") != canonical_digest(splat, digest_field="digest")
                 or splat["pose_result_digest"] != result["digest"]):
             raise ValueError("atlas_bundle_splat_manifest_invalid")
@@ -248,7 +251,17 @@ def export_pose_bundle(*, pose_root: Path, output_root: Path, generated_roots=()
                     or _sha256_file(source) != row["sha256"]):
                 raise ValueError("atlas_bundle_splat_output_changed")
             copy(source, Path("splat") / row["path"])
-        copy(splat_root / "atlas_depth_splat_manifest.json", Path("splat/atlas_depth_splat_manifest.json"))
+        from .atlas_native_splat import splat_manifest_path
+        manifest_path = splat_manifest_path(splat_root)
+        copy(manifest_path, Path("splat") / manifest_path.name)
+        if splat.get("task") == "posedImages2Splats":
+            native = _completed_task(splat_root / "native", source_digest, "splat")
+            if native["digest"] != splat.get("native_result_digest"):
+                raise ValueError("atlas_bundle_native_splat_receipt_changed")
+            copy_task(splat_root / "native", native, Path("evidence/refined_splat"), "splat")
+            copy(splat_root / "native/atlas_pose/submission.json", Path("evidence/refined_splat_submission.json"))
+            copy(splat_root / "input_binding.json", Path("evidence/refined_splat_inputs.json"))
+            manifest["splat_native_result_digest"] = native["digest"]
         manifest.update(splat_available=True, splat_kind=splat["splat_kind"])
 
     for index, row in enumerate(receipt["input_usage"]["frames"]):
