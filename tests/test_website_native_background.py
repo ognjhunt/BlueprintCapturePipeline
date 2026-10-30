@@ -192,6 +192,10 @@ def test_native_collision_stage_preserves_background_and_transports_original_ref
     artifacts = {row["role"]: row for row in result["output_artifacts"]}
     collision = artifacts["configured_collision_without_source_object"]
     assert _sha256_file(Path(collision["path"])) == runtime["collision"]["digest"]
+    # The transported bytes keep their recorded format name and stay readable.
+    from pxr import Usd
+    assert Path(collision["path"]).suffix == Path(runtime["collision"]["path"]).suffix
+    assert Usd.Stage.Open(collision["path"]).GetPseudoRoot().GetChildren()
     config = runtime["object_authoring"]["configuration"]
     frames = _reference_frames({"configuration": config}, [result])
     assert frames and all(frame.is_relative_to(tmp_path / "result") for frame in frames)

@@ -518,7 +518,11 @@ def execute_prepared_collision(*, envelope, stage, configuration, configuration_
     candidate = _record(observed_root / observed["candidate"]["path"])
     if any(candidate[key] != authoring["source_candidate"][key] for key in ("digest", "size_bytes")):
         raise ValueError("website_prepared_collision_candidate_mismatch")
-    background = _copy_artifact(collision, output_root / "background_collision.usda")
+    # The transported path has no extension. Keep the recorded layer's own
+    # format name (text .usda before, crate .usdc now and when reconciled):
+    # OpenUSD refuses crate bytes under a .usda name.
+    background = _copy_artifact(
+        collision, output_root / ("background_collision" + Path(value["collision"]["path"]).suffix))
     receipt = {"schema_version": "website_prepared_background_result.v1", "status": "prepared_background_reused",
                "runtime_inputs_digest": configuration["runtime_inputs_digest"],
                "preparation_digest": value["preparation_digest"], "collision_digest": background["digest"],

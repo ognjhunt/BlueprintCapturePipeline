@@ -283,7 +283,9 @@ def _portable_render_inputs(
         return portable
     if render.get("status") == MESH_INPUT_STATUS:
         source = _bound_file(render["derived_visual_geometry"], code="scene_configuration_mesh_input_invalid")
-        target = runtime / "input/render/normalized_visual_geometry.usda"
+        # These are the normalized collision layer's bytes, crate or text by
+        # its receipt; ``.usd`` lets OpenUSD read either.
+        target = runtime / "input/render/normalized_visual_geometry.usd"
         _copy_file(source, target)
         portable["derived_visual_geometry"]["path"] = target.relative_to(runtime).as_posix()
         portable["control_plane_result_digest"] = source_result_digest

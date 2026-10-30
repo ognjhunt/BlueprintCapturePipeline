@@ -29,7 +29,9 @@ def _only_unpaid_preparation(binding: Path) -> bool:
         first = relative.parts[0]
         if first in {'deferred-inputs', 'cpu-placement-checkpoints'}:
             continue
-        if relative.as_posix() == 'configured_collision.usda' and path.is_file():
+        # Extracted under the bundle member's own format name (text or crate).
+        if relative.as_posix() in {'configured_collision.usd', 'configured_collision.usda',
+                                   'configured_collision.usdc'} and path.is_file():
             continue
         if first.startswith('agent-placement-attempts-') and path.is_dir():
             continue

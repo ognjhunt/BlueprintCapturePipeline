@@ -92,7 +92,8 @@ def fixture_scene_artifacts(*, envelope: dict, output_root: Path) -> list[dict]:
     original = Path(refs["scene.geometry.collision"]["materialized_path"])
     # Preparation CAS paths have no extension; USD chooses its reader from
     # an asset extension. Preserve the exact validated bytes in fixture work.
-    source_usd = output_root / "source-collision.usda"
+    # ``.usd`` reads crate and text alike; the collision layer may be either.
+    source_usd = output_root / "source-collision.usd"
     shutil.copyfile(original, source_usd)
     stage = Usd.Stage.Open(str(source_usd))
     stage.GetRootLayer().Export(str(collision))

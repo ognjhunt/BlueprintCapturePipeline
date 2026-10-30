@@ -5482,3 +5482,27 @@ def test_agents_api_project_guard_refuses_before_paid_allocation(tmp_path, monke
     with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError,
                        match="agents_api_project_guard_invalid"):
         scene_vast._provider_runtime_inputs(authority, receipt)
+
+
+def test_provided_mesh_visual_geometry_keeps_crate_bytes_readable_in_the_packet(tmp_path):
+    # The normalized collision layer is crate (.usdc) now and text in earlier
+    # receipts. Its digest-named bytes must not be renamed to .usda.
+    from pxr import Usd, UsdGeom
+
+    from blueprint_pipeline.task_evaluation_scene_configuration_disclosure import MESH_INPUT_STATUS
+
+    layer = tmp_path / "normalized_scene.usdc"
+    stage = Usd.Stage.CreateNew(str(layer))
+    UsdGeom.Mesh.Define(stage, "/Root/Support")
+    stage.GetRootLayer().Save()
+    stage = None
+    cas = tmp_path / hashlib.sha256(layer.read_bytes()).hexdigest()
+    shutil.copyfile(layer, cas)
+    render = {"status": MESH_INPUT_STATUS, "result_digest": "sha256:" + "0" * 64,
+              "derived_visual_geometry": {"path": str(cas), "digest": file_digest(cas),
+                                          "size_bytes": cas.stat().st_size}}
+    runtime = tmp_path / "runtime"
+    portable = bundle_module._portable_render_inputs(runtime=runtime, render=render)
+    packed = runtime / portable["derived_visual_geometry"]["path"]
+    assert packed.read_bytes()[:8] == b"PXR-USDC" and packed.read_bytes() == cas.read_bytes()
+    assert Usd.Stage.Open(str(packed)).GetPrimAtPath("/Root/Support").IsValid()

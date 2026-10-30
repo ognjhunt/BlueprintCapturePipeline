@@ -108,6 +108,17 @@ def test_cpu_candidates_and_released_lock_do_not_count_as_paid_execution(tmp_pat
     assert prepare._only_unpaid_preparation(binding) is (paid_file is None)
 
 
+@pytest.mark.parametrize('suffix', ['.usda', '.usdc', '.usd'])
+def test_extracted_collision_in_either_usd_format_is_unpaid_preparation(tmp_path, suffix):
+    # The configured collision is extracted under its bundle member's format name.
+    binding=tmp_path/'binding'
+    put(binding/'cpu-placement-checkpoints'/'digest'/'cpu-placement-checkpoint.v2.json', {})
+    (binding/('configured_collision'+suffix)).write_bytes(b'collision')
+    assert prepare._only_unpaid_preparation(binding)
+    (binding/'configured_collision.ply').write_bytes(b'other')
+    assert not prepare._only_unpaid_preparation(binding)
+
+
 def test_cpu_preparation_symlink_is_not_refreshable(tmp_path):
     binding=tmp_path/'binding'
     (binding/'cpu-placement-checkpoints').mkdir(parents=True)
