@@ -6,7 +6,7 @@ umask 022
 operation="${DOOR_PUBLIC_POLICY_OPERATION:-install-public-piper-policy}"
 installer=public_policy_registration.py
 case "$operation" in
-  install-public-piper-policy|install-public-yam-policy|install-public-franka-policy) builder=blueprint_pipeline.openwam_piper_registration ;;
+  install-public-piper-policy|install-public-yam-policy|install-public-franka-policy|install-public-trlc-policy) builder=blueprint_pipeline.openwam_piper_registration ;;
   install-scripted-robot-baselines) builder=blueprint_pipeline.scripted_robot_registration_install ;;
   install-native-g1-policies) builder=blueprint_pipeline.native_g1_registration_install; installer=native_g1_registration.py ;;
   *) echo "unsupported fixed public policy operation" >&2; exit 2 ;;

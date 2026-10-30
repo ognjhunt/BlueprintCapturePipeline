@@ -1,0 +1,51 @@
+{
+  "files": [
+    {
+      "path": "gemma-terms.txt",
+      "sha256": "sha256:a490e6c5e07cbf144366468d64205302f34fb90edaf795d360c0268447b7759d",
+      "size_bytes": 10110,
+      "source_raw_bytes": 144392,
+      "source_raw_sha256": "sha256:2973b6188387d1c6cb5583df2cb0e4c8518c97079bb1e72c6946d8d036608684",
+      "source_retrieved_date": "2026-10-30",
+      "source_url": "https://ai.google.dev/gemma/terms",
+      "transformation": "Complete devsite-article-body text; whitespace normalized and link destinations retained; navigation/scripts omitted"
+    },
+    {
+      "path": "gemma-prohibited-use.txt",
+      "sha256": "sha256:f6f8fd65cc8fb5170815e5aaa3cea6850ae9ed70f639ddcbbbb17225aa9868a8",
+      "size_bytes": 3610,
+      "source_raw_bytes": 135425,
+      "source_raw_sha256": "sha256:ce91f8787d2a78c561e179ecaf754d49d7af4d5b40b37bc25b5774e5df57abfb",
+      "source_retrieved_date": "2026-10-30",
+      "source_url": "https://ai.google.dev/gemma/prohibited_use_policy",
+      "transformation": "Complete devsite-article-body text; whitespace normalized and link destinations retained; navigation/scripts omitted"
+    },
+    {
+      "path": "community-model-card.md",
+      "sha256": "sha256:5916bef5353aa251d59ad4434680c7df504431a0f5c6139b19a3384169dac68c",
+      "size_bytes": 2140,
+      "source_retrieved_date": "2026-10-30",
+      "source_url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/blob/10466a133c74018465c6839b7003b700775e4f69/README.md",
+      "transformation": "verbatim retained public source"
+    },
+    {
+      "path": "base-model-card.md",
+      "sha256": "sha256:5660a59c4bc742dbab3b0f8a109442436b8378200cdbdf6ed35045efe16cdfdc",
+      "size_bytes": 5139,
+      "source_retrieved_date": "2026-10-30",
+      "source_url": "https://huggingface.co/lerobot/pi05_base/blob/main/README.md",
+      "transformation": "verbatim retained public source"
+    },
+    {
+      "path": "APACHE-2.0.txt",
+      "sha256": "sha256:43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1",
+      "size_bytes": 11356,
+      "source_retrieved_date": "2026-10-30",
+      "source_url": "https://github.com/Physical-Intelligence/openpi/blob/main/LICENSE",
+      "transformation": "verbatim retained public source"
+    }
+  ],
+  "schema_version": "trlc_pi05_public_terms_sources.v1",
+  "scope": "Current user-authorized internal robot simulation; no old G1 approval or task authority reused",
+  "training_base_revision": "unknown; merged checkpoint metadata names lerobot/pi05_base without revision"
+}

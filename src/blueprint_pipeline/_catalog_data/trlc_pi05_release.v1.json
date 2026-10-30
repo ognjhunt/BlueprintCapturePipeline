@@ -1,0 +1,38 @@
+{
+  "schema_version": "trlc_pi05_release.v1",
+  "model_id": "djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged",
+  "model_revision": "10466a133c74018465c6839b7003b700775e4f69",
+  "source_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9",
+  "files": [
+    {
+      "path": "config.json",
+      "size_bytes": 2244,
+      "sha256": "7d6f32df94ab49bffba6779eaa27f7c83d9f12ab95887a17f0bd10d4f665bda2"
+    },
+    {
+      "path": "model.safetensors",
+      "size_bytes": 7473096344,
+      "sha256": "1b9086d511dc534ce8ceb0a119912fbf27325cb44643b3dd6821d8135d3db2ad"
+    },
+    {
+      "path": "policy_postprocessor.json",
+      "size_bytes": 663,
+      "sha256": "0a0dfae53926f741f2f80df2bd10a98dae980b7a3c96e76971e82c230abfa2b4"
+    },
+    {
+      "path": "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+      "size_bytes": 9920,
+      "sha256": "be756f317fa7659062d7745ea831097ebf15c7689efd89a8d75fd8dd0ee4b740"
+    },
+    {
+      "path": "policy_preprocessor.json",
+      "size_bytes": 1906,
+      "sha256": "9cf8326a253b7b071dfcabfc6b6b607e9d8c27d36eeb1e8c2c4a7953e0216606"
+    },
+    {
+      "path": "policy_preprocessor_step_2_normalizer_processor.safetensors",
+      "size_bytes": 9920,
+      "sha256": "be756f317fa7659062d7745ea831097ebf15c7689efd89a8d75fd8dd0ee4b740"
+    }
+  ]
+}

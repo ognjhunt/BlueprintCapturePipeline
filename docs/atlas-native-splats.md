@@ -60,8 +60,21 @@ root carries the refined digest, so a new draft gets its own purchase and a
 legacy mesh is never adopted for a refined splat.
 
 Preserved-capture scenes and the plain pose-and-generate route keep the draft
-for now. Choosing more real views for the splat (16–30 overlapping frames) is a
-separate change: it alters which views are edited and posed.
+for now.
+
+New object-removal jobs with a reviewed refined-splat price clean every selected
+real view. Selection retains the task/room cover and up to 30 distinct overlapping
+views; when a slow camera movement yields fewer than 16, sharp, connected source
+frames fill the set toward 16. Identical source-image digests are never repeated.
+These are labelled `overlapping_support_view`, separately from distinct views.
+If fewer usable frames exist, the manifest reports that shortfall without
+inventing coverage. Excluded frames, quality thresholds, face screening and
+the cumulative allowance still apply. Views without a removal target remain
+unedited. Generated views address only the recorded uncaptured regions.
+
+The input binding retains the minimum, the actual support count and whether it
+was met. Existing jobs retain their original edit scope and selection, so this
+change requires a fresh job; it never rewrites job 3's three-view inputs.
 
 ## Reviewed runtime policy
 

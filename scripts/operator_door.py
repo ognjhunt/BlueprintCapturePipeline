@@ -375,6 +375,7 @@ def _terminal(state: dict[str, Any]) -> bool | None:
             "install-public-piper-policy": "public_policy_registered",
             "install-public-yam-policy": "public_policy_registered",
             "install-public-franka-policy": "public_policy_registered",
+            "install-public-trlc-policy": "public_policy_registered",
             "install-scripted-robot-baselines": "public_policy_registered",
             "install-native-g1-policies": "public_policy_registered",
         }.get(kind)
@@ -578,6 +579,8 @@ def _embodiment_preparation_request(path: str, *, public_policy: str | None = No
                 schema = "molmoact2_yam_policy_install_request.v1"
             elif public_policy == "franka":
                 schema = "openwam_franka_policy_install_request.v1"
+            elif public_policy == "trlc":
+                schema = "trlc_pi05_policy_install_request.v1"
             elif public_policy == "scripted":
                 schema = "scripted_robot_baseline_install_request.v1"
                 fields -= {"candidate_id", "checkpoint_id"}
@@ -732,6 +735,7 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     for public_command, public_name in (("install-public-piper-policy", "OpenWAM PiPER"),
                                        ("install-public-yam-policy", "MolmoAct2 YAM"),
                                        ("install-public-franka-policy", "OpenWAM single-FR3"),
+                                       ("install-public-trlc-policy", "community TRLC Pi0.5"),
                                        ("install-scripted-robot-baselines", "Blueprint scripted robot baselines"),
                                        ("install-native-g1-policies", "Native G1 site policy receipts")):
         policy_install = commands.add_parser(public_command,
@@ -833,10 +837,11 @@ def run(args: argparse.Namespace) -> int:
         if not args.operation_key:
             args.operation_key = "public-embodiment-preparation-" + request["authorization_id"]
         return _submit({"kind": command, "request": request}, args)
-    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines", "install-native-g1-policies"}:
+    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies"}:
         request = _embodiment_preparation_request(args.request_file,
             public_policy={"install-public-yam-policy": "yam", "install-public-piper-policy": "piper",
                            "install-public-franka-policy": "franka",
+                           "install-public-trlc-policy": "trlc",
                            "install-scripted-robot-baselines": "scripted", "install-native-g1-policies": "g1"}[command])
         if not args.operation_key:
             args.operation_key = command + "-" + request["installation_id"]

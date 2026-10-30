@@ -1,0 +1,50 @@
+{
+  "actual_tokenizer_executed": false,
+  "camera_order": [
+    "observation.images.top",
+    "observation.images.right_wrist",
+    "observation.images.left_wrist"
+  ],
+  "checkpoint_revision": "10466a133c74018465c6839b7003b700775e4f69",
+  "claim_ceiling": "cpu_source_meta_shapes_saved_processors_with_stub_tokenizer_and_model",
+  "full_checkpoint_verified": false,
+  "full_unnormalized_action_shape": [
+    50,
+    28
+  ],
+  "image_center_values": [
+    -0.6000000238418579,
+    -0.003921568393707275,
+    0.6000000238418579
+  ],
+  "meta_runtime_tensor_count": 813,
+  "meta_saved_tensor_count": 812,
+  "model_weights_loaded": false,
+  "native_execution_validated": false,
+  "network_attempts": 0,
+  "peak_gpu_memory_measured": false,
+  "physical_action_shape": [
+    50,
+    14
+  ],
+  "policy_inference_executed": false,
+  "prepared_prompt": "Task: Move the object to the target., State: 128 128 127 128 128 128 30 128 128 128 128 128 128 197;\nAction: ",
+  "saved_postprocessor_steps": [
+    "UnnormalizerProcessorStep",
+    "DeviceProcessorStep"
+  ],
+  "saved_preprocessor_steps": [
+    "RenameObservationsProcessorStep",
+    "AddBatchDimensionProcessorStep",
+    "NormalizerProcessorStep",
+    "Pi05PrepareStateTokenizerProcessorStep",
+    "TokenizerProcessorStep",
+    "DeviceProcessorStep"
+  ],
+  "schema": "trlc_pi05_cpu_adapter_audit.v1",
+  "source_directory_verified": true,
+  "status": "passed",
+  "tied_alias": {
+    "model.paligemma_with_expert.paligemma.model.language_model.embed_tokens.weight": "model.paligemma_with_expert.paligemma.lm_head.weight"
+  }
+}

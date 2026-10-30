@@ -30,6 +30,16 @@ FRANKA_CANDIDATE_ID = "openwam_alpha_franka"
 FRANKA_CHECKPOINT_ID = "openwam-alpha-franka-e75522eb"
 FRANKA_PROFILE_ID = "openwam_alpha_real_franka.v1"
 FRANKA_EMBODIMENT_ID = "franka_research_3_robotiq_2f85_sim"
+TRLC_SCHEMA = "trlc_pi05_policy_install_request.v1"
+TRLC_CANDIDATE_ID = "pi05_trlc_rabc_10466a13"
+TRLC_CHECKPOINT_ID = "pi05-trlc-rabc-10466a13"
+TRLC_PROFILE_ID = "pi05_trlc_rabc_joint14.v1"
+TRLC_EMBODIMENT_ID = "trlc_dk1_bimanual"
+TRLC_TOKENIZER_ROOT = Path("/var/lib/blueprint/task-evaluation-inputs/g1-841757-development/pi-tokenizer-f1eaa13")
+TRLC_NOTICE_FILES = ("APACHE-2.0.txt", "NOTICE.txt", "base-model-card.md", "community-model-card.md",
+                     "gemma-prohibited-use.txt", "gemma-terms.txt", "provenance.json")
+TRLC_TOKENIZER_FILES = {"added_tokens.json", "preprocessor_config.json", "special_tokens_map.json",
+                        "tokenizer.json", "tokenizer.model", "tokenizer_config.json"}
 SCRIPTED_SCHEMA = "scripted_robot_baseline_install_request.v1"
 SCRIPTED_PROFILE_ID = "blueprint_scripted_pick_place.v1"
 SCRIPTED_TEAM_ID = "blueprint-owned-baselines"
@@ -37,6 +47,11 @@ SCRIPTED_BODIES = ("i2rt_yam_bimanual", "agilex_piper_bimanual", "franka_researc
     "universal_robots_ur5e_bimanual", "kinova_gen3", "kinova_gen3_bimanual", "ufactory_xarm7",
     "ufactory_xarm7_bimanual", "almond_axol", "trlc_dk1_bimanual")
 IDENTITIES = {
+    TRLC_SCHEMA: {"candidate_id": TRLC_CANDIDATE_ID, "team_id": TEAM_ID, "checkpoint_id": TRLC_CHECKPOINT_ID,
+        "policy_profile": TRLC_PROFILE_ID, "embodiment_id": TRLC_EMBODIMENT_ID,
+        "operation": "install-public-trlc-policy", "profile_file": "trlc_pi05_registration_profile.json",
+        "proposal_schema": "trlc_pi05_policy_install_proposal.v1",
+        "receipt_schema": "trlc_pi05_policy_install_receipt.v1"},
     FRANKA_SCHEMA: {"candidate_id": FRANKA_CANDIDATE_ID, "team_id": TEAM_ID, "checkpoint_id": FRANKA_CHECKPOINT_ID,
         "policy_profile": FRANKA_PROFILE_ID, "embodiment_id": FRANKA_EMBODIMENT_ID,
         "operation": "install-public-franka-policy", "profile_file": "openwam_franka_registration_profile.json",
@@ -151,12 +166,21 @@ def file_record(path: Path) -> dict:
     return {"path": str(path), "sha256": sha, "size_bytes": info.st_size}
 
 
-def load_profile(request: dict, profile_root: Path) -> dict:
+def load_profile(request: dict, profile_root: Path, *, license_root: Path | None = None) -> dict:
     identity = request_identity(request)
     profile = read(profile_root / identity["profile_file"])
     require(all(profile[key] == identity[key] for key in ("candidate_id", "team_id", "checkpoint_id", "policy_profile")),
             "fixed_profile_changed")
-    if request["schema_version"] in {SCHEMA, FRANKA_SCHEMA}:
+    if request["schema_version"] == TRLC_SCHEMA:
+        require(set(profile["license_evidence_files"]) == set(TRLC_NOTICE_FILES), "trlc_license_inventory_changed")
+        for name in TRLC_NOTICE_FILES:
+            actual = file_record((license_root or profile_root / "trlc_pi05_notices") / name)
+            require(all(actual[key] == profile["license_evidence_files"][name][key]
+                        for key in ("sha256", "size_bytes")), "model_license_evidence_changed")
+        inventory_path = profile_root / "trlc_pi05_tokenizer_inventory.v1.json"
+        require(file_record(inventory_path)["sha256"] == profile["tokenizer_inventory_sha256"]
+                and read(inventory_path) == profile["tokenizer_inventory"], "trlc_tokenizer_inventory_changed")
+    elif request["schema_version"] in {SCHEMA, FRANKA_SCHEMA}:
         card = "openwam_franka_model_card.md" if request["schema_version"] == FRANKA_SCHEMA else "openwam_piper_model_card.md"
         require(file_record(profile_root / card)["sha256"] == profile["model_card_sha256"],
                 "model_license_evidence_changed")
@@ -170,12 +194,54 @@ def load_profile(request: dict, profile_root: Path) -> dict:
     return profile
 
 
+def trlc_tokenizer_record(profile: dict) -> dict:
+    """Verify only fixed retained tokenizer bytes; no network, credentials or old task authority."""
+    root = safe_path(TRLC_TOKENIZER_ROOT)
+    require(root.is_dir(), "trlc_offline_tokenizer_unavailable")
+    inventory = profile["tokenizer_inventory"]
+    rows = inventory["files"]
+    require(inventory.get("source_repository") == "https://huggingface.co/google/paligemma-3b-pt-224"
+            and inventory.get("source_revision") == "35e4f46485b4d07967e7e9935bc3786aad50687c"
+            and len(rows) == 6 and {row.get("path") for row in rows} == TRLC_TOKENIZER_FILES,
+            "trlc_tokenizer_inventory_changed")
+    files = []
+    for row in rows:
+        path = root / row["path"]
+        require(path.is_file(), "trlc_offline_tokenizer_unavailable")
+        actual = file_record(path)
+        require(actual["size_bytes"] == row["size_bytes"], "trlc_offline_tokenizer_bytes_changed")
+        if "sha256" in row:
+            matches = actual["sha256"] == "sha256:" + row["sha256"]
+        else:
+            # SHA1 here identifies the publisher's Git blob; SHA256 binds the retained bytes.
+            blob = hashlib.sha1(usedforsecurity=False)
+            blob.update(f"blob {actual['size_bytes']}\0".encode("ascii"))
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                raw = stream.read(row["size_bytes"] + 1)
+            blob.update(raw)
+            matches = (len(raw) == row["size_bytes"] and blob.hexdigest() == row["git_blob_sha1"]
+                       and "sha256:" + hashlib.sha256(raw).hexdigest() == actual["sha256"])
+        require(matches, "trlc_offline_tokenizer_bytes_changed")
+        files.append({"path": row["path"], **{key: actual[key] for key in ("sha256", "size_bytes")}})
+    return {"status": "tokenizer_bytes_verified", "source_repository": inventory["source_repository"],
+        "source_revision": inventory["source_revision"], "inventory_sha256": profile["tokenizer_inventory_sha256"],
+        "files": files, "inference_executed": False}
+
+
 def expected_manifest(original: dict, profile: dict | None = None) -> dict:
     value = json.loads(canonical(original))
     body = profile["policy_spec_template"]["embodiment_id"] if profile else EMBODIMENT_ID
     require(value.get("embodiment_id") == body, "body_mismatch")
     if body == EMBODIMENT_ID:
         value.update(control_hz=60, action_chunk_rows=1)
+    elif body == TRLC_EMBODIMENT_ID:
+        value.update(control_hz=60, action_chunk_rows=50)
+        require(isinstance(value.get("cameras"), list)
+                and [row["name"] for row in value["cameras"]] == ["overhead", "left_wrist", "right_wrist"],
+                "source_cameras_changed")
+        for camera in value["cameras"]:
+            camera.update(profile["camera_overrides"][camera["name"]])
     elif body == FRANKA_EMBODIMENT_ID:
         value.update(control_hz=60, action_chunk_rows=1)
         require(isinstance(value.get("cameras"), list)
@@ -213,7 +279,18 @@ def rights_record(request: dict, profile: dict) -> dict:
         "authorization_basis": "user_instruction_to_run_public_models",
         "authorization_reference": request["authorization_reference"],
         "private_vendor_authorization_claimed": False, "physical_validation_claimed": False}
-    if request["schema_version"] in {SCHEMA, FRANKA_SCHEMA}:
+    if request["schema_version"] == TRLC_SCHEMA:
+        value.update(license_id="Apache-2.0 AND Gemma-Terms-of-Use",
+            license_basis="community_checkpoint_apache_with_inherited_gemma_public_terms",
+            license_evidence_files=profile["license_evidence_files"],
+            license_evidence_url=profile["license_evidence_url"],
+            authorization_basis="current_user_instruction_for_internal_robot_simulation",
+            usage_scope="internal_out_of_distribution_rigid_task_simulation_diagnostic",
+            inherited_terms_apply=True, old_g1_task_authority_reused=False, new_human_review_claimed=False,
+            model_redistribution_authorized=False, public_model_service_authorized=False,
+            cloth_benchmark_claimed=False, vendor_policy_claimed=False,
+            tokenizer_inventory_sha256=profile["tokenizer_inventory_sha256"])
+    elif request["schema_version"] in {SCHEMA, FRANKA_SCHEMA}:
         value.update(license_basis="publisher_pinned_public_model_card", model_card_url=profile["model_card_url"],
                      model_card_sha256=profile["model_card_sha256"])
     else:

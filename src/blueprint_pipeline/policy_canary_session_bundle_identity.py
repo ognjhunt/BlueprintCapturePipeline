@@ -119,6 +119,12 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
         openwam_bundle_for_interface(payload["team_policy_interface_id"]).validate_runtime_contract(payload.get("openwam_runtime") or {})
         if minimum_gpu_ram_mb(payload) < 80_000:
             raise ValueError("openwam_gpu_memory_floor_invalid")
+    trlc = payload.get("team_policy_interface_id") == "pi05_trlc_joint14.v1"
+    if trlc:
+        from .trlc_pi05_bundle import validate_runtime_contract
+        validate_runtime_contract(payload.get("trlc_pi05_runtime") or {})
+        if minimum_gpu_ram_mb(payload) < 48_000:
+            raise ValueError("trlc_pi05_gpu_memory_floor_invalid")
     molmoact2 = payload.get("team_policy_interface_id") == "molmoact2_yam_joint14.v1"
     if molmoact2:
         from .molmoact2_yam_bundle import validate_runtime_contract
@@ -147,7 +153,7 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
         ) if family else (
             (("team_credential_env" not in payload and isinstance(candidates, list) and candidates
               and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"])
-             or ((openwam or molmoact2 or molmoact2_droid or scripted) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
+             or ((openwam or molmoact2 or molmoact2_droid or trlc or scripted) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
              or (payload.get("team_policy_interface_id") in {
                      "openpi_droid_https.v1", "blueprint_policy_https.v1", "dreamlabs_dream1.v1"}
                  and _SECRET_FILE_ENV.fullmatch(str(payload.get("team_credential_env") or "")) is not None
@@ -217,6 +223,14 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
             required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
                              "provider_runtime/adp009d_policy_server_worker.py",
                              "provider_runtime/blueprint_pipeline/team_candidate_policy_client.py"})
+        if manifest.get("team_policy_interface_id") == "pi05_trlc_joint14.v1":
+            from .trlc_pi05_bundle import RUNTIME_MODULES, validate_runtime_contract
+            contract = validate_runtime_contract(manifest["trlc_pi05_runtime"])
+            required.update("provider_runtime/blueprint_pipeline/" + name for name in RUNTIME_MODULES)
+            required.update("provider_runtime/" + name for name in contract["required_entries"])
+            required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
+                             "provider_runtime/adp009d_policy_server_worker.py",
+                             "provider_runtime/blueprint_pipeline/team_candidate_policy_client.py"})
         if manifest.get("team_policy_interface_id") == "molmoact2_yam_joint14.v1":
             from .molmoact2_yam_bundle import RUNTIME_MODULES, validate_runtime_contract
             contract = validate_runtime_contract(manifest["molmoact2_runtime"])
@@ -282,7 +296,7 @@ def run_kind_entrypoint_blockers(manifest: Mapping[str, Any], entrypoint_text: s
         if manifest.get("team_policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}:
             valid = valid and ('openwam_client:$RUNTIME_DIR' in entrypoint_text
                                and '--terminate-ready-server' in entrypoint_text)
-        if manifest.get("team_policy_interface_id") in {"molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1"}:
+        if manifest.get("team_policy_interface_id") in {"molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1", "pi05_trlc_joint14.v1"}:
             valid = valid and '--terminate-ready-server' in entrypoint_text
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             valid = valid and 'export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"' in entrypoint_text
