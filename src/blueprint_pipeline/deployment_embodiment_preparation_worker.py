@@ -60,21 +60,23 @@ def import_one(runtime: Path, output: Path, identity: str) -> dict:
         write_once(output / "import-checkpoint.json", sealed({
             "schema_version": "embodiment_import_checkpoint.v1", "body_result": row,
             "binding_digest": canonical_digest(binding)}, "checkpoint_digest"))
+    except Exception:
+        # Fast shutdown can suppress the pending exception as well as return
+        # code. Preserve its exact diagnostic in the parent's bounded log.
+        import traceback
+        traceback.print_exc()
+        sys.stderr.flush()
+        raise
     finally:
+        # Isaac's default fast shutdown terminates this process. The batch
+        # parent owns diagnostics and the final body receipt after verifying
+        # the checkpoint above; nothing required may follow this close.
         app.close()
-    from .deployment_embodiment_native_smoke import run_bounded_smoke_process
-    smoke = run_bounded_smoke_process(output, wall_seconds=min(90., max(0., min(
-        float(os.environ["BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH"]),
-        inputs["request"]["expires_at_epoch"]) - time.time() - 600),
-        max(0., float(os.environ.get("BLUEPRINT_EMBODIMENT_BODY_DEADLINE_EPOCH", "inf")) - time.time() - 5)))
-    row["native_controller_smoke"] = {key: smoke[key] for key in ("status", "process_digest", "smoke_digest", "reasons")}
-    write_once(output / "body-result.json", row)
     return row
 
 
-
-def recover_import_checkpoint(body: Path, identity: str, reason: str) -> dict:
-    """An interrupted diagnostic cannot erase an already verified import."""
+def verified_import_checkpoint(body: Path, identity: str) -> dict:
+    """Reopen the actual source/model closure before any diagnostic or retention."""
     from .decision_evidence_contracts import canonical_digest
     from .deployment_embodiment_runtime_configuration import bind_prepared_configuration
     checkpoint = read(body / "import-checkpoint.json")
@@ -93,6 +95,12 @@ def recover_import_checkpoint(body: Path, identity: str, reason: str) -> dict:
             and row["configuration_digest"] == verified["configuration_digest"]
             and row["import_digest"] == provenance["import_digest"]
             and row["source_bundle_digest"] == provenance["source_bundle_digest"], "import_checkpoint_identity_changed")
+    return row
+
+
+def recover_import_checkpoint(body: Path, identity: str, reason: str) -> dict:
+    """An interrupted diagnostic cannot erase an already verified import."""
+    row = verified_import_checkpoint(body, identity)
     row["native_controller_smoke"] = {"status": "failed", "reasons": ["import_process_interrupted_after_checkpoint:" + reason],
                                       "smoke_digest": None, "checkpoint_recovered": True}
     prior = body / "body-result.json"
@@ -102,6 +110,8 @@ def recover_import_checkpoint(body: Path, identity: str, reason: str) -> dict:
     return row
 
 def run_batch(runtime: Path, output: Path, *, run=subprocess.run, now=time.monotonic, wall=time.time) -> dict:
+    from .deployment_embodiment_native_smoke import run_bounded_smoke_process
+
     inputs = verify_inputs(runtime)
     output.mkdir(parents=True, exist_ok=True)
     provider_deadline = float(os.environ["BLUEPRINT_POLICY_CANARY_HARD_DEADLINE_EPOCH"])
@@ -122,20 +132,29 @@ def run_batch(runtime: Path, output: Path, *, run=subprocess.run, now=time.monot
             log = output / (identity + ".log")
             try:
                 body_timeout = min(1200, remaining - 30)
+                body_deadline = wall() + body_timeout
                 with log.open("wb") as stream:
                     process = run([sys.executable, "-m", "blueprint_pipeline.deployment_embodiment_preparation_worker",
                                    "one", "--runtime", str(runtime),
                                    "--output", str(body), "--embodiment", identity], stdout=stream, stderr=subprocess.STDOUT,
                                   timeout=body_timeout, check=False,
-                                  env={**os.environ, "BLUEPRINT_EMBODIMENT_BODY_DEADLINE_EPOCH": str(wall() + body_timeout)})
+                                  env={**os.environ, "BLUEPRINT_EMBODIMENT_BODY_DEADLINE_EPOCH": str(body_deadline)})
                 if process.returncode != 0:
                     row = {"embodiment_id": identity, "status": "import_failed", "reason": "isaac_import_process_failed",
                            "exit_code": process.returncode, "log": log.name}
                 else:
-                    row = read(body / "body-result.json")
+                    row = verified_import_checkpoint(body, identity)
+                    # Keep the original per-body deadline and both provider
+                    # clocks. SDK shutdown must not grant a fresh smoke window.
+                    smoke = run_bounded_smoke_process(body, wall_seconds=max(0., min(
+                        90., deadline - now(), body_deadline - wall() - 5,
+                        min(provider_deadline, inputs["request"]["expires_at_epoch"]) - wall() - 600)))
+                    row["native_controller_smoke"] = {key: smoke[key] for key in (
+                        "status", "process_digest", "smoke_digest", "reasons")}
+                    write_once(body / "body-result.json", row)
             except subprocess.TimeoutExpired:
                 row = {"embodiment_id": identity, "status": "import_failed", "reason": "isaac_import_timeout", "log": log.name}
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, KeyError, TypeError) as exc:
                 row = {"embodiment_id": identity, "status": "import_failed", "reason": type(exc).__name__, "log": log.name}
             if row["status"] != "imported" and (body / "import-checkpoint.json").is_file():
                 try:
