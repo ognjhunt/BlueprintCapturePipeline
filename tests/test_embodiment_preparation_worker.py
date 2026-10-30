@@ -252,3 +252,23 @@ def test_zero_exit_after_traceback_publishes_the_logged_failure_code_only(batch)
     result = batch.execute(run)
     assert [(row["status"], row["reason"]) for row in result["results"]] == [
         ("import_failed", "asset_import_unbound_dependency"), ("import_failed", "ValueError")]
+
+
+def test_binding_failure_log_carries_imported_structure_names_only(tmp_path, capsys):
+    """Batch05's TRLC binding failed on link names that were never retained."""
+    from blueprint_pipeline import deployment_embodiment_preparation_worker as module
+
+    module.print_imported_structure(tmp_path / "missing")
+    assert capsys.readouterr().err == ""
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    (prepared / "asset-import.json").write_text(json.dumps({"structure": {
+        "body_paths": [f"/station/Geometry/left_link{i}" for i in range(500)],
+        "joint_names": ["left_joint1"], "world_anchor_links": []}, "settings": {"asset_path": "/private/x"}}))
+    module.print_imported_structure(prepared)
+    line = capsys.readouterr().err.strip()
+    assert line.startswith("imported_structure ")
+    summary = json.loads(line.split(" ", 1)[1])
+    assert set(summary) == {"body_paths", "joint_names", "world_anchor_links"}
+    assert len(summary["body_paths"]) == 400 and summary["world_anchor_links"] == []
+    assert "/private/x" not in line

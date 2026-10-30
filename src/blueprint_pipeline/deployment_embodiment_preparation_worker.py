@@ -66,6 +66,7 @@ def import_one(runtime: Path, output: Path, identity: str) -> dict:
         # code. Preserve its exact diagnostic in the parent's bounded log.
         import traceback
         traceback.print_exc()
+        print_imported_structure(output / "prepared")
         sys.stderr.flush()
         raise
     finally:
@@ -74,6 +75,22 @@ def import_one(runtime: Path, output: Path, identity: str) -> dict:
         # the checkpoint above; nothing required may follow this close.
         app.close()
     return row
+
+
+def print_imported_structure(prepared: Path) -> None:
+    """A binding mismatch is diagnosable only from the names the importer produced.
+
+    Failed bodies are not retained, so their bounded log carries the imported
+    body paths, joint names and world anchors (public asset names only).
+    """
+    import json
+    try:
+        structure = json.loads((prepared / "asset-import.json").read_text(encoding="utf-8"))["structure"]
+        summary = {key: list(structure.get(key) or [])[:400]
+                   for key in ("body_paths", "joint_names", "world_anchor_links")}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return
+    print("imported_structure " + json.dumps(summary, sort_keys=True), file=sys.stderr)
 
 
 def verified_import_checkpoint(body: Path, identity: str) -> dict:
