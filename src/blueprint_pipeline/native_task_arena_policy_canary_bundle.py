@@ -47,6 +47,7 @@ from .native_task_arena_policy_canary_session import (
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
 from .openwam_franka_bundle import RUNTIME_MODULES as OPENWAM_RUNTIME_MODULES
 from .molmoact2_yam_bundle import RUNTIME_MODULES as MOLMOACT2_RUNTIME_MODULES
+from .trlc_pi05_bundle import RUNTIME_MODULES as TRLC_RUNTIME_MODULES
 from .molmoact2_droid_bundle import RUNTIME_MODULES as MOLMOACT2_DROID_RUNTIME_MODULES
 from .cosmos_droid_bundle import CANDIDATES as COSMOS_CANDIDATES, RUNTIME_MODULES as COSMOS_RUNTIME_MODULES
 from .task_evaluation_canary_hotfix_overlay import (
@@ -70,7 +71,7 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "rigid_robot_free_probe_recorder.py", "rigid_robot_free_probe_plan.py",
     "rigid_robot_free_readiness_score.py",
 )
-TEAM_RUNTIME_MODULE_NAMES = tuple(dict.fromkeys((*TEAM_RUNTIME_MODULE_NAMES, *OPENWAM_RUNTIME_MODULES, *MOLMOACT2_RUNTIME_MODULES, *MOLMOACT2_DROID_RUNTIME_MODULES, *COSMOS_RUNTIME_MODULES, "team_local_policy.py")))
+TEAM_RUNTIME_MODULE_NAMES = tuple(dict.fromkeys((*TEAM_RUNTIME_MODULE_NAMES, *OPENWAM_RUNTIME_MODULES, *MOLMOACT2_RUNTIME_MODULES, *TRLC_RUNTIME_MODULES, *MOLMOACT2_DROID_RUNTIME_MODULES, *COSMOS_RUNTIME_MODULES, "team_local_policy.py")))
 
 
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
@@ -485,7 +486,7 @@ def build_policy_canary_session_bundle(
                 raise ValueError("scripted_baseline_execution_requires_beta_run")
             scripted_candidates.append(candidate)
         elif interface not in TEAM_HTTPS_INTERFACES:
-            if interface in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1", "molmoact2_yam_joint14.v1"}:
+            if interface in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1", "molmoact2_yam_joint14.v1", "pi05_trlc_joint14.v1"}:
                 from .team_local_policy import runtime_for_interface
                 runtime_for_interface(interface).validate_execution_spec(spec)
                 if inputs.get("run_kind") != "blueprint_beta_screening":
@@ -629,7 +630,7 @@ def build_policy_canary_session_bundle(
         contract_dependency = stage_policy_contract_dependencies(runtime)
         robolab_dependency = (stage_robolab_source(runtime)
                               if any(spec.get("evaluation_backend") == "robolab.v1" for spec in specs.values()) else None)
-        openwam_contract = molmoact2_contract = molmoact2_droid_contract = cosmos_contract = None
+        openwam_contract = molmoact2_contract = molmoact2_droid_contract = cosmos_contract = trlc_contract = None
         for candidate in local_candidates:
             script = runtime / f"adp009d_policy_provisioning.{candidate}.sh"
             if specs[candidate].get("policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1"}:
@@ -637,6 +638,11 @@ def build_policy_canary_session_bundle(
                 selected = openwam_bundle_for_interface(specs[candidate]["policy_interface_id"])
                 openwam_contract = selected.stage_runtime(runtime)
                 provisioning_script = selected.provisioning_script()
+            elif specs[candidate].get("policy_interface_id") == "pi05_trlc_joint14.v1":
+                from .trlc_pi05_bundle import stage_runtime, provisioning_script as trlc_script, validate_native_inputs
+                validate_native_inputs(runtime_source_receipt=runtime_source_path, base_bundle_path=Path(base["bundle_path"]))
+                trlc_contract = stage_runtime(runtime)
+                provisioning_script = trlc_script()
             elif specs[candidate].get("policy_interface_id") == "molmoact2_yam_joint14.v1":
                 from .molmoact2_yam_bundle import stage_runtime, provisioning_script as molmoact2_script
                 molmoact2_contract = stage_runtime(runtime)
@@ -685,6 +691,11 @@ def build_policy_canary_session_bundle(
             from .openwam_piper_runtime import MINIMUM_GPU_MEMORY_GB
             manifest["minimum_gpu_memory_gb"] = max(MINIMUM_GPU_MEMORY_GB, manifest.get("minimum_gpu_memory_gb", 0))
             manifest.update(openwam_runtime=openwam_contract, team_policy_interface_id=openwam_contract["policy_interface_id"],
+                            secret_material_bundled=False)
+        if trlc_contract is not None:
+            from .trlc_pi05_runtime import MINIMUM_GPU_MEMORY_GB
+            manifest["minimum_gpu_memory_gb"] = max(float(manifest.get("minimum_gpu_memory_gb") or 0), MINIMUM_GPU_MEMORY_GB)
+            manifest.update(trlc_pi05_runtime=trlc_contract, team_policy_interface_id="pi05_trlc_joint14.v1",
                             secret_material_bundled=False)
         if molmoact2_contract is not None:
             from .molmoact2_yam_runtime import MINIMUM_GPU_MEMORY_GB

@@ -1,0 +1,39 @@
+{
+  "files": [
+    {
+      "path": "APACHE-2.0.txt",
+      "size_bytes": 11356,
+      "sha256": "sha256:43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+    },
+    {
+      "path": "NOTICE.txt",
+      "size_bytes": 1914,
+      "sha256": "sha256:66989753893863d627b12f35777e97d0a2ab956906ce7cf4a6b470e0fc93a917"
+    },
+    {
+      "path": "base-model-card.md",
+      "size_bytes": 5139,
+      "sha256": "sha256:5660a59c4bc742dbab3b0f8a109442436b8378200cdbdf6ed35045efe16cdfdc"
+    },
+    {
+      "path": "community-model-card.md",
+      "size_bytes": 2140,
+      "sha256": "sha256:5916bef5353aa251d59ad4434680c7df504431a0f5c6139b19a3384169dac68c"
+    },
+    {
+      "path": "gemma-prohibited-use.txt",
+      "size_bytes": 3610,
+      "sha256": "sha256:f6f8fd65cc8fb5170815e5aaa3cea6850ae9ed70f639ddcbbbb17225aa9868a8"
+    },
+    {
+      "path": "gemma-terms.txt",
+      "size_bytes": 10110,
+      "sha256": "sha256:a490e6c5e07cbf144366468d64205302f34fb90edaf795d360c0268447b7759d"
+    },
+    {
+      "path": "provenance.json",
+      "size_bytes": 2557,
+      "sha256": "sha256:a58904e95e11666c293c208340d1fa31e1a43cfd1d7783e9d178c7dd8329fbd7"
+    }
+  ]
+}
