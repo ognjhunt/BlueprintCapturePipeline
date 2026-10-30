@@ -272,3 +272,10 @@ def test_binding_failure_log_carries_imported_structure_names_only(tmp_path, cap
     assert set(summary) == {"body_paths", "joint_names", "world_anchor_links"}
     assert len(summary["body_paths"]) == 400 and summary["world_anchor_links"] == []
     assert "/private/x" not in line
+    # Isaac Sim 6 transcodes link6-7 and records the source name; the log shows both.
+    (prepared / "asset-import.json").write_text(json.dumps({"structure": {
+        "body_paths": ["/station/Geometry/tn__left_link67_sG"], "joint_names": [], "world_anchor_links": [],
+        "body_source_names": {"/station/Geometry/tn__left_link67_sG": "left_link6-7"}}}))
+    module.print_imported_structure(prepared)
+    summary = json.loads(capsys.readouterr().err.strip().split(" ", 1)[1])
+    assert summary["body_source_names"] == {"/station/Geometry/tn__left_link67_sG": "left_link6-7"}

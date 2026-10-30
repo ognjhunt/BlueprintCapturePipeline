@@ -90,6 +90,21 @@ def test_unbound_usd_external_asset_is_not_opened(tmp_path, monkeypatch, content
                                              "robot_embodiment": manifest}, fetch=_fetch(path))
 
 
+def test_flattened_instance_prototypes_are_self_contained_but_an_external_arc_is_not(tmp_path):
+    """USD flattening writes an internal reference (empty asset path) for each instance."""
+    from pxr import Sdf
+
+    text = ('#usda 1.0\n(\n defaultPrim = "robot"\n)\ndef Xform "robot" {\n'
+            ' def Material "grey" (instanceable = true\n  prepend references = </Flattened_Prototype_1>\n ) {}\n}\n'
+            'def Material "Flattened_Prototype_1" {}\n')
+    layer = Sdf.Layer.CreateAnonymous(".usda")
+    layer.ImportFromString(text)
+    assert list(layer.GetExternalReferences()) == [""]
+    assert configuration._has_external_assets(layer, Sdf) is False
+    layer.ImportFromString(text.replace("</Flattened_Prototype_1>", "@./materials.usda@</Flattened_Prototype_1>"))
+    assert configuration._has_external_assets(layer, Sdf) is True
+
+
 def test_signed_route_requires_trusted_issuer_and_bounds_body(tmp_path, monkeypatch):
     path, manifest, _ = _native_inputs(tmp_path)
     monkeypatch.setattr(configuration, "_fetch_model", _fetch(path))

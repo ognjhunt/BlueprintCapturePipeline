@@ -376,3 +376,31 @@ def test_predecessor_generator_never_accepts_a_new_configuration(public_sources,
     _reseal(folder, record)
     with pytest.raises(assets.AssetPreparationError):
         runtime.verify_runtime_configuration(folder)
+
+
+def previous42_runtime():
+    path = FIXTURE / "runtime_configuration_d06a.py"
+    assert "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest() == compatibility.CURRENT_42_GENERATOR
+    spec = importlib.util.spec_from_file_location("blueprint_pipeline._previous42", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert set(module._PROFILES) == compatibility.CURRENT_42_PROFILES and module._PROFILES == runtime._PROFILES
+    return module
+
+
+@pytest.mark.parametrize("identity", ["fanuc_m10id_12", "yaskawa_hc20_robotiq_2f85_sim"])
+def test_previous42_receipt_reuse_after_isaac6_name_binding_preserves_complete_metadata(
+        public_sources, tmp_path, monkeypatch, identity):
+    from tests.test_deployment_embodiment_runtime_compatibility import _reseal
+
+    old = previous42_runtime()
+    folder = tmp_path / "old"
+    record = old.prepare_runtime_configuration(public_sources(identity), folder)
+    assert record["generator_module_sha256"] == compatibility.CURRENT_42_GENERATOR
+    monkeypatch.setattr(runtime, "_expand_xacro", lambda *a, **k: pytest.fail("No historical re-expansion"))
+    assert runtime.verify_runtime_configuration(folder) == record
+    changed = deepcopy(record)
+    changed["manifest_fields"]["cameras"][0]["position_m"][0] += 0.01
+    _reseal(folder, changed)
+    with pytest.raises(assets.AssetPreparationError, match="predecessor_metadata_changed"):
+        runtime.verify_runtime_configuration(folder)
