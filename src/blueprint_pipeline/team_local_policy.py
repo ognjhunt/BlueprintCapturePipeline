@@ -3,6 +3,9 @@ from __future__ import annotations
 
 
 def runtime_for_interface(interface: str):
+    if interface == "pi05_trlc_joint14.v1":
+        from . import trlc_pi05_runtime
+        return trlc_pi05_runtime
     if interface == "openwam_franka_eef10.v1":
         from . import openwam_franka_runtime
         return openwam_franka_runtime

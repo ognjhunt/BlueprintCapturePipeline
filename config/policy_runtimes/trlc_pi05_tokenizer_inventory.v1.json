@@ -1,0 +1,15 @@
+{
+  "schema_version": "g1_paligemma_tokenizer_inventory.v1",
+  "source_repository": "https://huggingface.co/google/paligemma-3b-pt-224",
+  "source_revision": "35e4f46485b4d07967e7e9935bc3786aad50687c",
+  "model_license": "gemma",
+  "rights_review_required": true,
+  "files": [
+    {"path": "added_tokens.json", "size_bytes": 24, "git_blob_sha1": "ff9246e420971b10c510b39a0de289132c2bf23f"},
+    {"path": "preprocessor_config.json", "size_bytes": 699, "git_blob_sha1": "28cf2b54fa2e3de2f07c11fb13a29c6541ca913b"},
+    {"path": "special_tokens_map.json", "size_bytes": 607, "git_blob_sha1": "0c18fdd94629ea652e2ef36ed9a422474ad0a8e8"},
+    {"path": "tokenizer.json", "size_bytes": 17549604, "sha256": "ef6773c135b77b834de1d13c75a4c98ab7a3684ffd602d1831e1f1bf5467c563"},
+    {"path": "tokenizer.model", "size_bytes": 4264023, "sha256": "8986bb4f423f07f8c7f70d0dbe3526fb2316056c17bae71b1ea975e77a168fc6"},
+    {"path": "tokenizer_config.json", "size_bytes": 39968, "git_blob_sha1": "960dcec0bccc6e594d865eceb63c8078e164cfb2"}
+  ]
+}

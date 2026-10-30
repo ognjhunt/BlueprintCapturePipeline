@@ -1,0 +1,29 @@
+Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms
+
+This package retains notices for the community checkpoint
+ djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged
+ revision 10466a133c74018465c6839b7003b700775e4f69.
+Its publisher card declares Apache-2.0. Its merge metadata names lerobot/pi05_base;
+that base card declares Gemma/PaliGemma. The base/training revision is unknown.
+The Apache declaration does not remove inherited Gemma terms or restrictions.
+
+All use of this staged model is subject to gemma-terms.txt and the incorporated
+use restrictions in gemma-prohibited-use.txt, including applicable-law and
+third-party rights requirements. Those restrictions must be preserved in any
+agreement governing distribution or hosted use. No model redistribution or
+public model-serving authorization is granted by this internal integration.
+Retain the complete terms, restrictions, Apache license and this NOTICE with
+cloud-staged model artifacts. Modified files must identify their modifications.
+
+Blueprint's adapter changes runtime configuration, image/robot bindings and the
+inference implementation as documented in its source. The pinned community
+checkpoint bytes are verified and are not rewritten. This is not a publisher-
+identical training fork or a TRLC vendor policy. Training involved T-shirt
+folding; rigid pick/place execution is an out-of-distribution simulation
+diagnostic, with no cloth benchmark, physical validation or vendor endorsement.
+
+The current user's instruction to run public policies in internal simulation is
+the integration's authorization basis. No prior G1 task approval, new human
+review, gated download permission or deployment outcome is asserted or reused.
+Public-source URLs, retained-byte hashes and text extraction details are recorded
+in provenance.json. Original upstream and inherited rights remain unchanged.

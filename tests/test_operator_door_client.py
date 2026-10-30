@@ -738,6 +738,23 @@ def test_franka_policy_cli_http_preserves_exact_model_batch_and_retry(door, tmp_
     assert _run(*arguments)[0] == 3
 
 
+def test_trlc_policy_cli_http_preserves_exact_model_batch_and_retry(door, tmp_path, monkeypatch):
+    from tests.test_operator_door_trlc_registration import request
+    value = request()
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(value))
+    arguments = ("install-public-trlc-policy", "--request-file", str(path))
+    code, output = _run(*arguments)
+    assert code == 0
+    request_id = json.loads(output)["id"]
+    retry_code, retry = _run(*arguments)
+    assert retry_code == 0 and json.loads(retry)["id"] == request_id
+    saved = json.loads((door["state"] / "requests" / "pending" / (request_id + ".json")).read_text())
+    assert saved["request"] == {"kind": "install-public-trlc-policy", "request": value}
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
+    assert _run(*arguments)[0] == 3
+
+
 def test_scripted_batch_cli_http_binds_exact_batch_and_idempotent_operation(door, tmp_path, monkeypatch):
     from tests.test_operator_door_scripted_registration import request
     value = request()

@@ -327,7 +327,10 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                     raise ValueError("beta_screening_company_embodiment_binding_mismatch")
                 route = deployment.get("policy_route_id")
                 if route is not None:
-                    if local and route != ("blueprint_scripted_baseline" if scripted else "customer_controller"):
+                    expected_route = ("blueprint_scripted_baseline" if scripted else
+                                      "pi05_custom_checkpoint" if interface["policy_interface_id"] == "pi05_trlc_joint14.v1" else
+                                      "customer_controller")
+                    if local and route != expected_route:
                         raise ValueError("team_local_policy_route_identity_mismatch")
                     # A shared robot or HTTPS transport does not identify a
                     # policy family. Retain explicit operator route provenance

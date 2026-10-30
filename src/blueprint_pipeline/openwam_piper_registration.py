@@ -37,12 +37,16 @@ def prepare(request: dict, *, state_root: Path = STATE_ROOT, model_root: Path = 
     identity = _contract.request_identity(request)
     actual = release_commit or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
     require(actual == request["release_commit"], "installed_release_mismatch")
-    profile = _contract.load_profile(request, profile_root)
+    profile = _contract.load_profile(request, profile_root,
+        license_root=Path(__file__).parent / "_vendor/trlc_pi05_notices")
     body, original, model = retained_body(request, model_root=model_root)
-    rows = 30 if request["schema_version"] == _contract.YAM_SCHEMA else 1
+    rows = {_contract.YAM_SCHEMA: 30, _contract.TRLC_SCHEMA: 50}.get(request["schema_version"], 1)
     prepared = bind_prepared_configuration(body / "configuration", body / "prepared",
         original["robot_embodiment"]["model"]["url"], runtime_settings={"control_hz": 60, "action_chunk_rows": rows})
-    if request["schema_version"] == _contract.YAM_SCHEMA:
+    if request["schema_version"] == _contract.TRLC_SCHEMA:
+        from .trlc_pi05_runtime import build_policy_spec, configure_prepared_inputs
+        prepared = configure_prepared_inputs(prepared)
+    elif request["schema_version"] == _contract.YAM_SCHEMA:
         from .molmoact2_yam_runtime import build_policy_spec, configure_prepared_inputs
         prepared = configure_prepared_inputs(prepared)
     elif request["schema_version"] == _contract.FRANKA_SCHEMA:
@@ -61,6 +65,8 @@ def prepare(request: dict, *, state_root: Path = STATE_ROOT, model_root: Path = 
         checkpoint_id=identity["checkpoint_id"],
         policy_spec=policy, rights=rights_record(request, profile), display_name=profile["display_name"])
     registration.update(minimum_gpu_memory_gb=profile["minimum_gpu_memory_gb"], deployment=profile["deployment"])
+    if request["schema_version"] == _contract.TRLC_SCHEMA:
+        registration["offline_tokenizer"] = _contract.trlc_tokenizer_record(profile)
     proposal = {"schema_version": identity["proposal_schema"], "request_digest": request["request_digest"],
                 "registration": registration, "candidate_policy_queried": False, "provider_allocations_performed": 0}
     write_once(destination / "proposal.json", proposal)
