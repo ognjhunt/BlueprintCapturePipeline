@@ -24,9 +24,6 @@ from .reconstruction_capability import (
 
 ADAPTER = "local://provided-scene-mesh-import-v1"
 MAX_INSPECTION_BYTES = 256 * 1024 * 1024
-#: The pipeline's own ASCII USD of an admitted source. It is several times the
-#: source's bytes (a 70.6 MB Atlas GLB writes 292 MB); MAX_VERTICES still bounds it.
-MAX_NORMALIZED_INSPECTION_BYTES = 8 * MAX_INSPECTION_BYTES
 MAX_VERTICES = 10_000_000
 
 
@@ -77,10 +74,16 @@ def _row(identity: str, points: Any, faces: Any, *, scale: float, axis: str) -> 
 def inspect_mesh(path: Path, *, original_filename: str,
                  coordinate_frame_declaration: Mapping[str, Any],
                  normalized_output: bool = False) -> dict[str, Any]:
-    """``normalized_output`` reads back the pipeline's own normalized layer; a source keeps its cap."""
+    """``normalized_output`` reads back the pipeline's own normalized layer.
+
+    The byte cap bounds what a supplied file can make us parse. The pipeline's
+    own ASCII USD of an admitted source is several times that source's bytes (a
+    70.6 MB Atlas GLB writes 292 MB), so it has no byte cap; MAX_VERTICES and
+    the exact point and face comparison still bound and check it.
+    """
     _require(path.is_file() and not any(p.is_symlink() for p in (path, *path.parents)), "asset_missing")
-    limit = MAX_NORMALIZED_INSPECTION_BYTES if normalized_output is True else MAX_INSPECTION_BYTES
-    _require(0 < path.stat().st_size <= limit, "inspection_size_limit")
+    _require(path.stat().st_size > 0 and (normalized_output is True or path.stat().st_size <= MAX_INSPECTION_BYTES),
+             "inspection_size_limit")
     scale = coordinate_frame_declaration.get("meters_per_unit")
     axis = coordinate_frame_declaration.get("up_axis")
     _require(not isinstance(scale, bool) and isinstance(scale, (int, float))

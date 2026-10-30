@@ -94,13 +94,12 @@ def test_normalized_ascii_layer_larger_than_the_source_cap_is_read_back(tmp_path
     source.write_bytes(trimesh.creation.icosphere(subdivisions=4).export(file_type="glb"))
     frame = {"meters_per_unit": 1.1, "up_axis": "Y"}
     monkeypatch.setattr(provided_scene_mesh, "MAX_INSPECTION_BYTES", source.stat().st_size)
-    monkeypatch.setattr(provided_scene_mesh, "MAX_NORMALIZED_INSPECTION_BYTES", 8 * source.stat().st_size)
     root = tmp_path / "normalized"
     normalized = normalize_completed_mesh(source=source, original_filename=source.name,
                                           coordinate_frame=frame, output_root=root)
     output = root / normalized["output"]["relative_path"]
     assert normalized["output"]["size_bytes"] > source.stat().st_size
-    # Only the pipeline's own layer gets the larger bound; a source of that size is still refused.
+    # Only the pipeline's own layer is read back past the cap; a source of that size is still refused.
     with pytest.raises(ReconstructionContractError, match="inspection_size_limit"):
         inspect_mesh(output, original_filename=output.name,
                      coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"})
