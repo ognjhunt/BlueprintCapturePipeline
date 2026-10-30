@@ -1151,6 +1151,54 @@
       "reviewed_on": "2026-10-28",
       "severity": "MEDIUM",
       "test_id": "B103"
+    },
+    {
+      "disposition": "mitigated_by_control",
+      "expires_on": "2027-01-27",
+      "filename": "scripts/audit_molmoact2_yam_inference_imports.py",
+      "fingerprint": "95db750830a844d13b75f46655d808fe34a7875ff34267129699854b55eac57e",
+      "line_number": 63,
+      "owner": "@ognjhunt",
+      "reason": "The checkpoint is loaded from a local, digest-verified MolmoAct2 snapshot with local_files_only=True (and HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE in the server), so no Hub download or unpinned revision is reachable at this site; Bandit does not follow the local-only load.",
+      "reviewed_on": "2026-10-29",
+      "severity": "MEDIUM",
+      "test_id": "B615"
+    },
+    {
+      "disposition": "mitigated_by_control",
+      "expires_on": "2027-01-27",
+      "filename": "scripts/audit_molmoact2_yam_inference_imports.py",
+      "fingerprint": "4cb4ed08ca075702953a777e5fd4885acb7dd0430a09343b95663a66b3dbb609",
+      "line_number": 64,
+      "owner": "@ognjhunt",
+      "reason": "The checkpoint is loaded from a local, digest-verified MolmoAct2 snapshot with local_files_only=True (and HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE in the server), so no Hub download or unpinned revision is reachable at this site; Bandit does not follow the local-only load.",
+      "reviewed_on": "2026-10-29",
+      "severity": "MEDIUM",
+      "test_id": "B615"
+    },
+    {
+      "disposition": "mitigated_by_control",
+      "expires_on": "2027-01-27",
+      "filename": "src/blueprint_pipeline/molmoact2_yam_policy_server.py",
+      "fingerprint": "cdbcdc8ba4a4f120fadde5e46e24b73481c4e1aff582ddc79d5ba6b0da1a68d4",
+      "line_number": 126,
+      "owner": "@ognjhunt",
+      "reason": "The checkpoint is loaded from a local, digest-verified MolmoAct2 snapshot with local_files_only=True (and HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE in the server), so no Hub download or unpinned revision is reachable at this site; Bandit does not follow the local-only load.",
+      "reviewed_on": "2026-10-29",
+      "severity": "MEDIUM",
+      "test_id": "B615"
+    },
+    {
+      "disposition": "mitigated_by_control",
+      "expires_on": "2027-01-27",
+      "filename": "src/blueprint_pipeline/molmoact2_yam_policy_server.py",
+      "fingerprint": "37dcf57a4f9343a366cf86d527a3ae3fb881fd534a28ffa2d98e0aac6bd974c1",
+      "line_number": 128,
+      "owner": "@ognjhunt",
+      "reason": "The checkpoint is loaded from a local, digest-verified MolmoAct2 snapshot with local_files_only=True (and HF_HUB_OFFLINE/TRANSFORMERS_OFFLINE in the server), so no Hub download or unpinned revision is reachable at this site; Bandit does not follow the local-only load.",
+      "reviewed_on": "2026-10-29",
+      "severity": "MEDIUM",
+      "test_id": "B615"
     }
   ],
   "fingerprint_policy": "filename_test_id_ast_scope_column_issue_text_canonical_code_and_source_anchor",
