@@ -418,7 +418,7 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # ``checkpoint(stage)`` runs before every paid stage; raising there (a
     # withdrawal) stops the job before it buys or uploads anything more.
     checkpoint = _checkpoint_with_details(checkpoint)
-    check = checkpoint or (lambda _stage: None)
+    check = checkpoint or (lambda _stage, **_details: None)
     from .atlas_video_inputs import survey_video, prepare_video_inputs, takes_reviewed_background
     from .atlas_scene_planner import proposal_review
     from .paid_resource_allocator import (run_sponsored_website_atlas_plan, run_sponsored_website_atlas_pose,
