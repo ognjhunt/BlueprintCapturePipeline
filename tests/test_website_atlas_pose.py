@@ -964,6 +964,50 @@ def test_an_attempt_that_never_submitted_can_be_set_aside(atlas_case, monkeypatc
     assert archived["status"] == "uploading" and archived["created_assets"] == ["asset_0000", "asset_0001"]
 
 
+def test_the_provider_poll_retains_a_finished_pose_through_its_own_reader(atlas_case, tmp_path):
+    from blueprint_pipeline import website_atlas_preview as preview
+    fake = FakeAtlas(atlas_case.events, polls_until_done=2)
+    assert atlas_case.run(fake, max_polls=1)["status"] == "processing"
+    job = tmp_path / "preview_job.json"
+    job.write_text(json.dumps({"state": "processing", "enqueued_at_epoch": int(time.time()),
+                               "next_attempt_at_epoch": 0}))
+    before, reserved = job.read_bytes(), len(atlas_case.webapp.spend)
+    calls = len(fake.calls)
+    counts = preview.poll_jobs([(job, lambda path: json.loads(path.read_text()), lambda _job: True)], transport=fake)
+    assert counts == {"completed": 1} and _state(atlas_case)["status"] == "completed"
+    assert all(method == "GET" or url.endswith(":createReadUrl") for method, url in fake.calls[calls:])
+    assert job.read_bytes() == before and len(atlas_case.webapp.spend) == reserved and len(fake.submissions) == 1
+    # The tick's own run finds the retained result: no poll, no purchase.
+    calls = len(fake.calls)
+    assert atlas_case.run(fake)["status"] == "completed" and len(fake.calls) == calls
+
+
+WEBHOOK = "https://paperclip.tryblueprint.io/api/live-pipeline/atlas-webhook"
+
+
+def test_a_new_pose_asks_for_the_completion_webhook_outside_what_was_bought(atlas_case, monkeypatch):
+    monkeypatch.setenv(atlas.ATLAS_WEBHOOK_URL_ENV, WEBHOOK)
+    fake = FakeAtlas(atlas_case.events)
+    assert atlas_case.run(fake, max_polls=3)["status"] == "completed"
+    body, key = fake.submissions[0]
+    state = _state(atlas_case)
+    assert body["webhookUrl"] == WEBHOOK and key == "bp-atlas-" + state["request_digest"][7:39]
+    # The request record, its binding and the receipt are the task request alone.
+    assert "webhookUrl" not in state["request"] and "webhook" not in json.dumps(state["binding"])
+    assert "webhookUrl" not in _result(atlas_case)["operation_receipt"]["request"]
+    assert geometry.run_website_scene_geometry(**atlas_case.kwargs)["actual_provider_input_count"] == 3
+
+
+def test_a_pose_sent_before_the_webhook_was_configured_is_resent_byte_for_byte(atlas_case, monkeypatch):
+    fake = FakeAtlas(atlas_case.events, submit_outcomes=["timeout"])
+    with pytest.raises(atlas.AtlasTransportError):
+        atlas_case.run(fake)
+    monkeypatch.setenv(atlas.ATLAS_WEBHOOK_URL_ENV, WEBHOOK)
+    assert atlas_case.run(fake, max_polls=3)["status"] == "completed"
+    assert fake.raw_submissions[0] == fake.raw_submissions[1] and b"webhookUrl" not in fake.raw_submissions[1]
+    assert fake.submissions[0][1] == fake.submissions[1][1]
+
+
 def test_the_reader_reports_an_operation_in_progress(atlas_case):
     fake = FakeAtlas(atlas_case.events, polls_until_done=2)
     assert atlas_case.run(fake, max_polls=1)["status"] == "processing"

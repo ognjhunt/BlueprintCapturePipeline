@@ -732,3 +732,27 @@ def test_the_preview_checkpoint_accepts_the_details_a_stage_reports(monkeypatch,
            "enqueued_at_epoch": 1000, "next_attempt_at_epoch": 0, "state": "processing"}
     result = preview._step(job, job_dir=tmp_path, capture_root=tmp_path, now=lambda: 1001)
     assert reached == [True] and result["state"] == "processing" and "last_transient_reason" not in result
+
+
+def test_the_provider_poll_reads_website_jobs_until_withdrawal_and_never_writes_the_job(monkeypatch, site, capsys):
+    # 2026-10-30: a refined splat finished at World Labs around 18:10Z and waited out a deploy.
+    from blueprint_pipeline import owned_capture_atlas_worker as owned
+    _enqueue(site)
+    stage = site.pipeline / "atlas" / "native" / "atlas_pose"
+    stage.mkdir(parents=True)
+    (stage / "submission.json").write_text(json.dumps({"status": "submitted", "operation_id": "op_splat"}))
+    (site.pipeline / "atlas" / "pose" / "atlas_pose").mkdir(parents=True)
+    (site.pipeline / "atlas" / "pose" / "atlas_pose" / "submission.json").write_text(
+        json.dumps({"status": "completed", "operation_id": "op_pose"}))
+    polled = []
+    monkeypatch.setattr(preview, "_read_only_client", lambda transport=None: "read-only client")
+    monkeypatch.setattr(preview, "_poll_submission", lambda root, *, client, now: polled.append((root, client)) or "completed")
+    monkeypatch.setattr(preview, "_step", lambda *_a, **_k: pytest.fail("the poll advanced a job"))
+    monkeypatch.setattr(owned, "poll_from_environment", lambda: {})
+    before = site.job.read_bytes()
+    assert preview.main(["poll", "--storage-root", str(site.storage)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"completed": 1}
+    assert polled == [(stage.parent, "read-only client")] and site.job.read_bytes() == before
+    _withdraw(site)
+    assert preview.poll(site.storage) == {"idle": 1} and len(polled) == 1
+    assert site.job.read_bytes() == before  # the withdrawal itself is the next tick's to record

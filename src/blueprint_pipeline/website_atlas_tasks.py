@@ -451,7 +451,7 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
                 pose._await_ready(client, state, state_path, sleep)
                 body = _replace_uploads(request, {r["frame_id"]: r["asset_id"] for r in state["uploads"]})
                 validate_task_request(task, body)
-                state.update(request=body, request_body=pose._canonical_json(body))
+                state.update(request=body, request_body=pose.new_request_body(body))
             elif state.get("status") != "resend":
                 # Never invent a second purchase after an unknown response.
                 raise ValueError("atlas_task_submission_requires_reconciliation")
@@ -483,40 +483,70 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
             operation = pose._without_urls(pose._json_object(status, payload))
             state.update(status="submitted", operation_id=pose._safe_id(operation.get("id")))
             pose._write_state(state_path, state)
-        if state["api_base"] != base:
-            raise ValueError("atlas_task_api_base_changed")
-        operation = state.get("terminal_operation") if state.get("status") == "failed" else None
-        if operation is None:
-            for attempt in range(max_polls):
-                operation = pose._without_urls(client.call("GET", "/operations/" + state["operation_id"]))
-                if operation.get("id") != state["operation_id"]:
-                    raise ValueError("atlas_task_operation_identity_mismatch")
-                if operation.get("done") is True:
-                    break
-                if attempt + 1 < max_polls:
-                    sleep(poll_interval_seconds)
-            else:
-                return {"status": "processing", "operation_id": state["operation_id"]}
-        if operation.get("id") != state["operation_id"] or operation.get("done") is not True:
-            raise ValueError("atlas_task_terminal_operation_invalid")
-        if operation.get("error") is not None:
-            if state.get("status") != "failed":
-                state.update(status="failed", terminal_operation=operation, terminal_observed_at_epoch=now())
-                pose._write_state(state_path, state)
-            raise ValueError("atlas_task_operation_failed")
-        _validate_response(task, state["request"], operation.get("response"))
-        outputs = _collect(client, operation, root)
-        result = {"schema_version": "website_atlas_task_result.v1", "status": "completed", "task": task,
-                  "operation": operation, "binding": binding, "request_digest": request_digest,
-                  "outputs": outputs, "billing": {"status": "unreported", "reserved_usd": cost},
-                  "claim_ceiling": "development_only", "physical_evidence": False,
-                  "metric_measurement_proven": False, "scale_status": "unscaled_provider_world_units",
-                  "generated_content": task != "splats2Mesh"}
-        result["digest"] = canonical_digest(result, digest_field="digest")
-        pose._write_state(root / "result.json", result)
-        state.update(status="completed", result_digest=result["digest"])
-        pose._write_state(state_path, state)
-        return result
+        return _collect_operation(client, state, root, binding=binding, request_digest=request_digest, now=now,
+                                  sleep=sleep, max_polls=max_polls, poll_interval_seconds=poll_interval_seconds)
+
+
+def _collect_operation(client: pose.AtlasClient, state: dict[str, Any], root: Path, *,
+                       binding: Mapping[str, Any], request_digest: str, now: Callable[[], float],
+                       sleep: Callable[[float], None], max_polls: int,
+                       poll_interval_seconds: float) -> dict[str, Any]:
+    """Poll the submitted operation and retain a finished one. Reads only; the caller holds the lock."""
+    state_path = root / "atlas_pose" / "submission.json"
+    task = binding["task"]
+    if state["api_base"] != client.base_url:
+        raise ValueError("atlas_task_api_base_changed")
+    operation = state.get("terminal_operation") if state.get("status") == "failed" else None
+    if operation is None:
+        for attempt in range(max_polls):
+            operation = pose._without_urls(client.call("GET", "/operations/" + state["operation_id"]))
+            if operation.get("id") != state["operation_id"]:
+                raise ValueError("atlas_task_operation_identity_mismatch")
+            if operation.get("done") is True:
+                break
+            if attempt + 1 < max_polls:
+                sleep(poll_interval_seconds)
+        else:
+            return {"status": "processing", "operation_id": state["operation_id"]}
+    if operation.get("id") != state["operation_id"] or operation.get("done") is not True:
+        raise ValueError("atlas_task_terminal_operation_invalid")
+    if operation.get("error") is not None:
+        if state.get("status") != "failed":
+            state.update(status="failed", terminal_operation=operation, terminal_observed_at_epoch=now())
+            pose._write_state(state_path, state)
+        raise ValueError("atlas_task_operation_failed")
+    _validate_response(task, state["request"], operation.get("response"))
+    outputs = _collect(client, operation, root)
+    result = {"schema_version": "website_atlas_task_result.v1", "status": "completed", "task": task,
+              "operation": operation, "binding": binding, "request_digest": request_digest,
+              "outputs": outputs, "billing": {"status": "unreported", "reserved_usd": binding["maximum_cost_usd"]},
+              "claim_ceiling": "development_only", "physical_evidence": False,
+              "metric_measurement_proven": False, "scale_status": "unscaled_provider_world_units",
+              "generated_content": task != "splats2Mesh"}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    pose._write_state(root / "result.json", result)
+    state.update(status="completed", result_digest=result["digest"])
+    pose._write_state(state_path, state)
+    return result
+
+
+def poll_atlas_task_submission(output_root: Path, *, client: pose.AtlasClient,
+                               now: Callable[[], float] = time.time) -> dict[str, Any]:
+    """Read a submitted task's operation once and record what the attempt's own poll records.
+
+    The provider poll's entry (``website_atlas_preview.poll_jobs``). It reaches no
+    release gate, reservation, upload, send or retry: a finished operation is
+    retained or its failure recorded, and the next attempt run does the rest.
+    """
+    root = output_root.resolve()
+    with pose._locked(root):
+        state = json.loads((root / "atlas_pose" / "submission.json").read_text())
+        if state.get("status") != "submitted" or not isinstance(state.get("operation_id"), str):
+            return {"status": state.get("status"), "operation_id": state.get("operation_id")}
+        if canonical_digest(state.get("binding")) != state.get("request_digest"):
+            raise ValueError("atlas_task_binding_changed")
+        return _collect_operation(client, state, root, binding=state["binding"], request_digest=state["request_digest"],
+                                  now=now, sleep=time.sleep, max_polls=1, poll_interval_seconds=0)
 
 
 def _transient_upstream_failure(state, attempt=0):
