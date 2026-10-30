@@ -1,0 +1,171 @@
+{
+  "claim_ceiling": "development_only_no_checkpoint_gpu_or_task_evidence",
+  "constructions": [
+    {
+      "claim_ceiling": "development_only_no_checkpoint_load_no_policy_inference_no_gpu_or_task_evidence",
+      "class": "DiffusionPolicy",
+      "config_filename": "humanoidarena_dp_g1_dex3_sonic.config.json",
+      "config_sha256": "9854a226d08820fa643b9506b3ddd339d1131ce6edb9959e696aaa8dfc448b04",
+      "construction": "cpu_initialized_policy_with_retained_resnet18_initializer_no_policy_checkpoint",
+      "elapsed_s": 5.8341707669969765,
+      "max_rss_kib": 1554072,
+      "network": "socket_connections_refused",
+      "parameter_devices": [
+        "cpu"
+      ],
+      "parameters": 262730568,
+      "publisher_source_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9",
+      "schema": "development_g1_cpu_construction_audit.v1",
+      "source_tree_scope": "verified_selected_publisher_python_tree_not_full_git_checkout"
+    },
+    {
+      "claim_ceiling": "development_only_no_checkpoint_load_no_policy_inference_no_gpu_or_task_evidence",
+      "class": "DiffusionPolicy",
+      "config_filename": "humanoidarena_dp_g1_dex3_sonic_vision_navi.config.json",
+      "config_sha256": "9854a226d08820fa643b9506b3ddd339d1131ce6edb9959e696aaa8dfc448b04",
+      "construction": "cpu_initialized_policy_with_retained_resnet18_initializer_no_policy_checkpoint",
+      "elapsed_s": 3.5712375479997718,
+      "max_rss_kib": 1550536,
+      "network": "socket_connections_refused",
+      "parameter_devices": [
+        "cpu"
+      ],
+      "parameters": 262730568,
+      "publisher_source_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9",
+      "schema": "development_g1_cpu_construction_audit.v1",
+      "source_tree_scope": "verified_selected_publisher_python_tree_not_full_git_checkout"
+    },
+    {
+      "claim_ceiling": "development_only_no_checkpoint_load_no_policy_inference_no_gpu_or_task_evidence",
+      "class": "PI05Policy",
+      "config_filename": "humanoidarena_pi05_g1_dex3_sonic.config.json",
+      "config_sha256": "8adc714c9e5aab70939e5bfbc5cec6d6e100b9b817e810ca6aec6088ec466a63",
+      "construction": "meta_parameter_graph_only_no_parameter_storage_no_checkpoint",
+      "elapsed_s": 1.2703975699987495,
+      "max_rss_kib": 550372,
+      "network": "socket_connections_refused",
+      "parameter_devices": [
+        "meta"
+      ],
+      "parameters": 4143421208,
+      "publisher_source_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9",
+      "schema": "development_g1_cpu_construction_audit.v1",
+      "source_tree_scope": "verified_selected_publisher_python_tree_not_full_git_checkout"
+    },
+    {
+      "claim_ceiling": "development_only_no_checkpoint_load_no_policy_inference_no_gpu_or_task_evidence",
+      "class": "PI05Policy",
+      "config_filename": "humanoidarena_pi05_g1_dex3_sonic_vision_navi.config.json",
+      "config_sha256": "488b9f6c4b483ea4f84dec46985671a344bf4a49fb50fd3591350282ef6a0aa3",
+      "construction": "meta_parameter_graph_only_no_parameter_storage_no_checkpoint",
+      "elapsed_s": 1.436263452997082,
+      "max_rss_kib": 549912,
+      "network": "socket_connections_refused",
+      "parameter_devices": [
+        "meta"
+      ],
+      "parameters": 4143421208,
+      "publisher_source_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9",
+      "schema": "development_g1_cpu_construction_audit.v1",
+      "source_tree_scope": "verified_selected_publisher_python_tree_not_full_git_checkout"
+    }
+  ],
+  "cpu_torch_substitutions": [
+    {
+      "filename": "torch-2.10.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "name": "torch",
+      "requires_dist": [
+        "filelock",
+        "typing-extensions>=4.10.0",
+        "setuptools; python_version >= \"3.12\"",
+        "sympy>=1.13.3",
+        "networkx>=2.5.1",
+        "jinja2",
+        "fsspec>=0.8.5",
+        "optree>=0.13.0; extra == \"optree\"",
+        "opt-einsum>=3.3; extra == \"opt-einsum\"",
+        "pyyaml; extra == \"pyyaml\""
+      ],
+      "sha256": "ee40b8a4b4b2cf0670c6fd4f35a7ef23871af956fecb238fbf5da15a72650b1d",
+      "size_bytes": 188943803,
+      "url": "https://download-r2.pytorch.org/whl/cpu/torch-2.10.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "version": "2.10.0+cpu"
+    },
+    {
+      "filename": "torchvision-0.25.0+cpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "name": "torchvision",
+      "requires_dist": [
+        "numpy",
+        "torch (==2.10.0)",
+        "pillow (!=8.3.*,>=5.3.0)",
+        "gdown (>=4.7.3) ; extra == 'gdown'",
+        "scipy ; extra == 'scipy'"
+      ],
+      "sha256": "c1be164e93c68b2dbf460fd58975377c892dbcf3358fb72941709c3857351bba",
+      "size_bytes": 1928072,
+      "url": "https://download-r2.pytorch.org/whl/cpu/torchvision-0.25.0%2Bcpu-cp312-cp312-manylinux_2_28_x86_64.whl",
+      "version": "0.25.0+cpu"
+    }
+  ],
+  "cpu_wheel_count": 78,
+  "cpu_wheel_inventory_sha256": "e57b37fcb20fccb197cd0f16e1332ef01eab74934377787dab77c762b73a59b7",
+  "cpu_wheelhouse_verification": {
+    "archive_members": 26836,
+    "claim_ceiling": "dependency_bytes_only",
+    "expanded_bytes": 1544043261,
+    "manifest_digest": "development_only_cpu_wheel_inventory",
+    "schema": "native_g1_beta_wheelhouse_verification.v1",
+    "wheel_count": 78
+  },
+  "imports": [
+    {
+      "module": "torch",
+      "version": "2.10.0+cpu"
+    },
+    {
+      "module": "torchvision",
+      "version": "0.25.0+cpu"
+    },
+    {
+      "module": "transformers",
+      "version": "5.3.0"
+    },
+    {
+      "module": "diffusers",
+      "version": "0.35.2"
+    },
+    {
+      "module": "numpy",
+      "version": "2.2.6"
+    },
+    {
+      "module": "lerobot.policies.factory",
+      "version": null
+    },
+    {
+      "module": "lerobot.policies.diffusion.modeling_diffusion",
+      "version": null
+    },
+    {
+      "module": "lerobot.policies.pi05.modeling_pi05",
+      "version": null
+    },
+    {
+      "module": "pinned_publisher_server"
+    }
+  ],
+  "limitations": [
+    "CPU Torch/TorchVision replace their CUDA distributions only in this audit.",
+    "Pi0.5 graph construction uses the meta device; weights are not allocated.",
+    "No policy checkpoint was loaded or prediction performed.",
+    "No GPU, simulator, SONIC, task or physical performance evidence."
+  ],
+  "manifest_digest": "sha256:5ad43668b6903fa2682680c59f90f6daf3c4ee3a07b48930f74d96a53206a5de",
+  "network": "socket_connections_refused_during_imports_and_construction",
+  "pip_check": "No broken requirements found.",
+  "publisher_revision": "68479287a784a69be9ce6ad739311d2f11f75ef9",
+  "schema": "native_g1_beta_dependency_cpu_audit.v1",
+  "selected_source_bytes": 4099808,
+  "selected_source_files": 363,
+  "selected_source_inventory_sha256": "f3bc1024e68b59bc1a54876a06648ba6c981859034d20fc75f287b882459b6a7"
+}
