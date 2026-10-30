@@ -692,6 +692,47 @@ def test_a_ready_job_reopens_once_to_send_the_gap_views_its_minimal_splat_left_o
         preview.retry_failed_job(site.job, now=world.now)
 
 
+def test_a_job_ready_before_the_marker_derives_its_upgrade_from_retained_records(site):
+    """capture-447ae4f4: an earlier release adopted its minimal splat and recorded no marker."""
+    from blueprint_pipeline import atlas_native_splat as native
+    _enqueue(site)
+    automation = site.job.parent / "automation"
+    camera = {"intrinsics": {"width": 4, "height": 3}, "extrinsics": {"position": [0, 0, 0]}}
+    gap_camera = {**camera, "extrinsics": {"position": [1, 0, 0]}}
+    real = [{"frame_id": f"real-{i}", "camera": camera, "rgb_sha256": f"sha256:real{i}"} for i in range(2)]
+    sent = [*real, {"frame_id": "gap", "camera": gap_camera, "rgb_sha256": "sha256:gap", "mask_sha256": "m1"},
+            # Recovered views repeating a real frame and the gap view: counted once, or not at all.
+            {"frame_id": "recovered-0", "camera": camera, "rgb_sha256": "sha256:real0", "mask_sha256": "m2"},
+            {"frame_id": "recovered-1", "camera": gap_camera, "rgb_sha256": "sha256:gap", "mask_sha256": "m3"}]
+    (automation / "draft-refined").mkdir(parents=True)
+    (automation / "draft-refined/input_binding.json").write_text(json.dumps(
+        {"request_form": "reviewed_masks_and_confidence", "frames": sent}))
+    minimal = automation / "draft-refined-minimal"
+    minimal.mkdir()
+    manifest = {"schema_version": "atlas_refined_splat.v1", "request_form": "documented_minimal", "frames": real}
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    (minimal / native.MANIFEST).write_text(json.dumps(manifest))
+    result = {"status": "needs_input", "splat_manifest_digest": manifest["digest"]}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    (site.job.parent / "result.json").write_text(json.dumps(result))
+    site.job.write_text(json.dumps({**_job(site), "state": "ready", "stage": "archived",
+                                    "result_digest": result["digest"]}))
+    from blueprint_pipeline.atlas_refined_splat_forms import REVIEW_RECORD, retained_minimal_marker
+    assert retained_minimal_marker(site.job.parent, result["digest"]) == {
+        "request_form": "documented_minimal", "splat_root": str(minimal), "splat_manifest_digest": manifest["digest"],
+        "left_out_admitted_view_ids": ["gap"], "gap_preserving_form_untried": True}
+    assert retained_minimal_marker(site.job.parent, "sha256:" + "0" * 64) is None
+    job = preview.retry_failed_job(site.job)
+    assert job["state"] == "processing" and job["retries"][-1]["reason"] == "refined_splat_gap_preserving_form_untried"
+    assert json.loads((minimal / native.UPGRADE).read_text())["roots"] == ["draft-refined-whole"]
+    # Once the reviewed whole form has been tried, the same finished job stays finished.
+    (automation / "draft-refined-whole").mkdir()
+    (automation / "draft-refined-whole" / REVIEW_RECORD).write_text("{}")
+    site.job.write_text(json.dumps({**job, "state": "ready", "stage": "archived"}))
+    with pytest.raises(ValueError, match="requires_recoverable_failure"):
+        preview.retry_failed_job(site.job)
+
+
 def test_a_ready_job_without_an_untried_gap_form_in_its_own_tree_stays_finished(site):
     _enqueue(site)
     marker = _minimal_splat(site.job.parent / "automation/background_splat-refined-minimal")

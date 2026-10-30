@@ -86,6 +86,10 @@ def retry_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, Any]
         # A finished job reopens only to try the reviewed whole-view refined-splat
         # form its adopted minimal splat left untried; any other ready job stays.
         marker = job.get("refined_splat")
+        if job["state"] == "ready" and not isinstance(marker, Mapping):
+            # Ready before jobs recorded the marker: derive it from the retained records.
+            from .atlas_refined_splat_forms import retained_minimal_marker
+            marker = retained_minimal_marker(path.parent, job.get("result_digest"))
         upgrade = (job["state"] == "ready" and isinstance(marker, Mapping)
                    and marker.get("gap_preserving_form_untried") is True)
         if ((job["state"] not in {"failed", "needs_input"} and not upgrade) or job["reason"] in _NOT_RETRYABLE

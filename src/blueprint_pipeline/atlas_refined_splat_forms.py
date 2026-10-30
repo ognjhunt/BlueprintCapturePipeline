@@ -52,6 +52,48 @@ def untried_gap_roots(roots) -> list:
     return [] if bought(whole) or (whole / REVIEW_RECORD).is_file() else [whole]
 
 
+def retained_minimal_marker(job_dir: Path, result_digest) -> dict | None:
+    """The refined-splat marker of a job that became ready before jobs recorded one.
+
+    Read from retained records only. A release before the marker bought the
+    minimal form only after its full form with review masks failed
+    (capture-447ae4f4, 2026-10-30). The archived result names the adopted splat by
+    its manifest digest; the views that full form sent with a review mask, and the
+    minimal form did not send (duplicates counted once), are the generated views
+    it left out. The next run's whole-view review decides what actually goes in.
+    """
+    path = job_dir / "result.json"
+    if path.is_symlink() or not path.is_file():
+        return None
+    result = json.loads(path.read_text())
+    if (not isinstance(result, dict) or result.get("digest") != result_digest
+            or result_digest != canonical_digest(result, digest_field="digest")):
+        return None
+    for root in sorted((job_dir / "automation").glob("*-minimal")):
+        if root.is_symlink() or not (root / MANIFEST).is_file():
+            continue
+        manifest = load_splat_manifest(root)
+        if manifest["digest"] != result.get("splat_manifest_digest") or manifest.get("request_form") != MINIMAL:
+            continue
+        roots = form_roots(root.with_name(root.name.removesuffix("-minimal")))
+
+        def view(row):
+            return row.get("rgb_sha256"), json.dumps(row.get("camera"), sort_keys=True)
+        sent, left = {view(row) for row in manifest.get("frames", [])}, {}
+        for form, legacy in roots:
+            binding = legacy / "input_binding.json"
+            if form in LEGACY_FORMS and not binding.is_symlink() and binding.is_file():
+                for row in json.loads(binding.read_text()).get("frames", []):
+                    if row.get("mask_sha256") and view(row) not in sent:
+                        left.setdefault(view(row), row.get("frame_id"))
+        marker = {"request_form": MINIMAL, "splat_root": str(root), "splat_manifest_digest": manifest["digest"]}
+        if left:
+            marker.update(left_out_admitted_view_ids=sorted(left.values()),
+                          gap_preserving_form_untried=bool(untried_gap_roots(roots)))
+        return marker
+    return None
+
+
 def request_gap_preserving_upgrade(root: Path, *, splat_manifest_digest: str, at_epoch: int) -> dict:
     """Record an operator's request to try the reviewed-whole form a minimal splat left untried.
 
