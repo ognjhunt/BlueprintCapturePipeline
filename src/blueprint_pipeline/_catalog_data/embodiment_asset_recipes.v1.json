@@ -1577,6 +1577,179 @@
       }
     },
     {
+      "embodiment_id": "yaskawa_gp12_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/ros-industrial/motoman",
+        "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+        "entry_path": "motoman_gp12_support/urdf/gp12.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "motoman_gp12_support/package.xml",
+        "license_url": "https://github.com/ros-industrial/motoman/blob/846fbbc57c60223f12bf4795ea6404982d57709e/motoman_gp12_support/package.xml",
+        "license_note": "ROS-Industrial GP12 package declares BSD-3-Clause in package.xml. Retain source copyright notices; exact mesh notice closure and imported dynamics remain unqualified.",
+        "include_paths": [
+          "motoman_gp12_support",
+          "motoman_resources",
+          "motoman_gp12_support/package.xml"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "motoman_gp12_support": "motoman_gp12_support",
+          "motoman_resources": "motoman_resources"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established",
+        "link_dynamics_are_declared_simulation_estimates",
+        "exact_gp12_sku_revision_unverified",
+        "current_primary_flyer_u_limit_differs_from_retained_source"
+      ],
+      "reason": "Public yaskawa_gp12 geometry with licensed Robotiq2F85 at an ideal fixed simulation mount. Arm-only collision-volume dynamics estimates use 150kg current GP12-family mass with explicit SKU ambiguity; source U limit remains2.6179rad. Tool source inertias are added separately. No factory dynamics, hardware fit, policy or native execution claim.",
+      "composition": {
+        "schema_version": "yaskawa_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "yaskawa_gp12",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "Identity simulation mount at source tool0, retaining authored flange translation/rotation and all source joint limits; no adapter geometry or physical calibration.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "tool0",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
+    },
+    {
+      "embodiment_id": "yaskawa_gp20_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/ros-industrial/motoman",
+        "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+        "entry_path": "motoman_gp25_support/urdf/gp25_20.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "motoman_gp25_support/package.xml",
+        "license_url": "https://github.com/ros-industrial/motoman/blob/846fbbc57c60223f12bf4795ea6404982d57709e/motoman_gp25_support/package.xml",
+        "license_note": "The ROS-Industrial package declares BSD-3-Clause for its configuration data and 3D models. Retain the package declaration, exact meshes and source notices. This is the GP25-20 variant YR-1-06VX25-20-A0*, documented as European GP20; it is not GP20HL or the default GP25. The macro has no inertial elements; no measured dynamics or use-rights admission is inferred.",
+        "include_paths": [
+          "motoman_gp25_support/urdf/gp25_20.xacro",
+          "motoman_gp25_support/urdf/gp25_20_macro.xacro",
+          "motoman_gp25_support/meshes/gp25",
+          "motoman_gp25_support/meshes/gp25_20",
+          "motoman_gp25_support/package.xml",
+          "motoman_resources"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "motoman_gp25_support": "motoman_gp25_support",
+          "motoman_resources": "motoman_resources"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established",
+        "link_dynamics_are_declared_simulation_estimates"
+      ],
+      "reason": "Public yaskawa_gp20 geometry with licensed Robotiq2F85 at an ideal fixed simulation mount. Arm-only collision-volume dynamics estimates use 250kg nominal mass for exact YR-1-06VX25-20-A00 (GP25-20/European GP20). Tool source inertias are added separately. No factory dynamics, hardware fit, policy or native execution claim.",
+      "composition": {
+        "schema_version": "yaskawa_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "yaskawa_gp20",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "assembly_convention": "Identity simulation mount at source tool0, retaining authored flange translation/rotation and all source joint limits; no adapter geometry or physical calibration.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "tool0",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
+    },
+    {
       "embodiment_id": "kuka_lbr_iiwa_14_robotiq_2f85_sim",
       "arm_count": 1,
       "status": "source_available",

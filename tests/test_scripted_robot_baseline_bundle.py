@@ -76,6 +76,7 @@ def registered_world(tmp_path, monkeypatch, identity="agilex_piper_bimanual"):
 
 
 @pytest.mark.parametrize("identity", [
+    "yaskawa_gp12_robotiq_2f85_sim", "yaskawa_gp20_robotiq_2f85_sim",
     "fanuc_crx_10ia_robotiq_2f85_sim", "fanuc_crx_10ia_l_robotiq_2f85_sim",
     "fanuc_m710ic_45m_robotiq_2f85_sim", "abb_gofa_crb15000_5_95_robotiq_2f85_sim",
     "abb_gofa_crb15000_12_127_robotiq_2f85_sim", "agilex_piper_bimanual", "universal_robots_ur5e_robotiq_2f85_sim",

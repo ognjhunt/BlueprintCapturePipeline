@@ -17,7 +17,9 @@
     "ufactory_xarm7_bimanual": "xarm",
     "universal_robots_ur10e_robotiq_2f85_sim": "robotiq_ur",
     "universal_robots_ur5e_bimanual": "robotiq_ur",
-    "universal_robots_ur5e_robotiq_2f85_sim": "robotiq_ur"
+    "universal_robots_ur5e_robotiq_2f85_sim": "robotiq_ur",
+    "yaskawa_gp12_robotiq_2f85_sim": "robotiq_ur",
+    "yaskawa_gp20_robotiq_2f85_sim": "robotiq_ur"
   },
   "checkpoint_id": "blueprint-scripted-pick-place-v1",
   "frames": {
@@ -507,5 +509,27 @@
       }
     ],
     "schema_version": "blueprint_scripted_controller_source.v1"
+  },
+  "yaskawa_bodies": [
+    "yaskawa_gp12_robotiq_2f85_sim",
+    "yaskawa_gp20_robotiq_2f85_sim"
+  ],
+  "yaskawa_policy_profile": "blueprint_scripted_pick_place_yaskawa_robotiq.v1",
+  "yaskawa_source_identity": {
+    "schema_version": "blueprint_scripted_controller_source.v1",
+    "files": [
+      {
+        "path": "scripted_robot_baseline.py",
+        "sha256": "sha256:73b092973d2cfa922b38182729449cf7e06932a9fecbda00392356296c6ea6be"
+      },
+      {
+        "path": "scripted_robot_grasp_frames.py",
+        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+      },
+      {
+        "path": "scripted_robot_yaskawa_robotiq_runtime.py",
+        "sha256": "sha256:3722b080bab98cea0948356cf86dd2a25240a71fd6b57681f6801deba7930129"
+      }
+    ]
   }
 }

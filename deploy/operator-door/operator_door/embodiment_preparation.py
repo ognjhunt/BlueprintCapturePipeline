@@ -14,6 +14,7 @@ import time
 from typing import Any
 
 PUBLIC_EMBODIMENT_IDS = frozenset({
+    "yaskawa_gp12_robotiq_2f85_sim", "yaskawa_gp20_robotiq_2f85_sim",
     "fanuc_crx_10ia_robotiq_2f85_sim",
     "fanuc_crx_10ia_l_robotiq_2f85_sim",
     "fanuc_m710ic_45m_robotiq_2f85_sim",

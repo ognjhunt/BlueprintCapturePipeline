@@ -1,0 +1,667 @@
+{
+  "recipes": {
+    "universal_robots_ur5e": "sha256:67cf4da476b575768a81fe42bdbbe8173b2b11534cfcceb23cdd511db338e251",
+    "universal_robots_ur5e_bimanual": "sha256:be9d3225c26368f53df6476796588bc5bbb860e30e1366a9e72300e1d9ea55da",
+    "trlc_dk1_bimanual": "sha256:48485bcac0051fdc721166fdf4f853d123d64f7ae1dbd4d1353378ce4c7c3c46",
+    "almond_axol": "sha256:075aef18182ad268a13dac5742bbaf2dc66755744f63ff5f6d524b92ce10d7d2",
+    "fanuc_crx_10ia_l": "sha256:698d9088838c8e184672d1d138a3573876a96219b208841b46c067029acbd9e0",
+    "fanuc_m710ic_45m": "sha256:42ca7eddfaeda3f1f9ff2f0050caed9d111e48b0e7bbfe7bf103887a7e2bc2d4",
+    "yaskawa_gp12": "sha256:e6980b3be95c84c2948bfa5fecb4fcc8d7ebe8f71e71d440c820704d6340fee5",
+    "yaskawa_gp20": "sha256:6ba14f1ef1aede918c45748546ab1cf0993137f23de9848ba919b44631f8acf8",
+    "i2rt_yam_bimanual": "sha256:1d40f120de6648d2156f3786ec4802fef4b9abc3e93b2e8d521ae5db185c070a",
+    "agilex_piper_bimanual": "sha256:371fa9f75d4f2fb784ed982c893a2965a2c10c13b388d80a27ffc664b946357e",
+    "standard_bots_ro1": "sha256:22db8c1c9d84f73c2bb6c095ec00c00296ebb56d02b4682575a199f05f3dbf69",
+    "standard_bots_core": "sha256:946ad616ef628572a85fecfa4dbc0c49363d9798d0773397e14b068580364fde",
+    "franka_research_3_bimanual": "sha256:d7ea389e4b6f69221d3ac7f0992031a866cd4feee1066a72824aef0e86a72693",
+    "kinova_gen3_bimanual": "sha256:c7c235104e248e013c8f75563837005b1f01307bf2af2652b8fc826efe663f7d",
+    "ufactory_xarm7_bimanual": "sha256:0c6bc2711c7c5a2dceb0abd60c4826a44a8d77f03313d8293ebe11d86d072854",
+    "kuka_lbr_iiwa_14": "sha256:b8a45f5d2178e19d040d8260028420c23ee645d68b50cb8db2f49626c20b3d41",
+    "universal_robots_ur10e": "sha256:5080ecb78bff18cb8be674cdc41429ba6b8267d47430a58b5be223d3e01e8ab2",
+    "fanuc_crx_10ia": "sha256:e61c027fc6c25c7a81c8385281dc0aa9102e23ee95dddb9a07c33e2f0eeee692",
+    "abb_gofa_crb15000": "sha256:6fe4d9cca553763a7cafaa598197d966f01a66bce5acb2aed26591e282ca4367",
+    "kinova_gen3": "sha256:d1edd8da97293b87b25d86fb108870225b1ab4afd61e562cf1ec6c7e54141d3a",
+    "ufactory_xarm7": "sha256:e3809a476e73aa99de75b03118a346788308d99c8c684b1b86d70953ec257e3f",
+    "droid_franka_robotiq_2f85": "sha256:72fdf50d03d89df8cfca919c575cedab72f12aed5a07dc2dfb9eb6544d9e9726",
+    "unitree_g1_dex3_v1": "sha256:c83707ce51905013156a609e9cb1b529f3c5c0b26b698f73245c54f3b4061f17",
+    "boston_dynamics_atlas": "sha256:fe44a987660abd189f60b3070f3f03e92ffaedc1abca7068344923d6ff4370a5",
+    "franka_research_3_robotiq_2f85_sim": "sha256:d97209f9a840ee0abb79caf7d116b343df75ac029fdf2465b57bf53b05dbdacf",
+    "abb_gofa_crb15000_5_95": "sha256:8292aa427f39b80ad630d321a5ba927f5731b8df62ff52ca827b5b29247a574a",
+    "abb_gofa_crb15000_12_127": "sha256:0060818ae17ee955e1ef4836bc59152510ddffb3ae715dca73ce9a56689e92dd",
+    "universal_robots_ur5e_robotiq_2f85_sim": "sha256:df3d6a21fd14313929fe96d406aec46381f6f567aead3304d7c3597e286b8800",
+    "universal_robots_ur10e_robotiq_2f85_sim": "sha256:8f078a819af186b0e2bd46a5f258e9d7887c6ad04aa9ccd230116d335c9a3a22",
+    "fanuc_crx_10ia_robotiq_2f85_sim": "sha256:0f8ade572211b4f5ae87f3dec2cb8fdb154586a78bd65f94322169c2d2d9e907",
+    "fanuc_crx_10ia_l_robotiq_2f85_sim": "sha256:70117069b5aa5ca58a027520a997054aadf9b1111326c1e396a3a9c17d27d3cd",
+    "fanuc_m710ic_45m_robotiq_2f85_sim": "sha256:8eab2ffd0581a0fe3263ce2d492c8ac02013496d110a674b6764c5383950ad86",
+    "abb_gofa_crb15000_5_95_robotiq_2f85_sim": "sha256:a484d0968a06bd79fc7f1f8942f989586601e600e6d875971e6fbb9324545c77",
+    "abb_gofa_crb15000_12_127_robotiq_2f85_sim": "sha256:6c2339a55ef18d432d5ec139f6e06298ef70d20d21a5efe1abffc608c1f4e203"
+  },
+  "catalog": {
+    "pi05_droid": "sha256:b9dea69e2370508d2ff6cc1f504b0c19ace65238af7faee4be7c575ea9258049",
+    "groot_n17_droid": "sha256:59a7d5ca5bc1f1d243983188717b082bce7140c9ab43fc1d5f8b9d4cc467e11e",
+    "cosmos3_nano_policy_droid": "sha256:63e3aff99c308a3dd0d9c13e064a881be5c7fb357bf5283adb05eeefbf4644de",
+    "molmoact2_droid": "sha256:904061d535fbc421360564d0e4d97711d8748e8f2aa6b3057c25cf06f255886d",
+    "flux3_action_droid": "sha256:aa5710b2dd1571687b3cfaaca4d583e23d4ac1f556ef80fba88f37b77fd7c2e1",
+    "cosmos3_edge_policy_droid": "sha256:e33b1354f9f14d2ea30de196ff630720dd7371b05ffec2b3a54866bb67fbb595",
+    "dreamlabs_dream1": "sha256:1888701abe19ee9a0cdcac2ecc70590b436cd58d121a8f94614ebcfc58291772",
+    "dreamzero_droid": "sha256:81ace63a5b26c9d09e534b190fbffa85c35db2ee00bb2204ba734987fdd31340",
+    "openwam_alpha_franka": "sha256:f10b9fc491bd6c7be283d4442365d56e6f7c3915565f45bd342275547e413051",
+    "physical_intelligence_pi_api": "sha256:1098121d577119c8e9ccfc41bde87ae952640699550ea59c04cdc949d838044b",
+    "dream1_i2rt_yam_bimanual": "sha256:81e01afc15fb4eaae4acd9809ad671902db84993bd5e103ff58402e6738acfc7",
+    "dream1_agilex_piper_bimanual": "sha256:06ecbcf6f5f6599c183e3c29e53a74e8ae7f7ec71a81d674dec105ccf9046526",
+    "dream1_universal_robots_ur5e_bimanual": "sha256:9b7ab12d2c05ac32a52875a5f5addd07dc94e4728aac918b7edaffa1393e19a1",
+    "dream1_franka_research_3_bimanual": "sha256:9536ac6eba8052b0f780a6415b657beac017d0382f54586e5bdac933d7483d4a",
+    "dream1_kinova_gen3_bimanual": "sha256:c413f524136798c329ef68c41e426c6206b841232d14780efd3b17948d96f361",
+    "dream1_ufactory_xarm7_bimanual": "sha256:ed9bda187733cb1775a205fa167111868c3bf05fe17b0b28bd860561dd0d41f1",
+    "almond_axol_pi_api": "sha256:e86f86aa591f6304922d5c4234981f8f6f2f2d7dad49a2690d5a45bf0752ddae",
+    "almond_axol_team_controller": "sha256:f0d03b04a6119096902f72f52aee9eba2281a82e67b962b1005c348aaca392b4",
+    "trlc_dk1_lerobot_controller": "sha256:06e9622fb9664fa35d8c90d66ea55010dcb762defd09e688de1fa3d2febfec85",
+    "extend_ur5e_team_controller": "sha256:0de6f228ea561cc7e852870b8d52b45f66e47ee6a6c8e8be62d0fa2ecee32b20",
+    "jacobi_fanuc_m710ic_45m": "sha256:ddf81bfef226e6b8bb89126a405de3c10464109ec897819a287f08aabf4d2fb5",
+    "graymatter_fanuc_crx_10ia_l": "sha256:2ced5f9a8db59eed7718a69d0ab004f5e46327ad984b8fad2f224adb6de47470",
+    "unchained_yaskawa_gp12_luna": "sha256:bd1df6d2c81032f13b2e80060393fcf8b46dfbef776beac616456c20193be5c6",
+    "unchained_yaskawa_gp20_luna": "sha256:63e6116fe533468025aca3d77d69edc19f07756d45711e19e971b6ac6df9f44f",
+    "standard_bots_ro1_controller": "sha256:d82bab187425268d0663da2d14e9a41ca627641651f06cf8a53cf19fb62543f5",
+    "standard_bots_core_controller": "sha256:5b6e2528543fc7db3ddb8addb87376ec08564ec1777a4ffa91c21dad7e1b81b6",
+    "universal_robots_ur5e__planning_endpoint": "sha256:c490b571882b5b731d375e5062b2cfed46ce99b1c42ce0e1a73d7628bb6c59bf",
+    "universal_robots_ur5e__skill_trace": "sha256:f04f4b074582d1c826ddbe0171f74b164e3f11aba48687a6f92ec50f66d5ea60",
+    "universal_robots_ur5e__pi05_custom_checkpoint": "sha256:611b20666c3d5dd595ef67f770d52bf44a7e08c03fe0b01679cb2e95d80b928f",
+    "universal_robots_ur5e__groot_custom_checkpoint": "sha256:47961023bdee2c3ba1eac8bcaf03e78cf8a5a3ccee02fb4bff81eb9da9603be3",
+    "universal_robots_ur5e__act_custom_checkpoint": "sha256:4c6bac5dd3c93a2719b6b972df0211a469b1efdcc62bcb583b36e16c0972e77b",
+    "universal_robots_ur5e_bimanual__customer_controller": "sha256:a9d20968c49e74106aaf454f7fa2c7a886be0daff1c1253dcfb3fd02f2cb0728",
+    "universal_robots_ur5e_bimanual__planning_endpoint": "sha256:319cede1b8d2b58604d73482420fb2ef1ddf44f3537a0eb809dcecc37e08177a",
+    "universal_robots_ur5e_bimanual__skill_trace": "sha256:fef7f92992170180830ed91dcb2af12cc32f2cfe07993cacb566cfba66e5525a",
+    "universal_robots_ur5e_bimanual__pi05_custom_checkpoint": "sha256:76c4975b7508ffe00af254f92a681c0b5470a1e28b150ca0af748cbdedf077c9",
+    "trlc_dk1_bimanual__planning_endpoint": "sha256:b3f301ed98de956600fa54de5494cee0c1b7ad60f6f1cda723b64faa218c43de",
+    "trlc_dk1_bimanual__skill_trace": "sha256:04ce05ebe381fcd7165021307cfa8c93aaf8c7c3cb84ae6da7476eaddbcbdd72",
+    "trlc_dk1_bimanual__pi05_custom_checkpoint": "sha256:ac8486a64f77dc7a2ebc2aeda2c4bd40ca154f64355bfb7507f8d3ac210d8037",
+    "almond_axol__planning_endpoint": "sha256:30491ba80a0bde6deb8d5b6006d62dce40992e8ed0788a4e7e82c26afa65d46e",
+    "almond_axol__skill_trace": "sha256:8043cbeeec2aac0909aadc1a7799bb05f4e8ad755ecb7a9efe4f3bd67be19b6c",
+    "almond_axol__pi05_custom_checkpoint": "sha256:801d256c67c2fa25184032256499dce7348bfe82092035a28291a8dfdcb616da",
+    "fanuc_crx_10ia_l__planning_endpoint": "sha256:4199d835930489c626244ee1991978a905788970d7767b85c7e65790c057fec3",
+    "fanuc_crx_10ia_l__skill_trace": "sha256:9592a08fe666d461fc9e165cba4a1e540706337ac0044f0fdab2c389dd624888",
+    "fanuc_crx_10ia_l__pi05_custom_checkpoint": "sha256:a40087497fd005bdc9ce75c7d306a033c3e4493572e4f6c5412babe7404aac36",
+    "fanuc_m710ic_45m__customer_controller": "sha256:c13a497c59b111a3f9f6d9a751cacce263a8f8da69b9170688259fec85d32857",
+    "fanuc_m710ic_45m__skill_trace": "sha256:e1e6e9b90b2244c5ed0dd109a9a21d6e5cafa874163d231bb6307640142ec597",
+    "fanuc_m710ic_45m__pi05_custom_checkpoint": "sha256:6c433317707a8bfd61dc3132714e5767d70bc0b0d6535f730b20861e81e8c356",
+    "yaskawa_gp12__planning_endpoint": "sha256:2677842f396aa1f3d637f3a427b436cdcb4d1041d9c6e29edc547ddca64202ba",
+    "yaskawa_gp12__skill_trace": "sha256:6502d91de6497822eb4fbdb0f913937710845d6c60b2f75bb16af3f6b2f6da31",
+    "yaskawa_gp12__pi05_custom_checkpoint": "sha256:0250b48627e82c4d01627a3d7aaf8845ccf15d0ebd22400b85390780683194ed",
+    "yaskawa_gp20__planning_endpoint": "sha256:71a173e78042f48a3b90d541387a2e80c035cfc1da2a3e8f0eb65c7985f82ae8",
+    "yaskawa_gp20__skill_trace": "sha256:eae3627e5d5da97912d4170d9118354966eb85c473f8a2d103cf117f7ab4ec5a",
+    "yaskawa_gp20__pi05_custom_checkpoint": "sha256:f10f5c75b07d4b08d932b55964c6454b6a58359bb1f0d834b1eabd747307d0e2",
+    "i2rt_yam_bimanual__customer_controller": "sha256:2cb0da2d3910c6287fdca3ed28dc60bc36528ac2260f7341d02334b25ee94668",
+    "i2rt_yam_bimanual__planning_endpoint": "sha256:a1f0568536213100b5f24bab50b8da659be9894fa7abd11c14c95e9e92d01d1a",
+    "i2rt_yam_bimanual__skill_trace": "sha256:07e4240d8a347b158a3c60b454c86e88a324c53d38c106f64e64e552c9af9e17",
+    "i2rt_yam_bimanual__pi05_custom_checkpoint": "sha256:87c39257c821e2791ffd8c3de5a1e4e0e007fe0b5d3dd29663ac2342151da73b",
+    "agilex_piper_bimanual__customer_controller": "sha256:72538c6fb657f18cac0059f60da775c7ecd8dea9d61e71746cecb7e914c37b27",
+    "agilex_piper_bimanual__planning_endpoint": "sha256:d39823db095162c1f0808d78b4fd719612da11661e95baf18b2287ab1dc13bf9",
+    "agilex_piper_bimanual__skill_trace": "sha256:562ade615c32834a0e9f3c62cf16766009e6d9cbba12f58ec8a49a015e28e91e",
+    "agilex_piper_bimanual__pi05_custom_checkpoint": "sha256:40bdb6c59f6c37f3cd641c2a1855b98ad1c3e6bd6e73ce289d0e9bb0f85b4cfa",
+    "standard_bots_ro1__runway_praxis1": "sha256:9da96d15970fefd09f49a751c34965d486feff418c4aa9d2729c88f4980c2aa1",
+    "standard_bots_ro1__planning_endpoint": "sha256:d6806b4071fece74adf80dce9e39b31facedc0b76c76c4ae44a53c6d45249151",
+    "standard_bots_ro1__skill_trace": "sha256:45e5ef728d6e9083fdc845c009e544806d55b6616e0e50556f459a0b09cdaf96",
+    "standard_bots_ro1__pi05_custom_checkpoint": "sha256:04bbd53bf5c5ac1db930b9153e2137bff5de8eeae6c4868602f5e1a454864fac",
+    "standard_bots_core__planning_endpoint": "sha256:f456312752239933bffff998053ef00269c0753417ed0e48b43ad9f2102e9530",
+    "standard_bots_core__skill_trace": "sha256:aa4c38bad5ffc2dd1b4a3420db753d3659eda5fdf80b55558db2d2442c756611",
+    "standard_bots_core__pi05_custom_checkpoint": "sha256:fb604d0356414d1783ff653c0663392e6fd7ef9d974a6ef59d00b5a1ce7925c1",
+    "franka_research_3_bimanual__customer_controller": "sha256:ae92838e087fb54bdf61e5b724846edd866fe14835d1945e8e1dbe0af4f0780d",
+    "franka_research_3_bimanual__planning_endpoint": "sha256:cfd3c326aee44e3684231b946e8a119c3e495da31db7bf611aab442d7baeeabd",
+    "franka_research_3_bimanual__skill_trace": "sha256:8882373f0854dc716811c60047bde3cbcb217c3ceb0b3a2c358bcc98a026f00c",
+    "franka_research_3_bimanual__pi05_custom_checkpoint": "sha256:cb6767e95e8596f50eaee5ae66a1106576d4dd0582861bc949b0369ee2fbf8a1",
+    "kinova_gen3_bimanual__customer_controller": "sha256:85629f93d3fe0fe7d60598a7c5ed5124ab21f4165c43c782cb84530bb5919f63",
+    "kinova_gen3_bimanual__planning_endpoint": "sha256:4057c835e68ff080389871d04f27de31d0deaff9845d7277513274838520dc61",
+    "kinova_gen3_bimanual__skill_trace": "sha256:7572e024eaf741d07ddda069d25817ab6471f434e37a76c099217818acc7bb25",
+    "kinova_gen3_bimanual__pi05_custom_checkpoint": "sha256:1ab93133e95def597bf492718dc42f7518448a7d826942847dd379b0de33141b",
+    "ufactory_xarm7_bimanual__customer_controller": "sha256:3a3fa5562f38be7136f5628985312f016618c2536a6c804af6b8dd9a96f2c24e",
+    "ufactory_xarm7_bimanual__planning_endpoint": "sha256:02b853bf3b2b25c3d02299a0cd169db0e6f9b7012eb31419e8ac87cf0a050075",
+    "ufactory_xarm7_bimanual__skill_trace": "sha256:09e31b056ec5dfc4e2a39cb39b5b0938652bd3433dbc89d4cb97154340f1d019",
+    "ufactory_xarm7_bimanual__pi05_custom_checkpoint": "sha256:d1c12f514ff658f1ed681cd256818ab4bf18f1246ffa31cf249b7be14620c250",
+    "kuka_lbr_iiwa_14__customer_controller": "sha256:18c49c02191acb5fc3b6645f01ec235063d83a22c4aa56a49adfefcb9288d713",
+    "kuka_lbr_iiwa_14__planning_endpoint": "sha256:0e6f2652c48954c64d1e9e1a45898659519d894529dafcd7a3728de694dc869d",
+    "kuka_lbr_iiwa_14__skill_trace": "sha256:7ab620217502333bd5d693842e7a6a9a8009c1487dc9b0b85b3bed58e1f1cc92",
+    "kuka_lbr_iiwa_14__pi05_custom_checkpoint": "sha256:eb9afe53b9d35918b7b3079ff6476e8b0c62ef1f285cfb9015f84b97212f4178",
+    "humanoidarena_dp_g1_dex3_sonic": "sha256:eed728ac3dd88828a2cc11cade4675af03e99cebd0340597db08b6cbad895a89",
+    "humanoidarena_pi05_g1_dex3_sonic": "sha256:ae21a345ba755029e52171d959455382cac2ff8996c6cd0dcc82f0c28204ff50",
+    "humanoidarena_dp_g1_dex3_sonic_vision_navi": "sha256:914498e187db76c26dd9bb6b8312720c393422755a6189fe4d0a9761ebec6c46",
+    "humanoidarena_pi05_g1_dex3_sonic_vision_navi": "sha256:dd507af1b8072b18fac879c264f2fd9a55b851d385c2cef8da5bbf603eb23b7d",
+    "openwam_alpha_piper_bimanual": "sha256:d21fc1bff192b878e43beba71280892125f3860c61fb1439c807ac54810055f8",
+    "molmoact2_bimanual_yam": "sha256:1c93a8f2651195a20202c87a64a69fe5192a4cac7e021041132bc56583e8dfc3",
+    "blueprint_scripted_agilex_piper_bimanual": "sha256:b4184fd8f24332d0d5b93ccde09618a90b4af9a895bd0b217ff1a0ddce0cf036",
+    "blueprint_scripted_almond_axol": "sha256:108fbf410262bce11da27e6d37683b7c33d4635de6f53e992ee00a05c8bedc33",
+    "blueprint_scripted_franka_research_3_bimanual": "sha256:0efdf1ca9c30b68a9bb9019f53bae4026dcbd6d0218cd707fbf73891b64dcd41",
+    "blueprint_scripted_i2rt_yam_bimanual": "sha256:50d3019e418c0af1709b0a5f53b88902e19053ab62632d10b2f9b9167baf741a",
+    "blueprint_scripted_kinova_gen3": "sha256:79017b53a06916d8289736455ad041e178d303da3aea565491b3b9cf4a7c565e",
+    "blueprint_scripted_kinova_gen3_bimanual": "sha256:460d2505d7279bcd7f512a6083733efd6b62a6d630b5279e920a6d78027f2449",
+    "blueprint_scripted_trlc_dk1_bimanual": "sha256:a7d293ca17188ab12899947754ff985e2eeb918f84e6d958bd11db3f3832dc75",
+    "blueprint_scripted_ufactory_xarm7": "sha256:2cb2ee39dffbb16962a6d800bfe202d5c906cbe7d8cf03514517c8b14acbe3b1",
+    "blueprint_scripted_ufactory_xarm7_bimanual": "sha256:7ed32f82ea3e9015ae90b91195644714aa5ed5c5039926dc2bc81818e5ae84c7",
+    "blueprint_scripted_universal_robots_ur5e_bimanual": "sha256:a98696b6352f3bcbb7897cfcfba18d3cea916bed263a26833b10002150e3502e",
+    "pi05_trlc_rabc_10466a13": "sha256:c341be7f27c844a0871dfe2e3089b9b25a45eeb6e7791787ff0480f62bd134a7",
+    "blueprint_scripted_franka_research_3_robotiq_2f85_sim": "sha256:32c2f077f39ab7733cc29d01ddd9a2ba8f5fc0578b4e8f85862d86d764747cd8",
+    "blueprint_scripted_universal_robots_ur10e_robotiq_2f85_sim": "sha256:a1d95c98390994f259f4686dedd1e0c06f8e3f205a094faffd6c6c0d60cc4698",
+    "blueprint_scripted_universal_robots_ur5e_robotiq_2f85_sim": "sha256:34080b13ff091337f243027a869730efa3aeca42e899e93f493755f530fb6934",
+    "blueprint_scripted_fanuc_crx_10ia_robotiq_2f85_sim": "sha256:89b5a20bffc0415b2621560ebdedfe4926d9bf804cb6fad31e4ab8aaafc3d5a3",
+    "blueprint_scripted_fanuc_crx_10ia_l_robotiq_2f85_sim": "sha256:17c3dd0bd688355d90e30a4833b187e62adc4f3d8e0770a65dff9469e1a01ff3",
+    "blueprint_scripted_fanuc_m710ic_45m_robotiq_2f85_sim": "sha256:714d9cc25d2999e80d0c6f10914bcf71ea6dea41e53f7af52c67960598945000",
+    "blueprint_scripted_abb_gofa_crb15000_5_95_robotiq_2f85_sim": "sha256:1486c8a0f68c4bc0d8421b5f2a55012b1f79b468e18827427afce6de641a0dee",
+    "blueprint_scripted_abb_gofa_crb15000_12_127_robotiq_2f85_sim": "sha256:f790163c50f4faab20fe5865bcc3bee521d6be03871e56a28a4861eb06942661"
+  },
+  "registration_profile": {
+    "bodies": {
+      "abb_gofa_crb15000_12_127_robotiq_2f85_sim": "robotiq_ur",
+      "abb_gofa_crb15000_5_95_robotiq_2f85_sim": "robotiq_ur",
+      "agilex_piper_bimanual": "piper",
+      "almond_axol": "axol",
+      "fanuc_crx_10ia_l_robotiq_2f85_sim": "robotiq_ur",
+      "fanuc_crx_10ia_robotiq_2f85_sim": "robotiq_ur",
+      "fanuc_m710ic_45m_robotiq_2f85_sim": "robotiq_ur",
+      "franka_research_3_bimanual": "fr3",
+      "franka_research_3_robotiq_2f85_sim": "robotiq_fr3",
+      "i2rt_yam_bimanual": "yam",
+      "kinova_gen3": "kinova",
+      "kinova_gen3_bimanual": "kinova",
+      "trlc_dk1_bimanual": "trlc",
+      "ufactory_xarm7": "xarm",
+      "ufactory_xarm7_bimanual": "xarm",
+      "universal_robots_ur10e_robotiq_2f85_sim": "robotiq_ur",
+      "universal_robots_ur5e_bimanual": "robotiq_ur",
+      "universal_robots_ur5e_robotiq_2f85_sim": "robotiq_ur"
+    },
+    "checkpoint_id": "blueprint-scripted-pick-place-v1",
+    "frames": {
+      "axol": {
+        "approach": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "assumptions": [
+          "Symmetric distal pad-envelope centre rounded to10micrometres; small source left/right asymmetries are ignored."
+        ],
+        "basis": "Standalone collision tips extend toward -Z, distal bounds Z[-.1495394,-.1355384]; prismatic jaws travel X. q=-.044 opens, q=0 closes.",
+        "contacts": [
+          "finger_1",
+          "finger_2"
+        ],
+        "dof": 7,
+        "jaw": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "jaws": {
+          "finger_1_joint": [
+            -0.044,
+            0.0
+          ],
+          "finger_2_joint": [
+            -0.044,
+            0.0
+          ]
+        },
+        "position": [
+          0.0,
+          0.0,
+          -0.14254
+        ],
+        "tool": "gripper",
+        "url": "https://github.com/almond-bot/axol/blob/3ccc69cf3adaea09845456148d6a4f16ef059f27/almond_axol/kinematics/urdf/axol_standalone.urdf"
+      },
+      "fr3": {
+        "approach": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "assumptions": [
+          "Publisher-authored nominal TCP, without site/tool calibration or measured contact proof."
+        ],
+        "basis": "Authored fr3_hand_tcp at103.4mm; opposing prismatic axes Y; distal pad boxes span Z[.0944,.1129].",
+        "contacts": [
+          "fr3_leftfinger",
+          "fr3_rightfinger"
+        ],
+        "dof": 7,
+        "jaw": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "jaws": {
+          "fr3_finger_joint1": [
+            0.04,
+            0.0
+          ],
+          "fr3_finger_joint2": [
+            0.04,
+            0.0
+          ]
+        },
+        "position": [
+          0.0,
+          0.0,
+          0.1034
+        ],
+        "tool": "fr3_hand",
+        "url": "https://github.com/frankarobotics/franka_description/tree/7aeeddc449edf8d62b594f9e36a81da53e7796f9/end_effectors/franka_hand"
+      },
+      "kinova": {
+        "approach": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "assumptions": [
+          "Fixed open-pad midpoint; pad centre advances about13.9mm in Z during closure.",
+          "The source tool_frame at120mm and yaw-1.57rad is separately transformed; it is not the pad midpoint."
+        ],
+        "basis": "Open pad-box centre from source transforms: .054904-.0041+.0471+.03242=.130324m; opposing pad centres Y=+/- .0461807553m.",
+        "contacts": [
+          "left_inner_finger_pad",
+          "right_inner_finger_pad"
+        ],
+        "dof": 7,
+        "jaw": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "jaws": {
+          "finger_joint": [
+            0.0,
+            0.8
+          ],
+          "left_inner_finger_joint": [
+            0.0,
+            -0.8
+          ],
+          "left_inner_knuckle_joint": [
+            0.0,
+            0.8
+          ],
+          "right_inner_finger_joint": [
+            0.0,
+            -0.8
+          ],
+          "right_inner_knuckle_joint": [
+            0.0,
+            0.8
+          ],
+          "right_outer_knuckle_joint": [
+            0.0,
+            0.8
+          ]
+        },
+        "position": [
+          0.0,
+          0.0,
+          0.130324
+        ],
+        "tool": "robotiq_arg2f_base_link",
+        "url": "https://github.com/Kinovarobotics/ros_kortex/tree/c3280d8a6a6b5d96590d51538e3f265710a6c77d/kortex_description/grippers/robotiq_2f_85"
+      },
+      "piper": {
+        "approach": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "assumptions": [
+          "Symmetric centre of distal 20mm collision-mesh vertex envelopes, not the tip-end frame at135.8mm."
+        ],
+        "basis": "gripper_joint1/2 origins Z=.1358 with Rx(pi/2); distal collision bounds Z[.1163463,.1358], jaw travel Y.",
+        "contacts": [
+          "gripper_link1",
+          "gripper_link2"
+        ],
+        "dof": 6,
+        "jaw": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "jaws": {
+          "gripper_joint1": [
+            0.05,
+            0.0
+          ],
+          "gripper_joint2": [
+            -0.05,
+            0.0
+          ]
+        },
+        "position": [
+          0.0,
+          0.0,
+          0.126073
+        ],
+        "tool": "gripper_base",
+        "url": "https://github.com/agilexrobotics/Agilex-College/tree/c2688be41e1bc99a9addd555f237a16bc839d936/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper"
+      },
+      "robotiq_fr3": {
+        "additional_source": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "approach": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "assumptions": [
+          "Nominal reference from a separately pinned example, not calibrated Dream hardware.",
+          "Fixed grasp position ignores about13.5mm of finger-pad Z travel during closure."
+        ],
+        "basis": "Opposing Robotiq finger tips separate along source X. Position follows the pinned PickNik134mm grasp_link reference; its yaw is not the task's Y-jaw convention.",
+        "contacts": [
+          "robotiq_85_left_finger_tip_link",
+          "robotiq_85_right_finger_tip_link"
+        ],
+        "dof": 7,
+        "jaw": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "jaws": {
+          "robotiq_85_left_finger_tip_joint": [
+            0.0,
+            -0.7929
+          ],
+          "robotiq_85_left_inner_knuckle_joint": [
+            0.0,
+            0.7929
+          ],
+          "robotiq_85_left_knuckle_joint": [
+            0.0,
+            0.7929
+          ],
+          "robotiq_85_right_finger_tip_joint": [
+            0.0,
+            0.7929
+          ],
+          "robotiq_85_right_inner_knuckle_joint": [
+            0.0,
+            -0.7929
+          ],
+          "robotiq_85_right_knuckle_joint": [
+            0.0,
+            -0.7929
+          ]
+        },
+        "position": [
+          0.0,
+          0.0,
+          0.134
+        ],
+        "tool": "robotiq_85_base_link",
+        "url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/tree/a74d007d8f2f06dc6a503ad21038ba869d4999a6/robotiq_description"
+      },
+      "robotiq_ur": {
+        "additional_source": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "approach": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "assumptions": [
+          "Nominal reference from a separately pinned example, not calibrated Dream hardware.",
+          "Fixed grasp position ignores about13.5mm of finger-pad Z travel during closure."
+        ],
+        "basis": "Opposing Robotiq finger tips separate along source X. Position follows the pinned PickNik134mm grasp_link reference; its yaw is not the task's Y-jaw convention.",
+        "contacts": [
+          "robotiq_85_left_finger_tip_link",
+          "robotiq_85_right_finger_tip_link"
+        ],
+        "dof": 6,
+        "jaw": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "jaws": {
+          "robotiq_85_left_finger_tip_joint": [
+            0.0,
+            -0.7929
+          ],
+          "robotiq_85_left_inner_knuckle_joint": [
+            0.0,
+            0.7929
+          ],
+          "robotiq_85_left_knuckle_joint": [
+            0.0,
+            0.7929
+          ],
+          "robotiq_85_right_finger_tip_joint": [
+            0.0,
+            0.7929
+          ],
+          "robotiq_85_right_inner_knuckle_joint": [
+            0.0,
+            -0.7929
+          ],
+          "robotiq_85_right_knuckle_joint": [
+            0.0,
+            -0.7929
+          ]
+        },
+        "position": [
+          0.0,
+          0.0,
+          0.134
+        ],
+        "tool": "robotiq_85_base_link",
+        "url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/tree/a74d007d8f2f06dc6a503ad21038ba869d4999a6/robotiq_description"
+      },
+      "trlc": {
+        "approach": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "assumptions": [
+          "Symmetric distal-mesh envelope centre, not calibrated contact geometry.",
+          "Full closed command overlaps distal envelopes by about10mm; native contact response and nominal width are unmeasured."
+        ],
+        "basis": "Distal collision pads X[.1480064,.1576931], jaws Y. Source tool0 atX=.158 has its own rotated basis; q=0 opens, negative q closes.",
+        "contacts": [
+          "finger_left",
+          "finger_right"
+        ],
+        "dof": 6,
+        "jaw": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "jaws": {
+          "gripper_left": [
+            0.0,
+            -0.045
+          ],
+          "gripper_right": [
+            0.0,
+            -0.045
+          ]
+        },
+        "position": [
+          0.15285,
+          0.0,
+          0.0
+        ],
+        "tool": "link6_7",
+        "url": "https://github.com/robot-learning-co/trlc-dk1/blob/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/urdf/follower/TRLC-DK1-Follower.urdf"
+      },
+      "xarm": {
+        "approach": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "assumptions": [
+          "Symmetric centre of the open/closed distal-mesh overlap, not calibrated contact geometry.",
+          "Authored link_tcp at172mm lies beyond the open finger tips; script uses a pad reference instead."
+        ],
+        "basis": "Opposing STL fingers travel Y. Distal20mm envelope common to open/closed spans Z[.1545213,.1621402]; its centre is158.331mm.",
+        "contacts": [
+          "left_finger",
+          "right_finger"
+        ],
+        "dof": 7,
+        "jaw": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "jaws": {
+          "drive_joint": [
+            0.0,
+            0.85
+          ],
+          "left_finger_joint": [
+            0.0,
+            0.85
+          ],
+          "left_inner_knuckle_joint": [
+            0.0,
+            0.85
+          ],
+          "right_finger_joint": [
+            0.0,
+            0.85
+          ],
+          "right_inner_knuckle_joint": [
+            0.0,
+            0.85
+          ],
+          "right_outer_knuckle_joint": [
+            0.0,
+            0.85
+          ]
+        },
+        "position": [
+          0.0,
+          0.0,
+          0.158331
+        ],
+        "tool": "xarm_gripper_base_link",
+        "url": "https://github.com/xArm-Developer/xarm_ros2/tree/ac736c92b02de7ca7e0be6f737d77d46707464d8/xarm_description"
+      },
+      "yam": {
+        "approach": [
+          0.0,
+          0.0,
+          1.0
+        ],
+        "assumptions": [
+          "Symmetric centre of distal 20mm mesh vertex envelopes; visual geometry is not a measured collision pad."
+        ],
+        "basis": "Distal tip visual mesh bounds, source joint7/8 transforms: Z[.1291924,.1468425], jaw travel X.",
+        "contacts": [
+          "tip_left",
+          "tip_right"
+        ],
+        "dof": 6,
+        "jaw": [
+          1.0,
+          0.0,
+          0.0
+        ],
+        "jaws": {
+          "joint7": [
+            0.04695,
+            0.0
+          ],
+          "joint8": [
+            0.04695,
+            0.0
+          ]
+        },
+        "position": [
+          0.0,
+          0.0,
+          0.138017
+        ],
+        "tool": "gripper",
+        "url": "https://github.com/i2rt-robotics/i2rt/blob/120c3c81400171174604e503943f8d1ebc891058/i2rt/robot_models/station/yam_station_linear_4310_d405/yam_station_linear_4310_d405.urdf"
+      }
+    },
+    "industrial_bodies": [
+      "abb_gofa_crb15000_12_127_robotiq_2f85_sim",
+      "abb_gofa_crb15000_5_95_robotiq_2f85_sim",
+      "fanuc_crx_10ia_l_robotiq_2f85_sim",
+      "fanuc_crx_10ia_robotiq_2f85_sim",
+      "fanuc_m710ic_45m_robotiq_2f85_sim"
+    ],
+    "industrial_policy_profile": "blueprint_scripted_pick_place_industrial_robotiq.v1",
+    "industrial_source_identity": {
+      "files": [
+        {
+          "path": "scripted_robot_baseline.py",
+          "sha256": "sha256:73b092973d2cfa922b38182729449cf7e06932a9fecbda00392356296c6ea6be"
+        },
+        {
+          "path": "scripted_robot_grasp_frames.py",
+          "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+        },
+        {
+          "path": "scripted_robot_industrial_robotiq_runtime.py",
+          "sha256": "sha256:6cabadf16126185a670aa6be44da714c9b4024fb43ef82cf2a1ac3693795a72d"
+        }
+      ],
+      "schema_version": "blueprint_scripted_controller_source.v1"
+    },
+    "license_evidence": {
+      "path": "BlueprintCapturePipeline:LICENSE",
+      "sha256": "sha256:7d1ed722a23878384036453aa95845ead7d0e646bdb33af460a751869d8e9a40",
+      "size_bytes": 1071
+    },
+    "policy_profile": "blueprint_scripted_pick_place.v1",
+    "schema_version": "scripted_robot_baseline_registration_profile.v1",
+    "source_identity": {
+      "files": [
+        {
+          "path": "scripted_robot_baseline.py",
+          "sha256": "sha256:73b092973d2cfa922b38182729449cf7e06932a9fecbda00392356296c6ea6be"
+        },
+        {
+          "path": "scripted_robot_baseline_runtime.py",
+          "sha256": "sha256:923f2cac576a982acf9d0a5e0d65ad4da653428b2c2da4dd99bdcb33928fbe25"
+        },
+        {
+          "path": "scripted_robot_grasp_frames.py",
+          "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+        }
+      ],
+      "schema_version": "blueprint_scripted_controller_source.v1"
+    },
+    "team_id": "blueprint-owned-baselines",
+    "variant_bodies": [
+      "franka_research_3_robotiq_2f85_sim",
+      "universal_robots_ur10e_robotiq_2f85_sim",
+      "universal_robots_ur5e_robotiq_2f85_sim"
+    ],
+    "variant_policy_profile": "blueprint_scripted_pick_place_robotiq.v1",
+    "variant_source_identity": {
+      "files": [
+        {
+          "path": "scripted_robot_baseline.py",
+          "sha256": "sha256:73b092973d2cfa922b38182729449cf7e06932a9fecbda00392356296c6ea6be"
+        },
+        {
+          "path": "scripted_robot_grasp_frames.py",
+          "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+        },
+        {
+          "path": "scripted_robot_robotiq_runtime.py",
+          "sha256": "sha256:1db4f17f2f4d2246ca734c000012958271d100bb67405edd77f718df11984ec9"
+        }
+      ],
+      "schema_version": "blueprint_scripted_controller_source.v1"
+    }
+  },
+  "modules": {
+    "scripted_robot_baseline.py": "sha256:73b092973d2cfa922b38182729449cf7e06932a9fecbda00392356296c6ea6be",
+    "scripted_robot_baseline_runtime.py": "sha256:923f2cac576a982acf9d0a5e0d65ad4da653428b2c2da4dd99bdcb33928fbe25",
+    "scripted_robot_grasp_frames.py": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d",
+    "scripted_robot_robotiq_runtime.py": "sha256:1db4f17f2f4d2246ca734c000012958271d100bb67405edd77f718df11984ec9",
+    "scripted_robot_industrial_robotiq_runtime.py": "sha256:6cabadf16126185a670aa6be44da714c9b4024fb43ef82cf2a1ac3693795a72d"
+  }
+}

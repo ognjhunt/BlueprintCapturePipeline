@@ -1,0 +1,1 @@
+Exact public source text at ros-industrial/motoman846fbbc57c60223f12bf4795ea6404982d57709e; retained package BSD-3 declarations include models. Test meshes are explicitly synthetic; no native proof. Production recipe retains exact upstream binary assets. Original28 profile/recipe/catalog/controller identities are pinned separately.

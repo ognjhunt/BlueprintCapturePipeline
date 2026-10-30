@@ -31,6 +31,7 @@ from .deployment_embodiment_asset_import import (
 from .deployment_embodiment_station import _inverse, _mesh_paths, _multiply, _origin_matrix, _tree, gen_urdf
 from .immutable_directory_publication import publish_staged_immutable_directory
 from .deployment_embodiment_industrial_composition import VARIANTS as _INDUSTRIAL_VARIANTS
+from .deployment_embodiment_yaskawa_composition import VARIANTS as _YASKAWA_VARIANTS
 from .team_embodiment import model_structure_blockers, read_model_structure, validate_embodiment_manifest
 
 SCHEMA = "embodiment_runtime_configuration.v1"
@@ -84,7 +85,7 @@ for _identity in ("abb_gofa_crb15000_5_95", "abb_gofa_crb15000_12_127"):
     _PROFILES[_identity] = [_arm("base_link", "link_6", 6, tcp="tool0")]
 
 
-for _identity in _INDUSTRIAL_VARIANTS:
+for _identity in (*_INDUSTRIAL_VARIANTS, *_YASKAWA_VARIANTS):
     _PROFILES[_identity] = [_arm("base_link", "robotiq_85_base_link", 6, tcp="grasp_link",
         fingers={"robotiq_85_left_knuckle_joint": [0.0, .7929]},
         contacts=["robotiq_85_left_finger_tip_link", "robotiq_85_right_finger_tip_link"], width=.085)]
