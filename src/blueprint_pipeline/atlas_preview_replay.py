@@ -609,6 +609,12 @@ def replay(job: str | Path, *, configuration: str | None = None, task_context: s
             core = run_steps(job_path=job_path, capture_root=capture_root, workspace=workspace, prefix=str(mirror),
                              **options)
             report["overlay"] = {"mode": "relocated", "copy": str(workspace)}
+            # Retained records keep absolute host paths the mirror cannot redirect, so a
+            # refusal here may be the replay's own containment check, not the job's stop.
+            stop = core.get("first_stop") or {}
+            if stop.get("kind") in ("refusal", "error"):
+                core = {**core, "first_stop": {"kind": "replay_unsupported", "stage": stop.get("stage"),
+                        "code": "relocated_replay_cannot_resolve_retained_absolute_paths", "underlying": stop}}
     finally:
         if not keep_overlay:
             for name in ("overlay", "mirror"):
@@ -657,7 +663,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.report:
         Path(args.report).write_text(text + "\n", encoding="utf-8")
     print(text)
-    return {"refusal": 3, "missing_input": 4, "error": 2}.get((report.get("first_stop") or {}).get("kind"), 0)
+    return {"refusal": 3, "missing_input": 4, "error": 2, "replay_unsupported": 5}.get(
+        (report.get("first_stop") or {}).get("kind"), 0)
 
 
 __all__ = ["ReplayStop", "SCHEMA", "main", "replay", "run_steps"]
