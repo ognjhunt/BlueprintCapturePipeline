@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from http.client import HTTPException
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import tempfile
 import zipfile
@@ -71,6 +71,21 @@ def _wheel_bytes(url):
                         max_response_bytes=2 * 1024**2).body
 
 
+def _archive_verified(zip_out: zipfile.ZipFile, source: Path, row: dict) -> None:
+    """Stream ``source`` into the archive; the stored bytes must be the ones verified.
+
+    Stored, not deflated: the packet is itself a ZIP.
+    """
+    info = zipfile.ZipInfo.from_file(source, row["path"])
+    digest = hashlib.sha256()
+    with source.open("rb") as stream, zip_out.open(info, "w") as member:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+            member.write(chunk)
+    require(info.file_size == row["size_bytes"] and "sha256:" + digest.hexdigest() == row["sha256"],
+            "runtime_source_packet_changed")
+
+
 def build_bundle(*, request: dict, runtime_source_receipt: Path, source_root: Path,
                  output: Path, materialize=materialize_sources, wheel_get=_wheel_bytes) -> dict:
     request = validate_request(request)
@@ -113,7 +128,10 @@ def build_bundle(*, request: dict, runtime_source_receipt: Path, source_root: Pa
         native = runtime / "native_task_runtime_sources"
         native.mkdir()
         shutil.copyfile(runtime_source_receipt, native / "native_task_runtime_source_packet.v1.json")
-        shutil.copyfile(runtime_packet["verified_packet_path"], native / "native_task_runtime_sources.zip")
+        # The verified runtime packet (~4.3 GB) is archived from where it was
+        # verified. Staging a copy first held it on disk twice beside the ZIP.
+        packet_row = {"path": (native / "native_task_runtime_sources.zip").relative_to(staged).as_posix(),
+                      "size_bytes": runtime_packet["packet_size_bytes"], "sha256": runtime_packet["packet_sha256"]}
         inputs = sealed({"schema_version": INPUT_SCHEMA, "request": request, "sources": sources,
                          "runtime_source_digest": runtime_packet["receipt_digest"], "maximum_output_bytes": MAX_OUTPUT_BYTES,
                          "claim_ceiling": "robot_asset_import_only", "candidate_policy_queried": False}, "inputs_digest")
@@ -121,8 +139,9 @@ def build_bundle(*, request: dict, runtime_source_receipt: Path, source_root: Pa
         entry = runtime / "run_adp_arena_provider_runtime.sh"
         entry.write_text(ENTRYPOINT, encoding="utf-8")
         entry.chmod(0o755)
-        files = [{"path": p.relative_to(staged).as_posix(), "size_bytes": p.stat().st_size, "sha256": sha(p)}
-                 for p in sorted(staged.rglob("*")) if p.is_file()]
+        files = sorted([{"path": p.relative_to(staged).as_posix(), "size_bytes": p.stat().st_size, "sha256": sha(p)}
+                        for p in staged.rglob("*") if p.is_file()] + [packet_row],
+                       key=lambda row: PurePosixPath(row["path"]))
         manifest = sealed({"schema_version": SCHEMA, "status": "ready", "implementation_commit": request["release_commit"],
             "request_digest": request["request_digest"], "inputs_digest": inputs["inputs_digest"], "inputs": inputs,
             "container_image": NATIVE_TASK_ARENA_IMAGE,
@@ -135,7 +154,10 @@ def build_bundle(*, request: dict, runtime_source_receipt: Path, source_root: Pa
         archive = published / "embodiment_asset_preparation.zip"
         with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=3) as zip_out:
             for row in files:
-                zip_out.write(staged / row["path"], row["path"])
+                if row is packet_row:
+                    _archive_verified(zip_out, Path(runtime_packet["verified_packet_path"]), row)
+                else:
+                    zip_out.write(staged / row["path"], row["path"])
             zip_out.write(staged / MANIFEST_PATH, MANIFEST_PATH)
         # Copied retained sources preserve read-only directory modes. Only this
         # disposable staging copy is made writable for cleanup.
