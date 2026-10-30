@@ -98,6 +98,9 @@ CREDIT_RESEND_INTERVAL_SECONDS = 300
 # EXECUTION_TIMEOUT retry "is a new task submission"; code 4 alone can also mean
 # an expired task. EXECUTION_FAILED says to investigate first, so it stays final.
 RESUBMITTABLE_FAILURES = frozenset({(14, "TRANSIENT_UPSTREAM"), (8, "THROTTLED"), (4, "EXECUTION_TIMEOUT")})
+#: World Labs' own execution failure may clear on a separate submission, but one that fails
+#: again only spends: it gets a single resubmission (2026-10-30 capture-4b60431e atlasGenerate).
+RESUBMITTABLE_ONCE_FAILURES = frozenset({(13, "EXECUTION_FAILED")})
 # Each pose attempt is separately reserved; a failure above starts at most this many.
 MAX_POSE_ATTEMPTS = 3
 RESUBMIT_BACKOFF_SECONDS = 30
@@ -511,13 +514,14 @@ def refuse_closed_or_uncertain_attempt(state: Mapping[str, Any] | None, now: flo
         raise ValueError("website_atlas_pose_attempt_failed")
 
 
-def resubmittable_terminal_failure(state: Mapping[str, Any] | None) -> bool:
+def resubmittable_terminal_failure(state: Mapping[str, Any] | None, *, prior_resubmissions: int = 0) -> bool:
     """A finished operation whose documented failure a new, separate submission may clear."""
+    failures = RESUBMITTABLE_FAILURES | (RESUBMITTABLE_ONCE_FAILURES if prior_resubmissions == 0 else frozenset())
     operation = (state or {}).get("terminal_operation") or {}
     error = operation.get("error") or {}
     return bool(state) and (state.get("status") == "failed" and operation.get("done") is True
             and operation.get("id") == state.get("operation_id")
-            and any((error.get("code"), row.get("reason")) in RESUBMITTABLE_FAILURES
+            and any((error.get("code"), row.get("reason")) in failures
                     and row.get("domain") == "api.worldlabs.ai"
                     for row in error.get("details", []) if isinstance(row, dict)))
 
@@ -1066,7 +1070,8 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
 
     def resubmit_due() -> bool:
         # The archive itself refuses an attempt that could have bought more than its failed operation.
-        return (resubmittable_terminal_failure(atlas_pose_submission_state(output_root))
+        return (resubmittable_terminal_failure(atlas_pose_submission_state(output_root),
+                                               prior_resubmissions=_attempt_number(output_root))
                 and _attempt_number(output_root) + 1 < MAX_POSE_ATTEMPTS)
     while True:
         if resubmit_due():

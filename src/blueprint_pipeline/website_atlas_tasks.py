@@ -451,8 +451,8 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
         return result
 
 
-def _transient_upstream_failure(state):
-    return pose.resubmittable_terminal_failure(state)
+def _transient_upstream_failure(state, attempt=0):
+    return pose.resubmittable_terminal_failure(state, prior_resubmissions=attempt)
 
 
 def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_root: Path,
@@ -483,7 +483,7 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
             with pose._locked(root):
                 failed = json.loads(state_path.read_text())
                 attempt = (lineage or {}).get("attempt", 0)
-                if not _transient_upstream_failure(failed) or attempt >= 2:
+                if not _transient_upstream_failure(failed, attempt) or attempt >= 2:
                     raise
                 failure_digest = canonical_digest(failed["terminal_operation"])
                 failure_observed_at = failed.get("terminal_observed_at_epoch", state_path.stat().st_mtime)

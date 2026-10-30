@@ -894,7 +894,17 @@ def test_documented_resubmittable_pose_failure_starts_a_separately_reserved_atte
     assert atlas_case.run(fake, max_polls=2) == result and len(fake.submissions) == 2
 
 
-@pytest.mark.parametrize("code,reason", [(13, "EXECUTION_FAILED"), (4, "THROTTLED"), (3, "CONTENT_POLICY")])
+def test_an_execution_failed_pose_is_resubmitted_once(atlas_case):
+    fake = FailingFirstAtlas(atlas_case.events, failures=9, code=13, reason="EXECUTION_FAILED")
+    with pytest.raises(ValueError, match="website_atlas_pose_operation_failed"):
+        atlas_case.run(fake, max_polls=2)
+    assert len(fake.submissions) == 2 and len(atlas_case.webapp.reserved) == 2
+    with pytest.raises(ValueError, match="website_atlas_pose_attempt_failed"):
+        atlas_case.run(fake, max_polls=2)
+    assert len(fake.submissions) == 2
+
+
+@pytest.mark.parametrize("code,reason", [(4, "THROTTLED"), (3, "CONTENT_POLICY")])
 def test_other_pose_failures_stay_final(atlas_case, code, reason):
     fake = FailingFirstAtlas(atlas_case.events, failures=9, code=code, reason=reason)
     with pytest.raises(ValueError, match="website_atlas_pose_operation_failed"):
