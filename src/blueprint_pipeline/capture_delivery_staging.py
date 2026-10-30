@@ -37,7 +37,8 @@ _ERROR_TEXT_LIMIT = 200
 _ERROR_SCAN_LIMIT = 4096
 _ERROR_TYPE = re.compile(r'[A-Za-z_][A-Za-z0-9_.<>]{0,199}')
 # Applied in order. A URL keeps its scheme, host and path; its query or
-# fragment can sign or authorize it. The last rule removes runs that mix
+# fragment can sign or authorize it. A credential key may be quoted, as in
+# JSON or a printed dictionary. The last rule removes runs that mix
 # upper case, lower case and digits, as keys and tokens do, while hex
 # digests, generations and capture identifiers stay readable.
 _ERROR_REDACTIONS = (
@@ -46,7 +47,7 @@ _ERROR_REDACTIONS = (
      '<redacted>'),
     (re.compile(r'(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+'), r'\1 <redacted>'),
     (re.compile(r'(?i)\b((?:[a-z0-9]+[_-])*(?:token|key|secret|password|passwd|signature|sig'
-                r'|credentials?|authorization|cookie|session))(\s*[:=]\s*)("[^"]*"|\'[^\']*\'|[^\s,;&)]+)'),
+                r'|credentials?|authorization|cookie|session)["\']?)(\s*[:=]\s*)("[^"]*"|\'[^\']*\'|[^\s,;&)}]+)'),
      r'\1\2<redacted>'),
     (re.compile(r'[?&][^\s=&?]+=[^\s&]+'), '?<redacted>'),
     (re.compile(r'\b(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z._-]+|eyJ[0-9A-Za-z_-]+\.[0-9A-Za-z._-]+'

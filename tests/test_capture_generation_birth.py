@@ -898,6 +898,11 @@ def test_unrecognized_staging_error_keeps_type_and_bounded_secret_free_message()
     assert bounded_staging_error(described) == described
     assert staging_error_description(RuntimeError('private staging token=secret')) == {
         'type': 'builtins.RuntimeError', 'message': 'private staging token=<redacted>'}
+    # JSON and printed dictionaries quote the key.
+    for quoted, kept in (('{"client_secret": "hunter2"}', '{"client_secret": <redacted>}'),
+                         ("{'api_key': 'hunter2', 'n': 1}", "{'api_key': <redacted>, 'n': 1}"),
+                         ('{"session":hunter2}', '{"session":<redacted>}')):
+        assert staging_error_description(RuntimeError(quoted))['message'] == kept
     # Another result repeats only the exact shape, bounded again.
     assert bounded_staging_error({'type': 'builtins.OSError', 'message': 'see ?token=abc'}) == {
         'type': 'builtins.OSError', 'message': 'see ?<redacted>'}
