@@ -396,14 +396,19 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                         "native_status": result.get("status"), "native_disposition": result.get("queue_disposition"),
                         "blockers": [] if complete else ["selected_handoff_native_preparation_still_blocked"]}
                 # Preserve the native stage's bounded refusal just as original
-                # dispatch does; never expose provider/source exception text.
-                from .capture_delivery_staging import STAGING_REASON_CODES
+                # dispatch does; never expose raw provider/source exception text.
+                from .capture_delivery_staging import STAGING_REASON_CODES, bounded_staging_error
                 from .capture_original_owner_observer import OWNER_OBSERVATION_REASON_CODES
                 for field, codes in (("staging_reason", STAGING_REASON_CODES),
                                      ("owner_observation_reason", OWNER_OBSERVATION_REASON_CODES)):
                     reason = result.get(field)
                     if type(reason) is str and reason in codes:
                         outcome[field] = reason
+                # An unrecognized staging failure keeps only its type and a
+                # redacted, trimmed message, bounded again here.
+                staging_error = bounded_staging_error(result.get("staging_error"))
+                if staging_error is not None:
+                    outcome["staging_error"] = staging_error
                 return outcome
             return {"status": "atlas_status_returned", "atlas": snapshot, "atlas_retry_performed": False}
 

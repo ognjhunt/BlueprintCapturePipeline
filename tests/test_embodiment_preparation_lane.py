@@ -1,6 +1,8 @@
 """Development-only authorization, recovery and per-body publication contracts."""
 from __future__ import annotations
 
+import os
+
 from copy import deepcopy
 import hashlib
 from pathlib import Path
@@ -338,6 +340,32 @@ def test_disk_reservation_accounts_for_actual_runtime_packet_before_build(tmp_pa
     evidence = contract.read(job / "disk-admission.json")
     assert evidence["authorization_id"] == grant["authorization_id"]
     assert evidence["workspace_path"] == str(controller.workspace_for(job))
+
+
+def test_allocator_inherits_only_this_jobs_workspace_hold_as_enclosing(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from blueprint_pipeline import control_plane_disk_budget, native_task_runtime_source_packet
+    _, _job, item = _queued(tmp_path)
+    tokens = iter(["a" * 32, "b" * 32])
+    @contextmanager
+    def reserve(role, **kwargs):
+        token = next(tokens)
+        yield SimpleNamespace(receipt=lambda: {"reservation_token": token})
+    monkeypatch.setattr(control_plane_disk_budget, "reserve_control_plane_disk", reserve)
+    monkeypatch.setattr(controller, "runtime_source_receipt", lambda: tmp_path / "runtime.json")
+    monkeypatch.setattr(native_task_runtime_source_packet, "verify_native_task_runtime_source_packet",
+                        lambda *a: {"packet_size_bytes": 1})
+    monkeypatch.setenv(control_plane_disk_budget.ENCLOSING_RESERVATIONS_ENV, "c" * 32)
+    seen = []
+    def process(*a, **k):
+        seen.append(os.environ[control_plane_disk_budget.ENCLOSING_RESERVATIONS_ENV])
+        raise RuntimeError("development_only_stop")
+    monkeypatch.setattr(controller, "process_entry", process)
+    with pytest.raises(RuntimeError, match="development_only_stop"):
+        controller.process_reserved_entry(item, root=tmp_path, store=tmp_path / "models", commit=COMMIT)
+    # The workspace hold (first) is enclosing; the model-store hold is not.
+    assert seen == ["c" * 32 + "," + "a" * 32]
+    assert os.environ[control_plane_disk_budget.ENCLOSING_RESERVATIONS_ENV] == "c" * 32
 
 
 def test_sealed_completed_recovery_does_not_need_live_registry_runtime_packet(tmp_path, monkeypatch):

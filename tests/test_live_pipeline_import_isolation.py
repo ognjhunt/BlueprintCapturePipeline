@@ -173,3 +173,48 @@ def test_owned_atlas_cpu_queue_and_task_contracts_exclude_active_execution() -> 
         "owned_capture_atlas_worker", "website_atlas_preview", "website_atlas_pipeline",
         "paid_resource_allocator",
     })
+
+
+# The single registry-reading and effective-catalog implementation screening plans
+# with. The CPU intake lane reads it too, so it must never reach scene compilation,
+# screening launch or paid compute -- nor the heavier modules it was extracted
+# from, each of which would bring that hot lane back.
+SHARED_CATALOG_MODULES = (
+    "team_candidate_registry_reader",
+    "beta_policy_effective_catalog",
+    "beta_policy_screening_g1_catalog",
+    "beta_policy_screening_files",
+    "team_candidate_rights",
+    "team_candidate_credential_file",
+)
+SHARED_CATALOG_FORBIDDEN = HOT_LANE_MODULES | {
+    "paid_resource_allocator",
+    "beta_policy_screening_launch",
+    "team_scene_packet",
+    "team_candidate_quick10_registry",
+    "beta_policy_screening_team",
+    "beta_policy_screening_g1",
+    "team_candidate_quick10_vast",
+    "team_candidate_quick10_admission",
+}
+
+
+def test_shared_registry_and_effective_catalog_stay_off_the_hot_lane() -> None:
+    leaked = {}
+    for seed in SHARED_CATALOG_MODULES:
+        assert (PKG_DIR / f"{seed}.py").is_file(), seed
+        reached = _transitive_local_modules((seed,)) & SHARED_CATALOG_FORBIDDEN
+        if reached:
+            leaked[seed] = sorted(reached)
+    assert not leaked, f"Shared catalog modules reach the hot lane: {leaked}"
+    assert "team_candidate_rights" in _transitive_local_modules(("beta_policy_effective_catalog",))
+
+
+def test_candidate_readiness_preview_reads_only_the_shared_catalog() -> None:
+    # The intake service serves the preview, so the seed guard above walks it too.
+    assert {"website_candidate_readiness", "beta_policy_effective_catalog",
+            "team_candidate_registry_reader"} <= _transitive_local_modules(SEED_MODULES)
+    for seed in ("website_candidate_readiness", "website_candidate_readiness_http"):
+        reachable = _transitive_local_modules((seed,))
+        assert {"beta_policy_effective_catalog", "team_candidate_registry_reader"} <= reachable, seed
+        assert not reachable & SHARED_CATALOG_FORBIDDEN, (seed, sorted(reachable & SHARED_CATALOG_FORBIDDEN))
