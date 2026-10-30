@@ -631,3 +631,40 @@ def test_native_resume_preserves_only_a_bounded_refusal_code(site, monkeypatch, 
     assert len(calls) == 1 and calls[0][0] == b'original selected bytes'
     assert calls[0][1]['expected_preparation_purpose'] == 'scene_preparation'
     assert tree_bytes(site) == before
+
+
+@pytest.mark.parametrize('staging_error,expected', [
+    ({'type': 'blueprint_pipeline.pubsub_handoff_disk_admission.HandoffStagingCapacityError',
+      'message': 'pubsub_handoff_staging_capacity_insufficient'},
+     {'type': 'blueprint_pipeline.pubsub_handoff_disk_admission.HandoffStagingCapacityError',
+      'message': 'pubsub_handoff_staging_capacity_insufficient'}),
+    # A native result is bounded again here, whatever produced it.
+    ({'type': 'builtins.OSError', 'message': 'GET https://h/o?X-Goog-Signature=abc token=secret ' + 'y' * 300},
+     {'type': 'builtins.OSError', 'message': ('GET https://h/o?<redacted> token=<redacted> ' + 'y' * 300)[:197] + '...'}),
+    ({'type': 'builtins.OSError', 'message': 'boom', 'traceback': 'private token=secret'}, None),
+    ('builtins.OSError: private token=secret', None),
+])
+def test_native_resume_preserves_a_bounded_unrecognized_staging_error(site, monkeypatch, staging_error, expected):
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+
+    delivery = 'sha256:' + '8' * 64
+    site.observation['producer_delivery']['delivery_key'] = delivery
+    ledger = {'scene_id': 'site-fixture', 'capture_id': 'walkthrough-fixture',
+              'status': 'failed_retryable', 'revision': 13, 'attempt_count': 5,
+              'source_payload_sha256': '7' * 64, 'producer_delivery_key': delivery}
+    (site.capture / listener.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
+    write_job(site, state='ready')
+    reviewed = recover(site)['atlas']['atlas_status_digest']
+    monkeypatch.setenv('BLUEPRINT_PUBSUB_HANDOFF_PROVIDER', 'openai')
+    result = recovery.recover_selected_atlas_preview(
+        {**site.selection, 'mode': 'preparation-resume', 'atlas_status_digest': reviewed},
+        observation=site.observation, membership=site.membership,
+        capture_root=site.capture, storage_root=site.storage,
+        handoff_payload=b'original selected bytes',
+        listener=SimpleNamespace(process_handoff_payload=lambda *_a, **_k: {
+            'status': 'capture_source_membership_unavailable_retryable', 'queue_disposition': 'retryable',
+            'staging_reason': 'capture_staging_unavailable', 'staging_error': staging_error}))
+    assert result['status'] == 'blocked'
+    assert result['staging_reason'] == 'capture_staging_unavailable'
+    assert result.get('staging_error') == expected
+    assert 'secret' not in json.dumps(result) and 'X-Goog' not in json.dumps(result)

@@ -26,10 +26,15 @@ or occupied workspace is never silently adopted. A preclaim receipt does not
 establish zero prior provider charges.
 
 `staging_reason` is a fixed reason code. It distinguishes the repeated owner
-read, membership preflight, missing/disabled birth policy, other birth refusals
-and an unclassified staging failure. Raw exception text is never exposed. A
-legacy generic receipt remains generic; new diagnostics do not prove its first
-failure after the fact.
+read, membership preflight, missing/disabled birth policy, other birth refusals,
+a bulk-disk refusal (`pubsub_handoff_staging_capacity_insufficient`) and an
+unclassified staging failure. Only the unclassified `capture_staging_unavailable`
+also carries `staging_error`: the exception's `module.qualname` type and its
+message with URL queries and credential-like text removed, trimmed to 200
+characters. Raw exception text is never exposed. Retained staging whose members
+are all current is reused without a bulk-disk reservation; only bytes that must
+be downloaded again need disk admission. A legacy generic receipt remains
+generic; new diagnostics do not prove its first failure after the fact.
 
 ## The protected capture-birth prerequisite
 
