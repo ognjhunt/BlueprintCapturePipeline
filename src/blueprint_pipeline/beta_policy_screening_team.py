@@ -25,6 +25,9 @@ def team_policy_interface(spec: Mapping[str, Any]) -> dict[str, Any]:
     if binding.get("binding_digest") != canonical_digest(binding, digest_field="binding_digest"):
         raise ValueError("beta_screening_team_binding_invalid")
     manifest = validate_embodiment_manifest(binding["manifest"])
+    if interface == "openwam_piper_eef20.v1":
+        from .openwam_piper_runtime import interface_contract
+        return interface_contract(spec)
     if interface == "dreamlabs_dream1.v1":
         from .dreamlabs_policy_client import DreamLabsPolicySpec, validate_robot_contract
 
@@ -69,6 +72,15 @@ def team_interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any
     expected = team_policy_interface(spec)
     runtime = configured.get("runtime") or {}
     policy = spec["policy_spec"]
+    if spec["policy_interface_id"] == "openwam_piper_eef20.v1":
+        from .openwam_piper_runtime import MODEL_SOURCE, MODEL_REVISION
+        return (configured.get("interface") == expected
+                and configured["policy"]["kind"] == "checkpoint"
+                and configured["policy"]["source"] == MODEL_SOURCE
+                and configured["policy"]["revision"] == MODEL_REVISION
+                and configured["policy"]["digest"] == policy["model_identity_digest"]
+                and runtime.get("backend") == "robolab.v1"
+                and runtime.get("runtime_id") == "native_task_arena_policy_canary.v1")
     source = urlsplit(configured["policy"]["source"])
     return (configured.get("interface") == expected
             and configured["policy"]["kind"] == "hosted"
@@ -138,6 +150,11 @@ def build_registered_team_spec(*, candidate_id: str, registration: Mapping[str, 
             checkpoint_id=registration["checkpoint_id"], candidate_id=candidate_id, model_id=policy["model_id"],
             scene_revision_digest=scene_revision_digest)
         spec.update(provider_disclosure=disclosure, checkpoint_identity_basis="provider_metadata",
+                    weights_identity_verified=False)
+    if interface == "openwam_piper_eef20.v1":
+        from .openwam_piper_runtime import PORT
+        spec.update(policy_endpoint={"host": "127.0.0.1", "port": PORT},
+                    checkpoint_identity_basis="pinned_file_inventory_verified_before_worker_load",
                     weights_identity_verified=False)
     team_policy_interface(spec)
     spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
@@ -252,18 +269,30 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                     raise ValueError("beta_screening_dream_provider_identity_changed")
             blockers = (["beta_screening_hosted_credential_not_private"]
                         if credential_file_blockers(settings.get("credential_file")) else [])
-            row = {"candidate_id": key, "display_name": registration.get("display_name", key),
-                "policy": {"kind": "hosted", "source": policy["allowed_origin"],
+            local = interface["policy_interface_id"] == "openwam_piper_eef20.v1"
+            if local:
+                from .openwam_piper_runtime import MINIMUM_GPU_MEMORY_GB, MODEL_SOURCE, MODEL_REVISION
+                blockers = []
+                memory = registration.get("minimum_gpu_memory_gb", MINIMUM_GPU_MEMORY_GB)
+                if type(memory) not in (int, float) or not math.isfinite(memory) or not 0 < memory <= 1024:
+                    raise ValueError("openwam_gpu_memory_configuration_invalid")
+                policy_identity = {"kind": "checkpoint", "source": MODEL_SOURCE, "revision": MODEL_REVISION,
+                    "digest": policy["model_identity_digest"], "digest_kind": "pinned_runtime_file_inventory"}
+            else:
+                policy_identity = {"kind": "hosted", "source": policy["allowed_origin"],
                     "revision": registration.get("policy_revision") or policy.get("model_id") or policy["policy_id"],
-                    "digest": policy["model_identity_digest"], "digest_kind": "provider_metadata"},
+                    "digest": policy["model_identity_digest"], "digest_kind": "provider_metadata"}
+            row = {"candidate_id": key, "display_name": registration.get("display_name", key),
+                "policy": policy_identity,
                 "interface": interface,
                 "runtime": {"backend": "robolab.v1", "runtime_id": "native_task_arena_policy_canary.v1",
-                    "minimum_gpu_memory_gb": registration.get("minimum_gpu_memory_gb", 46)},
+                    "minimum_gpu_memory_gb": (max(MINIMUM_GPU_MEMORY_GB, memory)
+                                              if local else registration.get("minimum_gpu_memory_gb", 46))},
                 "supported_task_kinds": ["rigid_pick_place"],
                 "eligibility": {"enabled": not blockers, "commercial_use": "allowed_with_conditions",
                     "license_id": "operator-scoped-policy-license", "license_note": "Scoped run license: " + rights["rights_digest"],
-                    "requires_credentials": ["DREAM_API_KEY" if interface["policy_interface_id"] == "dreamlabs_dream1.v1"
-                                             else "BLUEPRINT_TEAM_POLICY_BEARER_FILE"], "blockers": blockers}}
+                    "requires_credentials": ([] if local else ["DREAM_API_KEY" if interface["policy_interface_id"] == "dreamlabs_dream1.v1"
+                                             else "BLUEPRINT_TEAM_POLICY_BEARER_FILE"]), "blockers": blockers}}
             deployment = (rows.get(key) or {}).get("deployment") or registration.get("deployment")
             if deployment is not None:
                 if not isinstance(deployment, Mapping):
@@ -272,6 +301,8 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                     raise ValueError("beta_screening_company_embodiment_binding_mismatch")
                 route = deployment.get("policy_route_id")
                 if route is not None:
+                    if local and route != "customer_controller":
+                        raise ValueError("openwam_policy_route_identity_mismatch")
                     # A shared robot or HTTPS transport does not identify a
                     # policy family. Retain explicit operator route provenance
                     # for checkpoint/planner/API variants; legacy generic

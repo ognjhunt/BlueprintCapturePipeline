@@ -260,7 +260,8 @@
                   "downloaded_snapshot_inventory",
                   "hub_tree_listing",
                   "provider_metadata",
-                  "unverified"
+                  "unverified",
+                  "pinned_runtime_file_inventory"
                 ]
               },
               "kind": {

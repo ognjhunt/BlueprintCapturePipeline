@@ -248,6 +248,7 @@ POLICY_EXTRA_RUNTIME_MODULE_NAMES = (
     "adp009d_policy_episode.py",
     "policy_episode_events.py",
     "beta_robolab_runtime.py",
+    "beta_robolab_policy_execution.py",
     "adp009d_policy_episode_evidence.py",
     "adp009d_policy_episode_native_validation.py",
     "adp009d_droid_action_execution.py",
@@ -288,7 +289,6 @@ POLICY_RUNTIME_MODULE_NAMES = tuple(
 # dependency downloader the entrypoint runs, plus the modules every native
 # bundle carries; tests/test_rigid_robot_free_probe_lane.py pins the closure.
 RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES = (
-    "adp_articulated_task_success_contract.py",
     "adp009d_contact_envelope.py", "adp009d_droid_action_execution.py", "adp009d_droid_observation.py", "adp009d_groot_worker_identity.py",
     "adp009d_isaac_episode_adapter.py", "adp009d_newton_gripper_drive.py",
     "adp009d_physics_backend_comparison.py", "adp009d_task_scoring.py", "adp_rigid_retreat_scoring.py",
@@ -310,7 +310,7 @@ RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES = (
     "native_task_robot_registry.py", "native_task_runtime_dependency_download.py",
     "native_task_runtime_source_packet.py", "native_task_runtime_source_provision.py",
     "native_task_torch_runtime_lock.py", "policy_episode_events.py", "policy_episode_trace_evidence.py", "policy_request_evidence.py",
-    "policy_episode_lifecycle.py", "policy_interface_binding.py",
+    "policy_episode_lifecycle.py",
     "policy_scientific_reset.py", "provider_output_range_transport.py", "rigid_frame_transforms.py",
     "rigid_robot_free_probe_plan.py", "rigid_robot_free_probe_recorder.py",
     "rigid_robot_free_probe_worker.py", "rigid_robot_free_readiness_score.py", "safe_outbound_http.py",

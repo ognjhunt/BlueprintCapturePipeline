@@ -657,6 +657,48 @@ exit "$FAKE_HELPER_RC"
     assert rc == 2 and outcome["code"] == "embodiment_preparation_user_invalid"
 
 
+@pytest.mark.parametrize("helper_rc", [0, 2])
+def test_public_policy_shell_builds_unprivileged_then_uses_only_installed_stdlib_installer(env, tmp_path, helper_rc):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_stub(tmp_path / "stubs/setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "stubs/chgrp", "#!/bin/bash\nexit 0\n")
+    helper = tmp_path / "policy-preparation-python"
+    _write_stub(helper, '''#!/bin/bash
+printf '%s\\n' "$@" > "$STUB_DIR/public-policy-prepare-argv"
+printf '%s\\n' '{"status":"prepared","claim_ceiling":"development_only"}'
+exit "$FAKE_HELPER_RC"
+''')
+    _write_stub(tmp_path / "stubs/python3", '''#!/bin/bash
+if [[ "$*" == *"/operator_door/public_policy_registration.py"* ]]; then
+  printf '%s\\n' "$@" > "$STUB_DIR/public-policy-root-argv"
+  printf '%s\\n' '{"status":"installed","claim_ceiling":"development_only"}'
+  exit 0
+fi
+exec "''' + sys.executable + '''" "$@"
+''')
+    request = json.dumps({"authorization_reference": "development_only $(touch must-not-exist) `false` %n"})
+    arguments = dict(DOOR_REQUEST_ID="20261029T154718Z-install-public-piper-policy-0000abcd",
+        DOOR_VENV_PYTHON=str(helper), DOOR_CONTROL_PLANE_REPO=str(repository), DOOR_SERVICE_USER="blueprint",
+        DOOR_PUBLIC_POLICY_REQUEST=request, FAKE_HELPER_RC=str(helper_rc))
+    rc, outcome, calls = _run("door-install-public-piper-policy.sh", env, **arguments)
+    assert rc == helper_rc
+    assert outcome["status"] == ("completed" if helper_rc == 0 else "failed")
+    assert (tmp_path / "public-policy-prepare-argv").read_text().splitlines() == [
+        "-m", "blueprint_pipeline.openwam_piper_registration", "--request-json", request]
+    root_argv = tmp_path / "public-policy-root-argv"
+    if helper_rc == 0:
+        assert root_argv.read_text().splitlines() == ["-I", "-S", str(DOOR / "operator_door/public_policy_registration.py"),
+                                                   "--request-json", request]
+    else:
+        assert not root_argv.exists()
+    assert any("--reuid=blueprint --regid=blueprint" in call for call in calls)
+    assert not any("systemctl" in call or "git " in call for call in calls)
+    assert not (repository / "must-not-exist").exists()
+    rc, outcome, _ = _run("door-install-public-piper-policy.sh", env, **{**arguments, "DOOR_SERVICE_USER": "root"})
+    assert rc == 2 and outcome["code"] == "public_policy_service_user_invalid"
+
+
 @pytest.mark.parametrize(("guard_rc", "helper_rc"), [(0, 0), (0, 1), (1, 0)])
 def test_selected_handoff_receipts_readable_and_service_artifacts_private(env, tmp_path, guard_rc, helper_rc):
     request_id = "20261009T154718Z-selected-handoff-0000abcd"

@@ -141,6 +141,7 @@ else:
         "PYTHONDONTWRITEBYTECODE": "1",
         "DOOR_INSTALL_ROOT": str(door), "DOOR_STATE_ROOT_DIR": str(tmp_path / "state"),
         "DOOR_CONFIG_DIR": str(config), "DOOR_SYSTEMD_DIR": str(units),
+        "DOOR_PUBLIC_POLICY_STATE_ROOT": str(tmp_path / "public-policy-registrations"),
         "DOOR_CADDYFILE": str(caddy),
     }
     result = subprocess.run(["/bin/bash", str(DOOR / "install.sh"), "--upgrade"],

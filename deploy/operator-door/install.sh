@@ -32,6 +32,7 @@ repo_root="$(cd "$source_dir/../.." && pwd)"
 units_dir="$repo_root/deploy/systemd"
 install_root="${DOOR_INSTALL_ROOT:-/opt/blueprint/operator-door}"
 state_root="${DOOR_STATE_ROOT_DIR:-/var/lib/blueprint-operator-door}"
+public_policy_state_root="${DOOR_PUBLIC_POLICY_STATE_ROOT:-/var/lib/blueprint/pipeline-control-plane/public-policy-registrations}"
 config_dir="${DOOR_CONFIG_DIR:-/etc/blueprint-operator-door}"
 systemd_dir="${DOOR_SYSTEMD_DIR:-/etc/systemd/system}"
 caddyfile="${DOOR_CADDYFILE:-/etc/caddy/Caddyfile}"
@@ -95,7 +96,11 @@ if [ "$dispatcher_hold_only" -eq 1 ]; then
 fi
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
   "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-selected-handoff.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh "$source_dir"/door-repair-notifier-binding.sh \
-  "$source_dir"/door-public-embodiment-preparation.sh "$source_dir"/install.sh "$stage/"
+  "$source_dir"/door-public-embodiment-preparation.sh "$source_dir"/door-install-public-piper-policy.sh "$source_dir"/install.sh "$stage/"
+install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_registration_profile.json" \
+  "$stage/operator_door/openwam_piper_registration_profile.json"
+install -m 0644 "$repo_root/config/policy_runtimes/openwam_piper_model_card.md" \
+  "$stage/operator_door/openwam_piper_model_card.md"
 if [ "$dispatcher_hold_only" -eq 0 ]; then
   python3 -I -S "$source_dir/stage-historical-runtime.py" "$repo_root/src/blueprint_pipeline" "$stage/historical-python"
   install -m 0644 "$source_dir/historical-generation-entry.py" "$stage/historical-generation-entry.py"
@@ -169,6 +174,8 @@ for sub in processing completed results; do
 done
 install -d -o root -g root -m 0755 "$state_root/requests/holds"
 install -d -o blueprint -g blueprint -m 0750 "$state_root/audit"
+install -d -o root -g blueprint-door -m 2750 "$state_root/policy-registrations"
+install -d -o blueprint -g blueprint -m 0700 "$public_policy_state_root"
 install -d -o root -g blueprint -m 2750 "$config_dir"
 if [ "$dispatcher_hold_only" -eq 0 ]; then
 if [ ! -e "$config_dir/tokens.json" ]; then

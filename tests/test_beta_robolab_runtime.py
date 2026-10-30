@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from blueprint_pipeline import beta_robolab_runtime as runtime
+from blueprint_pipeline import beta_robolab_policy_execution as policy_execution
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.policy_episode_events import NativeStep, PolicyQuery
 from tests.test_adp009d_policy_episode import _Environment, _Policy, _run
@@ -116,14 +117,14 @@ def test_sealed_spec_cannot_change_task_or_interface():
     spec = _spec("pi05_droid")
     spec["evaluation_backend"] = "robolab.v1"
     spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
-    assert runtime.validate_robolab_policy_execution_spec(spec)["candidate_id"] == "pi05_droid"
+    assert policy_execution.validate_robolab_policy_execution_spec(spec)["candidate_id"] == "pi05_droid"
     for changed in ({**spec, "candidate_id": "other"}, {**spec, "evaluation_backend": "custom"}):
         with pytest.raises(ValueError):
-            runtime.validate_robolab_policy_execution_spec(changed)
+            policy_execution.validate_robolab_policy_execution_spec(changed)
     spec["task_success_contract"]["criteria"]["untrusted_success"] = True
     spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
     with pytest.raises(ValueError):
-        runtime.validate_robolab_policy_execution_spec(spec)
+        policy_execution.validate_robolab_policy_execution_spec(spec)
 
 
 def test_source_archive_contains_unmodified_entrypoints_and_license(tmp_path):
@@ -177,13 +178,13 @@ def test_remote_configuration_uses_explicit_supported_interface_and_private_file
     spec.update(evaluation_backend="robolab.v1", policy_interface_id="openpi_droid_https.v1",
                 policy_endpoint={"credential_env": "BLUEPRINT_POLICY_TOKEN_FILE"})
     spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
-    assert runtime.validate_robolab_policy_execution_spec(spec)["candidate_id"] == "customer_policy_v7"
+    assert policy_execution.validate_robolab_policy_execution_spec(spec)["candidate_id"] == "customer_policy_v7"
     for endpoint in ({"credential_env": "invalid;command_FILE"},
                      {"credential_env": "BLUEPRINT_POLICY_TOKEN_FILE", "token": "forbidden-in-bundle"}):
         refused = {**spec, "policy_endpoint": endpoint}
         refused["execution_spec_digest"] = canonical_digest(refused, digest_field="execution_spec_digest")
         with pytest.raises(ValueError, match="credential_binding"):
-            runtime.validate_robolab_policy_execution_spec(refused)
+            policy_execution.validate_robolab_policy_execution_spec(refused)
 
 
 def test_remote_entrypoint_requires_private_regular_file_without_reading_secret(tmp_path):

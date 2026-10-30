@@ -77,7 +77,9 @@ def test_the_shipped_package_is_exactly_the_workers_static_import_closure() -> N
     assert contract.policy_candidate_required is False
     # No policy server, client or checkpoint machinery is reachable from the probe.
     assert not {"native_task_arena_policy_canary_worker.py", "team_candidate_policy_client.py",
-                "adp009d_policy_server_worker.py", "droid_https_policy_client.py"} & set(
+                "adp009d_policy_server_worker.py", "droid_https_policy_client.py",
+                "beta_robolab_policy_execution.py", "openwam_piper_runtime.py",
+                "openwam_piper_policy.py", "openwam_piper_assets.py"} & set(
         RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES)
 
 

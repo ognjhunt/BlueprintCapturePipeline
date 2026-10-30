@@ -842,14 +842,28 @@ def _completed_legacy_scene_review(output_root: Path, binding: dict, schema):
 
 
 def _review_attempt(*, configuration, **attempt):
-    """Price under each earlier cap the job ran under, lowest first, then the current one.
+    """Reuse a receipt under any prior cap before pricing a new review, lowest first.
 
     Each receipt binds the cap it was priced under, so a review bought before a raise is
-    found again rather than bought twice. Pricing refuses before any spend is reserved.
+    found again rather than bought twice. New input fitting can make a previously refused
+    lower cap affordable; that must not hide a review already bought under a later cap.
+    Pricing refuses before any spend is reserved.
     """
     from .website_atlas_pipeline import REVIEW_CAPS
     cap = configuration["policy"]["maximum_review_cost_usd"]
-    for earlier in (value for value in configuration.get(REVIEW_CAPS, ()) if value < cap):
+    earlier_caps = [value for value in configuration.get(REVIEW_CAPS, ()) if value < cap]
+    if earlier_caps:
+        for previous in [*earlier_caps, cap]:
+            try:
+                receipt = _bound_review_attempt(configuration={**configuration, "policy": {
+                    **configuration["policy"], "maximum_review_cost_usd": previous}}, receipt_only=True, **attempt)
+            except ValueError as error:
+                if str(error) != "atlas_scene_planner_token_budget_exceeded":
+                    raise
+                continue
+            if receipt is not None:
+                return receipt
+    for earlier in earlier_caps:
         try:
             return _bound_review_attempt(configuration={**configuration, "policy": {
                 **configuration["policy"], "maximum_review_cost_usd": earlier}}, **attempt)
@@ -862,7 +876,7 @@ def _review_attempt(*, configuration, **attempt):
 def _bound_review_attempt(*, survey_path: Path, task_context, configuration, output_root: Path, invoker,
                           release_blockers, feedback, completion, scaling, recovery, truncation_retry,
                           validation_repair=None, failed_output_recovery=None, source_review_recovery=None,
-                          carried_reserved_usd=0.0):
+                          carried_reserved_usd=0.0, receipt_only=False):
     """One bound request; ``truncation_retry`` comes only from a retained cut-off receipt."""
     from .website_task_context import reserve_website_preparation_spend, preparation_webapp_request
     from .atlas_preparation_runtime import preparation_source_checkpoint
@@ -1064,8 +1078,10 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
         adopted = _completed_legacy_scene_review(output_root, legacy_binding, legacy_schema)
         if adopted is not None:
             binding, digest = adopted, canonical_digest(adopted)
-    output_root.mkdir(parents=True, exist_ok=True)
     path = output_root / (digest[7:] + ".json")
+    if receipt_only and not path.exists():
+        return None
+    output_root.mkdir(parents=True, exist_ok=True)
     with path.with_suffix(".lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if path.exists():
@@ -1090,6 +1106,8 @@ def _bound_review_attempt(*, survey_path: Path, task_context, configuration, out
                     and receipt.get("proposal_digest") != canonical_digest(receipt["proposal"])):
                 raise ValueError("atlas_scene_planner_receipt_changed")
         else:
+            if receipt_only:
+                return None
             if input_value is None:
                 input_value = _input(survey, task_context, extra, preview_size=preview_size)
             if release_blockers is None:

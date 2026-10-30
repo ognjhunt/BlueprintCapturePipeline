@@ -488,7 +488,7 @@ def preflight_policy_canary_static_inputs(
                     from blueprint_pipeline.task_family_policy_execution import validate_task_family_policy_execution_spec
                     validate_task_family_policy_execution_spec(spec, candidate_id=candidate, scene_plan=base_scene_plan)
                 else:
-                    from blueprint_pipeline.beta_robolab_runtime import validate_robolab_policy_execution_spec
+                    from blueprint_pipeline.beta_robolab_policy_execution import validate_robolab_policy_execution_spec
                     validate_robolab_policy_execution_spec(spec, candidate_id=candidate)
         check(f"execution_spec.{candidate}", validate_spec)
     cells: list[dict[str, Any]] = []

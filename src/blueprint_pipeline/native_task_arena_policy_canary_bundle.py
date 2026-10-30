@@ -45,6 +45,7 @@ from .native_task_arena_policy_canary_session import (
     validate_session_authority,
 )
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_IMAGE
+from .openwam_piper_bundle import RUNTIME_MODULES as OPENWAM_RUNTIME_MODULES
 from .task_evaluation_canary_hotfix_overlay import (
     apply_canary_hotfix_overlay,
     canary_hotfix_execution_release,
@@ -65,6 +66,7 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "rigid_robot_free_probe_recorder.py", "rigid_robot_free_probe_plan.py",
     "rigid_robot_free_readiness_score.py",
 )
+TEAM_RUNTIME_MODULE_NAMES += OPENWAM_RUNTIME_MODULES
 
 
 EXECUTION_AUTHORITY = "internal_policy_canary_unqualified"
@@ -236,7 +238,7 @@ def _family_operator_inputs(
 
 def _entrypoint(*, local_candidates: tuple[str, ...] = ("pi05_droid", "groot_n17_droid"),
                 run_kind: str = RUN_KIND, credential_env: str | None = None,
-                family_runtime_catalog_staged: bool = False) -> str:
+                family_runtime_catalog_staged: bool = False, openwam_local: bool = False) -> str:
     if credential_env is not None and re.fullmatch(r"[A-Z][A-Z0-9_]{2,58}_FILE", credential_env) is None:
         raise ValueError("beta_robolab_https_credential_binding_invalid")
     credential_check = "" if credential_env is None else f'''/isaac-sim/python.sh - {shlex.quote(credential_env)} <<'PYCREDENTIAL'
@@ -269,6 +271,8 @@ fi
     )
     catalog_config = ('export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"'
                       if family_runtime_catalog_staged else "")
+    local_client_config = ('export PYTHONDONTWRITEBYTECODE=1\nexport PYTHONPATH="$RUNTIME_DIR/openwam_client:$RUNTIME_DIR${PYTHONPATH:+:$PYTHONPATH}"'
+                           if openwam_local else "")
     return f'''#!/usr/bin/env bash
 set +e
 RUNTIME_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -365,6 +369,7 @@ elif [ "$strict_controls" != legacy ]; then
 fi
 
 {provisioning}
+{local_client_config}
 
 /isaac-sim/python.sh "$RUNTIME_DIR/adp_arena_provider_runner.py"
 runner_rc=$?
@@ -437,7 +442,8 @@ def build_policy_canary_session_bundle(
     if construction_result_path is None and not family_pending:
         raise ValueError("policy_canary_construction_result_record_invalid")
     from .policy_interface_binding import TEAM_HTTPS_INTERFACES, resolve_policy_interface
-    from .beta_robolab_runtime import stage_robolab_source, validate_robolab_policy_execution_spec
+    from .beta_robolab_runtime import stage_robolab_source
+    from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .task_family_policy_execution import FAMILY_BACKEND, validate_task_family_policy_execution_spec
 
     spec_paths = dict(execution_spec_paths or {})
@@ -468,7 +474,12 @@ def build_policy_canary_session_bundle(
     for candidate, spec in specs.items():
         interface = resolve_policy_interface(spec)
         if interface not in TEAM_HTTPS_INTERFACES:
-            if candidate not in ("pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"):
+            if interface == "openwam_piper_eef20.v1":
+                from .openwam_piper_runtime import validate_execution_spec as validate_openwam_spec
+                validate_openwam_spec(spec)
+                if inputs.get("run_kind") != "blueprint_beta_screening":
+                    raise ValueError("openwam_native_execution_requires_beta_run")
+            elif candidate not in ("pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"):
                 raise ValueError("policy_canary_local_provisioning_identity_not_admitted")
             if candidate == "cosmos3_edge_policy_droid":
                 from .cosmos_edge_beta_runtime import validate_execution_spec as validate_cosmos_spec
@@ -602,9 +613,14 @@ def build_policy_canary_session_bundle(
         contract_dependency = stage_policy_contract_dependencies(runtime)
         robolab_dependency = (stage_robolab_source(runtime)
                               if any(spec.get("evaluation_backend") == "robolab.v1" for spec in specs.values()) else None)
+        openwam_contract = None
         for candidate in local_candidates:
             script = runtime / f"adp009d_policy_provisioning.{candidate}.sh"
-            if candidate == "cosmos3_edge_policy_droid":
+            if specs[candidate].get("policy_interface_id") == "openwam_piper_eef20.v1":
+                from .openwam_piper_bundle import stage_runtime, provisioning_script as openwam_script
+                openwam_contract = stage_runtime(runtime)
+                provisioning_script = openwam_script()
+            elif candidate == "cosmos3_edge_policy_droid":
                 from .cosmos_edge_beta_provisioning import build_provisioning_script as build_cosmos_provisioning
                 from .cosmos_edge_beta_runtime import (
                     SNAPSHOT_STAGED_NAME, snapshot_manifest_path, verified_snapshot_manifest,
@@ -632,7 +648,8 @@ def build_policy_canary_session_bundle(
         entrypoint = runtime / "run_adp_arena_provider_runtime.sh"
         entrypoint.write_text(_entrypoint(local_candidates=tuple(local_candidates), run_kind=inputs["run_kind"],
                                          credential_env=credential_env,
-                                         family_runtime_catalog_staged=operator_inputs is not None), encoding="utf-8")
+                                         family_runtime_catalog_staged=operator_inputs is not None,
+                                         openwam_local=openwam_contract is not None), encoding="utf-8")
         entrypoint.chmod(entrypoint.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP)
         manifest_path = runtime / "adp_arena_provider_manifest.json"
         manifest = _read(manifest_path)
@@ -640,6 +657,11 @@ def build_policy_canary_session_bundle(
             if type(minimum_gpu_memory_gb) not in (int, float) or not 0 < minimum_gpu_memory_gb <= 1024:
                 raise ValueError("beta_screening_gpu_memory_bound_invalid")
             manifest["minimum_gpu_memory_gb"] = minimum_gpu_memory_gb
+        if openwam_contract is not None:
+            from .openwam_piper_runtime import MINIMUM_GPU_MEMORY_GB
+            manifest["minimum_gpu_memory_gb"] = max(MINIMUM_GPU_MEMORY_GB, manifest.get("minimum_gpu_memory_gb", 0))
+            manifest.update(openwam_runtime=openwam_contract, team_policy_interface_id="openwam_piper_eef20.v1",
+                            secret_material_bundled=False)
         manifest.update(
             {
                 "schema_version": PROVIDER_BUNDLE_SCHEMA_VERSION,
