@@ -122,3 +122,33 @@ def test_fixed_runtime_contract_counts_required_files_and_refuses_changed_allowa
     value["checkpoint_download_bytes"] -= 1
     with pytest.raises(ValueError, match="sealed_runtime_identity_invalid"):
         validate_runtime_contract(value)
+
+
+def test_standalone_bootstrap_does_not_inherit_isaac_python_paths(tmp_path, monkeypatch):
+    import sys
+    from blueprint_pipeline.local_policy_provisioning import _command
+    shadow = tmp_path / "isaac-python"
+    shadow.mkdir()
+    (shadow / "pip.py").write_text("raise RuntimeError('Isaac shadow must not load')")
+    monkeypatch.setenv("PYTHONHOME", str(tmp_path / "nonexistent-isaac-home"))
+    monkeypatch.setenv("PYTHONPATH", str(shadow))
+    monkeypatch.setenv("VIRTUAL_ENV", "/isaac-sim/python")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/isaac-sim/lib:/usr/lib")
+    code = ("import os,sys; assert 'PYTHONHOME' not in os.environ; assert 'VIRTUAL_ENV' not in os.environ; "
+            "assert 'PYTHONPATH' not in os.environ; assert os.environ['LD_LIBRARY_PATH']=='/usr/lib'; "
+            "assert os.environ['PYTHONNOUSERSITE']=='1'; assert " + repr(str(shadow)) + " not in sys.path")
+    _command([sys.executable, "-c", code], deadline=time.time() + 30)
+
+
+def test_thin_client_install_preserves_isaac_launcher_environment(tmp_path, monkeypatch):
+    from blueprint_pipeline import local_policy_provisioning as shared
+    calls = []
+    monkeypatch.setenv("PYTHONHOME", "/isaac-sim/python")
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/isaac-sim/lib:/usr/lib")
+    monkeypatch.setattr(shared, "_command", lambda argv, **kwargs: calls.append((argv, kwargs)))
+    shared._install_wheels(Path("/isaac-sim/python/bin/python3.11"), [], tmp_path,
+                            deadline=time.time() + 30, target=tmp_path / "client")
+    assert calls[0][1]["env"]["PYTHONHOME"] == "/isaac-sim/python"
+    assert calls[0][1]["env"]["LD_LIBRARY_PATH"] == "/isaac-sim/lib:/usr/lib"
+    shared._install_wheels(Path("/separate/python3.12"), [], tmp_path, deadline=time.time() + 30)
+    assert calls[1][1]["env"] is None

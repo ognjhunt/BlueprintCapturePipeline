@@ -85,6 +85,15 @@ def fetch_exact(row: dict, destination: Path, *, deadline: float, fetch=None,
 
 
 def _command(argv: list[str], *, deadline: float, env: dict | None = None) -> None:
+    if env is None:
+        # Isaac's launcher exports its own import and shared-library paths.
+        # A separate interpreter must not inherit that framework during even
+        # its version check or offline pip installation.
+        env = {key: value for key, value in os.environ.items()
+               if key not in {"PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"}}
+        if "LD_LIBRARY_PATH" in env:
+            env["LD_LIBRARY_PATH"] = ":".join(part for part in env["LD_LIBRARY_PATH"].split(":") if "/isaac-sim" not in part)
+        env["PYTHONNOUSERSITE"] = "1"
     subprocess.run(argv, check=True, timeout=remaining_seconds(deadline), env=env)
 
 
@@ -107,4 +116,8 @@ def _install_wheels(python: Path, rows: list[dict], wheels: Path, *, deadline: f
             "--require-hashes", "--no-compile", "-r", str(requirements)]
     if target is not None:
         argv += ["--target", str(target)]
-    _command(argv, deadline=deadline)
+    # The thin client is intentionally installed with Isaac's own interpreter,
+    # whose launcher paths must remain intact. Only the standalone server
+    # interpreter uses the default isolated bootstrap environment.
+    env = {**os.environ, "PYTHONNOUSERSITE": "1"} if target is not None else None
+    _command(argv, deadline=deadline, env=env)
