@@ -204,6 +204,8 @@ def test_quick10_runs_ten_simulator_scored_episodes_of_one_team_candidate(tmp_pa
     assert result["paired_diagnostic_summary"] is None
     assert result["isolated_simulation_process_count"] == 10
     assert len(result["episodes"]) == 10 and len(isaacs) == 10
+    # This retained DROID fixture uses the native Franka servo, not a generic team body.
+    assert all(isaac.controller_backends == ["pink_franka"] for isaac in isaacs)
     assert {(row["cell_id"], row["seed"]) for row in result["episodes"]} == {
         (f"cell-{index}", 3100 + index) for index in range(10)}
     for row in result["episodes"]:

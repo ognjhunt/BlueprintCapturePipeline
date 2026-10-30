@@ -77,9 +77,7 @@ NATIVE_TASK_ARENA_GAUSSIAN_SKIP_TONEMAPPING_SETTING = (
     "/rtx/rtpt/gaussian/skipTonemapping/enabled"
 )
 NATIVE_TASK_ARENA_KIT_ARGS = (
-    "--enable isaacsim.replicator.nurec_utils "
     "--enable omni.rtx.spg "
-    "--enable isaacsim.robot_motion.pink "
     "--/UJITSO/geometry=true "
     "--/renderer/multiGpu/enabled=false"
 )
@@ -307,6 +305,8 @@ def launch_native_task_isaaclab(
     device: str,
     appearance_render_path: str,
     enable_cameras: bool = True,
+    controller_backend: str = "joint",
+    runtime_probe_factory: Callable[..., Mapping[str, Any]] | None = None,
     app_launcher_factory: Callable[..., Any] | None = None,
     nurec_renderer_probe_factory: Callable[[], Mapping[str, Any]] | None = None,
 ) -> tuple[Any, dict[str, Any]]:
@@ -346,6 +346,30 @@ def launch_native_task_isaaclab(
     receipt = verify_native_task_isaaclab_launch_contract(
         provisioning_receipt_path
     )
+    from .native_task_runtime_capabilities import (
+        post_start_identity, require_controller, validate_post_start_identity,
+    )
+    require_controller(controller_backend)
+    render_required = appearance_render_path in {
+        NATIVE_TASK_ARENA_NUREC_RENDER_PATH, NATIVE_TASK_ARENA_PARTICLEFIELD_RENDER_PATH,
+    }
+    kit_args = NATIVE_TASK_ARENA_KIT_ARGS if render_required else "--/renderer/multiGpu/enabled=false"
+    experience_path = receipt["experience"]["path"]
+    if not enable_cameras:
+        experience_path = str(Path(experience_path).with_name("isaaclab.python.headless.kit"))
+    pink_profile = None
+    if controller_backend == "g1_joint":
+        from .native_task_runtime_capabilities import prepare_g1_python_dependencies
+        prepare_g1_python_dependencies()
+    if controller_backend == "pink_franka":
+        from .native_task_pink_compatibility import prepare_pink_runtime
+        pink_profile = prepare_pink_runtime(Path(provisioning_receipt_path), enable_cameras=enable_cameras)
+        experience_path = pink_profile["experience_path"]
+        kit_args += " " + pink_profile["kit_args"]
+    helper_provenance = None
+    if render_required:
+        from .native_task_official_nurec import verified_helper
+        _helper, helper_provenance = verified_helper()
     requested_device = str(device).strip()
     if not requested_device:
         raise NativeTaskIsaacLabLaunchError(["native_task_isaaclab_device_missing"])
@@ -357,10 +381,20 @@ def launch_native_task_isaaclab(
         headless=True,
         device=requested_device,
         enable_cameras=enable_cameras,
-        experience=receipt["experience"]["path"],
-        kit_args=NATIVE_TASK_ARENA_KIT_ARGS,
+        experience=experience_path,
+        kit_args=kit_args,
     )
     app = getattr(launcher, "app", launcher)
+    identity = None
+    try:
+        identity = dict((runtime_probe_factory or post_start_identity)(
+            Path(provisioning_receipt_path), controller_backend=controller_backend))
+        validate_post_start_identity(identity, controller_backend=controller_backend)
+    except Exception as exc:
+        raise NativeTaskIsaacLabLaunchError(
+            ["native_task_isaaclab_post_start_identity_failed"],
+            diagnostics={"reason": str(exc), "error_type": type(exc).__name__, "runtime_readback": identity},
+        ) from exc
     if nurec_renderer_probe_factory is None:
 
         def nurec_renderer_probe_factory() -> Mapping[str, Any]:
@@ -376,11 +410,9 @@ def launch_native_task_isaaclab(
             return {
                 "render_path": appearance_render_path,
                 "activation_method": "kit_prelaunch_extensions_no_dynamic_enable",
-                # NVIDIA launches the SPG extension globally even when stage
-                # classification later selects the plain ParticleField render
-                # product. Loading the extension and using the SPG graph are
-                # distinct claims.
-                "extension_required": True,
+                # Request SPG only for NuRec/splat appearance. Loading that
+                # extension and exercising a particular stage remain distinct.
+                "extension_required": render_required,
                 "extension_was_enabled_before_probe": extension_enabled,
                 "extension_enabled": extension_enabled,
                 "spg_dynamic_enable_attempted": False,
@@ -421,7 +453,7 @@ def launch_native_task_isaaclab(
         "render_path": raw_nurec.get("render_path")
         or appearance_render_path,
         "activation_method": raw_nurec.get("activation_method"),
-        "extension_required": raw_nurec.get("extension_required") is True,
+        "extension_required": render_required,
         "extension_was_enabled_before_probe": raw_nurec.get(
             "extension_was_enabled_before_probe"
         ),
@@ -437,7 +469,7 @@ def launch_native_task_isaaclab(
         is True,
         "renderer_hints": raw_nurec.get("renderer_hints"),
         "renderer_hints_expected": 3,
-        "ujitso_geometry_required": True,
+        "ujitso_geometry_required": render_required,
         "ujitso_geometry_enabled": raw_nurec.get("ujitso_geometry_enabled")
         is True,
         "multi_gpu_enabled": raw_nurec.get("multi_gpu_enabled"),
@@ -458,17 +490,13 @@ def launch_native_task_isaaclab(
     nurec_errors = []
     if nurec["extension_required"] and not nurec["extension_enabled"]:
         nurec_errors.append("native_task_isaaclab_nurec_extension_not_enabled")
-    if not nurec["nurec_utils_extension_enabled"]:
-        nurec_errors.append(
-            "native_task_isaaclab_nurec_utils_extension_not_enabled"
-        )
-    if nurec["renderer_hints"] != 3:
+    if render_required and nurec["renderer_hints"] != 3:
         nurec_errors.append("native_task_isaaclab_nurec_renderer_hints_invalid")
-    if not nurec["ujitso_geometry_enabled"]:
+    if render_required and not nurec["ujitso_geometry_enabled"]:
         nurec_errors.append("native_task_isaaclab_ujitso_geometry_not_enabled")
     if nurec["multi_gpu_enabled"] is not False:
         nurec_errors.append("native_task_isaaclab_nurec_multi_gpu_not_disabled")
-    if nurec["gaussian_skip_tonemapping_enabled"] is False:
+    if render_required and nurec["gaussian_skip_tonemapping_enabled"] is False:
         nurec_errors.append(
             "native_task_isaaclab_gaussian_tonemapping_forced_off"
         )
@@ -480,15 +508,21 @@ def launch_native_task_isaaclab(
         # the worker's sealed failure receipt. The worker records these raw
         # diagnostics and process exit/atexit owns resource closure.
         raise NativeTaskIsaacLabLaunchError(nurec_errors, diagnostics=nurec)
-    nurec["status"] = "qualified"
+    nurec["status"] = "qualified" if render_required else "not_required"
+    nurec["official_helper"] = helper_provenance
+    nurec["nurec_utils_extension_required"] = False
     receipt["launch"] = {
         "launcher": "isaaclab.app.AppLauncher",
         "requested_device": requested_device,
         "enable_cameras": bool(enable_cameras),
         "device_configured_by_launcher": True,
-        "kit_args": NATIVE_TASK_ARENA_KIT_ARGS.split(),
+        "kit_args": kit_args.split(),
+        "experience_path": experience_path,
+        "controller_backend": controller_backend,
     }
     receipt["nurec_renderer"] = nurec
+    receipt["post_start_identity"] = identity
+    receipt["pink_compatibility"] = pink_profile
     return app, receipt
 
 

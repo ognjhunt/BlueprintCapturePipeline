@@ -374,6 +374,7 @@ def load_verified_native_task_arena_policy_diagnostic_bundle(
         for row in receipt.get("bound_runtime_inputs") or []
         if isinstance(row, Mapping)
     }
+    from .native_task_official_nurec import runtime_data_files
     runtime_root_names = {
         str(row.get("relative_path") or "")
         for row in receipt.get("runtime_root_modules") or []
@@ -390,7 +391,7 @@ def load_verified_native_task_arena_policy_diagnostic_bundle(
         or receipt.get("container_image") != NATIVE_TASK_ARENA_IMAGE
         or input_names != expected_inputs
         or runtime_root_names != set(POLICY_RUNTIME_ROOT_MODULE_NAMES) | {
-            "blueprint_pipeline/" + name for name in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES}
+            "blueprint_pipeline/" + name for name in POLICY_RUNTIME_PACKAGE_EXTRA_FILE_NAMES} | set(runtime_data_files())
         or receipt.get("policy_provisioning_script")
         != f"adp009d_policy_provisioning.{candidate_id}.sh"
         or (receipt.get("policy_provisioning") or {}).get("relative_path")

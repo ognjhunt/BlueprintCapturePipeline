@@ -793,7 +793,7 @@ def main() -> int:
 
         simulation_app, launch = launch_native_task_isaaclab(
             output_root / "native_task_runtime_source_provisioning.v1.json",
-            device=NATIVE_TASK_ARENA_DEVICE,
+            device=NATIVE_TASK_ARENA_DEVICE, controller_backend="pink_franka",
             appearance_render_path=result["appearance_render_path"]["render_path"],
         )
         result["isaaclab_launch"] = launch
@@ -802,7 +802,7 @@ def main() -> int:
 
         _announce("dependency_matrix")
         dependencies = preflight_native_dependency_matrix(
-            robot_id=str(plan["robot"]["robot_id"])
+            robot_id=str(plan["robot"]["robot_id"]), controller_backend="pink_franka"
         )
         result["dependency_matrix"] = dependencies
         if not dependencies["all_required_available"]:

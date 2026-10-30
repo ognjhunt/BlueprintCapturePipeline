@@ -765,6 +765,7 @@ class FakeIsaac:
         self.result_path = result_path
         self.launches = 0
         self.appearance_render_paths: list[str] = []
+        self.controller_backends: list[str] = []
         self.builds = 0
         self.environment_closes = 0
         self.closed = False
@@ -775,12 +776,15 @@ class FakeIsaac:
         self.built_object_roles: list[tuple[str, ...]] = []
 
     def launch(
-        self, receipt_path: Path, *, device: str, appearance_render_path: str
+        self, receipt_path: Path, *, device: str, appearance_render_path: str, controller_backend: str
     ) -> tuple[Any, dict[str, Any]]:
         self.launches += 1
         self.appearance_render_paths.append(appearance_render_path)
+        assert controller_backend in {"joint", "g1_joint", "pink_franka"}
+        self.controller_backends.append(controller_backend)
         return _FakeSimulationApp(self), {
             "device": device,
+            "controller_backend": controller_backend,
             "receipt": receipt_path.name,
             "nurec_renderer": {"render_path": appearance_render_path},
         }
@@ -963,7 +967,8 @@ def _rehearsal_runtime(isaac: FakeIsaac) -> worker.CellRuntime:
     return worker.CellRuntime(
         device="cuda:0",
         launch_isaac=isaac.launch,
-        preflight_dependency_matrix=lambda *, robot_id: {
+        preflight_dependency_matrix=lambda *, robot_id, controller_backend: {
+            "controller_backend": controller_backend,
             "all_required_available": True,
             "robot_id": robot_id,
         },
@@ -1123,6 +1128,7 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
     assert isaac.launches == 1
     # The launcher was told which backend the plan composes; nothing defaulted.
     assert isaac.appearance_render_paths == ["particlefield_3d_gaussian_splat"]
+    assert isaac.controller_backends == ["pink_franka"]
     assert result["appearance_render_backend"]["kind"] == (
         "particlefield_blueprint_private_tensor_conversion"
     )
@@ -1133,6 +1139,7 @@ def test_selected_cell_queries_both_real_clients_and_seals_before_isaac_close(
         (child_root / "prepolicy_dependency_matrix.v1.json").read_text()
     )
     assert dependency_receipt["all_required_available"] is True
+    assert dependency_receipt["controller_backend"] == "pink_franka"
     assert isaac.builds == 1
     assert isaac.built_cell_ids == ["cell-3"]
     assert isaac.environment_closes == 1

@@ -104,7 +104,7 @@
     },
     {
       "path": "src/blueprint_pipeline/native_g1_development_worker.py",
-      "sha256": "8e0f4f7d6c141779d98ea49b928de6a7edcc2e0f82ca792ad8248cea9a8f7d94",
+      "sha256": "d3af2e10d319d24c8afae496875ae7f3a170baf2b987d2e7cb35ca49199c0cfa",
       "responsibility": "payload_consumer",
       "output_class": "lane_scratch",
       "admission_method": "enrolled target guard before first mkdir through teardown and terminal receipt; controlled inherited handshake",
@@ -114,7 +114,7 @@
         "tests/test_beta_policy_screening_g1.py",
         "tests/test_native_g1_beta_runtime.py"
       ],
-      "review_reference": "2026-09-29: independent merged-source SPEC and separate QUALITY at dde688e800cff7bfc5466a41b0aa339ccdc88adc; exact current bytes and responsibilities in handoff evidence 12-whole-feature-independent-merged-SPEC-GO-dde688e80-20260929.md, 12-two-unregistered-writers-independent-SPEC-GO-dde688e80-20260929.md, and 12-eight-writer-independent-QUALITY-GO-dde688e80-20260929.md; hosted CI and native Linux are separate gates; 2026-10-30 PR3089: root and agent_offerings independently reviewed the beta task/cell authority and full-checkpoint-load checks introduced by 9ce13713d and composed at e7d3c93a6. Existing scratch enrollment, inherited handshake and teardown lifetime remain unchanged. Source SHA256 8e0f4f7d6c141779d98ea49b928de6a7edcc2e0f82ca792ad8248cea9a8f7d94; CPU/regression validation is not native execution evidence.",
+      "review_reference": "2026-09-29: independent merged-source SPEC and separate QUALITY at dde688e800cff7bfc5466a41b0aa339ccdc88adc; exact current bytes and responsibilities in handoff evidence 12-whole-feature-independent-merged-SPEC-GO-dde688e80-20260929.md, 12-two-unregistered-writers-independent-SPEC-GO-dde688e80-20260929.md, and 12-eight-writer-independent-QUALITY-GO-dde688e80-20260929.md; hosted CI and native Linux are separate gates; 2026-10-30 PR3089: root and agent_offerings independently reviewed the beta task/cell authority and full-checkpoint-load checks introduced by 9ce13713d and composed at e7d3c93a6. Existing scratch enrollment, inherited handshake and teardown lifetime remain unchanged. Source SHA256 8e0f4f7d6c141779d98ea49b928de6a7edcc2e0f82ca792ad8248cea9a8f7d94; CPU/regression validation is not native execution evidence. 2026-10-30: agent_offerings independently reviewed the exact capability-specific launch and dependency-matrix selection in f5d1faea80512cb900bf5450705bbd0b721d57e5; source SHA256 d3af2e10d319d24c8afae496875ae7f3a170baf2b987d2e7cb35ca49199c0cfa. Existing lane-scratch admission, handshake, paths and teardown lifetime are unchanged. Independent focused CPU checks and both bounded historical staging paths passed; actual native Kit/GPU execution remains unproven.",
       "historical_exceptions": [
         "Legacy/non-lane output compatibility is unchanged; external policy-server and unknown grandchildren remain unproved."
       ]

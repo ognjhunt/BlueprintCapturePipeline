@@ -15,8 +15,14 @@ def _write(path: Path, value: str = "") -> None:
     path.write_text(value, encoding="utf-8")
 
 
+@pytest.mark.parametrize("robot_id,selected_module", [
+    ("franka_panda", "isaaclab_arena.embodiments.droid.droid"),
+    # Public PiPER/YAM/TRLC and scripted named-arm bindings use this same
+    # generic Arena base, without importing G1's unrelated Pink dependency.
+    ("team_embodiment", "isaaclab_arena.embodiments.embodiment_base"),
+])
 def test_scoped_arena_import_loads_selected_robot_without_unrelated_packages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, robot_id: str, selected_module: str
 ) -> None:
     package = tmp_path / "isaaclab_arena"
     _write(package / "__init__.py")
@@ -26,6 +32,7 @@ def test_scoped_arena_import_loads_selected_robot_without_unrelated_packages(
     )
     _write(package / "embodiments/droid/__init__.py")
     _write(package / "embodiments/droid/droid.py", "SELECTED = True\n")
+    _write(package / "embodiments/embodiment_base.py", "SELECTED = True\n")
     _write(
         package / "embodiments/g1/__init__.py",
         "raise AssertionError('unrelated G1 imported')\n",
@@ -35,9 +42,9 @@ def test_scoped_arena_import_loads_selected_robot_without_unrelated_packages(
         if name == "isaaclab_arena" or name.startswith("isaaclab_arena."):
             monkeypatch.delitem(sys.modules, name, raising=False)
 
-    receipt = install_scoped_arena_embodiment("franka_panda")
+    receipt = install_scoped_arena_embodiment(robot_id)
 
-    assert receipt["selected_module"] == "isaaclab_arena.embodiments.droid.droid"
+    assert receipt["selected_module"] == selected_module
     assert receipt["eager_all_embodiments_imported"] is False
     assert "isaaclab_arena.embodiments.g1" not in sys.modules
 

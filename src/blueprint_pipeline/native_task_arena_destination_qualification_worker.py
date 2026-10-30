@@ -301,7 +301,7 @@ def main() -> int:
         _announce("simulation_app")
         simulation_app, launch = launch_native_task_isaaclab(
             output_root / "native_task_runtime_source_provisioning.v1.json",
-            device=NATIVE_TASK_ARENA_DEVICE,
+            device=NATIVE_TASK_ARENA_DEVICE, controller_backend=("g1_joint" if plan["robot"]["robot_id"] == "unitree_g1" else "joint"),
             appearance_render_path="particlefield_3d_gaussian_splat",
         )
         failure["native_isaac_executed"] = True

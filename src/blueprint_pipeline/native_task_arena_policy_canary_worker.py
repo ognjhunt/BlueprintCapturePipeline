@@ -1536,6 +1536,10 @@ def _run_selected_cell(
     current_env: dict[str, Any] = {}
     current_session: dict[str, Any] = {}
     team_binding = _team_embodiment_binding(specs)
+    from blueprint_pipeline.native_task_runtime_capabilities import policy_controller
+    # Task-family execution bypasses this Isaac arm/controller path entirely.
+    controller_backend = None if family_scene else policy_controller(
+        team_binding=team_binding, robot_id=str(base_scene_plan["robot"]["robot_id"]))
     probe_request = next((spec["robot_free_probe"] for spec in specs.values()
                           if spec.get("robot_free_probe") is not None), None)
 
@@ -1572,7 +1576,7 @@ def _run_selected_cell(
         report_progress("isaac_launch_started")
         simulation_app, launch = bound_runtime.launch_isaac(
             provider_output_root / "native_task_runtime_source_provisioning.v1.json",
-            device=bound_runtime.device,
+            device=bound_runtime.device, controller_backend=controller_backend,
             appearance_render_path=appearance_render_backend["launch_render_path"],
         )
         report_progress("isaac_launch_completed")
@@ -1638,7 +1642,7 @@ def _run_selected_cell(
                 site_qualification=current_session["native_family_gate"]["site_qualification"],
             )
         dependencies = bound_runtime.preflight_dependency_matrix(
-            robot_id=str(scene_plan["robot"]["robot_id"])
+            robot_id=str(scene_plan["robot"]["robot_id"]), controller_backend=controller_backend
         )
         if not dependencies["all_required_available"]:
             raise RuntimeError("policy_canary_dependency_preflight_failed")
@@ -2095,7 +2099,7 @@ def _run_selected_cell(
             if bound_runtime.prepolicy_camera_gate is None:
                 raise RuntimeError("policy_canary_runtime_camera_gate_unavailable")
             dependencies = bound_runtime.preflight_dependency_matrix(
-                robot_id=str(scene_plan["robot"]["robot_id"])
+                robot_id=str(scene_plan["robot"]["robot_id"]), controller_backend=controller_backend
             )
             (output_root / "prepolicy_dependency_matrix.v1.json").write_text(
                 json.dumps(dependencies, indent=2, sort_keys=True) + "\n", encoding="utf-8"

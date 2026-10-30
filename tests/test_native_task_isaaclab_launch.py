@@ -26,6 +26,21 @@ from blueprint_pipeline.native_task_runtime_source_packet import (
 )
 
 
+
+def development_runtime_identity():
+    return {"modules": {name: {"version": version, "origin_matches": True, "sha256": "sha256:" + "0" * 64}
+                        for name, version in (("torch", "2.10.0+cu128"), ("warp", "1.13.0"))},
+            "excluded_extensions": {name: False for name in ("omni.isaac.ml_archive", "isaacsim.pip.newton", "omni.warp.core")},
+            "gpu_interop": {"torch_device": "cuda:0", "warp_device": "cuda:0", "cuda_version": "12.8",
+                            "shared_pointer": True, "sum": 6.}}
+
+
+@pytest.fixture(autouse=True)
+def injected_sdk_runtime_identity(monkeypatch):
+    from blueprint_pipeline import native_task_runtime_capabilities as capabilities
+    monkeypatch.setattr(capabilities, "post_start_identity", lambda *_a, **_kw: development_runtime_identity())
+
+
 def _sha256(path: Path) -> str:
     import hashlib
 
@@ -144,7 +159,7 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
             "extension_required": True,
             "extension_was_enabled_before_probe": True,
             "extension_enabled": True,
-            "nurec_utils_extension_enabled": True,
+            "nurec_utils_extension_enabled": False,
             "renderer_hints": 3,
             "ujitso_geometry_enabled": True,
             "multi_gpu_enabled": False,
@@ -171,7 +186,8 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     assert receipt["nurec_renderer"]["render_path"] == "plain_nurec_volume"
     assert receipt["nurec_renderer"]["extension_required"] is True
     assert receipt["nurec_renderer"]["extension_enabled"] is True
-    assert receipt["nurec_renderer"]["nurec_utils_extension_enabled"] is True
+    assert receipt["nurec_renderer"]["nurec_utils_extension_enabled"] is False
+    assert receipt["nurec_renderer"]["official_helper"]["metrics_imported"] is False
     assert receipt["nurec_renderer"]["ujitso_geometry_enabled"] is True
     assert receipt["nurec_renderer"]["schema_registration_required"] is False
     assert receipt["nurec_renderer"]["schema_registered"] is False
@@ -180,13 +196,10 @@ def test_launch_uses_exact_compatible_experience_as_a_real_input(
     )
     assert receipt["launch"]["kit_args"][:2] == [
         "--enable",
-        "isaacsim.replicator.nurec_utils",
+        "omni.rtx.spg",
     ]
     assert "--/UJITSO/geometry=true" in receipt["launch"]["kit_args"]
-    assert receipt["launch"]["kit_args"][2:4] == ["--enable", "omni.rtx.spg"]
-    assert ["--enable", "isaacsim.robot_motion.pink"] == receipt["launch"][
-        "kit_args"
-    ][4:6]
+    assert "isaacsim.robot_motion.pink" not in receipt["launch"]["kit_args"]
     assert receipt["launch"]["kit_args"] == NATIVE_TASK_ARENA_KIT_ARGS.split()
     assert {row["filename"] for row in receipt["experience_files"]} == {
         "isaaclab.python.kit",
@@ -213,7 +226,7 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
             {
                 "extension_required": True,
                 "extension_enabled": False,
-                "nurec_utils_extension_enabled": True,
+                "nurec_utils_extension_enabled": False,
                 "renderer_hints": 3,
                 "ujitso_geometry_enabled": True,
                 "multi_gpu_enabled": False,
@@ -224,7 +237,7 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
         (
             {
                 "extension_enabled": True,
-                "nurec_utils_extension_enabled": True,
+                "nurec_utils_extension_enabled": False,
                 "renderer_hints": None,
                 "ujitso_geometry_enabled": True,
                 "multi_gpu_enabled": False,
@@ -235,7 +248,7 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
         (
             {
                 "extension_enabled": True,
-                "nurec_utils_extension_enabled": True,
+                "nurec_utils_extension_enabled": False,
                 "renderer_hints": 3,
                 "ujitso_geometry_enabled": True,
                 "multi_gpu_enabled": True,
@@ -246,7 +259,7 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
         (
             {
                 "extension_enabled": True,
-                "nurec_utils_extension_enabled": True,
+                "nurec_utils_extension_enabled": False,
                 "renderer_hints": 3,
                 "ujitso_geometry_enabled": True,
                 "multi_gpu_enabled": False,
@@ -258,24 +271,13 @@ def test_arena_image_is_nurec_capable_without_moving_shared_adp_image() -> None:
         (
             {
                 "extension_enabled": True,
-                "nurec_utils_extension_enabled": True,
+                "nurec_utils_extension_enabled": False,
                 "renderer_hints": 3,
                 "ujitso_geometry_enabled": False,
                 "multi_gpu_enabled": False,
                 "schema_registered": True,
             },
             "native_task_isaaclab_ujitso_geometry_not_enabled",
-        ),
-        (
-            {
-                "extension_enabled": True,
-                "nurec_utils_extension_enabled": False,
-                "renderer_hints": 3,
-                "ujitso_geometry_enabled": True,
-                "multi_gpu_enabled": False,
-                "schema_registered": True,
-            },
-            "native_task_isaaclab_nurec_utils_extension_not_enabled",
         ),
     ],
 )
@@ -340,7 +342,7 @@ def test_plain_particlefield_preloads_but_does_not_dynamically_enable_spg(
             "extension_was_enabled_before_probe": True,
             "extension_enabled": True,
             "spg_dynamic_enable_attempted": False,
-            "nurec_utils_extension_enabled": True,
+            "nurec_utils_extension_enabled": False,
             "renderer_hints": 3,
             "ujitso_geometry_enabled": True,
             "multi_gpu_enabled": False,
@@ -623,7 +625,7 @@ _QUALIFIED_PROBE = {
     "extension_required": True,
     "extension_was_enabled_before_probe": True,
     "extension_enabled": True,
-    "nurec_utils_extension_enabled": True,
+    "nurec_utils_extension_enabled": False,
     "renderer_hints": 3,
     "ujitso_geometry_enabled": True,
     "multi_gpu_enabled": False,

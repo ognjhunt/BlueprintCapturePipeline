@@ -3043,8 +3043,8 @@ def _blueprint_bundle_preflight(
                                 and not entry.endswith("/__init__.py")
                             }
                             expected_module_paths = {
-                                f"provider_runtime/blueprint_pipeline/{name}"
-                                for name in expected_modules
+                                path for path in native_task_arena_required_archive_entries(execution_mode)
+                                if path.endswith(".py") and not path.endswith("/__init__.py")
                             }
                             if execution_mode == "controlled_policy":
                                 expected_module_paths.add(
