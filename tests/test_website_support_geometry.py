@@ -185,3 +185,37 @@ def test_a_corrugated_surface_whose_ridges_would_cut_the_object_is_refused():
     faces = np.concatenate([np.c_[k, k + n, k + 1], np.c_[k + 1, k + n, k + n + 1]])
     mesh = trimesh.Trimesh(vertices=np.c_[gx.ravel(), gy.ravel(), gz.ravel()], faces=faces, process=False)
     assert support_under(mesh, [-.11, -.11, .70], [.11, .11, .85], up=2, meters_per_unit=1) is None
+
+
+def test_measured_placement_residual_widens_the_search_window():
+    # capture-447ae4f4: the estimated tray bottom sat 4 cm into the counter and the
+    # registration's residual near the task was 7.2 cm; a 3 cm window found nothing.
+    lower, upper = [-.03, -.03, .66], [.03, .03, .74]
+    value = support_under(plate(), lower, upper, up=2, meters_per_unit=1, placement_residual_m=.07)
+    assert value["top_runtime_units"] == pytest.approx(.7)
+    assert value["top_runtime_units"] - lower[2] == pytest.approx(.04)  # the snap compile applies
+    assert value["search_window_m"] == .07
+    assert value["search_window_basis"] == "registration_task_region_residual"
+    # A tight residual keeps the 3 cm window, and so does an unmeasured one.
+    for residual in (.01, None, float("nan")):
+        assert support_under(plate(), lower, upper, up=2, meters_per_unit=1, placement_residual_m=residual) is None
+    within = support_under(plate(), [-.03, -.03, .72], [.03, .03, .8], up=2, meters_per_unit=1,
+                           placement_residual_m=.01)
+    assert within["search_window_m"] == .03 and within["search_window_basis"] == "default"
+    # A remote surface stays remote: the window is the residual, not unbounded.
+    assert support_under(plate(), [-.03, -.03, .8], [.03, .03, .9], up=2, meters_per_unit=1,
+                         placement_residual_m=.07) is None
+
+
+def test_measured_placement_residual_widens_the_fitted_window_and_y_down_frames():
+    bumpy = trimesh.creation.box(extents=[2, 2, .1])
+    bumpy.apply_translation([0, 0, .65])
+    found = support_under(bumpy, [-.03, -.03, .66], [.03, .03, .74], up=2, meters_per_unit=1,
+                          placement_residual_m=.07)
+    assert found is not None and found["top_runtime_units"] == pytest.approx(.7)
+    flipped = plate(height=-.7)
+    down = support_under(flipped, [-.03, -.03, -.74], [.03, .03, -.66], up=2, meters_per_unit=1,
+                         up_sign=-1, placement_residual_m=.07)
+    assert down is not None and down["top_runtime_units"] == pytest.approx(-.7)
+    assert support_under(flipped, [-.03, -.03, -.74], [.03, .03, -.66], up=2, meters_per_unit=1,
+                         up_sign=-1) is None
