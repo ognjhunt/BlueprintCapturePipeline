@@ -329,6 +329,11 @@ def _team_episode_events(*, built: Any, task_readback: Any, policy: Any, plan: M
     unwrapped = env.unwrapped
     robot = unwrapped.scene["robot"]
     row, task_spec, cadence = plan["robot"], plan["task_spec"], plan["cadence"]
+    scripted = getattr(policy, "execution_evidence_kind", None) == "scripted_simulator_state_baseline"
+    if scripted:
+        policy.bind_scene_plan(plan)
+        progress.update(execution_evidence_kind="scripted_simulator_state_baseline", action_source="scripted_simulator_state",
+                        candidate_policy_queried=False, scripted_controller_invoked=False)
     declared = list(row["joint_names"])
     controls = row["joint_controls"]
     gripper = list(row["gripper_joints"])
@@ -424,6 +429,8 @@ def _team_episode_events(*, built: Any, task_readback: Any, policy: Any, plan: M
                                             task_readback=task_readback, task_spec=task_spec)
     seed = int(plan["scenario"]["seed"])
     env.reset(seed=seed)
+    if scripted:
+        policy.reset()
     scoring.begin_episode()
     observations: list[dict[str, Any]] = []
     review_observations: list[dict[str, Any]] = []
@@ -504,7 +511,9 @@ def _team_episode_events(*, built: Any, task_readback: Any, policy: Any, plan: M
                           "joint_velocity": [float(qd[i]) for i in declared_index],
                           "gripper_position": closures(q),
                           **({"gripper_names": [channel["name"] for channel in channels]} if multi_tool else {}),
-                          **(arm_control.state() if arm_control is not None else {}), "base": base_state()}}
+                          **(arm_control.state() if arm_control is not None else {}), "base": base_state(),
+                          **({"scripted_arm_base_pose_world": arm_control.scripted_base_world_state()}
+                             if scripted and arm_control is not None else {})}}
 
     def retain_policy_frame() -> dict[str, Any]:
         nonlocal last_retained_step
@@ -661,7 +670,7 @@ def _team_episode_events(*, built: Any, task_readback: Any, policy: Any, plan: M
     last = ([float(q0[declared_index[j]]) for j in position_columns] + [float(q0[i]) for i in gripper_index]
             + [0.0] * len(velocity_columns))
     for query_index in range(int(max_policy_queries)):
-        if step >= action_steps or fell:
+        if step >= action_steps or fell or (scripted and getattr(policy, "finished", False)):
             break
         current_observation = observation()
         retain_policy_frame()
@@ -670,7 +679,8 @@ def _team_episode_events(*, built: Any, task_readback: Any, policy: Any, plan: M
             named_arm_trace.append({"step_index": step, "simulation_time_s": step * step_seconds,
                                     **{key: current_observation["state"][key]
                                        for key in ("arm_names", "arm_joint_names", "arm_gripper_names", "joint_names", "arm_eef_pose")}})
-        progress.update(candidate_policy_query_attempted=True, candidate_action_applied=False, phase="policy_query")
+        progress.update(candidate_policy_query_attempted=not scripted, candidate_action_applied=False,
+                        phase="scripted_control" if scripted else "policy_query")
         started = time.monotonic()
 
         retain_request = request_evidence_sink(
@@ -688,12 +698,16 @@ def _team_episode_events(*, built: Any, task_readback: Any, policy: Any, plan: M
         except Exception:
             # Only an inference exception marks a policy failure. The retained
             # request sink marks its own disk/media failures as infrastructure.
-            progress["policy_inference_failed"] = True
+            progress["scripted_controller_failed" if scripted else "policy_inference_failed"] = True
+            if scripted:
+                progress["scripted_controller_invoked"] = getattr(policy, "scripted_controller_invoked", False)
             retain_transport_frames(query_index)
             raise
         retain_transport_frames(query_index)
         latency = time.monotonic() - started
-        progress.update(candidate_policy_queried=True, candidate_action_returned=True)
+        progress.update(candidate_policy_queried=not scripted, candidate_action_returned=True)
+        if scripted:
+            progress["scripted_controller_invoked"] = True
         pose_chunk = None
         if isinstance(chunk, Mapping) and chunk.get("schema_version") == POSE_CHUNK_SCHEMA:
             if arm_control is None:
@@ -779,13 +793,19 @@ def _team_episode_events(*, built: Any, task_readback: Any, policy: Any, plan: M
              > 1e-3) or math.dist(base_state()["position_world_m"], base0) > 1e-3
     return {
         "status": "completed", "score": score, "visual_evidence": visual, "media_artifacts": artifacts,
+        **({"execution_evidence_kind": "scripted_simulator_state_baseline", "action_source": "scripted_simulator_state",
+            "candidate_policy_queried": False, "scripted_controller_invoked": bool(queries),
+            "policy_outcome_interpretable": False, "scripted_outcome_interpretable": bool(commanded),
+            "scripted_request_evidence_complete": len(request_artifacts) == len(queries) and bool(queries),
+            "scripted_controller_evidence": policy.evidence_summary()} if scripted else {}),
         "motion_evidence": {"actions_reached_robot": bool(commanded), "arm_moved": moved, "robot_fell": fell,
                             "control_hz": float(cadence["control_frequency_hz"]), "task_sample_stride": stride,
                             **({"self_collisions_enabled": row.get("enabled_self_collisions") is True,
                                 "self_collision_force_readback": "unavailable_task_and_scene_contacts_only"}
                                if multi_tool else {})},
         "commanded_actions": commanded, "state_trace": state_trace, "contact_force_evidence": contacts,
-        "task_object_trajectory": trajectory, "queries": queries, "policy_queries": len(queries),
+        "task_object_trajectory": trajectory, "queries": queries, "policy_queries": 0 if scripted else len(queries),
+        **({"scripted_controller_calls": len(queries)} if scripted else {}),
         "policy_query_latency": {"seconds": [row_q["latency_seconds"] for row_q in queries]},
         "camera_calibration": None, "resource_telemetry": None, "telemetry_channels": None,
         "scientific_reset": None, "embodiment_digest": row["embodiment_digest"],

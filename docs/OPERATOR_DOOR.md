@@ -1,5 +1,9 @@
 # Operator door
 
+The fixed [`install-scripted-robot-baselines` operation](scripted_robot_baseline_registration.md)
+registers all supported scripted configurations from one exact retained public
+robot preparation batch, with individual unavailable reasons and no compute.
+
 The fixed [`install-public-yam-policy` operation](research/molmoact2-yam-registration-2026-10-29.md)
 installs the public MolmoAct2 YAM screening registration from retained prepared
 assets and verified official license evidence, without launching compute.

@@ -39,12 +39,12 @@ def _object(properties: dict[str, Any], required: list[str] | None = None) -> di
 
 
 POLICY_IDENTITY_SCHEMA = _object({
-    "kind": {"enum": ["checkpoint", "hosted"]},
+    "kind": {"enum": ["checkpoint", "hosted", "scripted"]},
     "source": _TEXT,
     "revision": {"type": ["string", "null"], "maxLength": 2048},
     "digest": _OPTIONAL_DIGEST,
     "digest_kind": {"enum": ["downloaded_snapshot_inventory", "hub_tree_listing",
-                               "provider_metadata", "unverified", "pinned_runtime_file_inventory"]},
+                               "provider_metadata", "unverified", "pinned_runtime_file_inventory", "source_code_inventory"]},
 })
 INTERFACE_SCHEMA = _object({
     "policy_interface_id": _ID,

@@ -10,6 +10,7 @@ import time
 from typing import Any, Mapping
 
 from .decision_evidence_contracts import canonical_digest
+from .policy_execution_evidence import evidence_kind, SCRIPTED, scripted_fields
 from .policy_canary_media_integrity import bound_media_artifact as _bound_media_artifact
 
 # Also shipped in standalone policy bundles, which have no paired-session module.
@@ -42,8 +43,10 @@ def _write_episode_failure_gap(
     )
     progress = progress if isinstance(progress, Mapping) else {}
     first_observation_retained = progress.get("first_observation_retained") is True
-    candidate_policy_queried = progress.get("candidate_policy_queried") is True
-    query_attempted = candidate_policy_queried or progress.get("candidate_policy_query_attempted") is True
+    scripted = evidence_kind(context) == SCRIPTED or evidence_kind(progress) == SCRIPTED
+    scripted_invoked = scripted and progress.get("scripted_controller_invoked") is True
+    candidate_policy_queried = not scripted and progress.get("candidate_policy_queried") is True
+    query_attempted = not scripted and (candidate_policy_queried or progress.get("candidate_policy_query_attempted") is True)
     query_attempt = {
         "candidate_policy_query_attempted": query_attempted,
         "policy_response_status": "received" if candidate_policy_queried else "unproven" if query_attempted else "not_attempted",
@@ -56,7 +59,7 @@ def _write_episode_failure_gap(
         if str(item).startswith("candidate_action_joint_position_bounds_invalid")
     ]
     action_rejected = bool(
-        candidate_policy_queried
+        (candidate_policy_queried or scripted_invoked)
         and candidate_action_returned
         and not action_applied
         and progress.get("phase") == "policy_action_bounds_refused"
@@ -161,6 +164,9 @@ def _write_episode_failure_gap(
                                                        "droid_https_policy_identity_mismatch")))
     )
     failure_cause = "policy" if policy_failure else "media" if progress.get("media_integrity_failure") else "infrastructure"
+    if scripted and (policy_failure or (scripted_invoked and (progress.get("scripted_controller_failed") is True
+            or progress.get("policy_inference_failed") is True))):
+        failure_cause = "scripted_controller"
     evidence_artifacts: dict[str, Any] = {}
     if isinstance(progress.get("native_site_qualification"), Mapping):
         evidence_artifacts["native_site_qualification"] = _write_episode_json_artifact(output_root,
@@ -181,13 +187,14 @@ def _write_episode_failure_gap(
             role="review_video",
             role_match=lambda name: "video" in name,
         )
-    if query_attempted:
+    if query_attempted or scripted_invoked:
         evidence_artifacts["policy_query_receipt"] = _write_episode_json_artifact(
             output_root,
             episode_id=episode_id,
             role="policy_query_receipt",
             value={
                 **query_attempt,
+                **(scripted_fields(invoked=scripted_invoked) if scripted else {}),
                 "candidate_policy_queried": candidate_policy_queried,
                 "candidate_action_returned": candidate_action_returned,
                 "policy_request_artifacts": progress.get("policy_request_artifacts") or [],
@@ -234,6 +241,7 @@ def _write_episode_failure_gap(
             }
         ),
         "candidate_policy_queried": candidate_policy_queried,
+        **(scripted_fields(invoked=scripted_invoked) if scripted else {}),
         **query_attempt,
         "candidate_action_returned": candidate_action_returned,
         "candidate_action_shape_validated": (
@@ -277,6 +285,7 @@ def _write_episode_failure_gap(
             **({"native_site_qualification": dict(progress["native_site_qualification"])}
                if isinstance(progress.get("native_site_qualification"), Mapping) else {}),
             **query_attempt,
+            **(scripted_fields(invoked=scripted_invoked) if scripted else {}),
             "episode_id": episode_id,
             "policy_request_artifacts": progress.get("policy_request_artifacts") or [],
             "scientific_reset": progress.get("scientific_reset"),

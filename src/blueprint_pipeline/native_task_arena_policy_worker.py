@@ -36,6 +36,7 @@ _EPISODE_PROGRESS_BOOLEAN_FIELDS = (
     "multicamera_policy_observation_retained",
     "candidate_policy_query_attempted",
     "candidate_policy_queried",
+    "scripted_controller_invoked",
     "candidate_action_returned",
     "candidate_action_shape_validated",
     "candidate_action_finite_validated",
@@ -79,6 +80,8 @@ _EPISODE_PROGRESS_EVIDENCE_FIELDS = (
     "candidate_exact_policy_input_frames",
     "policy_inference_evidence",
     "prestart_readiness",
+    "execution_evidence_kind",
+    "action_source",
 )
 
 
@@ -451,6 +454,20 @@ def _policy_client(
     from .policy_interface_binding import resolve_policy_interface
     interface = resolve_policy_interface(spec)
     endpoint = spec["policy_endpoint"]
+    if interface == "molmoact2_droid_joint8.v1":
+        from blueprint_pipeline.molmoact2_droid_policy import MolmoAct2DROIDPolicyClient
+        from blueprint_pipeline.molmoact2_droid_runtime import policy_binding, validate_execution_spec
+        validate_execution_spec(spec)
+        client = MolmoAct2DROIDPolicyClient(binding=policy_binding(spec["policy_spec"]))
+        client.execution_binding_digest = spec["execution_spec_digest"]
+        return client
+    if interface == "cosmos_nano_droid.v1":
+        from blueprint_pipeline.cosmos_nano_beta_runtime import CosmosNanoSimulatorClient, validate_execution_spec
+
+        validate_execution_spec(spec)
+        return CosmosNanoSimulatorClient(
+            policy_spec=spec["policy_spec"], host=str(endpoint["host"]), port=int(endpoint["port"]),
+        )
     if interface == "cosmos_edge_droid.v1":
         from blueprint_pipeline.cosmos_edge_beta_runtime import CosmosEdgeSimulatorClient, validate_execution_spec
 
@@ -496,8 +513,13 @@ class _PolicyQueryTracker:
     def __init__(self, client: Any) -> None:
         self._client = client
         self.candidate_policy_queried = False
+        self.scripted_controller_invoked = False
 
     def infer(self, observation: Mapping[str, Any]) -> Any:
+        from blueprint_pipeline.policy_execution_evidence import SCRIPTED
+        if getattr(self._client, "execution_evidence_kind", None) == SCRIPTED:
+            self.scripted_controller_invoked = True
+            return self._client.infer(observation)
         try:
             response = self._client.infer(observation)
         except BaseException:  # noqa: BLE001 - preserve paid-run query truth

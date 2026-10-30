@@ -12,7 +12,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .decision_evidence_contracts import canonical_digest
-from .policy_interface_binding import TEAM_ROBOT_INTERFACES, TEAM_LOCAL_INTERFACES
+from .policy_interface_binding import TEAM_ROBOT_INTERFACES, TEAM_LOCAL_INTERFACES, TEAM_SCRIPTED_INTERFACES
 from .team_local_policy import runtime_for_interface
 from .team_embodiment import apply_team_embodiment, camera_names, validate_embodiment_manifest
 
@@ -26,6 +26,9 @@ def team_policy_interface(spec: Mapping[str, Any]) -> dict[str, Any]:
     if binding.get("binding_digest") != canonical_digest(binding, digest_field="binding_digest"):
         raise ValueError("beta_screening_team_binding_invalid")
     manifest = validate_embodiment_manifest(binding["manifest"])
+    if interface in TEAM_SCRIPTED_INTERFACES:
+        from .scripted_robot_baseline_runtime import interface_contract
+        return interface_contract(spec)
     if interface in TEAM_LOCAL_INTERFACES:
         return runtime_for_interface(interface).interface_contract(spec)
     if interface == "dreamlabs_dream1.v1":
@@ -72,6 +75,14 @@ def team_interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any
     expected = team_policy_interface(spec)
     runtime = configured.get("runtime") or {}
     policy = spec["policy_spec"]
+    if spec["policy_interface_id"] in TEAM_SCRIPTED_INTERFACES:
+        from . import scripted_robot_baseline_runtime as local
+        return (configured.get("interface") == expected and configured["policy"]["kind"] == "scripted"
+                and configured["policy"]["source"] == local.MODEL_SOURCE
+                and configured["policy"]["revision"] == local.MODEL_REVISION
+                and configured["policy"]["digest"] == policy["model_identity_digest"]
+                and runtime.get("backend") == "robolab.v1"
+                and runtime.get("runtime_id") == "native_task_arena_policy_canary.v1")
     if spec["policy_interface_id"] in TEAM_LOCAL_INTERFACES:
         local = runtime_for_interface(spec["policy_interface_id"])
         return (configured.get("interface") == expected
@@ -155,6 +166,14 @@ def build_registered_team_spec(*, candidate_id: str, registration: Mapping[str, 
         spec.update(policy_endpoint={"host": "127.0.0.1", "port": runtime_for_interface(interface).PORT},
                     checkpoint_identity_basis="pinned_file_inventory_verified_before_worker_load",
                     weights_identity_verified=False)
+    if interface in TEAM_SCRIPTED_INTERFACES:
+        from .scripted_robot_baseline_runtime import build_task_plan
+        from .scripted_robot_baseline import EVIDENCE_KIND, ACTION_SOURCE
+        spec.update(policy_endpoint={"transport": "in_process"},
+                    execution_evidence_kind=EVIDENCE_KIND, action_source=ACTION_SOURCE,
+                    checkpoint_identity_basis="owned_scripted_controller_source_inventory_no_weights",
+                    weights_identity_verified=False,
+                    scripted_task_plan=build_task_plan(scene_plan, policy, manifest))
     team_policy_interface(spec)
     spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
     return spec, dict(registration["model"])
@@ -268,16 +287,21 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                     raise ValueError("beta_screening_dream_provider_identity_changed")
             blockers = (["beta_screening_hosted_credential_not_private"]
                         if credential_file_blockers(settings.get("credential_file")) else [])
-            local = interface["policy_interface_id"] in TEAM_LOCAL_INTERFACES
+            scripted = interface["policy_interface_id"] in TEAM_SCRIPTED_INTERFACES
+            local = interface["policy_interface_id"] in TEAM_LOCAL_INTERFACES or scripted
             if local:
-                module = runtime_for_interface(interface["policy_interface_id"])
+                if scripted:
+                    from . import scripted_robot_baseline_runtime as module
+                else:
+                    module = runtime_for_interface(interface["policy_interface_id"])
                 minimum_memory = module.MINIMUM_GPU_MEMORY_GB
                 blockers = []
                 memory = registration.get("minimum_gpu_memory_gb", minimum_memory)
                 if type(memory) not in (int, float) or not math.isfinite(memory) or not 0 < memory <= 1024:
                     raise ValueError("team_local_gpu_memory_configuration_invalid")
-                policy_identity = {"kind": "checkpoint", "source": module.MODEL_SOURCE, "revision": module.MODEL_REVISION,
-                    "digest": policy["model_identity_digest"], "digest_kind": "pinned_runtime_file_inventory"}
+                policy_identity = {"kind": "scripted" if scripted else "checkpoint", "source": module.MODEL_SOURCE,
+                    "revision": module.MODEL_REVISION, "digest": policy["model_identity_digest"],
+                    "digest_kind": "source_code_inventory" if scripted else "pinned_runtime_file_inventory"}
             else:
                 policy_identity = {"kind": "hosted", "source": policy["allowed_origin"],
                     "revision": registration.get("policy_revision") or policy.get("model_id") or policy["policy_id"],
@@ -301,7 +325,7 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                     raise ValueError("beta_screening_company_embodiment_binding_mismatch")
                 route = deployment.get("policy_route_id")
                 if route is not None:
-                    if local and route != "customer_controller":
+                    if local and route != ("blueprint_scripted_baseline" if scripted else "customer_controller"):
                         raise ValueError("team_local_policy_route_identity_mismatch")
                     # A shared robot or HTTPS transport does not identify a
                     # policy family. Retain explicit operator route provenance
@@ -319,7 +343,7 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                     dream = interface["policy_interface_id"] == "dreamlabs_dream1.v1"
                     if dream != (route == "dreamlabs_dream1"):
                         raise ValueError("beta_screening_policy_route_interface_mismatch")
-                    if declared is None and route in {"customer_controller", "dreamlabs_dream1"}:
+                    if declared is None and route in {"customer_controller", "dreamlabs_dream1", "blueprint_scripted_baseline"}:
                         declared = route
                     if declared != route:
                         raise ValueError("beta_screening_policy_route_binding_mismatch")
@@ -339,7 +363,9 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                 row = {**rows[key], "eligibility": {**rows[key]["eligibility"], "enabled": False,
                     "blockers": [reason]}}
             else:
-                row = {"candidate_id": key, "display_name": key, "policy": {"kind": "hosted",
+                declared_policy = registration.get("policy_spec") if isinstance(registration, Mapping) else None
+                scripted = isinstance(declared_policy, Mapping) and declared_policy.get("policy_interface_id") in TEAM_SCRIPTED_INTERFACES
+                row = {"candidate_id": key, "display_name": key, "policy": {"kind": "scripted" if scripted else "hosted",
                     "source": "operator-registration", "revision": None, "digest": None, "digest_kind": "unverified"},
                     "interface": None, "runtime": None, "supported_task_kinds": [],
                     "eligibility": {"enabled": False, "commercial_use": "under_review", "license_id": "unverified",

@@ -74,7 +74,21 @@ def test_installed_articulated_scene_plans_and_passes_real_sealed_bundle_preflig
         assert actual["pose_world"] == subject["pose_world"]
         assert actual["reset_state"]["root_pose_world"] == subject["reset_state"]["root_pose_world"]
     assert gaps and all(gap["qualified_variation_claim_permitted"] is False for gap in gaps)
-    candidate = next(row for row in plan["candidates"] if row["candidate_id"] == "pi05_droid")
+    by_id = {row["candidate_id"]: row for row in plan["candidates"]}
+    selected = [row for row in plan["candidates"] if row["status"] == "selected"]
+    assert {row["candidate_id"] for row in selected} == {
+        "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid", "groot_n17_droid"}
+    assert plan["maximum_planned_cost_usd"] == "12.00" and plan["budget_usd"] == "15.00"
+    assert all(row["max_cost_usd"] == row["cost_quote"]["maximum_cost_usd"] == "4.00" for row in selected)
+    # The fourth compatible $4 candidate exceeds the remaining $3. Preserve
+    # that individual reason and preflight a candidate the planner selected.
+    assert by_id["pi05_droid"]["status"] == "deferred"
+    assert by_id["pi05_droid"]["blockers"] == ["site_screening_budget_insufficient"]
+    assert "cost_quote" not in by_id["pi05_droid"]
+    assert by_id["molmoact2_droid"]["status"] == "unavailable"
+    assert by_id["molmoact2_droid"]["blockers"] == ["task_kind_not_supported_by_candidate"]
+    assert all(row["blockers"] for row in plan["candidates"] if row["status"] != "selected")
+    candidate = by_id["groot_n17_droid"]
     prepared = launch.prepare_candidate(plan=plan, candidate=candidate, attempt_dir=tmp_path / "attempt")
     assert launch._read(tmp_path / "attempt" / "static_preflight.json")["status"] == "passed"
     receipt = launch._read(Path(prepared["bundle_receipt"]["path"]))

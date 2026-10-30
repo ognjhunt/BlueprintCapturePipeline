@@ -653,14 +653,22 @@ def run_native_task_arena_policy_canary_session_vast(
 
         pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
         groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
+        cosmos = prepared_bundle.get("cosmos_runtime") is not None
         openwam = prepared_bundle.get("team_policy_interface_id") == "openwam_piper_eef20.v1"
         molmoact2 = prepared_bundle.get("team_policy_interface_id") == "molmoact2_yam_joint14.v1"
+        molmoact2_droid = prepared_bundle.get("team_policy_interface_id") == "molmoact2_droid_joint8.v1"
         download_bytes, upload_bytes = pi_download + groot_download + witness_capacity, 8_000_000_000 + witness_capacity
         if openwam:
             from .openwam_piper_bundle import transfer_byte_budget
             download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
         elif molmoact2:
             from .molmoact2_yam_bundle import transfer_byte_budget
+            download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
+        elif molmoact2_droid:
+            from .molmoact2_droid_bundle import transfer_byte_budget
+            download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
+        elif cosmos:
+            from .cosmos_droid_bundle import transfer_byte_budget
             download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
         result = run_arena_native_control_vast(
             pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
@@ -688,8 +696,8 @@ def run_native_task_arena_policy_canary_session_vast(
             ),
             vast_launch_lock_file=None,
             candidate_policy_query_expected=True,
-            forward_hf_token=not (openwam or molmoact2),
-            preferred_gpu_keywords=(("A100", "H100", "H200") if openwam else ("L40S", "RTX 6000 Ada", "RTX A6000")),
+            forward_hf_token=not (openwam or molmoact2 or molmoact2_droid or cosmos),
+            preferred_gpu_keywords=(("A100", "H100", "H200") if openwam or (cosmos and memory_floor >= 80_000) else ("L40S", "RTX 6000 Ada", "RTX A6000")),
             minimum_driver_version=MINIMUM_DRIVER_VERSION,
             require_independent_watchdog=True,
             allowed_geolocation_country_codes=(

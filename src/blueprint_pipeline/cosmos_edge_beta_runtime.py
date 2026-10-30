@@ -11,7 +11,6 @@ from collections.abc import Mapping
 from dataclasses import asdict
 import json
 from pathlib import Path
-import sys
 from typing import Any
 
 from .cosmos_edge_droid_policy_runtime import (
@@ -69,7 +68,9 @@ def candidate_execution_spec(*, scene_plan: Mapping[str, Any], contract: Mapping
     verified_snapshot_manifest(snapshot_manifest_path())
     policy = CosmosEdgeDroidPolicySpec(snapshot_manifest_sha256=SNAPSHOT_MANIFEST_SHA256)
     policy.validate()
+    from .cosmos_droid_bundle import runtime_contract
     runtime = {
+        "provisioning_identity": runtime_contract(CANDIDATE_ID),
         "source_commit": source_commit, "container_image": NATIVE_TASK_ARENA_IMAGE,
         "candidate_source": {"repository": "https://github.com/NVIDIA/cosmos-framework",
                              "revision": COSMOS_FRAMEWORK_REVISION},
@@ -105,8 +106,10 @@ def candidate_execution_spec(*, scene_plan: Mapping[str, Any], contract: Mapping
 def validate_execution_spec(spec: Mapping[str, Any]) -> None:
     policy = CosmosEdgeDroidPolicySpec(**dict(spec["policy_spec"]))
     policy.validate()
+    from .cosmos_droid_bundle import runtime_contract
     expected = CosmosEdgeDroidPolicySpec(snapshot_manifest_sha256=SNAPSHOT_MANIFEST_SHA256)
-    if (spec.get("candidate_id") != CANDIDATE_ID or spec.get("policy_interface_id") != INTERFACE_ID
+    if (spec.get("runtime_identity", {}).get("provisioning_identity") != runtime_contract(CANDIDATE_ID)
+            or spec.get("candidate_id") != CANDIDATE_ID or spec.get("policy_interface_id") != INTERFACE_ID
             or spec.get("evaluation_backend") != "robolab.v1"
             or spec.get("checkpoint_digest") != CHECKPOINT_DIGEST
             or policy.snapshot_manifest_sha256 != SNAPSHOT_MANIFEST_SHA256
@@ -120,19 +123,22 @@ def validate_execution_spec(spec: Mapping[str, Any]) -> None:
 class CosmosEdgeSimulatorClient:
     """Use the verified native output, without treating predicted state as observation."""
 
+    spec_type = CosmosEdgeDroidPolicySpec
     learned_policy = True
     policy_id = MODEL_ID
     action_space = "joint_position"
     action_chunk_rows = 32
     open_loop_horizon = 8
 
-    def __init__(self, *, policy_spec: Mapping[str, Any], host: str, port: int, client_factory=None):
+    def __init__(self, *, policy_spec: Mapping[str, Any], host: str, port: int, client_factory=None,
+                 startup_timeout_seconds: float | None = None):
         # Only the pinned protocol wheels, staged beside the provider package;
         # never install a policy model or another NumPy into Isaac's interpreter.
         wheels = Path(__file__).resolve().parent.parent / "cosmos_policy_client"
         if client_factory is None and wheels.is_dir():
-            sys.path.insert(0, str(wheels))
-        self._spec = CosmosEdgeDroidPolicySpec(**dict(policy_spec))
+            from .cosmos_droid_client_dependencies import activate_client_dependencies
+            activate_client_dependencies(wheels.parent)
+        self._spec = self.spec_type(**dict(policy_spec))
         self._spec.validate()
         if host not in {"127.0.0.1", "localhost", "::1"} or port != 8000:
             raise ValueError("cosmos_edge_beta_endpoint_must_be_local")
@@ -142,7 +148,8 @@ class CosmosEdgeSimulatorClient:
             from .openpi_droid_policy_runtime import _bounded_openpi_client_type
             self._wire_decoder = msgpack_numpy.unpackb
             client_factory = _bounded_openpi_client_type(websocket_client_policy.WebsocketClientPolicy,
-                                                         self._wire_decoder)
+                                                         self._wire_decoder,
+                **({"startup_timeout_seconds": startup_timeout_seconds} if startup_timeout_seconds is not None else {}))
         self._factory, self._host, self._port = client_factory, host, port
         self.required_policy_views = self._spec.required_policy_views
         self._client = None

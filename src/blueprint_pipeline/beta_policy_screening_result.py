@@ -16,6 +16,9 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .team_policy_episode_outcome import episode_outcome
+from .policy_execution_evidence import (
+    candidate_execution_kinds, evidence_kind, SCRIPTED, SCRIPTED_ACTION_SOURCE, scripted_episode_outcome,
+)
 
 PUBLICATION_SCHEMA = "beta_policy_screening_publication.v2"
 # The job-facing ceiling. The native session keeps its own runtime ceiling,
@@ -81,13 +84,18 @@ def candidate_result_summary(
             score = episode.get("score") if isinstance(episode, Mapping) else None
             if row.get("deterministic_score_digest") != canonical_digest({"value": score}):
                 raise ValueError("beta_screening_result_score_binding_mismatch")
-        outcome, reason = episode_outcome(row)
+        outcome, reason = scripted_episode_outcome(row) if evidence_kind(row) == SCRIPTED else episode_outcome(row)
         outcomes.append({"cell_id": row["cell_id"], "outcome": outcome, "reason": reason})
     succeeded = sum(row["outcome"] == "success" for row in outcomes)
     failed = sum(row["outcome"] == "failure" for row in outcomes)
     void = sum(row["outcome"] == "void" for row in outcomes)
     scored = succeeded + failed
+    kind = candidate_execution_kinds(result)[candidate["candidate_id"]]
     return {
+        **({"execution_evidence_kind": SCRIPTED, "action_source": SCRIPTED_ACTION_SOURCE,
+            "scripted_rollout_count": result["scripted_rollout_count"], "learned_policy_rollout_count": 0,
+            "scripted_controller_invoked": result.get("scripted_controller_invoked") is True,
+            "candidate_policy_queried": False} if kind == SCRIPTED else {}),
         "episodes_scored": scored, "episodes_succeeded": succeeded,
         "episodes_failed": failed, "episodes_void": void,
         "success_rate": succeeded / scored if scored else None,
@@ -113,6 +121,43 @@ def money(value: Decimal) -> str:
     return format(value, ".6f").rstrip("0").rstrip(".") if value else "0"
 
 
+def _publication_execution_evidence(configured: Mapping[str, Any], summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Retain explicit execution provenance; absence in old results stays unknown."""
+    kind = configured.get("execution_evidence_kind")
+    if kind is None:
+        if summary.get("execution_evidence_kind") == "scripted_simulator_state_baseline":
+            raise ValueError("beta_screening_result_evidence_kind_invalid")
+        # Do not add a new identity field halfway through a retained campaign.
+        return {}
+    scripted = kind == "scripted_simulator_state_baseline"
+    if (kind not in {"learned_policy", "scripted_simulator_state_baseline"}
+            or scripted and configured.get("execution_evidence_kind") != kind
+            or summary and summary.get("execution_evidence_kind") != kind):
+        raise ValueError("beta_screening_result_evidence_kind_invalid")
+    fields = {"execution_evidence_kind": kind,
+              "action_source": "scripted_simulator_state" if scripted else "learned_policy",
+              "scripted_rollout_count": 0, "learned_policy_rollout_count": 0,
+              "scripted_controller_invoked": False, "candidate_policy_queried": False}
+    if summary:
+        if not fields.keys() <= summary.keys():
+            raise ValueError("beta_screening_result_execution_evidence_missing")
+        fields = {key: summary[key] for key in fields}
+    counts = (fields["scripted_rollout_count"], fields["learned_policy_rollout_count"])
+    scored = summary.get("episodes_scored", 0)
+    if (any(type(count) is not int or count < 0 for count in counts)
+            or sum(counts) > configured.get("episode_count", 0)
+            or any(type(fields[key]) is not bool for key in ("scripted_controller_invoked", "candidate_policy_queried"))
+            or fields["scripted_controller_invoked"] and fields["scripted_rollout_count"] == 0
+            or fields["candidate_policy_queried"] and fields["learned_policy_rollout_count"] == 0
+            or fields["action_source"] != ("scripted_simulator_state" if scripted else "learned_policy")
+            or (scripted and (fields["learned_policy_rollout_count"] != 0 or fields["candidate_policy_queried"]
+                or scored > fields["scripted_rollout_count"] or scored and not fields["scripted_controller_invoked"]))
+            or (not scripted and (fields["scripted_rollout_count"] != 0 or fields["scripted_controller_invoked"]
+                or scored > fields["learned_policy_rollout_count"] or scored and not fields["candidate_policy_queried"]))):
+        raise ValueError("beta_screening_result_execution_evidence_invalid")
+    return fields
+
+
 def screening_publication(
     *, plan: Mapping[str, Any], state: Mapping[str, Any], budget: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -133,6 +178,7 @@ def screening_publication(
             "episodes_void": summary.get("episodes_void", 0),
             "success_rate": summary.get("success_rate"),
             "session_result_digest": summary.get("session_result_digest"),
+            **_publication_execution_evidence(configured, summary),
         })
     value = {
         "schema_version": PUBLICATION_SCHEMA,

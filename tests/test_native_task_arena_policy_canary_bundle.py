@@ -227,12 +227,19 @@ def test_candidate_servers_have_distinct_transports_ports_and_receipts() -> None
 
 
 def test_provider_manifest_digest_is_revalidated_inside_shipped_worker() -> None:
-    source = (
-        Path(bundle.__file__).with_name("native_task_arena_policy_canary_worker.py")
-    ).read_text(encoding="utf-8")
+    from blueprint_pipeline.native_task_arena_policy_canary_worker import _validate_provider_manifest
 
-    assert "policy_canary_provider_manifest_invalid" in source
-    assert 'canonical_digest(manifest, digest_field="input_digest")' in source
+    inputs = {"run_kind": "internal_policy_canary", "runtime_inputs_digest": "sha256:" + "a" * 64,
+              "task_success_contract_digest": "sha256:" + "b" * 64}
+    authority = {"authority_digest": "sha256:" + "c" * 64}
+    manifest = {"schema_version": "native_task_arena_policy_canary_provider_bundle.v1",
+                "execution_mode": "internal_policy_canary_paired_session", "claim_ceiling": "diagnostic_policy_execution",
+                **inputs, **authority}
+    manifest["input_digest"] = canonical_digest(manifest, digest_field="input_digest")
+    assert _validate_provider_manifest(manifest, runtime_inputs=inputs, authority=authority) == manifest
+    manifest["runtime_inputs_digest"] = "sha256:" + "d" * 64
+    with pytest.raises(RuntimeError, match="policy_canary_provider_manifest_invalid"):
+        _validate_provider_manifest(manifest, runtime_inputs=inputs, authority=authority)
 
 
 def test_provider_worker_has_one_simulation_launch_outside_episode_loop() -> None:

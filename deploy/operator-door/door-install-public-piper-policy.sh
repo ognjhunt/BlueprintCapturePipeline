@@ -5,7 +5,8 @@ umask 022
 . "$(dirname "$0")/door-common.sh"
 operation="${DOOR_PUBLIC_POLICY_OPERATION:-install-public-piper-policy}"
 case "$operation" in
-  install-public-piper-policy|install-public-yam-policy) ;;
+  install-public-piper-policy|install-public-yam-policy) builder=blueprint_pipeline.openwam_piper_registration ;;
+  install-scripted-robot-baselines) builder=blueprint_pipeline.scripted_robot_registration_install ;;
   *) echo "unsupported fixed public policy operation" >&2; exit 2 ;;
 esac
 door_init_request "$operation"
@@ -19,7 +20,7 @@ set +e
   umask 077
   setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all -- env PYTHONPATH=src \
     GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$PWD" \
-    "$DOOR_VENV_PYTHON" -m blueprint_pipeline.openwam_piper_registration \
+    "$DOOR_VENV_PYTHON" -m "$builder" \
     --request-json "$DOOR_PUBLIC_POLICY_REQUEST" > "$result.prepare.tmp"
 )
 rc=$?

@@ -25,6 +25,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .policy_execution_evidence import candidate_execution_kinds, rollout_counts_valid, rollout_total, SCRIPTED
 
 SCHEMA = "native_task_arena_policy_canary_provider_bundle.v1"
 RESULT_FILENAME = "native_task_arena_policy_canary_session_result.v1.json"
@@ -59,7 +60,10 @@ def _shape(payload: Mapping[str, Any]) -> tuple[str, str, int] | None:
 def _episode_shape_valid(payload: Mapping[str, Any], shape: tuple[str, str, int]) -> bool:
     """The pair runs its ten cells twice; a team session runs its own 1-200 cells once."""
 
-    episodes, rollouts = payload.get("episodes_per_policy"), payload.get("learned_policy_rollout_count")
+    episodes = payload.get("episodes_per_policy")
+    if not rollout_counts_valid(payload, episodes):
+        return False
+    rollouts = rollout_total(payload)
     if shape is BETA_SHAPE:
         return type(episodes) is int and 1 <= episodes <= 10 and rollouts == episodes
     if shape is TEAM_SHAPE:
@@ -98,6 +102,18 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
     shape = _shape(payload)
     candidates = payload.get("candidate_ids")
     openwam = payload.get("team_policy_interface_id") == "openwam_piper_eef20.v1"
+    scripted = (payload.get("team_policy_interface_id") == "blueprint_scripted_pick_place.v1"
+                and payload.get("model_delivery") == "scripted_in_process"
+                and payload.get("learned_policy_rollout_count") == 0
+                and payload.get("scripted_rollout_count") == payload.get("episodes_per_policy"))
+    cosmos = isinstance(candidates, list) and len(candidates) == 1 and candidates[0] in {
+        "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}
+    if cosmos:
+        from .cosmos_droid_bundle import validate_runtime_contract
+        contract = validate_runtime_contract(payload.get("cosmos_runtime") or {})
+        if (contract["candidate_id"] != candidates[0]
+                or minimum_gpu_ram_mb(payload) < contract["minimum_gpu_memory_gb"] * 1000):
+            raise ValueError("cosmos_gpu_memory_or_candidate_binding_invalid")
     if openwam:
         from .openwam_piper_bundle import validate_runtime_contract
         validate_runtime_contract(payload.get("openwam_runtime") or {})
@@ -109,6 +125,14 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
         validate_runtime_contract(payload.get("molmoact2_runtime") or {})
         if minimum_gpu_ram_mb(payload) < 48_000:
             raise ValueError("molmoact2_gpu_memory_floor_invalid")
+    molmoact2_droid = payload.get("team_policy_interface_id") == "molmoact2_droid_joint8.v1"
+    if molmoact2_droid:
+        from .molmoact2_droid_bundle import validate_runtime_contract
+        validate_runtime_contract(payload.get("molmoact2_droid_runtime") or {})
+        if minimum_gpu_ram_mb(payload) < 48_000:
+            raise ValueError("molmoact2_droid_gpu_memory_floor_invalid")
+    if (SCRIPTED in candidate_execution_kinds(payload).values()) != scripted:
+        raise ValueError("scripted_policy_manifest_execution_kind_mismatch")
     if shape is BETA_SHAPE:
         dependencies = payload.get("contract_python_dependencies") or []
         robolab = next((row for row in dependencies if row.get("distribution") == "robolab"), {})
@@ -122,8 +146,8 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
             and _SHA.fullmatch(str(payload.get("family_static_readiness_digest") or "")) is not None
         ) if family else (
             (("team_credential_env" not in payload and isinstance(candidates, list) and candidates
-              and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid"])
-             or ((openwam or molmoact2) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
+              and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"])
+             or ((openwam or molmoact2 or molmoact2_droid or scripted) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
              or (payload.get("team_policy_interface_id") in {
                      "openpi_droid_https.v1", "blueprint_policy_https.v1", "dreamlabs_dream1.v1"}
                  and _SECRET_FILE_ENV.fullmatch(str(payload.get("team_credential_env") or "")) is not None
@@ -182,6 +206,8 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
     if _shape(manifest) is BETA_SHAPE:
         candidate = str((manifest.get("candidate_ids") or [""])[0])
         required = {f"provider_runtime/runtime_inputs/policy_execution_spec.{candidate}.json"}
+        if manifest.get("team_policy_interface_id") == "blueprint_scripted_pick_place.v1":
+            required.add("provider_runtime/blueprint_pipeline/policy_execution_evidence.py")
         if manifest.get("team_policy_interface_id") == "openwam_piper_eef20.v1":
             from .openwam_piper_bundle import RUNTIME_MODULES, validate_runtime_contract
             contract = validate_runtime_contract(manifest["openwam_runtime"])
@@ -198,12 +224,19 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
             required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
                              "provider_runtime/adp009d_policy_server_worker.py",
                              "provider_runtime/blueprint_pipeline/team_candidate_policy_client.py"})
-        if candidate == "cosmos3_edge_policy_droid":
-            required.update({"provider_runtime/cosmos_edge_policy_snapshot_manifest.json",
-                             "provider_runtime/adp009d_policy_provisioning.cosmos3_edge_policy_droid.sh",
-                             "provider_runtime/blueprint_pipeline/cosmos_edge_beta_runtime.py",
-                             "provider_runtime/blueprint_pipeline/cosmos_edge_droid_policy_server.py",
-                             "provider_runtime/blueprint_pipeline/cosmos_edge_droid_policy_runtime.py"})
+        if manifest.get("team_policy_interface_id") == "molmoact2_droid_joint8.v1":
+            from .molmoact2_droid_bundle import RUNTIME_MODULES, validate_runtime_contract
+            contract = validate_runtime_contract(manifest["molmoact2_droid_runtime"])
+            required.update("provider_runtime/blueprint_pipeline/" + name for name in RUNTIME_MODULES)
+            required.update("provider_runtime/" + name for name in contract["required_entries"])
+            required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
+                             "provider_runtime/adp009d_policy_server_worker.py"})
+        if candidate in {"cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
+            from .cosmos_droid_bundle import RUNTIME_MODULES, validate_runtime_contract
+            contract = validate_runtime_contract(manifest.get("cosmos_runtime") or {})
+            required.update("provider_runtime/blueprint_pipeline/" + name for name in RUNTIME_MODULES)
+            required.update("provider_runtime/" + name for name in contract["required_entries"])
+            required.add(f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh")
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             required.update("provider_runtime/blueprint_pipeline/" + name for name in (
                 "task_family_native_runtime.py", "task_family_native_contracts.py", "task_family_native_controls.py",
@@ -248,7 +281,7 @@ def run_kind_entrypoint_blockers(manifest: Mapping[str, Any], entrypoint_text: s
         if manifest.get("team_policy_interface_id") == "openwam_piper_eef20.v1":
             valid = valid and ('openwam_client:$RUNTIME_DIR' in entrypoint_text
                                and '--terminate-ready-server' in entrypoint_text)
-        if manifest.get("team_policy_interface_id") == "molmoact2_yam_joint14.v1":
+        if manifest.get("team_policy_interface_id") in {"molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1"}:
             valid = valid and '--terminate-ready-server' in entrypoint_text
         if manifest.get("evaluation_backend") == "task_family_native.v1":
             valid = valid and 'export BLUEPRINT_TASK_FAMILY_RUNTIME_CATALOG_PATH="$RUNTIME_DIR/runtime_operator_inputs/catalog.json"' in entrypoint_text

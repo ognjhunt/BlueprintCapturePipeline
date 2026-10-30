@@ -123,10 +123,12 @@ def build_server(*, checkpoint: str | Path, binding: MolmoAct2YAMBinding) -> Mol
     import torch
 
     root = str(Path(checkpoint).resolve(strict=True))
-    processor = AutoProcessor.from_pretrained(root, trust_remote_code=True, local_files_only=True,
-                                              extra_special_tokens={})
-    model = AutoModelForImageTextToText.from_pretrained(root, trust_remote_code=True, local_files_only=True,
-                                                       torch_dtype=torch.float32).to("cuda").eval()
+    # The complete local snapshot was hash-verified above before remote-code
+    # loading. Offline mode and local_files_only forbid Hub fallback.
+    processor = AutoProcessor.from_pretrained(  # nosec B615 - exact verified local snapshot
+        root, trust_remote_code=True, local_files_only=True, extra_special_tokens={})
+    model = AutoModelForImageTextToText.from_pretrained(  # nosec B615 - exact verified local snapshot
+        root, trust_remote_code=True, local_files_only=True, torch_dtype=torch.float32).to("cuda").eval()
     return MolmoAct2YAMServer(backend=MolmoAct2YAMBackend(model=model, processor=processor),
                              binding=binding, checkpoint_receipt=receipt)
 

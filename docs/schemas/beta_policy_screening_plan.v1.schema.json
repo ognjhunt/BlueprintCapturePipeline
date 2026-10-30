@@ -294,9 +294,9 @@
           "type": "string"
         },
         "minimum_gpu_memory_gb": {
-          "type": "number",
           "exclusiveMinimum": 0,
-          "maximum": 1024
+          "maximum": 1024,
+          "type": "number"
         },
         "policy_execution_spec": {
           "$ref": "#/$defs/receipt"
@@ -538,6 +538,9 @@
                 "minimum": 1,
                 "type": "integer"
               },
+              "execution_evidence_kind": {
+                "const": "scripted_simulator_state_baseline"
+              },
               "execution_spec": {
                 "$ref": "#/$defs/execution"
               },
@@ -598,6 +601,9 @@
                 "minLength": 1,
                 "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
                 "type": "string"
+              },
+              "execution_evidence_kind": {
+                "const": "scripted_simulator_state_baseline"
               },
               "status": {
                 "enum": [

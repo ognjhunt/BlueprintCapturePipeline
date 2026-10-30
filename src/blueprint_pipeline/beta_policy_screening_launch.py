@@ -178,7 +178,13 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     elif native_spec.get("policy_interface_id") in TEAM_LOCAL_INTERFACES:
         from .team_local_policy import runtime_for_interface
         runtime_for_interface(native_spec["policy_interface_id"]).validate_execution_spec(native_spec)
-    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}:
+    elif native_spec.get("policy_interface_id") == "blueprint_scripted_pick_place.v1":
+        from .scripted_robot_baseline_runtime import validate_execution_spec
+        validate_execution_spec(native_spec)
+    elif native_spec.get("policy_interface_id") == "molmoact2_droid_joint8.v1":
+        from .molmoact2_droid_runtime import validate_execution_spec
+        validate_execution_spec(native_spec)
+    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
         raise ValueError("beta_screening_policy_provisioning_not_configured")
     if (native_spec["runtime_identity_digest"] != execution["runtime_digest"]
             or native_spec["task_success_contract_digest"] != scene["task_success_contract_digest"]):
@@ -206,6 +212,10 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
                   "task_success_contract": scene["task_success_contract"],
                   "task_success_contract_digest": scene["task_success_contract_digest"],
                   "campaign_unit_count": len(cells), "campaign_units": cells, "activation_digest": ""}
+    execution_kinds = ({candidate["candidate_id"]: native_spec["execution_evidence_kind"]}
+                       if native_spec.get("policy_interface_id") == "blueprint_scripted_pick_place.v1" else None)
+    if execution_kinds is not None:
+        activation["candidate_execution_evidence_kinds"] = execution_kinds
     activation["activation_digest"] = canonical_digest(activation, digest_field="activation_digest")
     inputs = {**{key: scene[key] for key in SCENE_INPUT_FIELDS if key in scene},
               "schema_version": "task_evaluation_policy_canary_runtime_inputs.v1", "run_id": run_id,
@@ -216,6 +226,8 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
               **({"pre_policy_site_qualification_required": True,
                   "family_static_readiness_digest": scene["family_static_readiness_digest"]} if family else {}),
               "activation_digest": activation["activation_digest"], "runtime_inputs_digest": ""}
+    if execution_kinds is not None:
+        inputs["candidate_execution_evidence_kinds"] = execution_kinds
     if family:
         inputs.pop("construction_result", None)
     inputs["runtime_inputs_digest"] = canonical_digest(inputs, digest_field="runtime_inputs_digest")
@@ -320,8 +332,8 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
                 validate_team_candidate_catalog(plan, candidate, native_spec, _read(_bound_path(plan["scene_inputs"])))
         elif execution.get("policy_execution_spec"):
             native_spec = _read(_bound_path(execution["policy_execution_spec"]))
-            from .policy_interface_binding import TEAM_LOCAL_INTERFACES
-            if native_spec.get("policy_interface_id") in TEAM_LOCAL_INTERFACES:
+            from .policy_interface_binding import TEAM_LOCAL_INTERFACES, TEAM_SCRIPTED_INTERFACES
+            if native_spec.get("policy_interface_id") in TEAM_LOCAL_INTERFACES | TEAM_SCRIPTED_INTERFACES:
                 from .beta_policy_screening_team import validate_team_candidate_catalog
                 validate_team_candidate_catalog(plan, candidate, native_spec, _read(_bound_path(plan["scene_inputs"])))
         from .beta_policy_screening_worker import require_current_source

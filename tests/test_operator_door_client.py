@@ -683,3 +683,20 @@ def test_selected_handoff_cli_discovers_original_selectors_without_execution(doo
             _run(*args, flag)
     assert _run(*args, "--atlas-status-digest", "sha256:" + "c" * 64)[0] == 2
     assert _run(*args, "--resume-request", "20261009T154718Z-selected-handoff-9ef60661")[0] == 2
+
+
+def test_scripted_batch_cli_http_binds_exact_batch_and_idempotent_operation(door, tmp_path, monkeypatch):
+    from tests.test_operator_door_scripted_registration import request
+    value = request()
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(value))
+    arguments = ("install-scripted-robot-baselines", "--request-file", str(path))
+    code, output = _run(*arguments)
+    assert code == 0
+    request_id = json.loads(output)["id"]
+    retry_code, retry = _run(*arguments)
+    assert retry_code == 0 and json.loads(retry)["id"] == request_id
+    saved = json.loads((door["state"] / "requests" / "pending" / (request_id + ".json")).read_text())
+    assert saved["request"] == {"kind": "install-scripted-robot-baselines", "request": value}
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
+    assert _run(*arguments)[0] == 3

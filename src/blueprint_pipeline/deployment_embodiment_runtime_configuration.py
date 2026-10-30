@@ -43,7 +43,7 @@ def _arm(base, tool, dof, *, tcp=None, fingers=None, contacts=None, width=None):
 
 _PROFILES = {
     "trlc_dk1_bimanual": [_arm("base_link", "link6-7", 6, tcp="tool0",
-        fingers={"gripper_left": [-.045, 0.0], "gripper_right": [-.045, 0.0]},
+        fingers={"gripper_left": [0.0, -.045], "gripper_right": [0.0, -.045]},
         contacts=["finger_left", "finger_right"], width=.09)],
     "agilex_piper_bimanual": [_arm("base_link", "gripper_base", 6,
         fingers={"gripper_joint1": [.05, 0.0], "gripper_joint2": [-.05, 0.0]},
@@ -61,7 +61,7 @@ _PROFILES = {
         fingers={f"{side}_joint7": [.04695, 0.0], f"{side}_joint8": [.04695, 0.0]},
         contacts=[f"{side}_tip_left", f"{side}_tip_right"], width=.0939) for side in ("left", "right")],
     "almond_axol": [_arm("s1", f"{side}_gripper", 7, tcp=f"{side}_fingers",
-        fingers={f"{side}_finger_1_joint": [0.0, -.044]},
+        fingers={f"{side}_finger_1_joint": [-.044, 0.0]},
         contacts=[f"{side}_finger_1", f"{side}_finger_2"], width=.088) for side in ("left", "right")],
 }
 _PROFILES["kinova_gen3_bimanual"] = deepcopy(_PROFILES["kinova_gen3"])

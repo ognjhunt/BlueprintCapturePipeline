@@ -747,6 +747,11 @@ def test_presubmission_setup_is_activation_independent_and_profile_ready(
         for row in pending.values()
     )
     assert pending["flux3_action_droid"]["license_id"] == "flux-kommunity-1.0"
+    molmo = pending["molmoact2_droid"]
+    assert molmo["license_id"] == "apache-2.0"
+    assert molmo["readiness"]["status"] == "unavailable"
+    assert "frozen-pair evaluation" in molmo["readiness"]["reason"]
+    assert "license" not in molmo["readiness"]["reason"].lower()
     assert sorted(setup) == shape["top_level_keys"]
     assert sorted(robot) == shape["robot_keys"]
     assert sorted(robot["policy_candidates"][0]) == shape["candidate_keys"]
