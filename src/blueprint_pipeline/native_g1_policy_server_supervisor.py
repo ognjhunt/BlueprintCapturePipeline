@@ -209,6 +209,28 @@ class NativeG1PolicyServerLease:
         return result
 
 
+def checkpoint_load_observation(log_path: Path, *, policy_type: str) -> dict[str, Any]:
+    """Observe the pinned loader's completion, including its caught Pi errors.
+
+    The exact source starts listening only after `_load_policy` returns. DP's
+    strict local load propagates errors. Pi catches errors, so its full-key
+    success marker is additionally mandatory; a ready HTTP port is insufficient.
+    """
+    if log_path.is_symlink() or not log_path.is_file() or log_path.stat().st_size > 16 * 1024 * 1024:
+        raise ValueError("g1_beta_checkpoint_load_log_invalid")
+    data = log_path.read_bytes()
+    bad = (b"Returning model without loading pretrained weights", b"Warning: Could not load state dict:",
+           b"Missing keys when loading state dict:", b"Unexpected keys when loading state dict:")
+    marker = b"All keys loaded successfully!" if policy_type == "pi05" else b"Loading weights from local directory"
+    if policy_type not in {"pi05", "diffusion"} or marker not in data or any(item in data for item in bad):
+        raise ValueError("g1_beta_checkpoint_load_unverified")
+    result = {"schema_version": "native_g1_checkpoint_load_observation.v1", "policy_type": policy_type,
+        "source_revision": PINNED_SOURCE_REVISION, "log_sha256": "sha256:" + hashlib.sha256(data).hexdigest(),
+        "loader_completed": True, "full_state_load_required": True, "inference_observed": False}
+    result["receipt_digest"] = canonical_digest(result, digest_field="receipt_digest")
+    return result
+
+
 def start_g1_policy_server(
     *,
     preflight_inputs: Mapping[str, Any],
@@ -220,6 +242,7 @@ def start_g1_policy_server(
     owner_reader: Callable[[int], set[int]] = listener_owner_pids,
     popen_factory: Callable[..., subprocess.Popen[Any]] = subprocess.Popen,
     client_factory: Callable[..., NativeG1HumanoidArenaPolicyClient] = NativeG1HumanoidArenaPolicyClient,
+    require_checkpoint_load_observation: bool = False,
     _registered_use: Any = None,
 ) -> NativeG1PolicyServerLease:
     """Launch exact staged bytes, wait for its own listener, and reset once."""
@@ -244,7 +267,7 @@ def start_g1_policy_server(
         or isinstance(startup_timeout_seconds, bool)
         or not isinstance(startup_timeout_seconds, (int, float))
         or not 1 <= startup_timeout_seconds <= 1800
-        or log_path.exists() or log_path.is_symlink()
+        or log_path.exists() or log_path.is_symlink() or type(require_checkpoint_load_observation) is not bool
     ):
         raise ValueError("g1_server_launch_configuration_invalid")
     preflight = preflight_g1_shared_scene_run(**preflight_inputs)
@@ -277,6 +300,8 @@ def start_g1_policy_server(
         str(python), str(source.resolve()), "--policy-path", str(policy_dir.resolve()),
         "--device", device, "--host", LOOPBACK_HOST, "--port", str(port),
     ]
+    if require_checkpoint_load_observation:
+        argv.insert(1, "-u")  # Observe loader output before the first reset/query.
     log_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
     child_lifetime = None
@@ -301,6 +326,13 @@ def start_g1_policy_server(
             if owners and owners != {process.pid}:
                 raise RuntimeError("g1_server_listener_owner_mismatch")
             if owners == {process.pid}:
+                load_observation = (checkpoint_load_observation(log_path, policy_type=policy_config.get("type"))
+                                    if require_checkpoint_load_observation else None)
+                if load_observation is not None:
+                    load_observation.update(candidate_id=preflight["candidate_id"],
+                                            candidate_inventory_digest=preflight["candidate_inventory_digest"])
+                    load_observation["receipt_digest"] = canonical_digest(load_observation, digest_field="receipt_digest")
+                    client.checkpoint_load_observation = load_observation
                 try:
                     client.reset(seed=0)
                 except (OSError, TimeoutError, ConnectionError):
@@ -321,7 +353,8 @@ def start_g1_policy_server(
                             "reset_ack_verified": True,
                             "listener_owner_verified": True,
                             "checkpoint_bytes_verified": True,
-                            "loaded_checkpoint_identity_observed": False,
+                            "loaded_checkpoint_identity_observed": load_observation is not None,
+                            **({"checkpoint_load_observation": load_observation} if load_observation is not None else {}),
                             "inference_observed": False,
                             "task_outcome_observed": False,
                             "inference_timeout_policy": timeout_policy,

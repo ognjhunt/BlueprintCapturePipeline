@@ -3083,10 +3083,226 @@
       },
       "runtime": null,
       "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "humanoidarena_dp_g1_dex3_sonic",
+      "configuration_digest": "sha256:7642740f48911d8237591536827ef1327c6d92d41ae456093cf95d42009643be",
+      "deployment": {
+        "companies": [
+          "Unitree"
+        ],
+        "configuration_id": "unitree_g1_dex3_sonic_v1",
+        "evidence_url": "https://github.com/William-wAng618/HumanoidArena/tree/68479287a784a69be9ce6ad739311d2f11f75ef9",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "HumanoidArena DP G1 / Dex3 / SONIC manipulation",
+      "eligibility": {
+        "blockers": [],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": true,
+        "license_id": "publisher-apache-2-inherited-terms-and-sonic-oml",
+        "license_note": "Existing exact model/source/SONIC terms reviewed for internal development. A current task/capture authority and exact G1 scene remain required; no public media or model redistribution grant.",
+        "requires_credentials": []
+      },
+      "interface": {
+        "action_horizon": 20,
+        "action_schema_id": "humanoidarena_semantic_v3",
+        "camera_roles": [
+          "head"
+        ],
+        "control_hz": 50,
+        "execution_horizon": 20,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 480,
+        "image_preprocessing": "publisher_checkpoint_preprocessor_once",
+        "image_width": 640,
+        "normalization_digest": "sha256:4174cf9328a6103c1009c7afcf1211f11236a0b49043b578ae17b609d03c7d21",
+        "observation_profile_id": "humanoidarena_head_rgb_state64_v1",
+        "policy_interface_id": "humanoidarena_semantic_v3",
+        "robot_profile_id": "unitree_g1_dex3_sonic_v1"
+      },
+      "policy": {
+        "digest": "sha256:0cb71830d1ff4ac5e6db73c558656de50a0a8cae44ead94c741e44f6688d6da1",
+        "digest_kind": "pinned_runtime_file_inventory",
+        "kind": "checkpoint",
+        "revision": "sha256-pinned-file-inventory:0cb71830d1ff4ac5e6db73c558656de50a0a8cae44ead94c741e44f6688d6da1",
+        "source": "https://modelscope.cn/models/Twang2026/HumanoidArena_models"
+      },
+      "runtime": {
+        "backend": "native_g1.v1",
+        "minimum_gpu_memory_gb": 48,
+        "runtime_id": "native_g1_beta_session.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "humanoidarena_pi05_g1_dex3_sonic",
+      "configuration_digest": "sha256:98530d80577e61eba52599d9578d7bead1faec33502bf4edea4dbb2d8d604397",
+      "deployment": {
+        "companies": [
+          "Unitree"
+        ],
+        "configuration_id": "unitree_g1_dex3_sonic_v1",
+        "evidence_url": "https://github.com/William-wAng618/HumanoidArena/tree/68479287a784a69be9ce6ad739311d2f11f75ef9",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "HumanoidArena \u03c00.5 G1 / Dex3 / SONIC manipulation",
+      "eligibility": {
+        "blockers": [],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": true,
+        "license_id": "publisher-apache-2-inherited-terms-and-sonic-oml",
+        "license_note": "Existing exact model/source/SONIC terms reviewed for internal development. A current task/capture authority and exact G1 scene remain required; no public media or model redistribution grant.",
+        "requires_credentials": []
+      },
+      "interface": {
+        "action_horizon": 20,
+        "action_schema_id": "humanoidarena_semantic_v3",
+        "camera_roles": [
+          "head"
+        ],
+        "control_hz": 50,
+        "execution_horizon": 20,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 480,
+        "image_preprocessing": "publisher_checkpoint_preprocessor_once",
+        "image_width": 640,
+        "normalization_digest": "sha256:2712d85c87fe9f72c20713eb800b69f6746ae66f454c690d09a6d840300ee9bf",
+        "observation_profile_id": "humanoidarena_head_rgb_state64_v1",
+        "policy_interface_id": "humanoidarena_semantic_v3",
+        "robot_profile_id": "unitree_g1_dex3_sonic_v1"
+      },
+      "policy": {
+        "digest": "sha256:aa6ae0c8ab888c264a002bc6474b2b3a3f8b898d72cf427428aa0b374d9e706f",
+        "digest_kind": "pinned_runtime_file_inventory",
+        "kind": "checkpoint",
+        "revision": "sha256-pinned-file-inventory:aa6ae0c8ab888c264a002bc6474b2b3a3f8b898d72cf427428aa0b374d9e706f",
+        "source": "https://modelscope.cn/models/Twang2026/HumanoidArena_models"
+      },
+      "runtime": {
+        "backend": "native_g1.v1",
+        "minimum_gpu_memory_gb": 48,
+        "runtime_id": "native_g1_beta_session.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "humanoidarena_dp_g1_dex3_sonic_vision_navi",
+      "configuration_digest": "sha256:2098a7f8893f19a118794c1498e811d4a2a05393e400775931f5136b208df2f4",
+      "deployment": {
+        "companies": [
+          "Unitree"
+        ],
+        "configuration_id": "unitree_g1_dex3_sonic_v1",
+        "evidence_url": "https://github.com/William-wAng618/HumanoidArena/tree/68479287a784a69be9ce6ad739311d2f11f75ef9",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "HumanoidArena DP G1 / Dex3 / SONIC navigation",
+      "eligibility": {
+        "blockers": [],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": true,
+        "license_id": "publisher-apache-2-inherited-terms-and-sonic-oml",
+        "license_note": "Existing exact model/source/SONIC terms reviewed for internal development. A current task/capture authority and exact G1 scene remain required; no public media or model redistribution grant.",
+        "requires_credentials": []
+      },
+      "interface": {
+        "action_horizon": 20,
+        "action_schema_id": "humanoidarena_semantic_v3",
+        "camera_roles": [
+          "head"
+        ],
+        "control_hz": 50,
+        "execution_horizon": 20,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 480,
+        "image_preprocessing": "publisher_checkpoint_preprocessor_once",
+        "image_width": 640,
+        "normalization_digest": "sha256:93e85e2bfb11d5aefff098491851b7796449da3059fbc894c1678b65fe83e6bc",
+        "observation_profile_id": "humanoidarena_head_rgb_state64_v1",
+        "policy_interface_id": "humanoidarena_semantic_v3",
+        "robot_profile_id": "unitree_g1_dex3_sonic_v1"
+      },
+      "policy": {
+        "digest": "sha256:a679eff7ddabf60ec80223beb51dfb613a9079dc539e4172864f108bf080708d",
+        "digest_kind": "pinned_runtime_file_inventory",
+        "kind": "checkpoint",
+        "revision": "sha256-pinned-file-inventory:a679eff7ddabf60ec80223beb51dfb613a9079dc539e4172864f108bf080708d",
+        "source": "https://modelscope.cn/models/Twang2026/HumanoidArena_models"
+      },
+      "runtime": {
+        "backend": "native_g1.v1",
+        "minimum_gpu_memory_gb": 48,
+        "runtime_id": "native_g1_beta_session.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
+    },
+    {
+      "candidate_id": "humanoidarena_pi05_g1_dex3_sonic_vision_navi",
+      "configuration_digest": "sha256:5427de0effca0da39dd4fe0d5cb77085b536a6524c0679a750649ef3cbc61245",
+      "deployment": {
+        "companies": [
+          "Unitree"
+        ],
+        "configuration_id": "unitree_g1_dex3_sonic_v1",
+        "evidence_url": "https://github.com/William-wAng618/HumanoidArena/tree/68479287a784a69be9ce6ad739311d2f11f75ef9",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "HumanoidArena \u03c00.5 G1 / Dex3 / SONIC navigation",
+      "eligibility": {
+        "blockers": [],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": true,
+        "license_id": "publisher-apache-2-inherited-terms-and-sonic-oml",
+        "license_note": "Existing exact model/source/SONIC terms reviewed for internal development. A current task/capture authority and exact G1 scene remain required; no public media or model redistribution grant.",
+        "requires_credentials": []
+      },
+      "interface": {
+        "action_horizon": 20,
+        "action_schema_id": "humanoidarena_semantic_v3",
+        "camera_roles": [
+          "head"
+        ],
+        "control_hz": 50,
+        "execution_horizon": 20,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 480,
+        "image_preprocessing": "publisher_checkpoint_preprocessor_once",
+        "image_width": 640,
+        "normalization_digest": "sha256:34c09faab47c80a494ececdedd5aad8201618ddcda7a80d13230f590f08b4304",
+        "observation_profile_id": "humanoidarena_head_rgb_state64_v1",
+        "policy_interface_id": "humanoidarena_semantic_v3",
+        "robot_profile_id": "unitree_g1_dex3_sonic_v1"
+      },
+      "policy": {
+        "digest": "sha256:f305ac7cc70a01c1de7aa38a185ec749079ab721a1ec34e0f85a2cd3eee77398",
+        "digest_kind": "pinned_runtime_file_inventory",
+        "kind": "checkpoint",
+        "revision": "sha256-pinned-file-inventory:f305ac7cc70a01c1de7aa38a185ec749079ab721a1ec34e0f85a2cd3eee77398",
+        "source": "https://modelscope.cn/models/Twang2026/HumanoidArena_models"
+      },
+      "runtime": {
+        "backend": "native_g1.v1",
+        "minimum_gpu_memory_gb": 48,
+        "runtime_id": "native_g1_beta_session.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ]
     }
   ],
-  "catalog_digest": "sha256:b121363541663aa3e8735acabb599c9a3f7cf8f031a8af8f9339662f181ba273",
+  "catalog_digest": "sha256:0ac304dbb4a430fdf2f48c93e416b8954b8489c7cb2f5c6b108d682514a80549",
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1",
+  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal",
   "schema_version": "beta_policy_candidate_catalog.v1"
 }

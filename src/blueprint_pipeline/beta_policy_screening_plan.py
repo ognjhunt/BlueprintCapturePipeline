@@ -25,6 +25,7 @@ from .beta_policy_candidate_catalog import CANDIDATE_ID_PATTERN, DIGEST_PATTERN,
 from .decision_evidence_contracts import canonical_digest
 from .team_evaluation_plan import scored_cells
 from .task_family_policy_execution import FAMILY_BACKEND, family_policy_execution_binding
+from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES, frozen_cells as g1_cells
 
 PLAN_SCHEMA_VERSION = "beta_policy_screening_plan.v1"
 EXECUTION_SCHEMA_VERSION = "blueprint.beta_policy_screening_execution.v1"
@@ -110,7 +111,7 @@ def validate_execution_descriptor(value: Mapping[str, Any], *, candidate_id: str
     if (set(result) - required - {"machine_avoidlist_path", "credential_file", "team_robot_model", "minimum_gpu_memory_gb"} - _HOSTED_COST_FIELDS
             or required - set(result)
             or result["schema_version"] != EXECUTION_SCHEMA_VERSION
-            or result["backend"] not in {"robolab.v1", FAMILY_BACKEND}
+            or result["backend"] not in {"robolab.v1", FAMILY_BACKEND, G1_BACKEND}
             or result["candidate_id"] != candidate_id
             or result["configuration_digest"] != configuration_digest):
         raise BetaPolicyScreeningPlanError("beta_screening_execution_binding_invalid")
@@ -339,7 +340,7 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
     if candidate["eligibility"]["commercial_use"] not in {"allowed", "allowed_with_conditions"}:
         blockers.append("commercial_use_not_admitted")
     pinned_runtime = (candidate["policy"]["digest_kind"] == "pinned_runtime_file_inventory"
-                      and (candidate.get("interface") or {}).get("policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1", "molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1", "cosmos_nano_droid.v1"})
+                      and (candidate.get("interface") or {}).get("policy_interface_id") in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1", "molmoact2_yam_joint14.v1", "molmoact2_droid_joint8.v1", "cosmos_nano_droid.v1", "humanoidarena_semantic_v3"})
     pinned_runtime = pinned_runtime or (candidate["policy"]["kind"] == "scripted"
         and candidate["policy"]["digest_kind"] == "source_code_inventory"
         and (candidate.get("interface") or {}).get("policy_interface_id") == "blueprint_scripted_pick_place.v1")
@@ -420,6 +421,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                                "status": "unavailable", "blockers": []}
         if candidate["policy"]["kind"] == "scripted":
             row["execution_evidence_kind"] = "scripted_simulator_state_baseline"
+        elif candidate_id in G1_CANDIDATES:
+            row["execution_evidence_kind"] = "learned_policy"
         binding = bindings.get(candidate_id)
         row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials)
         row["blockers"] = sorted(set(row["blockers"] + failures.get(candidate_id, [])))
@@ -448,7 +451,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         row.update(status="selected", admission_digest=binding["admission_digest"],
                    execution_spec=deepcopy(binding["execution_spec"]), cost_quote=quote,
                    max_cost_usd=quote["maximum_cost_usd"], episode_count=episodes_per_candidate,
-                   scenario_cells=deepcopy(cells))
+                   scenario_cells=g1_cells(cells) if spec["backend"] == G1_BACKEND else deepcopy(cells))
         remaining -= maximum
         candidates.append(row)
     plan = {
@@ -556,7 +559,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_invalid")
         candidates.append(_id(row["candidate_id"], "beta_screening_candidate_invalid"))
         evidence_fields = {"execution_evidence_kind"} if "execution_evidence_kind" in row else set()
-        if evidence_fields and row["execution_evidence_kind"] != "scripted_simulator_state_baseline":
+        if evidence_fields and row["execution_evidence_kind"] != "scripted_simulator_state_baseline" and not (
+                row["candidate_id"] in G1_CANDIDATES and row["execution_evidence_kind"] == "learned_policy"):
             raise BetaPolicyScreeningPlanError("beta_screening_evidence_kind_invalid")
         if not _CANDIDATE_ID.fullmatch(row["candidate_id"]):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_invalid")
@@ -571,7 +575,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
             if set(row) - evidence_fields != {"candidate_id", "display_name", "configuration_digest", "status", "blockers", "admission_digest",
                             "execution_spec", "cost_quote", "max_cost_usd", "episode_count", "scenario_cells"}:
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_fields_invalid")
-            if row["blockers"] or row.get("episode_count") != len(cells) or row.get("scenario_cells") != cells:
+            expected_cells = g1_cells(cells) if row.get("execution_spec", {}).get("backend") == G1_BACKEND else cells
+            if row["blockers"] or row.get("episode_count") != len(cells) or row.get("scenario_cells") != expected_cells:
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_cells_invalid")
             _digest(row["configuration_digest"], "beta_screening_configuration_invalid")
             spec = validate_execution_descriptor(row.get("execution_spec", {}), candidate_id=row["candidate_id"],

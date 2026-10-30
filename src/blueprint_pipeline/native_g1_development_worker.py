@@ -116,6 +116,19 @@ def _verify_packet(bundle_root: Path) -> dict[str, Any]:
 def _rights_review(value: Any, *, preflight: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ValueError("g1_worker_rights_review_missing")
+    if value.get("schema_version") in {
+        "native_g1_beta_development_authority.v1", "native_g1_beta_cell_authority.v1"
+    }:
+        from .native_g1_beta_authority import validate_beta_authority, SONIC
+        row = validate_beta_authority(value, candidate_id=preflight.get("candidate_id"),
+            scene_plan_digest=preflight.get("scene_plan_digest"),
+            inventory_file_sha256=preflight.get("inventory_file_sha256"))
+        base = row.get("base_authority", row)
+        if (base["checkpoint_digest"] != preflight.get("candidate_inventory_digest")
+                or (preflight.get("sonic_encoder") or {}).get("sha256") != SONIC["encoder_sha256"]
+                or (preflight.get("sonic_decoder") or {}).get("sha256") != SONIC["decoder_sha256"]):
+            raise ValueError("g1_beta_development_authority_runtime_mismatch")
+        return row
     receipt = dict(value)
     if (
         receipt.get("schema_version") != RIGHTS_SCHEMA
@@ -281,6 +294,12 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
         phase = "rights_review"
         rights = _rights_review(sealed.get("rights_review"), preflight=preflight)
         plan = json.loads(inputs["scene_plan_path"].read_text(encoding="utf-8"))
+        if rights.get("schema_version") in {"native_g1_beta_development_authority.v1", "native_g1_beta_cell_authority.v1"}:
+            from .native_g1_beta_authority import validate_beta_authority, ROBOT_USD_SHA256
+            validate_beta_authority(rights, candidate_id=sealed["candidate_id"], scene_plan_digest=plan["plan_digest"],
+                                   task_success_contract_digest=plan["task_spec"]["task_success_contract_digest"])
+            if plan["robot"].get("usd_sha256") != ROBOT_USD_SHA256:
+                raise ValueError("g1_beta_robot_asset_mismatch")
         if (
             plan.get("plan_digest") != preflight.get("scene_plan_digest")
             or plan.get("task_kind") != "rigid_pick_place"
@@ -291,9 +310,12 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
             phase = "navigation_goal_validation"
             validate_g1_navigation_goal(plan.get("task_spec") or {})
             phase = "navigation_goal_authority_validation"
-            navigation_authority = validate_g1_navigation_goal_authority(
-                sealed.get("navigation_goal_authority"), plan=plan
-            )
+            navigation_record = sealed.get("navigation_goal_authority")
+            if isinstance(navigation_record, Mapping) and navigation_record.get("schema_version") == "native_g1_beta_navigation_authority.v1":
+                from .native_g1_beta_navigation import validate_navigation_authority
+                navigation_authority = validate_navigation_authority(navigation_record, plan=plan, cell_authority=rights)
+            else:
+                navigation_authority = validate_g1_navigation_goal_authority(navigation_record, plan=plan)
         phase = "simulator_launch"
         print("BLUEPRINT_G1_WORKER_PHASE:simulator_launch", flush=True)
         app, launch = _launch_scene(request=sealed, plan=plan)
@@ -342,6 +364,8 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
             output_dir=output_dir / "episode",
             to_tensor=_to_tensor,
             make_action_tensor=torch.tensor,
+            **({"require_checkpoint_load_observation": True} if rights.get("schema_version") in {
+                "native_g1_beta_development_authority.v1", "native_g1_beta_cell_authority.v1"} else {}),
             **({"_registered_use": _registered_use} if _registered_use is not None else {}),
         )
         if episode.get("status") != "completed_development_only":
@@ -377,7 +401,7 @@ def _run_g1_development_worker(*, request: Mapping[str, Any], output_dir: Path,
             "scene_plan_digest": preflight.get("scene_plan_digest") if preflight else None,
             "candidate_id": sealed["candidate_id"],
             "preflight_receipt_digest": canonical_digest(preflight) if preflight else None,
-            "rights_review_digest": rights.get("rights_review_digest") if rights else None,
+            "rights_review_digest": (rights.get("rights_review_digest") or rights.get("authority_digest")) if rights else None,
             "navigation_goal_authority_digest": (
                 navigation_authority["authority_digest"] if navigation_authority else None
             ),

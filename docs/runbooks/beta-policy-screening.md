@@ -2,14 +2,18 @@
 
 For the free beta, a completed customer scene can run a configurable set of
 candidate policies under one persistent **$15 per site** screening allowance.
-The default catalog contains 84 candidate rows: ten original policy candidates
-and one for each of the 74 recorded embodiment–policy routes. The latter span
+The default catalog contains 88 candidate rows: ten original policy candidates,
+one for each of the 74 recorded embodiment–policy routes, and four pinned native
+G1/Dex3/SONIC candidates. The recorded deployment routes span
 16 robot configurations and remain individual planning candidates until their
 exact policy identity, rights, robot, interface and runtime are bound. Five DROID
 candidates have default runtime implementations: pi05, GR00T N1.7, Cosmos 3 Edge,
 Cosmos 3 Nano and MolmoAct2. That does not establish a completed simulation on
-the current task. Every other row reports its specific availability, licensing,
-adapter or credential reason.
+the current task. The native G1 candidates use their dedicated whole-body
+worker and require an exact current-task G1 scene packet. Missing scene, policy,
+rights, adapter or credentials remain individual reasons. See
+[native G1 screening](native-g1-beta-screening.md) for the internal-development
+authority and result boundaries.
 Catalog entries alone never authorize a run.
 
 Scripted simulator-state baselines retain a separate execution identity in

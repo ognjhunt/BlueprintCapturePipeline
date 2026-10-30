@@ -234,3 +234,63 @@ def test_supervisor_binds_reviewed_compilation_first_inference_allowance(
         "automatic_retries": 0,
     }
     assert lease.close()["status"] == "child_exited"
+
+
+@pytest.mark.parametrize("policy_type,loader_log", [
+    ("pi05", "All keys loaded successfully!\n"),
+    ("diffusion", "Loading weights from local directory\n"),
+])
+def test_beta_requires_loaded_checkpoint_before_reset(tmp_path, monkeypatch, policy_type, loader_log):
+    args = _launch_inputs(tmp_path, monkeypatch)
+    (tmp_path / "checkpoints/small/model/config.json").write_text(json.dumps({"type": policy_type}))
+    process, launched = _Process(), []
+
+    def popen(argv, **kwargs):
+        launched.append(argv)
+        kwargs["stdout"].write(loader_log)
+        kwargs["stdout"].flush()
+        return process
+
+    lease = supervisor.start_g1_policy_server(**args, require_checkpoint_load_observation=True,
+        owner_reader=lambda port: {process.pid}, popen_factory=popen)
+    assert launched[0][1] == "-u"
+    assert lease.client.resets == [0]
+    observed = lease.client.checkpoint_load_observation
+    assert observed == lease.receipt["checkpoint_load_observation"]
+    assert observed["candidate_id"] == "dp"
+    assert observed["candidate_inventory_digest"] == "sha256:" + "b" * 64
+    assert observed["source_revision"] == supervisor.PINNED_SOURCE_REVISION
+    assert observed["loader_completed"] is True
+    assert observed["inference_observed"] is False
+    assert lease.receipt["loaded_checkpoint_identity_observed"] is True
+    lease.close()
+
+
+@pytest.mark.parametrize("loader_log", [
+    "HTTP server ready\n",
+    "Returning model without loading pretrained weights\n",
+    "All keys loaded successfully!\nWarning: Could not load state dict: mismatch\n",
+    "All keys loaded successfully!\nMissing keys when loading state dict: ['weight']\n",
+    "All keys loaded successfully!\nUnexpected keys when loading state dict: ['weight']\n",
+])
+def test_beta_ready_listener_cannot_hide_missing_or_partial_pi_weights(tmp_path, monkeypatch, loader_log):
+    args = _launch_inputs(tmp_path, monkeypatch)
+    (tmp_path / "checkpoints/small/model/config.json").write_text(json.dumps({"type": "pi05"}))
+    process, clients = _Process(), []
+
+    def client_factory(**kwargs):
+        client = _Client(**kwargs)
+        clients.append(client)
+        return client
+
+    def popen(argv, **kwargs):
+        kwargs["stdout"].write(loader_log)
+        kwargs["stdout"].flush()
+        return process
+
+    args["client_factory"] = client_factory
+    with pytest.raises(ValueError, match="checkpoint_load_unverified"):
+        supervisor.start_g1_policy_server(**args, require_checkpoint_load_observation=True,
+            owner_reader=lambda port: {process.pid}, popen_factory=popen)
+    assert process.terminated is True
+    assert clients[0].resets == []
