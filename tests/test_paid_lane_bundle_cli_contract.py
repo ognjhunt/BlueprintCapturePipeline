@@ -48,6 +48,11 @@ BUNDLE_MODULES_WITHOUT_AN_ENTRYPOINT = {
     "cosmos_edge_closed_loop_provider_bundle.py",
     # Generic Arena bundle is a shared library, not a launch entry point.
     "native_task_arena_bundle.py",
+    # beta_policy_screening_g1_launch.prepare_candidate rebuilds this library
+    # automatically for each new attempt at the current implementation commit.
+    # test_native_g1_beta_automatic_bundle.py executes that public launch path
+    # and checks current-commit binding, resume, and stale-commit/source refusal.
+    "native_g1_beta_bundle.py",
     # ADP-009D diagnostics and the launch qualification bundle.
     "adp009d_native_microcheck_bundle.py",
     "articulated_isaac_bundle.py",

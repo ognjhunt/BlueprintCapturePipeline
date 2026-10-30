@@ -233,6 +233,8 @@ def run_g1_shared_scene_episode(
             "team_policy_profile_digest": team_policy_profile_digest,
             "query": dict(query),
             "action_chunk": chunk,
+            **({"checkpoint_load_observation": policy_client.checkpoint_load_observation}
+               if getattr(policy_client, "checkpoint_load_observation", None) is not None else {}),
         }
         checkpoint["checkpoint_digest"] = canonical_digest(
             checkpoint, digest_field="checkpoint_digest"

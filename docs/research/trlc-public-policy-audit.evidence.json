@@ -1,0 +1,842 @@
+{
+  "checkpoint_source_revision_published": false,
+  "claim_ceiling": "public_metadata_and_source_audit_no_model_execution",
+  "dataset_repository": "Gongsta/trlc_tshirt_folding",
+  "dataset_revision_observed": "2fb972f237989ff01ed59a818834fdf3e1537734",
+  "dataset_revision_pinned_by_training": false,
+  "feature_schema": {
+    "action": {
+      "dtype": "float32",
+      "names": [
+        "left_joint_1.pos",
+        "left_joint_2.pos",
+        "left_joint_3.pos",
+        "left_joint_4.pos",
+        "left_joint_5.pos",
+        "left_joint_6.pos",
+        "left_gripper.pos",
+        "right_joint_1.pos",
+        "right_joint_2.pos",
+        "right_joint_3.pos",
+        "right_joint_4.pos",
+        "right_joint_5.pos",
+        "right_joint_6.pos",
+        "right_gripper.pos",
+        "left_ee.x",
+        "left_ee.y",
+        "left_ee.z",
+        "left_ee.wx",
+        "left_ee.wy",
+        "left_ee.wz",
+        "left_ee.gripper_pos",
+        "right_ee.x",
+        "right_ee.y",
+        "right_ee.z",
+        "right_ee.wx",
+        "right_ee.wy",
+        "right_ee.wz",
+        "right_ee.gripper_pos"
+      ],
+      "shape": [
+        28
+      ]
+    },
+    "episode_index": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "frame_index": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "index": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "observation.images.left_wrist": {
+      "dtype": "video",
+      "info": {
+        "has_audio": false,
+        "video.channels": 3,
+        "video.codec": "av1",
+        "video.fps": 30,
+        "video.height": 540,
+        "video.is_depth_map": false,
+        "video.pix_fmt": "yuv420p",
+        "video.width": 960
+      },
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ],
+      "shape": [
+        540,
+        960,
+        3
+      ]
+    },
+    "observation.images.right_wrist": {
+      "dtype": "video",
+      "info": {
+        "has_audio": false,
+        "video.channels": 3,
+        "video.codec": "av1",
+        "video.fps": 30,
+        "video.height": 540,
+        "video.is_depth_map": false,
+        "video.pix_fmt": "yuv420p",
+        "video.width": 960
+      },
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ],
+      "shape": [
+        540,
+        960,
+        3
+      ]
+    },
+    "observation.images.top": {
+      "dtype": "video",
+      "info": {
+        "has_audio": false,
+        "video.channels": 3,
+        "video.codec": "av1",
+        "video.fps": 30,
+        "video.height": 600,
+        "video.is_depth_map": false,
+        "video.pix_fmt": "yuv420p",
+        "video.width": 800
+      },
+      "names": [
+        "height",
+        "width",
+        "channels"
+      ],
+      "shape": [
+        600,
+        800,
+        3
+      ]
+    },
+    "observation.state": {
+      "dtype": "float32",
+      "names": [
+        "left_joint_1.pos",
+        "left_joint_2.pos",
+        "left_joint_3.pos",
+        "left_joint_4.pos",
+        "left_joint_5.pos",
+        "left_joint_6.pos",
+        "left_gripper.pos",
+        "right_joint_1.pos",
+        "right_joint_2.pos",
+        "right_joint_3.pos",
+        "right_joint_4.pos",
+        "right_joint_5.pos",
+        "right_joint_6.pos",
+        "right_gripper.pos"
+      ],
+      "shape": [
+        14
+      ]
+    },
+    "task_index": {
+      "dtype": "int64",
+      "names": null,
+      "shape": [
+        1
+      ]
+    },
+    "timestamp": {
+      "dtype": "float32",
+      "names": null,
+      "shape": [
+        1
+      ]
+    }
+  },
+  "model_repository": "djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged",
+  "model_revision": "10466a133c74018465c6839b7003b700775e4f69",
+  "model_weight_bytes_downloaded": 0,
+  "model_weight_published_identity": {
+    "lfs": {
+      "oid": "1b9086d511dc534ce8ceb0a119912fbf27325cb44643b3dd6821d8135d3db2ad",
+      "pointerSize": 135,
+      "size": 7473096344
+    },
+    "oid": "e3aaafdd12d5e984428f4169b245135b5c7cc9ed",
+    "path": "model.safetensors",
+    "size": 7473096344,
+    "type": "file",
+    "xetHash": "a9833af8b9466c70f18d3f0e38f364fa5b62a002617459176d88f06970c5a685"
+  },
+  "normalization_comparisons": [
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "action.mean",
+      "shape": [
+        28
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "action.std",
+      "shape": [
+        28
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "action.min",
+      "shape": [
+        28
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "action.max",
+      "shape": [
+        28
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "action.q01",
+      "shape": [
+        28
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "action.q99",
+      "shape": [
+        28
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "observation.state.mean",
+      "shape": [
+        14
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "observation.state.std",
+      "shape": [
+        14
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "observation.state.min",
+      "shape": [
+        14
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "observation.state.max",
+      "shape": [
+        14
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "observation.state.q01",
+      "shape": [
+        14
+      ]
+    },
+    {
+      "matches_dataset_float32": true,
+      "max_abs_diff": 0.0,
+      "name": "observation.state.q99",
+      "shape": [
+        14
+      ]
+    }
+  ],
+  "observed_date": "2026-10-30",
+  "retained_files": [
+    {
+      "name": "pi05-trlc-dagger-uniform-20260323-1k-v5--checkpoint_info.json",
+      "sha256": "1dd2ea97012ce8c80c595c020b8bb4898acc508afe40ee6ffbe7aaf73c02998b",
+      "size_bytes": 1889,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dagger-uniform-20260323-1k-v5/resolve/f3696a007491b6e881b7326e9d32dd6823ca2a05/checkpoint_info.json"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1500-v1--checkpoint_info.json",
+      "sha256": "8424822554b284bd1f5c15e0168a7c23dc2b93122252aaef14d9634a6622a4d4",
+      "size_bytes": 2380,
+      "url": "https://huggingface.co/djkesu/trlc-mixed10-basepi05-step1500-v1/resolve/9db0f28ff925eca0525f48a9b3519819e56fe197/checkpoint_info.json"
+    },
+    {
+      "name": "pi05-trlc-dk1-corrections-openpi-from1k-step999-v1--checkpoint_info.json",
+      "sha256": "485518029709f6fc447f1ca5be78545dc470763ed2dfc6b06269cff3d8ea263a",
+      "size_bytes": 1909,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dk1-corrections-openpi-from1k-step999-v1/resolve/3b446916363f7f34584e9924e5af80a3218fedfb/checkpoint_info.json"
+    },
+    {
+      "name": "pi05-trlc-dagger-dk1-tshirt-step4999-v1--checkpoint_info.json",
+      "sha256": "f64b0a32a3ae2232dfb0d3e8e6ae9484ed4f846129a1d8a1583689f6ad4d11e8",
+      "size_bytes": 1870,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dagger-dk1-tshirt-step4999-v1/resolve/a19ddc7d1ebe3b29aa3a165d7d42f06d8855112e/checkpoint_info.json"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1000-v1--checkpoint_info.json",
+      "sha256": "fc6ad52b2c3cb200cb09884f181c38bbec63dd7f3c25f723867c0a62f83fe06b",
+      "size_bytes": 2284,
+      "url": "https://huggingface.co/djkesu/trlc-mixed10-basepi05-step1000-v1/resolve/989ca463a5aba3ce2c4472149ee666b278a9586b/checkpoint_info.json"
+    },
+    {
+      "name": "official-follower.py",
+      "sha256": "25f0aac019c283ba33e9cc1045bc7ee878248e31ed6c09d8061924eb5e070ac4",
+      "size_bytes": 12602,
+      "url": "https://raw.githubusercontent.com/robot-learning-co/trlc-dk1/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/lerobot_robot_trlc_dk1/follower.py"
+    },
+    {
+      "name": "official-bi-follower.py",
+      "sha256": "29005013ab3314527f8d084bc92d85b9025736fc0c7e3972ab741a469a928f93",
+      "size_bytes": 5673,
+      "url": "https://raw.githubusercontent.com/robot-learning-co/trlc-dk1/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/lerobot_robot_trlc_dk1/bi_follower.py"
+    },
+    {
+      "name": "official-robot.py",
+      "sha256": "b75a3a6e100251694bd9744b78ed7b377c291212a7d450de0d17ccbda9183199",
+      "size_bytes": 11891,
+      "url": "https://raw.githubusercontent.com/robot-learning-co/trlc-dk1/12f5368aefd0381461f2c7ffbb5611b4e8c90de9/trlc_dk1_control/robot.py"
+    },
+    {
+      "name": "model-card.md",
+      "sha256": "5916bef5353aa251d59ad4434680c7df504431a0f5c6139b19a3384169dac68c",
+      "size_bytes": 2140,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/README.md"
+    },
+    {
+      "name": "train_config.json",
+      "sha256": "b54c02998b3ca0552cc24f0547b772f53366e0a73b13e6b8286912ed1dd9fc44",
+      "size_bytes": 6968,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/train_config.json"
+    },
+    {
+      "name": "merge_metadata.json",
+      "sha256": "ada6b4d6bbb0a7c772c4ba2dfb24004653debe804b100398beb07cbf937cc0fd",
+      "size_bytes": 553,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/merge_metadata.json"
+    },
+    {
+      "name": "policy_preprocessor.json",
+      "sha256": "9cf8326a253b7b071dfcabfc6b6b607e9d8c27d36eeb1e8c2c4a7953e0216606",
+      "size_bytes": 1906,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/policy_preprocessor.json"
+    },
+    {
+      "name": "policy_postprocessor.json",
+      "sha256": "0a0dfae53926f741f2f80df2bd10a98dae980b7a3c96e76971e82c230abfa2b4",
+      "size_bytes": 663,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/policy_postprocessor.json"
+    },
+    {
+      "name": "policy_preprocessor_step_2_normalizer_processor.safetensors",
+      "sha256": "be756f317fa7659062d7745ea831097ebf15c7689efd89a8d75fd8dd0ee4b740",
+      "size_bytes": 9920,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/policy_preprocessor_step_2_normalizer_processor.safetensors"
+    },
+    {
+      "name": "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+      "sha256": "be756f317fa7659062d7745ea831097ebf15c7689efd89a8d75fd8dd0ee4b740",
+      "size_bytes": 9920,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/policy_postprocessor_step_0_unnormalizer_processor.safetensors"
+    },
+    {
+      "name": "trlc-model-search.json",
+      "sha256": "3e0ed5bd4f669a622d8421db27715f7909d27a511d83a1743d5645f3c94fd7c8",
+      "size_bytes": 55686,
+      "url": "https://huggingface.co/api/models?search=trlc&limit=100&full=true"
+    },
+    {
+      "name": "dataset-metadata.json",
+      "sha256": "783f4cac64dba8073f2a5b446d83c59e684871c9d43bb0228978fd3423fe3ceb",
+      "size_bytes": 18146,
+      "url": "https://huggingface.co/api/datasets/Gongsta/trlc_tshirt_folding"
+    },
+    {
+      "name": "dataset-README.md",
+      "sha256": "00174099f9b85cba7f838de597893cb9b043dfefee118d87daf4f4fcf468ab7b",
+      "size_bytes": 5810,
+      "url": "https://huggingface.co/datasets/Gongsta/trlc_tshirt_folding/resolve/2fb972f237989ff01ed59a818834fdf3e1537734/README.md"
+    },
+    {
+      "name": "dataset-meta-info.json",
+      "sha256": "ac5e31a053a143c17b05e9592be79393bdcf169ee41d23017dac1511c310e450",
+      "size_bytes": 4929,
+      "url": "https://huggingface.co/datasets/Gongsta/trlc_tshirt_folding/resolve/2fb972f237989ff01ed59a818834fdf3e1537734/meta/info.json"
+    },
+    {
+      "name": "dataset-meta-stats.json",
+      "sha256": "ec4f4b6f90109c1869cf92ce5f12eead555756586aba8441c2632af7143c709b",
+      "size_bytes": 24954,
+      "url": "https://huggingface.co/datasets/Gongsta/trlc_tshirt_folding/resolve/2fb972f237989ff01ed59a818834fdf3e1537734/meta/stats.json"
+    },
+    {
+      "name": "dataset-meta-tasks.parquet",
+      "sha256": "53dee82174badb0ec2188f074fb6071ad9b63efa20181dbef12aec434aad4414",
+      "size_bytes": 2157,
+      "url": "https://huggingface.co/datasets/Gongsta/trlc_tshirt_folding/resolve/2fb972f237989ff01ed59a818834fdf3e1537734/meta/tasks.parquet"
+    },
+    {
+      "name": "pi05_trlc_abs_a100x2_fast_v1--README.md",
+      "sha256": "8f9effa764cd0cc494ade9f3b4fdd1997ba0ab172d40b3f3a625c799e811471d",
+      "size_bytes": 1164,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_abs_a100x2_fast_v1/resolve/60a92af48f47b52a832746129a70fa55dc9871f7/README.md"
+    },
+    {
+      "name": "pi05_trlc_abs_a100x2_fast_v1--config.json",
+      "sha256": "f3f0fe201f1d28372642af5d008ce801a8344d038a96052379eb1a892120e4bf",
+      "size_bytes": 1880,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_abs_a100x2_fast_v1/resolve/60a92af48f47b52a832746129a70fa55dc9871f7/config.json"
+    },
+    {
+      "name": "pi05_trlc_abs_a100x2_fast_v1--policy_preprocessor.json",
+      "sha256": "3a8de84a88d68b4ac2e29f495689dc574bfe6ce68d7713958156971c8b0de465",
+      "size_bytes": 1546,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_abs_a100x2_fast_v1/resolve/60a92af48f47b52a832746129a70fa55dc9871f7/policy_preprocessor.json"
+    },
+    {
+      "name": "pi05_trlc_abs_a100x2_fast_v1--policy_postprocessor.json",
+      "sha256": "7e721aeab8736709ba60948f4c96ea9b14a88bb4c7baaf20afd7ba1eada8ed0d",
+      "size_bytes": 663,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_abs_a100x2_fast_v1/resolve/60a92af48f47b52a832746129a70fa55dc9871f7/policy_postprocessor.json"
+    },
+    {
+      "name": "pi05_trlc_delta_a100x2_fast_v1--README.md",
+      "sha256": "2748a5fbeb6743ce65dc966ceb6853bfe8fc26cae2221f59d4bdc1f57af9e0a4",
+      "size_bytes": 1284,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_delta_a100x2_fast_v1/resolve/f1617fc1ae3d0790b9c3e3655fc84a9bc0cafdc8/README.md"
+    },
+    {
+      "name": "pi05_trlc_delta_a100x2_fast_v1--config.json",
+      "sha256": "f3f0fe201f1d28372642af5d008ce801a8344d038a96052379eb1a892120e4bf",
+      "size_bytes": 1880,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_delta_a100x2_fast_v1/resolve/f1617fc1ae3d0790b9c3e3655fc84a9bc0cafdc8/config.json"
+    },
+    {
+      "name": "pi05_trlc_delta_a100x2_fast_v1--policy_preprocessor.json",
+      "sha256": "3a8de84a88d68b4ac2e29f495689dc574bfe6ce68d7713958156971c8b0de465",
+      "size_bytes": 1546,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_delta_a100x2_fast_v1/resolve/f1617fc1ae3d0790b9c3e3655fc84a9bc0cafdc8/policy_preprocessor.json"
+    },
+    {
+      "name": "pi05_trlc_delta_a100x2_fast_v1--policy_postprocessor.json",
+      "sha256": "7e721aeab8736709ba60948f4c96ea9b14a88bb4c7baaf20afd7ba1eada8ed0d",
+      "size_bytes": 663,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_delta_a100x2_fast_v1/resolve/f1617fc1ae3d0790b9c3e3655fc84a9bc0cafdc8/policy_postprocessor.json"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step500--README.md",
+      "sha256": "d2ecb2b28d5cca4b82107c1ca125be3f519f7221f7a45b3291313fc9e6003c11",
+      "size_bytes": 759,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step500/resolve/2d7d031d7802f549eca3a59334c72b5372381d48/README.md"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step500--config.json",
+      "sha256": "c1c502718fd5c6968080fc70e0a297c23ba836c4c4f30166bee0c0070dbb8de8",
+      "size_bytes": 563,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step500/resolve/2d7d031d7802f549eca3a59334c72b5372381d48/config.json"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step1000--README.md",
+      "sha256": "4fc5e3ebe08f720c6f95d44d3b7d5653c327ac52d9ba384248c36671c9f9a4e7",
+      "size_bytes": 759,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step1000/resolve/66ddb42e9a8608a3dfd9e8257cc3de560208efac/README.md"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step1000--config.json",
+      "sha256": "c1c502718fd5c6968080fc70e0a297c23ba836c4c4f30166bee0c0070dbb8de8",
+      "size_bytes": 563,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step1000/resolve/66ddb42e9a8608a3dfd9e8257cc3de560208efac/config.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000--README.md",
+      "sha256": "5916bef5353aa251d59ad4434680c7df504431a0f5c6139b19a3384169dac68c",
+      "size_bytes": 2140,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000/resolve/597226be3209313f42dde313b5201f31bf0c66ec/README.md"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000--config.json",
+      "sha256": "4e16db7271457b4a433b71ab216cead660cb5a833fcf81baee4ffdec0866e21e",
+      "size_bytes": 2396,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000/resolve/597226be3209313f42dde313b5201f31bf0c66ec/config.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000--train_config.json",
+      "sha256": "571bcacde2d0daa9be34743a6229a1f1e5c2d470347aae59d3c4699ed40dc61d",
+      "size_bytes": 6996,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000/resolve/597226be3209313f42dde313b5201f31bf0c66ec/train_config.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000--policy_preprocessor.json",
+      "sha256": "9cf8326a253b7b071dfcabfc6b6b607e9d8c27d36eeb1e8c2c4a7953e0216606",
+      "size_bytes": 1906,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000/resolve/597226be3209313f42dde313b5201f31bf0c66ec/policy_preprocessor.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000--policy_postprocessor.json",
+      "sha256": "0a0dfae53926f741f2f80df2bd10a98dae980b7a3c96e76971e82c230abfa2b4",
+      "size_bytes": 663,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000/resolve/597226be3209313f42dde313b5201f31bf0c66ec/policy_postprocessor.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged--README.md",
+      "sha256": "5916bef5353aa251d59ad4434680c7df504431a0f5c6139b19a3384169dac68c",
+      "size_bytes": 2140,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/README.md"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged--config.json",
+      "sha256": "7d6f32df94ab49bffba6779eaa27f7c83d9f12ab95887a17f0bd10d4f665bda2",
+      "size_bytes": 2244,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/config.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged--train_config.json",
+      "sha256": "b54c02998b3ca0552cc24f0547b772f53366e0a73b13e6b8286912ed1dd9fc44",
+      "size_bytes": 6968,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/train_config.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged--policy_preprocessor.json",
+      "sha256": "9cf8326a253b7b071dfcabfc6b6b607e9d8c27d36eeb1e8c2c4a7953e0216606",
+      "size_bytes": 1906,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/policy_preprocessor.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged--policy_postprocessor.json",
+      "sha256": "0a0dfae53926f741f2f80df2bd10a98dae980b7a3c96e76971e82c230abfa2b4",
+      "size_bytes": 663,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/policy_postprocessor.json"
+    },
+    {
+      "name": "pi05-trlc-dagger-uniform-20260323-1k-v5--README.md",
+      "sha256": "3dfbc438059e241669435f63fa6866a9961023237ad5785cc994a0453af016d6",
+      "size_bytes": 1264,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dagger-uniform-20260323-1k-v5/resolve/f3696a007491b6e881b7326e9d32dd6823ca2a05/README.md"
+    },
+    {
+      "name": "pi05-trlc-dk1-corrections-openpi-from1k-step999-v1--README.md",
+      "sha256": "8d51f72cf6982957ac4b6651204b9b89cb10d6611a6c14b507fc0635f37756f3",
+      "size_bytes": 1286,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dk1-corrections-openpi-from1k-step999-v1/resolve/3b446916363f7f34584e9924e5af80a3218fedfb/README.md"
+    },
+    {
+      "name": "pi05-trlc-dagger-dk1-tshirt-step4999-v1--README.md",
+      "sha256": "86b072419d1a0a51c71c3a4f7c864de9dde857bd1de07f3c71c72f087fc5dc1a",
+      "size_bytes": 1198,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dagger-dk1-tshirt-step4999-v1/resolve/a19ddc7d1ebe3b29aa3a165d7d42f06d8855112e/README.md"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1000-v1--README.md",
+      "sha256": "ca5470f6f18a6a6e8e09dae36db6f1a43d322de8586650ab6876790c83872c42",
+      "size_bytes": 1301,
+      "url": "https://huggingface.co/djkesu/trlc-mixed10-basepi05-step1000-v1/resolve/989ca463a5aba3ce2c4472149ee666b278a9586b/README.md"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1500-v1--README.md",
+      "sha256": "3b1848242c3e61915ba4d295c1aa924500ca3895ef8efe45605b03d3e5912753",
+      "size_bytes": 1398,
+      "url": "https://huggingface.co/djkesu/trlc-mixed10-basepi05-step1500-v1/resolve/9db0f28ff925eca0525f48a9b3519819e56fe197/README.md"
+    },
+    {
+      "name": "pi05_trlc_abs_a100x2_fast_v1--metadata.json",
+      "sha256": "0425baf6ddf6854d1d71034a9b0adfe026369f44d27f7ffae4f2ac1a6e7cd18f",
+      "size_bytes": 968,
+      "url": "https://huggingface.co/api/models/djkesu/pi05_trlc_abs_a100x2_fast_v1/revision/60a92af48f47b52a832746129a70fa55dc9871f7"
+    },
+    {
+      "name": "pi05_trlc_abs_a100x2_fast_v1--assets-trlc_tshirt_folding-norm_stats.json",
+      "sha256": "3c21cccce01d390929de33d7c4e625b732241042da76a5518478137055e8fdf5",
+      "size_bytes": 3437,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_abs_a100x2_fast_v1/resolve/60a92af48f47b52a832746129a70fa55dc9871f7/assets/trlc_tshirt_folding/norm_stats.json"
+    },
+    {
+      "name": "pi05_trlc_abs_a100x2_fast_v1--trlc_export_metadata.json",
+      "sha256": "e1c098bda87bc7a186b89ef3d20c4e03574160a7ecff2ad10eb6b71516771277",
+      "size_bytes": 779,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_abs_a100x2_fast_v1/resolve/60a92af48f47b52a832746129a70fa55dc9871f7/trlc_export_metadata.json"
+    },
+    {
+      "name": "pi05_trlc_delta_a100x2_fast_v1--metadata.json",
+      "sha256": "b2ab8c470537e66733d1f83c534807737c0a22fc2533dd708b4b2fa339f7421b",
+      "size_bytes": 972,
+      "url": "https://huggingface.co/api/models/djkesu/pi05_trlc_delta_a100x2_fast_v1/revision/f1617fc1ae3d0790b9c3e3655fc84a9bc0cafdc8"
+    },
+    {
+      "name": "pi05_trlc_delta_a100x2_fast_v1--assets-trlc_tshirt_folding-norm_stats.json",
+      "sha256": "a3ef830cb7070f5ec6f1fdcd3e505b241dfe6cba6dd25dcbf0c43df871c6c39c",
+      "size_bytes": 3460,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_delta_a100x2_fast_v1/resolve/f1617fc1ae3d0790b9c3e3655fc84a9bc0cafdc8/assets/trlc_tshirt_folding/norm_stats.json"
+    },
+    {
+      "name": "pi05_trlc_delta_a100x2_fast_v1--trlc_export_metadata.json",
+      "sha256": "debc9647c1a53b6da3cd5784f7e17b4f9d22852d3714a1812ed929146047b044",
+      "size_bytes": 962,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_delta_a100x2_fast_v1/resolve/f1617fc1ae3d0790b9c3e3655fc84a9bc0cafdc8/trlc_export_metadata.json"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step500--metadata.json",
+      "sha256": "fa9db35cd7f491c0579928579f1b563cadaf695738d01e88765f5ead11e23489",
+      "size_bytes": 860,
+      "url": "https://huggingface.co/api/models/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step500/revision/2d7d031d7802f549eca3a59334c72b5372381d48"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step500--merge_metadata.json",
+      "sha256": "4646ad4fa332decf0a68bbf8a246495c39d5f9f9f4ab0e7f37d85adc22509594",
+      "size_bytes": 585,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step500/resolve/2d7d031d7802f549eca3a59334c72b5372381d48/merge_metadata.json"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step500--norm_stats.json",
+      "sha256": "02b7e878122d3e83ea4c1d109ad5f82cd63b554029fb96643c14b38f9057de48",
+      "size_bytes": 3443,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step500/resolve/2d7d031d7802f549eca3a59334c72b5372381d48/norm_stats.json"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step500--training_config.json",
+      "sha256": "59ab77f3f9eb7f9d0ce27ab0740a3e334aca4581e3a4f1f23b14715e36bdd7bc",
+      "size_bytes": 4962,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step500/resolve/2d7d031d7802f549eca3a59334c72b5372381d48/training_config.json"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step1000--metadata.json",
+      "sha256": "d815b184f6ab6b3f14724b57fb05997a3417e051bc18463aec673380742174f0",
+      "size_bytes": 862,
+      "url": "https://huggingface.co/api/models/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step1000/revision/66ddb42e9a8608a3dfd9e8257cc3de560208efac"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step1000--merge_metadata.json",
+      "sha256": "f5af71ad87126d63a956132db40347561b6a6925f7042d72d90a3fef0d209bd6",
+      "size_bytes": 588,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step1000/resolve/66ddb42e9a8608a3dfd9e8257cc3de560208efac/merge_metadata.json"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step1000--norm_stats.json",
+      "sha256": "02b7e878122d3e83ea4c1d109ad5f82cd63b554029fb96643c14b38f9057de48",
+      "size_bytes": 3443,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step1000/resolve/66ddb42e9a8608a3dfd9e8257cc3de560208efac/norm_stats.json"
+    },
+    {
+      "name": "gigabrain_trlc_abs_lora_20260316_v1_step1000--training_config.json",
+      "sha256": "e4dc236c722a60904272c21e9f32959e311c8f9e84418473b63f9fc586e72c76",
+      "size_bytes": 4931,
+      "url": "https://huggingface.co/djkesu/gigabrain_trlc_abs_lora_20260316_v1_step1000/resolve/66ddb42e9a8608a3dfd9e8257cc3de560208efac/training_config.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000--metadata.json",
+      "sha256": "03221f92b082b44d52db343af4e4796ecdf263acc0eba47e2a5cd0f4fd4a0b23",
+      "size_bytes": 1259,
+      "url": "https://huggingface.co/api/models/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000/revision/597226be3209313f42dde313b5201f31bf0c66ec"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000--adapter_config.json",
+      "sha256": "b5ffa8571559405267fbcd7aae1fb628dee2b9e523bab13995ded0200016155a",
+      "size_bytes": 1169,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000/resolve/597226be3209313f42dde313b5201f31bf0c66ec/adapter_config.json"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged--metadata.json",
+      "sha256": "73644da5c23ab450842fcdc6ff20a1d2777d2ecd468bd4aafbac50a2e336b77d",
+      "size_bytes": 1352,
+      "url": "https://huggingface.co/api/models/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/revision/10466a133c74018465c6839b7003b700775e4f69"
+    },
+    {
+      "name": "pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged--merge_metadata.json",
+      "sha256": "ada6b4d6bbb0a7c772c4ba2dfb24004653debe804b100398beb07cbf937cc0fd",
+      "size_bytes": 553,
+      "url": "https://huggingface.co/djkesu/pi05_trlc_rabc_3cam_alpha025_20260319_v2_step10000_merged/resolve/10466a133c74018465c6839b7003b700775e4f69/merge_metadata.json"
+    },
+    {
+      "name": "pi05-trlc-tshirt-folding-23k--metadata.json",
+      "sha256": "43d03a1e5c8a758609588a1c393faf6e32e9730e16e0b8db6e62a3fae0932156",
+      "size_bytes": 2438,
+      "url": "https://huggingface.co/api/models/Gongsta/pi05-trlc-tshirt-folding-23k/revision/89d6583a83781d6fe9cf3c160f4387a1ee9215d4"
+    },
+    {
+      "name": "pi05-trlc-tshirt-folding-23k--_CHECKPOINT_METADATA",
+      "sha256": "8593a74a3f329e1743629657b534c6c11efa92c49a3491eb6d12740634425d72",
+      "size_bytes": 426,
+      "url": "https://huggingface.co/Gongsta/pi05-trlc-tshirt-folding-23k/resolve/89d6583a83781d6fe9cf3c160f4387a1ee9215d4/_CHECKPOINT_METADATA"
+    },
+    {
+      "name": "pi05-trlc-tshirt-folding-23k--assets-Gongsta-trlc_tshirt_folding_impedance-norm_stats.json",
+      "sha256": "71fc4081fb9271bf49db4f9faa80174c1a765e0708bc442f4cdc31879b10d348",
+      "size_bytes": 5035,
+      "url": "https://huggingface.co/Gongsta/pi05-trlc-tshirt-folding-23k/resolve/89d6583a83781d6fe9cf3c160f4387a1ee9215d4/assets/Gongsta/trlc_tshirt_folding_impedance/norm_stats.json"
+    },
+    {
+      "name": "pi05-trlc-dagger-uniform-20260323-1k-v5--metadata.json",
+      "sha256": "b62c8aa9da1027b7ca7a12bde7de6d3d0cb69979ae29e6ada9af16801f68180c",
+      "size_bytes": 4729,
+      "url": "https://huggingface.co/api/models/djkesu/pi05-trlc-dagger-uniform-20260323-1k-v5/revision/f3696a007491b6e881b7326e9d32dd6823ca2a05"
+    },
+    {
+      "name": "pi05-trlc-dagger-uniform-20260323-1k-v5--_CHECKPOINT_METADATA",
+      "sha256": "a28c68d04d35a6e1988d2e6477b75d71f0a861768ce72620fe764446750c83ec",
+      "size_bytes": 426,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dagger-uniform-20260323-1k-v5/resolve/f3696a007491b6e881b7326e9d32dd6823ca2a05/_CHECKPOINT_METADATA"
+    },
+    {
+      "name": "pi05-trlc-dagger-uniform-20260323-1k-v5--assets-Gongsta-trlc_tshirt_folding_impedance_norm10k-norm_stats.json",
+      "sha256": "a70dbe33bc265ea5ac51bfe58f738f540dbc5dff11bc8bb07d6b4260646e0809",
+      "size_bytes": 5005,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dagger-uniform-20260323-1k-v5/resolve/f3696a007491b6e881b7326e9d32dd6823ca2a05/assets/Gongsta/trlc_tshirt_folding_impedance_norm10k/norm_stats.json"
+    },
+    {
+      "name": "pi05-trlc-dk1-corrections-openpi-from1k-step999-v1--metadata.json",
+      "sha256": "1c67d154f7a66f606a91ec0b4317e72659126243bcb652d3c34a6942e6aa4ee2",
+      "size_bytes": 4638,
+      "url": "https://huggingface.co/api/models/djkesu/pi05-trlc-dk1-corrections-openpi-from1k-step999-v1/revision/3b446916363f7f34584e9924e5af80a3218fedfb"
+    },
+    {
+      "name": "pi05-trlc-dk1-corrections-openpi-from1k-step999-v1--_CHECKPOINT_METADATA",
+      "sha256": "83f1808939d1dd213fc5a87e8e8addc7fa1f1937cde18b018b5a486754e6c1ab",
+      "size_bytes": 426,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dk1-corrections-openpi-from1k-step999-v1/resolve/3b446916363f7f34584e9924e5af80a3218fedfb/_CHECKPOINT_METADATA"
+    },
+    {
+      "name": "pi05-trlc-dk1-corrections-openpi-from1k-step999-v1--assets-Gongsta-dagger_dk1_tshirt_corrections-norm_stats.json",
+      "sha256": "d82ede836996c3dfb76cdb437ca3c7d8f53c34cf9d4fa11e915584c3204f77b0",
+      "size_bytes": 5015,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dk1-corrections-openpi-from1k-step999-v1/resolve/3b446916363f7f34584e9924e5af80a3218fedfb/assets/Gongsta/dagger_dk1_tshirt_corrections/norm_stats.json"
+    },
+    {
+      "name": "pi05-trlc-dagger-dk1-tshirt-step4999-v1--metadata.json",
+      "sha256": "1ce6c4214a43c26ec3f6f73bde69868ed85707f593dcb0526b6fd90c3892160d",
+      "size_bytes": 3003,
+      "url": "https://huggingface.co/api/models/djkesu/pi05-trlc-dagger-dk1-tshirt-step4999-v1/revision/a19ddc7d1ebe3b29aa3a165d7d42f06d8855112e"
+    },
+    {
+      "name": "pi05-trlc-dagger-dk1-tshirt-step4999-v1--_CHECKPOINT_METADATA",
+      "sha256": "30605286ac69d1177ba9a19cc3cd04c03ba67067695314af40b08ca243db16be",
+      "size_bytes": 426,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dagger-dk1-tshirt-step4999-v1/resolve/a19ddc7d1ebe3b29aa3a165d7d42f06d8855112e/_CHECKPOINT_METADATA"
+    },
+    {
+      "name": "pi05-trlc-dagger-dk1-tshirt-step4999-v1--assets-dagger_dk1_tshirt-norm_stats.json",
+      "sha256": "d497623e84db92a7f1d88161af672b5241c1f830c9bebecc642d09737ed3d24c",
+      "size_bytes": 4983,
+      "url": "https://huggingface.co/djkesu/pi05-trlc-dagger-dk1-tshirt-step4999-v1/resolve/a19ddc7d1ebe3b29aa3a165d7d42f06d8855112e/assets/dagger_dk1_tshirt/norm_stats.json"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1000-v1--metadata.json",
+      "sha256": "ea313e1410aac488af24c7c1ab2f4c561f0b5afa6202969f48817777db1c3341",
+      "size_bytes": 7874,
+      "url": "https://huggingface.co/api/models/djkesu/trlc-mixed10-basepi05-step1000-v1/revision/989ca463a5aba3ce2c4472149ee666b278a9586b"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1000-v1--_CHECKPOINT_METADATA",
+      "sha256": "bd123f3f57e1c746385bb8fdaf404eba83af1f2489f29b2c25f0278df327e710",
+      "size_bytes": 426,
+      "url": "https://huggingface.co/djkesu/trlc-mixed10-basepi05-step1000-v1/resolve/989ca463a5aba3ce2c4472149ee666b278a9586b/_CHECKPOINT_METADATA"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1000-v1--assets-trlc_mixed10_on_the_fly-norm_stats.json",
+      "sha256": "027dd3c2ec934c38a7286c9e3ca67d0585e3576696734c15d1f4230e5cd40e46",
+      "size_bytes": 5038,
+      "url": "https://huggingface.co/djkesu/trlc-mixed10-basepi05-step1000-v1/resolve/989ca463a5aba3ce2c4472149ee666b278a9586b/assets/trlc_mixed10_on_the_fly/norm_stats.json"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1500-v1--metadata.json",
+      "sha256": "90ccd676f4fd541d6c913127aecc81dc573455de8d837aa4059ae1611e2490b5",
+      "size_bytes": 7721,
+      "url": "https://huggingface.co/api/models/djkesu/trlc-mixed10-basepi05-step1500-v1/revision/9db0f28ff925eca0525f48a9b3519819e56fe197"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1500-v1--_CHECKPOINT_METADATA",
+      "sha256": "2bd228861ed56e1368f01bbff2e628314670abb2e22662acb73852869d749368",
+      "size_bytes": 426,
+      "url": "https://huggingface.co/djkesu/trlc-mixed10-basepi05-step1500-v1/resolve/9db0f28ff925eca0525f48a9b3519819e56fe197/_CHECKPOINT_METADATA"
+    },
+    {
+      "name": "trlc-mixed10-basepi05-step1500-v1--assets-trlc_mixed10_on_the_fly-norm_stats.json",
+      "sha256": "027dd3c2ec934c38a7286c9e3ca67d0585e3576696734c15d1f4230e5cd40e46",
+      "size_bytes": 5038,
+      "url": "https://huggingface.co/djkesu/trlc-mixed10-basepi05-step1500-v1/resolve/9db0f28ff925eca0525f48a9b3519819e56fe197/assets/trlc_mixed10_on_the_fly/norm_stats.json"
+    },
+    {
+      "name": "molmoact2-trlc-dk1-vit-lora--metadata.json",
+      "sha256": "f865f658bb0bed30a2a463cf0b7c78718d64bef1315b86699fb5d8f3acd63227",
+      "size_bytes": 462,
+      "url": "https://huggingface.co/api/models/Gokulavelan/molmoact2-trlc-dk1-vit-lora/revision/2ef2b0f1836ca5e3f8b99696c87ab5ba95e86da8"
+    },
+    {
+      "name": "config.json",
+      "sha256": "7d6f32df94ab49bffba6779eaa27f7c83d9f12ab95887a17f0bd10d4f665bda2",
+      "size_bytes": 2244
+    },
+    {
+      "name": "model-metadata.json",
+      "sha256": "73644da5c23ab450842fcdc6ff20a1d2777d2ecd468bd4aafbac50a2e336b77d",
+      "size_bytes": 1352
+    },
+    {
+      "name": "merged-model-file-inventory.json",
+      "sha256": "4b6a7b93ed428c5624cd2ae1c9dc6df98699583345786849913a570141d4e553",
+      "size_bytes": 1702
+    },
+    {
+      "name": "tokenizer-repo-metadata.json",
+      "sha256": "3cba7fe59099b3499c715903d3b478c58844756eef69c644978e9b1d6f8208ef",
+      "size_bytes": 3532
+    },
+    {
+      "name": "base-model-metadata.json",
+      "sha256": "1e98c8caa337a0fe9d865781b76e601a18d67f52936c1bac7ce214b31a9623a6",
+      "size_bytes": 1284
+    },
+    {
+      "name": "base-model-card.md",
+      "sha256": "5660a59c4bc742dbab3b0f8a109442436b8378200cdbdf6ed35045efe16cdfdc",
+      "size_bytes": 5139,
+      "url": "https://huggingface.co/lerobot/pi05_base/resolve/22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0/README.md"
+    }
+  ],
+  "rights": {
+    "community_card_license": "apache-2.0",
+    "existing_g1_review_does_not_authorize_this_policy": true,
+    "named_base_card_license": "gemma",
+    "named_base_revision_observed": "22c30e5b34f9e7ab738b1b34fc2fc5ecfe2d28f0",
+    "named_base_revision_pinned_by_training": false,
+    "rights_complete_for_execution": false,
+    "tokenizer_access_observed": "manual",
+    "tokenizer_card_license": "gemma",
+    "tokenizer_files_downloaded": 0,
+    "tokenizer_revision_observed": "35e4f46485b4d07967e7e9935bc3786aad50687c"
+  },
+  "robot_source_revision": "12f5368aefd0381461f2c7ffbb5611b4e8c90de9",
+  "schema": "trlc_public_policy_metadata_audit.v1"
+}

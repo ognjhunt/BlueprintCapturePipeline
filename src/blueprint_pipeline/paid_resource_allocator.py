@@ -1665,7 +1665,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             NATIVE_TASK_ARENA_POLICY_PROBE_KIND,
             NATIVE_TASK_ARENA_POLICY_DIAGNOSTIC_PROBE_KIND,
             NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND,
-            NATIVE_G1_TEAM_POLICY_PROBE_KIND,
+            NATIVE_G1_TEAM_POLICY_PROBE_KIND, "native-g1-beta-screening",
             policy_canary_lane.PROBE_KIND, RIGID_ROBOT_FREE_PROBE_KIND,
             "embodiment-asset-preparation",
             ADP009D_OVRTX_LIVE_CAMERA_PROBE_KIND,
@@ -1819,16 +1819,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     gpu.add_argument("--native-task-arena-control-result")
     gpu.add_argument("--native-task-arena-policy-execution-spec")
-    gpu.add_argument("--g1-campaign-bundle-receipt")
-    gpu.add_argument("--g1-campaign-manipulation-packet")
-    gpu.add_argument("--g1-campaign-movement-packet")
-    gpu.add_argument("--g1-campaign-book-handoff")
-    gpu.add_argument("--g1-campaign-movement-handoff")
-    gpu.add_argument("--g1-campaign-navigation-authority")
-    gpu.add_argument("--g1-campaign-publisher-source")
-    gpu.add_argument("--g1-campaign-runtime-source-receipt")
+    for name in ("bundle-receipt", "manipulation-packet", "movement-packet", "book-handoff",
+                 "movement-handoff", "navigation-authority", "publisher-source", "runtime-source-receipt"):
+        gpu.add_argument("--g1-campaign-" + name)
     gpu.add_argument("--g1-campaign-rights-review", action="append", default=[])
     g1_team_lane.add_g1_team_policy_allocator_arguments(gpu)
+    gpu.add_argument("--g1-beta-session-authority")
+    gpu.add_argument("--g1-beta-session-bundle-receipt")
     policy_canary_lane.add_policy_canary_allocator_arguments(gpu)
     gpu.add_argument(
         "--native-task-arena-retain-warm-session",
@@ -2286,6 +2283,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if success else 2
         if args.probe_kind == NATIVE_G1_TEAM_POLICY_PROBE_KIND:
             return g1_team_lane.dispatch_g1_team_policy_allocator_cli(args, control_recheck=_control_plane_checkout_blockers)
+        if args.probe_kind == "native-g1-beta-screening":
+            from .native_g1_beta_paid import dispatch_g1_beta_allocator_cli
+            return dispatch_g1_beta_allocator_cli(args, control_recheck=_control_plane_checkout_blockers)
         if args.probe_kind == NATIVE_G1_DEVELOPMENT_CAMPAIGN_PROBE_KIND:
             control_blockers, control_identity = _control_plane_checkout_blockers()
             result = dispatch_g1_paid_campaign(

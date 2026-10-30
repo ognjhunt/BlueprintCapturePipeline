@@ -260,6 +260,8 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
     from .team_candidate_quick10_vast import credential_file_blockers
 
     base = dict(base_catalog) if base_catalog is not None else load_default_catalog()
+    from .beta_policy_screening_g1 import catalog_for_profile as g1_catalog_for_profile
+    base = g1_catalog_for_profile(profile, base)
     configured = profile.get("screening_candidates") or {}
     registered = {key: row for key, row in configured.items() if isinstance(row, Mapping) and row.get("robot_policy")}
     if not registered:

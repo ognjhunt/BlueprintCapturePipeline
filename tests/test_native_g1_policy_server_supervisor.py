@@ -182,6 +182,7 @@ def test_supervisor_binds_child_listener_and_closes_only_owned_process(tmp_path,
     def popen(argv, **kwargs):
         launched.append(argv)
         assert kwargs["start_new_session"] is True
+        assert "env" not in kwargs  # Historical lane keeps its launcher environment.
         return process
 
     lease = supervisor.start_g1_policy_server(
@@ -234,3 +235,102 @@ def test_supervisor_binds_reviewed_compilation_first_inference_allowance(
         "automatic_retries": 0,
     }
     assert lease.close()["status"] == "child_exited"
+
+
+@pytest.mark.parametrize("policy_type,loader_log", [
+    ("pi05", "All keys loaded successfully!\n"),
+    ("diffusion", "Loading weights from local directory\n"),
+])
+def test_beta_requires_loaded_checkpoint_before_reset(tmp_path, monkeypatch, policy_type, loader_log):
+    args = _launch_inputs(tmp_path, monkeypatch)
+    (tmp_path / "checkpoints/small/model/config.json").write_text(json.dumps({"type": policy_type}))
+    process, launched = _Process(), []
+
+    def popen(argv, **kwargs):
+        launched.append(argv)
+        kwargs["stdout"].write(loader_log)
+        kwargs["stdout"].flush()
+        return process
+
+    lease = supervisor.start_g1_policy_server(**args, require_checkpoint_load_observation=True,
+        owner_reader=lambda port: {process.pid}, popen_factory=popen)
+    assert launched[0][1:3] == ["-I", "-u"]
+    assert lease.client.resets == [0]
+    observed = lease.client.checkpoint_load_observation
+    assert observed == lease.receipt["checkpoint_load_observation"]
+    assert observed["candidate_id"] == "dp"
+    assert observed["candidate_inventory_digest"] == "sha256:" + "b" * 64
+    assert observed["source_revision"] == supervisor.PINNED_SOURCE_REVISION
+    assert observed["loader_completed"] is True
+    assert observed["inference_observed"] is False
+    assert lease.receipt["loaded_checkpoint_identity_observed"] is True
+    lease.close()
+
+
+def test_beta_server_ignores_ambient_python_poison_before_publisher_imports(tmp_path, monkeypatch):
+    args = _launch_inputs(tmp_path, monkeypatch)
+    poison = tmp_path / "ambient"
+    poison.mkdir()
+    (poison / "json.py").write_text("raise RuntimeError('ambient module executed')\n")
+    monkeypatch.setenv("PYTHONPATH", str(poison))
+    monkeypatch.setenv("PYTHONHOME", "/not-the-policy-interpreter")
+    monkeypatch.setenv("PYTHONEXE", "/not-the-policy-interpreter")
+    monkeypatch.setenv("VIRTUAL_ENV", "/not-the-policy-venv")
+    monkeypatch.setenv("TORCH_HOME", str(tmp_path / "exact-initializer"))
+    process = _Process()
+
+    def popen(argv, **kwargs):
+        environment = kwargs["env"]
+        assert not {"PYTHONPATH", "PYTHONHOME", "PYTHONEXE", "VIRTUAL_ENV"} & environment.keys()
+        assert environment["TORCH_HOME"] == str(tmp_path / "exact-initializer")
+        assert all(environment[key] == "1" for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"))
+        # Execute the exact beta interpreter flags and environment on CPU. No
+        # native runtime, checkpoint, listener or fake inference is involved.
+        probe = subprocess.run([*argv[:3], "-c", "import sys,json; assert sys.flags.isolated; print(json.dumps(True))"],
+                               env=environment, check=True, capture_output=True, text=True)
+        assert probe.stdout.strip() == "true"
+        kwargs["stdout"].write("Loading weights from local directory\n")
+        kwargs["stdout"].flush()
+        return process
+
+    lease = supervisor.start_g1_policy_server(**args, require_checkpoint_load_observation=True,
+        owner_reader=lambda port: {process.pid}, popen_factory=popen)
+    lease.close()
+
+
+@pytest.mark.parametrize("loader_log", [
+    "HTTP server ready\n",
+    "Returning model without loading pretrained weights\n",
+    "All keys loaded successfully!\nWarning: Could not load state dict: mismatch\n",
+    "All keys loaded successfully!\nMissing keys when loading state dict: ['weight']\n",
+    "All keys loaded successfully!\nUnexpected keys when loading state dict: ['weight']\n",
+])
+def test_beta_ready_listener_cannot_hide_missing_or_partial_pi_weights(tmp_path, monkeypatch, loader_log):
+    args = _launch_inputs(tmp_path, monkeypatch)
+    (tmp_path / "checkpoints/small/model/config.json").write_text(json.dumps({"type": "pi05"}))
+    process, clients = _Process(), []
+
+    def client_factory(**kwargs):
+        client = _Client(**kwargs)
+        clients.append(client)
+        return client
+
+    def popen(argv, **kwargs):
+        kwargs["stdout"].write(loader_log)
+        kwargs["stdout"].flush()
+        return process
+
+    args["client_factory"] = client_factory
+    with pytest.raises(ValueError, match="checkpoint_load_unverified"):
+        supervisor.start_g1_policy_server(**args, require_checkpoint_load_observation=True,
+            owner_reader=lambda port: {process.pid}, popen_factory=popen)
+    assert process.terminated is True
+    assert clients[0].resets == []
+
+
+@pytest.mark.parametrize("warning", ["Missing key(s) when loading model:", "Unexpected key(s) when loading model:"])
+def test_beta_dp_non_strict_loader_warning_never_attests_full_weights(tmp_path, warning):
+    log = tmp_path / "dp.log"
+    log.write_text("Loading weights from local directory\n" + warning + " ['model.weight']\n")
+    with pytest.raises(ValueError, match="checkpoint_load_unverified"):
+        supervisor.checkpoint_load_observation(log, policy_type="diffusion")

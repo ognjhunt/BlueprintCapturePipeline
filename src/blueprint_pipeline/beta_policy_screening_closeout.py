@@ -45,8 +45,15 @@ def _bindings(*, adapter: Mapping[str, Any], prepared: Mapping[str, Any], adapte
               record_reader: Callable[[Mapping[str, Any]], dict[str, Any]] | None = None,
               retained_only: bool = False) -> dict[str, Any]:
     read_bound = record_reader or _read_bound
-    authority = validate_session_authority(read_bound(prepared["authority"]))
-    bundle = validate_provider_bundle(read_bound(prepared["bundle_receipt"]), authority=authority)
+    raw_authority = read_bound(prepared["authority"])
+    if raw_authority.get("schema_version") == "native_g1_beta_session_authority.v1":
+        from .native_g1_beta_session import validate_session_authority as validate_g1_authority
+        from .native_g1_beta_session import validate_provider_bundle as validate_g1_bundle
+        authority = validate_g1_authority(raw_authority)
+        bundle = validate_g1_bundle(read_bound(prepared["bundle_receipt"]), authority=authority)
+    else:
+        authority = validate_session_authority(raw_authority)
+        bundle = validate_provider_bundle(read_bound(prepared["bundle_receipt"]), authority=authority)
     if (authority["run_kind"] != BETA_RUN_KIND
             or prepared.get("prepared_digest") != canonical_digest(prepared, digest_field="prepared_digest")
             or adapter.get("bundle_sha256") != bundle["bundle_sha256"]

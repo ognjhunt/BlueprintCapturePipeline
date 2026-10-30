@@ -50,8 +50,10 @@ does not rewrite an existing plan. The fresh campaign uses the same persisted
 worker restart cannot reset that allowance. Quotes expire before new launches;
 retained plans and results remain readable after expiry.
 
-The planner gives every selected candidate the same bounded screening cells
-(ten by default), with a separate seed domain from finalist evaluation. These
+The planner gives selected candidates bounded screening cells (ten by default),
+with a separate seed domain from finalist evaluation. Native whole-body G1
+uses the same cell IDs and seeds with explicitly frozen scene geometry; its
+cells do not claim the fixed-arm placement/camera perturbations. These
 are diagnostic results, not the 200-episode evidence required for a recommended
 pilot. The published catalog and plan JSON schemas live under `docs/schemas/`;
 runtime validation additionally enforces the identity bindings and budget math.

@@ -112,7 +112,7 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
                   subject_center: list[float], subject_minimum: list[float], subject_maximum: list[float],
                   footprint_half_extent_m: list[float], root_height_m: float | None = None,
                   root_world_z_m: float | None = None, task_motion: Mapping[str, Any] | None = None,
-                  ranked: int = 0) -> Any:
+                  ranked: int = 0, retain_large_collision_bounds: bool = False) -> Any:
     """The closest clear floor stance facing the subject, or raise by name (no GPU).
 
     The root stands ``root_height_m`` above the floor, or at ``root_world_z_m``.
@@ -121,6 +121,8 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
     threshold) and ``fall_points`` (where gravity carries it) block a stance, and
     a stance ``limit_points`` (its whole range) reaches ranks after the rest.
     With ``ranked``, the ``ranked`` best clear stances are returned in order instead.
+    ``retain_large_collision_bounds`` keeps long retained collision fixtures in
+    the footprint check; the default preserves existing fixed-arm behavior.
     """
 
     from .external_scene_robot_placement import (
@@ -146,7 +148,8 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
 
     obstacles = [replace(box, bbox_min=shifted(box.bbox_min), bbox_max=shifted(box.bbox_max),
                          centroid=shifted(box.centroid))
-                 for box in UsdSceneSpatialIndex(usd_path=str(collision_path)).obstacle_boxes()]
+                 for box in UsdSceneSpatialIndex(usd_path=str(collision_path),
+                     **({"max_obstacle_box_size": math.inf} if retain_large_collision_bounds else {})).obstacle_boxes()]
     start = [float(v) for v in subject_center[:3]]
     subject = SceneObject(id="task_object", label="task object", centroid=tuple(start),
                           bbox_min=tuple(float(v) for v in subject_minimum),

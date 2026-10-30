@@ -753,3 +753,20 @@ def test_scripted_batch_cli_http_binds_exact_batch_and_idempotent_operation(door
     assert saved["request"] == {"kind": "install-scripted-robot-baselines", "request": value}
     monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
     assert _run(*arguments)[0] == 3
+
+
+def test_native_g1_install_real_cli_http_preserves_exact_source_request_and_retry(door, tmp_path, monkeypatch):
+    from tests.test_operator_door_g1_registration import request
+    value = request()
+    path = tmp_path / "g1-request.json"
+    path.write_text(json.dumps(value))
+    args = ("install-native-g1-policies", "--request-file", str(path))
+    code, output = _run(*args)
+    assert code == 0
+    request_id = json.loads(output)["id"]
+    retry_code, retry = _run(*args)
+    assert retry_code == 0 and json.loads(retry)["id"] == request_id
+    saved = json.loads((door["state"] / "requests/pending" / (request_id + ".json")).read_text())
+    assert saved["request"] == {"kind": "install-native-g1-policies", "request": value}
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", READ_ONLY)
+    assert _run(*args)[0] == 3

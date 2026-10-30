@@ -189,6 +189,7 @@ def run_g1_supervised_built_scene_episode(
     output_dir: Path,
     to_tensor: Callable[[Any], Any],
     make_action_tensor: Callable[..., Any],
+    require_checkpoint_load_observation: bool = False,
     _registered_use: Any = None,
 ) -> dict[str, Any]:
     """Run one bounded development episode and always retain child teardown."""
@@ -223,6 +224,7 @@ def run_g1_supervised_built_scene_episode(
             port=port,
             device=device,
             log_path=output_dir / "g1_policy_server.log",
+            **({"require_checkpoint_load_observation": True} if require_checkpoint_load_observation else {}),
             **({"_registered_use": _registered_use} if _registered_use is not None else {}),
         )
         if (

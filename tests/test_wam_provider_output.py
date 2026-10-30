@@ -1,13 +1,68 @@
 from __future__ import annotations
 
 import json
+import re
 import zipfile
 from pathlib import Path
 
+import pytest
+
+from blueprint_pipeline.provider_runtime_bundle_contract import g1_provider_output_contract
+from blueprint_pipeline.vast_arena_output_packaging import arena_provider_output_packaging_script
 from blueprint_pipeline.wam_provider_output import (
     inspect_provider_runtime_output_zip,
     summarize_runtime_result,
 )
+
+
+@pytest.mark.parametrize("kind", ["embodiment_asset_preparation", "native_g1_team_policy"])
+@pytest.mark.parametrize("outcome", ["completed", "blocked", "invalid_json"])
+def test_packaged_robot_results_are_recognized_without_claiming_task_success(
+    tmp_path, monkeypatch, kind, outcome,
+):
+    filename, _, _ = g1_provider_output_contract(kind)
+    output = tmp_path / "runtime_output"
+    output.mkdir()
+    preparation = kind == "embodiment_asset_preparation"
+    status = "completed" if preparation else "completed_development_only"
+    blockers = []
+    if outcome == "blocked":
+        status, blockers = "blocked", ["retained_runtime_failure"]
+    result = {
+        "schema_version": filename.removesuffix(".json"), "status": status,
+        "claim_ceiling": "robot_asset_import_only" if preparation else "development_only",
+        "blockers": blockers, "task_executed": False,
+    }
+    if preparation:
+        # A completed batch can contain only failed imports. Receipt recognition
+        # must not turn its envelope status into robot or task success.
+        result["candidate_policy_queried"] = False
+        result["results"] = [{"embodiment_id": "i2rt_yam_bimanual",
+                              "status": "import_failed", "reason": "retained_converter_failure"}]
+    (output / filename).write_text("{invalid" if outcome == "invalid_json" else json.dumps(result))
+    monkeypatch.setenv("BLUEPRINT_ADP_ARENA_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("BLUEPRINT_VAST_WORK_DIR", str(tmp_path))
+    shell = arena_provider_output_packaging_script(kind)
+    script = re.fullmatch(r"\$RUNTIME_PY - <<'PY'\n(.*)\nPY\n", shell, re.S).group(1)
+    exec(compile(script, "<actual-provider-output-packaging>", "exec"), {})
+
+    archive = tmp_path / "adp_arena_provider_runtime_output.zip"
+    inspected = inspect_provider_runtime_output_zip(archive, expected_video_count=0)
+    if outcome == "invalid_json":
+        assert inspected["runtime_result_present"] is False
+        assert inspected["runtime_result_json_validated"] is False
+        assert inspected["json_parse_errors"] == [filename + ":JSONDecodeError"]
+        return
+    assert inspected["runtime_result_present"] is True
+    assert inspected["runtime_result_member"] == filename
+    assert inspected["runtime_result_json_validated"] is True
+    assert inspected["runtime_result_status"] == status
+    assert inspected["runtime_result_blockers"] == blockers
+    assert inspected["runtime_result"]["task_success"] is None
+    assert inspected["runtime_result"]["action_conditioned_video_rollout_generated"] is False
+    assert inspected["video_smoke_proven"] is False
+    with zipfile.ZipFile(archive) as retained:
+        assert json.loads(retained.read(filename)) == result
 
 
 def test_runtime_summary_preserves_only_explicit_boolean_task_success() -> None:

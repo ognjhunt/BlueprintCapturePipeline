@@ -428,6 +428,15 @@ def _extract_provider_output(
     hold = None
     try:
         with zipfile.ZipFile(path) as archive:
+            if result_name == "native_g1_beta_session_result.v1.json":
+                from .native_g1_beta_transport import MAX_OUTPUT_BYTES, MAX_TERMINAL_BYTES
+                members = archive.infolist()
+                if (path.stat().st_size > MAX_OUTPUT_BYTES or sum(member.file_size for member in members) > MAX_OUTPUT_BYTES
+                        or archive.getinfo(result_name).file_size > MAX_TERMINAL_BYTES):
+                    blockers.append(f"{blocker_prefix}_output_read_budget_exceeded")
+                if (len(archive.namelist()) != len(set(archive.namelist()))
+                        or any((member.external_attr >> 16) & 0o170000 == 0o120000 for member in members)):
+                    blockers.append(f"{blocker_prefix}_output_inventory_invalid")
             if result_name == "embodiment_asset_preparation_result.v1.json":
                 from .deployment_embodiment_preparation_contract import MAX_OUTPUT_BYTES
                 members = archive.infolist()
@@ -490,7 +499,12 @@ def _provider_execution_transport_completed(
     execution: Mapping[str, Any], *, provider_bundle_kind: str,
     expected_output_filename: str, bundle: Mapping[str, Any], result_path: str | None,
 ) -> bool:
-    """Keep robot asset import completion separate from task/policy results."""
+    """Keep dedicated robot result transports separate from task/score claims."""
+    if provider_bundle_kind == "native_g1_beta_screening":
+        from .native_g1_beta_transport import RESULT_FILENAME, transport_completed
+        return expected_output_filename == RESULT_FILENAME and transport_completed(execution, manifest=bundle)
+    if execution.get("schema_version") == "native_g1_beta_session_result.v1":
+        return False
     if provider_bundle_kind == "embodiment_asset_preparation":
         from .deployment_embodiment_preparation_contract import (
             RESULT_FILENAME, validate_preparation_result,
@@ -637,6 +651,11 @@ def run_arena_native_control_vast(
         or _file_sha256(bundle_path) != bundle.get("bundle_sha256")
     ):
         raise ValueError("adp_arena_prepared_bundle_binding_invalid")
+    provider_disk_gb = 200
+    if provider_bundle_kind == "native_g1_beta_screening":
+        provider_disk_gb = bundle.get("provider_disk_gb")
+        if type(provider_disk_gb) is not int or provider_disk_gb <= 0:
+            raise ValueError("g1_beta_provider_disk_quote_invalid")
     watchdog_preflight: dict[str, Any] = {}
     if require_independent_watchdog:
         survival = _caller_exit_survival_contract()
@@ -1022,7 +1041,7 @@ def run_arena_native_control_vast(
                 vast_launch_mode="ssh_direct",
                 allow_cold_isaac_image_pull=True,
                 min_cold_isaac_pull_live_minutes=30,
-                disk_gb=200,
+                disk_gb=provider_disk_gb,
                 min_gpu_ram_mb=min_gpu_ram_mb,
                 min_compute_cap=min_compute_cap,
                 max_compute_cap=max_compute_cap,
@@ -1145,7 +1164,7 @@ def run_arena_native_control_vast(
         result_path=extracted.get("result_path"),
     ):
         blockers.extend(execution.get("blockers") or [f"{blocker_prefix}_runtime_not_completed"])
-    policy_query_blocker = _candidate_policy_query_blocker(
+    policy_query_blocker = None if provider_bundle_kind == "native_g1_beta_screening" else _candidate_policy_query_blocker(
         execution,
         blocker_prefix=blocker_prefix,
         query_expected=candidate_policy_query_expected,

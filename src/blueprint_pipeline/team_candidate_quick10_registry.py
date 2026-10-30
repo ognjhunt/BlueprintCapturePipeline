@@ -172,7 +172,35 @@ def profile_for_capture(capture_root: str | Path) -> dict[str, Any] | None:
     matches = [dict(row) for row in registry["profiles"] if isinstance(row, Mapping) and row.get("capture_root") == root]
     if len(matches) > 1:
         raise TeamCandidateRegistryError("team_candidate_profile_ambiguous")
-    return matches[0] if matches else _derived_profile(registry, root)
+    profile = matches[0] if matches else _derived_profile(registry, root)
+    return _site_screening_profile(registry, profile) if profile else None
+
+
+def _site_screening_profile(registry: Mapping[str, Any], profile: Mapping[str, Any]) -> dict[str, Any]:
+    """Overlay task-bound G1 receipts without freezing the derived scene facts."""
+    value = dict(profile)
+    row = (registry.get("site_screening_candidates") or {}).get(profile.get("scene_id"))
+    if row is None:
+        return value
+    from .native_g1_beta_authority import SOURCE_FIELDS
+    from .beta_policy_screening_g1 import CANDIDATES
+    if (not isinstance(row, Mapping) or set(row) != {"source", "screening_candidates"}
+            or not isinstance(row["source"], Mapping) or set(row["source"]) != set(SOURCE_FIELDS)
+            or not isinstance(row["screening_candidates"], Mapping)
+            or set(row["screening_candidates"]) - set(CANDIDATES)
+            or any(not isinstance(item, Mapping) or set(item) != {"native_g1"}
+                   for item in row["screening_candidates"].values())):
+        raise TeamCandidateRegistryError("team_candidate_site_screening_registration_invalid")
+    source = row["source"]
+    context = _read(Path(profile["capture_root"]) / "pipeline/website_task_context.json")
+    if (source["task_id"] != profile.get("task_id")
+            or source["scene_revision_digest"] != profile.get("scene_revision_digest")
+            or source["capture_id"] != context.get("capture_id")
+            or source["task_context_digest"] != context.get("context_digest")):
+        return value
+    value["screening_candidates"] = {**value.get("screening_candidates", {}), **row["screening_candidates"]}
+    value["native_g1_registration_source"] = dict(source)
+    return value
 
 
 def write_derived_profile(row: Mapping[str, Any]) -> dict[str, Any]:

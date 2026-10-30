@@ -40,6 +40,9 @@ def candidate_result_summary(
     value: Mapping[str, Any], *, plan: Mapping[str, Any], candidate: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Count only the exact simulator-bound, closed native session's episodes."""
+    if candidate.get("execution_spec", {}).get("backend") == "native_g1.v1":
+        from .beta_policy_screening_g1 import summarize_result
+        return summarize_result(value, plan=plan, candidate=candidate)
     from .native_task_arena_policy_canary_session import BETA_RUN_KIND, validate_session_result
 
     result = validate_session_result(value)

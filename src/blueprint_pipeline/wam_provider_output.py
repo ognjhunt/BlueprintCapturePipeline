@@ -90,6 +90,9 @@ RUNTIME_RESULT_FILENAMES = (
     "native_task_arena_policy_diagnostic_result.v1.json",
     "native_task_arena_policy_canary_session_result.v1.json",
     "native_g1_provider_campaign_result.v1.json",
+    "native_g1_beta_session_result.v1.json",
+    "native_g1_team_provider_result.v1.json",
+    "embodiment_asset_preparation_result.v1.json",
     "native_task_arena_runtime_preflight.v1.json",
     "task_evaluation_rigid_destination_native_observation.v1.json",
     "paired_target_native_import_runtime_result.v1.json",
@@ -374,6 +377,10 @@ def inspect_provider_runtime_output_archive(
         for candidate in result_candidates:
             if Path(candidate).name in RUNTIME_RESULT_FILENAMES:
                 try:
+                    if Path(candidate).name == "native_g1_beta_session_result.v1.json":
+                        from .native_g1_beta_transport import MAX_TERMINAL_BYTES
+                        if archive.getinfo(candidate).file_size > MAX_TERMINAL_BYTES:
+                            raise ValueError("g1_beta_terminal_read_budget_exceeded")
                     if Path(candidate).name == "native_task_arena_policy_canary_session_result.v1.json":
                         parsed, runtime_result_parse_scope = _native_status_projection(archive, candidate)
                     else:

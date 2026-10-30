@@ -17,10 +17,11 @@ from blueprint_pipeline.task_evaluation_policy_candidate_registry import validat
 
 def test_default_catalog_records_all_named_candidates_and_only_existing_initial_interfaces():
     value = load_default_catalog()
-    assert len(value["candidates"]) == 84
+    assert len(value["candidates"]) == 88
     enabled = {row["candidate_id"] for row in value["candidates"] if row["eligibility"]["enabled"]}
-    assert enabled == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "molmoact2_droid", "cosmos3_nano_policy_droid"}
-    company_rows = [row for row in value["candidates"] if row.get("deployment")]
+    from blueprint_pipeline.beta_policy_screening_g1 import CANDIDATES
+    assert enabled == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "molmoact2_droid", "cosmos3_nano_policy_droid", *CANDIDATES}
+    company_rows = [row for row in value["candidates"] if row.get("deployment") and row["candidate_id"] not in CANDIDATES]
     assert len(company_rows) == 74
     assert all(row["eligibility"]["blockers"] for row in company_rows)
     assert {row["deployment"]["configuration_id"] for row in company_rows
@@ -86,7 +87,7 @@ def test_duplicate_json_keys_and_unavailable_without_reason_fail(tmp_path):
     with pytest.raises(BetaPolicyCatalogError, match="duplicate_json_key"):
         load_catalog(path)
     value = load_default_catalog()
-    value["candidates"][-1]["eligibility"]["blockers"] = []
+    next(row for row in value["candidates"] if not row["eligibility"]["enabled"])["eligibility"]["blockers"] = []
     with pytest.raises(BetaPolicyCatalogError, match="disabled_reason_missing"):
         seal_catalog(value)
 
