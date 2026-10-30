@@ -857,10 +857,10 @@ def test_only_a_scene_with_transients_extends_the_bound_edit_and_review_prompts(
     assert completion.MULTI_OBJECT_PROMPT not in edit
 
 
-def test_removal_zone_reaches_a_quarter_of_the_object_size_past_the_mask_with_a_soft_edge():
+def test_retained_v1_removal_zone_keeps_its_exact_reach_and_soft_edge():
     editable = np.zeros((600, 900), dtype=bool)
     editable[200:400, 300:500] = True                      # 200 x 200: reach 50 px
-    row = completion.removal_zone_alpha(editable)[300]
+    row = completion.removal_zone_alpha(editable, policy=completion.LEGACY_REMOVAL_ZONE_BINDING)[300]
     assert row[400] == 1 and row[499 + 50] == 1            # mask and its reach
     assert 0 < row[499 + 58] < 1                           # the 16 px soft edge
     assert row[499 + 66] == 0 and row[0] == 0              # photographed pixels beyond
@@ -869,6 +869,67 @@ def test_removal_zone_reaches_a_quarter_of_the_object_size_past_the_mask_with_a_
     row = completion.removal_zone_alpha(small)[300]
     assert row[450 + 16] == 1 and row[450 + 32] == 0       # at least 16 px
     assert completion.removal_zone_alpha(np.ones((600, 900), dtype=bool)).min() == 1
+
+
+@pytest.mark.parametrize("vertical", [False, True])
+def test_thin_container_mask_does_not_restore_contents_above_its_removal_zone(vertical):
+    # The production tray mask covered its narrow rim, while cloth extended
+    # above it. The old area-derived reach pasted that cloth back from source.
+    source = np.full((600, 900, 3), 120, dtype=np.uint8)
+    source[270:304, 385:415] = [20, 40, 80]  # contents extending 30 px above the rim
+    source[20:40, 20:40] = [200, 20, 20]    # an unrelated object must remain source pixels
+    expected = source.copy()
+    expected[270:304, 385:415] = 120
+    editable = np.zeros((600, 900), dtype=bool)
+    editable[300:304, 300:500] = True
+    if vertical:
+        source, expected, editable = source.transpose(1, 0, 2), expected.transpose(1, 0, 2), editable.T
+    generated = Image.new("RGB", (source.shape[1], source.shape[0]), (120, 120, 120))
+    original = Image.fromarray(source)
+    old, _ = completion.composite_removal_zone(original, generated, editable,
+                                              policy=completion.LEGACY_REMOVAL_ZONE_BINDING)
+    new, count = completion.composite_removal_zone(original, generated, editable)
+    assert not np.array_equal(np.asarray(old), expected)
+    np.testing.assert_array_equal(np.asarray(new), expected)
+    alpha = completion.removal_zone_alpha(editable)
+    np.testing.assert_array_equal(np.asarray(new)[alpha == 0], source[alpha == 0])
+    assert count == np.count_nonzero(alpha) < editable.size
+
+
+def test_span_reach_remains_bounded_and_rejects_unknown_composite_policy():
+    editable = np.zeros((600, 900), dtype=bool)
+    editable[300, 100:800] = True
+    alpha = completion.removal_zone_alpha(editable)
+    assert alpha[180, 400] == 1 and 0 < alpha[172, 400] < 1 and alpha[164, 400] == 0
+    assert not completion.removal_zone_alpha(np.zeros_like(editable)).any()
+    with pytest.raises(ValueError, match="removal_zone_policy_invalid"):
+        completion.removal_zone_alpha(editable, policy={"name": "unknown"})
+
+
+@pytest.mark.parametrize("shape", ["compact", "thin", "disconnected", "frame_edge"])
+def test_generic_removal_shapes_preserve_all_source_pixels_beyond_the_bounded_zone(shape):
+    from scipy.ndimage import distance_transform_edt
+
+    mask = np.zeros((500, 800), dtype=bool)
+    if shape == "compact":
+        mask[200:300, 350:450] = True
+    elif shape == "thin":
+        mask[240:244, 250:550] = True
+    elif shape == "disconnected":
+        mask[245:255, 145:155] = mask[245:255, 645:655] = True
+    else:
+        mask[:20, :200] = True
+    source = np.random.default_rng(28).integers(0, 256, (500, 800, 3), dtype=np.uint8)
+    generated = np.full_like(source, (15, 30, 60))
+    output, _ = completion.composite_removal_zone(Image.fromarray(source), Image.fromarray(generated), mask)
+    actual = np.asarray(output)
+    np.testing.assert_array_equal(actual[mask], generated[mask])
+    far = distance_transform_edt(~mask) >= 136
+    assert far.any()
+    np.testing.assert_array_equal(actual[far], source[far])
+    # Neither orientation nor object/frame labels enter the policy.
+    np.testing.assert_array_equal(completion.removal_zone_alpha(mask).T,
+                                  completion.removal_zone_alpha(mask.T))
 
 
 def _zone_inputs(tmp_path):
@@ -919,7 +980,7 @@ def test_edit_keeps_editor_pixels_only_in_the_removal_zone_when_its_camera_held(
     assert receipt["full_frame_image_digest"] == _sha256_file(full_frame) and receipt["edited_view_camera"] == camera
     policy = completion.completion_binding(frames, task_digest="task", backend_digest=receipt["backend_digest"])
     assert policy["output_policy"] == completion.REMOVAL_ZONE_BINDING
-    assert policy["output_policy"]["name"] == "removal_zone_composite_v1"
+    assert policy["output_policy"]["name"] == "removal_zone_composite_v2"
     if camera == "unchanged_features":
         assert np.all(image[70:90, 110:130] == [0, 0, 255])        # the removal itself
         assert np.all(image[:10] == [255, 0, 0]) and np.all(image[:, :40] == [255, 0, 0])
@@ -937,3 +998,61 @@ def test_edit_keeps_editor_pixels_only_in_the_removal_zone_when_its_camera_held(
     full_frame.write_bytes(b"changed")
     with pytest.raises(ValueError, match="website_image_completion_output_changed"):
         completion.complete_background_images(**args)
+
+
+@pytest.mark.parametrize("uncertain", [False, True])
+@pytest.mark.parametrize("new_guidance", [False, True])
+def test_new_zone_policy_adopts_v1_outputs_and_never_rebuys_its_uncertain_intent(tmp_path, monkeypatch,
+                                                                            uncertain, new_guidance):
+    frames, admission = _inputs(tmp_path)
+    monkeypatch.setattr(completion, "_execute_frame_request", _blue_edit([]))
+    from blueprint_pipeline import edited_view_camera as camera_check
+    monkeypatch.setattr(camera_check, "edited_view_camera", lambda *_: {"status": "unverifiable"})
+    root = tmp_path / "edits"
+    outputs = completion.complete_background_images(frames=frames, task_digest="task", output_root=root,
+        admission=admission, admission_grant=_grant(admission), token="test")
+    backend = json.loads(Path(outputs[0]["completion_receipt"]).read_text())["backend_digest"]
+    legacy_digest = canonical_digest(completion.completion_binding(frames, task_digest="task", backend_digest=backend,
+                                                                  output_policy=completion.LEGACY_REMOVAL_ZONE_BINDING))
+    old_root = Path(outputs[0]["completion_receipt"]).parent
+    legacy_root = root / legacy_digest[7:]
+    old_root.rename(legacy_root)
+    for row in outputs:
+        for key in ("image_path", "completion_receipt"):
+            row[key] = str(legacy_root / Path(row[key]).name)
+        receipt_path = Path(row["completion_receipt"])
+        receipt = json.loads(receipt_path.read_text())
+        receipt["request_digest"] = legacy_digest
+        if uncertain:
+            receipt["status"] = "submitting"
+        receipt_path.write_text(json.dumps(receipt))
+    before = {f.name: f.read_bytes() for f in legacy_root.iterdir()}
+    monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("rebought a v1 edit"))
+    args = dict(frames=frames, task_digest="task", output_root=root, admission={}, token="",
+                mask_guidance=new_guidance)
+    if uncertain:
+        with pytest.raises(ValueError, match="requires_reconciliation"):
+            completion.complete_background_images(**args)
+    else:
+        assert completion.complete_background_images(**args) == outputs
+    assert {f.name: f.read_bytes() for f in legacy_root.iterdir()} == before
+    assert list(root.glob("[0-9a-f]" * 64)) == [legacy_root]
+
+
+def test_new_policy_cannot_hide_an_uncertain_old_policy_behind_completed_new_outputs(tmp_path, monkeypatch):
+    frames, admission = _inputs(tmp_path)
+    monkeypatch.setattr(completion, "_execute_frame_request", _blue_edit([]))
+    from blueprint_pipeline import edited_view_camera as camera_check
+    monkeypatch.setattr(camera_check, "edited_view_camera", lambda *_: {"status": "unverifiable"})
+    root = tmp_path / "edits"
+    outputs = completion.complete_background_images(frames=frames, task_digest="task", output_root=root,
+        admission=admission, admission_grant=_grant(admission), token="test")
+    backend = json.loads(Path(outputs[0]["completion_receipt"]).read_text())["backend_digest"]
+    legacy_digest = canonical_digest(completion.completion_binding(frames, task_digest="task", backend_digest=backend,
+                                                                  output_policy=completion.LEGACY_REMOVAL_ZONE_BINDING))
+    legacy_root = root / legacy_digest[7:]
+    legacy_root.mkdir()
+    (legacy_root / "0.json").write_text(json.dumps({"status": "submitting", "request_digest": legacy_digest}))
+    monkeypatch.setattr(completion, "_execute_frame_request", lambda **_: pytest.fail("bought another image"))
+    with pytest.raises(ValueError, match="removal_zone_requires_reconciliation"):
+        completion.complete_background_images(frames=frames, task_digest="task", output_root=root, admission={}, token="")
