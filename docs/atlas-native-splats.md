@@ -9,11 +9,13 @@ not prove metric scale, source-geometry preservation, collision or physics.
 ## Where it runs
 
 `atlas_scene_automation.run_automation` (the object-removal background flow)
-keeps every existing step: removal edits and review, fallback pose, gap
-completion for uncaptured regions, geometry recovery and coverage repair. Those
-steps still fuse a local draft, because gap detection and coverage review
-project it. When the reviewed policy carries `refined_splat_cost_usd`, one step
-follows the final draft:
+keeps the existing steps: removal edits and review, fallback pose, up-front gap
+completion for the planner's uncaptured regions, and geometry recovery. Those
+steps still fuse a local draft, because gap detection projects it. When the
+reviewed policy carries `refined_splat_cost_usd`, the refined splat follows
+that draft directly. The later coverage-repair pass is skipped: it measures
+gaps in the draft, which is no longer the final appearance.
+
 
 1. `atlas_native_splat.prepare_splat_request` posts exactly the frames the
    draft fused, each with its camera, linear depth and an alpha mask of the

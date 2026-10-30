@@ -247,3 +247,46 @@ def test_refined_splat_replaces_the_draft_as_the_final_appearance(tmp_path, monk
     assert result["status"] == "completed" and exported[0]["splat_root"] == tmp_path / "refined"
     assert result["background"]["splat_kind"] == "atlas_refined"
     assert result["background"]["splat_manifest_digest"] == "refined"
+
+
+@pytest.mark.parametrize("refined", [False, True])
+def test_refined_splat_follows_gap_completion_without_the_draft_coverage_pass(tmp_path, monkeypatch, refined):
+    from blueprint_pipeline import atlas_scene_automation as worker, atlas_result_bundle, atlas_scene_coverage
+    from blueprint_pipeline import atlas_background_automation as edits, atlas_scene_measurements as sizes
+    from blueprint_pipeline import atlas_scene_completion, atlas_recorded_source_recovery, atlas_scene_recovery
+    from blueprint_pipeline import atlas_scene_task_regions
+    from tests.test_atlas_scene_automation import view, plan
+    real, generated = view(tmp_path), view(tmp_path, "gap", .2)
+    pose = {"digest": "pose", "binding": {"source_video_digest": "source"}}
+    monkeypatch.setattr(sizes, "load_views", lambda *a: (pose, [real]))
+    monkeypatch.setattr(edits, "run_background", lambda **_: {
+        "status": "fallback_prepared", "frames": ["edited"], "review": {"verdict": "passed"}, "stage_roots": []})
+    monkeypatch.setattr(worker, "_fallback_pose", lambda *a: ((pose, [real], tmp_path), {}))
+    monkeypatch.setattr(atlas_recorded_source_recovery, "adopt_recorded_recoveries", lambda **_: ([real], []))
+    monkeypatch.setattr(atlas_scene_completion, "complete_scene", lambda **_: ([generated], {
+        "status": "passed", "generation_result_digest": "gaps", "review": "gap-review", "generated_roots": []}))
+    monkeypatch.setattr(atlas_scene_recovery, "reviewed_completion_views", lambda _: ["reviewed-gap-view"])
+    monkeypatch.setattr(atlas_scene_task_regions, "plan_task_regions", lambda **_: {})
+    monkeypatch.setattr(atlas_scene_recovery, "recover_reviewed_geometry",
+                        lambda **_: ([], {"digest": "rec", "preservation_paths": []}))
+    monkeypatch.setattr(depth, "write_depth_splat", lambda **kw: {
+        "digest": "draft", "generated_result_digests": kw["generated_result_digests"],
+        "frames": [{"frame_id": f["frame_id"]} for f in kw["frames"]]})
+    coverage = []
+    monkeypatch.setattr(atlas_scene_coverage, "refine_scene_coverage",
+                        lambda **kw: coverage.append(kw) or (None, {"status": "processing", "stage": "coverage"}))
+    observed = []
+    monkeypatch.setattr(native, "run_native_splat", lambda **kw: observed.append(kw) or {
+        "status": "completed", "splat_root": str(tmp_path / "refined"),
+        "splat_manifest": {"digest": "refined", "splat_kind": "atlas_refined"}})
+    monkeypatch.setattr(atlas_result_bundle, "export_pose_bundle", lambda **kw: {"zip_path": "refined.zip"})
+    policy = {"rgbd_view_cost_usd": .05, **({"refined_splat_cost_usd": 5} if refined else {})}
+    result = worker.run_automation(pose_root=tmp_path, inputs={}, review={"automation": plan()},
+        output_root=tmp_path / "out", task_context={}, configuration={"policy": policy},
+        task_runner=None, pose_runner=None, release_blockers=lambda: ("commit", []))
+    if not refined:
+        assert len(coverage) == 1 and not observed and result["status"] == "processing"
+        return
+    # The generated gap views go into the refined splat with the real views.
+    assert not coverage and [f["frame_id"] for f in observed[0]["frames"]] == ["a", "gap"]
+    assert result["status"] == "completed" and result["background"]["splat_kind"] == "atlas_refined"

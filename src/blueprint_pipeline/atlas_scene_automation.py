@@ -513,7 +513,9 @@ def run_automation(
                     or {row["frame_id"] for row in splat.get("frames", [])}
                     != {row["frame_id"] for row in derived_frames}):
                 raise ValueError("atlas_completion_splat_did_not_consume_generated_depth")
-            if recovery is not None and reviewed_views:
+            # Coverage repair measures gaps in the draft. A refined splat is the final
+            # appearance instead, so it follows the up-front completion directly.
+            if recovery is not None and reviewed_views and "refined_splat_cost_usd" not in policy:
                 from .atlas_scene_coverage import refine_scene_coverage
 
                 refined, coverage = refine_scene_coverage(
