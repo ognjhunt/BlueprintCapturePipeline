@@ -135,7 +135,7 @@ def load_exported_splat(root):
 def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=(),
                 splat_root=None):
     """Survey all known directions; the existing production agent chooses gaps."""
-    from .atlas_scene_chisel import project_source_depth
+    from .atlas_scene_chisel import project_source_depths, DEPTH_PROJECTION_BATCH_CAMERAS
     from .atlas_scene_preservation import prepare_completion_views, _save_image
     from PIL import Image
 
@@ -171,12 +171,17 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
     # Raw projected points can look like context while the usable patches are
     # actually empty, especially when looking at the back of a surface.
     prepared = prepare_completion_views(frames=frames, selected=candidates, root=root / 'context')
-    rows, previews = [], []
+    rows, previews, depth_batch = [], [], []
     for index, (candidate, source) in enumerate(zip(candidates, prepared, strict=True)):
         rgb = np.asarray(Image.open(source['image_path']).convert('RGB'))
         photographed = np.asarray(Image.open(source['keep_mask_path']).convert('L')) == 255
-        depth = (project_exported_splat(splat, candidate['camera']) if splat is not None
-                 else project_source_depth(geometry_frames, candidate['camera']))
+        if splat is not None:
+            depth = project_exported_splat(splat, candidate['camera'])
+        else:
+            if index % DEPTH_PROJECTION_BATCH_CAMERAS == 0:
+                batch = candidates[index:index + DEPTH_PROJECTION_BATCH_CAMERAS]
+                depth_batch = project_source_depths(geometry_frames, [row['camera'] for row in batch])
+            depth = depth_batch[index % DEPTH_PROJECTION_BATCH_CAMERAS]
         expected = (expected_depth_for_candidate(expected_frames, candidate)
                     if expected_frames else None)
         outline = candidate.get('gap_domain') == 'projected_scene_outline_hypothesis'
