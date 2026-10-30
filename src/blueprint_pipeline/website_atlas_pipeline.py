@@ -235,7 +235,7 @@ def run_atlas_pipeline(*, output_root: Path, **options):
         return result
 
 
-def _job_edit_scope(output_root: Path, requested: str | None) -> str:
+def _job_edit_scope(output_root: Path, requested: str | None, *, default="required_and_additional") -> str:
     """The job's edit scope, chosen once: a resume can never change which views were cleaned."""
     from .atlas_scene_automation import EDIT_SCOPES
     path = output_root / "edit_scope.json"
@@ -244,10 +244,22 @@ def _job_edit_scope(output_root: Path, requested: str | None) -> str:
         raise ValueError("atlas_edit_scope_invalid")
     if stored is not None and requested is not None and requested != stored:
         raise ValueError("atlas_edit_scope_changed")
-    scope = stored or requested or EDIT_SCOPES[0]
+    scope = stored or requested or default
     if stored is None:
         write_json(path, {"schema_version": "atlas_edit_scope.v1", "edit_scope": scope})
     return scope
+
+
+def _splat_input_options(pose_root, *, review, policy, edit_scope):
+    """Keep historical inputs immutable; new refined removal jobs use denser real footage."""
+    from .atlas_video_inputs import takes_reviewed_background
+    path = pose_root / "atlas_view_selection.json"
+    if path.is_file():
+        dense = json.loads(path.read_text()).get("frame_policy", {}).get("minimum_source_frames") == 16
+    else:
+        dense = ("refined_splat_cost_usd" in policy and edit_scope == "all_selected_views"
+                 and takes_reviewed_background(review))
+    return {"minimum_frames": 16, "maximum_frames": 30} if dense else {}
 
 
 def _preserved_scene(*, pose_root, output_root, inputs, review, policy, task_context,
@@ -460,7 +472,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         config = current
         write_json(saved, config)
     policy = config["policy"]
-    edit_scope = _job_edit_scope(output_root, edit_scope)
+    default_scope = ("all_selected_views" if "refined_splat_cost_usd" in policy
+                     and not selection_path.exists() and not reviews.exists() else "required_and_additional")
+    edit_scope = _job_edit_scope(output_root, edit_scope, default=default_scope)
     os.environ[ATLAS_PROVIDER_RETENTION_ENV] = current["authority"]["provider_retention"]
     feedback = None
     if refinement_feedback is not None:
@@ -562,7 +576,8 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
         return result
     pose_root = output_root / "pose"
     pose_root.mkdir(exist_ok=True)
-    inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root)
+    inputs = prepare_video_inputs(survey_path=survey_path, review=review, output_root=pose_root,
+        **_splat_input_options(pose_root, review=review, policy=policy, edit_scope=edit_scope))
     if not selection_path.exists():
         write_json(selection_path, {"survey_relative_path": str(survey_path.relative_to(output_root)),
                                    "review": review, "planner_receipt": receipt})

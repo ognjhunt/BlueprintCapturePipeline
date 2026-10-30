@@ -626,6 +626,26 @@ def test_a_job_keeps_the_edit_scope_it_started_with(tmp_path):
         pipeline._job_edit_scope(tmp_path / "bad", "everything")
 
 
+def test_new_refined_splat_inputs_use_real_support_views_without_changing_historical_jobs(tmp_path):
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    policy = {"refined_splat_cost_usd": 5}
+    review = {"automation": {"objects": [{"disposition": "remove"}]}}
+    fresh = tmp_path / "new"
+    fresh.mkdir()
+    assert pipeline._job_edit_scope(fresh, None, default="all_selected_views") == "all_selected_views"
+    options = dict(review=review, policy=policy, edit_scope="all_selected_views")
+    assert pipeline._splat_input_options(fresh, **options) == {"minimum_frames": 16, "maximum_frames": 30}
+    historical = tmp_path / "old"
+    historical.mkdir()
+    (historical / "atlas_view_selection.json").write_text(json.dumps({"frame_policy": {}}))
+    assert pipeline._splat_input_options(historical, **options) == {}
+    assert pipeline._splat_input_options(fresh, **{**options, "policy": {}}) == {}
+    assert pipeline._splat_input_options(fresh, **{**options, "edit_scope": "required_and_additional"}) == {}
+    assert pipeline._splat_input_options(fresh, **{**options, "review": {}}) == {}
+    assert pipeline._job_edit_scope(historical, None) == "required_and_additional"
+    assert pipeline._job_edit_scope(historical, None, default="all_selected_views") == "required_and_additional"
+
+
 def test_resume_checks_current_remaining_allowance_before_any_more_planning(tmp_path, monkeypatch):
     from blueprint_pipeline import website_atlas_pipeline as pipeline, paid_resource_allocator as allocator
     from blueprint_pipeline import website_atlas_pose as pose_api
