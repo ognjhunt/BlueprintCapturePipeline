@@ -12,7 +12,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .decision_evidence_contracts import canonical_digest
-from .policy_interface_binding import TEAM_ROBOT_INTERFACES
+from .policy_interface_binding import TEAM_ROBOT_INTERFACES, TEAM_LOCAL_INTERFACES
+from .team_local_policy import runtime_for_interface
 from .team_embodiment import apply_team_embodiment, camera_names, validate_embodiment_manifest
 
 
@@ -25,9 +26,8 @@ def team_policy_interface(spec: Mapping[str, Any]) -> dict[str, Any]:
     if binding.get("binding_digest") != canonical_digest(binding, digest_field="binding_digest"):
         raise ValueError("beta_screening_team_binding_invalid")
     manifest = validate_embodiment_manifest(binding["manifest"])
-    if interface == "openwam_piper_eef20.v1":
-        from .openwam_piper_runtime import interface_contract
-        return interface_contract(spec)
+    if interface in TEAM_LOCAL_INTERFACES:
+        return runtime_for_interface(interface).interface_contract(spec)
     if interface == "dreamlabs_dream1.v1":
         from .dreamlabs_policy_client import DreamLabsPolicySpec, validate_robot_contract
 
@@ -72,12 +72,12 @@ def team_interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any
     expected = team_policy_interface(spec)
     runtime = configured.get("runtime") or {}
     policy = spec["policy_spec"]
-    if spec["policy_interface_id"] == "openwam_piper_eef20.v1":
-        from .openwam_piper_runtime import MODEL_SOURCE, MODEL_REVISION
+    if spec["policy_interface_id"] in TEAM_LOCAL_INTERFACES:
+        local = runtime_for_interface(spec["policy_interface_id"])
         return (configured.get("interface") == expected
                 and configured["policy"]["kind"] == "checkpoint"
-                and configured["policy"]["source"] == MODEL_SOURCE
-                and configured["policy"]["revision"] == MODEL_REVISION
+                and configured["policy"]["source"] == local.MODEL_SOURCE
+                and configured["policy"]["revision"] == local.MODEL_REVISION
                 and configured["policy"]["digest"] == policy["model_identity_digest"]
                 and runtime.get("backend") == "robolab.v1"
                 and runtime.get("runtime_id") == "native_task_arena_policy_canary.v1")
@@ -151,9 +151,8 @@ def build_registered_team_spec(*, candidate_id: str, registration: Mapping[str, 
             scene_revision_digest=scene_revision_digest)
         spec.update(provider_disclosure=disclosure, checkpoint_identity_basis="provider_metadata",
                     weights_identity_verified=False)
-    if interface == "openwam_piper_eef20.v1":
-        from .openwam_piper_runtime import PORT
-        spec.update(policy_endpoint={"host": "127.0.0.1", "port": PORT},
+    if interface in TEAM_LOCAL_INTERFACES:
+        spec.update(policy_endpoint={"host": "127.0.0.1", "port": runtime_for_interface(interface).PORT},
                     checkpoint_identity_basis="pinned_file_inventory_verified_before_worker_load",
                     weights_identity_verified=False)
     team_policy_interface(spec)
@@ -269,14 +268,15 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                     raise ValueError("beta_screening_dream_provider_identity_changed")
             blockers = (["beta_screening_hosted_credential_not_private"]
                         if credential_file_blockers(settings.get("credential_file")) else [])
-            local = interface["policy_interface_id"] == "openwam_piper_eef20.v1"
+            local = interface["policy_interface_id"] in TEAM_LOCAL_INTERFACES
             if local:
-                from .openwam_piper_runtime import MINIMUM_GPU_MEMORY_GB, MODEL_SOURCE, MODEL_REVISION
+                module = runtime_for_interface(interface["policy_interface_id"])
+                minimum_memory = module.MINIMUM_GPU_MEMORY_GB
                 blockers = []
-                memory = registration.get("minimum_gpu_memory_gb", MINIMUM_GPU_MEMORY_GB)
+                memory = registration.get("minimum_gpu_memory_gb", minimum_memory)
                 if type(memory) not in (int, float) or not math.isfinite(memory) or not 0 < memory <= 1024:
-                    raise ValueError("openwam_gpu_memory_configuration_invalid")
-                policy_identity = {"kind": "checkpoint", "source": MODEL_SOURCE, "revision": MODEL_REVISION,
+                    raise ValueError("team_local_gpu_memory_configuration_invalid")
+                policy_identity = {"kind": "checkpoint", "source": module.MODEL_SOURCE, "revision": module.MODEL_REVISION,
                     "digest": policy["model_identity_digest"], "digest_kind": "pinned_runtime_file_inventory"}
             else:
                 policy_identity = {"kind": "hosted", "source": policy["allowed_origin"],
@@ -286,7 +286,7 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                 "policy": policy_identity,
                 "interface": interface,
                 "runtime": {"backend": "robolab.v1", "runtime_id": "native_task_arena_policy_canary.v1",
-                    "minimum_gpu_memory_gb": (max(MINIMUM_GPU_MEMORY_GB, memory)
+                    "minimum_gpu_memory_gb": (max(minimum_memory, memory)
                                               if local else registration.get("minimum_gpu_memory_gb", 46))},
                 "supported_task_kinds": ["rigid_pick_place"],
                 "eligibility": {"enabled": not blockers, "commercial_use": "allowed_with_conditions",
@@ -302,7 +302,7 @@ def catalog_for_profile(profile: Mapping[str, Any], base_catalog: Mapping[str, A
                 route = deployment.get("policy_route_id")
                 if route is not None:
                     if local and route != "customer_controller":
-                        raise ValueError("openwam_policy_route_identity_mismatch")
+                        raise ValueError("team_local_policy_route_identity_mismatch")
                     # A shared robot or HTTPS transport does not identify a
                     # policy family. Retain explicit operator route provenance
                     # for checkpoint/planner/API variants; legacy generic

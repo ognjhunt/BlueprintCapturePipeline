@@ -658,7 +658,8 @@ exit "$FAKE_HELPER_RC"
 
 
 @pytest.mark.parametrize("helper_rc", [0, 2])
-def test_public_policy_shell_builds_unprivileged_then_uses_only_installed_stdlib_installer(env, tmp_path, helper_rc):
+@pytest.mark.parametrize("operation", ["install-public-piper-policy", "install-public-yam-policy"])
+def test_public_policy_shell_builds_unprivileged_then_uses_only_installed_stdlib_installer(env, tmp_path, helper_rc, operation):
     repository = tmp_path / "repository"
     repository.mkdir()
     _write_stub(tmp_path / "stubs/setpriv", SETPRIV_STUB)
@@ -678,9 +679,9 @@ fi
 exec "''' + sys.executable + '''" "$@"
 ''')
     request = json.dumps({"authorization_reference": "development_only $(touch must-not-exist) `false` %n"})
-    arguments = dict(DOOR_REQUEST_ID="20261029T154718Z-install-public-piper-policy-0000abcd",
+    arguments = dict(DOOR_REQUEST_ID="20261029T154718Z-" + operation + "-0000abcd",
         DOOR_VENV_PYTHON=str(helper), DOOR_CONTROL_PLANE_REPO=str(repository), DOOR_SERVICE_USER="blueprint",
-        DOOR_PUBLIC_POLICY_REQUEST=request, FAKE_HELPER_RC=str(helper_rc))
+        DOOR_PUBLIC_POLICY_REQUEST=request, DOOR_PUBLIC_POLICY_OPERATION=operation, FAKE_HELPER_RC=str(helper_rc))
     rc, outcome, calls = _run("door-install-public-piper-policy.sh", env, **arguments)
     assert rc == helper_rc
     assert outcome["status"] == ("completed" if helper_rc == 0 else "failed")

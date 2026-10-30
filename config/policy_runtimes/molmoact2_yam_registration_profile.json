@@ -1,0 +1,72 @@
+{
+  "camera_overrides": {
+    "left_wrist": {
+      "height": 360,
+      "horizontal_fov_deg": 87.0,
+      "width": 640
+    },
+    "overhead": {
+      "height": 360,
+      "horizontal_fov_deg": 69.4,
+      "width": 640
+    },
+    "right_wrist": {
+      "height": 360,
+      "horizontal_fov_deg": 87.0,
+      "width": 640
+    }
+  },
+  "candidate_id": "molmoact2_bimanual_yam",
+  "checkpoint_id": "molmoact2-bimanual-yam-8dcbed66",
+  "deployment": {
+    "companies": [],
+    "configuration_id": "i2rt_yam_bimanual",
+    "evidence_url": "https://huggingface.co/allenai/MolmoAct2-BimanualYAM/tree/8dcbed66f2380e4393189c303ea72488eb9e63c2",
+    "policy_route_id": "customer_controller",
+    "relationship": "public_controller_integration"
+  },
+  "display_name": "MolmoAct2 \u00b7 YAM bimanual (public baseline)",
+  "license_declaration": "This model is licensed under Apache 2.0.",
+  "license_evidence_files": {
+    "molmoact2_yam_publisher_license.txt": {
+      "sha256": "sha256:c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "size_bytes": 11357,
+      "url": "https://github.com/allenai/molmoact2/blob/6070080a20321b4f498ab30f28e1d09ac465edb7/LICENSE"
+    },
+    "molmoact2_yam_publisher_readme.md": {
+      "sha256": "sha256:5b3cc2e6780938fbbf5d5f72f43368ff210b69b8d6cc0ff6daff8bfbdeef5909",
+      "size_bytes": 19456,
+      "url": "https://github.com/allenai/molmoact2/blob/6070080a20321b4f498ab30f28e1d09ac465edb7/README.md"
+    }
+  },
+  "license_evidence_url": "https://github.com/allenai/molmoact2/blob/6070080a20321b4f498ab30f28e1d09ac465edb7/README.md#7-license",
+  "minimum_gpu_memory_gb": 48,
+  "policy_profile": "molmoact2_bimanual_yam.v1",
+  "policy_spec_template": {
+    "action_chunk_rows": 30,
+    "action_hz": 30,
+    "binding": {
+      "camera_binding_reference": "initial_simulation_assumption:source_configured_camera_mounts_and_poses;640x360_overhead69.4deg_wrists87deg_optics_not_publisher_or_site_calibration;overhead_D405_CAD_with_simulated_D435i_optics;native60Hz_policy30Hz_execution25_of30",
+      "camera_names": [
+        "overhead",
+        "left_wrist",
+        "right_wrist"
+      ],
+      "configuration_digest": null,
+      "execution_horizon": 25
+    },
+    "camera_names": [
+      "overhead",
+      "left_wrist",
+      "right_wrist"
+    ],
+    "embodiment_id": "i2rt_yam_bimanual",
+    "model_identity_digest": "sha256:8f0d8d7767f4e20d0e6a721b95ffb7111ca1b5f1fcd180e4a94c23492bbb7317",
+    "open_loop_horizon": 25,
+    "policy_id": "molmoact2_bimanual_yam.v1",
+    "policy_interface_id": "molmoact2_yam_joint14.v1",
+    "source_revision": "6070080a20321b4f498ab30f28e1d09ac465edb7"
+  },
+  "publisher_intended_use": "research and educational use in accordance with Ai2 Responsible Use Guidelines",
+  "team_id": "blueprint-public-models"
+}

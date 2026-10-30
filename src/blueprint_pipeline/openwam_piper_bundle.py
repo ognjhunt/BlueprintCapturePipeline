@@ -15,7 +15,7 @@ RUNTIME_MODULES = (
     "openwam_piper_policy.py", "openwam_piper_assets.py", "openwam_piper_policy_server.py",
     "openwam_piper_source.py", "openwam_piper_runtime.py", "openwam_piper_provisioning.py",
     "openwam_piper_dependencies.py", "openwam_piper_bundle.py",
-    "openwam_piper_client_dependencies.py",
+    "openwam_piper_client_dependencies.py", "local_policy_provisioning.py",
 )
 IMAGE_DOWNLOAD_ALLOWANCE_BYTES = 64 * 1024**3
 MAXIMUM_OUTPUT_BYTES = 8_000_000_000

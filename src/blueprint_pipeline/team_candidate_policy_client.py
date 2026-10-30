@@ -53,6 +53,14 @@ def canary_policy_client(spec: Mapping[str, Any], *,
         client = OpenWAMPiperPolicyClient(binding=policy_binding(spec["policy_spec"]))
         client.execution_binding_digest = spec["execution_spec_digest"]
         return client
+    if interface == "molmoact2_yam_joint14.v1":
+        from .molmoact2_yam_policy import MolmoAct2YAMPolicyClient
+        from .molmoact2_yam_runtime import policy_binding, validate_execution_spec
+
+        validate_execution_spec(spec)
+        client = MolmoAct2YAMPolicyClient(binding=policy_binding(spec["policy_spec"]))
+        client.execution_binding_digest = spec["execution_spec_digest"]
+        return client
     if interface == "task_family_policy_https.v1":
         from .task_family_policy_https_client import TaskFamilyPolicyHttpsClient, TaskFamilyPolicySpec
 

@@ -13,9 +13,9 @@ import sys
 
 if __package__:
     from .public_policy_registration_contract import (
-        CANDIDATE_ID, CHECKPOINT_ID, MODEL_ROOT, REGISTRY_PATH, STATE_ROOT, TEAM_ID,
+        MODEL_ROOT, REGISTRY_PATH, STATE_ROOT,
         decode, digest, expected_manifest, expected_policy, file_record, read, require,
-        retained_body, rights_record, safe_path, validate_request,
+        retained_body, rights_record, safe_path, validate_request, load_profile, request_identity,
     )
 else:
     # -I excludes the script directory. Load only this reviewed installed
@@ -27,9 +27,9 @@ else:
     _spec.loader.exec_module(_contract)
     sys.modules[_spec.name] = _contract
     from public_policy_registration_contract import (
-        CANDIDATE_ID, CHECKPOINT_ID, MODEL_ROOT, REGISTRY_PATH, STATE_ROOT, TEAM_ID,
+        MODEL_ROOT, REGISTRY_PATH, STATE_ROOT,
         decode, digest, expected_manifest, expected_policy, file_record, read, require,
-        retained_body, rights_record, safe_path, validate_request,
+        retained_body, rights_record, safe_path, validate_request, load_profile, request_identity,
     )
 
 AUDIT_ROOT = Path("/var/lib/blueprint-operator-door/policy-registrations")
@@ -63,25 +63,24 @@ def _write_once(path: Path, value: dict) -> None:
 
 
 def verified_registration(request: dict, *, state_root: Path, model_root: Path, profile_root: Path) -> dict:
-    profile = read(profile_root / "openwam_piper_registration_profile.json")
-    require(file_record(profile_root / "openwam_piper_model_card.md")["sha256"] == profile["model_card_sha256"],
-            "model_license_evidence_changed")
+    identity = request_identity(request)
+    profile = load_profile(request, profile_root)
     _, original, model = retained_body(request, model_root=model_root)
-    manifest = expected_manifest(original["robot_embodiment"])
+    manifest = expected_manifest(original["robot_embodiment"], profile)
     destination = safe_path(state_root / request["installation_id"])
     require(read(destination / "request.json") == request, "retained_request_changed")
     manifest_path = destination / (manifest["embodiment_digest"][7:] + ".robot_manifest.json")
     require(read(manifest_path) == manifest, "fixed_manifest_changed")
     # Construct every permitted value independently. Extra keys (including any
     # endpoint, credential, command or caller-selected path) cannot survive.
-    expected = {"team_id": TEAM_ID, "checkpoint_id": CHECKPOINT_ID, "display_name": profile["display_name"],
+    expected = {"team_id": identity["team_id"], "checkpoint_id": identity["checkpoint_id"], "display_name": profile["display_name"],
         "model": model, "manifest": file_record(manifest_path), "policy_spec": expected_policy(manifest, profile),
         "rights_binding": rights_record(request, profile),
         "dependency_closure": original["model_record"]["dependency_closure"],
         "source_import_provenance": original["model_record"]["source_import_provenance"],
         "minimum_gpu_memory_gb": profile["minimum_gpu_memory_gb"], "deployment": profile["deployment"]}
     proposal = read(destination / "proposal.json")
-    require(proposal == {"schema_version": "openwam_piper_policy_install_proposal.v1",
+    require(proposal == {"schema_version": identity["proposal_schema"],
         "request_digest": request["request_digest"], "registration": expected,
         "candidate_policy_queried": False, "provider_allocations_performed": 0}, "fixed_registration_changed")
     return expected
@@ -91,6 +90,7 @@ def apply(request: dict, *, registry_path: Path = REGISTRY_PATH, state_root: Pat
           model_root: Path = MODEL_ROOT, audit_root: Path = AUDIT_ROOT,
           profile_root: Path = Path(__file__).resolve().parent) -> dict:
     request = validate_request(request)
+    identity = request_identity(request)
     safe_path(registry_path)
     safe_path(audit_root)
     # Registry parent and audit storage are controlled by the privileged caller,
@@ -137,7 +137,7 @@ def apply(request: dict, *, registry_path: Path = REGISTRY_PATH, state_root: Pat
                 require(isinstance(settings, dict), "registry_profile_invalid")
                 candidates = settings.setdefault("screening_candidates", {})
                 require(isinstance(candidates, dict), "registry_candidates_invalid")
-                candidates[CANDIDATE_ID] = {"robot_policy": registration}
+                candidates[identity["candidate_id"]] = {"robot_policy": registration}
             updated["registry_digest"] = digest(updated, "registry_digest")
             intent = {"request_digest": request["request_digest"],
                       "before_registry_digest": registry["registry_digest"],
@@ -164,8 +164,8 @@ def apply(request: dict, *, registry_path: Path = REGISTRY_PATH, state_root: Pat
                 _sync_directory(registry_path.parent)
             finally:
                 Path(temporary).unlink(missing_ok=True)
-        receipt = {"schema_version": "openwam_piper_policy_install_receipt.v1", "status": "installed",
-            "installation_id": request["installation_id"], **intent, "candidate_id": CANDIDATE_ID,
+        receipt = {"schema_version": identity["receipt_schema"], "status": "installed",
+            "installation_id": request["installation_id"], **intent, "candidate_id": identity["candidate_id"],
             "preparation_authorization_id": request["preparation_authorization_id"],
             "preparation_publication_digest": request["preparation_publication_digest"],
             "native_policy_execution_validated": False, "candidate_policy_queried": False,
