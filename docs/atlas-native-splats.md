@@ -93,7 +93,11 @@ and left generated views out, the result records
 `refined_splat.left_out_admitted_view_ids` and whether the reviewed-whole form
 was never tried (`gap_preserving_form_untried`: never sent and never reviewed).
 Only that marker lets an operator retry (`retry_failed_job` or the door's
-atlas-retry) reopen a `ready` job; the retry records
+atlas-retry) reopen a `ready` job. A job that became ready before jobs recorded
+the marker (capture-447ae4f4) has it derived from retained records
+(`retained_minimal_marker`): the archived result names the adopted minimal splat
+by manifest digest, and the views the failed masked form sent with a review mask
+and the minimal form did not send are the ones left out. The retry records
 `refined_splat_gap_preserving_form_untried` and `request_gap_preserving_upgrade`
 names the reviewed-whole root. The next run reviews the generated views if
 needed and sends that form at most once. A success supersedes the minimal splat
