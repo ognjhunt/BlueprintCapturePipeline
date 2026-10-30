@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from . import website_atlas_pose as pose
+from .atlas_spend_settlement import settle_closed_atlas_task_attempts
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 from .paid_resource_admission import require_paid_resource_admission_grant
@@ -545,6 +546,8 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
         try:
             return _run_admitted_atlas_task_attempt(output_root=root, retry_lineage=lineage, **options)
         except ValueError as exc:
+            # A failed or refused hold is released before a retry reserves again.
+            settle_closed_atlas_task_attempts(root, task_context=task_context)
             if str(exc) != "atlas_task_operation_failed":
                 raise
             state_path = root / "atlas_pose/submission.json"
@@ -594,4 +597,8 @@ def run_admitted_atlas_task(*, task: str, request: Mapping[str, Any], output_roo
                 pose._write_state(state_path, current)
             return result
 
-    return _retry_task(output_root.resolve())
+    try:
+        return _retry_task(output_root.resolve())
+    finally:
+        # Report every closed attempt, retained or new, and each retry's under its own hold.
+        settle_closed_atlas_task_attempts(output_root.resolve(), task_context=task_context)

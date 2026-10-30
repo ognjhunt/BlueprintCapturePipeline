@@ -34,6 +34,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator, Mapping, Sequence
 from urllib.parse import urlencode, urlsplit
 
+from .atlas_spend_settlement import settle_closed_atlas_pose_attempts
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_bytes, _sha256_file
@@ -1073,57 +1074,63 @@ def run_admitted_atlas_pose(*, output_root: Path, capture_id: str, task_context:
         return (resubmittable_terminal_failure(atlas_pose_submission_state(output_root),
                                                prior_resubmissions=_attempt_number(output_root))
                 and _attempt_number(output_root) + 1 < MAX_POSE_ATTEMPTS)
-    while True:
-        if resubmit_due():
-            sleep(RESUBMIT_BACKOFF_SECONDS)
-            archive_closed_atlas_pose_attempt(output_root)
-        with _locked(output_root):
-            state = atlas_pose_submission_state(output_root)
-            if needs_atlas_pose_reconciliation(state, now()):
-                state = reconcile_atlas_pose_submission(output_root, client=client, now=now())
-            refuse_closed_or_uncertain_attempt(state, now())
-            if not (state and state.get("operation_id")):
-                pose_inputs = load_pending_atlas_pose_inputs(output_root)
-                retention = atlas_provider_retention()
-                commit, blockers = release_blockers()
-                if blockers:
-                    raise ValueError("website_atlas_pose_release_not_admitted:" + ",".join(blockers))
-                grid = atlas_pose_target_resolution(pose_inputs)
-                spend = atlas_pose_spend_line(planned_input_count=len(pose_inputs["frames"]), target_resolution=grid)
-                binding = atlas_pose_request_binding(
-                    pose_inputs=pose_inputs, spend=spend, task_context=task_context, target_resolution=grid,
-                    provider_retention=retention, attempt=_attempt_number(output_root))
-                # Refused before reserving: the adapter would refuse it anyway,
-                # after the sponsorship had been charged for it.
-                _refuse_state_conflict(state, binding)
-                retained_path = output_root / "atlas_pose" / "controller_admission.json"
-                retained = json.loads(retained_path.read_text()) if retained_path.is_file() else None
-                admission, grant = reserve_website_preparation_spend(
-                    task_context=task_context, binding_digest=canonical_digest(binding),
-                    maximum_cost_usd=spend["maximum_cost_usd"], request_count=1,
-                    resource_class=RESOURCE_CLASS, provider=PROVIDER, retained_admission=retained,
-                    source_video_digest=pose_inputs["binding"]["source_video_digest"],
-                    retain_admission=lambda value: _write_state(retained_path, {**value, "source_commit": commit}))
-                if admission.get("provider_retention", retention) != retention:
-                    raise ValueError("website_atlas_provider_retention_admission_mismatch")
-                admission = {**admission, "source_commit": commit}
-                _write_state(retained_path, admission)
-                submit_atlas_pose_operation(pose_inputs=pose_inputs, output_root=output_root, client=client,
-                                            binding=binding, admission=admission, grant=grant, sleep=sleep, now=now)
-        try:
-            result = collect_atlas_pose_operation(output_root=output_root, client=client, sleep=sleep, now=now,
-                                                  max_polls=max_polls, poll_interval_seconds=poll_interval_seconds)
-        except ValueError as exc:
-            if str(exc) == "website_atlas_pose_operation_failed" and resubmit_due():
-                continue
-            raise
-        break
-    if result.get("status") == "processing":
-        return result
-    receipt = result["operation_receipt"]
-    return {"status": "completed", "operation_id": receipt["operation_id"],
-            "result_path": str(output_root / "atlas_posed_rgbd_result.json"), "result_digest": result["digest"],
-            "submitted_frame_count": receipt["input_usage"]["submitted_frame_count"]}
+    try:
+        while True:
+            # A closed attempt's hold is released before the next one reserves.
+            settle_closed_atlas_pose_attempts(output_root, task_context=task_context)
+            if resubmit_due():
+                sleep(RESUBMIT_BACKOFF_SECONDS)
+                archive_closed_atlas_pose_attempt(output_root)
+            with _locked(output_root):
+                state = atlas_pose_submission_state(output_root)
+                if needs_atlas_pose_reconciliation(state, now()):
+                    state = reconcile_atlas_pose_submission(output_root, client=client, now=now())
+                refuse_closed_or_uncertain_attempt(state, now())
+                if not (state and state.get("operation_id")):
+                    pose_inputs = load_pending_atlas_pose_inputs(output_root)
+                    retention = atlas_provider_retention()
+                    commit, blockers = release_blockers()
+                    if blockers:
+                        raise ValueError("website_atlas_pose_release_not_admitted:" + ",".join(blockers))
+                    grid = atlas_pose_target_resolution(pose_inputs)
+                    spend = atlas_pose_spend_line(planned_input_count=len(pose_inputs["frames"]), target_resolution=grid)
+                    binding = atlas_pose_request_binding(
+                        pose_inputs=pose_inputs, spend=spend, task_context=task_context, target_resolution=grid,
+                        provider_retention=retention, attempt=_attempt_number(output_root))
+                    # Refused before reserving: the adapter would refuse it anyway,
+                    # after the sponsorship had been charged for it.
+                    _refuse_state_conflict(state, binding)
+                    retained_path = output_root / "atlas_pose" / "controller_admission.json"
+                    retained = json.loads(retained_path.read_text()) if retained_path.is_file() else None
+                    admission, grant = reserve_website_preparation_spend(
+                        task_context=task_context, binding_digest=canonical_digest(binding),
+                        maximum_cost_usd=spend["maximum_cost_usd"], request_count=1,
+                        resource_class=RESOURCE_CLASS, provider=PROVIDER, retained_admission=retained,
+                        source_video_digest=pose_inputs["binding"]["source_video_digest"],
+                        retain_admission=lambda value: _write_state(retained_path, {**value, "source_commit": commit}))
+                    if admission.get("provider_retention", retention) != retention:
+                        raise ValueError("website_atlas_provider_retention_admission_mismatch")
+                    admission = {**admission, "source_commit": commit}
+                    _write_state(retained_path, admission)
+                    submit_atlas_pose_operation(pose_inputs=pose_inputs, output_root=output_root, client=client,
+                                                binding=binding, admission=admission, grant=grant, sleep=sleep, now=now)
+            try:
+                result = collect_atlas_pose_operation(output_root=output_root, client=client, sleep=sleep, now=now,
+                                                      max_polls=max_polls, poll_interval_seconds=poll_interval_seconds)
+            except ValueError as exc:
+                if str(exc) == "website_atlas_pose_operation_failed" and resubmit_due():
+                    continue
+                raise
+            break
+        if result.get("status") == "processing":
+            return result
+        receipt = result["operation_receipt"]
+        return {"status": "completed", "operation_id": receipt["operation_id"],
+                "result_path": str(output_root / "atlas_posed_rgbd_result.json"), "result_digest": result["digest"],
+                "submitted_frame_count": receipt["input_usage"]["submitted_frame_count"]}
+    finally:
+        # Report every closed attempt, retained or new; a failed or refused hold stops counting.
+        settle_closed_atlas_pose_attempts(output_root, task_context=task_context)
 
 
 def _read_json(path: Path) -> dict[str, Any]:

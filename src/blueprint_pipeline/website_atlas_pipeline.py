@@ -460,6 +460,10 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
 
     output_root.mkdir(parents=True, exist_ok=True)
     source_digest = _sha256_file(source_video)
+    # Before anything new is admitted, report every closed Atlas attempt's outcome so a
+    # failed or refused hold World Labs never charged stops counting against the job.
+    from .atlas_spend_settlement import settle_closed_atlas_attempts_under
+    settle_closed_atlas_attempts_under(output_root, task_context=task_context)
     from .atlas_observed_room import SELECTION as ROOM_SELECTION, run_observed_room, retain_selection
     if (output_root / ROOM_SELECTION).is_file():
         return run_observed_room(output_root=output_root, source_digest=source_digest, task_context=task_context,
