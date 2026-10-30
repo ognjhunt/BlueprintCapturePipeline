@@ -4,9 +4,11 @@ set -euo pipefail
 umask 022
 . "$(dirname "$0")/door-common.sh"
 operation="${DOOR_PUBLIC_POLICY_OPERATION:-install-public-piper-policy}"
+installer=public_policy_registration.py
 case "$operation" in
   install-public-piper-policy|install-public-yam-policy|install-public-franka-policy) builder=blueprint_pipeline.openwam_piper_registration ;;
   install-scripted-robot-baselines) builder=blueprint_pipeline.scripted_robot_registration_install ;;
+  install-native-g1-policies) builder=blueprint_pipeline.native_g1_registration_install; installer=native_g1_registration.py ;;
   *) echo "unsupported fixed public policy operation" >&2; exit 2 ;;
 esac
 door_init_request "$operation"
@@ -25,7 +27,7 @@ set +e
 )
 rc=$?
 if [ "$rc" -eq 0 ]; then
-  python3 -I -S "$door_code/operator_door/public_policy_registration.py" \
+  python3 -I -S "$door_code/operator_door/$installer" \
     --request-json "$DOOR_PUBLIC_POLICY_REQUEST" > "$result.tmp"
   rc=$?
 else

@@ -101,3 +101,62 @@ returned 150 queries and failed the task with collision/containment failure.
 Pi returned no actions before timeout. Those results do not transfer to another
 scene, and this change does not restart that stopped campaign. Current validation
 uses CPU contract/source tests, not new checkpoint inference or a GPU run.
+
+## Activate a current site's G1 candidates
+
+Use the authenticated operator door; activation does not require editing the
+protected registry or logging into the controller:
+
+```sh
+python scripts/operator_door.py install-native-g1-policies \
+  --request-file /private/current-site-g1-request.json --wait
+```
+
+The sealed `native_g1_policy_install_request.v1` contains only
+`installation_id`, exact `release_commit`, `site_id`, the existing six-field
+beta `source`, `expected_registry_digest`, `shared_registry_digest`,
+`authorization_reference`, `publisher_source`, `runtime_source`, `candidates`,
+and `request_digest` (plus `schema_version`). The two shared references contain
+only `sha256` and `size_bytes` for the retained receipt files. Each candidate
+row contains one fixed built-in `candidate_id`, a `scene_packet` receipt
+reference or `null`, and a `navigation_authority` receipt reference or `null`.
+The digest is SHA-256 of sorted, compact UTF-8 JSON excluding `request_digest`.
+No source paths, commands, endpoint URLs, credentials or rights assertions are
+accepted in this request. It has no budget field and grants no provider spend.
+
+A null scene reference asks the service user to prepare the current site's
+packet using the reviewed recipe. It resolves the current base packet and task
+contract from the protected team registry and the existing completed source
+queue. Shared publisher/runtime locators come exclusively from
+`/var/lib/blueprint/task-evaluation-inputs/g1-team-campaign-registry.json`.
+The historical binding supplies shared source and exact robot model bytes;
+its old task, scene approval and navigation authority are not transferred.
+No policy checkpoints need to be downloaded to the controller.
+
+Preparation retains the exact current scene assets and task contract. It uses
+an explicitly labeled simulated floor stance, the fixed G1 head camera,
+right-hand contacts, 50 Hz control and 200 Hz physics. The original episode
+wall-time limit is preserved when action steps are resampled. The result lives
+under the current site's existing scene directory at
+`native-g1/<base-receipt-digest>/<current-source-digest>/`. A new task/source
+identity gets a new directory; historical packets are never overwritten.
+Missing navigation semantics remain an individual navigation-candidate reason.
+
+The installed root process uses Python's standard library only and independently
+reopens the current context, packet, derivation, source inventory and runtime
+archive. It never imports the active pipeline checkout or runs retained Git
+configuration/hooks. Only exact tracked publisher source files enter the beta
+runtime bundle; ignored historical bytecode is not shipped. The installer
+retains a durable request, proposal comparison, before/after snapshots, intent
+and receipt, using the same lock and compare-and-swap discipline as existing
+public-policy installers. Retrying the same installation is idempotent.
+
+Registrations are scoped to `site_screening_candidates.<site_id>` and the exact
+six source fields. Global defaults, other sites, existing policies and derived
+scene refresh remain intact. Every requested candidate receives `registered`
+or `unavailable` with a reason. Registration means its source receipts were
+installed: it does not claim live consent was queried, grant execution authority,
+prove checkpoint inference or score the task. The planner and launcher recheck
+current consent and task identity and compose the existing reviewed model terms
+before budgeted execution. This operation does not release the founder dispatcher
+hold, start a simulator, allocate a provider or authorize public media.

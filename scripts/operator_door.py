@@ -376,6 +376,7 @@ def _terminal(state: dict[str, Any]) -> bool | None:
             "install-public-yam-policy": "public_policy_registered",
             "install-public-franka-policy": "public_policy_registered",
             "install-scripted-robot-baselines": "public_policy_registered",
+            "install-native-g1-policies": "public_policy_registered",
         }.get(kind)
         if public_disposition is not None:
             # Only the bounded enqueue/registration completed, not a simulation.
@@ -568,7 +569,12 @@ def _embodiment_preparation_request(path: str, *, public_policy: str | None = No
                 "preparation_publication_digest", "candidate_id", "team_id", "checkpoint_id", "policy_profile",
                 "expected_registry_digest", "authorization_reference", "request_digest"}
             schema, id_key = "openwam_piper_policy_install_request.v1", "installation_id"
-            if public_policy == "yam":
+            if public_policy == "g1":
+                schema = "native_g1_policy_install_request.v1"
+                fields = {"schema_version", "installation_id", "release_commit", "site_id", "source", "candidates",
+                    "publisher_source", "runtime_source", "shared_registry_digest", "expected_registry_digest",
+                    "authorization_reference", "request_digest"}
+            elif public_policy == "yam":
                 schema = "molmoact2_yam_policy_install_request.v1"
             elif public_policy == "franka":
                 schema = "openwam_franka_policy_install_request.v1"
@@ -726,12 +732,14 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     for public_command, public_name in (("install-public-piper-policy", "OpenWAM PiPER"),
                                        ("install-public-yam-policy", "MolmoAct2 YAM"),
                                        ("install-public-franka-policy", "OpenWAM single-FR3"),
-                                       ("install-scripted-robot-baselines", "Blueprint scripted robot baselines")):
+                                       ("install-scripted-robot-baselines", "Blueprint scripted robot baselines"),
+                                       ("install-native-g1-policies", "Native G1 site policy receipts")):
         policy_install = commands.add_parser(public_command,
             help=f"install the fixed public {public_name} registration from retained assets; launches no compute")
         policy_install.add_argument("--request-file", required=True,
             help="sealed request binding retained preparation, exact release, public policy identity and registry digest")
-        _add_wait(policy_install, 660 if public_command == "install-scripted-robot-baselines" else 360)
+        _add_wait(policy_install, 960 if public_command == "install-native-g1-policies" else
+                  660 if public_command == "install-scripted-robot-baselines" else 360)
     selected = commands.add_parser("selected-handoff", help="inspect one immutable original handoff; dispatch uses existing admission")
     selected.add_argument("--selector-file", required=True, help="private JSON with exact generation/hash/size selectors")
     selected_modes = selected.add_mutually_exclusive_group()
@@ -825,11 +833,11 @@ def run(args: argparse.Namespace) -> int:
         if not args.operation_key:
             args.operation_key = "public-embodiment-preparation-" + request["authorization_id"]
         return _submit({"kind": command, "request": request}, args)
-    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines"}:
+    elif command in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines", "install-native-g1-policies"}:
         request = _embodiment_preparation_request(args.request_file,
             public_policy={"install-public-yam-policy": "yam", "install-public-piper-policy": "piper",
                            "install-public-franka-policy": "franka",
-                           "install-scripted-robot-baselines": "scripted"}[command])
+                           "install-scripted-robot-baselines": "scripted", "install-native-g1-policies": "g1"}[command])
         if not args.operation_key:
             args.operation_key = command + "-" + request["installation_id"]
         return _submit({"kind": command, "request": request}, args)

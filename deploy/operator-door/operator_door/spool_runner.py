@@ -245,6 +245,13 @@ def _public_policy_properties(config: DoorConfig, _request: dict[str, Any]) -> t
             "/var/lib/blueprint-operator-door/policy-registrations " + str(Path(config.spool_root) / "results"))
 
 
+def _native_g1_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
+    # Fixed production site-packet store, never a request-selected write path.
+    return tuple(value + " /var/lib/blueprint/task-evaluation-inputs/team-scene-halves"
+                 if value.startswith("ReadWritePaths=") else value
+                 for value in _public_policy_properties(config, request))
+
+
 def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
     writable = str(Path(config.spool_root) / "results")
     if request["mode"] in {"dispatch", "preparation-resume"}:
@@ -291,6 +298,10 @@ class _LaunchSpec:
 
 
 _LAUNCHES: dict[str, _LaunchSpec] = {
+    "install-native-g1-policies": _LaunchSpec(
+        "blueprint-operator-door-native-g1-policy", "door-install-public-piper-policy.sh", "15min",
+        lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],
+        _public_policy_environment, _native_g1_properties),
     "install-public-franka-policy": _LaunchSpec(
         "blueprint-operator-door-public-franka-policy", "door-install-public-piper-policy.sh", "5min",
         lambda request: request["request"]["request_digest"].removeprefix("sha256:")[:12],

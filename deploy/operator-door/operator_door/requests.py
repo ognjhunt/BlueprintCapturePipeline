@@ -42,6 +42,7 @@ from typing import Any
 from .config import DoorConfig
 from .embodiment_preparation import validate_request as validate_embodiment_preparation
 from .public_policy_registration_contract import validate_request as validate_public_policy_registration
+from .native_g1_registration_contract import validate_request as validate_native_g1_registration
 from .admitted_controls import DISPATCHER_HOLD_ONLY
 from .hostinfo import UNIT_NAME
 from .secrets_guard import redact_lines
@@ -74,6 +75,7 @@ _SCOPES = {
     "install-public-yam-policy": "operate",
     "install-public-franka-policy": "operate",
     "install-scripted-robot-baselines": "operate",
+    "install-native-g1-policies": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -83,7 +85,7 @@ if DISPATCHER_HOLD_ONLY:
     # job status/requeue; the legacy inspect mode stays refused.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines"}}
+                           "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines", "install-native-g1-policies"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
@@ -199,6 +201,13 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         raise RequestRefused("request_not_object")
     kind = body.get("kind")
     required_scope(kind)
+    if kind == "install-native-g1-policies":
+        _only(body, ("kind", "request"))
+        try:
+            request = validate_native_g1_registration(body.get("request"))
+        except ValueError as error:
+            raise RequestRefused(str(error)) from error
+        return {"kind": kind, "request": request}
     if kind in {"install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-scripted-robot-baselines"}:
         _only(body, ("kind", "request"))
         try:

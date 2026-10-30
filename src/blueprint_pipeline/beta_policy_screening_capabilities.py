@@ -228,6 +228,8 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             override = (profile.get("screening_candidates") or {}).get(key)
             model = None
             if g1:
+                if profile.get("native_g1_registration_source") not in (None, dict(source)):
+                    raise ValueError("g1_beta_registration_current_source_changed")
                 from .beta_policy_screening_g1 import candidate_execution_spec, validate_execution_spec
                 if family:
                     raise ValueError("g1_beta_native_rigid_task_required")
