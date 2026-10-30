@@ -261,13 +261,15 @@
                   "hub_tree_listing",
                   "provider_metadata",
                   "unverified",
-                  "pinned_runtime_file_inventory"
+                  "pinned_runtime_file_inventory",
+                  "source_code_inventory"
                 ]
               },
               "kind": {
                 "enum": [
                   "checkpoint",
-                  "hosted"
+                  "hosted",
+                  "scripted"
                 ]
               },
               "revision": {
