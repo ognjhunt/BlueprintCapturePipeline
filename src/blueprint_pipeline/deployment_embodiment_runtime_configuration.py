@@ -337,6 +337,7 @@ def prepare_runtime_configuration(source_bundle: str | Path, output_dir: str | P
 
 
 def verify_runtime_configuration(directory: str | Path) -> dict[str, Any]:
+    from .deployment_embodiment_runtime_compatibility import is_exact_predecessor, verify_predecessor_metadata
     root = Path(directory)
     _require(not any(p.is_symlink() for p in (root, *root.parents)), "symlink_refused")
     source = verify_source_bundle(root)
@@ -356,7 +357,7 @@ def verify_runtime_configuration(directory: str | Path) -> dict[str, Any]:
              and record.get("source_bundle_digest") == source["bundle_digest"]
              and record.get("embodiment_id") == source["embodiment_id"]
              and model_identity_matches
-             and record.get("generator_module_sha256") == _sha(Path(__file__))
+             and (record.get("generator_module_sha256") == _sha(Path(__file__)) or is_exact_predecessor(record))
              and record.get("configuration_digest") == cross_runtime_canonical_digest(record, digest_field="configuration_digest"),
              "receipt_changed")
     seen = set()
@@ -371,6 +372,8 @@ def verify_runtime_configuration(directory: str | Path) -> dict[str, Any]:
     actual = {p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file()
               and not p.is_relative_to(root / "source") and p not in {root / RECEIPT, root / "source-bundle.json"}}
     _require(seen == actual, "generated_inventory_changed")
+    if is_exact_predecessor(record):
+        verify_predecessor_metadata(root, source, record)
     return record
 
 

@@ -96,7 +96,12 @@ runner subsequently seals the actual task station and execution budget. Import
 must precede that sealing because the worker requires the real USD digest.
 
 Existing source/configuration/import outputs are verified and reused on retry;
-changed bytes are never silently replaced. A different policy cadence can be
+changed bytes are never silently replaced. The FR3/Robotiq addition also accepts
+the exact corrected `9bd34559c` generator for its original 18 profiles, after
+reconstructing every derived configuration field with the current matching
+profile and verifying the retained source, model, inventory and receipt digests.
+Unknown generators, pre-correction TRLC/Axol generators and that old identity on
+the new FR3/Robotiq profile remain invalid. A different policy cadence can be
 bound with `--runtime-settings settings.json` containing supported `control_hz`
 and `action_chunk_rows`. The final manifest seals those values. Actual policy
 compatibility, successful Isaac import and scored task execution remain separate
