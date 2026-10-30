@@ -40,7 +40,7 @@ def final_output_cost(policy, admitted=frozenset()) -> float:
 
 
 def admitted_final_outputs(root: Path) -> frozenset:
-    """Final-output tasks with an admitted purchase that has not failed.
+    """Final-output tasks with an admitted purchase that is live or bought.
 
     Its reservation is already deducted from the remaining allowance, so holding
     its price back again counts it twice. capture-4b60431e 2026-10-30: a live
@@ -53,6 +53,7 @@ def admitted_final_outputs(root: Path) -> frozenset:
         except (OSError, ValueError):
             continue
         task = (state.get("binding") or {}).get("task")
-        if task in ("posedImages2Splats", "splats2Mesh") and state.get("status") != "failed":
+        # A failed operation (free per the provider) or a refused send bought nothing.
+        if task in ("posedImages2Splats", "splats2Mesh") and state.get("status") not in ("failed", "rejected"):
             found.add(task)
     return frozenset(found)

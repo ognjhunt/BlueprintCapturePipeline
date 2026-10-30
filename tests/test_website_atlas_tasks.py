@@ -595,3 +595,22 @@ def test_textured_mesh_may_exceed_the_image_output_ceiling_but_images_may_not(tm
     assert retained[0]["bytes"] == 200 and retained[0]["path"].endswith(".glb")
     with pytest.raises(ValueError, match="output_too_large"):
         tasks._collect(client, {"response": {"frames": [{"imageAsset": {"assetId": "asset_image"}}]}}, tmp_path)
+
+
+def test_a_purged_upload_restarts_the_uploads_under_a_new_key_without_a_second_purchase():
+    from blueprint_pipeline.website_atlas_tasks import refresh_purged_uploads, MAX_UPLOAD_REFRESHES
+    def state():
+        return {"status": "submitting", "created_assets": ["asset_a", "asset_b"], "uploads": [{"asset_id": "asset_a"}],
+                "idempotency_key": "bp-atlas-task-" + "f" * 32, "request": {}, "request_body": "{}"}
+    purged = state()
+    assert refresh_purged_uploads(purged, 404, b'{"detail":"asset \'asset_b\' not found"}')
+    assert purged["status"] == "uploading" and purged["uploads"] == [] and purged["purged_assets"] == ["asset_b"]
+    assert purged["idempotency_key"] == "bp-atlas-task-" + "f" * 32 + "-u1"
+    assert "request" not in purged and "request_body" not in purged
+    assert refresh_purged_uploads(purged, 404, b"asset_a gone") and purged["idempotency_key"].endswith("-u2")
+    assert not refresh_purged_uploads(purged, 404, b"asset_a gone")  # bounded: then it is refused
+    assert purged["upload_refreshes"] == MAX_UPLOAD_REFRESHES
+    for status, payload, extra in ((404, b"model not found", {}), (400, b"asset_b invalid", {}),
+                                   (404, b"asset_b", {"operation_id": "op"})):
+        unchanged = {**state(), **extra}
+        assert not refresh_purged_uploads(unchanged, status, payload) and unchanged["status"] == "submitting"

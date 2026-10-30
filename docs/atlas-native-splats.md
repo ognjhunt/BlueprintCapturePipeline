@@ -39,6 +39,22 @@ gaps in the draft, which is no longer the final appearance.
    keeps the draft's fusion grid as its tolerance. `splats2Mesh`, registration,
    the download bundle and scene handoff read either manifest.
 
+**First production run (capture-4b60431e, 2026-10-30).** World Labs failed the
+full request (11 views, masks on 8, confidence on all) with `EXECUTION_FAILED`
+after two minutes; failed runs are free. Two recoveries followed:
+
+- If World Labs fails a refined-splat request and no attempt of it is live,
+  the next attempt sends the guide's documented minimal form from
+  `<draft root>-refined-minimal`: whole views only, image + depth + camera.
+  Partly admitted generated views are then left out; the draft keeps them.
+- Uploads to an account that does not retain them are purged about an hour
+  after creation. If a send is refused with 404 naming one of the attempt's own
+  uploads, nothing was bought, so the same admitted purchase uploads again under
+  a new idempotency key (`refresh_purged_uploads`, at most twice).
+
+The ledger still holds a reservation for a failed or refused attempt until it is
+settled; the WebApp has no `world_labs_atlas` settlement yet.
+
 The refined root sits beside the draft (`<draft root>-refined`), and its mesh
 root carries the refined digest, so a new draft gets its own purchase and a
 legacy mesh is never adopted for a refined splat.

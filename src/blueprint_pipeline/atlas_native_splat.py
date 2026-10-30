@@ -58,11 +58,12 @@ def _admission(frame) -> tuple[bool, object]:
     return bool(keep.any()), keep
 
 
-def prepare_splat_request(*, frames, root: Path):
+def prepare_splat_request(*, frames, root: Path, minimal=False):
     """Post every fused view with its camera, linear depth, Atlas depth confidence and review mask.
 
     One grid is posted unchanged; mixed grids (portrait source beside landscape
-    generated views) use the ray-preserving photograph tiler.
+    generated views) use the ray-preserving photograph tiler. ``minimal`` sends
+    the provider guide's documented form: whole views only, image + depth + camera.
     """
     from PIL import Image
     from .atlas_depth_splat import write_exr_depth
@@ -79,15 +80,15 @@ def prepare_splat_request(*, frames, root: Path):
                     or frame["depth"].shape != (k["height"], k["width"])):
                 raise ValueError("atlas_splat_frame_grid_changed")
             admitted, keep = _admission(frame)
-            if not admitted:
-                continue  # The review admitted none of this view's pixels.
+            if not admitted or (minimal and keep is not None):
+                continue  # The review admitted none (or, in the minimal form, not all) of this view.
             key = frame["frame_id"]
             rgb = root / f"{key}.png"
             Image.fromarray(frame["rgb"]).save(rgb)
             confidence = np.clip(np.round(np.nan_to_num(frame["confidence"]) * 255), 0, 255)
             views.append((key, rgb, write_exr_depth(root / f"{key}.exr", frame["depth"]),
                           None if keep is None else _png(np.where(keep, 255, 0), root / f"{key}-mask.png"),
-                          _png(confidence, root / f"{key}-confidence.png"),
+                          None if minimal else _png(confidence, root / f"{key}-confidence.png"),
                           {"intrinsics": frame["intrinsics"], "extrinsics": frame["extrinsics"]}))
     else:
         from .atlas_scene_chisel import prepare_source_photographs, project_source_depth
@@ -95,7 +96,7 @@ def prepare_splat_request(*, frames, root: Path):
         by_id = {}
         for frame in keyed:
             admitted, keep = _admission(frame)
-            if admitted:
+            if admitted and not (minimal and keep is not None):
                 # Project depth over the admitted pixels only (all of a real frame).
                 support = np.ones(frame["depth"].shape, np.float32) if keep is None else keep.astype(np.float32)
                 by_id[frame["frame_id"]] = ({**frame, "confidence": support}, keep is not None)
@@ -132,19 +133,42 @@ def prepare_splat_request(*, frames, root: Path):
     return request, uploads, provenance
 
 
+def _provider_failed_and_exhausted(root: Path) -> bool:
+    """Every attempt under root ended without a purchase, and the provider failed one."""
+    states = []
+    for path in root.rglob("atlas_pose/submission.json"):
+        try:
+            states.append(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            return False
+    return (bool(states) and all(state.get("status") in ("failed", "rejected") for state in states)
+            and any(state.get("status") == "failed" and state.get("terminal_operation") for state in states))
+
+
 def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_context,
                      task_runner, max_polls=2, checkpoint=None):
-    """Resume one refined-splat operation; publish its original SPZ and lossless decoded PLY."""
+    """Resume one refined-splat operation; publish its original SPZ and lossless decoded PLY.
+
+    If World Labs failed the full request and no attempt is left, the next attempt
+    sends the documented minimal form from its own root (capture-4b60431e,
+    2026-10-30: EXECUTION_FAILED with masks on 8 of 11 views and confidence on all).
+    Partly admitted generated views are then left out; the draft keeps them.
+    """
+    minimal = _provider_failed_and_exhausted(output_root / "native")
+    if minimal:
+        output_root = output_root.with_name(output_root.name + "-minimal")
     from .atlas_depth_splat import decode_spz, splats2mesh_task_spec
     from .atlas_pricing import splat_cost
     from .gaussian_splat_decode import write_standard_3dgs_ply
     from .atlas_result_bundle import _completed_task
 
-    request, uploads, provenance = prepare_splat_request(frames=frames, root=output_root / "inputs")
+    request, uploads, provenance = prepare_splat_request(frames=frames, root=output_root / "inputs",
+                                                         minimal=minimal)
     source = result["binding"]["source_video_digest"]
     stage = output_root / "native"
     binding = {"pose_result_digest": result["digest"], "source_video_digest": source,
                "draft_splat_manifest_digest": draft["digest"], "request_digest": canonical_digest(request),
+               "request_form": "documented_minimal" if minimal else "reviewed_masks_and_confidence",
                "uploads": uploads, "frames": provenance,
                "generated_result_digests": list(draft.get("generated_result_digests") or []),
                "visual_review_digest": draft.get("visual_review_digest")}

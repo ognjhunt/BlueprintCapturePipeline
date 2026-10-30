@@ -649,7 +649,7 @@ def test_resume_checks_current_remaining_allowance_before_any_more_planning(tmp_
     assert json.loads((root / "configuration.json").read_text())==saved
 
 
-@pytest.mark.parametrize("retry_status", ["failed", "capacity_wait"])
+@pytest.mark.parametrize("retry_status", ["failed", "rejected", "capacity_wait"])
 def test_an_admitted_refined_splat_is_not_held_back_twice(tmp_path, monkeypatch, retry_status):
     """capture-4b60431e 2026-10-30: two $5 splat reservations were held (a provider-failed
     attempt and its live retry) and the pre-check held the splat back a third time."""
