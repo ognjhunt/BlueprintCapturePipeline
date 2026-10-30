@@ -11,6 +11,23 @@ that does not establish a completed simulation on the current task. Every other
 row reports its specific availability, licensing, adapter or credential reason.
 Catalog entries alone never authorize a run.
 
+Scripted simulator-state baselines retain a separate execution identity in
+publication v2. Their candidate rows include `execution_evidence_kind` set to
+`scripted_simulator_state_baseline`, `action_source` set to
+`scripted_simulator_state`, `scripted_rollout_count`,
+`learned_policy_rollout_count`, `scripted_controller_invoked`, and
+`candidate_policy_queried`. Scripted results keep the learned count at zero and
+the learned-policy query flag false. Existing episode score counts still mean
+the task's deterministic simulator score; they do not establish learned-policy,
+vendor-policy, or physical performance.
+
+Rollout counts describe retained episode records, including failures before
+controller invocation. Only the separate witnessed invocation flag establishes
+that the controller ran, and a scored scripted episode requires it. The planned
+execution kind is retained before launch, including for unavailable or deferred
+candidates. Old publications remain readable with no inferred execution kind.
+Deploy the updated consumer before publishing the additional optional v2 fields.
+
 `deployment.configuration_id` identifies the exact body and
 `deployment.policy_route_id` identifies its recorded policy route. Existing
 candidate IDs are retained. Several checkpoint or endpoint versions on the same
