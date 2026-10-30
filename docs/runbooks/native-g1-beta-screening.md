@@ -160,3 +160,41 @@ prove checkpoint inference or score the task. The planner and launcher recheck
 current consent and task identity and compose the existing reviewed model terms
 before budgeted execution. This operation does not release the founder dispatcher
 hold, start a simulator, allocate a provider or authorize public media.
+
+## Dedicated provider runtime
+
+Each selected beta candidate gets one sealed provider bundle and one consumption
+receipt. The receipt fixes its absolute deadline before transport, including
+image startup, downloads, installation, simulation and collection. An uncertain
+allocation never receives a new deadline or automatic retry. The exact resource
+name uses the existing native-policy-canary family, and independent watchdog,
+fleet ownership, provider absence and staged-object cleanup are retained.
+
+Only that candidate's checkpoint and the reviewed SONIC pair are fetched. DP
+also requires the exact torchvision ResNet18 initialization file; Pi alone
+stages the reviewed PaliGemma tokenizer. Every download is streamed and checked
+against its size and SHA, within the sealed transfer quote and deadline. The
+96-wheel policy environment reuses 4,132,469,228 bytes of existing native packet
+wheels and downloads 261,777,389 bytes of exact extra wheels. Installation uses a
+fresh isolated Python 3.12 environment, offline pip, fixed hashes and no online
+resolver or apt. Expanded native wheels, per-cell scene copies, policy install,
+retained output and the cold-image allowance determine the requested disk.
+
+The beta server ignores ambient Python import paths. Its pinned source tree is
+copied from tracked files with sanitized Git configuration and a freshly built
+exact-commit index. DP and Pi must retain the publisher's complete checkpoint
+load observation; known partial-load or random-initialization warnings refuse
+the loaded-checkpoint claim. That observation is bound into returned action
+checkpoints. Readiness alone is not inference evidence.
+
+Cells repeat the exact frozen scene with explicit reset seeds. The session runs
+what fits its admitted lifetime and retains a result or bounded reason for every
+cell. The compact provider result references retained worker, episode, trace and
+query JSON instead of duplicating arrays. After download, the controller reopens
+those exact bytes, independently reconstructs each derived scene and authority,
+and recomputes the task score. Partial returned actions survive a timeout as
+queried but unscored evidence. Provider transport and scientific result digests
+are distinct. Only scoped controller closeout authorizes result projection.
+
+Git must be present in the pinned image before source verification. Its absence
+produces a per-cell bootstrap reason; the lane never installs it with apt.

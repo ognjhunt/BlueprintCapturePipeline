@@ -182,6 +182,7 @@ def test_supervisor_binds_child_listener_and_closes_only_owned_process(tmp_path,
     def popen(argv, **kwargs):
         launched.append(argv)
         assert kwargs["start_new_session"] is True
+        assert "env" not in kwargs  # Historical lane keeps its launcher environment.
         return process
 
     lease = supervisor.start_g1_policy_server(
@@ -253,7 +254,7 @@ def test_beta_requires_loaded_checkpoint_before_reset(tmp_path, monkeypatch, pol
 
     lease = supervisor.start_g1_policy_server(**args, require_checkpoint_load_observation=True,
         owner_reader=lambda port: {process.pid}, popen_factory=popen)
-    assert launched[0][1] == "-u"
+    assert launched[0][1:3] == ["-I", "-u"]
     assert lease.client.resets == [0]
     observed = lease.client.checkpoint_load_observation
     assert observed == lease.receipt["checkpoint_load_observation"]
@@ -263,6 +264,37 @@ def test_beta_requires_loaded_checkpoint_before_reset(tmp_path, monkeypatch, pol
     assert observed["loader_completed"] is True
     assert observed["inference_observed"] is False
     assert lease.receipt["loaded_checkpoint_identity_observed"] is True
+    lease.close()
+
+
+def test_beta_server_ignores_ambient_python_poison_before_publisher_imports(tmp_path, monkeypatch):
+    args = _launch_inputs(tmp_path, monkeypatch)
+    poison = tmp_path / "ambient"
+    poison.mkdir()
+    (poison / "json.py").write_text("raise RuntimeError('ambient module executed')\n")
+    monkeypatch.setenv("PYTHONPATH", str(poison))
+    monkeypatch.setenv("PYTHONHOME", "/not-the-policy-interpreter")
+    monkeypatch.setenv("PYTHONEXE", "/not-the-policy-interpreter")
+    monkeypatch.setenv("VIRTUAL_ENV", "/not-the-policy-venv")
+    monkeypatch.setenv("TORCH_HOME", str(tmp_path / "exact-initializer"))
+    process = _Process()
+
+    def popen(argv, **kwargs):
+        environment = kwargs["env"]
+        assert not {"PYTHONPATH", "PYTHONHOME", "PYTHONEXE", "VIRTUAL_ENV"} & environment.keys()
+        assert environment["TORCH_HOME"] == str(tmp_path / "exact-initializer")
+        assert all(environment[key] == "1" for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE", "HF_DATASETS_OFFLINE"))
+        # Execute the exact beta interpreter flags and environment on CPU. No
+        # native runtime, checkpoint, listener or fake inference is involved.
+        probe = subprocess.run([*argv[:3], "-c", "import sys,json; assert sys.flags.isolated; print(json.dumps(True))"],
+                               env=environment, check=True, capture_output=True, text=True)
+        assert probe.stdout.strip() == "true"
+        kwargs["stdout"].write("Loading weights from local directory\n")
+        kwargs["stdout"].flush()
+        return process
+
+    lease = supervisor.start_g1_policy_server(**args, require_checkpoint_load_observation=True,
+        owner_reader=lambda port: {process.pid}, popen_factory=popen)
     lease.close()
 
 

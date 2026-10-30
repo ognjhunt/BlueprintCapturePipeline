@@ -302,8 +302,16 @@ def start_g1_policy_server(
         str(python), str(source.resolve()), "--policy-path", str(policy_dir.resolve()),
         "--device", device, "--host", LOOPBACK_HOST, "--port", str(port),
     ]
+    child_environment = None
     if require_checkpoint_load_observation:
-        argv.insert(1, "-u")  # Observe loader output before the first reset/query.
+        # The beta server owns an isolated venv. Isaac's parent PYTHONPATH must
+        # not shadow its exact torch/numpy closure before the server inserts its
+        # pinned LeRobot source. Keep the image interpreter's native library
+        # search paths: this Python is copied from that same pinned image.
+        argv[1:1] = ["-I", "-u"]
+        child_environment = {key: value for key, value in os.environ.items()
+                             if key not in {"PYTHONPATH", "PYTHONHOME", "PYTHONEXE", "VIRTUAL_ENV"}}
+        child_environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1", HF_DATASETS_OFFLINE="1")
     log_path.parent.mkdir(parents=True, exist_ok=True)
     process = None
     child_lifetime = None
@@ -314,6 +322,7 @@ def start_g1_policy_server(
             process = popen_factory(
                 argv, stdin=subprocess.DEVNULL, stdout=log_stream,
                 stderr=subprocess.STDOUT, start_new_session=True,
+                **({"env": child_environment} if child_environment is not None else {}),
             )
     try:
         client = client_factory(
