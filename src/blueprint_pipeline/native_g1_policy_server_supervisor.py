@@ -213,14 +213,16 @@ def checkpoint_load_observation(log_path: Path, *, policy_type: str) -> dict[str
     """Observe the pinned loader's completion, including its caught Pi errors.
 
     The exact source starts listening only after `_load_policy` returns. DP's
-    strict local load propagates errors. Pi catches errors, so its full-key
-    success marker is additionally mandatory; a ready HTTP port is insufficient.
+    non-strict loader reports missing/unexpected keys; neither warning is
+    admitted. Pi catches errors, so its full-key success marker is additionally
+    mandatory; a ready HTTP port is insufficient.
     """
     if log_path.is_symlink() or not log_path.is_file() or log_path.stat().st_size > 16 * 1024 * 1024:
         raise ValueError("g1_beta_checkpoint_load_log_invalid")
     data = log_path.read_bytes()
     bad = (b"Returning model without loading pretrained weights", b"Warning: Could not load state dict:",
-           b"Missing keys when loading state dict:", b"Unexpected keys when loading state dict:")
+           b"Missing keys when loading state dict:", b"Unexpected keys when loading state dict:",
+           b"Missing key(s) when loading model:", b"Unexpected key(s) when loading model:")
     marker = b"All keys loaded successfully!" if policy_type == "pi05" else b"Loading weights from local directory"
     if policy_type not in {"pi05", "diffusion"} or marker not in data or any(item in data for item in bad):
         raise ValueError("g1_beta_checkpoint_load_unverified")

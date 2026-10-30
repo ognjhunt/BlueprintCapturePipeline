@@ -294,3 +294,11 @@ def test_beta_ready_listener_cannot_hide_missing_or_partial_pi_weights(tmp_path,
             owner_reader=lambda port: {process.pid}, popen_factory=popen)
     assert process.terminated is True
     assert clients[0].resets == []
+
+
+@pytest.mark.parametrize("warning", ["Missing key(s) when loading model:", "Unexpected key(s) when loading model:"])
+def test_beta_dp_non_strict_loader_warning_never_attests_full_weights(tmp_path, warning):
+    log = tmp_path / "dp.log"
+    log.write_text("Loading weights from local directory\n" + warning + " ['model.weight']\n")
+    with pytest.raises(ValueError, match="checkpoint_load_unverified"):
+        supervisor.checkpoint_load_observation(log, policy_type="diffusion")
