@@ -25,8 +25,9 @@ def test_catalog_and_existing_compatibility_identities_have_explicit_source_stat
         "universal_robots_ur10e", "fanuc_crx_10ia", "abb_gofa_crb15000",
         "kinova_gen3", "ufactory_xarm7", "franka_research_3_robotiq_2f85_sim",
         "abb_gofa_crb15000_5_95", "abb_gofa_crb15000_12_127",
+        "universal_robots_ur5e_robotiq_2f85_sim", "universal_robots_ur10e_robotiq_2f85_sim",
     }
-    assert len(rows) == 27
+    assert len(rows) == 29
     for row in rows.values():
         assert row["status"] in {"source_available", "source_unavailable", "existing_runtime"}
         assert bool(row["source"]) == (row["status"] == "source_available")
