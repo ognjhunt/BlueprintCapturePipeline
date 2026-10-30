@@ -403,3 +403,18 @@ def test_website_bundle_relocates_and_hydrates_actual_capture_inputs(tmp_path, m
         results.append(registry.execute(stage=stage, envelope=hydrated, configuration=json.loads(config_path.read_text()),
             configuration_path=config_path, dependency_results=tuple(results), output_root=tmp_path / stage["stage_id"]))
     assert _reference_frames({"configuration": configs["stage-3"]}, results)
+
+
+def test_construction_without_a_support_under_the_subject_is_a_named_refusal(tmp_path):
+    # 2026-10-30 capture-447ae4f4: compile flagged support_surface_not_found_under_subject and
+    # construction then failed with "'NoneType' object is not subscriptable".
+    args, preparation, _ = inputs(tmp_path)
+    unsupported = {**preparation, "support": None}
+    unsupported["digest"] = canonical_digest(unsupported, digest_field="digest")
+    preparation_path = args["output_root"] / "preparation.json"
+    write_json(preparation_path, unsupported)
+    prepare_website_runtime_inputs(preparation=unsupported, base_scene=args["base_scene"],
+        source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=tmp_path / "native")
+    with pytest.raises(ValueError, match="^website_native_construction_support_missing$"):
+        prepare_construction_stages(runtime_inputs_path=tmp_path / "native/runtime_inputs.json",
+                                    preparation_path=preparation_path)
