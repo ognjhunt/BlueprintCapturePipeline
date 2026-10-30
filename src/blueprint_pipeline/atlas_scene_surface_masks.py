@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from pydantic import BaseModel, ConfigDict, Field
 
-from .atlas_pricing import request_headroom, require_request_headroom
+from .atlas_pricing import headroom, require_headroom
 from .atlas_scene_task_regions import TaskSurfaceProposal, TaskSurfaceRegion
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -199,7 +199,7 @@ def segment_and_review_surfaces(*, proposal, reviewed_views, survey_path, contex
         # Corrections are optional spend: buy them only while the scene can still finish.
         new_calls = sum(not any((root / key / "sam").glob("*/response-*.json")) for *_, key in work)
         if new_calls:
-            require_request_headroom(request_headroom(configuration, stages={
+            require_headroom(headroom(configuration, stages={
                 "surface_mask_segmentation": new_calls, "task_surface_review": 1},
                 final_output_root=final_output_root, context=context, source_digest=source_digest),
                 root / f"request-budget-{attempt:02d}.json")

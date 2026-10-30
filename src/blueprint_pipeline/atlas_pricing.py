@@ -59,70 +59,92 @@ def admitted_final_outputs(root: Path) -> frozenset:
     return frozenset(found)
 
 
-def completion_request_preflight(configuration, *, generation_roots, final_output_root,
-                                 context, source_digest):
-    """Forecast the known unfinished calls before buying optional novel views.
+# Known calls after optional novel views: their independent review, then the
+# task-surface plan and its mask review. Unbought final outputs are added per call.
+AFTER_NOVEL_VIEWS = {'independent_image_review': 1, 'task_surface_plan': 1, 'task_surface_review': 1}
+# The dollar share of those review/planning calls, held back as one margin.
+REVIEW_MARGIN_USD = 1
 
-    This is a lower bound, not a grant: semantic-mask corrections and provider
-    failures can require more calls. Canonical admission still checks every call.
-    Retained submissions always reach their adapter for polling/reconciliation,
-    even when no new requests remain; this forecast never resets their accounting.
+
+def submitted(stage: Path) -> bool:
+    """A batch that is bought or in flight; it only polls or adopts, never re-buys."""
+    return (stage / 'atlas_pose/submission.json').exists() or (stage / 'result.json').exists()
+
+
+def novel_view_headroom(configuration, *, batches, final_output_root, context, source_digest,
+                        extra_cost_usd=0.):
+    """The finish forecast before buying optional novel views; ``batches`` are (stage, cost).
+
+    Returns None when every batch is already bought, so retained submissions
+    always reach their adapter for polling/reconciliation with zero headroom.
     """
-    pending = sum(not (root / 'atlas_pose/submission.json').exists()
-                  and not (root / 'result.json').exists() for root in generation_roots)
+    pending = [cost for stage, cost in batches if not submitted(stage)]
     if not pending:
         return None
-    return request_headroom(configuration, stages={
-        'novel_view_batches': pending, 'independent_image_review': 1,
-        'task_surface_plan': 1, 'task_surface_review': 1},
-        final_output_root=final_output_root, context=context, source_digest=source_digest)
+    return headroom(configuration, stages={'novel_view_batches': len(pending), **AFTER_NOVEL_VIEWS},
+                    cost_usd=sum(pending) + extra_cost_usd, final_output_root=final_output_root,
+                    context=context, source_digest=source_digest)
 
 
-def request_headroom(configuration, *, stages, final_output_root, context, source_digest):
-    """Whether the current request allowance covers ``stages`` plus unbought final outputs.
+def headroom(configuration, *, stages, final_output_root, context, source_digest, cost_usd=0.):
+    """Whether the allowance covers this optional step plus what finishing still needs.
 
-    The one forecast every optional paid step uses before it spends requests the
-    finished scene still needs. A configuration without a request allowance
-    (no schema, no ``remaining_requests``) has nothing to forecast.
+    The one forecast every optional paid step uses, for dollars and requests
+    alike. It is a lower bound, not a grant: later mask corrections and provider
+    retries are not known yet, and canonical admission still checks every call.
+    An allowance the configuration does not carry is not forecast.
     """
     if configuration.get('schema_version') in {
             'website_atlas_configuration.v1', 'owned_capture_atlas_configuration.v1'}:
         from .website_task_context import load_atlas_configuration
         from .website_atlas_pipeline import resumed_policy
 
-        # The planner and earlier stages have consumed requests since the caller
-        # loaded its snapshot. A noncreating read cannot issue more authority.
+        # Earlier stages have spent since the caller loaded its snapshot.
+        # A noncreating read cannot issue more authority.
         current = load_atlas_configuration(context, source_digest, create=False)
         resumed_policy(configuration, current)
-        remaining = current.get('remaining_requests')
-    elif 'remaining_requests' not in configuration:
-        return None
     else:
-        remaining = configuration.get('remaining_requests')
-    if type(remaining) is not int or remaining < 0:
+        current = configuration
+    remaining = current.get('remaining_requests')
+    if 'remaining_requests' in current and (type(remaining) is not int or remaining < 0):
         raise ValueError('atlas_completion_remaining_requests_invalid')
-    policy = configuration['policy']
+    dollars = current.get('remaining_cost_usd')
+    if remaining is None and dollars is None:
+        return None
+    reserve = finish_reserve(configuration['policy'], stages, final_output_root)
+    required, required_usd = reserve['requests'], round(cost_usd + reserve['cost_usd'], 6)
+    return {'schema_version': 'atlas_finish_forecast.v1',
+            'remaining_requests': remaining, 'minimum_remaining_requests': required,
+            'remaining_cost_usd': dollars, 'minimum_remaining_cost_usd': required_usd,
+            'unfinished_stages': reserve['stages'],
+            'sufficient_for_known_calls': ((remaining is None or remaining >= required)
+                                           and (dollars is None or dollars >= required_usd)),
+            'additional_mask_or_retry_calls': 'not_yet_known',
+            'reservation_created': False}
+
+
+def finish_reserve(policy, stages, final_output_root=None):
+    """Known calls and dollars still needed after ``stages``, including unbought final outputs."""
     admitted = admitted_final_outputs(final_output_root) if final_output_root else frozenset()
     stages = dict(stages)
     if 'refined_splat_cost_usd' in policy and 'posedImages2Splats' not in admitted:
         stages['refined_splat'] = 1
     if 'mesh_export_cost_usd' in policy and 'splats2Mesh' not in admitted:
         stages['mesh_export'] = 1
-    required = sum(stages.values())
-    return {'schema_version': 'atlas_completion_request_preflight.v1',
-            'remaining_requests': remaining, 'minimum_remaining_requests': required,
-            'unfinished_stages': stages, 'sufficient_for_known_calls': remaining >= required,
-            'additional_mask_or_retry_calls': 'not_yet_known',
-            'reservation_created': False}
+    return {'stages': stages, 'requests': sum(stages.values()),
+            'cost_usd': round(final_output_cost(policy, admitted) + REVIEW_MARGIN_USD, 6)}
 
 
-def require_request_headroom(forecast, path: Path):
-    """Retain the forecast and stop before spending requests the scene cannot finish with."""
+def require_headroom(forecast, path: Path):
+    """Retain the forecast and stop before spending what the scene cannot finish with."""
     if forecast is None:
         return
     from .common import write_json
 
     write_json(path, forecast)
+    if forecast['remaining_cost_usd'] is not None and (
+            forecast['remaining_cost_usd'] < forecast['minimum_remaining_cost_usd']):
+        raise ValueError('atlas_completion_remaining_budget_insufficient')
     if not forecast['sufficient_for_known_calls']:
         raise ValueError('atlas_completion_request_budget_insufficient:'
                          f"required={forecast['minimum_remaining_requests']},"

@@ -88,7 +88,7 @@ def test_full_source_context_overhead_is_priced_before_any_provider_call(tmp_pat
     def task(**kw):
         purchases.append(kw)
         return {'status': 'processing'}
-    args = dict(frames=[], selected=selected, candidates=candidates, root=tmp_path,
+    args = dict(frames=[], selected=selected, candidates=candidates, root=tmp_path / 'completion',
         pose={'digest': 'pose', 'binding': {'source_video_digest': 'video'}}, context={},
         configuration={'remaining_cost_usd': 3., 'policy': {'rgbd_view_cost_usd': .05,
             'rate_card_reference': 'test', 'reviewed_by': 'test', 'reviewed_on': '2026-10-23'}},
@@ -381,10 +381,10 @@ def test_masked_completion_uses_paired_keep_masks_and_reuses_completed_operation
     args['configuration']['remaining_cost_usd'] = 1.01
     _, resumed = preservation.generate_masked_completion(**args)
     assert len(purchases) == 1 and resumed['digest'] == report['digest']
+    # Adopting bought work needs no headroom; any later purchase is still admitted per call.
     args['configuration']['remaining_cost_usd'] = .5
-    with pytest.raises(ValueError, match='remaining_budget_insufficient'):
-        preservation.generate_masked_completion(**args)
-    assert len(purchases) == 1
+    _, resumed = preservation.generate_masked_completion(**args)
+    assert len(purchases) == 1 and resumed['digest'] == report['digest']
 
 
 def test_novel_view_review_rejects_invented_objects_on_known_surfaces():

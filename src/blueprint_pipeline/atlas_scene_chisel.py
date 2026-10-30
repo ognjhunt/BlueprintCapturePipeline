@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 
 from .common import write_json
-from .atlas_pricing import render_cost, final_output_cost
+from .atlas_pricing import render_cost, novel_view_headroom, require_headroom
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -241,7 +241,7 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
         'Cleared openings remain open, unobstructed space. Newly revealed areas are empty of movable objects. '
         'The scene stays inside the captured room, without additional rooms, objects or fixtures.')
     policy = configuration['policy']
-    specs, remaining = [], 0.
+    specs = []
     for index, group in enumerate(groups):
         uploads, contexts = dict(photo_uploads), []
         for i, target in enumerate(group):
@@ -260,11 +260,10 @@ def generate_chisel_completion(*, frames, selected, candidates, root, pose, cont
                  **{k: policy[k] for k in ('rate_card_reference', 'reviewed_by', 'reviewed_on')}}
         if (stage / 'result.json').is_file():
             _completed_task(stage, pose['binding']['source_video_digest'], 'generated')
-        else:
-            remaining += cost
         specs.append((group, request, uploads, stage, quote))
-    if remaining + final_output_cost(policy) + 1 > configuration['remaining_cost_usd']:
-        raise ValueError('atlas_completion_remaining_budget_insufficient')
+    require_headroom(novel_view_headroom(configuration,
+        batches=[(spec[3], spec[4]['maximum_cost_usd']) for spec in specs], final_output_root=root.parent,
+        context=context, source_digest=pose['binding']['source_video_digest']), root / 'request-budget-preflight.json')
     binding = {'schema_version': 'atlas_chisel_completion_plan.v1', 'source_pose_digest': pose['digest'],
                'selected_camera_ids': [row['camera_id'] for row in selected], 'source_photographs': sources,
                'prepared_views': rows, 'native_keep_masks_sent': False, 'depth_context': depth_context,

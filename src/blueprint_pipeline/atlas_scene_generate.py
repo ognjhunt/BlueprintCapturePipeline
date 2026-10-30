@@ -12,8 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from .common import write_json
-from .atlas_pricing import (render_cost, final_output_cost, completion_request_preflight,
-                            require_request_headroom)
+from .atlas_pricing import render_cost, novel_view_headroom, require_headroom
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
@@ -108,7 +107,7 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
         'and existing possessions in their photographed positions. Missing areas continue only '
         'the bare surfaces at their visible boundaries. Cleared openings remain open and empty. '
         'No additional rooms, fixtures, furniture, possessions or decorations.')
-    policy, specs, needed = configuration['policy'], [], 0.
+    policy, specs = configuration['policy'], []
     for index, group in enumerate(groups):
         request = {'contextFrames': contexts, 'targetCameras': [row['camera'] for row in group],
                    'prompt': caption, 'enhancePrompt': False, 'returnDepth': True}
@@ -120,8 +119,6 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
                  **{key: policy[key] for key in ('rate_card_reference', 'reviewed_by', 'reviewed_on')}}
         if (stage / 'result.json').is_file():
             _completed_task(stage, pose['binding']['source_video_digest'], 'generated')
-        else:
-            needed += cost
         specs.append((group, request, stage, quote))
     # Reserve room for joint registration before buying novel RGB. Count the
     # real source photographs and distinct selected cameras, not conditioning
@@ -129,8 +126,10 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
     source_ids = {frame['frame_id'] for frame in frames}
     registration_images = sum(photo['source_frame_id'] in source_ids for photo in photos) + len(selected_by_id)
     registration_quote = registration_images * policy.get('pose_input_cost_usd', 0)
-    if needed + registration_quote + final_output_cost(policy) + 1 > configuration['remaining_cost_usd']:
-        raise ValueError('atlas_completion_remaining_budget_insufficient')
+    require_headroom(novel_view_headroom(configuration,
+        batches=[(stage, quote['maximum_cost_usd']) for _, _, stage, quote in specs],
+        final_output_root=root.parent, context=context, source_digest=pose['binding']['source_video_digest'],
+        extra_cost_usd=registration_quote), root / 'request-budget-preflight.json')
     binding = {'schema_version': 'atlas_generate_completion_plan.v1', 'source_pose_digest': pose['digest'],
                'source_photographs': photos, 'prepared_views': rows, 'native_keep_masks_sent': False,
                'selected_camera_ids': list(selected_by_id), 'generation_extent': extent,
@@ -146,11 +145,6 @@ def generate_rgbd_completion(*, frames, selected, candidates, root, pose, contex
               *[Path(row[key]) for row in rows for key in ('image_path', 'keep_mask_path', 'completion_gap_mask_path')]]
     generated, images, roots, digests, receipts, seen = [], [], [], [], [], set()
     for batch_index, (group, request, stage, quote) in enumerate(specs):
-        if not (stage / 'atlas_pose/submission.json').exists() and not (stage / 'result.json').exists():
-            require_request_headroom(completion_request_preflight(configuration,
-                generation_roots=[spec[2] for spec in specs[batch_index:]],
-                final_output_root=root.parent, context=context,
-                source_digest=pose['binding']['source_video_digest']), root / 'request-budget-preflight.json')
         if checkpoint:
             checkpoint('automation_completion_generate_rgbd')
         state = task_runner(task='atlasGenerate', request=request, uploads=uploads, output_root=stage,

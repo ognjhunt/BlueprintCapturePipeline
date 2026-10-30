@@ -94,7 +94,7 @@ def test_chisel_uploads_only_clean_photos_and_prices_rgbd_once_before_purchase(t
             assert Image.open(row['path']).size == (1280, 720)
         return {'status': 'processing'}
 
-    args = dict(frames=frames, selected=pool, candidates=pool, root=tmp_path,
+    args = dict(frames=frames, selected=pool, candidates=pool, root=tmp_path / 'completion',
         pose={'digest': 'pose', 'binding': {'source_video_digest': 'source'}}, context={},
         configuration={'remaining_cost_usd': 1.59, 'policy': {'rgbd_view_cost_usd': .05, 'mesh_export_cost_usd': .5,
             'rate_card_reference': 'retained rate card', 'reviewed_by': 'test', 'reviewed_on': '2026-10-23'}},
@@ -106,10 +106,10 @@ def test_chisel_uploads_only_clean_photos_and_prices_rgbd_once_before_purchase(t
     generated, report = chisel.generate_chisel_completion(**args)
     assert generated is None and report['status'] == 'processing' and len(calls) == 1
     import json
-    plan = json.loads((tmp_path / 'chisel-completion-plan.json').read_text())
+    plan = json.loads((tmp_path / 'completion/chisel-completion-plan.json').read_text())
     assert plan['native_keep_masks_sent'] is False
     # Adopt a retained completed prefix without charging it in the new budget.
-    stage = tmp_path / 'generated/0'
+    stage = tmp_path / 'completion/generated/0'
     stage.mkdir(parents=True)
     retained = {'status': 'completed', 'binding': {'source_video_digest': 'source'}, 'outputs': []}
     retained['digest'] = canonical_digest(retained, digest_field='digest')

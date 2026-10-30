@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from blueprint_pipeline.atlas_pricing import completion_request_preflight
+from blueprint_pipeline.atlas_pricing import novel_view_headroom, require_headroom
 
 
 def configuration(remaining=40):
@@ -13,9 +13,9 @@ def configuration(remaining=40):
                        'mesh_export_cost_usd': .5}}
 
 
-def forecast(tmp_path, config, count=1):
-    return completion_request_preflight(config,
-        generation_roots=[tmp_path / 'generated' / str(i) for i in range(count)],
+def forecast(tmp_path, config, count=1, cost=0.):
+    return novel_view_headroom(config,
+        batches=[(tmp_path / 'generated' / str(i), cost) for i in range(count)],
         final_output_root=tmp_path, context={'context_digest': 'context'}, source_digest='source')
 
 
@@ -91,3 +91,21 @@ def test_production_forecast_reads_current_noncreating_allowance_after_planning(
     current['authority']['maximum_requests'] = 400
     with pytest.raises(ValueError, match='authority_or_policy_changed'):
         forecast(tmp_path, config)
+
+
+def test_dollars_and_requests_share_one_forecast_without_counting_bought_work_twice(tmp_path):
+    config = {**configuration(40), 'remaining_cost_usd': 7.5}
+    # Two $.5 batches + refined splat $5 + mesh $.5 + one review margin = $7.5.
+    report = forecast(tmp_path, config, count=2, cost=.5)
+    assert report['minimum_remaining_cost_usd'] == 7.5 and report['sufficient_for_known_calls']
+    config['remaining_cost_usd'] = 7.49
+    with pytest.raises(ValueError, match='remaining_budget_insufficient'):
+        require_headroom(forecast(tmp_path, config, count=2, cost=.5), tmp_path / 'forecast.json')
+    # An in-flight batch is already held by admission; a bought splat is already paid.
+    for relative, value in [('generated/0/atlas_pose/submission.json', {'status': 'submitted'}),
+                            ('refined/atlas_pose/submission.json', {'status': 'submitted',
+                                'binding': {'task': 'posedImages2Splats'}})]:
+        (tmp_path / relative).parent.mkdir(parents=True)
+        (tmp_path / relative).write_text(json.dumps(value))
+    config['remaining_cost_usd'] = 2.
+    assert forecast(tmp_path, config, count=2, cost=.5)['minimum_remaining_cost_usd'] == 2
