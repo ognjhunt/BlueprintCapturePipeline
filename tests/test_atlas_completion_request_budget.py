@@ -118,6 +118,7 @@ def test_dollars_and_requests_share_one_forecast_without_counting_bought_work_tw
     ({'maximum_requests': 60}, True),
     ({'maximum_requests': 60, 'maximum_cost_usd': 50, 'approval_reference': 'owner raise',
       'expires_at_epoch': 2, 'authorization_digest': 'sha256:amended'}, True),
+    ({'maximum_requests': None}, True),
     ({'maximum_requests': 39}, False),
     ({'maximum_cost_usd': 39}, False),
     ({'maximum_requests': 60, 'source_video_digest': 'other'}, False),
@@ -133,7 +134,8 @@ def test_owner_may_raise_a_running_jobs_limits_but_not_change_its_grant(change, 
                  'maximum_cost_usd': 40, 'maximum_requests': 40}
     policy = {'maximum_review_cost_usd': 1, 'pose_input_cost_usd': .02}
     stored = {'authority': authority, 'policy': policy}
-    current = {'authority': {**authority, **change}, 'policy': dict(policy)}
+    current = {'authority': {k: v for k, v in {**authority, **change}.items() if v is not None},
+               'policy': dict(policy)}
     if allowed:
         assert resumed_policy(stored, current) == {'policy': policy}
     else:
