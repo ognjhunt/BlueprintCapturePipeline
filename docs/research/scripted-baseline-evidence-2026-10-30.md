@@ -18,6 +18,10 @@ failure counts as an episode record, not proof of invocation. The independent
 session has zero learned rollouts and `candidate_policy_queried=false`.
 `policy_outcome_interpretable` remains false for scripted episodes; any
 interpretable scripted result uses `scripted_outcome_interpretable`.
+A scripted success additionally requires witnessed delivered actions and arm
+motion. A true scorer verdict without those witnesses remains retained but is
+unscorable as controller success; an actual false verdict remains a failed
+attempt even when the controller held still.
 
 Timeout handling retains verified completed children and their evidence. An
 unsealed interrupted cell has explicitly unknown invocation; recovery creates no

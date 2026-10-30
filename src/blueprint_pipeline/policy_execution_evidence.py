@@ -116,7 +116,12 @@ def scripted_episode_outcome(row: Mapping[str, Any]) -> tuple[str, str]:
             and score.get("status") == "scored" and type(score.get("task_succeeded")) is bool):
         if (episode.get("motion_evidence") or {}).get("robot_fell") is True:
             return "failure", "robot_fell"
-        return ("success", "task_succeeded") if score["task_succeeded"] else ("failure", "task_not_completed")
+        if score["task_succeeded"]:
+            if (row.get("scripted_outcome_interpretable") is not True
+                    or row.get("actions_reached_robot") is not True or row.get("arm_moved") is not True):
+                return "void", "scripted_task_score_without_interpretable_action_evidence"
+            return "success", "task_succeeded"
+        return "failure", "task_not_completed"
     if row.get("episode_failure_stage") == "action_delivery_rejected":
         return "failure", "scripted_action_beyond_joint_limits"
     if row.get("episode_failure_cause") == "scripted_controller" and execution_invoked(row):

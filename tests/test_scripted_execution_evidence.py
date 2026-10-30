@@ -176,6 +176,17 @@ def test_scripted_controller_error_and_actual_failure_remain_individual_failures
         scripted_episode_outcome(row)
 
 
+@pytest.mark.parametrize("missing", ["scripted_outcome_interpretable", "actions_reached_robot", "arm_moved"])
+def test_scripted_success_needs_its_own_action_witness_but_stationary_failure_remains_failure(missing):
+    row = {**_episode(SCRIPTED), "scripted_outcome_interpretable": True}
+    assert scripted_episode_outcome(row) == ("success", "task_succeeded")
+    row[missing] = False
+    assert scripted_episode_outcome(row) == ("void", "scripted_task_score_without_interpretable_action_evidence")
+    assert row["episode"]["score"]["task_succeeded"] is True  # Raw scorer verdict remains unchanged.
+    row["episode"]["score"]["task_succeeded"] = False
+    assert scripted_episode_outcome(row) == ("failure", "task_not_completed")
+
+
 @pytest.mark.parametrize("sealed_current", [False, True])
 def test_scripted_timeout_retains_bound_children_and_never_invents_interrupted_invocation(tmp_path, sealed_current):
     from blueprint_pipeline.team_evaluation_worker_retention import seal_scripted_interruption
