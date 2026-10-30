@@ -5,9 +5,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from .beta_policy_screening_g1 import validate_cell_binding
 from .decision_evidence_contracts import canonical_digest
-from .native_g1_beta_authority import CELL_SCHEMA
+from .native_g1_beta_authority import CELL_SCHEMA, validate_cell_binding
 from .native_g1_navigation_goal import validate_g1_navigation_goal_authority
 
 SCHEMA = "native_g1_beta_navigation_authority.v1"

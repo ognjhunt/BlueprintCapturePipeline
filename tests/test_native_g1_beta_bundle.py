@@ -94,6 +94,10 @@ def test_selected_dp_real_zip_reopens_and_passes_actual_vast_preflight(tmp_path,
     assert receipt["cell_ids"] == [c["cell_id"] for c in authority["cells"]]
     with zipfile.ZipFile(receipt["bundle_path"]) as archive:
         assert not any("/pi_tokenizer/" in name for name in archive.namelist())
+        for name in ("native_g1_beta_authority", "native_g1_beta_authority_composer"):
+            path = "provider_runtime/blueprint_pipeline/" + name + ".py"
+            assert path in session.REQUIRED_ENTRIES
+            assert archive.read(path) == (Path(session.__file__).parent / (name + ".py")).read_bytes()
         assert b"private-test-credential" not in archive.read("provider_runtime/publisher-source/source/.git/config")
         assert archive.read("provider_runtime/publisher-source/source/LICENSE").startswith(b"Publisher source")
         # Exercise the actual source verifier after extraction. Omitting the Git

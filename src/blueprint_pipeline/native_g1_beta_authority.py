@@ -1,4 +1,4 @@
-"""Compose existing G1 model-term evidence with a current internal beta task.
+"""Validate sealed G1 model-term evidence for an internal beta task.
 
 This is a machine derivation, not a new human review. The old scene-specific
 approvals remain unchanged. The current owner's instruction authorizes internal
@@ -8,6 +8,7 @@ launch. Neither source permits public media, redistribution or physical claims.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -178,22 +179,34 @@ def derive_cell_authority(*, base_authority: Mapping[str, Any], cell: Mapping[st
                                    scene_plan_digest=scene_plan_digest)
 
 
-def compose_beta_authority(*, candidate_id: str, scene_plan_digest: str,
-                           source_packet_receipt_digest: str, task_success_contract_digest: str,
-                           checkpoint_digest: str, current_source: Mapping[str, Any],
-                           site_id: str, registration_digest: str) -> dict[str, Any]:
-    """Compose only after reopening current trusted task and capture consent."""
-    from .beta_policy_screening_worker import require_current_source
-    require_current_source(current_source, site_id=site_id)
-    row = {"schema_version": SCHEMA, **SCOPE, "candidate_id": candidate_id,
-           "scene_plan_digest": scene_plan_digest, "task_success_contract_digest": task_success_contract_digest,
-           "source_packet_receipt_digest": source_packet_receipt_digest, "checkpoint_digest": checkpoint_digest,
-           "inventory_file_sha256": INVENTORY_SHA256, "source_revision": SOURCE_REVISION,
-           "sonic": dict(SONIC), "robot_usd_sha256": ROBOT_USD_SHA256,
-           "auxiliary_assets": [dict(PI_AUXILIARY if "_pi05_" in candidate_id else DP_AUXILIARY)],
-           "model_review": reviewed_model_terms(candidate_id),
-           "current_task_source": {key: current_source[key] for key in SOURCE_FIELDS},
-           "site_id": site_id, "registration_digest": registration_digest}
-    row["authority_digest"] = canonical_digest(row, digest_field="authority_digest")
-    return validate_beta_authority(row, candidate_id=candidate_id, scene_plan_digest=scene_plan_digest,
-                                   current_source=current_source, task_success_contract_digest=task_success_contract_digest)
+def validate_cell_binding(base_scene: Mapping[str, Any], derived_scene: Mapping[str, Any],
+                          cell: Mapping[str, Any], authority: Mapping[str, Any], *,
+                          base_contract: Mapping[str, Any]) -> dict[str, Any]:
+    """A G1 cell changes only the reset seed, never the scene, task or controller."""
+    validate_frozen_cell(cell)
+    for scene in (base_scene, derived_scene):
+        if scene.get("plan_digest") != canonical_digest(scene, digest_field="plan_digest"):
+            raise ValueError("g1_beta_cell_scene_digest_invalid")
+    context = {"schema_version": "adp009d_scenario_instance.v1", "cell_id": cell["cell_id"], "seed": cell["seed"],
+        "policy_neutral": True, "caller_asserted_success": False, "learned_policy_outcomes_consulted": False,
+        "factor_records": [], "resolved_parameters": {}, "beta_cell_spec_digest": cell["cell_spec_digest"],
+        "scenario_scope": "native_frozen_reset_seeds"}
+    scenario = {"context_kind": "evaluation_cell", "cell_id": cell["cell_id"], "seed": cell["seed"],
+                "instance_digest": canonical_digest(context, digest_field="instance_digest")}
+    if (base_contract.get("contract_digest") != canonical_digest(base_contract, digest_field="contract_digest")
+            or base_scene.get("runtime_contract_digest") != base_contract["contract_digest"]):
+        raise ValueError("g1_beta_cell_contract_invalid")
+    contract = deepcopy(dict(base_contract))
+    contract["scenario"].update(scenario)
+    expected = deepcopy(dict(base_scene))
+    expected["scenario"].update(scenario)
+    expected["runtime_contract_digest"] = canonical_digest(contract, digest_field="contract_digest")
+    expected["plan_digest"] = canonical_digest(expected, digest_field="plan_digest")
+    if dict(derived_scene) != expected:
+        raise ValueError("g1_beta_cell_changed_frozen_scene")
+    validated = validate_beta_authority(authority, candidate_id=authority.get("base_authority", authority)["candidate_id"],
+        scene_plan_digest=derived_scene["plan_digest"],
+        task_success_contract_digest=derived_scene["task_spec"]["task_success_contract_digest"])
+    if validated.get("cell") != cell or validated["base_authority"]["scene_plan_digest"] != base_scene["plan_digest"]:
+        raise ValueError("g1_beta_cell_authority_binding_invalid")
+    return dict(derived_scene)

@@ -9,6 +9,7 @@ from jsonschema import Draft202012Validator
 
 from blueprint_pipeline import beta_policy_screening_g1 as g1
 from blueprint_pipeline import native_g1_beta_authority as rights
+from blueprint_pipeline.native_g1_beta_authority_composer import compose_beta_authority
 from blueprint_pipeline.beta_policy_candidate_catalog import load_default_catalog, seal_catalog
 from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan, validate_screening_plan
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
@@ -29,7 +30,7 @@ def authority(monkeypatch, *, candidate=DP):
     calls = []
     monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source",
         lambda source, *, site_id: calls.append((source, site_id)))
-    value = rights.compose_beta_authority(candidate_id=candidate, scene_plan_digest=SHA,
+    value = compose_beta_authority(candidate_id=candidate, scene_plan_digest=SHA,
         source_packet_receipt_digest=SHA, task_success_contract_digest=SHA,
         checkpoint_digest=rights.CANDIDATE_DIGESTS[candidate], current_source=source(),
         site_id="site-current", registration_digest=OTHER)
@@ -94,7 +95,7 @@ def test_revoked_capture_prevents_authority_derivation(monkeypatch):
         raise ValueError("beta_screening_current_capture_consent_required")
     monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", refused)
     with pytest.raises(ValueError, match="current_capture_consent_required"):
-        rights.compose_beta_authority(candidate_id=DP, scene_plan_digest=SHA,
+        compose_beta_authority(candidate_id=DP, scene_plan_digest=SHA,
             source_packet_receipt_digest=SHA, task_success_contract_digest=SHA,
             checkpoint_digest=rights.CANDIDATE_DIGESTS[DP], current_source=source(),
             site_id="site-current", registration_digest=OTHER)

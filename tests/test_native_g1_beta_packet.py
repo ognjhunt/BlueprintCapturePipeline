@@ -6,7 +6,8 @@ import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline import native_g1_beta_packet as packet
-from blueprint_pipeline.native_g1_beta_authority import CANDIDATE_DIGESTS, compose_beta_authority
+from blueprint_pipeline.native_g1_beta_authority import CANDIDATE_DIGESTS
+from blueprint_pipeline.native_g1_beta_authority_composer import compose_beta_authority
 
 SHA = "sha256:" + "a" * 64
 DP = next(iter(CANDIDATE_DIGESTS))

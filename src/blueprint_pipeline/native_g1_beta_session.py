@@ -36,6 +36,7 @@ REQUIRED_ENTRIES = (
     *("provider_runtime/blueprint_pipeline/" + name + ".py" for name in (
         "native_g1_beta_runtime", "native_g1_beta_session", "native_g1_beta_bundle",
         "native_g1_beta_packet", "native_g1_beta_assets", "native_g1_beta_download", "native_g1_beta_authority",
+        "native_g1_beta_authority_composer",
         "native_g1_beta_dependencies", "native_g1_beta_dependency_profile", "native_g1_beta_navigation",
         "native_g1_development_worker", "native_g1_provider_runtime")),
 )

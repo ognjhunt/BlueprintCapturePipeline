@@ -57,6 +57,23 @@ def test_staged_runtime_uses_actual_bounded_production_import_closure(tmp_path):
     assert (package / 'control_plane_lane_historical_restore_worker.py').is_file()
     assert (package / 'control_plane_lane_historical_gc.py').is_file()
     assert not (package / 'live_pipeline_intake_service.py').exists()
+    assert (package / 'native_g1_beta_authority.py').is_file()
+    assert not (package / 'native_g1_beta_authority_composer.py').exists()
+    assert not (package / 'beta_policy_screening_g1.py').exists()
+    assert not (package / 'beta_policy_screening_worker.py').exists()
+    assert sum(path.stat().st_size for path in package.iterdir()) <= 8 * 1024**2
+
+
+def test_native_acceptance_stages_bounded_worker_validation_without_controller(tmp_path):
+    from tests.historical_generation_native_acceptance import _stage
+    _stage(tmp_path)
+    package = tmp_path / 'python/blueprint_pipeline'
+    root = Path(__file__).parents[1]
+    for name in ('native_g1_development_worker', 'native_g1_beta_authority', 'native_g1_beta_navigation'):
+        assert (package / (name + '.py')).read_bytes() == (
+            root / 'src/blueprint_pipeline' / (name + '.py')).read_bytes()
+    assert not (package / 'native_g1_beta_authority_composer.py').exists()
+    assert not (package / 'beta_policy_screening_worker.py').exists()
     assert sum(path.stat().st_size for path in package.iterdir()) <= 8 * 1024**2
 
 

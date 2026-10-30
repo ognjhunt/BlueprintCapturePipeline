@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -12,8 +11,9 @@ from typing import Any
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_beta_authority import (
     CANDIDATE_DIGESTS, INVENTORY_SHA256, SOURCE_REVISION, SONIC, ROBOT_USD_SHA256,
-    compose_beta_authority, validate_beta_authority, validate_frozen_cell,
+    validate_beta_authority, validate_cell_binding as validate_cell_binding, validate_frozen_cell,
 )
+from .native_g1_beta_authority_composer import compose_beta_authority
 
 BACKEND = "native_g1.v1"
 SPEC_SCHEMA = "native_g1_beta_execution_spec.v1"
@@ -99,39 +99,6 @@ def frozen_cells(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
         result.append(validate_frozen_cell({**cell, "family": "canonical_anchor", "resolved_scenario": scenario,
                                            "cell_spec_digest": digest, "resolved_scenario_digest": digest}))
     return result
-
-
-def validate_cell_binding(base_scene: Mapping[str, Any], derived_scene: Mapping[str, Any],
-                          cell: Mapping[str, Any], authority: Mapping[str, Any], *,
-                          base_contract: Mapping[str, Any]) -> dict[str, Any]:
-    """A G1 cell changes only the reset seed, never the scene, task or controller."""
-    validate_frozen_cell(cell)
-    for scene in (base_scene, derived_scene):
-        if scene.get("plan_digest") != canonical_digest(scene, digest_field="plan_digest"):
-            raise ValueError("g1_beta_cell_scene_digest_invalid")
-    context = {"schema_version": "adp009d_scenario_instance.v1", "cell_id": cell["cell_id"], "seed": cell["seed"],
-        "policy_neutral": True, "caller_asserted_success": False, "learned_policy_outcomes_consulted": False,
-        "factor_records": [], "resolved_parameters": {}, "beta_cell_spec_digest": cell["cell_spec_digest"],
-        "scenario_scope": "native_frozen_reset_seeds"}
-    scenario = {"context_kind": "evaluation_cell", "cell_id": cell["cell_id"], "seed": cell["seed"],
-                "instance_digest": canonical_digest(context, digest_field="instance_digest")}
-    if (base_contract.get("contract_digest") != canonical_digest(base_contract, digest_field="contract_digest")
-            or base_scene.get("runtime_contract_digest") != base_contract["contract_digest"]):
-        raise ValueError("g1_beta_cell_contract_invalid")
-    contract = deepcopy(dict(base_contract))
-    contract["scenario"].update(scenario)
-    expected = deepcopy(dict(base_scene))
-    expected["scenario"].update(scenario)
-    expected["runtime_contract_digest"] = canonical_digest(contract, digest_field="contract_digest")
-    expected["plan_digest"] = canonical_digest(expected, digest_field="plan_digest")
-    if dict(derived_scene) != expected:
-        raise ValueError("g1_beta_cell_changed_frozen_scene")
-    validated = validate_beta_authority(authority, candidate_id=authority.get("base_authority", authority)["candidate_id"],
-        scene_plan_digest=derived_scene["plan_digest"],
-        task_success_contract_digest=derived_scene["task_spec"]["task_success_contract_digest"])
-    if validated.get("cell") != cell or validated["base_authority"]["scene_plan_digest"] != base_scene["plan_digest"]:
-        raise ValueError("g1_beta_cell_authority_binding_invalid")
-    return dict(derived_scene)
 
 
 def _record(record: Mapping[str, Any]) -> dict[str, Any]:
