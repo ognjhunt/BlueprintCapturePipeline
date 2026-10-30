@@ -105,54 +105,83 @@ def target_batches(*, selected, candidates, source_count):
     return groups or [anchors]
 
 
-def project_source_depth(frames, camera):
-    """Render retained estimated depth into the target; unknown pixels stay zero.
+# Bound working memory independently of how many cameras the planner surveys.
+DEPTH_PROJECTION_BATCH_CAMERAS = 8
 
-    A same-centre inverse warp keeps continuous surfaces continuous without
-    forward-projection holes. Other observed centres contribute nearest depth.
-    This is soft geometric conditioning, never an RGB keep mask.
+
+def project_source_depths(frames, cameras):
+    """Render a bounded camera batch, lifting each source frame at most once.
+
+    Every camera keeps the original frame order, nearest-depth reduction and
+    same-centre homography. This reuses computation without sampling or changing
+    source geometry, confidence, camera selection or unknown-pixel semantics.
     """
     import cv2
     from .atlas_scene_preservation import _same_center, _valid, _world, _project
     from .atlas_depth_splat import _rotation_matrix
 
-    k = camera['intrinsics']
-    width, height = k['width'], k['height']
-    target_k = np.array([[k['fx'], 0, k['cx']], [0, k['fy'], k['cy']], [0, 0, 1.]])
-    target_rotation = _rotation_matrix(camera['extrinsics']['quaternion'])
-    zbuffer = np.full((height, width), np.inf, np.float32)
+    if len(cameras) > DEPTH_PROJECTION_BATCH_CAMERAS:
+        raise ValueError('atlas_depth_projection_batch_too_large')
+    targets = []
+    for camera in cameras:
+        k = camera['intrinsics']
+        matrix = np.array([[k['fx'], 0, k['cx']], [0, k['fy'], k['cy']], [0, 0, 1.]])
+        targets.append((camera, matrix, np.linalg.inv(matrix),
+                        _rotation_matrix(camera['extrinsics']['quaternion']),
+                        np.full((k['height'], k['width']), np.inf, np.float32)))
+    grids = {}
+    optical_to_rub = np.diag([1., -1., -1.])
+    to_center = np.array([[1, 0, .5], [0, 1, .5], [0, 0, 1.]])
     for frame in frames:
-        if not _same_center(frame, camera):
-            points, _, _ = _world(frame, _valid(frame))
-            z, u, v, inside = _project(points, camera)
-            pixels = np.floor(v[inside]).astype(int) * width + np.floor(u[inside]).astype(int)
-            np.minimum.at(zbuffer.reshape(-1), pixels, z[inside])
-            continue
-        source = frame['intrinsics']
-        source_k = np.array([[source['fx'], 0, source['cx']], [0, source['fy'], source['cy']], [0, 0, 1.]])
-        optical_to_rub = np.diag([1., -1., -1.])
-        rotation = optical_to_rub @ target_rotation.T @ frame['rotation'] @ optical_to_rub
-        to_center = np.array([[1, 0, .5], [0, 1, .5], [0, 0, 1.]])
-        mapping = np.linalg.inv(to_center) @ target_k @ rotation @ np.linalg.inv(source_k) @ to_center
-        source_depth = np.where(_valid(frame), frame['depth'], 0).astype(np.float32)
-        sampled = cv2.warpPerspective(source_depth, mapping, (width, height), flags=cv2.INTER_NEAREST)
-        yy, xx = np.indices((height, width))
-        ray = (rotation.T @ np.linalg.inv(target_k))[2]
-        source_z = ray[0] * (xx + .5) + ray[1] * (yy + .5) + ray[2]
-        valid = (sampled > 0) & (source_z > 0)
-        projected = np.full((height, width), np.inf, np.float32)
-        projected[valid] = sampled[valid] / source_z[valid]
-        np.minimum(zbuffer, projected, out=zbuffer)
-    return np.where(np.isfinite(zbuffer), zbuffer, 0).astype(np.float32)
+        valid_source = _valid(frame)
+        points = source_depth = source_inverse = None
+        for camera, target_k, target_inverse, target_rotation, zbuffer in targets:
+            k = camera['intrinsics']
+            width, height = k['width'], k['height']
+            if not _same_center(frame, camera):
+                if points is None:
+                    points, _, _ = _world(frame, valid_source)
+                z, u, v, inside = _project(points, camera)
+                pixels = np.floor(v[inside]).astype(int) * width + np.floor(u[inside]).astype(int)
+                np.minimum.at(zbuffer.reshape(-1), pixels, z[inside])
+                continue
+            if source_depth is None:
+                source = frame['intrinsics']
+                source_k = np.array([[source['fx'], 0, source['cx']],
+                                     [0, source['fy'], source['cy']], [0, 0, 1.]])
+                source_inverse = np.linalg.inv(source_k)
+                source_depth = np.where(valid_source, frame['depth'], 0).astype(np.float32)
+            rotation = optical_to_rub @ target_rotation.T @ frame['rotation'] @ optical_to_rub
+            mapping = np.linalg.inv(to_center) @ target_k @ rotation @ source_inverse @ to_center
+            sampled = cv2.warpPerspective(source_depth, mapping, (width, height), flags=cv2.INTER_NEAREST)
+            if (height, width) not in grids:
+                grids[height, width] = np.indices((height, width))
+            yy, xx = grids[height, width]
+            ray = (rotation.T @ target_inverse)[2]
+            source_z = ray[0] * (xx + .5) + ray[1] * (yy + .5) + ray[2]
+            valid = (sampled > 0) & (source_z > 0)
+            projected = np.full((height, width), np.inf, np.float32)
+            projected[valid] = sampled[valid] / source_z[valid]
+            np.minimum(zbuffer, projected, out=zbuffer)
+    return [np.where(np.isfinite(buffer), buffer, 0).astype(np.float32)
+            for _, _, _, _, buffer in targets]
+
+
+def project_source_depth(frames, camera):
+    """Render one retained-depth camera; unknown pixels stay zero."""
+    return project_source_depths(frames, [camera])[0]
 
 
 def prepare_depth_context(*, frames, selected, root):
     from .atlas_scene_preservation import _save_image
 
     root.mkdir(parents=True, exist_ok=True)
-    rows = {}
+    rows, depth_batch = {}, []
     for index, row in enumerate(selected):
-        depth = project_source_depth(frames, row['camera'])
+        if index % DEPTH_PROJECTION_BATCH_CAMERAS == 0:
+            batch = selected[index:index + DEPTH_PROJECTION_BATCH_CAMERAS]
+            depth_batch = project_source_depths(frames, [view['camera'] for view in batch])
+        depth = depth_batch[index % DEPTH_PROJECTION_BATCH_CAMERAS]
         valid = depth > 0
         zmin, zmax = ((float(depth[valid].min()), float(depth[valid].max())) if valid.any() else (1., 1.))
         pixels = np.zeros(depth.shape, np.uint8)
