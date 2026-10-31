@@ -697,6 +697,11 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     preview_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-website-atlas-preview\n", encoding="utf-8")
     preview_timer = unit_dir / "blueprint-website-atlas-preview.timer"
     preview_timer.write_text("[Timer]\nOnUnitInactiveSec=60s\n", encoding="utf-8")
+    provider_poll_units = []
+    for suffix in ("service", "timer", "path"):
+        source = unit_dir / f"blueprint-website-atlas-provider-poll.{suffix}"
+        source.write_text("[Unit]\nDescription=Exact provider poll fixture\n", encoding="utf-8")
+        provider_poll_units.append(source)
     additional_sources = []
     for name in (
         "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
@@ -778,6 +783,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         intake_service,
         preview_service,
         preview_timer,
+        *provider_poll_units,
     ):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
@@ -876,6 +882,13 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-pipeline-intake.service",
         "blueprint-website-atlas-preview.service",
         "blueprint-website-atlas-preview.timer",
+        "blueprint-website-atlas-provider-poll.service",
+        "blueprint-website-atlas-provider-poll.timer",
+        "blueprint-website-atlas-provider-poll.path",
+    )
+    assert deploy.DEPLOY_EXEMPT_TRIGGER_UNITS == (
+        "blueprint-website-atlas-provider-poll.timer",
+        "blueprint-website-atlas-provider-poll.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
@@ -5076,6 +5089,57 @@ def test_drain_refuses_a_trigger_the_deploy_does_not_restore(tmp_path, monkeypat
     assert order == []
 
 
+def test_the_atlas_provider_poll_keeps_running_through_a_deploy(tmp_path, monkeypatch) -> None:
+    """Polling an operation already bought cannot spend, so no deploy stops it (2026-10-30)."""
+    kwargs, _order = _drain_harness(monkeypatch, tmp_path)
+    snapshot = deploy._installed_path_unit_states
+    quiesce_candidates: list[str] = []
+    rearmed: list[tuple[str, ...]] = []
+
+    def observed(installed):
+        quiesce_candidates.extend(entry["unit"] for entry in installed)
+        return snapshot(installed)
+
+    def restore(installed, *, before, always_arm_units=(), **_kwargs):
+        rearmed.append(tuple(always_arm_units))
+        return []
+
+    monkeypatch.setattr(deploy, "_installed_path_unit_states", observed)
+    monkeypatch.setattr(deploy, "_restore_installed_path_units", restore)
+
+    deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    exempt = set(deploy.DEPLOY_EXEMPT_TRIGGER_UNITS)
+    assert exempt == {"blueprint-website-atlas-provider-poll.timer", "blueprint-website-atlas-provider-poll.path"}
+    # Every watcher the drain and the full quiesce may stop is snapshotted first; the poll never is.
+    assert PROGRESSION_TIMER in quiesce_candidates and not exempt & set(quiesce_candidates)
+    assert "blueprint-website-atlas-preview.timer" in quiesce_candidates
+    # The deploy still installs the units and re-arms the triggers as no-spend watchers.
+    assert exempt <= set(deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS) and rearmed and exempt <= set(rearmed[-1])
+
+
+def test_a_deploy_arms_a_newly_installed_provider_poll_trigger_as_no_spend(monkeypatch) -> None:
+    unit, calls, state = "blueprint-website-atlas-provider-poll.path", [], {"enabled": "disabled", "active": "inactive"}
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        if argv[1:2] == ["enable"]:
+            state["enabled"] = "enabled"
+        elif argv[1:2] == ["restart"]:
+            state["active"] = "active"
+        stdout = {"is-enabled": state["enabled"], "is-active": state["active"]}.get(argv[1], "")
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout + "\n", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={}, arm_path_units=False,
+        always_arm_units=(*deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS, *deploy.DEPLOY_EXEMPT_TRIGGER_UNITS))
+
+    assert ("systemctl", "enable", unit) in calls and ("systemctl", "restart", unit) in calls
+    assert restored[0]["requested_intent"] == "arm_no_spend"
+    assert restored[0]["after"] == {"enabled": "enabled", "state": "active"}
+
+
 def test_deploy_without_drain_units_never_waits(tmp_path, monkeypatch) -> None:
     kwargs = _stub_host_deploy(monkeypatch, tmp_path, "e" * 40)
     monkeypatch.setattr(deploy, "_drain_service_units", lambda *_a, **_k: pytest.fail("drained"))
@@ -5286,7 +5350,8 @@ def test_a_failure_inside_the_pause_restores_the_exact_watcher_state(tmp_path, m
         "installed": [
             {"unit": unit}
             for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-            if unit.endswith((".path", ".timer"))
+            # The provider poll was never quiesced, so a failure has nothing of it to restore.
+            if unit.endswith((".path", ".timer")) and unit not in deploy.DEPLOY_EXEMPT_TRIGGER_UNITS
         ],
         "before": {watcher: {"enabled": "enabled", "state": "active"}},
         "arm_path_units": False,

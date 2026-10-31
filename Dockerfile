@@ -55,6 +55,9 @@ RUN groupadd --gid "${APP_GID}" blueprint \
     && chown -R blueprint:blueprint /workspace /tmp/blueprint_pipeline /opt/huggingface
 
 COPY --from=builder --chown=blueprint:blueprint /opt/venv /opt/venv
+# The website candidate ranking sends the shared service brief verbatim; the
+# installed package has no repository root to find it in.
+COPY --chown=blueprint:blueprint PLATFORM_CONTEXT.md /opt/blueprint/PLATFORM_CONTEXT.md
 
 # Release identity is metadata. Keep it after the large filesystem layers so
 # a deployment-only commit can reuse the already verified environment bytes.
@@ -62,6 +65,7 @@ ARG BLUEPRINT_SOURCE_COMMIT
 LABEL org.opencontainers.image.revision="${BLUEPRINT_SOURCE_COMMIT}"
 ENV PATH="/opt/venv/bin:${PATH}" \
     BLUEPRINT_SOURCE_COMMIT="${BLUEPRINT_SOURCE_COMMIT}" \
+    BLUEPRINT_PLATFORM_CONTEXT_PATH=/opt/blueprint/PLATFORM_CONTEXT.md \
     HF_HUB_OFFLINE=1 \
     TRANSFORMERS_OFFLINE=1 \
     PYTHONDONTWRITEBYTECODE=1

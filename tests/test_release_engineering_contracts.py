@@ -386,6 +386,26 @@ def test_only_bounded_ci_workflow_runs_for_ordinary_pull_requests() -> None:
         assert "pull_request:" not in event_block, workflow_name
 
 
+def test_codeql_analyzes_only_the_newest_commit_and_gates_nothing() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/codeql.yml").read_text(encoding="utf-8"))
+
+    assert workflow["concurrency"] == {
+        "group": "codeql-${{ github.ref }}",
+        "cancel-in-progress": True,
+    }
+    # YAML reads the bare `on:` key as true. The weekly analysis stays.
+    assert workflow[True]["schedule"] == [{"cron": "31 7 * * 2"}]
+    assert workflow[True]["push"] == {"branches": ["main"]}
+    # Exact-commit release evidence stays reachable for a superseded commit.
+    assert "workflow_dispatch" in workflow[True]
+    queries = workflow["jobs"]["analyze"]["steps"][1]["with"]["queries"]
+    assert queries == "security-extended,security-and-quality"
+    # Cancelling a superseded analysis is safe only while nothing depends on it.
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    assert "analyze" not in ci["jobs"]
+    assert "analyze" not in ci["jobs"]["supply-chain"]["needs"]
+
+
 def test_groot_oscar_disk_admission_measures_every_write_filesystem() -> None:
     script = (ROOT / "scripts" / "build_push_groot_oscar_closed_loop_image.sh").read_text(
         encoding="utf-8"
@@ -1059,6 +1079,17 @@ def test_dependabot_covers_every_dockerfile_directory() -> None:
             config,
             re.MULTILINE,
         ), directory
+
+
+def test_dependabot_docker_updates_never_rebase_into_a_full_suite() -> None:
+    """A docker update changes the cross-cutting Dockerfile, so each rebase ran the full suite."""
+    config = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    docker = [row for row in config["updates"] if row["package-ecosystem"] == "docker"]
+    assert len(docker) == 2
+    for row in docker:
+        assert row["rebase-strategy"] == "disabled"
+        assert row["open-pull-requests-limit"] <= 2
+        assert [group["patterns"] for group in row["groups"].values()] == [["*"]]
 
 
 def test_package_import_is_lazy_and_module_entrypoints_are_not_preloaded() -> None:

@@ -18,7 +18,7 @@ from .common import write_json
 from .owned_capture_atlas_runtime import bind_owned_atlas_source, owned_atlas_source_checkpoint
 from .reconstruction_control_plane import _source_binding
 from .website_atlas_preview import (
-    _failed_step, _transition, advance_preparation_job, advance_preparation_step,
+    _failed_step, _transition, advance_preparation_job, advance_preparation_step, poll_jobs,
 )
 from .website_atlas_preview_store import MAXIMUM_JOB_SECONDS
 
@@ -92,15 +92,35 @@ def tick(*, state_root: Path, capture_store_root: Path, now: Callable[[], float]
     return counts
 
 
-def tick_from_environment(*, now: Callable[[], float] = time.time) -> dict[str, int]:
-    """The existing timer also discovers explicitly queued owned jobs; no new service."""
+def _roots_from_environment() -> tuple[Path, Path] | None:
     from .capture_upload_intake import CAPTURE_UPLOAD_STORE_ROOT_ENV
     from .live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
     from .live_pipeline_intake_runtime_controls import DEFAULT_MANIFEST_PATH, INTAKE_WORK_DIR_ENV
     capture_store = os.getenv(CAPTURE_UPLOAD_STORE_ROOT_ENV, "").strip()
     manifest = Path(os.getenv(CONTROL_PLANE_OUTPUT_PATH_ENV) or DEFAULT_MANIFEST_PATH).expanduser()
     if not capture_store or not manifest.is_file():
-        return {}
+        return None
     work = Path(os.getenv(INTAKE_WORK_DIR_ENV) or manifest.parent / "incoming_webapp_job_requests").expanduser()
-    return tick(state_root=work.resolve() / "reconstruction_control_plane",
-                capture_store_root=Path(capture_store).expanduser().resolve(), now=now)
+    return work.resolve() / "reconstruction_control_plane", Path(capture_store).expanduser().resolve()
+
+
+def tick_from_environment(*, now: Callable[[], float] = time.time) -> dict[str, int]:
+    """The existing timer also discovers explicitly queued owned jobs; no new service."""
+    roots = _roots_from_environment()
+    return {} if roots is None else tick(state_root=roots[0], capture_store_root=roots[1], now=now)
+
+
+def poll_from_environment(*, now: Callable[[], float] = time.time, transport: Any = None) -> dict[str, int]:
+    """The provider poll over queued owned jobs (``website_atlas_preview.poll_jobs``); reads only."""
+    roots = _roots_from_environment()
+    if roots is None:
+        return {}
+    state_root, capture_store_root = roots
+
+    def source_live(job: dict[str, Any], path: Path) -> bool:
+        refreshed = _refresh_source(job, state_root=state_root, capture_store_root=capture_store_root,
+                                    path=path, now=now)
+        return refreshed["state"] == "processing"
+    paths = sorted(Path(state_root).glob(f"plans/reconstruction-atlas-*/atlas/{JOB_FILE}"))
+    return poll_jobs([(path, read_job, lambda job, path=path: source_live(job, path)) for path in paths],
+                     now=now, transport=transport)

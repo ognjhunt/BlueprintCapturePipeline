@@ -1,7 +1,9 @@
 """No provider calls: durable task execution and the public beta schema boundary."""
+import contextlib
 import json
 import time
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 import pytest
 
@@ -636,6 +638,185 @@ def test_a_purged_upload_restarts_the_uploads_under_a_new_key_without_a_second_p
                                    (404, b"asset_b", {"operation_id": "op"})):
         unchanged = {**state(), **extra}
         assert not refresh_purged_uploads(unchanged, status, payload) and unchanged["status"] == "submitting"
+
+
+# The provider poll (website_atlas_preview.poll_jobs): reads a live operation once, buys nothing.
+WEBHOOK = "https://paperclip.tryblueprint.io/api/live-pipeline/atlas-webhook"
+
+
+@contextlib.contextmanager
+def _nothing_may_spend():
+    """Every path that could reserve, upload, submit, settle, retry or advance a job raises."""
+    from blueprint_pipeline import website_atlas_pipeline as pipeline
+    from blueprint_pipeline import website_atlas_preview as preview
+
+    def refuse(*_args, **_kwargs):
+        raise AssertionError("the provider poll reached a spending or advancing path")
+    targets = [(control, "reserve_website_preparation_spend"), (control, "load_current_website_task_context"),
+               (control, "website_webapp_request"), (admission_gate, "require_paid_resource_admission_grant"),
+               (tasks, "require_paid_resource_admission_grant"), (tasks, "_run_admitted_atlas_task_attempt"),
+               (tasks, "run_admitted_atlas_task"), (tasks, "_reconcile"), (pose, "_upload_frame"),
+               (pose, "_require_admission"), (pose, "submit_atlas_pose_operation"), (pose, "run_admitted_atlas_pose"),
+               (pose, "reconcile_atlas_submission"), (pose, "archive_closed_atlas_pose_attempt"),
+               (allocator, "run_sponsored_website_atlas_task"), (allocator, "run_sponsored_website_atlas_pose"),
+               (pipeline, "run_atlas_pipeline"), (preview, "advance_preparation_step"), (preview, "_step"),
+               (preview, "_clean_provider"), (preview, "_deliver")]
+    with contextlib.ExitStack() as stack:
+        for module, name in targets:
+            stack.enter_context(mock.patch.object(module, name, refuse))
+        yield
+
+
+def _processing_job(root, state="processing"):
+    path = root / "preview_job.json"
+    path.write_text(json.dumps({"state": state, "stage": "generated", "revision": 3,
+                                "enqueued_at_epoch": int(time.time()), "next_attempt_at_epoch": int(time.time())}))
+    return path
+
+
+def _poll(job, transport, source_live=lambda _job: True):
+    from blueprint_pipeline import website_atlas_preview as preview
+    return preview.poll_jobs([(job, lambda path: json.loads(path.read_text()), source_live)], transport=transport)
+
+
+def _recording(fake, calls):
+    original = fake.transport
+
+    def transport(method, url, headers, data):
+        calls.append((method, url))
+        return original(method, url, headers, data)
+    return transport
+
+
+def test_the_provider_poll_retains_a_finished_operation_and_buys_nothing(case, tmp_path):
+    fake, _, _, run = case
+    fake.pending = True
+    assert run()["status"] == "processing" and fake.posts == fake.reservations == 1
+    job = _processing_job(tmp_path)
+    before, calls = job.read_bytes(), []
+    with _nothing_may_spend():
+        assert _poll(job, _recording(fake, calls)) == {"processing": 1}
+        fake.pending = False
+        assert _poll(job, _recording(fake, calls)) == {"completed": 1}
+        state = json.loads((tmp_path / "atlas_pose/submission.json").read_text())
+        result = json.loads((tmp_path / "result.json").read_text())
+        assert state["status"] == "completed" and state["result_digest"] == result["digest"]
+        assert result["operation"]["id"] == "op_task_1" and result["billing"]["reserved_usd"] == .05
+        # Idempotent: nothing is live any more, so nothing is read or written again.
+        polls, retained = fake.polls, (tmp_path / "result.json").read_bytes()
+        assert _poll(job, _recording(fake, calls)) == {"idle": 1}
+        assert fake.polls == polls and (tmp_path / "result.json").read_bytes() == retained
+    assert job.read_bytes() == before  # the job's state and stage are the next tick's
+    assert calls and all(method == "GET" or url.endswith(":createReadUrl") for method, url in calls)
+    assert fake.posts == fake.reservations == 1
+    # The next normal tick takes the retained result as its own, without another purchase.
+    assert run()["digest"] == result["digest"] and fake.posts == fake.reservations == 1
+
+
+def test_the_provider_poll_records_a_failure_and_leaves_any_retry_to_the_tick(case, tmp_path):
+    fake, _, _, run = case
+    fake.pending = True
+    run()
+    original = fake.transport
+    failure = {"id": "op_task_1", "done": True, "error": {"code": 14, "message": "upstream unavailable",
+               "details": [{"domain": "api.worldlabs.ai", "reason": "TRANSIENT_UPSTREAM"}]}}
+
+    def failed(method, url, headers, data):
+        if url.endswith("/operations/op_task_1"):
+            return 200, json.dumps(failure).encode()
+        return original(method, url, headers, data)
+    job = _processing_job(tmp_path)
+    with _nothing_may_spend():
+        assert _poll(job, failed) == {"failed": 1}
+    state = json.loads((tmp_path / "atlas_pose/submission.json").read_text())
+    # Exactly the record the attempt's own poll writes, which the tick's retry decision reads.
+    assert state["status"] == "failed" and state["terminal_operation"] == failure
+    assert isinstance(state["terminal_observed_at_epoch"], float)
+    assert tasks._transient_upstream_failure(state) and not (tmp_path / "retry").exists()
+    assert fake.posts == fake.reservations == 1
+
+
+@pytest.mark.parametrize("change", ["job_ready", "source_withdrawn", "not_live", "backing_off", "busy"])
+def test_the_provider_poll_ignores_jobs_without_a_live_submission(case, tmp_path, change):
+    fake, _, _, run = case
+    fake.pending = True
+    run()
+    job = _processing_job(tmp_path, state="ready" if change == "job_ready" else "processing")
+    if change == "not_live":
+        path = tmp_path / "atlas_pose/submission.json"
+        path.write_text(json.dumps({**json.loads(path.read_text()), "status": "capacity_wait"}))
+    if change == "backing_off":
+        job.write_text(json.dumps({**json.loads(job.read_text()), "next_attempt_at_epoch": time.time() + 600}))
+
+    def untouched(*_args):
+        raise AssertionError("an ignored job reached World Labs")
+    with _nothing_may_spend():
+        if change == "busy":
+            import fcntl
+            with open(tmp_path / "preview.lock", "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                assert _poll(job, untouched) == {"busy": 1}
+        else:
+            assert _poll(job, untouched, lambda _job: change != "source_withdrawn") == {"idle": 1}
+
+
+def test_the_provider_poll_client_refuses_every_provider_mutation(case):
+    from blueprint_pipeline import website_atlas_preview as preview
+    sent = []
+    client = preview._read_only_client(lambda method, url, *_rest: sent.append(method) or (200, b"{}"))
+    for method, path in [("POST", "/tasks:atlasGenerate"), ("POST", "/assets"), ("DELETE", "/assets/asset_a"),
+                         ("POST", "/assets/asset_a:createUploadUrl"), ("POST", "/assets/asset_a:completeUpload"),
+                         ("POST", "/operations/op_task_1:cancel")]:
+        with pytest.raises(ValueError, match="atlas_provider_poll_read_only"):
+            client.send(method, path, {})
+    with pytest.raises(ValueError, match="atlas_provider_poll_read_only"):
+        client.send_bytes("https://upload.example.test/asset_a", method="PUT", headers={}, data=b"pixels")
+    client.call("GET", "/operations/op_task_1")
+    client.call("POST", "/assets/asset_a:createReadUrl")
+    assert sent == ["GET", "POST"]
+
+
+def test_a_new_submission_asks_for_the_completion_webhook_outside_its_identity(case, monkeypatch, tmp_path):
+    fake, _, _, run = case
+    monkeypatch.setenv(pose.ATLAS_WEBHOOK_URL_ENV, WEBHOOK)
+    assert run()["status"] == "completed"
+    state = json.loads((tmp_path / "atlas_pose/submission.json").read_text())
+    assert fake.bought[0]["webhookUrl"] == WEBHOOK and json.loads(state["request_body"])["webhookUrl"] == WEBHOOK
+    # Not part of the request record, its digest or its key: a config change re-identifies nothing.
+    assert "webhookUrl" not in state["request"] and "webhook" not in json.dumps(state["binding"])
+    assert state["request_digest"] == canonical_digest(state["binding"])
+    assert state["idempotency_key"] == "bp-atlas-task-" + state["request_digest"][7:39]
+
+
+def test_a_retained_submission_is_resent_exactly_without_a_webhook_it_never_asked_for(case, monkeypatch):
+    fake, _, _, run = case
+    original, sent = fake.transport, []
+
+    def limited(method, url, headers, data):
+        if url.endswith("/tasks:atlasGenerate"):
+            sent.append((headers["Idempotency-Key"], data))
+            if len(sent) == 1:
+                fake.posts += 1
+                return 429, b'{"code": "TASK_UNAVAILABLE"}', {"Retry-After": "60"}
+        return original(method, url, headers, data)
+    fake.transport = limited
+    first = run()
+    assert first["waiting_for"] == "provider_capacity"
+    monkeypatch.setenv(pose.ATLAS_WEBHOOK_URL_ENV, WEBHOOK)
+    assert run(now=lambda: first["retry_not_before_epoch"])["status"] == "completed"
+    assert sent[0] == sent[1] and b"webhookUrl" not in sent[1][1]
+
+
+@pytest.mark.parametrize("url", ["http://hooks.example.com/h", "https://203.0.113.5/h", "https://[2001:db8::1]/h",
+                                 "https://user:pw@hooks.example.com/h", "https://hooks.example.com:8443/h",
+                                 "https://hooks.example.com/h#part", "https://localhost/h",
+                                 "https://hooks.example.com/a b", "https://[broken/hook"])
+def test_an_unusable_webhook_url_is_left_out_rather_than_sent(monkeypatch, url):
+    monkeypatch.setenv(pose.ATLAS_WEBHOOK_URL_ENV, url)
+    assert pose.atlas_webhook_url() is None
+    assert json.loads(pose.new_request_body({"prompt": "room"})) == {"prompt": "room"}
+    monkeypatch.setenv(pose.ATLAS_WEBHOOK_URL_ENV, "https://hooks.example.com:443/marble?job=42")
+    assert json.loads(pose.new_request_body({"prompt": "room"}))["webhookUrl"] == "https://hooks.example.com:443/marble?job=42"
 
 
 def test_a_rate_limit_refusal_keeps_the_providers_explanation():

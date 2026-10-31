@@ -117,6 +117,15 @@ def run_website_capture_preparation(
     descriptor_payload["metadata"] = metadata
     # Keep producer members immutable; this is the pipeline-owned descriptor.
     write_json(capture_root / "capture_descriptor.json", descriptor_payload)
+    context = descriptor.metadata.get("site_task_context") or {}
+    if derived_scene_generation_allowed and context.get("context_digest") and clean_plate.get("task_masks"):
+        # The earliest point holding the confirmed task and its grounded targets:
+        # one retained call orders every compatible candidate for the later
+        # screening. A refusal or failure is recorded there, never a stop.
+        from .website_candidate_ranking import rank_website_candidates
+        handoff_lease_checkpoint("website_preparation_candidate_ranking")
+        rank_website_candidates(task_context=context, task_masks=clean_plate["task_masks"],
+                                pipeline_dir=pipeline_dir, capture_root=capture_root)
     handoff_lease_checkpoint("website_preparation_before_native_handoff")
     preparation = prepare_website_scene_handoff(
         descriptor=descriptor_payload, clean_plate=clean_plate,

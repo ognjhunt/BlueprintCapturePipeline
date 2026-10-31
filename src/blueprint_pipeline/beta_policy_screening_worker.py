@@ -55,6 +55,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
     from .team_scene_packet_worker import _read_json, request_key, resolve_capture_root, validated_request
+    from .website_candidate_ranking import retained_priority
+    from .website_candidate_selection import retain_campaign_catalog
 
     root = _root(queue_root)
     packet_root = Path(packet_queue_root)
@@ -109,10 +111,15 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
 
                     probe = enqueue_rigid_robot_free_probe(capture)
                     outcome["robot_free_probe_status"] = probe["status"]
+                    # The intake ranking orders the plan; the site budget decides how far it runs.
+                    priority = retained_priority(capture / "pipeline", task_context_digest=source["task_context_digest"])
+                    outcome["candidate_order"] = "intake_ranking" if priority else "identifier"
                     inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
-                        source=source, inputs_dir=root / "inputs" / campaign_id)
+                        source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
                     plan = build_screening_plan(catalog, inputs["scene"], campaign_id=campaign_id,
-                        capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"])
+                        capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
+                        priority=inputs.get("candidate_priority"))
+                    retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
                     outcome.update(enqueue_screening_campaign(plan, queue_root=root))
             except (OSError, ValueError, RuntimeError, KeyError) as exc:
                 # No raw remote response, URL, credentials or customer content in operational logs.
@@ -209,9 +216,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
         max_launches=args.max_launches)
     after = deliver_publications(queue_root=root)
+    from .website_candidate_selection import deliver_selections, retain_selections
+    try:
+        # After a terminal result is published, choose from it; local and unpaid.
+        selections = retain_selections(queue_root=root)
+        selections["delivery"] = deliver_selections(queue_root=root)
+    except (OSError, ValueError, KeyError) as exc:
+        code = str(exc) if isinstance(exc, ValueError) else ""
+        selections = {"status": "failed", "blocker": code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)
+                      else "website_candidate_selection_failed"}
     status = write_worker_status(root, publication_before=before, publication_after=after, execution=execution)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
-                      "publication_after": after, "worker_status": status}, sort_keys=True))
+                      "publication_after": after, "selections": selections, "worker_status": status},
+                     sort_keys=True))
     return 0
 
 
