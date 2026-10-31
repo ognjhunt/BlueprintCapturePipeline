@@ -264,3 +264,37 @@ def test_source_import_output_registers_without_reconstructing_manifest_by_hand(
     assert registration["source_import_provenance"] == receipt
     assert registration["dependency_closure"] == receipt["dependency_closure"]
     assert registration["model"]["sha256"] == receipt["model"]["sha256"]
+
+
+def test_a_free_base_is_bound_at_its_own_floor_stance_and_refused_by_name_without_one(tmp_path, monkeypatch):
+    from tests.test_team_embodiment import wheeled_manifest
+
+    base, facts = _plan(tmp_path, monkeypatch, scene_half="team_scene")
+    model = write_robot_usd(tmp_path / "rover.usda", anchored=False, wheels=True)
+    declared = validate_embodiment_manifest({**wheeled_manifest(model), "control_hz": 60})
+    manifest_path = launch._write(tmp_path / "rover.manifest.json", declared)
+    rights = {"schema_version": "blueprint.team_policy_candidate_rights.v1", "status": "admitted",
+        "team_id": "test-team", "checkpoint_id": "rover", "candidate_id": "rover", "license_to_run_granted": True,
+        "policy_self_grading_permitted": False, "official_ranking_permitted": False,
+        "secret_material_recorded": False, "adp_qualified_evidence_permitted": False}
+    rights["rights_digest"] = canonical_digest(rights, digest_field="rights_digest")
+    registration = {"manifest": launch._record(manifest_path), "model": launch._record(model),
+        "team_id": "test-team", "checkpoint_id": "rover", "rights_binding": rights,
+        "policy_spec": {"policy_id": "rover", "policy_interface_id": "blueprint_policy_https.v1",
+            "endpoint_url": "https://policy.example.com/infer", "metadata_url": "https://policy.example.com/metadata",
+            "allowed_origin": "https://policy.example.com", "model_identity_digest": canonical_digest({"policy": "rover"}),
+            "embodiment_id": declared["embodiment_id"], "action_chunk_rows": 4, "open_loop_horizon": 4,
+            "camera_names": [camera["name"] for camera in declared["cameras"]]}}
+    scene = facts["scene"]
+    kwargs = {"candidate_id": "rover", "registration": registration, "scene_plan": scene["native_scene_plan"],
+              "contract": scene["task_spec"]["task_success_contract"], "prompt": "pick it up",
+              "scene_revision_digest": scene["scene_revision_digest"]}
+    with pytest.raises(ValueError, match="beta_screening_team_free_base_stance_registration_required"):
+        build_registered_team_spec(**kwargs)
+    # The stance the scene recorded for this body (website_candidate_feasibility.own_stance).
+    robot = scene["native_scene_plan"]["robot"]["base_pose_world"]
+    stance = {"floor_z_m": 0.0, "position_world_m": [robot["position_world_m"][0] - 0.4,
+                                                     robot["position_world_m"][1], 0.9],
+              "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    spec, _ = build_registered_team_spec(**kwargs, stance=stance)
+    assert spec["team_embodiment"]["stance"] == stance

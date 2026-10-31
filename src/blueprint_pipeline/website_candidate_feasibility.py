@@ -66,16 +66,22 @@ def candidate_feasibility(*, scene_plan: Mapping[str, Any], catalog: Mapping[str
                          "embodiment_id": manifest["embodiment_id"],
                          **({"own_station": _own(own)} if own is not None else {})}
             continue
-        # The status is measured from the station a screening run stands at today: the
-        # packet's (beta_policy_screening_team binds the packet's scene plan). The body's
-        # own station, measured when the scene was compiled, is advisory until the run's
-        # binding consumes station_scene_plan; then it becomes the basis.
-        blockers = station_reach_blockers(scene_plan, manifest)
-        rows[key] = {"status": _status(blockers), "blockers": list(blockers),
+        # The status is measured where the run stands: a body with its own station on this scene
+        # is bound there (own_station -> beta_policy_screening_team -> the binding's station), so
+        # its own verdict decides; the packet's station is kept beside it for comparison. A body
+        # registered after the scene was compiled has no own station and stands at the packet's.
+        packet = station_reach_blockers(scene_plan, manifest)
+        if own is not None:
+            rows[key] = {"status": _status(own["blockers"]), "blockers": list(own["blockers"]),
+                         "embodiment_id": manifest["embodiment_id"], "reach_m": manifest["reach_m"],
+                         "station_basis": OWN_STATION,
+                         "own_station": {**_own(own), "status": _status(own["blockers"]),
+                                         "blockers": list(own["blockers"])},
+                         "scene_packet_station": {"status": _status(packet), "blockers": list(packet)}}
+            continue
+        rows[key] = {"status": _status(packet), "blockers": list(packet),
                      "embodiment_id": manifest["embodiment_id"], "reach_m": manifest["reach_m"],
-                     "station_basis": "scene_packet_station",
-                     **({"own_station": {**_own(own), "status": _status(own["blockers"]),
-                                         "blockers": list(own["blockers"])}} if own is not None else {})}
+                     "station_basis": "scene_packet_station"}
     value = {"schema_version": SCHEMA_VERSION, "scene_plan_digest": scene_plan.get("plan_digest"),
              "basis": "team_embodiment.station_reach_blockers_on_reconstructed_scene_packet",
              "candidates": rows, "feasibility_digest": ""}
@@ -101,10 +107,29 @@ def station_scene_plan(scene_plan: Mapping[str, Any], candidate: Mapping[str, An
     return value
 
 
+def own_station(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The fixed body's own station when its verdict was measured there; else ``None`` (the scene's)."""
+    own = candidate.get("own_station") or {}
+    if candidate.get("station_basis") != OWN_STATION or own.get("base_mode") != "fixed" or not own.get("station"):
+        return None
+    return {"position_world_m": list(own["station"]["position_world_m"]),
+            "orientation_xyzw": list(own["station"]["orientation_xyzw"])}
+
+
+def own_stance(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A free base's own floor stance on this scene (``team_embodiment_stance.ground_stance``); else ``None``."""
+    own = candidate.get("own_station") or {}
+    stance = own.get("station")
+    if own.get("base_mode") != "free" or not isinstance(stance, Mapping) or "floor_z_m" not in stance:
+        return None
+    return dict(stance)
+
+
 def infeasible_blockers(feasibility: Mapping[str, Any]) -> dict[str, list[str]]:
     """The planner's input: measured refusals only."""
     return {key: list(row["blockers"]) for key, row in feasibility["candidates"].items()
             if row["status"] == "infeasible"}
 
 
-__all__ = ["FILENAME", "SCHEMA_VERSION", "candidate_feasibility", "infeasible_blockers", "station_scene_plan"]
+__all__ = ["FILENAME", "SCHEMA_VERSION", "candidate_feasibility", "infeasible_blockers", "own_stance",
+           "own_station", "station_scene_plan"]
