@@ -63,6 +63,7 @@ door_prepare_source
 door_phase prepare_source_done
 door_require_on_main
 door_phase require_on_main_done
+door_settle_parked
 door_add_tool
 door_phase tool_worktree_done
 
