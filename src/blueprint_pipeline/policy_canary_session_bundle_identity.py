@@ -25,6 +25,7 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .openpi_droid_policy_runtime import BETA_POLARIS_VARIANT_CANDIDATE_IDS
 from .policy_execution_evidence import candidate_execution_kinds, rollout_counts_valid, rollout_total, SCRIPTED
 
 SCHEMA = "native_task_arena_policy_canary_provider_bundle.v1"
@@ -152,7 +153,8 @@ def validate_policy_canary_provider_manifest(payload: object) -> dict[str, Any]:
             and _SHA.fullmatch(str(payload.get("family_static_readiness_digest") or "")) is not None
         ) if family else (
             (("team_credential_env" not in payload and isinstance(candidates, list) and candidates
-              and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"])
+              and candidates[0] in [*PAIR, "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid",
+                                    *BETA_POLARIS_VARIANT_CANDIDATE_IDS])
              or ((openwam or molmoact2 or molmoact2_droid or trlc or scripted) and "team_credential_env" not in payload and payload.get("secret_material_bundled") is False)
              or (payload.get("team_policy_interface_id") in {
                      "openpi_droid_https.v1", "blueprint_policy_https.v1", "dreamlabs_dream1.v1"}
@@ -246,6 +248,12 @@ def run_kind_required_entries(manifest: Mapping[str, Any]) -> set[str]:
             required.update("provider_runtime/" + name for name in contract["required_entries"])
             required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
                              "provider_runtime/adp009d_policy_server_worker.py"})
+        if candidate in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
+            from .adp009d_policy_provisioning import CHECKPOINT_INVENTORY_STAGED_NAME
+            required.update({f"provider_runtime/adp009d_policy_provisioning.{candidate}.sh",
+                             "provider_runtime/adp009d_policy_server_worker.py",
+                             "provider_runtime/openpi_droid_policy_runtime.py",
+                             f"provider_runtime/{CHECKPOINT_INVENTORY_STAGED_NAME}"})
         if candidate in {"cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
             from .cosmos_droid_bundle import RUNTIME_MODULES, validate_runtime_contract
             contract = validate_runtime_contract(manifest.get("cosmos_runtime") or {})

@@ -28,7 +28,9 @@ MAX_MODEL_BYTES = 512 * 1024 * 1024
 
 def _has_external_assets(layer, sdf) -> bool:
     """Inspect authored fields without composing or resolving unbound assets."""
-    if layer.GetExternalReferences() or layer.GetExternalAssetDependencies():
+    # An empty asset path is an internal arc (USD flattening writes one for
+    # every instanceable prim's /Flattened_Prototype_N); it names no file.
+    if any(layer.GetExternalReferences()) or any(layer.GetExternalAssetDependencies()):
         return True
 
     def asset_value(value):

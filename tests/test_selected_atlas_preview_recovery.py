@@ -454,6 +454,27 @@ def test_selected_retry_never_requeues_a_running_ready_or_withdrawn_job(site, st
     assert site.job_path.read_bytes() == before
 
 
+def test_selected_retry_reopens_a_ready_job_only_for_its_untried_gap_preserving_form(site):
+    from blueprint_pipeline import atlas_native_splat as native
+    root = site.atlas / "automation/background_splat-refined-minimal"
+    root.mkdir(parents=True)
+    manifest = {"schema_version": "atlas_refined_splat.v1", "request_form": "documented_minimal"}
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    (root / native.MANIFEST).write_text(json.dumps(manifest))
+    marker = {"request_form": "documented_minimal", "splat_root": str(root), "splat_manifest_digest": manifest["digest"],
+              "left_out_admitted_view_ids": ["gap", "gap-2"], "gap_preserving_form_untried": True}
+    write_job(site, state="ready", reason=None, refined_splat=marker)
+    status = recover(site)["atlas"]
+    assert status["job"]["gap_preserving_upgrade"] == {"left_out_admitted_view_count": 2}
+    assert "splat_root" not in json.dumps(status)
+    result = recover(site, retry_digest=status["atlas_status_digest"])
+    assert result["status"] == "atlas_retry_queued" and result["later_timer_may_make_paid_calls"] is True
+    after = json.loads(site.job_path.read_text())
+    assert after["state"] == "processing" and after["revision"] == site.job["revision"] + 1
+    assert after["retries"][-1]["reason"] == "refined_splat_gap_preserving_form_untried"
+    assert json.loads((root / native.UPGRADE).read_text())["splat_manifest_digest"] == manifest["digest"]
+
+
 @pytest.mark.parametrize("reason", ["atlas_task_and_scene_coverage_gap", "atlas_preview_expired",
                                   "atlas_preview_source_video_unavailable"])
 def test_selected_retry_preserves_nonrecoverable_stopped_jobs(site, reason):

@@ -768,6 +768,8 @@ def finalize_background_result(*, output_root, source_digest, task_context, auto
               "simulation_qualified": False, "claim_ceiling": "development_only",
               "physical_evidence": False, "scale_status": "unscaled_provider_world_units",
               "billing_status": "provider_usage_unreported"}
+    if complete and background.get("refined_splat"):
+        result["refined_splat"] = background["refined_splat"]
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result

@@ -24,6 +24,7 @@ from .native_task_arena_policy_canary_session import (
     BETA_ADMISSION_SCHEMA_VERSION, BETA_RUN_KIND, CLAIM_CEILING, PROBE_KIND,
     build_session_authority, validate_runtime_input_manifest, validate_session_result,
 )
+from .openpi_droid_policy_runtime import BETA_POLARIS_VARIANT_CANDIDATE_IDS
 from .team_candidate_quick10_staging import SCENE_INPUT_FIELDS
 
 EXECUTION_SCHEMA = "blueprint.beta_policy_screening_execution.v1"
@@ -166,7 +167,8 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     elif native_spec.get("policy_interface_id") == "molmoact2_droid_joint8.v1":
         from .molmoact2_droid_runtime import validate_execution_spec
         validate_execution_spec(native_spec)
-    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
+    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid",
+                                                 "cosmos3_nano_policy_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS}:
         raise ValueError("beta_screening_policy_provisioning_not_configured")
     if (native_spec["runtime_identity_digest"] != execution["runtime_digest"]
             or native_spec["task_success_contract_digest"] != scene["task_success_contract_digest"]):
