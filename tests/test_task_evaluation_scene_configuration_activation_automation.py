@@ -1168,3 +1168,43 @@ def test_controller_registers_each_release_without_replacing_active_registry(tmp
     with pytest.raises(automation.SceneConfigurationActivationAutomationError):
         _provision(tmp_path, commit=COMMIT_NEXT, reference="changed authority", release_scoped=True)
     assert load(COMMIT_NEXT) == current
+
+
+def test_a_live_account_blocks_one_row_instead_of_aborting_the_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production collector raises a ValueError while anything is live.
+
+    It used to escape process_scene_configuration_activations, which catches
+    only SceneConfigurationActivationAutomationError, so one live instance on
+    the account aborted the whole tick for every waiting preparation.
+    """
+
+    from blueprint_pipeline import adp_task_evaluation_abstention as abstention
+
+    def live_account():
+        raise abstention.TaskEvaluationAbstentionError("provider_zero_not_observed")
+
+    monkeypatch.setattr(abstention, "collect_vast_provider_zero_receipt", live_account)
+    intent_root, _intent_value = _intent(tmp_path)
+    _preparation(tmp_path)
+    rows = automation.process_scene_configuration_activations(
+        preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations",
+        progression_root=tmp_path / "progression",
+        intent_root=intent_root,
+        configured_controls_intent_root=_controls_intent_root(tmp_path),
+        profile_dir=tmp_path / "profiles",
+        standing_authorization_dir=tmp_path / "standing",
+        submitter=lambda request: pytest.fail("a live account never launches"),
+        lineage_publisher_factory=lambda: pytest.fail("nothing is published"),
+        release_window_publisher_factory=lambda: pytest.fail("nothing is published"),
+        now=NOW,
+    )
+    assert len(rows) == 1
+    assert rows[0]["preparation_id"].startswith(PREPARATION_ID)
+    assert rows[0]["status"] == "blocked"
+    assert rows[0]["blockers"] == [
+        "scene_configuration_activation_provider_not_zero:provider_zero_not_observed"
+    ]
+    assert not (tmp_path / "activations" / "pending").exists()
