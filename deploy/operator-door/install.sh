@@ -193,7 +193,7 @@ mv "$stage" "$install_root"
 getent group blueprint-door >/dev/null || groupadd --system blueprint-door
 install -d -o root -g root -m 0755 "$state_root" "$state_root/requests"
 install -d -o root -g blueprint-door -m 2770 "$state_root/requests/pending"
-for sub in processing completed results parked; do
+for sub in processing completed results; do
   install -d -o root -g root -m 0755 "$state_root/requests/$sub"
 done
 install -d -o root -g root -m 0755 "$state_root/requests/holds"

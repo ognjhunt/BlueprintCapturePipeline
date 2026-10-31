@@ -232,7 +232,7 @@ journey and the ADP-009D development rehearsal without raising evidence claims.
 
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
-| `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |
+| `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | refuses while any `blueprint-*deploy*` unit is active; otherwise `door-deploy.sh` |
 | `unit` | operate | `unit` (`blueprint-*`), `action` `start`\|`reset-failed`\|`stop`\|`restart` | `systemctl --no-block <action> -- <unit>`; bare `stop` of a `.timer`/`.path` refuses with `unit_stop_requires_hold`, and `restart` remains limited to safe triggers. The door's own and safety-critical triggers cannot be paused or restarted. |
 | `hold` | operate | `.timer`/`.path` `unit`, `owner`, printable `reason`, `expires_in_seconds` (60–86400) | stops and disables the unit, writes a root-owned hold record with its prior boot policy, and schedules an expiry timer; a different owner cannot replace an active hold |
 | `release-hold` | operate | `.timer`/`.path` `unit` | restores the prior boot policy, starts the held unit, and records who released it; refuses if no active hold exists |
@@ -309,25 +309,6 @@ main's CI for that commit finishes without an attestation, the deploy fails with
 receipt's `runtime_diagnostic` then has phase `await_attestation` and reason
 `deadline` or `ci_finished_without_attestation`. A successful receipt records
 `attestation_wait_seconds`.
-
-**Deploys requested during a deploy wait their turn.** An iteration deploy
-requested while another deploy runs gets the result `parked` instead of a refusal.
-Up to 16 wait, for at most 4 hours. Within about a minute of the running deploy
-ending, the newest parked request starts and takes over the older ones: the hold
-sweep's timer wakes the runner, so this also survives a reboot. Each older one is
-settled after that deploy fetches main: if the newest commit contains it, its
-outcome is `superseded`, with `superseded_by`, and `--wait` follows the newer
-request. If not, its outcome is `failed`, code `parked_commit_not_contained`,
-because deploying it afterwards would drop the newer commit. A parked commit the
-running release already contains does not deploy at all, so waiting can never roll
-production back: its outcome is `superseded`, with `superseded_by_commit`. A deploy
-requested directly keeps the power to roll back. `status` counts parked requests
-under `door_requests.parked`. The runner parks and starts them without a network or
-git: it stays as sandboxed as before, and `door-deploy.sh` does the comparison.
-
-`deploy --latest-attested --wait` resolves the newest `origin/main` commit whose
-"SBOM, license, and provenance contract" job succeeded, from GitHub's public API.
-It refuses if the active release is that commit or already contains it.
 
 `--preserve-configured-controls-state` keeps the owner's configured-controls
 pause across the deploy; `deploy_control_plane_iteration.sh` and

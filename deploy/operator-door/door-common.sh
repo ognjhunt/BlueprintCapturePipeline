@@ -72,63 +72,9 @@ door_fail() {
 door_on_exit() {
   local rc="$1"
   door_remove_tool
-  door_settle_older_parked "" "$rc"
   if [ -z "${DOOR_OUTCOME_WRITTEN:-}" ] && [ -n "${DOOR_OUTCOME:-}" ]; then
     door_outcome failed "script_exited_early" "$rc"
   fi
-}
-
-# door_outcome_for ID STATUS CODE EXIT_CODE [KEY VALUE]...: an outcome for another
-# request this deploy replaced, leaving this request's own outcome state alone.
-door_outcome_for() {
-  local request_id="$1" own="$DOOR_OUTCOME" own_written="${DOOR_OUTCOME_WRITTEN:-}"
-  shift
-  DOOR_OUTCOME="$DOOR_RESULTS_DIR/$request_id.outcome.json"
-  door_outcome "$@"
-  DOOR_OUTCOME="$own"
-  DOOR_OUTCOME_WRITTEN="$own_written"
-}
-
-# door_settle_older_parked [CONTAINER] [RC]: settle each older deploy parked behind
-# this one, exactly once. With a container commit, a request it contains is
-# superseded and any other fails, because deploying it later would drop this one.
-# With none (the script is exiting before it could tell), they all fail.
-door_settle_older_parked() {
-  local container="${1:-}" rc="${2:-0}" entry older_id older_commit by
-  [ -n "${DOOR_PARKED_OLDER:-}" ] && [ -z "${DOOR_PARKED_SETTLED:-}" ] || return 0
-  DOOR_PARKED_SETTLED=1
-  local entries=()
-  IFS=, read -r -a entries <<<"$DOOR_PARKED_OLDER"
-  for entry in ${entries[@]+"${entries[@]}"}; do
-    older_id="${entry%%=*}"
-    older_commit="${entry#*=}"
-    [[ "$older_id" =~ ^[0-9]{8}T[0-9]{6}Z-deploy-[0-9a-f]{8}$ && "$older_commit" =~ ^[0-9a-f]{40}$ ]] || continue
-    if [ -z "$container" ]; then
-      door_outcome_for "$older_id" failed parked_successor_failed "$rc" newest_request "$DOOR_REQUEST_ID"
-    elif ! git -C "$DOOR_SOURCE_CLONE" merge-base --is-ancestor "$older_commit" "$container" 2>/dev/null; then
-      door_outcome_for "$older_id" failed parked_commit_not_contained 1 newest_commit "$container"
-    elif [ "$container" = "$DOOR_COMMIT" ]; then
-      door_outcome_for "$older_id" superseded "" 0 superseded_by "$DOOR_REQUEST_ID" superseded_by_commit "$container"
-    else
-      door_outcome_for "$older_id" superseded "" 0 superseded_by_commit "$container"
-    fi
-  done
-}
-
-# A parked request waited behind another deploy, possibly of a newer commit. If what
-# is now running already contains it, deploying it would roll production back. A
-# deploy requested directly keeps that power: an explicit rollback is a real action.
-door_settle_parked() {
-  [ -n "${DOOR_PARKED:-}" ] || return 0
-  local active
-  active="$(basename "$(readlink -f "${DOOR_ACTIVE_RELEASE_LINK:?}")")"
-  if [[ "$active" =~ ^[0-9a-f]{40}$ ]] && git -C "$DOOR_SOURCE_CLONE" merge-base --is-ancestor "$DOOR_COMMIT" "$active" 2>/dev/null; then
-    echo "not deploying: the active release $active already contains $DOOR_COMMIT"
-    door_settle_older_parked "$active"
-    door_outcome superseded "" 0 superseded_by_commit "$active"
-    exit 0
-  fi
-  door_settle_older_parked "$DOOR_COMMIT"
 }
 
 # Keep one long-lived source clone whose origin is GitHub, so every deploy's

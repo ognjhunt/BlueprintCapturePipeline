@@ -12,7 +12,6 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py pull <host path> <local path>    # file, or directory as an archive
     python3 scripts/operator_door.py journal blueprint-task-evaluation-scene-progression.service -n 200
     python3 scripts/operator_door.py deploy <sha on main> --wait
-    python3 scripts/operator_door.py deploy --latest-attested --wait
     python3 scripts/operator_door.py deploy <sha on main> --release-provenance receipt.json --release-provenance-sha256 <hex> --wait
     python3 scripts/operator_door.py unit start blueprint-pubsub-handoff-listener.timer
     python3 scripts/operator_door.py hold blueprint-scene-progression.timer --owner alice --reason "inspection" --for 2h
@@ -66,13 +65,9 @@ MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
-                "legacy_owner_census_observed", "repaired", "extended", "already_covered", "superseded"}
+                "legacy_owner_census_observed", "repaired", "extended", "already_covered"}
 SCENE_WINDOW_ACK = "extend-scene-execution-window"
 MAX_SCENE_WINDOW_SECONDS = 7 * 86400
-GITHUB_API = "https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline"
-# The only job that attests a main commit. Its success is what a deploy's verification needs.
-ATTESTING_JOB = "SBOM, license, and provenance contract"
-ATTESTED_SEARCH_RUNS = 30
 
 
 class DoorError(Exception):
@@ -418,14 +413,6 @@ def _wait(request_id: str, *, timeout: float, poll: float) -> int:
         if summary != last:
             print(f"{request_id}: state={summary[0]} result={summary[1]} outcome={summary[2]}", file=sys.stderr)
             last = summary
-        successor = (state.get("outcome") or {}).get("superseded_by")
-        if successor:
-            # A parked deploy replaced by a newer one that contains its commit: its
-            # result is the newer deploy's result.
-            print(f"{request_id} was replaced by {successor}, which contains its commit", file=sys.stderr)
-            request_id = successor
-            last = None
-            continue
         verdict = _terminal(state)
         if verdict is not None:
             _print(state)
@@ -448,59 +435,6 @@ def _submit(body: dict[str, Any], args: argparse.Namespace) -> int:
         return 0
     print(f"spooled {accepted['id']}", file=sys.stderr)
     return _wait(accepted["id"], timeout=args.timeout, poll=args.poll)
-
-
-def _github_json(route: str) -> dict[str, Any]:
-    """A read-only public GitHub read; the door's token is never sent there."""
-    request = urllib.request.Request(GITHUB_API + route, headers={
-        "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "blueprint-operator-door-client"})
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310 - fixed https origin
-            document = json.loads(response.read())
-    except (OSError, ValueError, http.client.HTTPException) as error:
-        raise DoorError(4, f"cannot read GitHub: {error}") from error
-    if not isinstance(document, dict):
-        raise DoorError(4, "cannot read GitHub: unexpected response")
-    return document
-
-
-def _latest_attested_commit() -> str:
-    """The newest main commit whose CI attested it. A refused deploy still verifies the proof."""
-    runs = _github_json(f"/actions/workflows/ci.yml/runs?branch=main&event=push&per_page={ATTESTED_SEARCH_RUNS}")
-    for run in runs.get("workflow_runs") or []:
-        # A run still waiting for a runner cannot have reached the last job.
-        if run.get("status") not in {"completed", "in_progress"}:
-            continue
-        jobs = _github_json(f"/actions/runs/{run['id']}/jobs?per_page=100&filter=latest")
-        if any(job.get("name") == ATTESTING_JOB and job.get("conclusion") == "success"
-               for job in jobs.get("jobs") or []):
-            return str(run["head_sha"])
-    raise DoorError(2, f"no attested commit in main's newest {ATTESTED_SEARCH_RUNS} CI runs")
-
-
-def _refuse_if_already_running(commit: str) -> None:
-    active = (_json("GET", "/status").get("active_release") or {}).get("commit")
-    if not active:
-        return
-    if commit == active:
-        raise DoorError(2, f"the newest attested commit {commit} is already the active release")
-    # Newest by CI start can still be older than what runs. Never roll back by accident.
-    if _github_json(f"/compare/{active}...{commit}?per_page=1").get("status") == "behind":
-        raise DoorError(2, f"the active release {active} already contains the newest attested commit {commit}")
-
-
-def _deploy_commit(args: argparse.Namespace) -> str:
-    if not args.latest_attested:
-        if not args.commit:
-            raise DoorError(2, "deploy needs a commit or --latest-attested")
-        return args.commit
-    if args.commit or args.release_provenance or args.release_provenance_sha256:
-        raise DoorError(2, "--latest-attested takes no commit and no release provenance")
-    commit = _latest_attested_commit()
-    _refuse_if_already_running(commit)
-    print(f"newest attested main commit: {commit}", file=sys.stderr)
-    return commit
 
 
 def _deploy_provenance(args: argparse.Namespace) -> dict[str, str]:
@@ -770,9 +704,7 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     release.add_argument("unit")
     _add_wait(release, 120)
     deploy = commands.add_parser("deploy", help="deploy a commit that is on origin/main")
-    deploy.add_argument("commit", nargs="?")
-    deploy.add_argument("--latest-attested", action="store_true",
-                        help="the newest origin/main commit whose CI attested it; refuses if it already runs")
+    deploy.add_argument("commit")
     deploy.add_argument("--no-wait-for-idle", action="store_true")
     deploy.add_argument("--release-provenance", help="official locally verified UTF-8 receipt; absent means iteration deploy")
     deploy.add_argument("--release-provenance-sha256", help="expected exact receipt SHA-256 (64 lowercase hex)")
@@ -924,7 +856,7 @@ def run(args: argparse.Namespace) -> int:
     elif command == "release-hold":
         return _submit({"kind": "release-hold", "unit": args.unit}, args)
     elif command == "deploy":
-        return _submit({"kind": "deploy", "commit": _deploy_commit(args),
+        return _submit({"kind": "deploy", "commit": args.commit,
                         "wait_for_idle": not args.no_wait_for_idle, **_deploy_provenance(args)}, args)
     elif command == "upgrade-door":
         return _submit({"kind": "door-upgrade", "commit": args.commit}, args)
