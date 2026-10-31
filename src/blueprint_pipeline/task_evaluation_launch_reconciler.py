@@ -753,10 +753,6 @@ def _index_terminal_results(
     return rows
 
 
-#: A processing lease with no run directory never reached the allocator.
-PRE_RUN_STALE_SECONDS = 900
-
-
 def reconcile_launches(
     *,
     queue_root: str | Path,
@@ -822,13 +818,6 @@ def reconcile_launches(
                 if isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0
                 else fallback_stale_seconds
             )
-            if not started and not run_root.exists():
-                # The dispatcher creates the run directory before it can invoke
-                # the allocator, so a lease that never got one never reached a
-                # provider. It still waits out a dispatcher pass and still needs
-                # the same provider-zero proof below; it just does not hold a
-                # scene's succession for the full unknown-run fallback.
-                ttl_seconds = min(ttl_seconds, PRE_RUN_STALE_SECONDS)
             lease_age = (
                 (observed_at - started_at).total_seconds()
                 if started_at is not None
