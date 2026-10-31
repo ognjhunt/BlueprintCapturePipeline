@@ -272,14 +272,15 @@ def same_support_surface(first: dict[str, Any], second: dict[str, Any]) -> bool:
 
 def destination_clear_of_start(start_min: Sequence[float], start_max: Sequence[float],
                                centre: Sequence[float], *, up: int, clearance: float) -> bool:
-    """Whether a target disc of radius ``clearance`` at ``centre`` stays off the start footprint.
+    """Whether a target disc of radius ``clearance`` at ``centre`` excludes the start's centre.
 
-    The same rule as ``surface_target_initial_overlap``: a target reaching the
-    footprint the subject starts on would leave the task complete before it starts.
+    The same rule as ``surface_target_initial_overlap``
+    (``task_evaluation_surface_target.region_excludes_start``) in this frame:
+    otherwise the task could begin complete.
     """
     plan = [axis for axis in range(3) if axis != up]
-    nearest = [min(max(float(centre[axis]), float(start_min[axis])), float(start_max[axis])) for axis in plan]
-    return math.dist(nearest, [float(centre[axis]) for axis in plan]) > clearance
+    middle = [(float(start_min[axis]) + float(start_max[axis])) / 2 for axis in plan]
+    return math.dist(middle, [float(centre[axis]) for axis in plan]) > clearance
 
 
 #: The target disc's radius beyond the subject's half-diagonal (the website task's green region).
