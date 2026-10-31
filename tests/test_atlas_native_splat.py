@@ -647,3 +647,51 @@ def test_an_operator_upgrade_tries_the_reviewed_whole_form_once(tmp_path, review
     calls.clear()
     assert refined(frames, root, [], calls)["splat_root"] == upgraded["splat_root"] and not calls
     assert len(reviewer.asked) == 1
+
+
+def test_the_review_judges_and_the_request_posts_the_view_rebuilt_around_the_capture(tmp_path, reviewer):
+    """capture-447ae4f4: the provider redrew what the capture observed; the review refused the whole frame."""
+    from PIL import Image
+    from blueprint_pipeline import atlas_gap_composite as composite
+    generated = gap_view(keep(slice(20, None)))
+    generated["rgb"][:, :20] = (0, 0, 255)  # Redrawn outside the admitted gap.
+    frames, calls = [*source_frames(), generated], []
+    reviewer.admit = {"candidate-0002"}
+    done = refined(frames, tmp_path / "draft-refined", ["completed"], calls)
+    assert done["refined_splat"]["request_form"] == "documented_reviewed_whole"
+    whole = tmp_path / "draft-refined-whole"
+    record = json.loads((whole / "whole_view_review.json").read_text())
+    assert record["candidate_basis"] == composite.CANDIDATE_BASIS
+    (receipt,) = record["gap_composites"]
+    assert receipt["position"] == 2 and receipt["observed_pixel_count"] > 0
+    reviewed = np.asarray(Image.open(whole / "whole_view_review/0002.png"))
+    assert composite._digest(reviewed) == receipt["rgb_sha256"] != receipt["provider_rgb_sha256"]
+    # The admitted gap keeps the provider's pixels; most of what it redrew is the capture again.
+    assert np.array_equal(reviewed[:, 20:], generated["rgb"][:, 20:])
+    assert (reviewed[:, :15] == (0, 0, 255)).all(axis=-1).mean() < .25
+    # Exactly the reviewed frame and its depth are posted, with their receipt.
+    uploads = calls[0]["uploads"]
+    assert np.array_equal(np.asarray(Image.open(uploads["frame-2-rgb"]["path"])), reviewed)
+    assert composite._digest(depth.read_exr_depth(Path(uploads["frame-2-depth"]["path"]))) == receipt["depth_sha256"]
+    binding = json.loads((whole / "input_binding.json").read_text())
+    assert binding["frames"][2]["gap_composite"]["rgb_sha256"] == receipt["rgb_sha256"]
+    assert binding["frames"][2]["whole_view_review"] == {"admit_whole": True, "reason": "compared"}
+    assert "gap_composite" not in binding["frames"][0]
+    # A restart reviews and buys nothing again.
+    assert refined(frames, tmp_path / "draft-refined", [], calls)["splat_manifest"] == done["splat_manifest"]
+    assert len(reviewer.asked) == len(reviewer.reserved) == 1 and len(calls) == 1
+
+
+def test_a_review_recorded_before_composites_keeps_its_candidates_and_is_never_bought_again(tmp_path, reviewer):
+    from PIL import Image
+    from blueprint_pipeline import atlas_whole_view_review as review
+    frames, calls = [*source_frames(), gap_view(keep(slice(20, None)))], []
+    reviewer.admit = {"candidate-0002"}
+    whole = tmp_path / "draft-refined-whole"
+    # An earlier release reviewed the provider's whole frame, then stopped before sending.
+    review.review_whole_views(views=native.merge_duplicate_views(frames), root=whole, task_context=CONTEXT,
+                              policy=splat_policy(), source_video_digest="video")
+    refined(frames, tmp_path / "draft-refined", ["completed"], calls)
+    assert len(reviewer.asked) == len(reviewer.reserved) == 1
+    assert np.array_equal(np.asarray(Image.open(calls[0]["uploads"]["frame-2-rgb"]["path"])), frames[2]["rgb"])
+    assert "candidate_basis" not in json.loads((whole / "whole_view_review.json").read_text())

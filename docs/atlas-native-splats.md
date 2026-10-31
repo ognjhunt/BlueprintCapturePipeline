@@ -88,6 +88,28 @@ admitted and nothing more is bought. The verdicts are kept in the root
 (`whole_view_review.json`), the input binding and each posted view's provenance.
 The prompt is scene-agnostic and covered by `test_harness_prompts_scene_agnostic`.
 
+**Candidates rebuilt around the capture** (`atlas_gap_composite`). `atlasGenerate`
+documents no keep or mask input, so each generated view is a whole new image,
+and completion's preservation pastes back only cross-view-supported context.
+On capture-447ae4f4 (2026-10-30) that kept 42% and 32% of the two gap views;
+elsewhere the reviewed frames differed from what the capture observed by a mean
+of 30 and 24 (of 255), and the review refused both for missing dining chairs.
+Before the review, `composited_views` now rebuilds each partly admitted view:
+wherever a real frame observed the scene, the pixel and its depth come from the
+real frames rendered into that camera (photographs resampled at a recorded camera
+centre; elsewhere the draft's smoothed depth, splatted over each pixel's
+footprint, nearest camera first, colour sampled back from its frame). The
+provider's pixels stay in the admitted region, feathered over 4 px into the
+observed pixels around it, and where no real frame observed anything. The review
+judges, and the request posts, that frame and depth; the review record carries
+`candidate_basis` and a per-view `gap_composites` receipt, and the input binding
+repeats the receipt per posted view. A root reviewed before this keeps its
+provider frames, so a restart neither re-buys its review nor changes what it
+sends. The render reuses frames already in the same request: nothing new is
+disclosed or bought. Offline on capture-447's retained request, 85% and 82% of
+the two views became the capture's own pixels and every admitted gap pixel stayed
+the provider's; whether the review now admits them needs one bounded review call.
+
 **Upgrade of a finished job.** When the adopted splat is `documented_minimal`
 and left generated views out, the result records
 `refined_splat.left_out_admitted_view_ids` and whether the reviewed-whole form
