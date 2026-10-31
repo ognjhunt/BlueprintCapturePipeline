@@ -4383,3 +4383,60 @@ def test_the_bundle_measures_the_external_camera_each_policy_cell_renders(tmp_pa
     with pytest.raises(NativeTaskArenaBundleError) as error:
         bundle._rendered_external_views(packet, {"policy_canary_runtime_inputs.json": inputs})
     assert error.value.errors == ("native_task_arena_bundle_policy_cell_unresolved:policy_canary_cell_scenario_invalid",)
+
+
+def test_a_team_robot_run_is_checked_as_that_robot_and_never_as_the_franka_it_replaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import robot_arm_path_clearance as arm
+    from blueprint_pipeline import scene_camera_visibility as camera
+    from blueprint_pipeline import scene_physics_preflight as physics
+    from blueprint_pipeline import team_embodiment
+
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+    module = tmp_path / "runtime_helper.py"
+    module.write_text("HELPER = 1\n", encoding="utf-8")
+    kwargs = {"packet_dir": _packet(tmp_path, scene_id="840313"), "worker_source": worker,
+              "runtime_module_sources": [module], "implementation_commit": "a" * 40, "generated_at": "fixed"}
+    binding = {"binding_digest": "sha256:" + "b" * 64}
+    seen: dict[str, object] = {}
+
+    def applied(plan, given):
+        assert given is binding
+        return {**plan, "robot": {"robot_id": "team_embodiment", "embodiment_id": "acme-arm",
+                                  "embodiment_digest": "sha256:" + "e" * 64, "base_mode": "fixed_at_station"}}
+
+    def physics_gate(packet_dir, **options):
+        seen["physics"] = options["scene_plan"]["robot"]["embodiment_id"]
+        return {"status": "passed"}
+
+    def camera_gate(packet_dir, **options):
+        seen["camera"] = sorted(options)
+        return {"status": "passed"}
+
+    def never(packet_dir):
+        raise AssertionError("the Franka arm-path gate measured a team robot")
+
+    monkeypatch.setattr(team_embodiment, "apply_team_embodiment", applied)
+    monkeypatch.setattr(physics, "require_scene_physics_admission", physics_gate)
+    monkeypatch.setattr(camera, "require_scene_camera_admission", camera_gate)
+    monkeypatch.setattr(arm, "require_robot_arm_path_admission", never)
+    build_native_task_arena_bundle(job_dir=tmp_path / "job", team_embodiment=binding, **kwargs)
+    # Each gate saw the team's plan; the external camera a Blueprint policy renders is not the team's.
+    assert seen == {"physics": "acme-arm", "camera": ["scene_plan"]}
+    report = json.loads((tmp_path / "job" / arm.PACKET_REPORT_FILENAME).read_text())
+    assert report["status"] == "unassessed" and report["reason"] == "robot_arm_unmodeled"
+    assert report["embodiment_id"] == "acme-arm" and report["blockers"] == []
+    assert report["advisories"] == ["robot_arm_path_unassessed:acme-arm"]
+    assert report["report_digest"].startswith("sha256:")
+
+    def invalid(plan, given):
+        raise team_embodiment.TeamEmbodimentError(["team_embodiment_binding_invalid"])
+
+    monkeypatch.setattr(team_embodiment, "apply_team_embodiment", invalid)
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        build_native_task_arena_bundle(job_dir=tmp_path / "job-invalid", team_embodiment=binding, **kwargs)
+    assert error.value.errors == (
+        "native_task_arena_bundle_team_embodiment_invalid:team_embodiment_binding_invalid",)
+    assert not (tmp_path / "job-invalid").exists()

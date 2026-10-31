@@ -198,3 +198,30 @@ def test_each_rendered_camera_sees_the_task_where_its_cell_places_it(tmp_path):
     with pytest.raises(scv.SceneCameraVisibilityBlocked) as blocked:
         scv.require_scene_camera_admission(root, rendered_external_views=[(rendered, plan), (rendered, moved)])
     assert blocked.value.blockers == ["scene_camera_contact_outside_view:external"]
+
+
+def test_a_team_robots_own_cameras_are_measured_in_place_of_blueprints(tmp_path):
+    root, plan = _packet(tmp_path, external=AWAY)  # Blueprint's own external camera looks away.
+    team_robot = {"robot_id": "team_embodiment", "embodiment_id": "acme-arm"}
+    team_world = {"role": "team_front", "team_camera_name": "front", "pose_frame": "world", "policy_input": True,
+                  "review_only": False, "optical_convention": "opencv",
+                  "frame_from_camera_matrix": sum(FACING, []), "intrinsics": INTRINSICS}
+    review = plan["cameras"][1]
+    # The team's world-fixed camera is what renders: it sees the contact, so the run is admitted.
+    seen = scv.require_scene_camera_admission(root, scene_plan={**plan, "robot": team_robot,
+                                                                "cameras": [team_world, review]})
+    assert seen["status"] == "passed" and [row["role"] for row in seen["cameras"]] == ["team_front", "overview"]
+    # The same rule as Blueprint's own: a team camera that looks away blocks.
+    with pytest.raises(scv.SceneCameraVisibilityBlocked, match="outside_view:team_front"):
+        scv.require_scene_camera_admission(root, scene_plan={**plan, "robot": team_robot, "cameras": [
+            {**team_world, "frame_from_camera_matrix": sum(AWAY, [])}, review]})
+    # Every team camera on the robot: a view that moves with the arm is not checked here, and not refused.
+    wrist = {"role": "team_wrist", "pose_frame": "robot_body", "policy_input": True, "review_only": False}
+    mounted = scv.require_scene_camera_admission(root, scene_plan={**plan, "robot": team_robot,
+                                                                   "cameras": [wrist, review]})
+    assert mounted["status"] == "unassessed" and mounted["reason"] == "team_policy_cameras_robot_mounted"
+    assert mounted["blockers"] == [] and "scene_camera_team_mounted_cameras_unassessed" in mounted["advisories"]
+    assert mounted["summary"].startswith("Not checked on CPU")
+    # Blueprint's own robot with no world-fixed policy camera is still refused.
+    with pytest.raises(scv.SceneCameraVisibilityBlocked, match="policy_camera_missing"):
+        scv.require_scene_camera_admission(root, scene_plan={**plan, "cameras": [wrist, review]})

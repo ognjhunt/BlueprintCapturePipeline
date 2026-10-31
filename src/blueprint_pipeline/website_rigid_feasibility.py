@@ -111,7 +111,7 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
             subject_maximum=region_upper.tolist(), footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M),
             root_world_z_m=min(float(row["aabb_max_xyz"][2]) for row in supports), ranked=CARRY_STATIONS)
     except TeamEmbodimentError as exc:
-        return settle("abstained", ["robot_station_" + item for item in exc.errors], station=None, reach=None,
+        return settle("abstained", ["robot_station_" + item for item in exc.blockers], station=None, reach=None,
                       embodiments=[])
     carry = {}
     if destination.get("relation") == "inside":
