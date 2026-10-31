@@ -399,9 +399,10 @@ def scene_camera_visibility(packet_dir: str | Path,
             continue
         required = camera.get("policy_input") is True and camera.get("review_only") is not True
         by_runtime = any(camera is row for row in rendered)
-        if rendered and role == "external" and not by_runtime:
+        if not by_runtime and role in {str(row.get("role")) for row in rendered}:
+            # The session renders this role as each cell places it; the nominal row is reported only.
             required = False
-            notices.append("scene_camera_plan_row_not_rendered:external")
+            notices.append(f"scene_camera_plan_row_not_rendered:{role}")
         task_colliders, task_region = geometry[placed_by.get(id(camera), task_geometry_key(plan))]
         row = camera_coverage(colliders=task_colliders, centres=centres, radii=radii, camera=camera, region=task_region)
         row["required"] = required

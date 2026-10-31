@@ -1189,8 +1189,11 @@ def preflight_native_packet(packet_dir: str | Path, *, scene_plan: Mapping[str, 
         reset = subject.get("reset_state") or {}
         # A team's robot at the station is measured as itself, by its embodiment.
         measured_id = str(robot.get("embodiment_id") if robot.get("robot_id") == TEAM_ROBOT_ID else robot.get("robot_id"))
-    if reach and robot.get("robot_id") == TEAM_ROBOT_ID and measured_id not in ROBOT_FIXED_VOLUMES:
-        # Another robot's volumes would measure the wrong body: say so, and keep going.
+    if reach and robot.get("robot_id") == TEAM_ROBOT_ID and (
+            measured_id not in ROBOT_FIXED_VOLUMES
+            or robot.get("usd_sha256") != ROBOT_FIXED_VOLUMES[measured_id]["measured_from_sha256"]):
+        # Volumes measured on another model would measure the wrong body, whatever the team named
+        # it: say so, and keep going.
         robot_report = {"status": "unassessed", "reason": "robot_fixed_volumes_unmeasured",
                         "robot_id": TEAM_ROBOT_ID, "embodiment_id": robot.get("embodiment_id"),
                         "embodiment_digest": robot.get("embodiment_digest"), "base_mode": robot.get("base_mode"),
