@@ -634,13 +634,17 @@ def station_reach_blockers(scene_plan: Mapping[str, Any], manifest: Mapping[str,
 def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mapping[str, Any],
                             structure: Mapping[str, Any], scene_plan: Mapping[str, Any],
                             stance: Mapping[str, Any] | None = None,
-                            station: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                            station: Mapping[str, Any] | None = None,
+                            station_reached_by_own_arm: bool = False) -> dict[str, Any]:
     """The sealed binding the execution spec carries, or raise with every reason (no I/O).
 
     A free base carries its floor ``stance`` (``team_embodiment_stance.free_base_stance``). A fixed base
     may carry its own ``station`` (the one chosen for this body when the scene was compiled,
     ``team_scene_packet._embodiment_stations``); every run of the binding then stands it there instead
-    of at the scene's robot station, and its reach is checked from there.
+    of at the scene's robot station, and its reach is checked from there. When that station was chosen
+    because the body's own arm reaches every phase of the task from it in its own model
+    (``station_reached_by_own_arm``, ``team_scene_packet._own_arm_stations``), its declared ``reach_m``
+    no longer vetoes it: the model measured what the declared number only estimates.
     """
 
     free = manifest["base"]["mode"] == "free"
@@ -652,7 +656,12 @@ def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mappin
         own = {"position_world_m": [float(v) for v in station["position_world_m"]],
                "orientation_xyzw": [float(v) for v in station["orientation_xyzw"]]}
         scene_plan = {**scene_plan, "robot": {**(scene_plan.get("robot") or {}), "base_pose_world": own}}
-    blockers = [*model_structure_blockers(manifest, structure), *station_reach_blockers(scene_plan, manifest)]
+    if station_reached_by_own_arm and own is None:
+        raise TeamEmbodimentError(["team_embodiment_own_station_invalid"])
+    reach = station_reach_blockers(scene_plan, manifest)
+    if station_reached_by_own_arm:
+        reach = [code for code in reach if code != "team_embodiment_station_out_of_reach"]
+    blockers = [*model_structure_blockers(manifest, structure), *reach]
     if free and not (isinstance(stance, Mapping) and _vector(stance.get("position_world_m"), 3)
                      and _vector(stance.get("orientation_xyzw"), 4) and _finite(stance.get("floor_z_m"))):
         blockers.append("team_embodiment_free_base_stance_unavailable")

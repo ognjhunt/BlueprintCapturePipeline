@@ -309,3 +309,21 @@ def test_a_free_base_whose_own_arm_reached_from_its_start_stance_is_feasible_the
                                       profile=profile)["candidates"].values()
         assert (row["status"], row["blockers"]) == expected
         assert row["own_station"]["station"] == stance and row["own_station"]["reach"]["own_arm"]["status"] == status
+
+
+def test_only_an_own_station_the_bodys_arm_reached_from_lifts_the_declared_reach_at_binding() -> None:
+    from blueprint_pipeline.website_candidate_feasibility import OWN_STATION, own_station_reached_by_own_arm
+
+    station = {"position_world_m": [1.0, 0.0, 0.75], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+
+    def row(rule, status, *, basis=OWN_STATION, base_mode="fixed"):
+        return {"station_basis": basis, "own_station": {
+            "station": station, "station_basis": basis, "base_mode": base_mode,
+            "reach": {"rule": rule, "own_arm": {"status": status}}}}
+    reached = "closest_clear_stance_own_arm_reaches_every_phase"
+    assert own_station_reached_by_own_arm(row(reached, "passed")) is True
+    assert own_station_reached_by_own_arm(row(reached, "flagged")) is False
+    assert own_station_reached_by_own_arm(row("closest_clear_stance_within_declared_reach", "flagged")) is False
+    assert own_station_reached_by_own_arm(row(reached, "passed", basis="scene_packet_station")) is False
+    assert own_station_reached_by_own_arm(row(reached, "passed", base_mode="free")) is False
+    assert own_station_reached_by_own_arm({}) is False
