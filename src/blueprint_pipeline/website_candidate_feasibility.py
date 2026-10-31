@@ -116,11 +116,20 @@ def own_station(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
             "orientation_xyzw": list(own["station"]["orientation_xyzw"])}
 
 
+def own_stance(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A free base's own floor stance on this scene (``team_embodiment_stance.ground_stance``); else ``None``."""
+    own = candidate.get("own_station") or {}
+    stance = own.get("station")
+    if own.get("base_mode") != "free" or not isinstance(stance, Mapping) or "floor_z_m" not in stance:
+        return None
+    return dict(stance)
+
+
 def infeasible_blockers(feasibility: Mapping[str, Any]) -> dict[str, list[str]]:
     """The planner's input: measured refusals only."""
     return {key: list(row["blockers"]) for key, row in feasibility["candidates"].items()
             if row["status"] == "infeasible"}
 
 
-__all__ = ["FILENAME", "SCHEMA_VERSION", "candidate_feasibility", "infeasible_blockers", "own_station",
-           "station_scene_plan"]
+__all__ = ["FILENAME", "SCHEMA_VERSION", "candidate_feasibility", "infeasible_blockers", "own_stance",
+           "own_station", "station_scene_plan"]

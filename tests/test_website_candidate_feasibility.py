@@ -127,7 +127,8 @@ def test_each_body_is_measured_from_its_own_station_and_an_unmodelled_one_stays_
         verify_model_file,
     )
     from blueprint_pipeline.team_scene_packet import materialize_team_scene
-    from blueprint_pipeline.website_candidate_feasibility import infeasible_blockers, own_station, station_scene_plan
+    from blueprint_pipeline.website_candidate_feasibility import (
+        infeasible_blockers, own_stance, own_station, station_scene_plan)
     from tests.test_team_scene_packet import _scene, bodies
 
     scene = _scene(tmp_path, strategy="pick_and_place")
@@ -186,6 +187,9 @@ def test_each_body_is_measured_from_its_own_station_and_an_unmodelled_one_stays_
     assert bound["station"] == station
     assert apply_team_embodiment(scene_plan, bound)["robot"]["base_pose_world"] == station
     assert own_station(rows["rover"]) is None and own_station(rows["short_arm"]) is not None
+    # A free base is placed by its own floor stance, the one its screening run binds.
+    assert own_stance(rows["rover"]) == own[body["wheeled"]["embodiment_digest"]]["station"]
+    assert "floor_z_m" in own_stance(rows["rover"]) and own_stance(long) is None
     # A scene compiled for another plan is not read for this one: the packet's own station is measured, and said.
     other = candidate_feasibility(scene_plan={**scene_plan, "plan_digest": "sha256:" + "0" * 64}, catalog=catalog,
                                   profile=profile)

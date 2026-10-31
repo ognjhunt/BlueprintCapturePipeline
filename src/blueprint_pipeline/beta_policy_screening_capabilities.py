@@ -274,11 +274,12 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                     from .beta_policy_screening_team import build_registered_team_spec
                     if family:
                         raise ValueError("beta_screening_team_robot_requires_rigid_scene")
-                    from .website_candidate_feasibility import own_station
+                    from .website_candidate_feasibility import own_stance, own_station
+                    measured = feasibility["candidates"].get(key) or {}
                     spec, model = build_registered_team_spec(candidate_id=key, registration=override["robot_policy"],
                         scene_plan=scene_plan, contract=inputs["task_success_contract"], prompt=facts["prompt"],
                         scene_revision_digest=inputs["scene_revision_digest"],
-                        station=own_station(feasibility["candidates"].get(key) or {}))
+                        station=own_station(measured), stance=own_stance(measured))
                     inventory = None
                 else:
                     spec = _read(_bound_path(override["policy_execution_spec"]))
