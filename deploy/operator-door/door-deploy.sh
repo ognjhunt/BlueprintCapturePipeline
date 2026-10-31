@@ -19,6 +19,7 @@ umask 022
 door_init_request deploy
 door_init_git
 : "${DOOR_STATE_ROOT:?}"
+DOOR_INSTALLED_DIR="$(dirname "$0")"
 
 mode=iteration
 deploy_options=(--iteration)
@@ -54,6 +55,7 @@ fi
 # Verified vendor reuse retains its existing override and discount.
 door_phase staging_guard_start
 if ! deploy_tmp="$(python3 -I -S "$(dirname "$0")/operator_door/deploy_staging.py")"; then
+  [ -z "${DOOR_PARKED:-}" ] || door_stay_parked deploy_staging_parent_unsafe
   door_fail deploy_staging_parent_unsafe
 fi
 export TMPDIR="$deploy_tmp"
@@ -61,6 +63,7 @@ door_phase staging_guard_done
 
 door_prepare_source
 door_phase prepare_source_done
+door_settle_parked
 door_require_on_main
 door_phase require_on_main_done
 door_add_tool
@@ -111,7 +114,7 @@ rc=$?
 set -e
 
 if [ "$rc" -eq 0 ]; then
-  door_outcome deployed "" "$rc" receipt "$receipt" mode "$mode"
+  door_outcome deployed "" "$rc" receipt "$receipt" mode "$mode" commit "$DOOR_COMMIT"
 else
   door_outcome failed "deploy_tool_exit_$rc" "$rc" receipt "$receipt"
 fi
