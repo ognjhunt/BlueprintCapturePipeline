@@ -44,6 +44,10 @@ def robot_configuration(manifest: Mapping[str, Any], model_path: Path) -> dict:
 class NativeArticulation:
     """Use the pinned Beta2 APIs and the same implicit drives as Team policies."""
     def __init__(self, robot_row: Mapping[str, Any]):
+        # Arena's embodiments package imports every robot, G1 and its packages included; a
+        # team body needs only the generic base, as in the paid runtime (2026-10-31 batch 11).
+        from .native_task_arena_import_scope import install_scoped_arena_embodiment
+        install_scoped_arena_embodiment("team_embodiment")
         import torch
         from isaaclab.assets import Articulation
         from isaaclab.sim import SimulationCfg, SimulationContext

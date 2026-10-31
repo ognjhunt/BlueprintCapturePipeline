@@ -52,6 +52,8 @@ only in production.
    per stage so a slow deploy is a measurement, not a feeling. As of the
    audit, staging the two per-commit runtime trees and validating the
    416-profile catalog dominate; the intake restart itself takes seconds.
+   `trigger_pause_seconds` records how long timers, watchers and paid
+   launches were held. The runtime trees are built before that pause starts.
 
 ## What still costs minutes
 

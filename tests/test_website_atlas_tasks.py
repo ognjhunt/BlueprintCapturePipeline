@@ -36,8 +36,15 @@ class Fake:
         # "lost": the task is accepted but its answer never arrives. A status code refuses it.
         self.outcome = None
         self.bought = []
+        self.settlements = []
 
     def reserve(self, *, capture_id, operation, payload):
+        if operation == "preparation-settlement":
+            # A closed attempt settles from its retained outcome; Atlas reports no bill.
+            command = payload["settlement"]
+            self.settlements.append(command)
+            return {**command, "status": "settled", "actual_cost_usd":
+                    self.admission["maximum_cost_usd"] if command["outcome"] == "completed" else 0}
         assert operation == "preparation-spend"
         if self.admission:
             return {**self.admission, "status": "already_reserved"}
@@ -171,6 +178,11 @@ class TransientFake(Fake):
         self.admissions, self.keys = {}, []
 
     def reserve(self, *, capture_id, operation, payload):
+        if operation == "preparation-settlement":
+            command = payload["settlement"]
+            self.settlements.append(command)
+            return {**command, "status": "settled", "actual_cost_usd": self.admissions[
+                command["allocation_binding_digest"]]["maximum_cost_usd"] if command["outcome"] == "completed" else 0}
         spend = payload["spend"]
         key = spend["allocation_binding_digest"]
         if key not in self.admissions:
@@ -221,6 +233,11 @@ def test_terminal_upstream_retry_keeps_separate_spend_and_replays_without_purcha
     assert state["completed_operation_id"] == "op_task_2"
     assert all((tmp_path / row["path"]).is_file() for row in result["outputs"])
     assert run() == result and fake.posts == fake.reservations == 2
+    # The failed operation settles at zero (World Labs charged nothing) and the retry
+    # at its reviewed price. A replay reports nothing again.
+    assert [(row["outcome"], row["operation_id"]) for row in fake.settlements] == [
+        ("failed", "op_task_1"), ("completed", "op_task_2")]
+    assert fake.settlements[0]["allocation_binding_digest"] == state["request_digest"]
 
 
 def test_upstream_retry_limit_persists_across_restarts(case, monkeypatch):
@@ -265,6 +282,7 @@ def test_nontransient_terminal_failure_never_retries(case, monkeypatch):
     with pytest.raises(ValueError, match="atlas_task_operation_failed"):
         run()
     assert fake.posts == fake.reservations == 1
+    assert [(row["outcome"], row["operation_id"]) for row in fake.settlements] == [("failed", "op_task_1")]
 
 
 @pytest.mark.parametrize("code,reason,resubmitted", [
@@ -453,9 +471,11 @@ def test_a_definitive_refusal_closes_the_task_without_a_purchase(case):
     fake.outcome = 422
     with pytest.raises(pose.AtlasHttpError, match="website_atlas_api_422"):
         run()
+    # The refused submission bought nothing, so its hold is released at once, and only once.
+    assert [(row["outcome"], row["operation_id"]) for row in fake.settlements] == [("refused", None)]
     with pytest.raises(ValueError, match="atlas_task_attempt_rejected"):
         run()
-    assert fake.posts == fake.reservations == 1
+    assert fake.posts == fake.reservations == 1 and len(fake.settlements) == 1
 
 
 def test_a_repeatedly_unbought_task_closes_after_the_reopen_limit(case):
@@ -467,6 +487,8 @@ def test_a_repeatedly_unbought_task_closes_after_the_reopen_limit(case):
     with pytest.raises(ValueError, match="atlas_task_attempt_rejected"):
         run(now=_later((pose.RECONCILE_REOPEN_LIMIT + 1) * 2 * pose.RECONCILE_SETTLE_SECONDS))
     assert fake.posts == pose.RECONCILE_REOPEN_LIMIT + 1 and fake.reservations == 1
+    # Proven unbought and closed: released. Every earlier, uncertain pass kept the hold.
+    assert [row["outcome"] for row in fake.settlements] == ["refused"]
 
 
 def test_a_legacy_uncertain_record_reconciles_from_its_write_time(case, tmp_path):

@@ -232,3 +232,55 @@ def test_batch_recovers_only_verified_import_when_process_dies_after_checkpoint(
         assert actual["native_controller_smoke"]["checkpoint_recovered"] is True
         assert (output / "bodies" / identity / "prepared" / "robot.usda").is_file()
         assert json.loads((output / "bodies" / identity / "body-result.json").read_text()) == actual
+
+
+def test_native_articulation_admits_only_the_team_base_not_every_arena_robot(tmp_path, monkeypatch):
+    # Batch 11 (Isaac Sim 6): every body's smoke failed importing ``isaaclab_arena_g1`` through
+    # Arena's eager embodiments package. The smoke now admits only the generic base.
+    from types import ModuleType
+
+    from blueprint_pipeline import team_embodiment_runtime
+
+    package = tmp_path / "isaaclab_arena"
+    for path, text in {"__init__.py": "", "utils/__init__.py": "", "utils/pose.py": "class Pose: pass\n",
+                       "embodiments/__init__.py": "import isaaclab_arena_g1\n",
+                       "embodiments/g1/__init__.py": "import isaaclab_arena_g1\n",
+                       "embodiments/embodiment_base.py": "class EmbodimentBase: pass\n"}.items():
+        (package / path).parent.mkdir(parents=True, exist_ok=True)
+        (package / path).write_text(text)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in tuple(sys.modules):
+        if name == "isaaclab_arena" or name.startswith("isaaclab_arena."):
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+    class Context:
+        @staticmethod
+        def instance():
+            return None
+
+        def __init__(self, _cfg):
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
+
+        def clear_instance(self):
+            pass
+
+    fakes = {"torch": {}, "isaaclab": {}, "isaaclab.assets": {"Articulation": object},
+             "isaaclab.sim": {"SimulationCfg": lambda **kw: kw, "SimulationContext": Context},
+             "isaaclab_physx": {}, "isaaclab_physx.physics": {"PhysxCfg": lambda **kw: kw}}
+    for name, attributes in fakes.items():
+        module = ModuleType(name)
+        module.__dict__.update(attributes)
+        monkeypatch.setitem(sys.modules, name, module)
+
+    def build(robot_row, **_kwargs):
+        from isaaclab_arena.embodiments.embodiment_base import EmbodimentBase  # as the real factory does
+        raise LookupError(EmbodimentBase.__name__)
+
+    monkeypatch.setattr(team_embodiment_runtime, "build_team_embodiment", build)
+    with pytest.raises(LookupError, match="EmbodimentBase"):
+        smoke.NativeArticulation({"base_pose_world": {}})
+    assert "isaaclab_arena.embodiments.g1" not in sys.modules
+    assert sys.modules["isaaclab_arena.embodiments"].__blueprint_scoped__ is True

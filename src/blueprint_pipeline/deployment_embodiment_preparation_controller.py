@@ -206,6 +206,34 @@ def promote(*, request: dict, bundle: dict, allocator_result: dict, job: Path, s
     return summary
 
 
+def spend_admission_wait(*, attempts: int = 17, sleep=None) -> list[str]:
+    """Wait, bounded, for the spend guard's current billing-backed lock; never waive it.
+
+    The grant is consumed just before the GPU is created, and the provider preflight then
+    refuses a stale lock. Right after a deploy the guard has not yet written one, and a
+    batch launched then consumed its single-use grant for nothing (public-robot-imports-
+    20261031-08). Checking first leaves the batch queued, unbuilt and unconsumed, for the
+    next pass. Returns the lock's blockers, empty when it admits spend or none is configured.
+    """
+    import time
+    from datetime import datetime, timezone
+    from .paid_lane_guard import SPEND_ADMISSION_LOCK_PATH_ENV, _load_spend_admission_lock
+    from .spend_admission_lock import validate_spend_admission_lock
+    configured = str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
+    if not configured:
+        return []  # The provider preflight still decides; nothing to wait for here.
+    blockers: list[str] = []
+    for attempt in range(attempts):
+        evidence = _load_spend_admission_lock(Path(configured).expanduser())
+        loaded = str(evidence.get("_load_blocker") or "")
+        blockers = [loaded] if loaded else validate_spend_admission_lock(
+            evidence, now=datetime.now(timezone.utc), required_provider="vast")
+        if not blockers or attempt == attempts - 1:
+            return blockers
+        (sleep or time.sleep)(15)
+    return blockers
+
+
 def unavailable_rows(request: dict, reason: str, details=None) -> list[dict]:
     return [{"embodiment_id": identity, "status": "not_imported", "reason": reason,
              **({"details": details} if details else {})} for identity in request["embodiment_ids"]]
@@ -284,6 +312,12 @@ def process_entry(item: Path, *, root: Path, store: Path, commit: str, build=bui
     if not result_path.exists():
         validate_request(request)
         require(request["release_commit"] == commit, "installed_release_mismatch")
+        waiting = spend_admission_wait()
+        if waiting:
+            # Queued, unbuilt and unconsumed: the next pass tries again.
+            return {"status": "waiting_for_spend_admission", "authorization_id": request["authorization_id"],
+                    "blockers": waiting, "provider_relaunch_performed": False, "authorization_consumed": False,
+                    "results": unavailable_rows(request, "spend_admission_not_current", waiting)}
         bundle = build(request=request, runtime_source_receipt=resolve_runtime(),
                        source_root=workspace_for(job).parent / "sources" / commit, output=workspace_for(job) / "bundle")
         write_once(job / "allocator_launch_intent.json", {"request_digest": request["request_digest"],
