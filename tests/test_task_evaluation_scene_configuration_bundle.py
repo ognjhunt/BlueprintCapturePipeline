@@ -5406,6 +5406,13 @@ def test_zip_tree_stores_already_compressed_members_and_deflates_the_rest(tmp_pa
         assert archive.read("wheelhouse/torch-2.0-py3-none-any.whl") == b"\x00\x01" * 4096
         assert archive.getinfo("runtime.sh").external_attr >> 16 & 0o777 == 0o755
         assert archive.testzip() is None
+        # Compressible members are deflated at the fast level: the 2026-10-31
+        # activation was stopped at one hour while still writing its bundle.
+        import zlib as _zlib
+        manifest = (stage / "manifest.json").read_bytes()
+        fast = _zlib.compressobj(bundle_module._DEFLATE_LEVEL, _zlib.DEFLATED, -15)
+        assert bundle_module._DEFLATE_LEVEL == 1
+        assert archive.getinfo("manifest.json").compress_size == len(fast.compress(manifest) + fast.flush())
     again = tmp_path / "again.zip"
     bundle_module._zip_tree(stage, again)
     assert again.read_bytes() == destination.read_bytes()  # still deterministic

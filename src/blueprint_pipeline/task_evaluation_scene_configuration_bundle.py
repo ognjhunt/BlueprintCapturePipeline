@@ -410,6 +410,13 @@ def _member_compress_type(path: Path) -> int:
     return zipfile.ZIP_STORED if path.suffix.lower() in _STORED_MEMBER_SUFFIXES else zipfile.ZIP_DEFLATED
 
 
+#: Deflate level for compressible members. Level 1 is several times faster than
+#: the default 6 for a modestly larger archive: on 2026-10-31 the activation
+#: worker, capped at two CPUs on a loaded host, wrote 3.5 GB of the bundle in
+#: thirteen minutes and was stopped before finishing it.
+_DEFLATE_LEVEL = 1
+
+
 def _zip_tree(source: Path, destination: Path) -> None:
     total = 0
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -432,6 +439,8 @@ def _zip_tree(source: Path, destination: Path) -> None:
                 path.relative_to(source).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
             )
             info.compress_type = _member_compress_type(path)
+            if info.compress_type == zipfile.ZIP_DEFLATED:
+                info._compresslevel = _DEFLATE_LEVEL
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | (0o755 if path.stat().st_mode & 0o111 else 0o444)) << 16
             with path.open("rb") as input_stream, archive.open(info, "w") as output_stream:
