@@ -127,7 +127,7 @@ def test_each_body_is_measured_from_its_own_station_and_an_unmodelled_one_stays_
         verify_model_file,
     )
     from blueprint_pipeline.team_scene_packet import materialize_team_scene
-    from blueprint_pipeline.website_candidate_feasibility import infeasible_blockers, station_scene_plan
+    from blueprint_pipeline.website_candidate_feasibility import infeasible_blockers, own_station, station_scene_plan
     from tests.test_team_scene_packet import _scene, bodies
 
     scene = _scene(tmp_path, strategy="pick_and_place")
@@ -151,9 +151,10 @@ def test_each_body_is_measured_from_its_own_station_and_an_unmodelled_one_stays_
     feasibility = candidate_feasibility(scene_plan=scene_plan, catalog=catalog, profile=profile)
     rows, own = feasibility["candidates"], record["embodiment_stations"]
     long = rows["long_arm"]
-    # Codex review of #3124: the status is measured from the station a screening run stands at today
-    # (the packet's); each body's own station is recorded beside it as advisory evidence.
-    assert (long["status"], long["blockers"], long["station_basis"]) == ("feasible", [], "scene_packet_station")
+    # The status is measured where the run stands: the body's own station, which its binding carries;
+    # the packet's station is kept beside it for comparison.
+    assert (long["status"], long["blockers"], long["station_basis"]) == ("feasible", [], "embodiment_own_station")
+    assert long["scene_packet_station"]["status"] in {"feasible", "infeasible"}
     assert long["own_station"]["station"] == own[body["long"]["embodiment_digest"]]["station"]
     assert (long["own_station"]["status"], long["own_station"]["station_basis"]) == ("feasible", "embodiment_own_station")
     # The short arm cannot reach from its own best station either: infeasible, by name, in both records.
@@ -177,6 +178,14 @@ def test_each_body_is_measured_from_its_own_station_and_an_unmodelled_one_stays_
     run = apply_team_embodiment(placed, binding)
     assert run["robot"]["base_mode"] == "fixed_at_station"
     assert run["robot"]["base_pose_world"] == placed["robot"]["base_pose_world"]
+    # The run's binding carries the station: every cell of the packet's own plan stands the body there.
+    station = own_station(long)
+    assert station == {key: long["own_station"]["station"][key] for key in ("position_world_m", "orientation_xyzw")}
+    bound = team_embodiment_binding(body["long"], model_record=verify_model_file(body["long"], model),
+                                    structure=read_model_structure(model), scene_plan=scene_plan, station=station)
+    assert bound["station"] == station
+    assert apply_team_embodiment(scene_plan, bound)["robot"]["base_pose_world"] == station
+    assert own_station(rows["rover"]) is None and own_station(rows["short_arm"]) is not None
     # A scene compiled for another plan is not read for this one: the packet's own station is measured, and said.
     other = candidate_feasibility(scene_plan={**scene_plan, "plan_digest": "sha256:" + "0" * 64}, catalog=catalog,
                                   profile=profile)

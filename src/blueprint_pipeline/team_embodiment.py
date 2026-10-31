@@ -607,13 +607,25 @@ def station_reach_blockers(scene_plan: Mapping[str, Any], manifest: Mapping[str,
 
 def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mapping[str, Any],
                             structure: Mapping[str, Any], scene_plan: Mapping[str, Any],
-                            stance: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                            stance: Mapping[str, Any] | None = None,
+                            station: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The sealed binding the execution spec carries, or raise with every reason (no I/O).
 
-    A free base carries its floor ``stance`` (``team_embodiment_stance.free_base_stance``).
+    A free base carries its floor ``stance`` (``team_embodiment_stance.free_base_stance``). A fixed base
+    may carry its own ``station`` (the one chosen for this body when the scene was compiled,
+    ``team_scene_packet._embodiment_stations``); every run of the binding then stands it there instead
+    of at the scene's robot station, and its reach is checked from there.
     """
 
     free = manifest["base"]["mode"] == "free"
+    own = None
+    if station is not None:
+        if free or not (isinstance(station, Mapping) and _vector(station.get("position_world_m"), 3)
+                        and _vector(station.get("orientation_xyzw"), 4)):
+            raise TeamEmbodimentError(["team_embodiment_own_station_invalid"])
+        own = {"position_world_m": [float(v) for v in station["position_world_m"]],
+               "orientation_xyzw": [float(v) for v in station["orientation_xyzw"]]}
+        scene_plan = {**scene_plan, "robot": {**(scene_plan.get("robot") or {}), "base_pose_world": own}}
     blockers = [*model_structure_blockers(manifest, structure), *station_reach_blockers(scene_plan, manifest)]
     if free and not (isinstance(stance, Mapping) and _vector(stance.get("position_world_m"), 3)
                      and _vector(stance.get("orientation_xyzw"), 4) and _finite(stance.get("floor_z_m"))):
@@ -631,7 +643,8 @@ def team_embodiment_binding(manifest: Mapping[str, Any], *, model_record: Mappin
                          **({"dependency_closure": closure} if closure else {}),
                          **({"source_import_provenance": provenance} if provenance else {})},
                "body_paths": list(structure["body_paths"]),
-               **({"stance": deepcopy(dict(stance))} if free else {}), "binding_digest": ""}
+               **({"stance": deepcopy(dict(stance))} if free else {}),
+               **({"station": own} if own is not None else {}), "binding_digest": ""}
     binding["binding_digest"] = canonical_digest(binding, digest_field="binding_digest")
     return binding
 
@@ -764,7 +777,9 @@ def apply_team_embodiment(plan: Mapping[str, Any], binding: Mapping[str, Any]) -
                                         "orientation_xyzw": list(stance["orientation_xyzw"])},
                     "fall_height_world_m": float(stance["floor_z_m"]) + float(base["fall_height_m"])}
     else:
-        base_row = {"base_mode": "fixed_at_station", "base_pose_world": deepcopy(dict(station))}
+        # A body bound to its own station stands there in every cell; otherwise at the scene's.
+        base_row = {"base_mode": "fixed_at_station",
+                    "base_pose_world": deepcopy(dict(binding.get("station") or station))}
     value["robot"] = {
         "robot_id": ROBOT_ID, "embodiment_id": manifest["embodiment_id"],
         "embodiment_digest": manifest["embodiment_digest"], "form": manifest["form"], **base_row,

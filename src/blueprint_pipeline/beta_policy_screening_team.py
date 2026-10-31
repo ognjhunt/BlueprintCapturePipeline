@@ -52,13 +52,16 @@ def team_interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any
 
 def build_registered_team_spec(*, candidate_id: str, registration: Mapping[str, Any],
                                scene_plan: Mapping[str, Any], contract: Mapping[str, Any],
-                               prompt: str, scene_revision_digest: str) -> tuple[dict[str, Any], dict[str, Any]]:
+                               prompt: str, scene_revision_digest: str,
+                               station: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Materialize a per-task spec from sealed, reusable operator inputs.
 
     ``robot_policy`` contains ``manifest`` and ``model`` artifact references,
     ``policy_spec`` (the existing HTTPS client contract), and ``rights_binding``.
     Source imports also carry their prepared closure/provenance. Actual model
-    bytes are reopened and the station binding is derived for this task.
+    bytes are reopened and the station binding is derived for this task. ``station`` is a fixed
+    body's own station on this scene (``website_candidate_feasibility``); the binding then stands it
+    there in every cell.
     """
     from .beta_policy_screening_launch import _bound_path, _read
     from .team_embodiment import read_model_structure, team_embodiment_binding, verify_model_file
@@ -73,7 +76,7 @@ def build_registered_team_spec(*, candidate_id: str, registration: Mapping[str, 
     if manifest["base"]["mode"] == "free":
         raise ValueError("beta_screening_team_free_base_stance_registration_required")
     binding = team_embodiment_binding(manifest, model_record=record, structure=read_model_structure(model_path),
-                                      scene_plan=scene_plan, stance=stance)
+                                      scene_plan=scene_plan, stance=stance, station=station)
     native = apply_team_embodiment(scene_plan, binding)
     policy = dict(registration["policy_spec"])
     interface = policy.get("policy_interface_id", "blueprint_policy_https.v1")
