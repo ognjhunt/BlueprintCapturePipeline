@@ -418,11 +418,12 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                     reason = result.get(field)
                     if type(reason) is str and reason in codes:
                         outcome[field] = reason
-                # An unrecognized staging failure keeps only its type and a
-                # redacted, trimmed message, bounded again here.
-                staging_error = bounded_staging_error(result.get("staging_error"))
-                if staging_error is not None:
-                    outcome["staging_error"] = staging_error
+                # A generic or summary refusal keeps only its failure's type and
+                # a redacted, trimmed message, bounded again here.
+                for field in ("owner_observation_error", "staging_error"):
+                    described = bounded_staging_error(result.get(field))
+                    if described is not None:
+                        outcome[field] = described
                 return outcome
             return {"status": "atlas_status_returned", "atlas": snapshot, "atlas_retry_performed": False}
 

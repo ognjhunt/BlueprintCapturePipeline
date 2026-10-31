@@ -448,10 +448,17 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
         if not isinstance(prepared, Mapping):
             raise ValueError("beta_screening_prepared_record_invalid")
     except Exception as exc:  # noqa: BLE001 - a pre-spend refusal does not prevent unrelated candidates
+        from .bounded_error import error_description
+
         blockers = _safe_blockers([str(exc)], "beta_screening_preparation_failed")
+        # Only the blocker codes are published. The attempt keeps the type and
+        # a redacted, trimmed message of a failure the generic code stands for.
+        described = error_description(exc) if blockers == ["beta_screening_preparation_failed"] else None
 
         def blocked(item):
             item["attempt"]["reservation_status"] = "released"
+            if described is not None:
+                item["attempt"]["error"] = described
             item.update(status="blocked", blockers=blockers)
         _update(root, plan["campaign_id"], candidate["candidate_id"], blocked)
         return False
@@ -478,9 +485,14 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
                     item.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
                 _update(root, plan["campaign_id"], candidate["candidate_id"], waiting)
                 return False
-        except Exception:  # noqa: BLE001 - this boundary is read-only and strictly pre-intent
+        except Exception as exc:  # noqa: BLE001 - this boundary is read-only and strictly pre-intent
+            from .bounded_error import error_description
+
+            described = error_description(exc)
+
             def refused(item):
                 item["attempt"]["reservation_status"] = "released"
+                item["attempt"]["error"] = described
                 item.update(status="blocked", blockers=["beta_screening_capacity_preflight_failed"])
             _update(root, plan["campaign_id"], candidate["candidate_id"], refused)
             return False

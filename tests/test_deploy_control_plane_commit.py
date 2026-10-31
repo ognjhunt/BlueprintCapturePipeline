@@ -2502,31 +2502,32 @@ def test_the_deploy_does_not_move_a_surface_while_refusing(tmp_path: Path, monke
 
     from blueprint_pipeline.vast_provider_adapter import vast_launch_gate_path
 
+    real_gate = deploy._holding_paid_launch_gate
+    arguments = _stub_host_deploy(monkeypatch, tmp_path, "a" * 40)
+    monkeypatch.setattr(deploy, "_holding_paid_launch_gate", real_gate)
     moved: list[str] = []
     monkeypatch.setattr(
         deploy, "_move_source_checkout", lambda repo, commit: moved.append(commit)
     )
+    live_steps = (
+        "_install_release_provenance", "_prepare_scene_retirement_runtime",
+        "_synchronize_shared_control_plane_dependencies", "_install_scene_configuration_environment",
+    )
+    for name in live_steps:
+        monkeypatch.setattr(deploy, name, lambda *_a, _name=name, **_k: moved.append(_name))
     monkeypatch.setattr(deploy, "PAID_LAUNCH_GATE_WAIT_SECONDS", 0)
-    source = tmp_path / "source"
-    source.mkdir()
     lock = _lock(tmp_path)
     gate = vast_launch_gate_path(lock)
     gate.touch()
 
     with gate.open("r", encoding="utf-8") as holder:
         fcntl.flock(holder.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
-        with pytest.raises(deploy.ControlPlaneDeployError):
-            deploy.deploy_control_plane_commit(
-                source_repo=source,
-                source_commit="a" * 40,
-                release_root=tmp_path / "releases",
-                state_root=tmp_path / "state",
-                active_link=tmp_path / "active",
-                release_provenance=_provenance(tmp_path, "a" * 40),
-                paid_launch_locks=(str(lock),),
-            )
+        with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_refused_paid_launch_gate_busy"):
+            deploy.deploy_control_plane_commit(**{**arguments, "paid_launch_locks": (str(lock),)})
         fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
 
+    # Nothing a launch reads moved: not the provenance, interpreter, runtime,
+    # environment, source or release link.
     assert moved == []
 
 
@@ -2784,8 +2785,16 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
                 fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         observed.append(stage)
 
+    def assert_lock_free(stage: str):
+        with lock.open("r", encoding="utf-8") as probe:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        observed.append(stage)
+
+    # Intake's capture-transfer runtime is prepared with the build, before the
+    # pause: launches stay open while it runs, and nothing they read moves.
     monkeypatch.setattr(deploy, "_prepare_capture_transfer_from_source",
-        lambda *_args: (assert_lock_held("capture_prerequisites") or None))
+        lambda *_args: (assert_lock_free("capture_prerequisites_launches_open") or None))
     monkeypatch.setattr(
         deploy, "_prepare_scene_retirement_runtime",
         lambda **_kwargs: (assert_lock_held("scene_retirement_runtime_prepare") or {
@@ -2869,8 +2878,8 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
     )
 
     assert observed == [
+        "capture_prerequisites_launches_open",
         "path_quiesce",
-        "capture_prerequisites",
         "scene_retirement_runtime_prepare",
         "shared_runtime_dependencies",
         "scene_retirement_disabled_stores",
@@ -3601,10 +3610,11 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
         "_installed_path_unit_states",
         lambda _units: {watcher: {"enabled": "enabled", "state": "active"}},
     )
+    quiesced: list[object] = []
     monkeypatch.setattr(
         deploy,
         "_quiesce_active_path_units",
-        lambda _before: [{"unit": watcher, "state": "inactive"}],
+        lambda before: quiesced.append(dict(before)) or [{"unit": watcher, "state": "inactive"}],
     )
     monkeypatch.setattr(
         deploy,
@@ -3628,6 +3638,11 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
         lambda **kwargs: (_ for _ in ()).throw(
             ValueError("splat_render_prerequisite_manifest_invalid")
         ),
+    )
+    paused: list[str] = []
+    monkeypatch.setattr(
+        deploy, "_holding_paid_launch_gate",
+        lambda _locks: paused.append("gate") or contextlib.nullcontext([]),
     )
     monkeypatch.setattr(
         deploy,
@@ -3654,20 +3669,10 @@ def test_scene_runtime_failure_blocks_before_source_or_active_release_moves(
 
     assert moved == []
     assert active.resolve() == original
-    assert restored == [
-        {
-            "installed": [
-                {"unit": unit}
-                for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-                if unit.endswith((".path", ".timer"))
-            ],
-            "before": {watcher: {"enabled": "enabled", "state": "active"}},
-            "arm_path_units": False,
-            "always_arm_units": (),
-            "held_units": {},
-            "defer_start_verification": True,
-        }
-    ]
+    # The runtime trees are built before anything pauses, so this refusal left
+    # every watcher and the paid-launch gate exactly as they were: nothing was
+    # stopped and nothing needs restoring.
+    assert quiesced == [] and paused == [] and restored == []
 
 
 def test_the_receipt_records_every_slot_it_was_exclusive_with(tmp_path: Path) -> None:
@@ -4995,15 +5000,17 @@ def test_drain_stops_only_its_triggers_before_the_paid_gate_and_full_quiesce(
         **kwargs, drain_units=(PROGRESSION,), drain_seconds=1800,
     )
 
-    # The spend guard and every other watcher stay live while runs finish:
-    # only the drained service's own trigger stops before the gate is taken.
-    assert order[:5] == [
+    # The release is built before anything pauses. Then the spend guard and
+    # every other watcher stay live while runs finish: only the drained
+    # service's own trigger stops before the gate is taken.
+    assert order[:6] == [
+        "stage",
         ("quiesce", (PROGRESSION_TIMER,)),
         ("drain", (PROGRESSION,), 1800),
         "gate",
         # The full quiesce still records the trigger's true prior intent ...
         ("quiesce", (PROGRESSION_TIMER,)),
-        "stage",
+        "stage",  # the activation, which moves the release link
     ]
     # ... so the deploy's own restore re-arms it at the end.
     assert any(step[0] == "restore" and PROGRESSION_TIMER in step[2]
@@ -5029,6 +5036,24 @@ def test_a_failed_drain_restarts_its_triggers_and_never_takes_the_gate(
 def test_a_later_deploy_failure_rearms_drained_triggers(tmp_path, monkeypatch) -> None:
     kwargs, order = _drain_harness(monkeypatch, tmp_path)
 
+    def failing_scene_runtime(**_kwargs):
+        order.append("scene_runtime")
+        raise deploy.ControlPlaneDeployError("deploy_scene_retirement_runtime_unproven")
+
+    monkeypatch.setattr(deploy, "_prepare_scene_retirement_runtime", failing_scene_runtime)
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_scene_retirement_runtime_unproven"):
+        deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    assert order.index("gate") < order.index("scene_runtime")
+    restores = [step for step in order if isinstance(step, tuple) and step[0] == "restore"]
+    assert restores and all(PROGRESSION_TIMER in step[2] for step in restores)
+
+
+def test_a_failed_release_build_never_pauses_a_trigger_or_a_launch(tmp_path, monkeypatch) -> None:
+    """The build writes only this commit's own trees: its failure has nothing to restore."""
+    kwargs, order = _drain_harness(monkeypatch, tmp_path)
+
     def failing_stage(**_kwargs):
         order.append("stage")
         raise deploy.ControlPlaneDeployError("deploy_release_stage_failed")
@@ -5038,8 +5063,7 @@ def test_a_later_deploy_failure_rearms_drained_triggers(tmp_path, monkeypatch) -
     with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_release_stage_failed"):
         deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
 
-    restores = [step for step in order if isinstance(step, tuple) and step[0] == "restore"]
-    assert restores and all(PROGRESSION_TIMER in step[2] for step in restores)
+    assert order == ["stage"]
 
 
 def test_drain_refuses_a_trigger_the_deploy_does_not_restore(tmp_path, monkeypatch) -> None:
@@ -5048,6 +5072,7 @@ def test_drain_refuses_a_trigger_the_deploy_does_not_restore(tmp_path, monkeypat
     with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_drain_trigger_unmanaged"):
         deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
 
+    # Refused before the build, not after it: no trigger, gate or release moved.
     assert order == []
 
 
@@ -5151,6 +5176,168 @@ def test_an_inactive_drain_snapshot_never_overrides_a_live_trigger(monkeypatch) 
 
     assert before[PROGRESSION_TIMER]["state"] == "active"
     assert stopped == [PROGRESSION_TIMER]
+
+
+def _recording_deploy(monkeypatch, tmp_path):
+    """A stubbed deploy whose every build, pause and live-surface step records itself."""
+    kwargs, order = _drain_harness(monkeypatch, tmp_path)
+    steps = {
+        "_prepare_capture_transfer_from_source": ("capture", None),
+        "_provision_scene_configuration_from_release": ("provision", {"environment": {}}),
+        "_install_release_provenance": ("provenance", {}),
+        "_prepare_scene_retirement_runtime": ("scene_runtime", {"status": "test_host_step_stub"}),
+        "_synchronize_shared_control_plane_dependencies": ("shared_interpreter", {"status": "test_host_step_stub"}),
+        "_install_scene_retirement_stores": ("retirement_stores", {"status": "test_host_step_stub"}),
+        "_install_unit_sandbox_paths": ("sandbox_paths", []),
+        "_install_scene_configuration_environment": ("scene_environment", {}),
+        "_move_source_checkout": ("source", None),
+        "_restart_units": ("restart", []),
+    }
+    for name, (label, value) in steps.items():
+        monkeypatch.setattr(deploy, name, lambda *_a, _label=label, _value=value, **_k: order.append(_label) or _value)
+    staged = {"source_commit": "d" * 40, "release_path": str(tmp_path / "release"),
+              "created_release_checkout": True}
+    monkeypatch.setattr(
+        deploy, "stage_task_evaluation_control_plane_release",
+        lambda **stage_kwargs: order.append("activate" if stage_kwargs["activate"] else "stage")
+        or dict(staged),
+    )
+    return kwargs, order
+
+
+def test_the_release_is_built_while_every_trigger_and_launch_stays_live(tmp_path, monkeypatch) -> None:
+    """2026-10-30: every timer stood still ~33 minutes per deploy, ~21 of them for this build."""
+    kwargs, order = _recording_deploy(monkeypatch, tmp_path)
+
+    deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    labels = [step if isinstance(step, str) else step[0] for step in order]
+    first_pause = labels.index("quiesce")
+    # Only this commit's own trees are written while triggers and launches run ...
+    assert labels[:first_pause] == ["capture", "stage", "provision"]
+    assert labels.index("gate") > labels.index("provision")
+    # ... and every step that changes what a running unit or a new launch reads
+    # happens with the drained triggers stopped, the gate held and every
+    # watcher quiesced, in the order it always had.
+    paused = labels.index("quiesce", labels.index("gate"))
+    live = ["provenance", "scene_runtime", "shared_interpreter", "retirement_stores",
+            "sandbox_paths", "scene_environment", "source", "activate", "restart", "restore"]
+    assert [label for label in labels if label in live] == live
+    assert all(labels.index(label) > paused for label in live)
+
+
+def test_a_paid_run_in_a_restarted_unit_refuses_before_anything_moves(tmp_path, monkeypatch) -> None:
+    """Launches stay open during the build, so the restart check runs as soon as the gate is held."""
+    kwargs, order = _recording_deploy(monkeypatch, tmp_path)
+    pid = 424242
+    proc = tmp_path / "proc"
+    (proc / str(pid)).mkdir(parents=True)
+    (proc / str(pid) / "cgroup").write_text(
+        "0::/system.slice/blueprint-pipeline-intake.service\n", encoding="utf-8")
+    in_flight = [{"slot": "vast_paid_launch.lock", "holder": "/run/job", "pid": pid}]
+
+    @contextlib.contextmanager
+    def gate(_locks):
+        order.append("gate")
+        yield in_flight
+
+    check = deploy._require_in_flight_runs_outside_units
+    monkeypatch.setattr(deploy, "_holding_paid_launch_gate", gate)
+    monkeypatch.setattr(deploy, "_require_in_flight_runs_outside_units",
+                        lambda runs, units: check(runs, units, proc_root=proc))
+
+    with pytest.raises(deploy.ControlPlaneDeployError,
+                       match="deploy_refused_paid_launch_in_restarted_unit:blueprint-pipeline-intake.service"):
+        deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    labels = [step if isinstance(step, str) else step[0] for step in order]
+    # Refused before the full quiesce and before any live surface; the drain's
+    # own trigger is armed again.
+    assert labels[:5] == ["capture", "stage", "provision", "quiesce", "drain"]
+    assert labels[5:7] == ["gate", "restore"] and len(labels) == 7
+    assert order[-1] == ("restore", (PROGRESSION_TIMER,), (PROGRESSION_TIMER,))
+
+
+def test_a_failure_inside_the_pause_restores_the_exact_watcher_state(tmp_path, monkeypatch) -> None:
+    commit = "d" * 40
+    kwargs = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    watcher = "blueprint-scene-object-discovery.path"
+    restored: list[dict[str, object]] = []
+    moved: list[str] = []
+    monkeypatch.setattr(deploy, "_installed_path_unit_states",
+                        lambda _units: {watcher: {"enabled": "enabled", "state": "active"}})
+    monkeypatch.setattr(deploy, "_quiesce_active_path_units",
+                        lambda _before: [{"unit": watcher, "state": "inactive"}])
+    monkeypatch.setattr(deploy, "_restore_installed_path_units",
+                        lambda installed, **kw: restored.append({"installed": installed, **kw}) or [])
+    monkeypatch.setattr(deploy, "_verify_deferred_path_unit_starts", lambda *_a, **_k: None)
+    monkeypatch.setattr(deploy, "_move_source_checkout", lambda *_args: moved.append("source"))
+
+    def unwritable(*_args, **_kwargs):
+        raise deploy.ControlPlaneDeployError("deploy_scene_configuration_environment_unwritable")
+
+    monkeypatch.setattr(deploy, "_install_scene_configuration_environment", unwritable)
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="environment_unwritable"):
+        deploy.deploy_control_plane_commit(**kwargs)
+
+    assert moved == []
+    assert restored == [{
+        "installed": [
+            {"unit": unit}
+            for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
+            if unit.endswith((".path", ".timer"))
+        ],
+        "before": {watcher: {"enabled": "enabled", "state": "active"}},
+        "arm_path_units": False,
+        "always_arm_units": (),
+        "held_units": {},
+        "defer_start_verification": True,
+    }]
+
+
+def test_the_receipt_measures_how_long_jobs_stood_still(tmp_path, monkeypatch) -> None:
+    """Stage times alone hid that the pause spanned the build; the receipt now says both."""
+    kwargs, _order = _recording_deploy(monkeypatch, tmp_path)
+
+    class Clock:
+        now = 1000.0
+
+        def monotonic(self):
+            return self.now
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    clock = Clock()
+
+    def costs(name, seconds, value):
+        def step(*_args, **_kwargs):
+            clock.now += seconds
+            return value
+        monkeypatch.setattr(deploy, name, step)
+
+    # Shaped like the 18:03 deploy of 2026-10-30, in whole seconds.
+    costs("_provision_scene_configuration_from_release", 1255, {"environment": {}})
+    costs("_prepare_scene_retirement_runtime", 227, {"status": "test_host_step_stub"})
+    costs("_verify_intake_runtime", 60, {"commit_proven": True})
+    monkeypatch.setattr(deploy, "time", clock)
+
+    receipt = deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    stages = receipt["stage_timings_seconds"]
+    assert list(stages) == [
+        "admission_and_deploy_lock", "capture_transfer_prerequisites", "release_checkout_staged",
+        "runtime_trees_provisioned", "triggers_paused", "scene_retirement_runtime_and_shared_dependencies",
+        "unit_sandbox_paths", "scene_configuration_environment_installed", "release_activated",
+        "controls_autoprovision_installed", "units_and_directories_installed",
+        "intake_restarted_and_proven", "agent_activated_and_triggers_rearmed",
+    ]
+    assert stages["runtime_trees_provisioned"] == 1255
+    # The build is not part of the pause; the switch-side steps are.
+    assert receipt["trigger_pause_seconds"] == {
+        "drained_triggers": 287, "all_triggers": 287, "paid_launch_gate": 287,
+    }
 
 
 def test_a_failed_release_provisioning_prints_its_own_error(tmp_path, capsys):

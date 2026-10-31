@@ -150,3 +150,36 @@ def test_other_users_read_only_files_are_rehashed(tmp_path, reads, monkeypatch):
         assert digests.sha256_file(path) == _expected(path.read_bytes())
         assert digests.sha256_file(path) == _expected(path.read_bytes())
     assert len(reads) == 2
+
+
+def test_inode_an_earlier_readback_proved_survives_links_but_not_changes(tmp_path, reads, monkeypatch):
+    """2026-10-29: each hardlink moved nlink/ctime, so 10 GB of unchanged vendor inodes were digested ~10 times."""
+    path, alias = tmp_path / "libtorch.so", tmp_path / "alias.so"
+    path.write_bytes(b"vendored library bytes")
+    path.chmod(0o444)
+    digest = _expected(path.read_bytes())
+    assert digests.admit_proven_digest(path.stat(), digest) is False  # outside a publication
+    with digests.immutable_file_digest_cache():
+        assert digests.admit_proven_digest(path.stat(), digest) is True
+        os.link(path, alias)  # moves st_nlink and st_ctime, as every publication step does
+        assert digests.sha256_file(alias) == digests.sha256_file(path) == digest
+        assert reads == []
+        os.utime(path, ns=(path.stat().st_atime_ns, path.stat().st_mtime_ns + 1))
+        assert digests.proven_digest(path.stat()) is None
+        assert digests.sha256_file(path) == digest
+        assert len(reads) == 1
+    with digests.immutable_file_digest_cache():  # proof never outlives its publication
+        assert digests.sha256_file(alias) == digest
+    assert len(reads) == 2
+
+
+@pytest.mark.parametrize("case", ("writable", "other_owner"))
+def test_only_this_process_s_read_only_inodes_can_be_admitted(tmp_path, monkeypatch, case):
+    path = tmp_path / "package"
+    path.write_bytes(b"bytes")
+    path.chmod(0o644 if case == "writable" else 0o444)
+    if case == "other_owner":
+        monkeypatch.setattr(digests.os, "geteuid", lambda: path.stat().st_uid + 1)
+    with digests.immutable_file_digest_cache():
+        assert digests.admit_proven_digest(path.stat(), _expected(b"bytes")) is False
+        assert digests.proven_digest(path.stat()) is None

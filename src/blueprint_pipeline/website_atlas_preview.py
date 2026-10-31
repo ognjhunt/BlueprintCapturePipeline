@@ -176,16 +176,21 @@ def _failed_step(job: Mapping[str, Any], error: BaseException, current: int) -> 
         return _transition(job, current, "needs_input", code)
     if not isinstance(error, ValueError):
         # Typed refusals are ValueErrors with their own code. Anything else (transport, storage
-        # or a defect) keeps only its type name in the job, so record where it was raised.
+        # or a defect) keeps only its type name in the code, so record where it was raised.
         logger.warning("website_atlas_preview_step_error capture=%s code=%s", job.get("capture_id"), code,
                        exc_info=error)
+    from .bounded_error import error_description
+    # The retained job, never the WebApp's preview, keeps the failure behind the
+    # code: its type and a redacted, trimmed message. It is the last one seen.
+    detail = {"last_error": error_description(error)}
     if _transient(error):
         failures = job["transient_failures"] + 1
         if failures >= MAXIMUM_TRANSIENT_FAILURES:
-            return _transition(job, current, "failed", "atlas_preview_retries_exhausted", transient_failures=failures)
-        return {**job, "transient_failures": failures, "last_transient_reason": code,
+            return _transition(job, current, "failed", "atlas_preview_retries_exhausted", transient_failures=failures,
+                               **detail)
+        return {**job, "transient_failures": failures, "last_transient_reason": code, **detail,
                 "next_attempt_at_epoch": current + min(3600, 60 * 2 ** failures)}
-    return _transition(job, current, "failed", code)
+    return _transition(job, current, "failed", code, **detail)
 
 
 def _archive(job: Mapping[str, Any], result: Mapping[str, Any]) -> dict[str, Any]:
@@ -404,8 +409,12 @@ def _clean_provider(job: dict[str, Any], *, job_dir: Path, now: Callable[[], flo
                 else:
                     assets.extend(asset for asset in outputs if asset not in set(cleanup["deleted"]))
             deleted, failed = _delete_assets(client, sorted(set(assets)))
-        except Exception:  # noqa: BLE001 - e.g. no key on this host yet; retried with backoff
+        except Exception as error:  # noqa: BLE001 - e.g. no key on this host yet; retried with backoff
+            from .bounded_error import error_description
+
+            # Every asset stays to delete; keep why the attempt could not start or finish.
             deleted, failed, running = [], sorted(set(assets)), operations
+            cleanup = {**cleanup, "last_error": error_description(error)}
         cleanup = {**cleanup, "deleted": sorted({*cleanup["deleted"], *deleted})}
     attempts = cleanup["attempts"] + 1
     done = not failed and not running

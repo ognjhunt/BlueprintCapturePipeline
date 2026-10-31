@@ -124,8 +124,14 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
             except (OSError, ValueError, RuntimeError, KeyError) as exc:
                 # No raw remote response, URL, credentials or customer content in operational logs.
                 code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else ""
-                outcome["blockers"] = [code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)
-                                       else "beta_screening_source_unavailable"]
+                typed = re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code) is not None
+                outcome["blockers"] = [code if typed else "beta_screening_source_unavailable"]
+                if not typed:
+                    from .bounded_error import error_description
+
+                    # The generic code covers a full disk, a missing retained
+                    # file and an unreadable record alike; keep which it was.
+                    outcome["error"] = error_description(exc)
             _write(states / path.name, outcome)
             _write(cursor_path, {"last": path.name})
             outcomes.append(outcome)
@@ -167,15 +173,27 @@ def deliver_publications(*, queue_root: str | Path, transport=None,
                          refresh_startable: bool = False) -> dict[str, Any]:
     from .beta_policy_screening_coordinator import acknowledge_publication, pending_publications
     sent = failed = 0
+    failure: dict[str, Any] = {}
     for publication in pending_publications(queue_root=queue_root, refresh_startable=refresh_startable):
         try:
             (transport or publish_screening)(publication)
             acknowledged = acknowledge_publication(publication["campaign_id"], publication["publication_digest"],
                 queue_root=queue_root)
             sent += int(acknowledged)
-        except (OSError, ValueError, RuntimeError):
+        except (OSError, ValueError, RuntimeError) as exc:
             failed += 1
-    return {"acknowledged": sent, "pending": failed}
+            from .bounded_error import error_description, rate_limited
+
+            # Name the refusal for the worker status (a 429 or an outage is
+            # "unavailable") and keep the failure's type and redacted message.
+            http = re.fullmatch(r"beta_screening_publication_http_([0-9]{3})", str(exc))
+            status = int(http.group(1)) if http else 0
+            failure = {"last_failure_category": (
+                "auth" if status in (401, 403) else "source" if status == 409
+                else "ack" if str(exc) == "beta_screening_publication_ack_invalid"
+                else "unavailable" if rate_limited(exc) or status >= 500 or isinstance(exc, OSError)
+                else "unknown"), "last_error": error_description(exc)}
+    return {"acknowledged": sent, "pending": failed, **failure}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

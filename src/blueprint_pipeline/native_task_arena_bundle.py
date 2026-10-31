@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 import stat
 import zipfile
 import zlib
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -232,11 +234,58 @@ def _stale_servo_limit_restatements(root: Path) -> list[str]:
     return sorted(set(stale))
 
 
+def _team_scene_plan(packet_root: Path, binding: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The packet's plan with the team's robot at the station, as the worker applies it."""
+    if binding is None:
+        return None
+    from .team_embodiment import TeamEmbodimentError, apply_team_embodiment
+
+    plan = _read_mapping(packet_root / "native_task_arena_scene_plan.v1.json",
+                         error="native_task_arena_bundle_packet_plan_invalid")
+    try:
+        return apply_team_embodiment(plan, binding)
+    except TeamEmbodimentError as exc:
+        if exc.blockers != ["team_embodiment_control_hz_incompatible_with_scene"]:
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_bundle_team_embodiment_invalid:" + item for item in exc.blockers]) from exc
+    # The session sets each cell's cadence before the worker applies the team's robot
+    # (policy_canary_scene_resolution), and the worker checks the rate there. These gates
+    # measure the robot's station, model and cameras, so they read the robot at its own rate.
+    try:
+        hz = float(binding["manifest"]["control_hz"])
+        paced = deepcopy(plan)
+        paced["task_spec"]["control_frequency_hz"] = hz
+        cadence = paced["cadence"]
+        cadence["physics_frequency_hz"] = hz * math.ceil(float(cadence["physics_frequency_hz"]) / hz)
+        return apply_team_embodiment(paced, binding)
+    except (TeamEmbodimentError, KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        raise NativeTaskArenaBundleError(["native_task_arena_bundle_team_embodiment_invalid:" + item for item in (
+            exc.blockers if isinstance(exc, TeamEmbodimentError) else ["team_embodiment_binding_invalid"])]) from exc
+
+
+def _team_arm_path_unassessed(plan: Mapping[str, Any]) -> dict[str, Any]:
+    """The arm-path gate's report for a team robot it has no arm model of: not checked, not Franka's."""
+    from .decision_evidence_contracts import canonical_digest
+    from .robot_arm_path_clearance import SCHEMA_VERSION
+
+    robot = plan.get("robot") or {}
+    result = {"schema_version": SCHEMA_VERSION, "status": "unassessed", "reason": "robot_arm_unmodeled",
+              "robot_id": robot.get("robot_id"), "embodiment_id": robot.get("embodiment_id"),
+              "embodiment_digest": robot.get("embodiment_digest"), "base_mode": robot.get("base_mode"),
+              "arena_scene_plan_digest": plan.get("plan_digest"), "blockers": [],
+              "advisories": ["robot_arm_path_unassessed:" + str(robot.get("embodiment_id"))], "report_digest": ""}
+    result["report_digest"] = canonical_digest(result, digest_field="report_digest")
+    return result
+
+
 def _rendered_external_views(packet_root: Path,
-                             bound_runtime_inputs: Mapping[str, str | Path] | None) -> list[tuple[dict, dict]]:
+                             bound_runtime_inputs: Mapping[str, str | Path] | None,
+                             team_embodiment: Mapping[str, Any] | None = None) -> list[tuple[dict, dict]]:
     """Each distinct external camera a bound policy session renders, with the cell plan placing its task.
 
-    Empty without a bound session. A cell may move or turn the task as well as the camera.
+    Empty without a bound session. A cell may move or turn the task as well as the camera. With a
+    team's robot these are the team's world-fixed policy cameras, read as the worker renders them:
+    each cell resolved, then the team's binding applied (a camera-shift cell moves them).
     """
     source = (bound_runtime_inputs or {}).get("policy_canary_runtime_inputs.json")
     if source is None:
@@ -260,13 +309,21 @@ def _rendered_external_views(packet_root: Path,
     for cell in inputs.get("cells") or []:
         try:
             resolved = resolved_scene_plan(plan, cell, task_success_contract=inputs.get("task_success_contract"))
-            row = runtime_external_camera_row(resolved)
+            if team_embodiment is None:
+                rows = [runtime_external_camera_row(resolved)]
+            else:
+                from .team_embodiment import apply_team_embodiment
+
+                resolved = apply_team_embodiment(resolved, team_embodiment)
+                rows = [row for row in resolved.get("cameras") or [] if row.get("policy_input") is True
+                        and row.get("review_only") is not True and row.get("pose_frame") == "world"]
         except (KeyError, TypeError, ValueError, RuntimeError) as exc:
             raise NativeTaskArenaBundleError(
                 ["native_task_arena_bundle_policy_cell_unresolved:" + str(exc)]) from exc
-        key = json.dumps([row["frame_from_camera_matrix"], row["intrinsics"], task_geometry_key(resolved)],
-                         sort_keys=True)
-        views.setdefault(key, (row, resolved))
+        for row in rows:
+            key = json.dumps([row.get("role"), row["frame_from_camera_matrix"], row["intrinsics"],
+                              task_geometry_key(resolved)], sort_keys=True)
+            views.setdefault(key, (row, resolved))
     return list(views.values())
 
 
@@ -547,8 +604,14 @@ def build_native_task_arena_bundle(
     bound_runtime_inputs: Mapping[str, str | Path] | None = None,
     runtime_extra_files: Mapping[str, str | Path] | None = None,
     generated_at: str | None = None,
+    team_embodiment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Package one exact native-task packet without reconstructing its scene."""
+    """Package one exact native-task packet without reconstructing its scene.
+
+    ``team_embodiment`` is the binding of a team's robot that the worker puts at the
+    station in place of the packet's. The CPU checks then measure that robot and its
+    cameras, or record that they could not, never the robot it replaces.
+    """
 
     if len(implementation_commit) != 40 or any(
         character not in "0123456789abcdef" for character in implementation_commit
@@ -589,6 +652,8 @@ def build_native_task_arena_bundle(
         )
 
     packet_root, packet_receipt, packet_rows = _verified_packet(packet_dir)
+    team_plan = _team_scene_plan(packet_root, team_embodiment)
+    team_scope = {} if team_plan is None else {"scene_plan": team_plan}
     # No paid native run starts from a scene the CPU checks block or cannot measure:
     # rest overlap, background inside the asset, task-range contact, or a contact the
     # policy camera cannot see through the captured scene.
@@ -604,17 +669,19 @@ def build_native_task_arena_bundle(
     )
 
     try:
-        physics_report = require_scene_physics_admission(packet_root)
+        physics_report = require_scene_physics_admission(packet_root, **team_scope)
     except ScenePhysicsAdmissionBlocked as exc:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_scene_physics_blocked:" + item for item in exc.blockers]
         ) from exc
     # A DROID policy runtime renders Arena's external camera, not the plan's world row: measure that one,
     # with the task where each cell places it.
-    rendered = _rendered_external_views(packet_root, bound_runtime_inputs)
+    # A team's own world-fixed cameras replace that one, measured in each cell as well.
+    rendered = _rendered_external_views(packet_root, bound_runtime_inputs,
+                                        team_embodiment if team_plan is not None else None)
     try:
         camera_report = require_scene_camera_admission(
-            packet_root, **({"rendered_external_views": rendered} if rendered else {}))
+            packet_root, **({"rendered_external_views": rendered} if rendered else {}), **team_scope)
     except SceneCameraVisibilityBlocked as exc:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_scene_camera_blocked:" + item for item in exc.blockers]
@@ -627,7 +694,8 @@ def build_native_task_arena_bundle(
     )
 
     try:
-        arm_path_report = require_robot_arm_path_admission(packet_root)
+        arm_path_report = (require_robot_arm_path_admission(packet_root) if team_plan is None
+                           else _team_arm_path_unassessed(team_plan))
     except RobotArmPathAdmissionBlocked as exc:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_robot_arm_path_blocked:" + item for item in exc.blockers]

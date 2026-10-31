@@ -451,7 +451,13 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
             status.update(_compile(root, request, status=status, capture=capture, inputs=inputs, fetcher=fetcher,
                                    embodiments=embodiments))
     except Exception as exc:  # noqa: BLE001 - every request ends in a typed status; the queue keeps moving
-        return {**status, "status": "blocked", "blockers": [_blocker(exc)]}
+        blocker = _blocker(exc)
+        if not blocker.startswith("team_scene_packet_failed:"):
+            return {**status, "status": "blocked", "blockers": [blocker]}
+        from .bounded_error import error_description
+
+        # The type alone hides a full disk or a missing input; keep a redacted, trimmed message.
+        return {**status, "status": "blocked", "blockers": [blocker], "error": error_description(exc)}
     published = publish_agent_execution_offer(capture, transport=offer_transport)
     status["offer"] = {"status": published.get("status"), "reason": published.get("reason"),
                        "team_evaluation_listed": bool((published.get("offer") or {}).get("team_evaluation")),

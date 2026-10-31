@@ -253,6 +253,7 @@ def test_a_refused_compile_leaves_no_partial_half_and_its_retry_compiles_cleanly
     _registry(world["operator"], packet_inputs={**world["inputs"], "droid_profile_digest": "sha256:" + "0" * 64})
     [status] = world["process"]()["results"]
     assert (status["status"], status["blockers"]) == ("blocked", ["team_scene_droid_profile_binding_invalid"])
+    assert "error" not in status  # A typed refusal is its own cause.
     assert list(world["halves"].iterdir()) == []
     assert profile_for_capture(world["capture"]) is None and world["calls"] == []
     _registry(world["operator"], packet_inputs=world["inputs"])
@@ -263,6 +264,20 @@ def test_a_refused_compile_leaves_no_partial_half_and_its_retry_compiles_cleanly
     assert profile_for_capture(world["capture"])["team_scene_inputs_path"] == retried["team_scene_inputs_path"]
     # A completed request is never requeued.
     assert worker.requeue_unfinished(queue_root=world["queue"])["requeued"] == []
+
+
+def test_an_untyped_compile_failure_keeps_its_bounded_cause_beside_the_type_code(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+
+    def full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device", "/var/lib/halves/token=abc")
+    monkeypatch.setattr(worker, "_compile", full)
+    [status] = world["process"]()["results"]
+    # The code stays the type name; the record keeps the redacted, trimmed message.
+    assert (status["status"], status["blockers"]) == ("blocked", ["team_scene_packet_failed:OSError"])
+    assert status["error"] == {"type": "builtins.OSError",
+                               "message": "[Errno 28] No space left on device: '/var/lib/halves/token=<redacted>"}
+    assert json.loads((world["queue"] / "status" / f"{world['key']}.json").read_text())["error"] == status["error"]
 
 
 def test_an_interrupted_attempt_is_blocked_by_name_and_its_unnamed_directory_removed(tmp_path, monkeypatch):

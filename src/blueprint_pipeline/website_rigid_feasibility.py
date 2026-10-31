@@ -11,7 +11,9 @@ directions. Every embodiment an enabled screening candidate runs on is checked
 (``config/beta_policy_candidates.v1.json``); one the gate has no arm model of
 is unassessed, never refused. A refusal names the furthest phase any stance
 reached, before the owner is asked to pay for the scene build. A pass means
-one such carry exists, not that a policy finds it.
+one such carry exists, not that a policy finds it. A target region that
+evaluation's surface-target admission refused in preparation travels with the
+verdict as a risk; it never changes the carry status.
 """
 from __future__ import annotations
 
@@ -91,12 +93,17 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
     profiles = sorted(enabled_robot_profiles() if robot_profiles is None else robot_profiles)
     arms = sorted({ROBOT_PROFILE_ARMS[p] for p in profiles if p in ROBOT_PROFILE_ARMS})
     unassessed = [p for p in profiles if p not in ROBOT_PROFILE_ARMS]
+    # Evaluation's surface-target admission already refused this region in
+    # preparation: a carry that clears still does not make the task "clear".
+    admission = preparation.get("surface_target_admission")
+    risks = ([{"code": admission["code"], "basis": admission["basis"]}]
+             if isinstance(admission, Mapping) and admission.get("status") == "refused" else [])
     value: dict[str, Any] = {"schema_version": SCHEMA, "preparation_digest": preparation["digest"],
                              "robot_id": arms[0] if arms else None, "robot_profiles": profiles,
                              "unassessed_robot_profiles": unassessed, "collision_sha256": digest,
                              "grasp_basis": "one_held_grasp_top_down_first_then_tilted_and_side_on",
                              "mount_rule": "level_with_lower_support", "claim_ceiling": "development_only",
-                             "physical_world_truth_claimed": False}
+                             "physical_world_truth_claimed": False, **({"risks": risks} if risks else {})}
 
     def settle(status: str, blockers: list[str], **fields: Any) -> dict[str, Any]:
         # An embodiment the gate cannot measure may still carry the task: unassessed, never refused.
@@ -115,7 +122,7 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
             subject_maximum=region_upper.tolist(), footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M),
             root_world_z_m=min(float(row["aabb_max_xyz"][2]) for row in supports), ranked=CARRY_STATIONS)
     except TeamEmbodimentError as exc:
-        return settle("abstained", ["robot_station_" + item for item in exc.errors], station=None, reach=None,
+        return settle("abstained", ["robot_station_" + item for item in exc.blockers], station=None, reach=None,
                       embodiments=[])
     carry = {}
     if destination.get("relation") == "inside":

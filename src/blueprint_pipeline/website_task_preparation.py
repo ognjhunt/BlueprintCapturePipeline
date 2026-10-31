@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import math
 import re
 from pathlib import Path
@@ -31,7 +32,9 @@ from .external_scene_frame_registration import _axis_rotations, _sample, _trimme
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
-from .website_support_geometry import ground_on_observed_floor, same_support_surface, support_under
+from .website_support_geometry import (DESTINATION_MARGIN_M, destination_clear_of_start, farthest_supported_destination,
+                                       ground_on_observed_floor, same_support_surface, support_under)
+from .website_surface_target_admission import admit_surface_target
 
 
 class RegistrationRefusal(ValueError):
@@ -503,6 +506,50 @@ def _runtime_bounds(bounds: Mapping[str, Any], matrix: np.ndarray) -> tuple[list
     return moved.min(axis=0).tolist(), moved.max(axis=0).tolist()
 
 
+def relocated_destination(preparation: Mapping[str, Any], preparation_path: Path) -> dict[str, Any] | None:
+    """The same-surface relocation applied to a preparation recorded before it existed.
+
+    Rereads only the preparation's own digest-bound collider and task masks
+    (no provider call, no write) and moves the destination exactly as a new
+    preparation would. None when no supported footprint clears the start.
+    """
+    import trimesh
+
+    directory, binding = Path(preparation_path).parent, preparation["binding"]
+    base_scene = json.loads((directory / "base_scene.json").read_text(encoding="utf-8"))
+    masks = json.loads((directory / "task_masks.geometry.json").read_text(encoding="utf-8"))
+    if (base_scene.get("collision_mesh_digest") != binding["collision_mesh_digest"]
+            or _sha256_file(Path(base_scene["collision_mesh_path"])) != binding["collision_mesh_digest"]
+            or masks.get("digest") != binding["task_masks_digest"]
+            or canonical_digest(masks, digest_field="digest") != masks["digest"]):
+        raise ValueError("website_destination_relocation_binding_changed")
+    rows = [row for row in masks["targets"] if row.get("target_role") == "destination"]
+    if len(rows) != 1:
+        raise ValueError("website_destination_relocation_binding_changed")
+    frame = preparation["coordinate_frame"]
+    runtime_to_sim = np.asarray(frame["runtime_to_simulator"], dtype=np.float64)
+    up, up_sign = _UP_INDEX[base_scene["up_axis"]], -1 if base_scene["up_axis"] == "-Y" else 1
+    mpu = float(frame["declared_meters_per_unit"])
+    subject = preparation["subject"]
+    subject_min, subject_max = _runtime_bounds({"minimum": subject["aabb_min_xyz"], "maximum": subject["aabb_max_xyz"]},
+                                               np.linalg.inv(runtime_to_sim))
+    low, high = _runtime_bounds(rows[0]["estimated_visible_bounds"],
+                                np.asarray(preparation["registration"]["source_to_runtime"], dtype=np.float64))
+    clearance = math.hypot(*[(subject_max[axis] - subject_min[axis]) / 2
+                             for axis in range(3) if axis != up]) + DESTINATION_MARGIN_M / mpu
+    collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
+    moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, preparation["support"],
+        up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
+        placement_residual_m=frame.get("placement_uncertainty_m"))
+    if moved is None:
+        return None
+    return {"position_world_m": (runtime_to_sim @ [*moved[0], 1.0])[:3].tolist(),
+            "relocation": {"reason": "grounded_destination_centre_overlapped_start",
+                           "rule": "farthest_supported_footprint_on_start_surface",
+                           "grounded_centre_world_m": list(preparation["destination"]["position_world_m"]),
+                           "harness_choice": True, "applied_at": "native_submission"}}
+
+
 def embodiment_grippers(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
     """A registered body's tools (``team_embodiment``) as ``screen_physics`` grippers.
 
@@ -913,7 +960,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     sim_support = (_runtime_bounds({"minimum": support["aabb_min"], "maximum": support["aabb_max"]}, runtime_to_sim)
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
-    destination = distinct_support = None
+    destination = distinct_support = relocation = surface_target_admission = None
     interior = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
@@ -937,6 +984,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             if coverage_bound:
                 blockers.extend(coverage_blockers(coverage, target_id=subject_entry["target_id"], several=False))
     elif len(destination_rows) == 1 and not independent_object:
+        blockers_before = len(blockers)
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
         position[up] = (high if up_sign == 1 else low)[up]
@@ -980,6 +1028,23 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 if not same_support_surface(destination_support, support):
                     # The object ends on another surface (floor to desk): bind that one by name.
                     distinct_support = destination_support
+                else:
+                    # Grounded as the surface it already rests on, the region's centre
+                    # can lie under the subject: the task would start complete.
+                    clearance = math.hypot(*[(subject_max[axis] - subject_min[axis]) / 2
+                                             for axis in range(3) if axis != up]) + DESTINATION_MARGIN_M / mpu
+                    if not destination_clear_of_start(subject_min, subject_max, position, up=up, clearance=clearance):
+                        stated = (runtime_to_sim @ [*position, 1.0])[:3].tolist()
+                        moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, support,
+                            up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
+                            placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"))
+                        if moved is None:
+                            blockers.append("task_destination_overlaps_start")
+                        else:
+                            position = moved[0]
+                            relocation = {"reason": "grounded_destination_centre_overlapped_start",
+                                          "rule": "farthest_supported_footprint_on_start_surface",
+                                          "grounded_centre_world_m": stated, "harness_choice": True}
         label = destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"]
         destination = {"relation": relation, "visible_label": label,
                        **({"mode": "existing_support_surface"} if relation == "on" or interior is not None else {}),
@@ -996,6 +1061,24 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                        "basis": "registered_reconstructed_container_interior" if interior is not None
                        else "registered_estimated_visible_bounds_and_collider_contact" if contact_bound
                        else "registered_estimated_visible_bounds"}
+        if support is not None and len(blockers) == blockers_before:
+            # A destination held above keeps its own code. Otherwise the region
+            # evaluation will seal goes through the same admission, from the same
+            # simulator-frame inputs, so its refusal is known now rather than after
+            # construction (capture-447ae4f4: intake_ready at 03:39Z, refused by
+            # evaluation preparation at 05:01Z). Geometry is not a hard stop: the
+            # job keeps going and the code travels as advisory evidence, which the
+            # capability verdict carries as a risk. A compiled support is captured,
+            # never an authored development surface.
+            try:
+                admit_surface_target(destination=destination,
+                    support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), sim_support)),
+                    subject_min=sim_min, subject_max=sim_max,
+                    placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
+                    development_support=False)
+            except ValueError as exc:
+                surface_target_admission = {"status": "refused", "code": str(exc),
+                                            "basis": "evaluation_admission_rule"}
     else:
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]
@@ -1343,6 +1426,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                                            "runtime_to_simulator": runtime_to_sim.tolist()},
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
+        **({"destination_relocation": relocation} if relocation is not None else {}),
+        **({"surface_target_admission": surface_target_admission} if surface_target_admission is not None else {}),
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
                              else "provided_mesh_rigid_authoring" if synthetic is not None

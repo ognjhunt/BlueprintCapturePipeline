@@ -1136,3 +1136,72 @@ def test_the_destination_support_is_searched_within_the_same_measured_residual(t
     value = _compile(tmp_path)
     assert value["status"] == "intake_ready", value["blockers"]
     assert calls == [value["registration"]["task_region"]["trimmed_rmse_m"]] * 2
+
+
+def _destination_bounds(args, minimum, maximum):
+    args["task_masks"]["targets"][1]["estimated_visible_bounds"] = _bounds(minimum, maximum)
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    return args
+
+
+def _on_another_level_surface(monkeypatch):
+    # The destination's surface is fitted apart from the subject's, at the same height.
+    real, calls = preparation.support_under, []
+
+    def another_surface(*args, **kwargs):
+        found = real(*args, **kwargs)
+        calls.append(found)
+        # Each preparation looks up the subject's support, then the destination's.
+        if len(calls) % 2 == 0 and found is not None:
+            found = {**found, "face_indices": [index + 10 ** 6 for index in found["face_indices"]]}
+        return found
+    monkeypatch.setattr(preparation, "support_under", another_surface)
+
+
+@pytest.mark.parametrize("case, code", [
+    # The footprint rests on the surface near its edge; the region holding it at any yaw does not.
+    ("region_off_its_support", "surface_target_outside_support"),
+    # The region's centre lies under the subject, on a second surface level with its own.
+    ("centre_under_the_subject", "surface_target_initial_overlap"),
+])
+def test_a_region_evaluation_would_refuse_is_recorded_at_preparation_and_the_job_continues(
+        tmp_path, monkeypatch, case, code):
+    # capture-447ae4f4: preparation reported intake_ready, evaluation refused the same geometry 82 minutes later.
+    # Geometry is not a hard stop (privacy, rights, money): the refusal is advisory evidence, not a blocker.
+    from tests.test_website_native_submission import legacy_native_surface_target
+    args = _arguments(tmp_path)
+    if case == "region_off_its_support":
+        _destination_bounds(args, [0.4, 0.48, 1.12], [0.6, 0.5, 1.14])
+    else:
+        _on_another_level_surface(monkeypatch)
+        _destination_bounds(args, [0.10, 0.48, 1.56], [0.165, 0.5, 1.61])
+    with monkeypatch.context() as unchecked_preparation:
+        # Without the shared admission, as before: ready, and native submission refuses it.
+        unchecked_preparation.setattr(preparation, "admit_surface_target", lambda **_: None)
+        unchecked = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "unchecked"})
+    assert unchecked["status"] == "intake_ready", unchecked["blockers"]
+    with pytest.raises(ValueError, match=code):
+        legacy_native_surface_target(unchecked)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready" and value["blockers"] == []
+    assert value["surface_target_admission"] == {"status": "refused", "code": code,
+                                                 "basis": "evaluation_admission_rule"}
+    # One Pipeline-internal key; the WebApp-facing destination and intake request are unchanged.
+    assert set(value) == set(unchecked) | {"surface_target_admission"}
+    assert value["destination"] == unchecked["destination"]
+    assert value["intake_request"] == unchecked["intake_request"]
+
+
+@pytest.mark.parametrize("case", ["same_surface", "container", "another_surface"])
+def test_a_region_evaluation_admits_leaves_the_preparation_unchanged(tmp_path, monkeypatch, case):
+    args = _arguments(tmp_path)
+    if case == "container":
+        args = container_arguments(args)
+    elif case == "another_surface":
+        _on_another_level_surface(monkeypatch)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready", value["blockers"]
+    assert ("support" in value["destination"]) is (case != "same_surface")
+    assert "surface_target_admission" not in value
+    monkeypatch.setattr(preparation, "admit_surface_target", lambda **_: None)
+    assert preparation.compile_website_scene_preparation(**args)["digest"] == value["digest"]
