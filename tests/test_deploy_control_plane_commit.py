@@ -1085,12 +1085,11 @@ def test_failed_deploy_rechecks_a_hold_created_after_unit_snapshot(tmp_path, mon
 
 
 @pytest.mark.parametrize("unit", deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS)
-@pytest.mark.parametrize("enabled", ["disabled", "enabled"])
-def test_explicit_controls_pause_survives_default_progression_arming(
-    monkeypatch, unit: str, enabled: str,
+def test_a_disabled_controls_trigger_is_the_owners_pause_and_survives_default_progression_arming(
+    monkeypatch, unit: str,
 ) -> None:
     calls = []
-    before = {"enabled": enabled, "state": "inactive"}
+    before = {"enabled": "disabled", "state": "inactive"}
 
     def completed(argv, **kwargs):
         calls.append(tuple(argv))
@@ -1103,13 +1102,77 @@ def test_explicit_controls_pause_survives_default_progression_arming(
         always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
         preserve_configured_controls_state=True,
     )
-    assert calls == [
-        ("systemctl", "enable" if enabled == "enabled" else "disable", unit),
-        ("systemctl", "stop", unit),
-    ]
+    assert calls == [("systemctl", "disable", unit), ("systemctl", "stop", unit)]
     assert restored[0]["after"] == before
     assert restored[0]["requested_intent"] == "preserve"
     assert restored[0]["operator_freeze_preserved"] is True
+
+
+@pytest.mark.parametrize("unit", deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS)
+def test_an_enabled_controls_trigger_that_died_comes_back_after_a_preserving_deploy(monkeypatch, unit: str) -> None:
+    # 2026-10-27: the progression timer stopped while enabled and every door deploy since
+    # (--preserve-configured-controls-state) kept it stopped, stalling website jobs at scene configuration.
+    calls = []
+    states = {"enabled": "enabled", "state": "inactive"}
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        if argv[-2] == "restart":
+            states["state"] = "active"
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: dict(states))
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={unit: {"enabled": "enabled", "state": "inactive"}}, arm_path_units=False,
+        always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+        preserve_configured_controls_state=True,
+    )
+    assert calls == [("systemctl", "enable", unit), ("systemctl", "restart", unit)]
+    assert restored[0]["after"] == {"enabled": "enabled", "state": "active"}
+    assert restored[0]["requested_intent"] == "rearm_enabled_configured_controls"
+    assert restored[0]["operator_freeze_preserved"] is False
+
+
+@pytest.mark.parametrize("unit", [*deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS, "blueprint-agent-run-dispatcher.timer"])
+def test_a_door_hold_keeps_a_trigger_stopped_through_a_preserving_deploy(monkeypatch, unit: str) -> None:
+    # The founder hold on the agent-run dispatcher, and an owner's hold on the controls, both stand.
+    calls = []
+    monkeypatch.setattr(deploy.subprocess, "run", lambda argv, **kwargs: calls.append(tuple(argv))
+                        or subprocess.CompletedProcess(argv, 0, stdout="", stderr=""))
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: {"enabled": "enabled", "state": "inactive"})
+    hold = {"owner": "paired-checkpoint-rollout-20260930", "reason": "founder stop",
+            "expires_at": "2026-01-01T00:00:00+00:00", "require_explicit_release": True}
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={unit: {"enabled": "enabled", "state": "inactive"}}, arm_path_units=False,
+        always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+        preserve_configured_controls_state=True, held_units={unit: hold},
+    )
+    assert calls == [("systemctl", "stop", unit)]
+    assert restored[0]["requested_intent"] == "hold" and restored[0]["held"] is True
+    assert restored[0]["require_explicit_release"] is True
+
+
+def test_only_the_configured_controls_triggers_are_rearmed_from_a_stop_and_paid_watchers_keep_their_freeze(
+        monkeypatch) -> None:
+    # Every other trigger a preserving deploy restores keeps the stopped state it was found in.
+    units = [unit for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS if unit.endswith((".path", ".timer"))]
+    always = {*deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS, *deploy.DEPLOY_EXEMPT_TRIGGER_UNITS,
+              *deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS, *deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS}
+    assert set(deploy.CONFIGURED_CONTROLS_AUTOMATION_UNITS) <= set(units)
+    calls = []
+    monkeypatch.setattr(deploy.subprocess, "run", lambda argv, **kwargs: calls.append(tuple(argv))
+                        or subprocess.CompletedProcess(argv, 0, stdout="", stderr=""))
+    monkeypatch.setattr(deploy, "_systemd_unit_state", lambda _unit: {"enabled": "enabled", "state": "inactive"})
+    frozen = [unit for unit in units if unit not in always]
+    assert "blueprint-task-evaluation-launch-dispatcher.path" in frozen
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit} for unit in frozen], before={unit: {"enabled": "enabled", "state": "inactive"} for unit in frozen},
+        arm_path_units=False, always_arm_timer_units=deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS,
+        preserve_configured_controls_state=True,
+    )
+    assert {row["requested_intent"] for row in restored} == {"preserve"}
+    assert not any(call[1] == "restart" for call in calls)
 
 
 def test_conflicting_controls_intent_refuses_before_any_host_action(tmp_path, monkeypatch):

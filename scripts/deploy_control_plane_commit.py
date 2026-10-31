@@ -3235,6 +3235,12 @@ def _restore_installed_path_units(
     configured-controls timer is a separate fixed category: it only consumes
     sealed qualifying plans through canonical APIs, and its receipt names that
     progression authority instead of misreporting it as no-spend.
+
+    With ``preserve_configured_controls_state`` the owner's pause of those
+    triggers survives the deploy, and that pause is a door hold or a disabled
+    unit.  An enabled trigger that is merely stopped is not a pause: a failed
+    oneshot or an interrupted deploy leaves it so, and a reboot would start it
+    anyway.  It comes back, and the receipt says it was re-armed.
     """
 
     if preserve_configured_controls_state and arm_path_units:
@@ -3266,10 +3272,12 @@ def _restore_installed_path_units(
             continue
         arm_no_spend = unit in always_arm_units
         arm_authority_gated = unit in always_arm_authority_gated_units
-        arm_progression = unit in always_arm_timer_units and not (
+        preserved_controls = (
             preserve_configured_controls_state
             and unit in CONFIGURED_CONTROLS_AUTOMATION_UNITS
         )
+        arm_progression = unit in always_arm_timer_units and not preserved_controls
+        rearm_enabled_controls = preserved_controls and prior.get("enabled") == "enabled"
         if sum((arm_no_spend, arm_authority_gated, arm_progression)) > 1:
             raise ControlPlaneDeployError(
                 f"deploy_automation_unit_authority_ambiguous:{unit}"
@@ -3287,6 +3295,7 @@ def _restore_installed_path_units(
             or arm_no_spend
             or arm_authority_gated
             or arm_progression
+            or rearm_enabled_controls
             or prior.get("state") == "active"
         )
         commands = ["enable" if should_enable else "disable"]
@@ -3336,6 +3345,8 @@ def _restore_installed_path_units(
                     if arm_authority_gated
                     else "arm_configured_controls_progression"
                     if arm_progression
+                    else "rearm_enabled_configured_controls"
+                    if rearm_enabled_controls
                     else "preserve"
                 ),
                 "after": after,
@@ -3344,6 +3355,7 @@ def _restore_installed_path_units(
                     and not arm_no_spend
                     and not arm_authority_gated
                     and not arm_progression
+                    and not rearm_enabled_controls
                     and not should_start
                 ),
                 **({"_start_pending": True} if defer_start_verification and should_start else {}),
