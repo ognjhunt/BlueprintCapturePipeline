@@ -261,9 +261,19 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
 
 
 def same_support_surface(first: dict[str, Any], second: dict[str, Any]) -> bool:
-    """Whether two support results name one surface: the same exact faces, or mostly the same fitted ones."""
+    """Whether two support results name one surface: the same exact faces, or mostly the same fitted ones.
+
+    Level faces nearly all within a fitted surface are that surface: a conditioned
+    collider's flattened patch (website_collider_conditioning) reads level under a
+    footprint wholly on it, and fitted under one that spans a gap in it.
+    """
     if first["basis"] != second["basis"]:
-        return False
+        bases = {first["basis"]: first, second["basis"]: second}
+        if set(bases) != {"fitted_surface_under_footprint", "reconstructed_triangle_footprint_contacts"}:
+            return False
+        level = set(bases["reconstructed_triangle_footprint_contacts"]["face_indices"])
+        fitted = set(bases["fitted_surface_under_footprint"]["face_indices"])
+        return bool(level) and len(level & fitted) >= SAME_FITTED_SURFACE_MIN_OVERLAP * len(level)
     if first["basis"] != "fitted_surface_under_footprint":
         return first["face_indices"] == second["face_indices"]
     a, b = set(first["face_indices"]), set(second["face_indices"])
