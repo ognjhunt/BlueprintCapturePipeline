@@ -1,0 +1,552 @@
+{
+  "schema_version": "embodiment_runtime_configuration.v1",
+  "claim_ceiling": "configuration_only",
+  "embodiment_id": "universal_robots_ur5e_robotiq_2f85_sim",
+  "source_bundle_digest": "sha256:4fc25ad1de9df79475bf754592b112ab9a34fc91894238ab2235800e144b7901",
+  "station_parameters": null,
+  "manifest_fields": {
+    "schema_version": "blueprint.robot_embodiment.v2",
+    "embodiment_id": "universal_robots_ur5e_robotiq_2f85_sim",
+    "form": "fixed_base_arm",
+    "base": {
+      "mode": "fixed"
+    },
+    "joints": [
+      {
+        "name": "shoulder_pan_joint",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "shoulder_lift_joint",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "elbow_joint",
+        "control": "position",
+        "lower": -3.141592653589793,
+        "upper": 3.141592653589793,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "wrist_1_joint",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "wrist_2_joint",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "wrist_3_joint",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      }
+    ],
+    "grippers": [
+      {
+        "name": "arm_gripper",
+        "tool_link": "robotiq_85_base_link",
+        "joints": [
+          {
+            "name": "robotiq_85_left_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_finger_tip_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_right_finger_tip_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          }
+        ],
+        "max_width_m": 0.085,
+        "contact_links": [
+          "robotiq_85_left_finger_tip_link",
+          "robotiq_85_right_finger_tip_link"
+        ]
+      }
+    ],
+    "tool_link": "robotiq_85_base_link",
+    "reset_joint_positions": {
+      "shoulder_pan_joint": 0.0,
+      "shoulder_lift_joint": 0.0,
+      "elbow_joint": 0.0,
+      "wrist_1_joint": 0.0,
+      "wrist_2_joint": 0.0,
+      "wrist_3_joint": 0.0,
+      "robotiq_85_left_knuckle_joint": 0.0,
+      "robotiq_85_right_knuckle_joint": 0.0,
+      "robotiq_85_left_inner_knuckle_joint": 0.0,
+      "robotiq_85_right_inner_knuckle_joint": 0.0,
+      "robotiq_85_left_finger_tip_joint": 0.0,
+      "robotiq_85_right_finger_tip_joint": 0.0
+    },
+    "actuator": {
+      "stiffness": 100.0,
+      "damping": 20.0
+    },
+    "cameras": [
+      {
+        "name": "overhead",
+        "mount_link": null,
+        "position_m": [
+          0.5,
+          0.0,
+          1.5
+        ],
+        "orientation_xyzw": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "arm_wrist",
+        "mount_link": "robotiq_85_base_link",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      }
+    ],
+    "control_hz": 60,
+    "action_chunk_rows": 48,
+    "reach_m": 1.3460339073518728,
+    "arms": [
+      {
+        "name": "arm",
+        "joint_names": [
+          "shoulder_pan_joint",
+          "shoulder_lift_joint",
+          "elbow_joint",
+          "wrist_1_joint",
+          "wrist_2_joint",
+          "wrist_3_joint"
+        ],
+        "base_link": "base_link_inertia",
+        "tool_link": "robotiq_85_base_link",
+        "gripper_name": "arm_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            3.4675874127211216e-17,
+            -4.44218892503155e-18,
+            0.134
+          ],
+          "orientation_xyzw": [
+            -4.5745677416520486e-35,
+            1.8746997290963376e-33,
+            1.0,
+            6.123233995736766e-17
+          ]
+        }
+      }
+    ]
+  },
+  "source_name_mapping": {
+    "base": "base",
+    "base_joint": "base_joint",
+    "base_link": "base_link",
+    "base_link-base_fixed_joint": "base_link_base_fixed_joint",
+    "base_link-base_link_inertia": "base_link_base_link_inertia",
+    "base_link_inertia": "base_link_inertia",
+    "blueprint_grasp_frame": "blueprint_grasp_frame",
+    "elbow_joint": "elbow_joint",
+    "flange": "flange",
+    "flange-tool0": "flange_tool0",
+    "forearm_link": "forearm_link",
+    "ft_frame": "ft_frame",
+    "grasp_link": "grasp_link",
+    "gripper_mount_link": "gripper_mount_link",
+    "gripper_side_joint": "gripper_side_joint",
+    "robotiq_85_base_joint": "robotiq_85_base_joint",
+    "robotiq_85_base_link": "robotiq_85_base_link",
+    "robotiq_85_left_finger_joint": "robotiq_85_left_finger_joint",
+    "robotiq_85_left_finger_link": "robotiq_85_left_finger_link",
+    "robotiq_85_left_finger_tip_joint": "robotiq_85_left_finger_tip_joint",
+    "robotiq_85_left_finger_tip_link": "robotiq_85_left_finger_tip_link",
+    "robotiq_85_left_inner_knuckle_joint": "robotiq_85_left_inner_knuckle_joint",
+    "robotiq_85_left_inner_knuckle_link": "robotiq_85_left_inner_knuckle_link",
+    "robotiq_85_left_knuckle_joint": "robotiq_85_left_knuckle_joint",
+    "robotiq_85_left_knuckle_link": "robotiq_85_left_knuckle_link",
+    "robotiq_85_right_finger_joint": "robotiq_85_right_finger_joint",
+    "robotiq_85_right_finger_link": "robotiq_85_right_finger_link",
+    "robotiq_85_right_finger_tip_joint": "robotiq_85_right_finger_tip_joint",
+    "robotiq_85_right_finger_tip_link": "robotiq_85_right_finger_tip_link",
+    "robotiq_85_right_inner_knuckle_joint": "robotiq_85_right_inner_knuckle_joint",
+    "robotiq_85_right_inner_knuckle_link": "robotiq_85_right_inner_knuckle_link",
+    "robotiq_85_right_knuckle_joint": "robotiq_85_right_knuckle_joint",
+    "robotiq_85_right_knuckle_link": "robotiq_85_right_knuckle_link",
+    "shoulder_lift_joint": "shoulder_lift_joint",
+    "shoulder_link": "shoulder_link",
+    "shoulder_pan_joint": "shoulder_pan_joint",
+    "tool0": "tool0",
+    "upper_arm_link": "upper_arm_link",
+    "ur_to_robotiq_joint": "ur_to_robotiq_joint",
+    "ur_to_robotiq_link": "ur_to_robotiq_link",
+    "world": "world",
+    "wrist_1_joint": "wrist_1_joint",
+    "wrist_1_link": "wrist_1_link",
+    "wrist_2_joint": "wrist_2_joint",
+    "wrist_2_link": "wrist_2_link",
+    "wrist_3-flange": "wrist_3_flange",
+    "wrist_3_joint": "wrist_3_joint",
+    "wrist_3_link": "wrist_3_link",
+    "wrist_3_link-ft_frame": "wrist_3_link_ft_frame"
+  },
+  "simulation_assumptions": [
+    "interior_zero_reset_pose",
+    "default_PD_gains_unless_source_drive_present",
+    "arm_velocity_capped_at_1_SI_unit_per_second",
+    "90_degree_simulated_camera_rig_not_site_calibration",
+    "parallel_gripper_width_is_nominal",
+    "reach_is_source_chain_upper_bound"
+  ],
+  "source_dynamics": {
+    "moving_link_count": 12,
+    "moving_links_without_positive_authored_mass_and_inertia": [],
+    "estimated_inertias_added": false,
+    "simulator_dynamics_validated": false
+  },
+  "source_limitations": [
+    "native_import_and_episode_receipts",
+    "publisher_hardware_and_policy_match_not_established"
+  ],
+  "execution_authorized": false,
+  "policy_compatibility_established": false,
+  "source_urdf_sha256": "sha256:9cde2637728bf3490e50175525485c4ce1315a3b8c329d3ab2faf6593c801860",
+  "generator_module_sha256": "sha256:df0b6c4e7277d4e79b087115852afca8f8ad426e616e0e277cbb4f82e0300469",
+  "generated_files": [
+    {
+      "path": "expanded_source/arm/source/LICENSE",
+      "sha256": "sha256:143077f9f6a8de5a99f78c2c2472801fb53cf240277ef661642f079b9acdfff8",
+      "size_bytes": 1459
+    },
+    {
+      "path": "expanded_source/arm/source/config/ur5e/default_kinematics.yaml",
+      "sha256": "sha256:4ffc6086bb0118a5a8e4a3576ef41de878de946710799ea4835789063fa9c0bc",
+      "size_bytes": 649
+    },
+    {
+      "path": "expanded_source/arm/source/config/ur5e/joint_limits.yaml",
+      "sha256": "sha256:1e908454a0fb073761a0c675f708eb003ca7d5333a9e0863ef87fe40d9abb3c7",
+      "size_bytes": 2869
+    },
+    {
+      "path": "expanded_source/arm/source/config/ur5e/physical_parameters.yaml",
+      "sha256": "sha256:0e58b89069d8d87b24cce0c2c02832d88de0f3229baf42916953ce1c71f0fa2d",
+      "size_bytes": 2428
+    },
+    {
+      "path": "expanded_source/arm/source/config/ur5e/visual_parameters.yaml",
+      "sha256": "sha256:87e8adba0d4e40cc9a994e7ca2264671cc6b6c732649b675b553639cb275a16d",
+      "size_bytes": 2393
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/collision/base.stl",
+      "sha256": "sha256:9a145e0d46f2130afdf2a2e8825a00a929870c4c3d6d8e4d1adc5f04db3aac1b",
+      "size_bytes": 21084
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/collision/forearm.stl",
+      "sha256": "sha256:2e7423cab807c34160ec4f770daee5e747d70e777eb01b7beeace2b8c5751816",
+      "size_bytes": 53284
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/collision/shoulder.stl",
+      "sha256": "sha256:ceb92532177daa77682f5fbd628e01c2137d168f949a7a706ce1dabe9f002387",
+      "size_bytes": 70084
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/collision/upperarm.stl",
+      "sha256": "sha256:ee893044caf00075cb55b4cf666d1f1311c7979786212a501009f33bee945209",
+      "size_bytes": 99684
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/collision/wrist1.stl",
+      "sha256": "sha256:f8c9f9337b6fd98c75f052e96de10e14a107ddb6874ba6b904e546f8a4e4f43a",
+      "size_bytes": 59584
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/collision/wrist2.stl",
+      "sha256": "sha256:2964a63f60ce3e3cf3ad55bcf190d7876d50e373cb64b70a57cea5885eaf3c86",
+      "size_bytes": 67584
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/collision/wrist3.stl",
+      "sha256": "sha256:83b3666b4ae2badd54af0d2c25a921682ecbc29e849eec646c3ed55fb74c78a3",
+      "size_bytes": 7184
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/visual/base.dae",
+      "sha256": "sha256:c30e4d7228ef633dca2a02c26df2316741f6642cb6333e8289dba6e6d0b22819",
+      "size_bytes": 358056
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/visual/forearm.dae",
+      "sha256": "sha256:04694bf57dac46e9b8bc7c30f2eec75a1bc762e1f1a879ea30c944f24cacbad8",
+      "size_bytes": 1140937
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/visual/shoulder.dae",
+      "sha256": "sha256:c581bfa55b86061d9b99d315ed53817b6b693e6a500643bbf9bbb783322d585d",
+      "size_bytes": 1797083
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/visual/upperarm.dae",
+      "sha256": "sha256:c040a05bb224f14cfab6aa6704d70cbb773ada940eca9a3e34e6ce486c4c4c29",
+      "size_bytes": 3082486
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/visual/wrist1.dae",
+      "sha256": "sha256:a07a3d96d2540f9be12e4a07bcb8577d9f1e36005920c396a407804343a3b588",
+      "size_bytes": 1334663
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/visual/wrist2.dae",
+      "sha256": "sha256:982fa42933c6f81629882ad7975e9ba5dac5d474a6b56694e233708376cf840e",
+      "size_bytes": 1554839
+    },
+    {
+      "path": "expanded_source/arm/source/meshes/ur5e/visual/wrist3.dae",
+      "sha256": "sha256:7a7664ac4adcd53b0870fe6a2b8b975693d846dd4d07a5f44194c7d16f4890ba",
+      "size_bytes": 66077
+    },
+    {
+      "path": "expanded_source/arm/source/urdf/inc/ur_common.xacro",
+      "sha256": "sha256:eafd57d800ae57611b4b67d10557c4d56ac5cdc38cfcf11ccaaab7963ee8918e",
+      "size_bytes": 18959
+    },
+    {
+      "path": "expanded_source/arm/source/urdf/inc/ur_joint_control.xacro",
+      "sha256": "sha256:3510cb880689ff8ca2a6983015212cdb8685addaba76a2a77fd812225fb8f164",
+      "size_bytes": 3739
+    },
+    {
+      "path": "expanded_source/arm/source/urdf/inc/ur_sensors.xacro",
+      "sha256": "sha256:d774af270ece1a55b89e688aece885886f48d69d2de912d19d66cf82d294880e",
+      "size_bytes": 825
+    },
+    {
+      "path": "expanded_source/arm/source/urdf/inc/ur_transmissions.xacro",
+      "sha256": "sha256:128c60dde9841d19fd5cf4cc8986cc70db50c23b8d6dd7698c91d01286e3f6f4",
+      "size_bytes": 2427
+    },
+    {
+      "path": "expanded_source/arm/source/urdf/ros2_control_mock_hardware.xacro",
+      "sha256": "sha256:ec8cee78ee1f2cda852ab92015bf5ea620f294ef276b23c0d514dc6fc51e250d",
+      "size_bytes": 1305
+    },
+    {
+      "path": "expanded_source/arm/source/urdf/ur.urdf.xacro",
+      "sha256": "sha256:0117d944999ecb8952df69a28af729a1e617b878a31c2c33be2bd22e3de95c62",
+      "size_bytes": 2279
+    },
+    {
+      "path": "expanded_source/arm/source/urdf/ur_macro.xacro",
+      "sha256": "sha256:ed236ec8df67a2d2c2e48ea55b14b4efe2ab81ef2203af5315936b4de6ccc581",
+      "size_bytes": 15796
+    },
+    {
+      "path": "expanded_source/arm/source/urdf/ur_mocked.urdf.xacro",
+      "sha256": "sha256:14075e421d0a3f6b2200b4825c809c492e7e25a7fa51962e4c5f42649dbfe163",
+      "size_bytes": 3042
+    },
+    {
+      "path": "expanded_source/arm/source-bundle.json",
+      "sha256": "sha256:bd39c64cf954c6a5d0fe947805430decf3c7739cfea67a764e531ec87c3d5475",
+      "size_bytes": 7701
+    },
+    {
+      "path": "expanded_source/assembly.urdf.urdf",
+      "sha256": "sha256:20e355ad61b63bee5ffdb274c16fcacc3ba2d42c2ff2006a7608e86a7967a328",
+      "size_bytes": 16590
+    },
+    {
+      "path": "expanded_source/assembly.urdf.xacro",
+      "sha256": "sha256:e6c2be4a8f4b424ff525a465d32e297bee43818796decafa23a9130ee535b454",
+      "size_bytes": 1260
+    },
+    {
+      "path": "expanded_source/tool/source/LICENSE",
+      "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8",
+      "size_bytes": 1524
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_finger.stl",
+      "sha256": "sha256:f39a50be121122fc1c53c588a762ad1da8a0f64d39bc6f299cbe9b0597e7257b",
+      "size_bytes": 19684
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_finger_tip.stl",
+      "sha256": "sha256:9d90031cd99106a8be63609f8ff78580638d91cc4167bf66c09198329f2e65cf",
+      "size_bytes": 11284
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_inner_knuckle.stl",
+      "sha256": "sha256:f250a3fea49be4d1bb2383d9980172c59fc44031193ef2293ca540f756f6c1e6",
+      "size_bytes": 17984
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_knuckle.stl",
+      "sha256": "sha256:b7ec787f57a7db5b2b14e64ffbedaac28739e38f14aac8afa8b575bac941feb7",
+      "size_bytes": 4384
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_finger.stl",
+      "sha256": "sha256:1d018fa2f0b50aca5941778d78810b211b1abfc8637c7953451d76d4833ba6f8",
+      "size_bytes": 19684
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_finger_tip.stl",
+      "sha256": "sha256:126f1559f2f7dca62449a6ca926c609fbdaa93ca66df805ff7c069bb206e3d10",
+      "size_bytes": 11284
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_inner_knuckle.stl",
+      "sha256": "sha256:c936d951ede875b91c180bd41d45b22ae23f8a39d9c3e09e29066453a8e863ef",
+      "size_bytes": 17784
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_knuckle.stl",
+      "sha256": "sha256:d151fb38f59748f1e6e627312e2ede96f2c98ba267bf722091665b20c78e7a8d",
+      "size_bytes": 4384
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/robotiq_base.stl",
+      "sha256": "sha256:ede5cd7d7846c051b88645f33d6bbb5ed9b36bbef404a19a46557639bfab7060",
+      "size_bytes": 20084
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/ur_to_robotiq_adapter.stl",
+      "sha256": "sha256:e5b4eaba7f75c4071c9c0213281af4798098c971891808d87e948383cd2b9aa9",
+      "size_bytes": 48884
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_finger.dae",
+      "sha256": "sha256:5fb9e5659c735e48eb55269da431cf61b3b7a6745922c1932a7adefb1db86dc3",
+      "size_bytes": 191399
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_finger_tip.dae",
+      "sha256": "sha256:785ec7a83b4fc6357c211a39bb117833b1cfd4e9bccbef2efc7f35aeb2fdb92e",
+      "size_bytes": 174578
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_inner_knuckle.dae",
+      "sha256": "sha256:2df009ef28868c90a4904370f5f4995c74ec84e0b8ca1371044e0ea669edcd71",
+      "size_bytes": 110219
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_knuckle.dae",
+      "sha256": "sha256:1b82214363d9548f3562be70e25cd23217a304c72ccd37bc1551cf1a3a64029d",
+      "size_bytes": 78865
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_finger.dae",
+      "sha256": "sha256:3b2245b5537eb596d7f8a4c64b12e3aedea46e365fc589019184d3b4200e664f",
+      "size_bytes": 190861
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_finger_tip.dae",
+      "sha256": "sha256:568371d25ddbcee8e432c0610bdcc7afcd1393d48d973eed92168e353eb4edf5",
+      "size_bytes": 173460
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_inner_knuckle.dae",
+      "sha256": "sha256:4cc6de99e177773ba755805b58b67537c3af24b2fd8f3a1bf4bbced87d6240a5",
+      "size_bytes": 111109
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_knuckle.dae",
+      "sha256": "sha256:532b6f6f8794883ff34995701036ca392461f26127757f92003db127693bc57c",
+      "size_bytes": 79122
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/robotiq_base.dae",
+      "sha256": "sha256:761a79d586a48d367d60f146ca77ef7d2821ad790f7b1b1c93b061ac59799267",
+      "size_bytes": 2159533
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/ur_to_robotiq_adapter.dae",
+      "sha256": "sha256:ed326c745df2942d2efb8dd902ecfafa84c692d360a7c03ce9276ad491614ac4",
+      "size_bytes": 188335
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/package.xml",
+      "sha256": "sha256:5395e79f5aa69af743f6dcec774107b6470ecd3bd87ab35f0556e1783ebe640f",
+      "size_bytes": 1236
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/urdf/2f_85.ros2_control.xacro",
+      "sha256": "sha256:024b33f6c1efe70aea47d8b26eabed8a9f8dd87a24aa523613ce5e76fc40cfce",
+      "size_bytes": 4788
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+      "sha256": "sha256:31a35fdb32c1e70aeee07cab8af35509e5ac439f5e5002ce9c58316976697eca",
+      "size_bytes": 13883
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+      "sha256": "sha256:31b584b9d013d816fb0bd98df0dcda6bfa7d45305563cd51169ca8d3c8eb66b3",
+      "size_bytes": 1377
+    },
+    {
+      "path": "expanded_source/tool/source-bundle.json",
+      "sha256": "sha256:a4c5ddb4c4edfe0f1b6ab1e588f812c0902bfa98d3f5744399f10bbdab2101df",
+      "size_bytes": 7849
+    },
+    {
+      "path": "robot.urdf",
+      "sha256": "sha256:9cde2637728bf3490e50175525485c4ce1315a3b8c329d3ab2faf6593c801860",
+      "size_bytes": 16688
+    }
+  ],
+  "configuration_digest": "sha256:7a70206144fe030d635e5a6015a6c6763e41ce4759f00478d0e290987b9b4858"
+}

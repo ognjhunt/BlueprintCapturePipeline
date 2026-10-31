@@ -1,0 +1,365 @@
+{
+ "bodies": {
+  "abb_gofa_crb15000_5_95_robotiq_2f85_sim": {
+   "configuration_digest": "sha256:e836ed06843ff1f2ebc94f080a47b327fc22b68bb339bee43c7e742b30861e00",
+   "licenses": [
+    {
+     "identifier": "Apache-2.0",
+     "path": "licenses/ros-industrial__abb/abb_crb15000_support/LICENSE",
+     "sha256": "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+    },
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/PickNikRobotics__ros2_robotiq_gripper/LICENSE",
+     "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:a78d0825f2a5f6e18180e4f6c0ddd022e271b7e46ce3608dfaa1ef068f39347e",
+   "source_bundle_digest": "sha256:0025dc41d2323ad6cf24e12acc5903691ba706a0000b856c18da08f2090aeff6",
+   "sources": [
+    {
+     "entry_path": "abb_crb15000_support/urdf/crb15000_5_95.xacro",
+     "license_id": "Apache-2.0",
+     "repository_url": "https://github.com/ros-industrial/abb",
+     "revision": "45f4769d826cf3ac62a65495f2db67b78b0c81df"
+    },
+    {
+     "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+     "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6"
+    }
+   ]
+  },
+  "agilex_piper_bimanual": {
+   "configuration_digest": "sha256:a8637d7f1a26ad73aed5dd5aebc5bafb65e633db67263868c07dfec2ca9c330b",
+   "licenses": [
+    {
+     "identifier": "MIT",
+     "path": "licenses/agilexrobotics__Agilex-College/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/LICENSE",
+     "sha256": "sha256:247944c63de1573653722ba784f96123da267105b7b48577e0c8826a24b809f6"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:10674093c02edbafd674f5cf111eaabe25d26a82b79f39ac4084d41a4dbe1e15",
+   "source_bundle_digest": "sha256:94ee6b4a25fe76959bd0de92375c783c4562391a85a4e1af2460297ca71241f6",
+   "sources": [
+    {
+     "entry_path": "isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/urdf/piper_with_gripper_description.xacro",
+     "license_id": "MIT",
+     "repository_url": "https://github.com/agilexrobotics/Agilex-College",
+     "revision": "c2688be41e1bc99a9addd555f237a16bc839d936"
+    }
+   ]
+  },
+  "fanuc_crx_10ia_robotiq_2f85_sim": {
+   "configuration_digest": "sha256:468a33f139a5ad8b34cbf4ef3c33ef6e5c7fbb8e2df65f01b8cb3659f900702a",
+   "licenses": [
+    {
+     "identifier": "Apache-2.0",
+     "path": "licenses/fanuc-corporation__fanuc_description/LICENSES/Apache-2.0.txt",
+     "sha256": "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+    },
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/PickNikRobotics__ros2_robotiq_gripper/LICENSE",
+     "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:1394727b030db5e52d0dd4a62a158ccb562c18ca4d41aab37f9aeaeec9569397",
+   "source_bundle_digest": "sha256:7cdf05f27a06049425150007d515628a5f1be1a5675fbe1b6987ef16f09bf134",
+   "sources": [
+    {
+     "entry_path": "fanuc_crx_description/robot/crx10ia.urdf.xacro",
+     "license_id": "Apache-2.0",
+     "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+     "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2"
+    },
+    {
+     "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+     "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6"
+    }
+   ]
+  },
+  "fanuc_m710ic_45m_robotiq_2f85_sim": {
+   "configuration_digest": "sha256:8b9981b5c8be0e173ffc9b7de896d0516ea16eaf98b3f56d0c0faebde45fa51d",
+   "licenses": [
+    {
+     "identifier": "Apache-2.0",
+     "path": "licenses/fanuc-corporation__fanuc_description/LICENSES/Apache-2.0.txt",
+     "sha256": "sha256:074e6e32c86a4c0ef8b3ed25b721ca23aca83df277cd88106ef7177c354615ff"
+    },
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/PickNikRobotics__ros2_robotiq_gripper/LICENSE",
+     "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:e38e2c5bde6e67480016f5ca27e4e2d695be110afbaa76065f5161e9c4e5af3f",
+   "source_bundle_digest": "sha256:eba02116b5bf233166d656e4146c835432baa3c9012ddbe916720a0391da803b",
+   "sources": [
+    {
+     "entry_path": "fanuc_m710_description/robot/m710ic_45m.urdf.xacro",
+     "license_id": "Apache-2.0",
+     "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+     "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2"
+    },
+    {
+     "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+     "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6"
+    }
+   ]
+  },
+  "franka_research_3_bimanual": {
+   "configuration_digest": "sha256:9ae634dce1abfa9cc462967e4d19f0274bf588adc19d2df8400f83e97bd2c521",
+   "licenses": [
+    {
+     "identifier": "Apache-2.0",
+     "path": "licenses/frankarobotics__franka_description/LICENSE",
+     "sha256": "sha256:4b25434e6ec2012e28a484f1d7924a0fd1a8bf232c2be2d50d584d299d04d6d6"
+    },
+    {
+     "identifier": "notice",
+     "path": "licenses/frankarobotics__franka_description/NOTICE",
+     "sha256": "sha256:13991525876741e3dc94c46e0afce111dc0a5c6156c89bbbefd06547b84738fd"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:5ae1248cbdb65f182e18ff3fb7cf1a9656fcc270497cc866eefbc41a0c5a533d",
+   "source_bundle_digest": "sha256:30c44937f97262496625166a24d9bf9a25823abf7ae0ebb30fbfe1a96ea2688d",
+   "sources": [
+    {
+     "entry_path": "robots/fr3/fr3.urdf.xacro",
+     "license_id": "Apache-2.0",
+     "repository_url": "https://github.com/frankarobotics/franka_description",
+     "revision": "7aeeddc449edf8d62b594f9e36a81da53e7796f9"
+    }
+   ]
+  },
+  "franka_research_3_robotiq_2f85_sim": {
+   "configuration_digest": "sha256:e4b8152dc382e1619217cffef40b9469c46ecd088ec505a4938db7dc54db220c",
+   "licenses": [
+    {
+     "identifier": "Apache-2.0",
+     "path": "licenses/frankarobotics__franka_description/LICENSE",
+     "sha256": "sha256:4b25434e6ec2012e28a484f1d7924a0fd1a8bf232c2be2d50d584d299d04d6d6"
+    },
+    {
+     "identifier": "notice",
+     "path": "licenses/frankarobotics__franka_description/NOTICE",
+     "sha256": "sha256:13991525876741e3dc94c46e0afce111dc0a5c6156c89bbbefd06547b84738fd"
+    },
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/PickNikRobotics__ros2_robotiq_gripper/LICENSE",
+     "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:7531846166d013e2d66a8b55d4f0bb4993107cc270d63b887d4583a0d3ff86a6",
+   "source_bundle_digest": "sha256:5bd69932dc6a9e17d95203efc5840c4bf597e7554258e6bd95189e28c5ae6512",
+   "sources": [
+    {
+     "entry_path": "robots/fr3/fr3.urdf.xacro",
+     "license_id": "Apache-2.0",
+     "repository_url": "https://github.com/frankarobotics/franka_description",
+     "revision": "7aeeddc449edf8d62b594f9e36a81da53e7796f9"
+    },
+    {
+     "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+     "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6"
+    }
+   ]
+  },
+  "i2rt_yam_bimanual": {
+   "configuration_digest": "sha256:bad7b6e662eadced5d4d5d30b3e5e97230bc2758d0d12c231ece63f9f63ce8f4",
+   "licenses": [
+    {
+     "identifier": "MIT",
+     "path": "licenses/i2rt-robotics__i2rt/LICENSE",
+     "sha256": "sha256:7cd0a0224a287ebd6c45703eb6623d264c7810f8958d65de8f99e87ccd9f4891"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:da58e8b98c430d4fedfb95d9c613297f4fcee39104d6276b4063d01a31ce4a24",
+   "source_bundle_digest": "sha256:d69a6b7788bab31b5687c74b776de00f5c86f012fc852eb37d6ac1eae2eb3f72",
+   "sources": [
+    {
+     "entry_path": "i2rt/robot_models/station/yam_station_linear_4310_d405/yam_station_linear_4310_d405.urdf",
+     "license_id": "MIT",
+     "repository_url": "https://github.com/i2rt-robotics/i2rt",
+     "revision": "120c3c81400171174604e503943f8d1ebc891058"
+    }
+   ]
+  },
+  "kinova_gen3": {
+   "configuration_digest": "sha256:e4b8449554f320884913bc1b5f08da6a8de6f7f7af4e7d17f0ee2b0c279d8b81",
+   "licenses": [
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/Kinovarobotics__ros_kortex/LICENSE",
+     "sha256": "sha256:f14cf305d8319266b17dac9319f536842faaf32f1e4391255478d511222cf017"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:5270753ca4582338763c9476621cb78bdf6c1ddac2e37251d247bf6c22cd4f84",
+   "source_bundle_digest": "sha256:f207e1729a4bda0d733c201e11b4d564e0830d5f44839877665204d49cd05cc1",
+   "sources": [
+    {
+     "entry_path": "kortex_description/robots/gen3_robotiq_2f_85.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/Kinovarobotics/ros_kortex",
+     "revision": "c3280d8a6a6b5d96590d51538e3f265710a6c77d"
+    }
+   ]
+  },
+  "kuka_lbr_iiwa_14_robotiq_2f85_sim": {
+   "configuration_digest": "sha256:6bbe032454276e90f1ba764dc1a87ee55d0a69c887d2259b096c8a04003a00b3",
+   "licenses": [
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/google-deepmind__mujoco_menagerie/kuka_iiwa_14/LICENSE",
+     "sha256": "sha256:c0ddafa1e3b5f0edcb02b6ef477a9792e3e423b8fcd20abbd7654f4005e21ef8"
+    },
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/PickNikRobotics__ros2_robotiq_gripper/LICENSE",
+     "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:70bb46e137342d96dbb1ffa5c59b429393bf24ad3edfa03131389b1791fa8c68",
+   "source_bundle_digest": "sha256:72c3dba70aded5a22131f62fb9c5fcf644c49cc261ffb7a668a336f7f8d2fe24",
+   "sources": [
+    {
+     "entry_path": "kuka_iiwa_14/iiwa14.xml",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/google-deepmind/mujoco_menagerie",
+     "revision": "cda5236f98383f6fbaa4820c6b18dba892cd087f"
+    },
+    {
+     "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+     "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6"
+    }
+   ]
+  },
+  "trlc_dk1_bimanual": {
+   "configuration_digest": "sha256:99601c8fce883612b204dac4a01c1454520253f97ccac8b553725d35a0dc47a2",
+   "licenses": [
+    {
+     "identifier": "Apache-2.0",
+     "path": "licenses/robot-learning-co__trlc-dk1/LICENSE",
+     "sha256": "sha256:98bd6d4c411234188c6ed1c371bff58ed2e000479c3fb244cbca0351240ddc8d"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:5067b182dc407d2a3e603b3412ed0022d48e81d8f554bef658656acc6ca52ccc",
+   "source_bundle_digest": "sha256:302060a06a2ccbdcfa301a7fb003e095633ed31fd58787d25dcfb9e702ab98a1",
+   "sources": [
+    {
+     "entry_path": "urdf/follower/TRLC-DK1-Follower.urdf",
+     "license_id": "Apache-2.0",
+     "repository_url": "https://github.com/robot-learning-co/trlc-dk1",
+     "revision": "12f5368aefd0381461f2c7ffbb5611b4e8c90de9"
+    }
+   ]
+  },
+  "ufactory_xarm7_bimanual": {
+   "configuration_digest": "sha256:06992e9fc240df523bdb63e5b2771c80b4bd8c81c18de24b1cd691e76adfc8a9",
+   "licenses": [
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/xArm-Developer__xarm_ros2/LICENSE",
+     "sha256": "sha256:685e81e0cd30124e24e834ea2bf39bfead4efc9907d021bc9d1ae0f2dcea1431"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:193c20d372fa2ee32e41feb4df00eb060207d1795df0cde41b8845945f7089f9",
+   "source_bundle_digest": "sha256:e96ed369478126dab2503e997e60a3fb88c2a00ca003aff07a7fa9da78d78f10",
+   "sources": [
+    {
+     "entry_path": "xarm_description/urdf/dual_xarm_device.urdf.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/xArm-Developer/xarm_ros2",
+     "revision": "ac736c92b02de7ca7e0be6f737d77d46707464d8"
+    }
+   ]
+  },
+  "universal_robots_ur5e_robotiq_2f85_sim": {
+   "configuration_digest": "sha256:7a70206144fe030d635e5a6015a6c6763e41ce4759f00478d0e290987b9b4858",
+   "licenses": [
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/UniversalRobots__Universal_Robots_ROS2_Description/LICENSE",
+     "sha256": "sha256:143077f9f6a8de5a99f78c2c2472801fb53cf240277ef661642f079b9acdfff8"
+    },
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/PickNikRobotics__ros2_robotiq_gripper/LICENSE",
+     "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:9cde2637728bf3490e50175525485c4ce1315a3b8c329d3ab2faf6593c801860",
+   "source_bundle_digest": "sha256:4fc25ad1de9df79475bf754592b112ab9a34fc91894238ab2235800e144b7901",
+   "sources": [
+    {
+     "entry_path": "urdf/ur.urdf.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description",
+     "revision": "d4042c1f5123c86645cc5dbd650b4f461f697ee9"
+    },
+    {
+     "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+     "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6"
+    }
+   ]
+  },
+  "yaskawa_gp12_robotiq_2f85_sim": {
+   "configuration_digest": "sha256:38d7c480985b7c2e6ad2485e9fc4bd1befef1b567bd11cd80990bd960094d436",
+   "licenses": [
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/ros-industrial__motoman/motoman_gp12_support/package.xml",
+     "sha256": "sha256:cca228bd9124052ee142499c0ba228a45607193712af01345e2e87a0bb14fbfe"
+    },
+    {
+     "identifier": "BSD-3-Clause",
+     "path": "licenses/PickNikRobotics__ros2_robotiq_gripper/LICENSE",
+     "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8"
+    }
+   ],
+   "robot_urdf_sha256": "sha256:3696732c53ea01cd42dd2b0b80ebb483229807b22811f97c01cd64556c78be49",
+   "source_bundle_digest": "sha256:22ee68b67e1891b7caa11c50917259f63efe48ef45cc9f9930f30d801507361c",
+   "sources": [
+    {
+     "entry_path": "motoman_gp12_support/urdf/gp12.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/ros-industrial/motoman",
+     "revision": "846fbbc57c60223f12bf4795ea6404982d57709e"
+    },
+    {
+     "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+     "license_id": "BSD-3-Clause",
+     "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+     "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6"
+    }
+   ]
+  }
+ },
+ "claim_ceiling": "development_only",
+ "franka_kinematics": {
+  "claim": "FR3 and FER (Franka Emika Panda) declare byte-identical joint origins at this revision.",
+  "files": {
+   "robots/fer/kinematics.yaml": "sha256:44326830a6773dd6611cdf9947045eeb3276ea4e3ca47a05272816c862c8e386",
+   "robots/fr3/kinematics.yaml": "sha256:44326830a6773dd6611cdf9947045eeb3276ea4e3ca47a05272816c862c8e386"
+  },
+  "license_id": "Apache-2.0",
+  "repository_url": "https://github.com/frankarobotics/franka_description",
+  "revision": "7aeeddc449edf8d62b594f9e36a81da53e7796f9"
+ },
+ "generator": "deployment_embodiment_runtime_configuration.prepare_runtime_configuration",
+ "notice": "Generated derivatives of the listed public sources: xacro expansion and Blueprint simulation composition by the named generator. They are not the publishers' files; mesh files are not retained; each source's license file is kept under licenses/.",
+ "schema_version": "body_kinematics_fixtures.v1"
+}

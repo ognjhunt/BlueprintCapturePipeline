@@ -1,0 +1,823 @@
+{
+  "schema_version": "embodiment_runtime_configuration.v1",
+  "claim_ceiling": "configuration_only",
+  "embodiment_id": "kinova_gen3",
+  "source_bundle_digest": "sha256:f207e1729a4bda0d733c201e11b4d564e0830d5f44839877665204d49cd05cc1",
+  "station_parameters": null,
+  "manifest_fields": {
+    "schema_version": "blueprint.robot_embodiment.v2",
+    "embodiment_id": "kinova_gen3",
+    "form": "fixed_base_arm",
+    "base": {
+      "mode": "fixed"
+    },
+    "joints": [
+      {
+        "name": "joint_1",
+        "control": "position",
+        "lower": -3.141592653589793,
+        "upper": 3.141592653589793,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "joint_2",
+        "control": "position",
+        "lower": -2.24,
+        "upper": 2.24,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "joint_3",
+        "control": "position",
+        "lower": -3.141592653589793,
+        "upper": 3.141592653589793,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "joint_4",
+        "control": "position",
+        "lower": -2.57,
+        "upper": 2.57,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "joint_5",
+        "control": "position",
+        "lower": -3.141592653589793,
+        "upper": 3.141592653589793,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "joint_6",
+        "control": "position",
+        "lower": -2.09,
+        "upper": 2.09,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "joint_7",
+        "control": "position",
+        "lower": -3.141592653589793,
+        "upper": 3.141592653589793,
+        "max_velocity": 1.0
+      }
+    ],
+    "grippers": [
+      {
+        "name": "arm_gripper",
+        "tool_link": "robotiq_arg2f_base_link",
+        "joints": [
+          {
+            "name": "finger_joint",
+            "open": 0.0,
+            "closed": 0.8
+          },
+          {
+            "name": "left_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.8
+          },
+          {
+            "name": "left_inner_finger_joint",
+            "open": 0.0,
+            "closed": -0.8
+          },
+          {
+            "name": "right_outer_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.8
+          },
+          {
+            "name": "right_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.8
+          },
+          {
+            "name": "right_inner_finger_joint",
+            "open": 0.0,
+            "closed": -0.8
+          }
+        ],
+        "max_width_m": 0.085,
+        "contact_links": [
+          "left_inner_finger_pad",
+          "right_inner_finger_pad"
+        ]
+      }
+    ],
+    "tool_link": "robotiq_arg2f_base_link",
+    "reset_joint_positions": {
+      "joint_1": 0.0,
+      "joint_2": 0.0,
+      "joint_3": 0.0,
+      "joint_4": 0.0,
+      "joint_5": 0.0,
+      "joint_6": 0.0,
+      "joint_7": 0.0,
+      "finger_joint": 0.0,
+      "left_inner_knuckle_joint": 0.0,
+      "left_inner_finger_joint": 0.0,
+      "right_outer_knuckle_joint": 0.0,
+      "right_inner_knuckle_joint": 0.0,
+      "right_inner_finger_joint": 0.0
+    },
+    "actuator": {
+      "stiffness": 100.0,
+      "damping": 20.0
+    },
+    "cameras": [
+      {
+        "name": "overhead",
+        "mount_link": null,
+        "position_m": [
+          0.5,
+          0.0,
+          1.5
+        ],
+        "orientation_xyzw": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "arm_wrist",
+        "mount_link": "robotiq_arg2f_base_link",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      }
+    ],
+    "control_hz": 60,
+    "action_chunk_rows": 48,
+    "reach_m": 1.3077883623402924,
+    "arms": [
+      {
+        "name": "arm",
+        "joint_names": [
+          "joint_1",
+          "joint_2",
+          "joint_3",
+          "joint_4",
+          "joint_5",
+          "joint_6",
+          "joint_7"
+        ],
+        "base_link": "base_link",
+        "tool_link": "robotiq_arg2f_base_link",
+        "gripper_name": "arm_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            2.313445413114578e-18,
+            3.3191624696988425e-21,
+            0.11999999999999998
+          ],
+          "orientation_xyzw": [
+            1.169565591045429e-25,
+            4.1985991722086297e-22,
+            -0.7068251811053659,
+            0.7073882691671998
+          ]
+        }
+      }
+    ]
+  },
+  "source_name_mapping": {
+    "base_link": "base_link",
+    "bracelet_link": "bracelet_link",
+    "camera_color_frame": "camera_color_frame",
+    "camera_depth_frame": "camera_depth_frame",
+    "camera_link": "camera_link",
+    "camera_module": "camera_module",
+    "color_module": "color_module",
+    "depth_module": "depth_module",
+    "end_effector": "end_effector",
+    "end_effector_link": "end_effector_link",
+    "finger_joint": "finger_joint",
+    "forearm_link": "forearm_link",
+    "gripper_base_joint": "gripper_base_joint",
+    "half_arm_1_link": "half_arm_1_link",
+    "half_arm_2_link": "half_arm_2_link",
+    "joint_1": "joint_1",
+    "joint_2": "joint_2",
+    "joint_3": "joint_3",
+    "joint_4": "joint_4",
+    "joint_5": "joint_5",
+    "joint_6": "joint_6",
+    "joint_7": "joint_7",
+    "left_inner_finger": "left_inner_finger",
+    "left_inner_finger_joint": "left_inner_finger_joint",
+    "left_inner_finger_pad": "left_inner_finger_pad",
+    "left_inner_finger_pad_joint": "left_inner_finger_pad_joint",
+    "left_inner_knuckle": "left_inner_knuckle",
+    "left_inner_knuckle_joint": "left_inner_knuckle_joint",
+    "left_outer_finger": "left_outer_finger",
+    "left_outer_finger_joint": "left_outer_finger_joint",
+    "left_outer_knuckle": "left_outer_knuckle",
+    "right_inner_finger": "right_inner_finger",
+    "right_inner_finger_joint": "right_inner_finger_joint",
+    "right_inner_finger_pad": "right_inner_finger_pad",
+    "right_inner_finger_pad_joint": "right_inner_finger_pad_joint",
+    "right_inner_knuckle": "right_inner_knuckle",
+    "right_inner_knuckle_joint": "right_inner_knuckle_joint",
+    "right_outer_finger": "right_outer_finger",
+    "right_outer_finger_joint": "right_outer_finger_joint",
+    "right_outer_knuckle": "right_outer_knuckle",
+    "right_outer_knuckle_joint": "right_outer_knuckle_joint",
+    "robotiq_arg2f_base_link": "robotiq_arg2f_base_link",
+    "shoulder_link": "shoulder_link",
+    "spherical_wrist_1_link": "spherical_wrist_1_link",
+    "spherical_wrist_2_link": "spherical_wrist_2_link",
+    "tool_frame": "tool_frame",
+    "tool_frame_joint": "tool_frame_joint"
+  },
+  "simulation_assumptions": [
+    "interior_zero_reset_pose",
+    "default_PD_gains_unless_source_drive_present",
+    "arm_velocity_capped_at_1_SI_unit_per_second",
+    "90_degree_simulated_camera_rig_not_site_calibration",
+    "parallel_gripper_width_is_nominal",
+    "reach_is_source_chain_upper_bound",
+    "simulation_command_window_for_continuous_joint:joint_1",
+    "simulation_command_window_for_continuous_joint:joint_3",
+    "simulation_command_window_for_continuous_joint:joint_5",
+    "simulation_command_window_for_continuous_joint:joint_7"
+  ],
+  "source_dynamics": {
+    "moving_link_count": 13,
+    "moving_links_without_positive_authored_mass_and_inertia": [],
+    "estimated_inertias_added": false,
+    "simulator_dynamics_validated": false
+  },
+  "source_limitations": [
+    "configuration_confirmation",
+    "controller_reset_and_runtime_receipt"
+  ],
+  "execution_authorized": false,
+  "policy_compatibility_established": false,
+  "source_urdf_sha256": "sha256:5270753ca4582338763c9476621cb78bdf6c1ddac2e37251d247bf6c22cd4f84",
+  "generator_module_sha256": "sha256:df0b6c4e7277d4e79b087115852afca8f8ad426e616e0e277cbb4f82e0300469",
+  "generated_files": [
+    {
+      "path": "expanded_source/LICENSE",
+      "sha256": "sha256:f14cf305d8319266b17dac9319f536842faaf32f1e4391255478d511222cf017",
+      "size_bytes": 3304
+    },
+    {
+      "path": "expanded_source/kortex_description/CMakeLists.txt",
+      "sha256": "sha256:59434ff847b58eaac3c7422ca3493fa50dbf3cad004c8d406dab6c6c89824b3a",
+      "size_bytes": 309
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/config/gazebo_initial_joint_positions.yaml",
+      "sha256": "sha256:3931250f92f578893e9c629d6f8c93b1797ff064ce4446a821150aa4ecc79031",
+      "size_bytes": 331
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/config/joint_limits.yaml",
+      "sha256": "sha256:cbd3c11c16e2d03872bd651ca8587ded185a906fa137a98ef15c87674ac27ad6",
+      "size_bytes": 323
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/config/twist_limits.yaml",
+      "sha256": "sha256:87dc31d5d37a8957a1cd1d003287063ec67c4bc59178085cd677dc00417d3a15",
+      "size_bytes": 126
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/meshes/base_link.STL",
+      "sha256": "sha256:943d08080967df2d7a292159af30dc0e8266f164c065a41c3f172e3b91ddf380",
+      "size_bytes": 209784
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/meshes/bicep_link.STL",
+      "sha256": "sha256:1b0f84b00c10b9eafa6b65fe93db264a5fa90b89b393e4a277ad13f952c47175",
+      "size_bytes": 783384
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/meshes/bracelet_no_vision_link.STL",
+      "sha256": "sha256:5b2ec7dafbf6a3c9a2cac717d18132a8a1efd9fcb8f2c40d9c12c8ece7323ec8",
+      "size_bytes": 1334384
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/meshes/bracelet_with_vision_link.STL",
+      "sha256": "sha256:4cdfef4c7df3d239378b522f3b92e98aaca326d6da602fe876a179a28aeb569b",
+      "size_bytes": 2636684
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/meshes/forearm_link.STL",
+      "sha256": "sha256:a835c44a59d534eaf46d61f005f19af3c3855f1136aba8bb2ae58aae24158074",
+      "size_bytes": 456284
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/meshes/shoulder_link.STL",
+      "sha256": "sha256:6ddffa8f20dd1542a9d9d25560579a377e9d91abc8eedc3496c0be53107136c0",
+      "size_bytes": 476984
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/meshes/spherical_wrist_1_link.STL",
+      "sha256": "sha256:7238c38da8302f033bb923a6c5928e030bd12ebf8648dbfa7dbc2e849da0f35a",
+      "size_bytes": 546484
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/meshes/spherical_wrist_2_link.STL",
+      "sha256": "sha256:4a497fc7e8db1115057910d4e86bc1e4593c1a617ad66355fea5c5b8392b8b8c",
+      "size_bytes": 516984
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/urdf/GEN3-6DOF_BRAKES_NO-VISION_URDF_ARM_V01.urdf",
+      "sha256": "sha256:24e8b210f36185a5d426762cc53aedcf68c9c6b6ff21090efdf6486c306e8d96",
+      "size_bytes": 9065
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/urdf/GEN3-6DOF_BRAKES_VISION_URDF_ARM_V01.urdf",
+      "sha256": "sha256:7d951442c87c1b49414bf43ab82e583b6d4a708ea460dff8fb2e8d728a4cbfd5",
+      "size_bytes": 9936
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/urdf/GEN3-6DOF_NO-VISION_URDF_ARM_V01.urdf",
+      "sha256": "sha256:eb3562ad3871cc9d0923e6f778592653bb766391ee72e536a0297a7863d00b13",
+      "size_bytes": 7449
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/urdf/GEN3-6DOF_VISION_URDF_ARM_V01.urdf",
+      "sha256": "sha256:30e11c36b1abd10f1e52f85804b2c6a533722818bc87eb819265aac503cbf60c",
+      "size_bytes": 8229
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/urdf/gen3.urdf",
+      "sha256": "sha256:50c13047aec1f4f5b99ceefe1122d16328e60fa0fac0c2cdcefd37afc64d25cf",
+      "size_bytes": 60
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/urdf/gen3_macro.xacro",
+      "sha256": "sha256:b805e7c2ef2b63181ee82151ca0d508dfde3f3c05e7189297afb00ec892cc414",
+      "size_bytes": 10251
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/6dof/urdf/gen3_transmission_macro.xacro",
+      "sha256": "sha256:64c094c05a324d3c267256eb249bc68807651ae2b885a7dae36e378006a38e00",
+      "size_bytes": 2703
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/config/gazebo_initial_joint_positions.yaml",
+      "sha256": "sha256:d01674ffba9d95b32542b9fe5077f316c6cc0cd2081c9cc05e7a2fb6c3c5d80b",
+      "size_bytes": 373
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/config/joint_limits.yaml",
+      "sha256": "sha256:000f90ac9277e6331236948dbb656727d3df34661ec64bdbfbef0616dd321d22",
+      "size_bytes": 366
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/config/twist_limits.yaml",
+      "sha256": "sha256:87dc31d5d37a8957a1cd1d003287063ec67c4bc59178085cd677dc00417d3a15",
+      "size_bytes": 126
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/meshes/base_link.STL",
+      "sha256": "sha256:3e38517e653d58f4160cfdcee34c9dea983d8b3ecb8f2c147444f58235335260",
+      "size_bytes": 183884
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/meshes/bracelet_no_vision_link.STL",
+      "sha256": "sha256:5b2ec7dafbf6a3c9a2cac717d18132a8a1efd9fcb8f2c40d9c12c8ece7323ec8",
+      "size_bytes": 1334384
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/meshes/bracelet_with_vision_link.STL",
+      "sha256": "sha256:8bb05e420a88532b4eee3948a0047fb8e7f341c3e5cc971d54e97e2aaffcf878",
+      "size_bytes": 1164084
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/meshes/forearm_link.STL",
+      "sha256": "sha256:a00d96d2c7ec37e9fe4c5fb6d3fa2b4386dfd48fea5ac25632f4cb83b3505105",
+      "size_bytes": 456284
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/meshes/half_arm_1_link.STL",
+      "sha256": "sha256:8df461a71780d8e2d09104a507584424279d85173adf14867e359f7e58b3bba7",
+      "size_bytes": 514184
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/meshes/half_arm_2_link.STL",
+      "sha256": "sha256:8a9f38de21648804b3ab7076ec73726031f2ade7c95eb2541d070553e025407b",
+      "size_bytes": 489184
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/meshes/shoulder_link.STL",
+      "sha256": "sha256:a98e232e5197f09e9cd520e7a450c21bcec74bc49e2a19ce7cf86c5dc25f2e18",
+      "size_bytes": 476984
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/meshes/spherical_wrist_1_link.STL",
+      "sha256": "sha256:0b97a5e3b2de535344f8e8d4176d77f0cdb3455b235f35430fa0413208856e66",
+      "size_bytes": 546484
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/meshes/spherical_wrist_2_link.STL",
+      "sha256": "sha256:12271fb7d0ee78fb5642424cf5078be20f0476061e74203db964b674031ce879",
+      "size_bytes": 516984
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/urdf/GEN3-7DOF-NOVISION_FOR_URDF_ARM_V12.urdf",
+      "sha256": "sha256:90efebe8b390e433ea8e857516873329efc78186be87d66868c87ee0e1d9f8b0",
+      "size_bytes": 8685
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/urdf/GEN3-7DOF-VISION_ARM_URDF_V12.urdf",
+      "sha256": "sha256:262a15a7c86fc484b99087be8d787d00d442241421fcc274c8da26117d03a9bf",
+      "size_bytes": 9453
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/urdf/GEN3-7DOF_BRAKES_NO-VISION_URDF_ARM_V01.urdf",
+      "sha256": "sha256:d2bafddb30608e105241426fc7cbbe4d85d239684e7824e66e138c40221207d2",
+      "size_bytes": 10406
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/urdf/GEN3-7DOF_BRAKES_VISION_URDF_ARM_V01.urdf",
+      "sha256": "sha256:830d31008f049f13e67ed723435c82cad0b9193360a219bbb88415d370ac01f2",
+      "size_bytes": 11294
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/urdf/gen3_macro.xacro",
+      "sha256": "sha256:1c743fd39080ace670232f1046f3e0ba6d71c22bd53d40238542809a0961df07",
+      "size_bytes": 11884
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3/7dof/urdf/gen3_transmission_macro.xacro",
+      "sha256": "sha256:10d560652986ccc2ea1d473d6e6c7cf31083120572f0a3fd894bc8f1d6668715",
+      "size_bytes": 3125
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/config/joint_limits.yaml",
+      "sha256": "sha256:eccbf276c9ffceb2a04722520f852cec150695ca024d073f10da6838285d7a43",
+      "size_bytes": 303
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/config/twist_limits.yaml",
+      "sha256": "sha256:8d06f7137e985ee367fdd116ba78020ad4f8f6482f4352801e7d122deb8ffabc",
+      "size_bytes": 126
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/meshes/arm_link.STL",
+      "sha256": "sha256:2daa1e649cd64d19865c13ab977a7b09a560218a25a969f741b41bd1d869c582",
+      "size_bytes": 696084
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/meshes/base_link.STL",
+      "sha256": "sha256:84025360b601d1afdec0b65f1fcfc1e1ff12c91db9e8952f38d89f20bd54fb6d",
+      "size_bytes": 1867984
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/meshes/forearm_link.STL",
+      "sha256": "sha256:5365cd2365c42f0394b9bd068677efa5176a380168600a188bb2e30d1e488d8b",
+      "size_bytes": 829884
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/meshes/lower_wrist_link.STL",
+      "sha256": "sha256:3d1e64b98c39bec3d7c4008e9a46ff78b03797e0280c2b93de68fe4ebc510dfc",
+      "size_bytes": 260984
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/meshes/shoulder_link.STL",
+      "sha256": "sha256:e01094c1339d3d161796f4aedbb195ac1b3ae713449b28d027276ccd6b7d2564",
+      "size_bytes": 251384
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/meshes/upper_wrist_link.STL",
+      "sha256": "sha256:a261314019b98d57177517b36ce4ced97e2c7791b99bd062e5ecf9768b6a5060",
+      "size_bytes": 1134284
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/urdf/GEN3-LITE.urdf",
+      "sha256": "sha256:6670c0c5f4662b1f56e781c28d126991e375379bbb83336178211cadd3063242",
+      "size_bytes": 7041
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/urdf/gen3_lite_macro.xacro",
+      "sha256": "sha256:11027c0821fe23768fecce5c55c7406677ec48be36d1d5cb3228b700fbe20d5d",
+      "size_bytes": 8180
+    },
+    {
+      "path": "expanded_source/kortex_description/arms/gen3_lite/6dof/urdf/gen3_lite_transmission_macro.xacro",
+      "sha256": "sha256:64c094c05a324d3c267256eb249bc68807651ae2b885a7dae36e378006a38e00",
+      "size_bytes": 2703
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/gen3_lite_2f/config/joint_limits.yaml",
+      "sha256": "sha256:ea34cfb7598b03202dd18a7b07837c407ce531088c5d14b33ca55b7636745d93",
+      "size_bytes": 136
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/gen3_lite_2f/meshes/gripper_base_link.STL",
+      "sha256": "sha256:a2c558cfb3956d4325d4fedf425544b5c3fcf0fce58125207946fa0e3eecddc5",
+      "size_bytes": 1277984
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/gen3_lite_2f/meshes/left_finger_dist_link.STL",
+      "sha256": "sha256:681dee5c31fd526c4aa0918dd60947beae5d3fb1568511dfde62a4fca728e7ee",
+      "size_bytes": 654484
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/gen3_lite_2f/meshes/left_finger_prox_link.STL",
+      "sha256": "sha256:82df8dbc59de39f54ab30099d95eb767493a8c2e3f3b37698181379013515148",
+      "size_bytes": 865584
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/gen3_lite_2f/meshes/right_finger_dist_link.STL",
+      "sha256": "sha256:2f7ce7e9013451924e506056ae81a4b8413441c8afa503e3a3cdfa843e3e7f2a",
+      "size_bytes": 654484
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/gen3_lite_2f/meshes/right_finger_prox_link.STL",
+      "sha256": "sha256:2b19bfcea81c1985da2c69977bce9966968bb34d45f47b6639b0b7ffdbe55eec",
+      "size_bytes": 866584
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/gen3_lite_2f/urdf/GEN3-LITE-GRIPPER_URDF_SIMPLIFIED_V2.urdf",
+      "sha256": "sha256:fb76181d2e8579b1d09ecb774a3b38cdf1f1e657a08346d1e8fcef731418936a",
+      "size_bytes": 4553
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/gen3_lite_2f/urdf/gen3_lite_2f_macro.xacro",
+      "sha256": "sha256:918fbf43802cb344a2b6f6ec587e9a794727d4eccf4e8cbf3f713657ba4f81a2",
+      "size_bytes": 7083
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/gen3_lite_2f/urdf/gen3_lite_2f_transmission_macro.xacro",
+      "sha256": "sha256:1c5c18ff0ab22cdb111c37884d932eb865fb7c3b0a798324f492d519b774a47e",
+      "size_bytes": 3010
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/LICENSE",
+      "sha256": "sha256:bfe9a4de3ec95dac1d2bf02df4d774ecfd6d492df1fa33476c3af5576bd08435",
+      "size_bytes": 1296
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/README.md",
+      "sha256": "sha256:8772be60eaa1a67261ac4ddebfb3302f30644934950e713783a64472c6d391fa",
+      "size_bytes": 699
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/config/joint_limits.yaml",
+      "sha256": "sha256:433e69c24abe936c096a7b8825c0adc1e1c433fc9222ed2eaf898ebe5f283bab",
+      "size_bytes": 124
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/collision/robotiq_arg2f_140_inner_finger.stl",
+      "sha256": "sha256:043901d9c22b38d09b30d11326108ab3ef1445b4bd655ef313f94199f25f57ed",
+      "size_bytes": 7284
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/collision/robotiq_arg2f_140_inner_knuckle.stl",
+      "sha256": "sha256:d341d986aa8aca7262565c039c04fb6b4c0f2f5c93443519eb7ca9bfc67ba17c",
+      "size_bytes": 5484
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/collision/robotiq_arg2f_140_outer_finger.stl",
+      "sha256": "sha256:bd7da1b31b73f1aa1d61b26a582cea10f16f17396d54b8937890fa51547d26b0",
+      "size_bytes": 11684
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/collision/robotiq_arg2f_140_outer_knuckle.stl",
+      "sha256": "sha256:37c1779f71fb5504a5898048a36f9f4bfce0f5e7039ff1dce53808b95c229777",
+      "size_bytes": 9784
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/collision/robotiq_arg2f_base_link.stl",
+      "sha256": "sha256:111e37f13a664989dd54226f80f521b32ea0b71c975282a16696b14be7cc9249",
+      "size_bytes": 86384
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/collision/robotiq_arg2f_coupling.stl",
+      "sha256": "sha256:5ca9ffc28ed04193854b005358599dd9c3dc6fa92c8403e661fda94732d9ac25",
+      "size_bytes": 21184
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/visual/robotiq_arg2f_140_inner_finger.stl",
+      "sha256": "sha256:be21c5e18c901d4747cbc8fa1a2af15dad7173ff701482a8517e33278432bb21",
+      "size_bytes": 33984
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/visual/robotiq_arg2f_140_inner_knuckle.stl",
+      "sha256": "sha256:d61e9c5304d8015333856e4a26d99e32b695b6ada993253986b1afe8e396ab11",
+      "size_bytes": 43484
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/visual/robotiq_arg2f_140_outer_finger.stl",
+      "sha256": "sha256:666a92ee075f6f320ffb13b39995a5b374657cee90ded4c52c23ede20a812f34",
+      "size_bytes": 76084
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/visual/robotiq_arg2f_140_outer_knuckle.stl",
+      "sha256": "sha256:f042edc44ede9773e7cad00f7d7354d0b7c1c6a6353fe897b2ca2e6ac71107fc",
+      "size_bytes": 78384
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/visual/robotiq_arg2f_base_link.stl",
+      "sha256": "sha256:74a62de75ae10cf77c60f2c49749b5d11f4c265f8624bbe7697a941fa86f6b3b",
+      "size_bytes": 1054984
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/meshes/visual/robotiq_arg2f_coupling.stl",
+      "sha256": "sha256:4281e83002a25c20dc07c68b8d77da30a13e9a8401f157f6848ed8287d7cce44",
+      "size_bytes": 160684
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/urdf/robotiq_2f_140_macro.xacro",
+      "sha256": "sha256:7ec485960da4960e1cdaab2080c5d15d1cc67b01015b88c913be23c41f9de1bd",
+      "size_bytes": 499
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/urdf/robotiq_2f_140_transmission_macro.xacro",
+      "sha256": "sha256:e5949c48abdb1ca459e55432b5e2f15e68bf1f03807085bf58f1b5cf59cdfbc8",
+      "size_bytes": 3720
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/urdf/robotiq_arg2f.xacro",
+      "sha256": "sha256:b0309814afa97254bd8033c84789250131ac884ae60ec318fe3ea5d4fd2078cd",
+      "size_bytes": 2432
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_140/urdf/robotiq_arg2f_140_model_macro.xacro",
+      "sha256": "sha256:1e66dcdb80c94fd6ea9dea180cb7668a64b488978547f573642c007386750b8b",
+      "size_bytes": 10218
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/LICENSE",
+      "sha256": "sha256:bfe9a4de3ec95dac1d2bf02df4d774ecfd6d492df1fa33476c3af5576bd08435",
+      "size_bytes": 1296
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/README.md",
+      "sha256": "sha256:b7b779ba109fbabae5d2122d80cd594a9e433a49bc18e5a020cc731051729170",
+      "size_bytes": 695
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/config/joint_limits.yaml",
+      "sha256": "sha256:2107a26a39ec761dc039070b763357d25b4b6cf7ad4207ff473751075e447b17",
+      "size_bytes": 124
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/collision/robotiq_arg2f_85_base_link.stl",
+      "sha256": "sha256:d8844d7d09e05423b6edb56b354eef561ad6cf4787d8b7f980232cd4346f46bf",
+      "size_bytes": 86384
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/collision/robotiq_arg2f_85_inner_finger.dae",
+      "sha256": "sha256:807aff52c5a12ca5429cfb2eb19cc88dfaf0083bac6b69e24d49f6beb29aa2c8",
+      "size_bytes": 21799
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/collision/robotiq_arg2f_85_inner_knuckle.dae",
+      "sha256": "sha256:a8e6bb0b3b5ef6ea1323aa698a16dc1ec1a878ed2c2bcd43547750a18e72d9b4",
+      "size_bytes": 18425
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/collision/robotiq_arg2f_85_outer_finger.dae",
+      "sha256": "sha256:5e45e7773260cc4b04bbae626af94bfdd49c38b3c69fc248cf0708e5fa65a39f",
+      "size_bytes": 21252
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/collision/robotiq_arg2f_85_outer_knuckle.dae",
+      "sha256": "sha256:8c7ce8ee42044149f9a956d55f33f06e6b75e5e35080ee4bf1e8cb381535aeb7",
+      "size_bytes": 25969
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/collision/robotiq_arg2f_base_link.stl",
+      "sha256": "sha256:111e37f13a664989dd54226f80f521b32ea0b71c975282a16696b14be7cc9249",
+      "size_bytes": 86384
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/visual/robotiq_arg2f_85_base_link.dae",
+      "sha256": "sha256:d03d6e7395b0aa11ae7954b2f04a0a650448547d5d4f367238098ccd848b3eb5",
+      "size_bytes": 2523721
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/visual/robotiq_arg2f_85_inner_finger.dae",
+      "sha256": "sha256:3172e8fe000fda75b9b29b48cd8cad4011d184a6df23eb2c3adb6c1f5a4eae93",
+      "size_bytes": 154078
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/visual/robotiq_arg2f_85_inner_knuckle.dae",
+      "sha256": "sha256:19b12510eec739a1a4655ff633ce3f02ad3c2eda2cb8f451df900ddfa76c8f14",
+      "size_bytes": 117207
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/visual/robotiq_arg2f_85_outer_finger.dae",
+      "sha256": "sha256:32d842e51e0ddd25b3354af212131befa191c183cf4cdb61f82ecbe5c5276323",
+      "size_bytes": 120496
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/visual/robotiq_arg2f_85_outer_knuckle.dae",
+      "sha256": "sha256:f1cc5198c9f3b06979af07d2944034b32acbb6130df5396dc2c7253cb656f587",
+      "size_bytes": 69464
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/visual/robotiq_arg2f_85_pad.dae",
+      "sha256": "sha256:0f1d5b8403fed489fb40b389e3d9ec27882db324d77d20cc84cf8bb8901fee80",
+      "size_bytes": 4136
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/meshes/visual/robotiq_gripper_coupling.stl",
+      "sha256": "sha256:4281e83002a25c20dc07c68b8d77da30a13e9a8401f157f6848ed8287d7cce44",
+      "size_bytes": 160684
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/urdf/robotiq_2f_85_macro.xacro",
+      "sha256": "sha256:b02b0763929ac7983ccdca6e5417d5916632bf1f0a5f7ec8af110b6d4de69aaa",
+      "size_bytes": 495
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/urdf/robotiq_2f_85_transmission_macro.xacro",
+      "sha256": "sha256:efbabf6299b089c1f76cc6a45f1575f422d0cec5451569627203d4b4731edea2",
+      "size_bytes": 3714
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/urdf/robotiq_arg2f.xacro",
+      "sha256": "sha256:ae442a24cdbce8a49a55cd2d852b59ba60b78b99ed9813980ed9da390104b594",
+      "size_bytes": 2425
+    },
+    {
+      "path": "expanded_source/kortex_description/grippers/robotiq_2f_85/urdf/robotiq_arg2f_85_model_macro.xacro",
+      "sha256": "sha256:41c7535f6b36a694c708e6aeda2c59af5a8c1ce964020a966724c0cf70b4ae89",
+      "size_bytes": 9276
+    },
+    {
+      "path": "expanded_source/kortex_description/launch/visualize.launch",
+      "sha256": "sha256:4b015f95225021e8a65a56fa1f261ed20c6dea9d407f1decf888efd9b55143be",
+      "size_bytes": 1630
+    },
+    {
+      "path": "expanded_source/kortex_description/multiple_robots/kortex_dual_robots.xacro",
+      "sha256": "sha256:1c462834c1177802bad4fdbae51a2662967cb5501f165c8398f05f19b1ac18df",
+      "size_bytes": 1802
+    },
+    {
+      "path": "expanded_source/kortex_description/package.xml",
+      "sha256": "sha256:e0aed64147f221558cf4fca0111909d4e133ffd73025e685297d3e81cc99668b",
+      "size_bytes": 804
+    },
+    {
+      "path": "expanded_source/kortex_description/readme.md",
+      "sha256": "sha256:6e2449c1b602df7b2f6f5cc5e994d4d6b744d510a41ab2723d71f6546eac4809",
+      "size_bytes": 1460
+    },
+    {
+      "path": "expanded_source/kortex_description/robots/gen3.urdf",
+      "sha256": "sha256:2f65f58590dfe50da96f207bc87c483fcc19b9d1722b8b6314a58b436d94e87e",
+      "size_bytes": 8435
+    },
+    {
+      "path": "expanded_source/kortex_description/robots/gen3.xacro",
+      "sha256": "sha256:bb7cf55ef7c48349ab876ecb40de61cbba67284375fd5d5996c06c4616b216e6",
+      "size_bytes": 717
+    },
+    {
+      "path": "expanded_source/kortex_description/robots/gen3_lite_gen3_lite_2f.xacro",
+      "sha256": "sha256:f6985174578470eeb0d6594bcb7eb11c31edf552518cb82ff2dc087930850340",
+      "size_bytes": 752
+    },
+    {
+      "path": "expanded_source/kortex_description/robots/gen3_robotiq_2f_140.xacro",
+      "sha256": "sha256:2bd8438c308661ea3269eddfaaa8b5102cccf5d484e88162163b41aead35e684",
+      "size_bytes": 749
+    },
+    {
+      "path": "expanded_source/kortex_description/robots/gen3_robotiq_2f_85.urdf",
+      "sha256": "sha256:4f61f88a25e9b4c1db9a9ab256ab1314188f6655fd2362e7cbfbb9f8a79ae1de",
+      "size_bytes": 19713
+    },
+    {
+      "path": "expanded_source/kortex_description/robots/gen3_robotiq_2f_85.xacro",
+      "sha256": "sha256:b2acdd03231ceec0eb5c03fd9ee9aef7ee299f492d5a487303c0a706709bf366",
+      "size_bytes": 748
+    },
+    {
+      "path": "expanded_source/kortex_description/robots/kortex_robot.xacro",
+      "sha256": "sha256:ec34435aae765a12051f6bf5a21d62a28f315c08818c1bec9c5c46175e1411a0",
+      "size_bytes": 3000
+    },
+    {
+      "path": "robot.urdf",
+      "sha256": "sha256:5270753ca4582338763c9476621cb78bdf6c1ddac2e37251d247bf6c22cd4f84",
+      "size_bytes": 19639
+    }
+  ],
+  "configuration_digest": "sha256:e4b8449554f320884913bc1b5f08da6a8de6f7f7af4e7d17f0ee2b0c279d8b81"
+}
