@@ -205,8 +205,16 @@ Every recovery is code; nothing is resolved by editing state.
 | `website_atlas_pose_admission_expired` | The sponsorship would expire within two minutes | Checked before the uploads and again before the POST |
 | `website_atlas_pose_frames_invalid`, `_grid_not_requested`, `_operation_identity_mismatch`, `website_atlas_identifier_invalid`, `website_atlas_depth_not_exr`, `website_atlas_transfer_size_mismatch`, `website_atlas_output_size_unreported` | The returned bundle does not match the request | No result is written. References are checked before the first download. |
 
-The reservation is never settled. Nothing reports what an Atlas operation
-actually cost, so the full ceiling stays charged against the sponsorship.
+Nothing reports what an Atlas operation actually cost, so each closed attempt
+settles from its own retained outcome over the signed `preparation-settlement`
+route (`atlas_spend_settlement`): a completed operation at the reviewed price it
+was reserved at, and a failed operation or a refused submission at zero, which
+releases its hold. An attempt whose outcome is unknown (an uncertain send, or an
+operation missing past retention) reports nothing and stays fully charged.
+Settlement runs before a resubmission reserves, after each run, and across the
+whole job before an Atlas pass admits anything new; the receipt is kept as
+`world_labs_settlement.json` beside the attempt. A refused or unreachable
+settlement changes nothing and is reported again on the next pass.
 
 ## Not done, because it needs Atlas access, pricing or a decision
 

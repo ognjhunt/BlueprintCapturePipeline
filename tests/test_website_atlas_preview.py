@@ -327,6 +327,9 @@ def test_transport_failures_back_off_and_end_failed_once_retries_are_exhausted(m
     job = _job(site)
     assert job["state"] == "processing" and job["transient_failures"] == 1 and job["next_attempt_at_epoch"] > world.clock
     assert job["last_transient_reason"] == "atlas_preview_oserror"
+    # The retained job keeps what the type-derived code cannot say; the WebApp's preview never does.
+    assert job["last_error"] == {"type": "builtins.OSError", "message": "connection reset"}
+    assert all("last_error" not in pushed and "connection reset" not in json.dumps(pushed) for pushed in world.pushed)
     world.clock += 30
     world.advance()
     assert len(world.runs) == 1  # not before the backoff ends
@@ -335,7 +338,33 @@ def test_transport_failures_back_off_and_end_failed_once_retries_are_exhausted(m
         world.advance()
     job = _job(site)
     assert (job["state"], job["reason"]) == ("failed", "atlas_preview_retries_exhausted")
+    assert job["last_error"] == {"type": "builtins.OSError", "message": "connection reset"}
     assert len(world.runs) == preview.MAXIMUM_TRANSIENT_FAILURES
+
+
+def test_a_non_code_value_error_fails_with_its_bounded_cause_retained(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError("Expecting value: line 1 column 1 (char 0) key=sk-live-abcdefgh123")])
+    assert world.advance() == "failed"
+    job = _job(site)
+    assert job["reason"] == "atlas_preview_valueerror"
+    assert job["last_error"] == {"type": "builtins.ValueError",
+                                 "message": "Expecting value: line 1 column 1 (char 0) key=<redacted>"}
+    assert world.pushed[-1]["reason"] == "atlas_preview_valueerror" and "last_error" not in world.pushed[-1]
+
+
+def test_provider_cleanup_that_cannot_start_keeps_why(monkeypatch, site):
+    from blueprint_pipeline import website_atlas_pose as pose
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed])
+
+    def missing():
+        raise ValueError("website_atlas_api_key_missing")
+    monkeypatch.setattr(pose, "atlas_api_config", missing)
+    assert world.advance() == "ready"
+    cleanup = _job(site)["provider_cleanup"]
+    assert cleanup["state"] == "pending" and cleanup["remaining"]
+    assert cleanup["last_error"] == {"type": "builtins.ValueError", "message": "website_atlas_api_key_missing"}
 
 
 def test_a_webapp_withdrawal_answer_ends_the_job(monkeypatch, site):

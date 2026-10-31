@@ -127,16 +127,25 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                     raise plain_refusal
                 observation, expected_preparation_purpose = candidate, 'scene_preparation'
         except Exception as error:
-            reason = (str(error) if isinstance(error, CaptureOwnerObservationError)
-                      and str(error) in OWNER_OBSERVATION_REASON_CODES
-                      else "capture_owner_response_unavailable")
+            from .bounded_error import cause_description, error_description
+
+            recognized = (isinstance(error, CaptureOwnerObservationError)
+                          and str(error) in OWNER_OBSERVATION_REASON_CODES)
+            reason = str(error) if recognized else "capture_owner_response_unavailable"
+            # The generic code covers every transport, credential and WebApp
+            # failure. Keep the failure's type and a redacted, trimmed message.
+            described = (error_description(error) if not recognized
+                         else cause_description(error) if reason == "capture_owner_response_unavailable"
+                         else None)
+            unexpected = {} if described is None else {'owner_observation_error': described}
             _listener.logger.warning('pubsub_handoff.capture_owner_observation_unavailable',
-                                     extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id})
+                                     extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                                            'owner_observation_reason': reason, **unexpected})
             return {'schema_version': 'v1', 'status': 'capture_owner_observation_unavailable_retryable',
                     'queue_disposition': 'retryable', 'bucket': handoff.bucket,
                     'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                     'capture_root': str(capture_root),
-                    'owner_observation_reason': reason,
+                    'owner_observation_reason': reason, **unexpected,
                     'blockers': ['capture_owner_observation_unavailable']}
         _listener.logger.info('pubsub_handoff.capture_owner_observed',
                               extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
@@ -148,11 +157,17 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                 retired = retired_capture_status(
                     storage_root=storage_root, bucket=handoff.bucket,
                     scene_id=handoff.scene_id, capture_id=handoff.capture_id)
-            except Exception:
+            except Exception as error:
+                from .bounded_error import error_description
+
+                described = error_description(error)
+                _listener.logger.warning('pubsub_handoff.retirement_lookup_failed',
+                                         extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                                                'error': described})
                 return {'schema_version': 'v1', 'status': 'retirement_lookup_failed_retryable',
                         'queue_disposition': 'retryable', 'bucket': handoff.bucket,
                         'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
-                        'capture_root': str(capture_root),
+                        'capture_root': str(capture_root), 'error': described,
                         'blockers': ['retirement_lookup_failed']}
             if retired is not None:
                 prior_retired = retired
@@ -175,17 +190,24 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
                     handoff, storage_root=storage_root, storage_client=storage_client,
                     **({"expected_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}))
             except Exception as error:
+                from .bounded_error import disk_capacity_refusal, error_description
                 from .capture_delivery_staging import (
-                    CaptureStagingError, STAGING_REASON_CODES, staging_error_description,
+                    CaptureStagingError, STAGING_REASON_CODES, STAGING_SUMMARY_REASON_CODES,
                 )
 
                 recognized = (isinstance(error, (CaptureStagingError, CaptureOwnerObservationError,
                                                  _listener.HandoffStagingCapacityError))
                               and str(error) in STAGING_REASON_CODES)
                 reason = str(error) if recognized else 'capture_staging_unavailable'
-                # The generic code alone hides which failure it was. Keep the
-                # type and a redacted, trimmed message of an unrecognized one.
-                unexpected = {} if recognized else {'staging_error': staging_error_description(error)}
+                # The generic code alone hides which failure it was, and so does
+                # a summary code raised from another failure. Keep the type and
+                # a redacted, trimmed message of that failure.
+                cause = (error if not recognized
+                         else error.__cause__ if reason in STAGING_SUMMARY_REASON_CODES else None)
+                if disk_capacity_refusal(error):
+                    # A full work volume is a capacity refusal wherever staging met it.
+                    reason = 'pubsub_handoff_staging_capacity_insufficient'
+                unexpected = {} if cause is None else {'staging_error': error_description(cause)}
                 _listener.logger.warning('pubsub_handoff.capture_source_membership_unavailable',
                                          extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
                                                 'staging_reason': reason, **unexpected})

@@ -27,11 +27,19 @@ establish zero prior provider charges.
 
 `staging_reason` is a fixed reason code. It distinguishes the repeated owner
 read, membership preflight, missing/disabled birth policy, other birth refusals,
-a bulk-disk refusal (`pubsub_handoff_staging_capacity_insufficient`) and an
-unclassified staging failure. Only the unclassified `capture_staging_unavailable`
-also carries `staging_error`: the exception's `module.qualname` type and its
-message with URL queries and credential-like text removed, trimmed to 200
-characters. Raw exception text is never exposed. Retained staging whose members
+a capacity refusal (`pubsub_handoff_staging_capacity_insufficient`: the bulk-disk
+band, or a work volume that is full or over quota during admission or staging)
+and an unclassified staging failure. The unclassified `capture_staging_unavailable`
+carries `staging_error`, and so does a code that summarizes another failure (the
+owner read, membership preflight, other birth refusals, an unavailable owner
+response) or a capacity refusal found as a full volume: the failure's
+`module.qualname` type and its message with URL queries and credential-like
+text removed, trimmed to 200 characters (`blueprint_pipeline.bounded_error`).
+The owner read before staging keeps `owner_observation_error` beside
+`capture_owner_response_unavailable` the same way; a WebApp 429 is named
+`capture_owner_response_rate_limited`. A generic
+`selected_handoff_current_lookup_or_admission_failed` keeps `error`. Raw
+exception text is never exposed, and none of these reach the WebApp. Retained staging whose members
 are all current is reused without a bulk-disk reservation; only bytes that must
 be downloaded again need disk admission. A legacy generic receipt remains
 generic; new diagnostics do not prove its first failure after the fact.
