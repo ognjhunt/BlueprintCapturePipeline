@@ -193,8 +193,12 @@ def restrict_frame(frame: Mapping[str, Any], mask, **changes: Any) -> dict[str, 
 
     Fusion confidence is exactly ``confidence * mask``. ``keep_mask`` separates the
     review's admission from Atlas's own depth confidence, which stays per pixel.
+    A changed ``rgb`` keeps the frame's own image as ``provider_rgb``, so a refined
+    splat can start from the provider's pixels rather than a pasted composite.
     """
     keep = (np.asarray(mask) > 0) & frame.get("keep_mask", True)
+    if "rgb" in changes:
+        changes = {"provider_rgb": frame.get("provider_rgb", frame["rgb"]), **changes}
     return {**frame, **changes, "confidence": frame["confidence"] * mask, "keep_mask": keep}
 
 

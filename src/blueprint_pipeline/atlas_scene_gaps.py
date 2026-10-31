@@ -335,7 +335,7 @@ def retained_completion(*, root, pose_digest):
                 if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or _sha256_file(path) != row['sha256']:
                     raise ValueError('atlas_completion_prior_changed')
                 assets[row['role']] = path
-            frame['rgb'] = np.asarray(Image.open(assets['composite_rgb']).convert('RGB'))
             mask = np.asarray(Image.open(assets['generated_geometry_mask']).convert('L')) == 255
-            frames.append(restrict_frame(frame, mask))
+            frames.append(restrict_frame(frame, mask, rgb=np.asarray(
+                Image.open(assets['composite_rgb']).convert('RGB'))))
     return frames, report
