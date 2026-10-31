@@ -5541,7 +5541,8 @@ def deploy_control_plane_commit(
         ],
         "release_path": release["release_path"],
         "release_provenance": installed_provenance,
-        "created_release_checkout": release["created_release_checkout"],
+        # The activating call always finds the checkout the build already made.
+        "created_release_checkout": staged_release["created_release_checkout"],
         "restarted_units": restarted,
         "agent_execution": agent_execution,
         "installed_systemd_units": installed_systemd_units,
