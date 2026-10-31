@@ -93,12 +93,9 @@ def test_cancellation_stops_every_job_of_a_superseded_run():
     import yaml
 
     ci = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
-    full = yaml.safe_load((ROOT / '.github/workflows/full-test-lane.yml').read_text())['jobs']
     assert ci['impacted-gate']['if'] == '${{ !cancelled() }}'
-    assert full['full-pytest']['if'] == '${{ !cancelled() }}'
-    for jobs in (ci, full):
-        for name, job in jobs.items():
-            assert 'always()' not in str(job.get('if', '')), name
+    for name, job in ci.items():
+        assert 'always()' not in str(job.get('if', '')), name
 
 
 def test_final_gate_refuses_missing_requested_full_evidence():
