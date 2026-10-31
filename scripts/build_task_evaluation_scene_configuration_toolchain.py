@@ -27,7 +27,8 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest, can
 from blueprint_pipeline.immutable_directory_publication import (
     publish_staged_immutable_directory,
 )
-from blueprint_pipeline.immutable_file_digest import sha256_file
+from blueprint_pipeline import readback_ledger
+from blueprint_pipeline.immutable_file_digest import proven_digest, sealed_identity, sha256_file
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
@@ -115,6 +116,35 @@ def _reuse_published_package_file(
     return _link_or_copy_immutable(source, destination)
 
 
+def _previous_roots(destination: Path) -> list[Path]:
+    """The newest three published toolchains beside ``destination``."""
+    if not destination.parent.is_dir():
+        return []
+    return sorted(
+        (path for path in destination.parent.iterdir()
+         if _COMMIT.fullmatch(path.name) and path != destination
+         and not path.is_symlink() and path.is_dir()),
+        key=lambda path: path.stat().st_mtime_ns, reverse=True,
+    )[:3]
+
+
+def admit_proven_readback(output_root: str | Path, *, readback_actor: str) -> dict[str, int]:
+    """Admit inodes the newest toolchains' service-account readback already read in full.
+
+    Call inside the publication's ``immutable_file_digest_cache`` before any
+    component is built, so no step re-digests those bytes. Returns the files
+    admitted per previous toolchain.
+    """
+    destination = Path(output_root).expanduser().absolute()
+    return {
+        root.name: readback_ledger.admit_ledger(
+            root, manifest_name=f"{TOOLCHAIN_SCHEMA_VERSION}.json",
+            digest_field="toolchain_digest", readback_actor=readback_actor,
+        )
+        for root in _previous_roots(destination)
+    }
+
+
 def _entrypoint(adapter_id: str) -> bytes:
     return (
         "#!/bin/sh\n"
@@ -134,8 +164,15 @@ def build_published_scene_configuration_toolchain(
     readback: Readback,
     readback_actor: str,
     component_packages: Mapping[str, str | Path],
+    proven_readback: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
-    """Install one exclusive read-only toolchain and prove full-byte readback."""
+    """Install one exclusive read-only toolchain and prove full-byte readback.
+
+    The service account reads every byte of each file, except an inode an
+    earlier toolchain's readback already read in full (``proven_readback``, or
+    admitted here): the account opens that one at its new path and its own
+    descriptor must name the same sealed inode.
+    """
 
     if _COMMIT.fullmatch(source_commit) is None or not readback_actor.strip():
         raise ValueError("scene_configuration_toolchain_publication_input_invalid")
@@ -154,12 +191,9 @@ def build_published_scene_configuration_toolchain(
     }
     destination = Path(output_root).expanduser().absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
-    previous_roots = sorted(
-        (path for path in destination.parent.iterdir()
-         if _COMMIT.fullmatch(path.name) and path != destination
-         and not path.is_symlink() and path.is_dir()),
-        key=lambda path: path.stat().st_mtime_ns, reverse=True,
-    )[:3]
+    previous_roots = _previous_roots(destination)
+    if proven_readback is None:
+        proven_readback = admit_proven_readback(destination, readback_actor=readback_actor)
     shared = {"file_count": 0, "bytes": 0}
     staging = Path(
         tempfile.mkdtemp(
@@ -237,11 +271,23 @@ def build_published_scene_configuration_toolchain(
         # ``mkdtemp`` creates 0700; make only this non-secret staged tree
         # traversable before claiming service-account readback.
         staging.chmod(0o755)
+        open_proven = getattr(readback, "identity", None)
+        read_back: dict[str, tuple[int, ...]] = {}
+        proven = {"file_count": 0, "bytes": 0}
         for row in files:
             path = staging / row["relative_path"]
-            observed_size, observed_digest = _readback_digest(readback, path)
-            if observed_size != row["size_bytes"] or observed_digest != row["sha256"]:
-                raise ValueError("scene_configuration_toolchain_service_readback_failed")
+            before = path.lstat()
+            if open_proven is not None and proven_digest(before) == row["sha256"]:
+                if tuple(open_proven(path)) != sealed_identity(before):
+                    raise ValueError("scene_configuration_toolchain_service_readback_failed")
+                proven["file_count"] += 1
+                proven["bytes"] += row["size_bytes"]
+            else:
+                observed_size, observed_digest = _readback_digest(readback, path)
+                if observed_size != row["size_bytes"] or observed_digest != row["sha256"]:
+                    raise ValueError("scene_configuration_toolchain_service_readback_failed")
+            if sealed_identity(path.lstat()) == sealed_identity(before):
+                read_back[row["relative_path"]] = sealed_identity(before)
         manifest: dict[str, Any] = {
             "schema_version": TOOLCHAIN_SCHEMA_VERSION,
             "status": "published_full_byte_readback_passed",
@@ -274,6 +320,10 @@ def build_published_scene_configuration_toolchain(
             root=destination,
             expected_source_commit=source_commit,
         )
+        ledger = readback_ledger.write_ledger(
+            destination, tree_digest=manifest["toolchain_digest"],
+            readback_actor=readback_actor, inodes=read_back,
+        )
         receipt: dict[str, Any] = {
             "schema_version": RECEIPT_SCHEMA_VERSION,
             "status": "published_and_read_back",
@@ -285,6 +335,16 @@ def build_published_scene_configuration_toolchain(
             "shared_immutable_file_bytes": shared["bytes"],
             "readback_actor": readback_actor,
             "full_byte_service_account_readback_passed": True,
+            # Bytes the account read in this deploy, and inodes an earlier
+            # deploy's readback read in full that it only opened here.
+            "service_account_readback": {
+                "full_byte_read_file_count": len(files) - proven["file_count"],
+                "full_byte_read_bytes": sum(row["size_bytes"] for row in files) - proven["bytes"],
+                "previously_read_inode_file_count": proven["file_count"],
+                "previously_read_inode_bytes": proven["bytes"],
+                "proven_by_previous_toolchains": dict(proven_readback),
+                "ledger": ledger,
+            },
             "provider_mutation_performed": False,
             "paid_resource_allocated": False,
             "receipt_digest": "",

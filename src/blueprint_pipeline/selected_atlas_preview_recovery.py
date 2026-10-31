@@ -268,6 +268,20 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
         value["job"]["reason"] = job["reason"]
     if type(job.get("stage")) is str and _CODE.fullmatch(job["stage"]):
         value["job"]["stage"] = job["stage"]
+    marker = job.get("refined_splat")
+    if job["state"] == "ready" and type(marker) is not dict:
+        # Ready before jobs recorded the marker; atlas-retry derives it the same way.
+        from .atlas_refined_splat_forms import retained_minimal_marker
+        try:
+            marker = retained_minimal_marker(capture_root / "pipeline/atlas", job.get("result_digest"))
+        except (OSError, ValueError, AttributeError):
+            marker = None  # Status reports eligibility; atlas-retry refuses with its own code.
+    if type(marker) is dict and marker.get("gap_preserving_form_untried") is True:
+        # The only ready job atlas-retry reopens: its minimal refined splat left
+        # generated views out, and the reviewed whole-view form was never tried.
+        left = marker.get("left_out_admitted_view_ids")
+        value["job"]["gap_preserving_upgrade"] = {
+            "left_out_admitted_view_count": len(left) if type(left) is list else None}
     if time.time() - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
         value["preflight_blockers"].append("atlas_preview_expired")
     try:
@@ -396,14 +410,19 @@ def recover_selected_atlas_preview(selection, *, observation, membership, captur
                         "native_status": result.get("status"), "native_disposition": result.get("queue_disposition"),
                         "blockers": [] if complete else ["selected_handoff_native_preparation_still_blocked"]}
                 # Preserve the native stage's bounded refusal just as original
-                # dispatch does; never expose provider/source exception text.
-                from .capture_delivery_staging import STAGING_REASON_CODES
+                # dispatch does; never expose raw provider/source exception text.
+                from .capture_delivery_staging import STAGING_REASON_CODES, bounded_staging_error
                 from .capture_original_owner_observer import OWNER_OBSERVATION_REASON_CODES
                 for field, codes in (("staging_reason", STAGING_REASON_CODES),
                                      ("owner_observation_reason", OWNER_OBSERVATION_REASON_CODES)):
                     reason = result.get(field)
                     if type(reason) is str and reason in codes:
                         outcome[field] = reason
+                # An unrecognized staging failure keeps only its type and a
+                # redacted, trimmed message, bounded again here.
+                staging_error = bounded_staging_error(result.get("staging_error"))
+                if staging_error is not None:
+                    outcome["staging_error"] = staging_error
                 return outcome
             return {"status": "atlas_status_returned", "atlas": snapshot, "atlas_retry_performed": False}
 

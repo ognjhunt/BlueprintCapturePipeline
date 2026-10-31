@@ -165,8 +165,11 @@ def _normalize_completed_mesh(*, source: Path, original_filename: str, coordinat
             mapping = _usd_copy(named, output, scale=scale, axis=axis)
         else:
             mapping = _triangle_copy(named, output, suffix=suffix, scale=scale, axis=axis)
+    # This ASCII layer is several times the admitted source's bytes; its points
+    # and faces are compared exactly with the source inspection below.
     observed = inspect_mesh(output, original_filename=output.name,
-                            coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"})
+                            coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"},
+                            normalized_output=True)
     actual = {row["source_object_id"]: row for row in observed["objects"]}
     require(len(inspection["objects"]) == len(actual) == len(mapping), "completed_mesh_object_count_changed")
     for row in inspection["objects"]:

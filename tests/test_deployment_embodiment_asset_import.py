@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,8 +19,8 @@ from blueprint_pipeline import deployment_embodiment_assets as assets
 from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
 
 
-def _source(tmp_path, monkeypatch, format_name="urdf", *, content=None, extra=None, arguments=None):
-    entry = "robot." + ("xml" if format_name == "mjcf" else format_name)
+def _source(tmp_path, monkeypatch, format_name="urdf", *, content=None, extra=None, arguments=None, entry=None):
+    entry = entry or "robot." + ("xml" if format_name == "mjcf" else format_name)
     recipe = {"embodiment_id": "fixture_dual_option", "arm_count": 2,
               "status": "source_available", "source": {
                   "repository_url": "https://github.com/fixture/source", "revision": "a" * 40,
@@ -79,6 +81,358 @@ def _sdk(monkeypatch, asset=None):
     monkeypatch.setattr(importer.importlib, "import_module",
                         lambda name, *args: sdk if name == "isaaclab.sim.converters" else real_import(name, *args))
     return calls
+
+
+# --- Isaac Sim 6.0.1 importer layout -------------------------------------------------------
+# A faithful development fake of what batch06 ran (nvcr.io/nvidia/isaac-sim:6.0.1, Isaac Lab
+# ffff603e = v3.0.0-beta2.patch1, urdf-usd-converter 0.1.3 pinned by deps/pip_urdf_usd.toml).
+# It reproduces the output structure, not the simulator: geometry is a placeholder cube.
+_B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def _usdex_prim_name(name):
+    """usdex.core.getValidPrimName for ASCII names (usd-exchange Transcoding.cpp encodeIdentifier)."""
+    kept = [char.isascii() and (char.isalnum() or char == "_") for char in name]
+    output = "".join(char for char, keep in zip(name, kept) if keep)
+    output += "_" if output else ""
+    present, previous = {index for index, keep in enumerate(kept) if keep}, 0
+    for code, position in sorted((ord(char), index) for index, char in enumerate(name) if not kept[index]):
+        delta = sum(index < position for index in present) + (code - previous) * (len(present) + 1)
+        while delta >= 31:
+            output += _B62[31 + (delta - 31) % 31]
+            delta = (delta - 31) // 31
+        output += _B62[delta]
+        previous = code
+        present.add(position)
+    return name if output == name + "_" and (name[0].isalpha() or name[0] == "_") else "tn__" + output
+
+
+def _urdf_usd_converter(urdf, asset_dir, output_dir):
+    """urdf_usd_converter.Converter(layer_structure=False).convert (v0.1.3 convert.py:39-164).
+
+    A layered asset (interface -> payload Contents, materials referenced from a
+    library whose material prims are instanceable, material.py:168) is flattened
+    by _flatten.export_flattened into ``output_dir/<URDF robot name>.usdc``. Link and
+    joint prims use usdex names and keep a different source name as displayName
+    (link.py:45-48, 339-340). A massless, geometry-free ("ghost") root link or ghost
+    behind a fixed joint gets no rigid body (link.py:68-80); joints from a ghost root
+    use the asset's default prim as body0, and a non-ghost root gets ``root_joint``
+    from the default prim (link.py:284-312).
+    """
+    from defusedxml import ElementTree as SafeXML
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
+
+    root = SafeXML.fromstring(urdf.read_bytes())
+    robot = _usdex_prim_name(root.get("name"))
+    links = {link.get("name"): link for link in root.findall("link")}
+    joints = root.findall("joint")
+    incoming = {joint.find("child").get("link"): joint for joint in joints}
+    children = {}
+    for joint in joints:
+        children.setdefault(joint.find("parent").get("link"), []).append(joint)
+    root_link = next(name for name in links if name not in incoming)
+
+    def ghost(name):
+        link = links[name]
+        mass = link.find("inertial/mass")
+        return ((mass is None or float(mass.get("value", "0")) == 0)
+                and link.find("visual") is None and link.find("collision") is None)
+
+    def rigid(name):
+        return not (ghost(name) and (name == root_link or incoming[name].get("type") == "fixed"))
+
+    colors = {material.get("name"): material for material in root.findall("material")}
+    payload = asset_dir / "Payload"
+    payload.mkdir(parents=True)
+    library = Usd.Stage.CreateNew(str(payload / "Materials.usdc"))
+    library.SetDefaultPrim(library.DefinePrim("/Materials", "Scope"))
+    content = Usd.Stage.CreateNew(str(payload / "Contents.usda"))
+    content.SetDefaultPrim(content.DefinePrim("/" + robot, "Xform"))
+    materials = {}
+
+    def material(node):
+        name = node.get("name")
+        if name not in materials:
+            declared = node if node.find("color") is not None or node.find("texture") is not None else colors[name]
+            safe = _usdex_prim_name(name)
+            shader = UsdShade.Shader.Define(library, f"/Materials/{safe}/PreviewSurface")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            rgba = [float(v) for v in (declared.find("color").get("rgba") if declared.find("color") is not None
+                                       else "1 1 1 1").split()]
+            shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*rgba[:3]))
+            if declared.find("texture") is not None:
+                texture = urdf.parent / declared.find("texture").get("filename")
+                (payload / "Textures").mkdir(exist_ok=True)
+                shutil.copyfile(texture, payload / "Textures" / texture.name)
+                shader.CreateInput("diffuseTexture", Sdf.ValueTypeNames.Asset).Set(
+                    Sdf.AssetPath("./Textures/" + texture.name))
+            UsdShade.Material.Define(library, f"/Materials/{safe}").CreateSurfaceOutput().ConnectToSource(
+                shader.ConnectableAPI(), "surface")
+            library.GetPrimAtPath(f"/Materials/{safe}").SetInstanceable(True)
+            local = content.DefinePrim(f"/{robot}/Materials/{safe}", "Material")
+            local.GetReferences().AddReference("./Materials.usdc", f"/Materials/{safe}")
+            materials[name] = local
+        return materials[name]
+
+    def convert(parent, name, articulated):
+        prim = content.DefinePrim(parent.AppendChild(_usdex_prim_name(name)), "Xform")
+        if _usdex_prim_name(name) != name:
+            prim.SetDisplayName(name)
+        if rigid(name):
+            UsdPhysics.RigidBodyAPI.Apply(prim)
+            if not (name == root_link and ghost(name)) and not articulated:
+                UsdPhysics.ArticulationRootAPI.Apply(prim)
+                articulated = True
+            mass = links[name].find("inertial/mass")
+            if mass is not None:
+                UsdPhysics.MassAPI.Apply(prim).CreateMassAttr(float(mass.get("value")))
+        for kind in ("visual", "collision"):
+            for index, node in enumerate(links[name].findall(kind)):
+                mesh = node.find("geometry/mesh")
+                if mesh is not None and Path(mesh.get("filename")).suffix.lower() not in {".stl", ".obj", ".dae"}:
+                    continue  # mesh.py:57-67: "Unsupported mesh format" (TRLC's GLB visuals)
+                geometry = UsdGeom.Cube.Define(content, prim.GetPath().AppendChild(f"{kind}_{index}"))
+                if kind == "collision":
+                    UsdPhysics.CollisionAPI.Apply(geometry.GetPrim())
+                elif node.find("material") is not None:
+                    UsdShade.MaterialBindingAPI.Apply(geometry.GetPrim()).Bind(
+                        UsdShade.Material(material(node.find("material"))))
+        for joint in children.get(name, []):
+            convert(prim.GetPath(), joint.find("child").get("link"), articulated)
+        return prim
+
+    default = content.GetDefaultPrim()
+    convert(default.GetPath().AppendChild("Geometry"), root_link, False)
+    content.DefinePrim(f"/{robot}/Geometry", "Scope")
+    scope = content.DefinePrim(f"/{robot}/Physics", "Scope").GetPath()
+
+    def link_path(name):
+        path, chain = None, [name]
+        while chain[-1] in incoming:
+            chain.append(incoming[chain[-1]].find("parent").get("link"))
+        path = default.GetPath().AppendChild("Geometry")
+        for link in reversed(chain):
+            path = path.AppendChild(_usdex_prim_name(link))
+        return path
+
+    kinds = {"fixed": UsdPhysics.FixedJoint, "revolute": UsdPhysics.RevoluteJoint,
+             "continuous": UsdPhysics.RevoluteJoint, "prismatic": UsdPhysics.PrismaticJoint}
+    authored = [] if ghost(root_link) else [("root_joint", "fixed", None, root_link)]
+    authored += [(joint.get("name"), joint.get("type"), joint.find("parent").get("link"), joint.find("child").get("link"))
+                 for joint in joints]
+    for name, kind, parent, child in authored:
+        if not rigid(child):
+            continue
+        prim = kinds[kind].Define(content, scope.AppendChild(_usdex_prim_name(name)))
+        if _usdex_prim_name(name) != name:
+            prim.GetPrim().SetDisplayName(name)
+        body0 = default.GetPath() if parent is None or (parent == root_link and ghost(root_link)) else link_path(parent)
+        prim.CreateBody0Rel().SetTargets([body0])
+        prim.CreateBody1Rel().SetTargets([link_path(child)])
+    library.GetRootLayer().Save()
+    content.GetRootLayer().Save()
+    interface = Usd.Stage.CreateNew(str(asset_dir / (root.get("name") + ".usda")))
+    interface.SetDefaultPrim(interface.DefinePrim("/" + robot, "Xform"))
+    interface.GetDefaultPrim().GetPayloads().AddPayload("./Payload/Contents.usda")
+    interface.GetRootLayer().Save()
+    output_dir.mkdir(parents=True)
+    flattened = output_dir / (root.get("name") + ".usdc")
+    interface.Flatten().Export(str(flattened))
+    # export_flattened rewrites scratch-anchored material inputs to ./Textures/... and
+    # copies the textures beside the flattened file (_flatten.py:20-40).
+    stage = Usd.Stage.Open(str(flattened))
+    for prim in stage.Traverse():
+        for attribute in prim.GetAttributes():
+            value = attribute.Get() if attribute.GetTypeName() == Sdf.ValueTypeNames.Asset else None
+            if value is not None and Path(value.path).is_relative_to(asset_dir):
+                attribute.Set(Sdf.AssetPath("./Textures/" + Path(value.path).name))
+    stage.Save()
+    if (payload / "Textures").is_dir():
+        shutil.copytree(payload / "Textures", output_dir / "Textures")
+    return flattened
+
+
+def _isaac_apply_fix_base(stage):
+    """isaacsim.asset.importer.utils asset_utils.apply_fix_base (v6.0.1 asset_utils.py:63-303)."""
+    from pxr import UsdPhysics
+
+    def body(joint, index):
+        relation = UsdPhysics.Joint(joint).GetBody0Rel() if index == 0 else UsdPhysics.Joint(joint).GetBody1Rel()
+        targets = relation.GetTargets() if relation else []
+        return str(targets[0]) if targets else None
+
+    bodies = [prim for prim in stage.Traverse() if prim.HasAPI(UsdPhysics.RigidBodyAPI)]
+    paths = {str(prim.GetPath()) for prim in bodies}
+    joints = [prim for prim in stage.Traverse() if prim.IsA(UsdPhysics.Joint)]
+    moved = {body(joint, 1) for joint in joints if not joint.IsA(UsdPhysics.FixedJoint)
+             and body(joint, 0) in paths and body(joint, 1) in paths}
+    root = next((prim for prim in bodies if str(prim.GetPath()) not in moved), None)
+    if root is None:
+        return  # "Cannot apply fix_base - no rigid body link found."
+    fixed = False
+    for joint in joints:
+        ends = (body(joint, 0), body(joint, 1))
+        if joint.IsA(UsdPhysics.FixedJoint) and str(root.GetPath()) in ends:
+            other = ends[0] if ends[1] == str(root.GetPath()) else ends[1]
+            target = stage.GetPrimAtPath(other) if other else None
+            fixed |= other is None or not target or not target.HasAPI(UsdPhysics.RigidBodyAPI)
+    if not fixed:
+        UsdPhysics.FixedJoint.Define(stage, stage.GetDefaultPrim().GetPath().AppendChild("fix_base_joint")
+                                     ).CreateBody1Rel().SetTargets([root.GetPath()])
+    for prim in [p for p in stage.Traverse() if p.HasAPI(UsdPhysics.ArticulationRootAPI) and p.HasAPI(UsdPhysics.RigidBodyAPI)]:
+        if not prim.GetParent().HasAPI(UsdPhysics.ArticulationRootAPI):
+            UsdPhysics.ArticulationRootAPI.Apply(prim.GetParent())
+        prim.RemoveAPI(UsdPhysics.ArticulationRootAPI)
+
+
+def _transformer_package(stage, output_dir, robot_name):
+    """The run_asset_transformer=True package (isaacsim_structure.json, interface.py:121-300).
+
+    ``<robot_name>.usda`` references ``./payloads/base.usda`` and selects a Physics
+    variant whose payload is ``./payloads/Physics/physx.usda``; that layer sublayers
+    ``./physics.usda`` next to itself. The base layer's texture sits in
+    ``payloads/Textures``. Every relative value resolves against its own layer.
+    """
+    from pxr import Sdf
+
+    for prim in stage.Traverse():
+        if prim.IsInstance():
+            prim.SetInstanceable(False)  # geometries.py _make_references_non_instanceable
+    payloads = output_dir / "payloads"
+    (payloads / "Physics").mkdir(parents=True)
+    (payloads / "Textures").mkdir()
+    (payloads / "Textures" / "grey.png").write_bytes(b"development texture bytes")
+    base = stage.Flatten()
+    name = stage.GetDefaultPrim().GetName()
+    shader = next(path for path in _spec_paths(base)
+                  if path.name == "PreviewSurface" and path.HasPrefix(Sdf.Path("/" + name)))
+    texture = Sdf.AttributeSpec(base.GetPrimAtPath(shader), "inputs:diffuseTexture", Sdf.ValueTypeNames.Asset)
+    texture.default = Sdf.AssetPath("./Textures/grey.png")
+    base.Export(str(payloads / "base.usda"))
+    physics = Sdf.Layer.CreateNew(str(payloads / "Physics" / "physics.usda"))
+    physics.defaultPrim = name
+    over = Sdf.CreatePrimInLayer(physics, "/" + name)
+    over.specifier = Sdf.SpecifierOver
+    Sdf.AttributeSpec(over, "physics:fixtureNeutralPhysics", Sdf.ValueTypeNames.Bool).default = True
+    physics.Save()
+    physx = Sdf.Layer.CreateNew(str(payloads / "Physics" / "physx.usda"))
+    physx.subLayerPaths = ["./physics.usda"]
+    physx.defaultPrim = name
+    over = Sdf.CreatePrimInLayer(physx, "/" + name)
+    over.specifier = Sdf.SpecifierOver
+    Sdf.AttributeSpec(over, "physxArticulation:fixtureSolverIterations", Sdf.ValueTypeNames.Int).default = 32
+    physx.Save()
+    interface = Sdf.Layer.CreateNew(str(output_dir / f"{robot_name}.usda"))
+    prim = Sdf.CreatePrimInLayer(interface, "/" + name)
+    prim.specifier, prim.typeName = Sdf.SpecifierDef, "Xform"
+    interface.defaultPrim = name
+    prim.referenceList.Prepend(Sdf.Reference("./payloads/base.usda"))
+    variants = Sdf.VariantSetSpec(prim, "Physics")
+    Sdf.VariantSpec(variants, "None")
+    for variant in ("physics", "physx"):
+        Sdf.VariantSpec(variants, variant).primSpec.payloadList.Prepend(
+            Sdf.Payload(f"./payloads/Physics/{variant}.usda"))
+    prim.variantSetNameList.Append("Physics")
+    prim.variantSelections["Physics"] = "physx"
+    interface.Save()
+
+
+def _spec_paths(layer):
+    paths = []
+    layer.Traverse("/", paths.append)
+    return paths
+
+
+def _isaac6_sdk(monkeypatch, scratch, *, package=False):
+    """Isaac Lab UrdfConverter -> Isaac Sim 6.0.1 URDFImporter.import_urdf, end to end.
+
+    Output is ``<usd_dir>/<robot_name>/<robot_name>.usda`` where robot_name is the
+    input file's stem (urdf_converter.py:64-67, importer_utils.parse_robot_name,
+    converter.py:220-223). With run_asset_transformer=False (our setting) that file
+    is ``stage.Export`` of the converter stage (converter.py:239-241), i.e. USD
+    flattening: instanceable materials become ``/Flattened_Prototype_N`` plus internal
+    references, and relative texture paths are anchored into the importer's scratch
+    directory, which is deleted afterwards (converter.py:245-247).
+    """
+    from pxr import Usd
+
+    calls = []
+    scratch.mkdir(exist_ok=True)
+
+    class Config:
+        def __init__(self, **kwargs):
+            self.values = kwargs
+
+    class Converter:
+        def __init__(self, config):
+            values = config.values
+            calls.append(values)
+            source = Path(values["asset_path"])
+            robot_name = source.stem.lstrip(".")
+            usd_dir = Path(values["usd_dir"])
+            usd_dir.mkdir(parents=True, exist_ok=True)
+            (usd_dir / ".asset_hash").write_text("development md5 of config and asset")
+            work = Path(tempfile.mkdtemp(prefix=f"urdf_import_{robot_name}_", dir=scratch))
+            try:
+                usdex = _urdf_usd_converter(source, work / "asset", work / f"usdex_{robot_name}")
+                stage = Usd.Stage.Open(str(usdex))
+                if values["fix_base"]:
+                    _isaac_apply_fix_base(stage)
+                output = usd_dir / robot_name
+                output.mkdir()
+                if package:
+                    _transformer_package(stage, output, robot_name)
+                else:
+                    stage.Export(str(output / f"{robot_name}.usda"))
+            finally:
+                shutil.rmtree(work)
+            (usd_dir / "config.yaml").write_text(f"asset_path: {source}\nusd_dir: {usd_dir}\n")
+            self.usd_path = str(output / f"{robot_name}.usda")
+
+    sdk = SimpleNamespace(UrdfConverterCfg=Config, UrdfConverter=Converter)
+    real_import = importer.importlib.import_module
+    monkeypatch.setattr(importer.importlib, "import_module",
+                        lambda name, *args: sdk if name == "isaaclab.sim.converters" else real_import(name, *args))
+    return calls
+
+
+_ARM = b'''<robot name="development_arm">
+  <material name="grey"><color rgba="0.5 0.5 0.5 1"/></material>
+  <link name="world"/><link name="base_link"/>
+  <link name="base_link_inertia"><inertial><mass value="4"/></inertial>
+    <visual><geometry><box size="0.1 0.1 0.1"/></geometry><material name="grey"/></visual></link>
+  <link name="shoulder_link"><inertial><mass value="2"/></inertial>
+    <visual><geometry><box size="0.1 0.1 0.1"/></geometry>
+      <material name="blue"><color rgba="0 0 1 1"/></material></visual></link>
+  <link name="tool-flange"><inertial><mass value="1"/></inertial>
+    <collision><geometry><box size="0.05 0.05 0.05"/></geometry></collision></link>
+  <link name="tcp"/>
+  <link name="finger-a"><inertial><mass value="0.1"/></inertial></link>
+  <link name="finger-b"><inertial><mass value="0.1"/></inertial></link>
+  <joint name="world_joint" type="fixed"><parent link="world"/><child link="base_link"/></joint>
+  <joint name="base_link-base_link_inertia" type="fixed"><parent link="base_link"/>
+    <child link="base_link_inertia"/></joint>
+  <joint name="shoulder_pan_joint" type="revolute"><parent link="base_link_inertia"/><child link="shoulder_link"/>
+    <axis xyz="0 0 1"/><limit lower="-3" upper="3" effort="10" velocity="1"/></joint>
+  <joint name="wrist_joint" type="revolute"><parent link="shoulder_link"/><child link="tool-flange"/>
+    <origin xyz="0 0 0.4"/><axis xyz="0 1 0"/><limit lower="-3" upper="3" effort="10" velocity="1"/></joint>
+  <joint name="tcp_mount" type="fixed"><parent link="tool-flange"/><child link="tcp"/><origin xyz="0 0 0.1"/></joint>
+  <joint name="finger" type="prismatic"><parent link="tool-flange"/><child link="finger-a"/>
+    <axis xyz="0 1 0"/><limit lower="0" upper="0.04" velocity="0.1" effort="10"/></joint>
+  <joint name="slave" type="prismatic"><parent link="tool-flange"/><child link="finger-b"/>
+    <axis xyz="0 1 0"/><limit lower="-0.04" upper="0" velocity="0.1" effort="10"/>
+    <mimic joint="finger" multiplier="-1" offset="0"/></joint>
+</robot>'''
+
+
+def _two_arm_station(identity="fixture_dual_option", base="world"):
+    from blueprint_pipeline import deployment_embodiment_station as station
+
+    return {"schema_version": station.PARAMETERS_SCHEMA, "embodiment_id": identity,
+            "composition_mode": "two_instances", "station_root_link": "blueprint_station", "arms": [
+                {"name": side, "prefix": side + "_", "source_base_link": base, "source_mount_joint": None,
+                 "station_from_base": {"translation_m": [0.0, y, 0.0], "quaternion_wxyz": [1, 0, 0, 0]}}
+                for side, y in (("left", .35), ("right", -.35))]}
 
 
 @pytest.mark.parametrize("format_name", ["urdf", "mjcf"])
@@ -155,6 +509,51 @@ def test_importer_internalizes_source_texture_and_rejects_unbound_paths(tmp_path
     with pytest.raises(assets.AssetPreparationError, match="unbound_dependency"):
         importer.import_source_asset(source, tmp_path / "unbound", fix_base=True)
     assert not (tmp_path / "unbound").exists()
+
+
+def test_isaac_builtin_mdl_is_recorded_as_runtime_dependency_and_reverified(tmp_path, monkeypatch):
+    """Isaac binds URDF colours to Kit's OmniPBR.mdl; batch05 refused all such imports."""
+    source = _source(tmp_path, monkeypatch)
+    _sdk(monkeypatch, asset="OmniPBR.mdl")
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True)
+    assert result["runtime_builtin_assets"] == ["OmniPBR.mdl"]
+    assert [row["path"] for row in result["dependency_closure"]["files"]] == ["robot.usda"]
+    assert "@OmniPBR.mdl@" in (prepared / "robot.usda").read_text()
+    assert importer.verify_prepared_asset_directory(prepared) == result
+    # A recorded runtime dependency cannot be dropped by re-digesting the receipt.
+    receipt = json.loads((prepared / importer.RECEIPT).read_text())
+    receipt["runtime_builtin_assets"] = []
+    receipt["import_digest"] = cross_runtime_canonical_digest(receipt, digest_field="import_digest")
+    (prepared / importer.RECEIPT).write_text(json.dumps(receipt, indent=2) + "\n")
+    with pytest.raises(assets.AssetPreparationError, match="dependency_changed"):
+        importer.verify_prepared_asset_directory(prepared)
+
+
+@pytest.mark.parametrize("asset", ["OmniUnlisted.mdl", "materials/OmniPBR.mdl"])
+def test_unlisted_or_pathed_mdl_remains_unbound_and_names_the_file(tmp_path, monkeypatch, asset):
+    source = _source(tmp_path, monkeypatch)
+    _sdk(monkeypatch, asset=asset)
+    expected = "unbound_dependency:" + Path(asset).name.replace(".", r"\.")
+    with pytest.raises(assets.AssetPreparationError, match=expected):
+        importer.import_source_asset(source, tmp_path / "prepared", fix_base=True)
+
+
+def test_builtin_name_with_a_sibling_file_is_checked_as_that_file_not_the_runtime(tmp_path):
+    from pxr import Sdf, Usd
+
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "OmniPBR.mdl").write_bytes(b"mdl 1.4;\n")
+    stage = Usd.Stage.CreateNew(str(staged / "robot.usda"))
+    stage.DefinePrim("/robot").CreateAttribute("material", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("OmniPBR.mdl"))
+    stage.GetRootLayer().Save()
+    builtins = set()
+    # The local file shadows Kit's module, so the ordinary file closure applies
+    # (and an MDL file closure remains unsupported).
+    with pytest.raises(assets.AssetPreparationError, match="input_format_dependency_unsupported"):
+        importer._dependencies(staged / "robot.usda", staged=staged, builtins=builtins)
+    assert builtins == set()
 
 
 def test_published_textured_model_loads_after_source_and_preparation_move(tmp_path, monkeypatch):
@@ -645,3 +1044,157 @@ def test_gltf_external_url_is_refused_before_converter(tmp_path, monkeypatch):
     with pytest.raises(assets.AssetPreparationError, match="external_reference_refused"):
         importer.import_source_asset(source, tmp_path / "prepared", fix_base=True)
     assert calls == []
+
+
+def _moved(tmp_path, prepared):
+    moved = tmp_path / "moved" / "robot-preparation"
+    moved.parent.mkdir()
+    prepared.chmod(0o755)  # The test owns this immutable publication directory.
+    prepared.rename(moved)
+    return moved
+
+
+@pytest.mark.parametrize("entry,format_name,station,robot_name", [
+    ("robot.urdf", "urdf", True, "robot"),  # universal_robots_ur5e_bimanual: station/robot.urdf
+    ("axol_standalone.urdf", "urdf", False, "axol_standalone"),
+    ("yam_station_linear_4310_d405.urdf", "urdf", False, "yam_station_linear_4310_d405"),
+    ("assembly.urdf.xacro", "xacro", False, "assembly.urdf"),  # expanded to assembly.urdf.urdf
+    # GoFa/KUKA/Yaskawa simulation models import staged simulation-model.urdf (gofa_model.py MODELED_URDF).
+    ("simulation-model.urdf", "urdf", False, "simulation-model"),
+])
+def test_isaac6_flattened_import_with_instanced_materials_is_walked_retained_and_relocatable(
+        tmp_path, monkeypatch, entry, format_name, station, robot_name):
+    """batch06: 13 of 14 bodies stopped at asset_import_unbound_dependency:<robot_name>."""
+    from pxr import Sdf, Usd, UsdShade
+
+    source = _source(tmp_path, monkeypatch, format_name, entry=entry,
+                     content=b'<robot name="development_arm"/>' if format_name == "xacro" else _ARM)
+    if format_name == "xacro":
+        import xml.dom.minidom
+
+        module, _ = _xacro_module(monkeypatch, lambda filename, args: None)
+        module.make_document = lambda: xml.dom.minidom.parseString(_ARM)
+    if station:
+        from blueprint_pipeline import deployment_embodiment_station as station_module
+        monkeypatch.setattr(station_module, "recipe_for", importer.recipe_for)
+    calls = _isaac6_sdk(monkeypatch, tmp_path / "isaac-scratch")
+    prepared = tmp_path / "prepared"
+    receipt = importer.import_source_asset(source, prepared, fix_base=True,
+                                            station_parameters=_two_arm_station() if station else None)
+    assert calls[0]["run_asset_transformer"] is False
+    # The importer's own package: <usd_dir>/<robot_name>/<robot_name>.usda, retained as staged content.
+    converted = prepared / "converted" / robot_name / f"{robot_name}.usda"
+    assert converted.is_file() and (prepared / "converted/config.yaml").is_file()
+    # What the old walker read: an internal arc's empty asset path, which it joined
+    # to the layer's directory and refused under that directory's name.
+    raw = Sdf.Layer.OpenAsAnonymous(str(converted))
+    assert "" in raw.GetExternalReferences() and "Flattened_Prototype_1" in converted.read_text()
+    assert (converted.parent / Path("")).is_dir() and (converted.parent / Path("")).name == robot_name
+    published = (prepared / "robot.usda").read_text()
+    assert "Flattened_Prototype_1" in published and str(tmp_path) not in published
+    assert [row["path"] for row in receipt["dependency_closure"]["files"]] == ["robot.usda"]
+    assert receipt["runtime_builtin_assets"] == [] and receipt["single_file_self_contained"] is True
+    sides = ("left_", "right_") if station else ("",)
+    assert receipt["structure"]["world_anchor_links"] == [side + "base_link_inertia" for side in sides]
+    prefix = "{ENV_REGEX_NS}/Robot/Geometry/" + ("blueprint_station/" if station else "")
+    assert receipt["structure"]["body_source_names"] == {
+        f"{prefix}{side}world/{side}base_link/{side}base_link_inertia/{side}shoulder_link/"
+        f"{_usdex_prim_name(side + 'tool-flange')}{suffix}": side + name for side in sides
+        for name, suffix in (("tool-flange", ""), ("finger-a", "/" + _usdex_prim_name(side + "finger-a")),
+                             ("finger-b", "/" + _usdex_prim_name(side + "finger-b")))}
+    moved = _moved(tmp_path, prepared)
+    assert importer.verify_prepared_asset_directory(moved) == receipt
+    stage = Usd.Stage.Open(str(moved / "robot.usda"))
+    bound = [UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0] for prim in stage.Traverse()
+             if prim.HasAPI(UsdShade.MaterialBindingAPI)]
+    assert bound and all(material.GetPrim().IsInstance() for material in bound)
+
+
+def test_isaac6_transformer_package_resolves_each_layer_against_itself_and_retains_textures(tmp_path, monkeypatch):
+    """run_asset_transformer=True layout: interface -> payloads/base.usda, Physics variant -> physx.usda -> physics.usda."""
+    from pxr import Sdf, Usd
+
+    source = _source(tmp_path, monkeypatch, content=_ARM, entry="axol_standalone.urdf")
+    _isaac6_sdk(monkeypatch, tmp_path / "isaac-scratch", package=True)
+    prepared = tmp_path / "prepared"
+    receipt = importer.import_source_asset(source, prepared, fix_base=True)
+    package = prepared / "converted/axol_standalone"
+    assert Sdf.Layer.FindOrOpen(str(package / "payloads/Physics/physx.usda")).subLayerPaths == ["./physics.usda"]
+    assert {row["path"] for row in receipt["dependency_closure"]["files"]} == {
+        "robot.usda", "converted/axol_standalone/payloads/Textures/grey.png"}
+    moved = _moved(tmp_path, prepared)
+    stage = Usd.Stage.Open(str(moved / "robot.usda"))
+    root = stage.GetDefaultPrim()
+    # The flattened model composed the selected physx variant and the sublayer it carries.
+    assert root.GetAttribute("physxArticulation:fixtureSolverIterations").Get() == 32
+    assert root.GetAttribute("physics:fixtureNeutralPhysics").Get() is True
+    texture = next(attr for prim in stage.Traverse() for attr in prim.GetAttributes()
+                   if attr.GetName() == "inputs:diffuseTexture").Get()
+    assert texture.path == "converted/axol_standalone/payloads/Textures/grey.png"
+    assert Path(Sdf.ComputeAssetPathRelativeToLayer(stage.GetRootLayer(), texture.path)).read_bytes() == (
+        b"development texture bytes")
+    assert importer.verify_prepared_asset_directory(moved) == receipt
+
+
+def test_isaac6_texture_left_in_deleted_importer_scratch_is_refused_with_a_named_diagnostic(tmp_path, monkeypatch):
+    """Flattening anchors ./Textures/x into Isaac's scratch directory, which import_urdf then deletes."""
+    content = _ARM.replace(b'<color rgba="0.5 0.5 0.5 1"/>',
+                           b'<color rgba="0.5 0.5 0.5 1"/><texture filename="textures/grey.png"/>')
+    source = _source(tmp_path, monkeypatch, content=content, extra={"textures/grey.png": b"png fixture"})
+    _isaac6_sdk(monkeypatch, tmp_path / "isaac-scratch")
+    with pytest.raises(assets.AssetPreparationError) as refused:
+        importer.import_source_asset(source, tmp_path / "prepared", fix_base=True)
+    assert str(refused.value) == (
+        "asset_import_unbound_dependency:grey.png;kind=asset_attribute;layer=robot.usda;reason=missing")
+    assert not (tmp_path / "prepared").exists()
+
+
+def test_authored_dependencies_classify_every_arc_and_skip_only_internal_arcs(tmp_path):
+    from pxr import Sdf
+
+    layer = Sdf.Layer.CreateNew(str(tmp_path / "robot.usda"))
+    layer.subLayerPaths = ["./physics.usda"]
+    layer.customLayerData = {"source": Sdf.AssetPath("./notes.txt")}
+    prim = Sdf.CreatePrimInLayer(layer, "/robot")
+    prim.specifier = Sdf.SpecifierDef
+    prim.referenceList.Prepend(Sdf.Reference("./payloads/base.usda"))
+    prim.referenceList.Prepend(Sdf.Reference("", "/Flattened_Prototype_1"))  # internal: no file
+    prim.payloadList.deletedItems = [Sdf.Payload("./retired.usda")]
+    variant = Sdf.VariantSpec(Sdf.VariantSetSpec(prim, "Physics"), "physx")
+    variant.primSpec.payloadList.Prepend(Sdf.Payload("./payloads/Physics/physx.usda"))
+    prim.assetInfo = {"identifier": Sdf.AssetPath("/host/robot.usd")}
+    texture = Sdf.AttributeSpec(prim, "texture", Sdf.ValueTypeNames.Asset)
+    texture.default = Sdf.AssetPath("./a.png")
+    texture.customData = {"origin": Sdf.AssetPath("./origin.txt")}
+    layer.SetTimeSample(texture.path, 1.0, Sdf.AssetPath("./b.png"))
+    frames = Sdf.AttributeSpec(prim, "frames", Sdf.ValueTypeNames.AssetArray)
+    frames.default = Sdf.AssetPathArray([Sdf.AssetPath("./c.png"), Sdf.AssetPath("")])
+    assert sorted(importer._authored_dependencies(layer)) == sorted([
+        ("sublayer", "./physics.usda"), ("metadata", "./notes.txt"), ("reference", "./payloads/base.usda"),
+        ("payload", "./retired.usda"), ("payload", "./payloads/Physics/physx.usda"),
+        ("metadata", "/host/robot.usd"), ("asset_attribute", "./a.png"), ("asset_attribute", "./b.png"),
+        ("metadata", "./origin.txt"), ("asset_attribute", "./c.png")])
+
+
+def test_published_model_metadata_host_path_is_refused_with_its_kind(tmp_path, monkeypatch):
+    from pxr import Sdf, Usd
+
+    source = _source(tmp_path, monkeypatch)
+    _sdk(monkeypatch)
+    prepared = tmp_path / "prepared"
+    result = importer.import_source_asset(source, prepared, fix_base=True)
+    prepared.chmod(0o755)
+    stage = Usd.Stage.Open(str(prepared / "robot.usda"))
+    stage.GetPrimAtPath("/robot").SetAssetInfoByKey("identifier", Sdf.AssetPath(str(tmp_path / "host.usd")))
+    stage.GetRootLayer().Save()
+    model_bytes = (prepared / "robot.usda").read_bytes()
+    updated = {"path": "robot.usda", "size_bytes": len(model_bytes),
+               "sha256": "sha256:" + hashlib.sha256(model_bytes).hexdigest()}
+    result["files"] = [updated if row["path"] == "robot.usda" else row for row in result["files"]]
+    result["model"] = dict(updated)
+    result["import_digest"] = cross_runtime_canonical_digest(result, digest_field="import_digest")
+    (prepared / importer.RECEIPT).write_text(json.dumps(result))
+    with pytest.raises(assets.AssetPreparationError) as refused:
+        importer.verify_prepared_asset_directory(prepared)
+    assert str(refused.value) == ("asset_import_dependency_not_relocatable:host.usd;kind=metadata;"
+                                  "layer=robot.usda;reason=absolute_path")

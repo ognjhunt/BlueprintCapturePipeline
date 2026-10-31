@@ -1,7 +1,7 @@
 """Read unchanged configurations from exact corrected predecessor releases.
 
-The exact 9bd34559c (18), b0ccd89e0 (19) and 2c2977ae4 (21) generators
-are accepted for their original profiles only. All follow the TRLC/Axol closure correction. Each complete derived
+The exact 9bd34559c (18), b0ccd89e0 (19), 2c2977ae4 (21) and later 23/28/30/31/42
+profile generators are accepted for their original profiles only. All follow the TRLC/Axol closure correction. Each complete derived
 contract is reconstructed from the retained, verified model/source and current
 matching profile before reuse. All source,
 model, generated-file inventory and receipt digests remain checked by caller.
@@ -37,10 +37,24 @@ CURRENT_30_GENERATOR = "sha256:fb94386f26a8516680dd136b53884000d0420db47a520700b
 CURRENT_30_PROFILES = CURRENT_28_PROFILES | {"yaskawa_gp12_robotiq_2f85_sim", "yaskawa_gp20_robotiq_2f85_sim"}
 
 
+CURRENT_31_GENERATOR = "sha256:1322ed108a1a9ad969221f3d2f732397fde0571d7a9ac038b80582ac550946a8"
+CURRENT_31_PROFILES = CURRENT_30_PROFILES | {"kuka_lbr_iiwa_14_robotiq_2f85_sim"}
+
+
+# d06a00c generator. Its configurations are unchanged; only Isaac 6 name binding
+# at bind_prepared_configuration followed it.
+CURRENT_42_GENERATOR = "sha256:b7f67d0a682022f9a870faed2baa65d6c518fb9b80db244098168d3213c6683d"
+CURRENT_42_PROFILES = CURRENT_31_PROFILES | {
+    "agile_robots_diana_7", "agile_robots_diana_7_robotiq_2f85_sim", "fanuc_m10id_12", "fanuc_m10id_12_robotiq_2f85_sim",
+    "kuka_kr20_r3100", "kuka_kr30_r2100", "kuka_kr50_r2100", "kuka_kr50_r2500", "kuka_kr70_r2100",
+    "yaskawa_hc20", "yaskawa_hc20_robotiq_2f85_sim"}
+
+
 def is_exact_predecessor(record: dict) -> bool:
     profiles = {PREDECESSOR_GENERATOR: PREDECESSOR_PROFILES, B0_GENERATOR: B0_PROFILES,
                 CURRENT_21_GENERATOR: CURRENT_21_PROFILES, CURRENT_23_GENERATOR: CURRENT_23_PROFILES,
-                CURRENT_28_GENERATOR: CURRENT_28_PROFILES, CURRENT_30_GENERATOR: CURRENT_30_PROFILES}
+                CURRENT_28_GENERATOR: CURRENT_28_PROFILES, CURRENT_30_GENERATOR: CURRENT_30_PROFILES,
+                CURRENT_31_GENERATOR: CURRENT_31_PROFILES, CURRENT_42_GENERATOR: CURRENT_42_PROFILES}
     return record.get("embodiment_id") in profiles.get(record.get("generator_module_sha256"), ())
 
 

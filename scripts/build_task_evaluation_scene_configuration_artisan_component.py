@@ -22,6 +22,7 @@ from blueprint_pipeline.task_object_authoring_backend import ARTISAN_BACKEND, AR
 from blueprint_pipeline.task_object_authoring_contracts import require, file_record
 from blueprint_pipeline.task_evaluation_scene_configuration_artisan_runtime import MANIFEST, SCHEMA
 from blueprint_pipeline.artisan_vendor_reuse import SITE_IGNORE, vendor_copy_function
+from blueprint_pipeline.immutable_file_digest import sha256_file
 from scripts.build_task_evaluation_scene_configuration_component_package import build_scene_configuration_component_package
 
 BRIDGE_MODULES = ("asset_authoring_sandbox", "asset_landlock", "task_object_artisan_hooks",
@@ -82,6 +83,17 @@ def missing_root_dependencies(roots, installed) -> list[str]:
         if versions.get(name(pinned_name), "").split("+", 1)[0] != pinned_version.strip():
             missing.append(item)
     return missing
+
+
+def _file_record(path: Path) -> dict:
+    """``file_record`` without the path, through the publication's digest cache.
+
+    A vendored file linked from the previous toolchain is an inode its
+    readback already read in full; hashing its 10 GB again here was one of
+    about ten full passes per deploy.
+    """
+    require(not path.is_symlink() and path.is_file(), "authoring_file_missing_or_symlink")
+    return {"sha256": sha256_file(path), "size_bytes": path.stat().st_size}
 
 
 def _git(root: Path, *args) -> str:
@@ -172,8 +184,7 @@ def build_artisan_scene_configuration_component(*, repository_root, expected_blu
         driver = staging / "run"
         shutil.copyfile(repository / "scripts/run_task_evaluation_scene_configuration_content_agents_component.sh", driver)
         driver.chmod(0o755)
-        files = [{"relative_path": p.relative_to(staging).as_posix(),
-                  **{k: v for k, v in file_record(p).items() if k != "path"}}
+        files = [{"relative_path": p.relative_to(staging).as_posix(), **_file_record(p)}
                  for p in sorted(staging.rglob("*")) if p.is_file()]
         value = {"schema_version": SCHEMA, "backend": ARTISAN_BACKEND,
                  "upstream_revision": ARTISAN_REVISION, "upstream_tree": ARTISAN_TREE,

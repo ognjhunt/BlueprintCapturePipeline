@@ -17,15 +17,17 @@ that draft directly. The later coverage-repair pass is skipped: it measures
 gaps in the draft, which is no longer the final appearance.
 
 1. `atlas_native_splat.prepare_splat_request` posts the views the final draft
-   fused, each with its camera and linear depth. Real frames go in whole, with
-   Atlas's own depth confidence as `depth.confidenceAsset`: low depth confidence
-   does not make their RGB wrong. A view a review admitted only in part
-   (generated gap views, recovered geometry) carries that admission as its alpha
-   `maskAsset`. `atlas_depth_splat.restrict_frame` records it as `keep_mask`
-   beside the fused `confidence * mask`, and a view with nothing admitted is left
-   out. Frames on one grid go unchanged; mixed grids (portrait source beside
-   landscape generated views) use the ray-preserving photograph tiler, with the
-   admitted region projected into each tile.
+   fused, each once, in World Labs' documented frame shape: `imageAsset`,
+   `camera` and `depth.depthAsset` (linear EXR), nothing else. Views with the
+   same camera (within 1e-6) and identical RGB are one posed view
+   (`merge_duplicate_views`): a whole duplicate makes it whole, otherwise the
+   admissions unite, and depth takes each partial duplicate's values where its
+   review admitted them. The provenance row records the merged positions
+   (`merged_duplicates`). Real frames go in whole. A generated or recovered view
+   (one an earlier review admitted only in part, `keep_mask`) goes in whole only
+   if the whole-view agreement review admitted it, and is left out otherwise.
+   Frames on one grid go unchanged; mixed grids (portrait source beside
+   landscape generated views) use the ray-preserving photograph tiler.
 2. `run_native_splat` reserves the reviewed price, submits through the shared
    admitted task runner, and resumes a pending operation by ID (an operation
    takes about 20–30 minutes; each controller pass returns `processing`).
@@ -35,30 +37,87 @@ gaps in the draft, which is no longer the final appearance.
    splat) into a standard 3DGS PLY. Any other layout fails closed with the paid
    SPZ kept, so a retry never buys twice.
 4. `atlas_refined_splat_manifest.json` binds the pose, the draft manifest, the
-   generated-result digests, the request and every upload. Mesh registration
-   keeps the draft's fusion grid as its tolerance. `splats2Mesh`, registration,
-   the download bundle and scene handoff read either manifest.
+   generated-result digests, the request, every upload and the whole-view
+   verdicts. Mesh registration keeps the draft's fusion grid as its tolerance.
+   `splats2Mesh`, registration, the download bundle and scene handoff read
+   either manifest.
 
-**First production run (capture-4b60431e, 2026-10-30).** World Labs failed the
-full request (11 views, masks on 8, confidence on all) with `EXECUTION_FAILED`
-after two minutes; failed runs are free. Two recoveries followed:
+## Request forms
 
-- If World Labs fails a refined-splat request and no attempt of it is live,
-  the next attempt sends the guide's documented minimal form from
-  `<draft root>-refined-minimal`: whole views only, image + depth + camera.
-  Partly admitted generated views are then left out; the draft keeps them.
-- Uploads to an account that does not retain them are purged about an hour
-  after creation. If a send is refused with 404 naming one of the attempt's own
-  uploads, nothing was bought, so the same admitted purchase uploads again under
-  a new idempotency key (`refresh_purged_uploads`, at most twice).
+World Labs documents a posed frame as image + camera + depth (`depthAsset`, or
+`logDepthAsset` with `zMin`/`zMax`) only
+([request/response reference](https://docs.atlas-beta.worldlabs.ai/api-reference/posed-images2-splats),
+[guide](https://docs.atlas-beta.worldlabs.ai/posed-images-to-splats)).
+`maskAsset` and `depth.confidenceAsset` are not documented. Both production
+requests that sent them were accepted and then failed with `EXECUTION_FAILED`
+(failed runs are free): capture-4b60431e (11 views, masks on 8, confidence on
+all) and capture-447ae4f4 (22 views, 4 of them posted twice with conflicting
+depth and masks). The undocumented fields are the likely cause. The splat
+guidance treats generated views as ordinary whole frames, to be compared with
+overlapping views before splatting: objects keep their position, orientation,
+shape and appearance, or the splat shows ghosted or duplicated surfaces
+([splat guidance](https://docs.atlas-beta.worldlabs.ai/splat-best-practices)).
+
+Each form has its own root beside the draft:
+
+- `documented_reviewed_whole` (`<draft root>-refined-whole`): real frames plus
+  the generated views the whole-view review admitted, whole. If it admits none,
+  no request is sent from this root.
+- `documented_minimal` (`-refined-minimal`): real frames only. It follows when
+  World Labs failed every attempt of the reviewed-whole form, or straight away
+  when no generated view was admitted (the same request is never bought twice).
+- `reviewed_masks_and_confidence` (`-refined`) and `reviewed_masks`
+  (`-refined-masks`) are earlier releases' forms: a retained attempt is polled
+  or adopted with exactly what it sent, never re-derived or bought again.
+
+A completed splat in any root is adopted, earlier roots first, and no form is
+newly bought behind a later live or completed one.
+
+**Whole-view agreement review** (`atlas_whole_view_review`). The completion
+review judges the generated set for the edit (`consistent_background`) and
+names no per-view verdict, so it cannot admit one view whole. Before the
+reviewed-whole form, one Gemini call reviews every candidate at once: each
+merged generated view beside the up to three real frames that overlap it most
+(sampled real depth projected into its camera, at least 2%), returning
+`admit_whole` and a reason per view. A view no real frame overlaps is never
+admitted. The call goes through `retained_gemini_call` (admitted by the WebApp
+spend ledger, retained by its exact inputs, so a restart never buys it again)
+and is quoted from its image and token count; above the policy's
+`maximum_review_cost_usd`, or after an uncertain earlier call, nothing is
+admitted and nothing more is bought. The verdicts are kept in the root
+(`whole_view_review.json`), the input binding and each posted view's provenance.
+The prompt is scene-agnostic and covered by `test_harness_prompts_scene_agnostic`.
+
+**Upgrade of a finished job.** When the adopted splat is `documented_minimal`
+and left generated views out, the result records
+`refined_splat.left_out_admitted_view_ids` and whether the reviewed-whole form
+was never tried (`gap_preserving_form_untried`: never sent and never reviewed).
+Only that marker lets an operator retry (`retry_failed_job` or the door's
+atlas-retry) reopen a `ready` job. A job that became ready before jobs recorded
+the marker (capture-447ae4f4) has it derived from retained records
+(`retained_minimal_marker`): the archived result names the adopted minimal splat
+by manifest digest, and the views the failed masked form sent with a review mask
+and the minimal form did not send are the ones left out. The retry records
+`refined_splat_gap_preserving_form_untried` and `request_gap_preserving_upgrade`
+names the reviewed-whole root. The next run reviews the generated views if
+needed and sends that form at most once. A success supersedes the minimal splat
+(its mesh root is keyed by the new digest, so a new mesh is bought and the
+archive rebuilt). If the review admits nothing or World Labs fails it, the
+minimal splat is adopted again unchanged, the marker clears and the job returns
+to `ready`. Nothing reopens a ready job on its own.
+
+Uploads to an account that does not retain them are purged about an hour after
+creation. If a send is refused with 404 naming one of the attempt's own
+uploads, nothing was bought, so the same admitted purchase uploads again under
+a new idempotency key (`refresh_purged_uploads`, at most twice).
 
 A failed or refused attempt's reservation is released once the attempt settles
 (`atlas_spend_settlement`, a WebApp `world_labs_atlas` settlement at zero); a
 completed one settles at its reviewed price.
 
-The refined root sits beside the draft (`<draft root>-refined`), and its mesh
-root carries the refined digest, so a new draft gets its own purchase and a
-legacy mesh is never adopted for a refined splat.
+The refined roots sit beside the draft (`<draft root>-refined*`), and the mesh
+root carries the adopted refined digest, so a new draft gets its own purchase
+and a legacy mesh is never adopted for a refined splat.
 
 Preserved-capture scenes and the plain pose-and-generate route keep the draft
 for now.

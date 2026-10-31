@@ -78,10 +78,14 @@ ruff check <changed Python files>
 scripts/pytest_fast.sh                                # broader, slower
 ```
 
-Replay a failed production stage locally before redeploying:
+Before merging or deploying a fix for a stopped production job, replay the job's
+next step on the fix branch (it pays for nothing) and include its first stop in
+the PR. Deploy to find out only what a replay cannot show, such as provider
+behavior:
 
 ```bash
 python -m blueprint_pipeline.task_evaluation_stage_replay --child <id> --isolate
+python -m blueprint_pipeline.atlas_preview_replay --job <pulled preview_job.json>
 ```
 
 Entrypoints:

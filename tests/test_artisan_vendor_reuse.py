@@ -127,3 +127,28 @@ def test_target_release_temporary_files_use_the_reserved_sdk_filesystem(tmp_path
     deploy._provision_scene_configuration_from_release(repository_root=tmp_path,
         source_commit="b" * 40, readback_user="blueprint", artisan_vendor_reuse_plan=path)
     assert observed["env"]["TMPDIR"] == plan["staging_root"]
+
+
+def test_planning_reads_every_source_but_not_inodes_the_toolchain_readback_proved(tmp_path, monkeypatch):
+    from blueprint_pipeline import immutable_file_digest
+    from blueprint_pipeline.immutable_file_digest import sealed_identity
+    from blueprint_pipeline.readback_ledger import write_ledger
+
+    _, source, prior, args = setup_vendor(tmp_path)
+    manifest_path = prior / "task_evaluation_scene_configuration_toolchain.v1.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["readback_actor"] = "service-account:blueprint"
+    manifest["toolchain_digest"] = canonical_digest(manifest, digest_field="toolchain_digest")
+    manifest_path.write_text(json.dumps(manifest))
+    published = [row["relative_path"] for row in manifest["files"] if (prior / row["relative_path"]).exists()]
+    reads = []
+    original = immutable_file_digest._read_digest
+    monkeypatch.setattr(immutable_file_digest, "_read_digest",
+                        lambda stream: reads.append(stream.name) or original(stream))
+    assert prepare_vendor_reuse(**args) is not None
+    assert len(reads) == 4  # without a ledger: two sources, two published files
+    reads.clear()
+    assert write_ledger(prior, tree_digest=manifest["toolchain_digest"], readback_actor="service-account:blueprint",
+                        inodes={name: sealed_identity((prior / name).stat()) for name in published})["status"] == "written"
+    assert prepare_vendor_reuse(**args) is not None
+    assert sorted(reads) == sorted(str(path) for path in source.rglob("*") if path.is_file())

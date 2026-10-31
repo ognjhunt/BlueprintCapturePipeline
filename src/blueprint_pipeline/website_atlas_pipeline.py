@@ -48,7 +48,9 @@ def _same_authority(stored, current):
             != {k: v for k, v in current.items() if k not in amendable}):
         return False
     # A limit the owner removed is raised; dollars stay bounded by WebApp admission.
-    return all(key not in current or (type(current[key]) in (int, float) and current[key] >= stored[key])
+    return all(key not in current or current[key] == stored[key]
+               or (type(current[key]) in (int, float) and type(stored[key]) in (int, float)
+                   and current[key] >= stored[key])
                for key in _RAISABLE_LIMITS if key in stored)
 
 
@@ -774,6 +776,8 @@ def finalize_background_result(*, output_root, source_digest, task_context, auto
               "simulation_qualified": False, "claim_ceiling": "development_only",
               "physical_evidence": False, "scale_status": "unscaled_provider_world_units",
               "billing_status": "provider_usage_unreported"}
+    if complete and background.get("refined_splat"):
+        result["refined_splat"] = background["refined_splat"]
     result["digest"] = canonical_digest(result, digest_field="digest")
     write_json(output_root / "result.json", result)
     return result

@@ -27,6 +27,9 @@ PUBLIC_EMBODIMENT_IDS = frozenset({
     "fanuc_m710ic_45m", "franka_research_3_bimanual", "i2rt_yam_bimanual", "kinova_gen3",
     "kinova_gen3_bimanual", "kuka_lbr_iiwa_14", "trlc_dk1_bimanual", "ufactory_xarm7", "ufactory_xarm7_bimanual",
     "universal_robots_ur10e", "universal_robots_ur5e", "universal_robots_ur5e_bimanual", "yaskawa_gp12", "yaskawa_gp20",
+    "fanuc_m10id_12", "fanuc_m10id_12_robotiq_2f85_sim", "yaskawa_hc20", "yaskawa_hc20_robotiq_2f85_sim",
+    "agile_robots_diana_7", "agile_robots_diana_7_robotiq_2f85_sim",
+    "kuka_kr20_r3100", "kuka_kr30_r2100", "kuka_kr50_r2100", "kuka_kr50_r2500", "kuka_kr70_r2100",
 })
 REQUEST_FIELDS = frozenset({
     "schema_version", "authorization_id", "release_commit", "embodiment_ids", "max_spend_usd",

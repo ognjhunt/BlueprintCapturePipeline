@@ -995,3 +995,39 @@ def test_a_reservation_shrinks_in_place_and_never_grows_without_admission(tmp_pa
     hold.release(outcome="completed")
     with pytest.raises(ControlPlaneDiskBudgetError, match="^control_plane_disk_budget_reservation_released$"):
         hold.resize(1)
+
+
+def test_a_jobs_own_children_do_not_count_its_enclosing_hold_twice(tmp_path, monkeypatch):
+    """Batch public-robot-imports-20261030-05 refused its own 50 KB result this way."""
+    ledger = tmp_path / "ledger"
+    total = 300 * GIB
+    floor = disk_budget.floor_bytes(total, role="policy_canary_output")
+    state = {"free": floor + 21 * GIB}
+
+    def usage(_path):
+        return Usage(total, total - state["free"], state["free"])
+
+    common = dict(target_root=tmp_path, reservation_root=ledger, disk_usage=usage,
+                  now=lambda: 100.0, pid_alive=lambda _pid: True)
+    parent = reserve_control_plane_disk("embodiment_preparation", expected_bytes=20 * GIB, **common)
+    state["free"] -= 5 * GIB  # the job writes its bundle inside its own hold
+    monkeypatch.delenv(disk_budget.ENCLOSING_RESERVATIONS_ENV, raising=False)
+    with pytest.raises(ControlPlaneDiskBudgetError, match="exceeded:policy_canary_output"):
+        reserve_control_plane_disk("policy_canary_output", expected_bytes=GIB, lock_nonblocking=True, **common)
+
+    monkeypatch.setenv(disk_budget.ENCLOSING_RESERVATIONS_ENV, "not-a-token,../" + parent.token)
+    with pytest.raises(ControlPlaneDiskBudgetError, match="exceeded:policy_canary_output"):
+        reserve_control_plane_disk("policy_canary_output", expected_bytes=GIB, lock_nonblocking=True, **common)
+
+    monkeypatch.setenv(disk_budget.ENCLOSING_RESERVATIONS_ENV, parent.token)
+    child = reserve_control_plane_disk("policy_canary_output", expected_bytes=GIB, lock_nonblocking=True, **common)
+    assert child.reserved_bytes == 0
+    # Free space still decides: the exclusion never admits more than the disk holds.
+    with pytest.raises(ControlPlaneDiskBudgetError, match="exceeded:policy_canary_output"):
+        reserve_control_plane_disk("policy_canary_output", expected_bytes=16 * GIB, lock_nonblocking=True, **common)
+    child.release(outcome="completed")
+    # Another lane, without the parent's token, still sees the full hold.
+    monkeypatch.delenv(disk_budget.ENCLOSING_RESERVATIONS_ENV)
+    with pytest.raises(ControlPlaneDiskBudgetError, match="exceeded:launch_preparation"):
+        reserve_control_plane_disk("launch_preparation", expected_bytes=GIB, lock_nonblocking=True, **common)
+    parent.release(outcome="completed")

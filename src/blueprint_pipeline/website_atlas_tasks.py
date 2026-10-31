@@ -27,7 +27,7 @@ _CAPACITY_CODES = frozenset({"RATE_LIMIT_EXCEEDED", "CONCURRENCY_LIMIT_EXCEEDED"
 
 
 def _capacity_refusal(payload: bytes, retry_after: str | None, *, now: float,
-                      attempt: int) -> dict[str, Any] | None:
+                      attempt: int, rate_limit_headers: Mapping[str, str] | None = None) -> dict[str, Any] | None:
     """A documented 429 proves no purchase; unknown replies still reconcile.
 
     https://atlas-beta.worldlabs.ai/docs/rate-limits
@@ -56,8 +56,12 @@ def _capacity_refusal(payload: bytes, retry_after: str | None, *, now: float,
         wait = 0.0
     backoff = min(300, 60 * 2 ** min(attempt - 1, 3))
     delay = max(wait, backoff) + random.uniform(0, 5)
+    # Keep the provider's own explanation so a recurring refusal names the limit it hit.
     return {"status": 429, "code": error["code"], "accepted": False,
-            "observed_at_epoch": now, "retry_not_before_epoch": now + delay}
+            "observed_at_epoch": now, "retry_not_before_epoch": now + delay,
+            "message": str(error.get("message") or "")[:500],
+            "details": json.dumps(error.get("details"), sort_keys=True)[:1000] if error.get("details") else None,
+            "rate_limit_headers": dict(rate_limit_headers or {})}
 
 
 MAX_UPLOAD_REFRESHES = 2
@@ -467,7 +471,8 @@ def _run_admitted_atlas_task_attempt(*, task: str, request: Mapping[str, Any], o
             state["submission_http_status"] = state["sends"][-1]["status"] = status
             if status == 429:
                 count = state.get("capacity_refusals", 0) + 1
-                refusal = _capacity_refusal(payload, client.retry_after, now=now(), attempt=count)
+                refusal = _capacity_refusal(payload, client.retry_after, now=now(), attempt=count,
+                                            rate_limit_headers=getattr(client, "rate_limit_headers", None))
                 if refusal is not None:
                     state.update(status="capacity_wait", capacity_refusals=count, capacity_refusal=refusal)
                     state["sends"][-1]["capacity_refusal"] = refusal

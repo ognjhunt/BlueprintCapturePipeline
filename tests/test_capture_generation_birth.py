@@ -465,14 +465,8 @@ def test_retired_capture_requires_new_raw_delivery_and_marker(tmp_path, monkeypa
     assert Path(born['birth_delivery_raw_ref']['path']).is_file()
 
 
-@pytest.mark.parametrize('terminal', [False, True])
-@pytest.mark.parametrize('policy_kind', ['enabled', 'absent', 'disabled'])
-@pytest.mark.parametrize('preparation_purpose', [None, 'scene_preparation'])
-def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
-        tmp_path, monkeypatch, terminal, policy_kind, preparation_purpose):
-    from blueprint_pipeline import capture_original_owner_observer as observer
-    from blueprint_pipeline import pubsub_handoff_listener as listener
-
+def _pinned_selected_source(tmp_path, monkeypatch, policy_kind):
+    """An unborn selected capture whose pinned GCS members serve exact bytes."""
     access, policy, target, owner, selector, membership_raw = _fixture(tmp_path, monkeypatch,
                                                                     prepare_parent=False)
     if policy_kind != 'enabled':
@@ -519,6 +513,10 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
             assert kwargs['if_generation_match'] == self.generation
             return contents[self.name]
 
+        def download_to_file(self, stream, **kwargs):
+            assert kwargs['if_generation_match'] == self.generation
+            stream.write(contents[self.name])
+
     class Bucket:
         def blob(self, name, generation):
             assert name in contents
@@ -533,6 +531,27 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
 
         def list_blobs(self, *_args, **_kwargs):
             pytest.fail('selected source cannot list current prefix')
+
+    payload = {
+        'bucket': owner['bucket'], 'scene_id': owner['scene_id'],
+        'capture_id': owner['capture_id'], 'raw_prefix_uri': owner['raw_prefix_uri'],
+        'source_finalize': {**membership['source_finalize'], 'event_id': 'evt-1',
+                            'event_source': 'storage'},
+        'source_membership_selector': selector,
+    }
+    return policy, target, owner, selector, membership, contents, rows, Client, payload
+
+
+@pytest.mark.parametrize('terminal', [False, True])
+@pytest.mark.parametrize('policy_kind', ['enabled', 'absent', 'disabled'])
+@pytest.mark.parametrize('preparation_purpose', [None, 'scene_preparation'])
+def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
+        tmp_path, monkeypatch, terminal, policy_kind, preparation_purpose):
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+
+    policy, target, owner, selector, membership, contents, rows, Client, payload = (
+        _pinned_selected_source(tmp_path, monkeypatch, policy_kind))
 
     def download(*, downloads, manifest_rows, selected_generations, **_kwargs):
         assert set(selected_generations) == set(rows)
@@ -560,13 +579,6 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
             'run_id': 'synthetic-assessment', 'source_key': 'sha256:' + 'b' * 64,
             'context_digest': 'c' * 64, 'packet_sha256': 'd' * 64, 'questions_pending': True,
             'scope': 'scene_preparation_only', 'robot_suitability_verified': False, 'physical_trial_authorized': False}})
-    payload = {
-        'bucket': owner['bucket'], 'scene_id': owner['scene_id'],
-        'capture_id': owner['capture_id'], 'raw_prefix_uri': owner['raw_prefix_uri'],
-        'source_finalize': {**membership['source_finalize'], 'event_id': 'evt-1',
-                            'event_source': 'storage'},
-        'source_membership_selector': selector,
-    }
     staged = listener.stage_handoff_capture(listener.parse_handoff_payload(payload),
                                              storage_root=target.parents[4], storage_client=Client())
     assert staged == target
@@ -612,6 +624,70 @@ def test_direct_selected_stage_reads_only_pinned_members_without_prefix_list(
                                 else 'skipped_already_processed')
     assert len(runs) == 1
     assert {p.name: p.read_bytes() for p in proof_store.iterdir() if p.is_file()} == original_proofs
+
+
+@pytest.mark.parametrize('policy_kind', ['enabled', 'absent'])
+def test_preparation_resume_restages_retained_members_on_an_exhausted_volume(
+        tmp_path, monkeypatch, policy_kind):
+    """capture-447ae4f4: a resume of current retained staging writes no bulk bytes."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    from blueprint_pipeline import pubsub_handoff_disk_admission as admission
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+    from blueprint_pipeline.control_plane_disk_budget import ControlPlaneDiskBudgetError
+
+    _, target, owner, _, _, _, _, Client, payload = _pinned_selected_source(
+        tmp_path, monkeypatch, policy_kind)
+    reservations = []
+
+    def roomy(role, **_kwargs):
+        reservations.append(role)
+        return nullcontext()
+
+    monkeypatch.setattr(admission, 'reserve_control_plane_disk', roomy)
+    monkeypatch.setattr(admission, 'keep_reservation_live',
+                        lambda _reservation: nullcontext(SimpleNamespace(check=lambda: None)))
+    monkeypatch.setattr(observer, 'load_original_owner_observation', lambda **_: owner)
+    listener.stage_handoff_capture(listener.parse_handoff_payload(payload),
+                                   storage_root=target.parents[4], storage_client=Client())
+    assert reservations == ['handoff_staging']
+    staged = json.loads((target / listener.STAGING_MANIFEST_FILENAME).read_bytes())
+
+    def exhausted(*_args, **_kwargs):
+        reservations.append('refused')
+        raise ControlPlaneDiskBudgetError('control_plane_disk_budget_exceeded:handoff_staging')
+
+    # The bulk band is exhausted by other live reservations. The operator's
+    # resume reads the same original source for scene preparation.
+    monkeypatch.setattr(admission, 'reserve_control_plane_disk', exhausted)
+    prepared = _preparation_observation(owner)
+    monkeypatch.setattr(observer, 'load_original_owner_observation', lambda **_: prepared)
+    monkeypatch.setattr(retention, 'retired_capture_status', lambda **_: None)
+    monkeypatch.setattr(listener, '_claim_job_lease', lambda *_a, **_k: ('active', {}))
+
+    def resume():
+        return listener.process_handoff_payload(
+            payload, storage_root=target.parents[4], storage_client=Client(), provider='local',
+            run_e2e=lambda **_: pytest.fail('ran'), expected_preparation_purpose='scene_preparation')
+
+    # Staging passes and the native claim decides what happens next.
+    assert resume()['status'] == 'lease_active_retryable'
+    assert reservations == ['handoff_staging']
+    restaged = json.loads((target / listener.STAGING_MANIFEST_FILENAME).read_bytes())
+    assert restaged['objects'] == staged['objects']
+    assert restaged['local_generation_id'] == staged['local_generation_id']
+
+    # A member that must be downloaded again still needs bulk admission, and
+    # its refusal stays a bounded, recognized code.
+    (target / 'raw' / 'manifest.json').unlink()
+    result = resume()
+    assert reservations == ['handoff_staging', 'refused']
+    assert result['status'] == 'capture_source_membership_unavailable_retryable'
+    assert result['staging_reason'] == 'pubsub_handoff_staging_capacity_insufficient'
+    assert 'staging_error' not in result
 
 
 def test_capture_lease_binds_semantic_delivery_across_changed_payload_bytes(tmp_path):
@@ -722,6 +798,7 @@ def test_required_capture_birth_policy_refuses_before_writes_and_preserves_optio
     ("unsafe_typed_birth_owner", "capture_original_birth_refused"),
     ("generic", "capture_staging_unavailable"),
     ("unsafe_typed", "capture_staging_unavailable"),
+    ("capacity", "pubsub_handoff_staging_capacity_insufficient"),
 ])
 def test_selected_staging_failure_reason_is_safe_and_preclaim(tmp_path, monkeypatch, phase, reason):
     from blueprint_pipeline import capture_delivery_staging as staging
@@ -765,8 +842,10 @@ def test_selected_staging_failure_reason_is_safe_and_preclaim(tmp_path, monkeypa
                      else SceneRetirementAccessError)
             raise error("private birth token=secret")
         monkeypatch.setattr(staging, 'birth_capture_member', refused)
-    if phase in {"generic", "unsafe_typed"}:
+    if phase in {"generic", "unsafe_typed", "capacity"}:
         def unavailable(*args, **kwargs):
+            if phase == "capacity":
+                raise listener.HandoffStagingCapacityError("pubsub_handoff_staging_capacity_insufficient")
             error = staging.CaptureStagingError if phase == "unsafe_typed" else RuntimeError
             raise error("private staging token=secret")
         monkeypatch.setattr(listener, 'stage_handoff_capture', unavailable)
@@ -778,8 +857,60 @@ def test_selected_staging_failure_reason_is_safe_and_preclaim(tmp_path, monkeypa
         run_e2e=lambda **_: pytest.fail('ran'))
     assert result['status'] == 'capture_source_membership_unavailable_retryable'
     assert result['queue_disposition'] == 'retryable' and result['staging_reason'] == reason
-    assert "secret" not in json.dumps(result) and "private" not in json.dumps(result)
+    assert "secret" not in json.dumps(result)
+    if phase in {"generic", "unsafe_typed"}:
+        # Only an unrecognized failure is described: type and redacted text.
+        assert result['staging_error'] == {
+            'type': ('blueprint_pipeline.capture_delivery_staging.CaptureStagingError'
+                     if phase == "unsafe_typed" else 'builtins.RuntimeError'),
+            'message': 'private staging token=<redacted>'}
+    else:
+        assert 'staging_error' not in result and "private" not in json.dumps(result)
     assert not target.exists()
+
+
+def test_unrecognized_staging_error_keeps_type_and_bounded_secret_free_message():
+    from blueprint_pipeline.capture_delivery_staging import (
+        bounded_staging_error, staging_error_description,
+    )
+
+    class TransportError(ConnectionError):
+        pass
+
+    signed = ('https://storage.googleapis.com/b/o/raw%2Fwalkthrough.mp4?X-Goog-Algorithm=GOOG4-RSA-SHA256'
+              '&X-Goog-Credential=svc%40p.iam&X-Goog-Signature=0f9e8d7c6b5a')
+    digest = '277b95d46b3dee94d9af7a0e99fa56153127199db7586c7de9c6946dae4748ed'
+    error = TransportError(
+        f'delivery {digest} download failed: {signed}\nAuthorization: Bearer ya29.a0AfH6SMBx-secretvalue '
+        'AIzaSyD3-abcdefghijklmnopqrstuvwxyz012 client_secret="s3cr3t value" Qx7Lm2Nv9Pr4St6Uw8Yz1Ab3Cd5Ef '
+        + 'x' * 400)
+    described = staging_error_description(error)
+    assert described['type'].endswith('test_unrecognized_staging_error_keeps_type_and_bounded_secret_free_message'
+                                      '.<locals>.TransportError')
+    message = described['message']
+    assert message.startswith(f'delivery {digest} download failed: '
+                              'https://storage.googleapis.com/b/o/raw%2Fwalkthrough.mp4?<redacted> ')
+    for secret in ('X-Goog', 'svc%40p', '0f9e8d7c6b5a', 'ya29', 'secretvalue', 'AIza', 's3cr3t',
+                   'Qx7Lm2Nv9Pr4St6Uw8Yz1Ab3Cd5Ef', '\n'):
+        assert secret not in message
+    # A digest is not a credential; the trimmed text stays bounded.
+    assert len(message) == 200 and message.endswith('...')
+    assert bounded_staging_error(described) == described
+    assert staging_error_description(RuntimeError('private staging token=secret')) == {
+        'type': 'builtins.RuntimeError', 'message': 'private staging token=<redacted>'}
+    # JSON and printed dictionaries quote the key.
+    for quoted, kept in (('{"client_secret": "hunter2"}', '{"client_secret": <redacted>}'),
+                         ("{'api_key': 'hunter2', 'n': 1}", "{'api_key': <redacted>, 'n': 1}"),
+                         ('{"session":hunter2}', '{"session":<redacted>}')):
+        assert staging_error_description(RuntimeError(quoted))['message'] == kept
+    # Another result repeats only the exact shape, bounded again.
+    assert bounded_staging_error({'type': 'builtins.OSError', 'message': 'see ?token=abc'}) == {
+        'type': 'builtins.OSError', 'message': 'see ?<redacted>'}
+    for malformed in (None, 'builtins.OSError: boom', {'type': 'builtins.OSError'},
+                      {'type': 'builtins.OSError', 'message': 'boom', 'cause': 'x'},
+                      {'type': 'not a type name', 'message': 'boom'},
+                      {'type': 'builtins.OSError', 'message': 17}):
+        assert bounded_staging_error(malformed) is None
 
 
 def test_incomplete_capture_birth_with_absent_workspace_is_not_adopted(tmp_path, monkeypatch):

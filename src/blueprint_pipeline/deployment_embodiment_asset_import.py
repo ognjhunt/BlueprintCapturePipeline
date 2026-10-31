@@ -43,6 +43,96 @@ MAX_PREPARED_FILE_BYTES = 512 * 1024**2
 MAX_IMPORT_RECEIPT_BYTES = 8 * 1024**2
 _FIND = re.compile(r"\$\(find\s+([A-Za-z0-9_]+)\)")
 _XACRO_LOCK = threading.RLock()
+# Isaac's importers bind source colours to MDL modules that Kit resolves from
+# the pinned image's own material library, never from beside the model. A bare
+# name is accepted only while no file of that name sits next to the layer, and
+# the receipt records it as a runtime dependency rather than a prepared file.
+RUNTIME_BUILTIN_MDL = frozenset({"OmniPBR.mdl"})
+# UsdStage::Export/Flatten (addSourceFileComment) name the composed root layer's host path.
+_SOURCE_FILE_COMMENT = re.compile(r"^Generated from Composed Stage of root layer .*$", re.MULTILINE)
+
+
+def _runtime_builtin(value: str, layer_directory: Path) -> bool:
+    return value in RUNTIME_BUILTIN_MDL and not os.path.lexists(layer_directory / value)
+
+
+def _public_name(value: str | Path) -> str:
+    """A basename that is safe to log: never a URL, host directory or control text."""
+    text = str(value)
+    if not text:
+        return "empty"
+    name = "url" if "://" in text else Path(text.split("?", 1)[0]).name
+    return name if re.fullmatch(r"[A-Za-z0-9._-]{1,80}", name) else "unnamed"
+
+
+def _refused(code: str, value: str | Path, *, kind: str | None, layer: str | Path | None,
+             reason: str | None) -> AssetPreparationError:
+    """Name the refused value, how and where it was authored, without a host path."""
+    detail = "".join(f";{key}={text}" for key, text in (
+        ("kind", kind), ("layer", None if layer is None else _public_name(layer)), ("reason", reason)) if text)
+    return AssetPreparationError(code + ":" + _public_name(value) + detail)
+
+
+def _unbound(value: str | Path, *, kind: str | None = None, layer: str | Path | None = None,
+             reason: str | None = None) -> AssetPreparationError:
+    return _refused("asset_import_unbound_dependency", value, kind=kind, layer=layer, reason=reason)
+
+
+def _asset_values(value) -> list[str]:
+    """Every authored asset path inside one field value (arrays and dictionaries included)."""
+    from pxr import Sdf
+
+    if isinstance(value, Sdf.AssetPath):
+        return [value.path] if value.path else []
+    if isinstance(value, dict):
+        return [path for item in value.values() for path in _asset_values(item)]
+    if isinstance(value, (list, tuple, Sdf.AssetPathArray)):
+        return [path for item in value for path in _asset_values(item)]
+    return []
+
+
+def _authored_dependencies(layer) -> list[tuple[str, str]]:
+    """``(kind, value)`` for every external value one layer authors, read from its specs.
+
+    Kinds are ``sublayer``, ``reference``, ``payload``, ``asset_attribute`` (default or
+    time sample of an asset-valued attribute) and ``metadata`` (assetInfo, customData,
+    clips, layer metadata). A reference or payload with an empty asset path is an
+    internal arc to a prim of the same layer stack. USD's own flattening writes those
+    for instanceable prims (``/Flattened_Prototype_N``), so it names no file.
+    """
+    from pxr import Sdf
+
+    rows = [("sublayer", value) for value in layer.subLayerPaths]
+
+    def visit(path):
+        spec = layer.GetObjectAtPath(path)
+        if spec is None:
+            return
+        attribute = isinstance(spec, Sdf.AttributeSpec)
+        for key in spec.ListInfoKeys():
+            if key in {"subLayers", "subLayerOffsets"}:
+                continue
+            value = spec.GetInfo(key)
+            if isinstance(value, (Sdf.ReferenceListOp, Sdf.PayloadListOp)):
+                kind = "reference" if isinstance(value, Sdf.ReferenceListOp) else "payload"
+                # Deleted items load nothing, but they are authored values and
+                # stay subject to the same binding as every other arc.
+                for items in (value.explicitItems, value.prependedItems, value.appendedItems,
+                              value.addedItems, value.orderedItems, value.deletedItems):
+                    rows.extend((kind, item.assetPath) for item in items if item.assetPath)
+                continue
+            kind = "asset_attribute" if attribute and key in {"default", "timeSamples"} else "metadata"
+            rows.extend((kind, item) for item in _asset_values(value))
+
+    layer.Traverse(Sdf.Path.absoluteRootPath, visit)
+    # Keep USD's own dependency report as a floor: anything it names that the
+    # spec walk did not classify is still checked rather than silently trusted.
+    known = {value for _, value in rows}
+    composition = getattr(layer, "GetCompositionAssetDependencies", layer.GetExternalReferences)
+    rows.extend(("composition", value) for value in sorted(composition()) if value and value not in known)
+    rows.extend(("format_dependency", value) for value in sorted(layer.GetExternalAssetDependencies())
+                if value and value not in known)
+    return list(dict.fromkeys(rows))
 
 
 def _sha(path: Path) -> str:
@@ -317,8 +407,13 @@ def _converter(format_name: str, entry: Path, output: Path, *, fix_base: bool,
 
 def _dependencies(entry: Path, *, staged: Path, source: Path | None = None,
                   source_receipt: dict[str, Any] | None = None,
-                  relative_references: bool = False) -> list[dict[str, Any]]:
-    """Inspect local layers before stage composition; never resolve an unbound URL/file."""
+                  relative_references: bool = False,
+                  builtins: set[str] | None = None) -> list[dict[str, Any]]:
+    """Inspect local layers before stage composition; never resolve an unbound URL/file.
+
+    Every value resolves against the layer that authors it. Runtime built-in
+    material names are added to ``builtins`` instead of the file closure.
+    """
     from pxr import Sdf
 
     allowed_source = ({(source / row["path"]).resolve() for row in source_receipt["files"]}
@@ -327,14 +422,17 @@ def _dependencies(entry: Path, *, staged: Path, source: Path | None = None,
     found: dict[str, dict[str, Any]] = {}
     visited = set()
 
-    def inspect(path: Path):
+    def inspect(path: Path, *, value: str | None = None, kind: str | None = None, layer: Path | None = None):
         resolved = path.resolve()
         if resolved in visited:
             return
         visited.add(resolved)
-        if (path.is_symlink() or not path.is_file()
-                or not (resolved.is_relative_to(staged.resolve()) or resolved in allowed_source)):
-            raise AssetPreparationError("asset_import_unbound_dependency")
+        reason = ("symlink" if path.is_symlink() else "missing" if not path.exists()
+                  else "not_a_file" if not path.is_file()
+                  else None if resolved.is_relative_to(staged.resolve()) or resolved in allowed_source
+                  else "outside_bound_files")
+        if reason is not None:
+            raise _unbound(path if value is None else value, kind=kind, layer=layer, reason=reason)
         internal = resolved.is_relative_to(staged.resolve())
         relative = str(resolved.relative_to(staged.resolve() if internal else source.resolve()))
         found[str(resolved)] = {"location": "prepared" if internal else "source_bundle", "path": relative,
@@ -352,28 +450,22 @@ def _dependencies(entry: Path, *, staged: Path, source: Path | None = None,
         # changed reference after digest verification.
         layer = Sdf.Layer.OpenAsAnonymous(str(resolved))
         if layer is None:
-            raise AssetPreparationError("asset_import_dependency_layer_unreadable")
-        references = (set(layer.GetExternalReferences()) | set(layer.subLayerPaths)
-                      | set(layer.GetExternalAssetDependencies()))
-
-        def attributes(spec_path):
-            spec = layer.GetObjectAtPath(spec_path)
-            if isinstance(spec, Sdf.AttributeSpec) and str(spec.typeName) in {"asset", "asset[]"}:
-                values = [spec.default, *(layer.QueryTimeSample(spec_path, time)
-                                        for time in layer.ListTimeSamplesForPath(spec_path))]
-                for value in values:
-                    for asset in ([value] if isinstance(value, Sdf.AssetPath) else value or []):
-                        if isinstance(asset, Sdf.AssetPath) and asset.path:
-                            references.add(asset.path)
-
-        layer.Traverse("/", attributes)
-        for value in references:
-            if "://" in value or "[" in value or "\x00" in value:
-                raise AssetPreparationError("asset_import_unbound_dependency")
+            raise AssetPreparationError("asset_import_dependency_layer_unreadable:" + _public_name(resolved))
+        for kind, value in _authored_dependencies(layer):
+            if "://" in value:
+                raise _unbound(value, kind=kind, layer=resolved, reason="url")
+            if "[" in value or "\x00" in value:
+                raise _unbound(value, kind=kind, layer=resolved, reason="unsupported_syntax")
+            if _runtime_builtin(value, resolved.parent):
+                if builtins is not None:
+                    builtins.add(value)
+                continue
             dependency = Path(value)
             if relative_references and dependency.is_absolute():
-                raise AssetPreparationError("asset_import_dependency_not_relocatable")
-            inspect(dependency if dependency.is_absolute() else resolved.parent / dependency)
+                raise _refused("asset_import_dependency_not_relocatable", value, kind=kind, layer=resolved,
+                               reason="absolute_path")
+            inspect(dependency if dependency.is_absolute() else resolved.parent / dependency,
+                    value=value, kind=kind, layer=resolved)
 
     inspect(entry)
     return sorted(found.values(), key=lambda row: (row["location"], row["path"]))
@@ -394,15 +486,22 @@ def _retain_flattened_content(layer, *, imported: Path, staged: Path, source: Pa
     retained = staged / "retained_source"
 
     def relative_asset(value):
+        # An empty path is an internal arc of the flattened layer itself.
         if not value:
             return value
-        if "://" in value or "[" in value or "\x00" in value:
-            raise AssetPreparationError("asset_import_unbound_dependency")
+        refused = {"kind": "flattened_asset", "layer": imported}
+        if "://" in value:
+            raise _unbound(value, reason="url", **refused)
+        if "[" in value or "\x00" in value:
+            raise _unbound(value, reason="unsupported_syntax", **refused)
+        if _runtime_builtin(value, imported.parent):
+            return value
         candidate = Path(value)
         candidate = candidate if candidate.is_absolute() else imported.parent / candidate
         resolved = candidate.resolve()
         if candidate.is_symlink() or not candidate.is_file():
-            raise AssetPreparationError("asset_import_unbound_dependency")
+            raise _unbound(value, reason="symlink" if candidate.is_symlink() else
+                           "missing" if not candidate.exists() else "not_a_file", **refused)
         if resolved.is_relative_to(staged.resolve()):
             target = resolved
         elif resolved in source_files:
@@ -417,7 +516,7 @@ def _retain_flattened_content(layer, *, imported: Path, staged: Path, source: Pa
                         raise AssetPreparationError("asset_import_retained_source_changed")
             target = retained / resolved.relative_to(source.resolve())
         else:
-            raise AssetPreparationError("asset_import_unbound_dependency")
+            raise _unbound(value, reason="outside_bound_files", **refused)
         return Path(os.path.relpath(target, staged)).as_posix()
 
     UsdUtils.ModifyAssetPaths(layer, relative_asset)
@@ -497,9 +596,11 @@ def verify_prepared_asset_directory(directory: str | Path) -> dict[str, Any]:
     expected_model = next((row for row in inventory if row["path"] == "robot.usda"), None)
     if model != expected_model or expected_model is None:
         raise AssetPreparationError("asset_import_model_binding_changed")
+    builtins: set[str] = set()
     dependencies = _dependencies(destination / model["path"], staged=destination,
-                                 relative_references=True)
+                                 relative_references=True, builtins=builtins)
     if (dependencies != receipt.get("dependencies") or receipt.get("dependency_closure") != _closure(dependencies)
+            or receipt.get("runtime_builtin_assets", []) != sorted(builtins)
             or receipt.get("prepared_directory_self_contained") is not True
             or receipt.get("single_file_self_contained") is not (len(dependencies) == 1)
             or receipt.get("source_bundle_required_for_dependency_resolution") is not False):
@@ -591,12 +692,16 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
         if stage is None:
             raise AssetPreparationError("asset_import_usd_unreadable")
         layer = stage.Flatten(addSourceFileComment=False)
+        # Flattening copies the imported layer's doc, which carries USD's own
+        # source-file comments for the importer's (deleted) scratch layers.
+        layer.documentation = _SOURCE_FILE_COMMENT.sub("", layer.documentation).strip()
         _retain_flattened_content(layer, imported=imported, staged=staged,
                                   source=source, source_receipt=source_receipt)
         output = staged / "robot.usda"
         layer.Export(str(output))
         simulation_readback = gofa.usd_values(output, simulation_model, apply=True) if simulation_model is not None else None
-        dependencies = _dependencies(output, staged=staged, relative_references=True)
+        builtins: set[str] = set()
+        dependencies = _dependencies(output, staged=staged, relative_references=True, builtins=builtins)
         structure = read_model_structure(output)
         if not structure["joint_names"] or not structure["body_paths"]:
             raise AssetPreparationError("asset_import_robot_structure_missing")
@@ -615,6 +720,7 @@ def import_source_asset(source_bundle_root: str | Path, output_dir: str | Path, 
                    "model": {"path": "robot.usda", "sha256": _sha(output), "size_bytes": output.stat().st_size},
                    "structure": structure, "dependencies": dependencies,
                    "dependency_closure": _closure(dependencies),
+                   "runtime_builtin_assets": sorted(builtins),
                    "prepared_directory_self_contained": True,
                    "single_file_self_contained": len(dependencies) == 1,
                    "source_bundle_required_for_dependency_resolution": False,

@@ -2,13 +2,23 @@
 
 For the free beta, a completed customer scene can run a configurable set of
 candidate policies under one persistent **$15 per site** screening allowance.
-The default catalog contains 88 candidate rows: ten original policy candidates,
-one for each of the 74 recorded embodiment–policy routes, and four pinned native
-G1/Dex3/SONIC candidates. The recorded deployment routes span
+The default catalog contains 128 candidate rows: ten original policy candidates,
+sixteen further public OpenPI DROID checkpoints from `gs://openpi-assets`, one
+for each of the 74 recorded embodiment–policy routes, 24 public controller
+integrations and scripted baselines, and four pinned native G1/Dex3/SONIC
+candidates. The recorded deployment routes span
 16 robot configurations and remain individual planning candidates until their
-exact policy identity, rights, robot, interface and runtime are bound. Five DROID
-candidates have default runtime implementations: pi05, GR00T N1.7, Cosmos 3 Edge,
-Cosmos 3 Nano and MolmoAct2. That does not establish a completed simulation on
+exact policy identity, rights, robot, interface and runtime are bound. Eight DROID
+candidates have default runtime implementations: pi05, the π0, π0 100k and
+π0-FAST PolaRiS joint-position checkpoints, GR00T N1.7, Cosmos 3 Edge,
+Cosmos 3 Nano and MolmoAct2. The three PolaRiS checkpoints are the other entries
+of pi05's frozen checkpoint inventory and run through pi05's pinned OpenPI
+source, server and client with their own 10-row action chunks. The other
+thirteen OpenPI checkpoints stay unavailable: none is in that frozen inventory,
+and each row also records why the runtime cannot serve it (joint-velocity
+output, a checkpoint outside `checkpoints/polaris/`, no training config at the
+pinned OpenPI revision, or a config that does not name its checkpoint).
+That does not establish a completed simulation on
 the current task. The native G1 candidates use their dedicated whole-body
 worker and require an exact current-task G1 scene packet. Missing scene, policy,
 rights, adapter or credentials remain individual reasons. See
