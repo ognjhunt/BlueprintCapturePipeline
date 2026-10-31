@@ -386,6 +386,24 @@ def test_only_bounded_ci_workflow_runs_for_ordinary_pull_requests() -> None:
         assert "pull_request:" not in event_block, workflow_name
 
 
+def test_codeql_analyzes_only_the_newest_commit_and_gates_nothing() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/codeql.yml").read_text(encoding="utf-8"))
+
+    assert workflow["concurrency"] == {
+        "group": "codeql-${{ github.ref }}",
+        "cancel-in-progress": True,
+    }
+    # YAML reads the bare `on:` key as true. The weekly analysis stays.
+    assert workflow[True]["schedule"] == [{"cron": "31 7 * * 2"}]
+    assert workflow[True]["push"] == {"branches": ["main"]}
+    queries = workflow["jobs"]["analyze"]["steps"][1]["with"]["queries"]
+    assert queries == "security-extended,security-and-quality"
+    # Cancelling a superseded analysis is safe only while nothing depends on it.
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    assert "analyze" not in ci["jobs"]
+    assert "analyze" not in ci["jobs"]["supply-chain"]["needs"]
+
+
 def test_groot_oscar_disk_admission_measures_every_write_filesystem() -> None:
     script = (ROOT / "scripts" / "build_push_groot_oscar_closed_loop_image.sh").read_text(
         encoding="utf-8"

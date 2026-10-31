@@ -6,6 +6,12 @@ on:
   schedule:
     - cron: "31 7 * * 2"
 
+# Only the newest main commit needs an analysis, and this workflow gates nothing:
+# at about 44 runner-minutes a run it held slots that main's attestation waited for.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   security-events: write
