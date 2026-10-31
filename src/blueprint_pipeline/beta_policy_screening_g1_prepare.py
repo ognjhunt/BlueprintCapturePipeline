@@ -125,8 +125,9 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
     from .adp_task_scoring import validate_rigid_task_success_contract
     from .native_g1_arena_robot_configuration import build_pinned_g1_arena_robot_configuration
     from .native_task_robot_contact_topology import _asset_rigid_body_paths
+    from .native_g1_scene_reach_probe import STANCE_RULE, g1_stance_static_reach
     from .scene_placement.robot_profile import UNITREE_G1_PROFILE
-    from .team_embodiment_stance import _scene_collision, ground_stance
+    from .team_embodiment_stance import GRID_STEP_M, SEARCH_RADIUS_M, _scene_collision, ground_stance
 
     original = _read(base_root / "native_task_arena_packet_request.v1.json")
     plan = _read(base_root / "native_task_arena_scene_plan.v1.json")
@@ -151,10 +152,19 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
         bounds = {key: [float(start[i]) + float(local[key][i]) for i in range(3)] for key in ("minimum", "maximum")}
         bounds_basis = "retained_unrotated_task_scoring_bounds"
     collision, collision_digest, offset = _scene_collision(plan, base_root)
-    stance = ground_stance(collision_path=collision, collision_sha256=collision_digest, offset=offset,
+    # The closest clear stance from which the G1's own nominal arm span covers the pick and the place;
+    # with none, the closest, flagged. Advisory: reach refuses nothing here.
+    stances = ground_stance(collision_path=collision, collision_sha256=collision_digest, offset=offset,
         subject_center=list(task["start_pose_world"][:3]), subject_minimum=bounds["minimum"], subject_maximum=bounds["maximum"],
         footprint_half_extent_m=list(UNITREE_G1_PROFILE.footprint_half_extent_xyz[:2]), root_height_m=UNITREE_G1_PROFILE.pelvis_height_m,
-        retain_large_collision_bounds=True)
+        retain_large_collision_bounds=True, ranked=(2 * math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9) + 1) ** 2)
+    try:
+        chosen, stance_reach = g1_stance_static_reach(stances, start=task["start_pose_world"][:3],
+                                                      target=task["target_position_world_m"])
+    except (KeyError, TypeError, ValueError):
+        chosen, stance_reach = 0, {"rule": STANCE_RULE, "status": "unassessed",
+                                   "reason": "g1_stance_reach_inputs_invalid"}
+    stance = stances[chosen]
     pose = {"position_world_m": stance["position_world_m"], "orientation_xyzw": stance["orientation_xyzw"]}
     robot = build_pinned_g1_arena_robot_configuration(asset=robot_asset, evidence_root=evidence_root,
         base_pose_world=pose, task_hand="right")
@@ -181,7 +191,7 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
     assumptions = {"recipe_id": RECIPE, "current_task_source": dict(source), "site_id": site_id,
         "source_packet_receipt_digest": base_receipt["receipt_digest"],
         "source_scene_plan_digest": base_receipt["arena_scene_plan_digest"],
-        "robot_usd_sha256": robot["usd_sha256"], "stance": stance,
+        "robot_usd_sha256": robot["usd_sha256"], "stance": stance, "stance_reach": stance_reach,
         "subject_bounds_world_m": bounds, "subject_bounds_basis": bounds_basis,
         "task_success_contract_digest": contract["contract_digest"],
         "stance_method": "existing_scene_collision_floor_and_clear_footprint_search",
