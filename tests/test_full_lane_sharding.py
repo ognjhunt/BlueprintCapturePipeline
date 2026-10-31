@@ -25,6 +25,7 @@ from scripts.full_lane_sharding import (
     build_shard_plan,
     validate_sharded_artifact,
     verify_shard,
+    verify_wide_shard,
 )
 from scripts.full_lane_sharding import (
     main as sharding_main,
@@ -691,3 +692,162 @@ def test_aggregate_command_retains_blocked_receipt_when_shards_are_missing(
     )
     assert payload["status"] == "blocked"
     assert payload["blockers"] == ["aggregate_shard_receipt_count_invalid"]
+
+
+def _wide_inputs(
+    tmp_path: Path, *, files: list[str], executed: list[str], junit: list[str] | None = None
+) -> dict[str, Path]:
+    plan = tmp_path / "plan.json"
+    _write_json(plan, {
+        "requires_wide_impacted": True,
+        "wide_impacted_tests": sorted(files),
+        "wide_shards": [{"index": 0, "estimated_seconds": 1.0, "files": sorted(files)}],
+    })
+    manifest = tmp_path / "executed.json"
+    _write_json(manifest, _collection(sorted(executed), phase="executed"))
+    report = tmp_path / "junit.xml"
+    _junit(report, sorted(executed) if junit is None else junit)
+    return {"impact_plan_path": plan, "executed_path": manifest, "junit_path": report}
+
+
+def _no_external_tests(_files) -> set[str]:
+    return set()
+
+
+def test_wide_shard_passes_when_every_planned_file_ran(tmp_path: Path) -> None:
+    receipt = verify_wide_shard(
+        **_wide_inputs(
+            tmp_path,
+            files=["tests/test_a.py", "tests/test_b.py"],
+            executed=["tests/test_a.py::test_one", "tests/test_b.py::test_two"],
+        ),
+        shard_index=0,
+        files_with_external_tests=_no_external_tests,
+    )
+    assert receipt["status"] == "passed"
+    assert receipt["blockers"] == []
+    assert receipt["planned_file_count"] == 2
+    assert receipt["executed_test_count"] == receipt["junit_test_count"] == 2
+
+
+def test_wide_shard_refuses_a_planned_file_that_collected_no_tests(tmp_path: Path) -> None:
+    receipt = verify_wide_shard(
+        **_wide_inputs(
+            tmp_path,
+            files=["tests/test_a.py", "tests/test_b.py"],
+            executed=["tests/test_a.py::test_one"],
+        ),
+        shard_index=0,
+        files_with_external_tests=_no_external_tests,
+    )
+    assert receipt["status"] == "blocked"
+    assert receipt["blockers"] == ["wide_shard_file_collected_no_tests:tests/test_b.py"]
+
+
+def test_wide_shard_accepts_a_file_only_external_markers_deselect(tmp_path: Path) -> None:
+    """The full lane leaves these tests to their evidence lanes too, so it is not a lost test."""
+    asked: list[list[str]] = []
+
+    def external(files) -> set[str]:
+        asked.append(list(files))
+        return {"tests/test_b.py"}
+
+    receipt = verify_wide_shard(
+        **_wide_inputs(
+            tmp_path,
+            files=["tests/test_a.py", "tests/test_b.py"],
+            executed=["tests/test_a.py::test_one"],
+        ),
+        shard_index=0,
+        files_with_external_tests=external,
+    )
+    assert receipt["status"] == "passed"
+    assert receipt["external_only_files"] == ["tests/test_b.py"]
+    assert asked == [["tests/test_b.py"]]
+
+
+def test_wide_shard_collects_external_tests_through_the_lanes_complement() -> None:
+    from scripts import full_lane_sharding as module
+
+    workflow = (ROOT / ".github/workflows/impacted-wide-lane.yml").read_text(encoding="utf-8")
+    assert f'-m "not {module.EXTERNAL_MARKERS.replace(" or ", " and not ")}"' in workflow
+    assert "tests/test_astra_cad_skill_runtime_kernel.py" in module._files_with_external_tests(
+        ["tests/test_astra_cad_skill_runtime_kernel.py"]
+    )
+    assert module._files_with_external_tests(["tests/test_full_lane_sharding.py"]) == set()
+
+
+def test_wide_shard_refuses_failure_skip_and_substitution(tmp_path: Path) -> None:
+    files = ["tests/test_a.py"]
+    executed = ["tests/test_a.py::test_one", "tests/test_a.py::test_two"]
+
+    inputs = _wide_inputs(tmp_path, files=files, executed=executed)
+    _junit(inputs["junit_path"], executed, failure=executed[0])
+    receipt = verify_wide_shard(**inputs, shard_index=0, files_with_external_tests=_no_external_tests)
+    assert receipt["blockers"] == ["wide_shard_junit_failures:1"]
+
+    inputs = _wide_inputs(tmp_path, files=files, executed=executed)
+    report = inputs["junit_path"]
+    report.write_text(report.read_text().replace("</properties>", "</properties><skipped/>", 1))
+    receipt = verify_wide_shard(**inputs, shard_index=0, files_with_external_tests=_no_external_tests)
+    assert receipt["blockers"] == ["wide_shard_junit_skipped:1"]
+
+    inputs = _wide_inputs(tmp_path, files=files, executed=executed, junit=executed[:1])
+    receipt = verify_wide_shard(**inputs, shard_index=0, files_with_external_tests=_no_external_tests)
+    assert receipt["blockers"] == ["wide_shard_junit_nodeids_mismatch"]
+
+    inputs = _wide_inputs(tmp_path, files=files, executed=[*executed, "tests/test_other.py::test_three"])
+    receipt = verify_wide_shard(**inputs, shard_index=0, files_with_external_tests=_no_external_tests)
+    assert receipt["blockers"] == ["wide_shard_executed_outside_plan"]
+
+
+@pytest.mark.parametrize(("change", "blocker"), [
+    ({"requires_wide_impacted": False}, "wide_plan_not_requested"),
+    ({"wide_impacted_tests": []}, "wide_plan_not_requested"),
+    ({"wide_shards": None}, "wide_plan_not_requested"),
+    ({"wide_impacted_tests": ["tests/test_a.py", "tests/test_b.py"]}, "wide_plan_shards_do_not_partition_selection"),
+    (
+        {"wide_shards": [{"index": 0, "files": ["tests/test_a.py"]}, {"index": 1, "files": ["tests/test_a.py"]}]},
+        "wide_plan_shards_do_not_partition_selection",
+    ),
+    ({"wide_shards": [{"index": 3, "files": ["tests/test_a.py"]}]}, "wide_plan_shard_indices_invalid"),
+])
+def test_wide_shard_refuses_a_plan_that_does_not_assign_each_selected_file_once(
+    tmp_path: Path, change: dict[str, object], blocker: str
+) -> None:
+    inputs = _wide_inputs(tmp_path, files=["tests/test_a.py"], executed=["tests/test_a.py::test_one"])
+    plan = json.loads(inputs["impact_plan_path"].read_text())
+    _write_json(inputs["impact_plan_path"], plan | change)
+
+    receipt = verify_wide_shard(**inputs, shard_index=0, files_with_external_tests=_no_external_tests)
+
+    assert receipt["status"] == "blocked"
+    assert blocker in receipt["blockers"]
+
+
+def test_wide_shard_refuses_an_index_the_plan_does_not_have(tmp_path: Path) -> None:
+    inputs = _wide_inputs(tmp_path, files=["tests/test_a.py"], executed=["tests/test_a.py::test_one"])
+
+    receipt = verify_wide_shard(**inputs, shard_index=1, files_with_external_tests=_no_external_tests)
+
+    assert "wide_plan_shard_index_invalid" in receipt["blockers"]
+
+
+def test_wide_shard_command_keeps_a_blocked_receipt_when_inputs_are_missing(tmp_path: Path) -> None:
+    output = tmp_path / "receipt.json"
+
+    status = sharding_main([
+        "verify-wide-shard",
+        "--impact-plan", str(tmp_path / "missing-plan.json"),
+        "--executed", str(tmp_path / "missing-executed.json"),
+        "--junit", str(tmp_path / "missing-junit.xml"),
+        "--shard-index", "0",
+        "--output", str(output),
+    ])
+
+    assert status == 1
+    receipt = json.loads(output.read_text())
+    assert receipt["status"] == "blocked"
+    assert any(blocker.startswith("wide_plan_invalid:") for blocker in receipt["blockers"])
+    assert any(blocker.startswith("wide_shard_executed_invalid:") for blocker in receipt["blockers"])
+    assert "junit_invalid" in receipt["blockers"]

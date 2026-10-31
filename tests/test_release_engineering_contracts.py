@@ -110,12 +110,118 @@ def test_final_gate_refuses_missing_requested_full_evidence():
                 'NATIVE_REQUIRED': 'false', 'NATIVE_RESULT': 'skipped',
                 'NATIVE_SCENE_REQUIRED': 'false', 'NATIVE_SCENE_RESULT': 'skipped',
                 'FULL_REQUIRED': str(required).lower(), 'FULL_RESULT': result,
+                'WIDE_REQUIRED': 'false', 'WIDE_RESULT': 'skipped',
             }
             outcome = subprocess.run(['bash', '-e', '-c', step['run']],
                                      env=environment, capture_output=True, check=False)
             expected = result == ('success' if required else 'skipped')
             assert (outcome.returncode == 0) is expected, (required, result)
     assert step['env']['FULL_REQUIRED'] == '${{ needs.impact.outputs.requires_full_suite }}'
+
+
+def test_final_gate_refuses_missing_requested_wide_evidence():
+    import yaml
+
+    jobs = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+    assert 'impacted-wide' in jobs['impacted-gate']['needs']
+    step = jobs['impacted-gate']['steps'][0]
+    for required in (False, True):
+        for result in ('success', 'skipped', 'failure', 'cancelled'):
+            environment = os.environ | {
+                'IMPACT_RESULT': 'success', 'IMPACTED_RESULT': 'success',
+                'NATIVE_REQUIRED': 'false', 'NATIVE_RESULT': 'skipped',
+                'NATIVE_SCENE_REQUIRED': 'false', 'NATIVE_SCENE_RESULT': 'skipped',
+                'FULL_REQUIRED': 'false', 'FULL_RESULT': 'skipped',
+                'WIDE_REQUIRED': str(required).lower(), 'WIDE_RESULT': result,
+            }
+            outcome = subprocess.run(['bash', '-e', '-c', step['run']],
+                                     env=environment, capture_output=True, check=False)
+            expected = result == ('success' if required else 'skipped')
+            assert (outcome.returncode == 0) is expected, (required, result)
+    assert step['env']['WIDE_REQUIRED'] == '${{ needs.impact.outputs.requires_wide_impacted }}'
+    assert step['env']['WIDE_RESULT'] == '${{ needs.impacted-wide.result }}'
+
+
+def test_wide_lane_waits_for_requested_native_acceptance():
+    import itertools
+    import yaml
+
+    jobs = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+    job = jobs['impacted-wide']
+    assert set(job['needs']) == {'impact', 'native-feature-linux', 'native-scene-linux'}
+    assert job['uses'] == './.github/workflows/impacted-wide-lane.yml'
+    assert job['with'] == {'shard_matrix': '${{ needs.impact.outputs.wide_shard_matrix }}'}
+    condition = job['if'].replace('${{', '').replace('}}', '').strip()
+    assert 'always()' not in condition
+    for cancelled, wide, registered, scene, impact, first, second in itertools.product(
+            (False, True), (False, True), (False, True), (False, True), ('success', 'failure'),
+            ('success', 'failure', 'skipped', 'cancelled'),
+            ('success', 'failure', 'skipped', 'cancelled')):
+        observed = condition
+        values = {
+            'needs.impact.outputs.requires_wide_impacted': str(wide).lower(),
+            'needs.impact.outputs.native_feature_required': str(registered).lower(),
+            'needs.impact.outputs.native_scene_required': str(scene).lower(),
+            'needs.impact.result': impact,
+            'needs.native-feature-linux.result': first,
+            'needs.native-scene-linux.result': second,
+        }
+        for key, value in values.items():
+            observed = observed.replace(key, repr(value))
+        observed = observed.replace('!cancelled()', repr(not cancelled))
+        observed = observed.replace('&&', ' and ').replace('||', ' or ')
+        assert 'needs.' not in observed
+        expected = (not cancelled and wide and impact == 'success'
+                    and first == ('success' if registered else 'skipped')
+                    and second == ('success' if scene else 'skipped'))
+        assert eval('(' + observed + ')', {'__builtins__': {}}, {}) is expected
+
+
+def test_wide_lane_has_the_full_lanes_environment_and_takes_no_test_selection():
+    import yaml
+
+    full = yaml.load((ROOT / '.github/workflows/full-test-lane.yml').read_text(),
+                     Loader=yaml.BaseLoader)['jobs']['full-pytest-shard']
+    source = (ROOT / '.github/workflows/impacted-wide-lane.yml').read_text()
+    workflow = yaml.load(source, Loader=yaml.BaseLoader)
+    shard = workflow['jobs']['wide-shard']
+
+    # Everything before collection is shared, the privacy fail-closed posture included,
+    # so slow, root and systemd tests run here exactly as they do in the full lane.
+    boundary = [step['name'] for step in full['steps']].index('Collect full lane')
+    shared = [step['name'] for step in full['steps'][:boundary]]
+    assert 'Verify production fail-closed posture' in shared
+    assert 'Install and protect system-Python dependencies for full Linux proof' in shared
+    assert shard['steps'][:boundary] == full['steps'][:boundary]
+    assert shard['runs-on'] == full['runs-on']
+    assert shard['timeout-minutes'] == full['timeout-minutes']
+    assert shard['strategy']['fail-fast'] == 'false'
+    assert shard['env'] == {name: value for name, value in full['env'].items()
+                            if name != 'FULL_TEST_LANE_TRIGGER_REASON'}
+
+    # The only input picks shard legs. The files come from this run's own impact plan.
+    assert workflow['on'].keys() == {'workflow_call'}
+    assert workflow['on']['workflow_call']['inputs'].keys() == {'shard_matrix'}
+    assert 'pull_request' not in workflow['on']
+    download = next(step for step in shard['steps'] if 'download-artifact' in step.get('uses', ''))
+    assert download['with']['name'] == 'impacted-test-plan-${{ github.sha }}'
+    assert 'run-id' not in download['with']
+
+    # A selected file runs the way the full lane runs it: same entry point, same
+    # marker expression, serial.
+    run = next(step for step in shard['steps'] if step['name'] == 'Run wide impacted shard')['run']
+    full_run = next(step for step in full['steps'] if step['name'] == 'Run full lane shard')['run']
+    assert '.wide_shards[]' in run
+    for shared_text in ('uv run --no-sync scripts/pytest_full.sh',
+                        '-p blueprint_pipeline.pytest_full_lane_evidence',
+                        '-m "not external_runtime and not external_data"'):
+        assert shared_text in run
+        assert shared_text in full_run
+    assert '-n ' not in run
+    assert '--dist' not in run
+    assert 'continue-on-error' not in source
+    verify = next(step for step in shard['steps'] if step['name'] == 'Verify exact wide impacted shard')
+    assert 'scripts/full_lane_sharding.py verify-wide-shard' in verify['run']
 
 
 def test_release_signing_accepts_validated_optional_skips_but_requires_every_gate():
@@ -286,6 +392,9 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
     assert "needs.cross-cutting-full-suite.result" in workflow
     assert "uses: ./.github/workflows/full-test-lane.yml" in workflow
     assert "needs.impact.outputs.requires_full_suite == 'true'" in workflow
+    assert "needs.impacted-wide.result" in workflow
+    assert "uses: ./.github/workflows/impacted-wide-lane.yml" in workflow
+    assert "needs.impact.outputs.requires_wide_impacted == 'true'" in workflow
     assert "uv run pytest -q" not in workflow
     assert "--cov-fail-under" not in workflow
 
@@ -336,7 +445,9 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
 
 
 def test_core_workflows_bind_runner_temp_only_after_job_start() -> None:
-    for workflow_name in ("ci.yml", "sim-only-local-gate.yml", "full-test-lane.yml"):
+    for workflow_name in (
+        "ci.yml", "sim-only-local-gate.yml", "full-test-lane.yml", "impacted-wide-lane.yml",
+    ):
         workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
             encoding="utf-8"
         )
@@ -393,6 +504,7 @@ def test_only_bounded_ci_workflow_runs_for_ordinary_pull_requests() -> None:
     for workflow_name in (
         "codeql.yml",
         "full-test-lane.yml",
+        "impacted-wide-lane.yml",
         "python-compatibility.yml",
         "sim-only-local-gate.yml",
     ):

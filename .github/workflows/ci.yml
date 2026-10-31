@@ -24,6 +24,8 @@ jobs:
     outputs:
       requires_full_suite: ${{ steps.plan.outputs.requires_full_suite }}
       selected_test_count: ${{ steps.plan.outputs.selected_test_count }}
+      requires_wide_impacted: ${{ steps.plan.outputs.requires_wide_impacted }}
+      wide_shard_matrix: ${{ steps.plan.outputs.wide_shard_matrix }}
       native_feature_required: ${{ steps.native-plan.outputs.required }}
       native_scene_required: ${{ steps.native-scene-plan.outputs.required }}
       native_reader_sdk_required: ${{ steps.native-reader-plan.outputs.required }}
@@ -490,9 +492,24 @@ jobs:
       reason: cross_cutting_dependency_impact
     secrets: inherit
 
+  impacted-wide:
+    name: Wide impacted lane
+    needs: [impact, native-feature-linux, native-scene-linux]
+    if: >-
+      !cancelled() && needs.impact.result == 'success' &&
+      needs.impact.outputs.requires_wide_impacted == 'true' &&
+      ((needs.impact.outputs.native_feature_required == 'true' && needs.native-feature-linux.result == 'success') ||
+       (needs.impact.outputs.native_feature_required != 'true' && needs.native-feature-linux.result == 'skipped')) &&
+      ((needs.impact.outputs.native_scene_required == 'true' && needs.native-scene-linux.result == 'success') ||
+       (needs.impact.outputs.native_scene_required != 'true' && needs.native-scene-linux.result == 'skipped'))
+    uses: ./.github/workflows/impacted-wide-lane.yml
+    with:
+      shard_matrix: ${{ needs.impact.outputs.wide_shard_matrix }}
+    secrets: inherit
+
   impacted-gate:
     name: Impacted test and sentinel gate
-    needs: [impact, impacted-tests, native-scene-linux, native-feature-linux, cross-cutting-full-suite]
+    needs: [impact, impacted-tests, native-scene-linux, native-feature-linux, cross-cutting-full-suite, impacted-wide]
     # Reports after failed or skipped needs, but not after cancellation: GitHub
     # keeps any job whose `if` is still true, so always() held a superseded run
     # open and left the pull request's newest run pending behind it. A cancelled
@@ -507,6 +524,8 @@ jobs:
           IMPACTED_RESULT: ${{ needs.impacted-tests.result }}
           FULL_RESULT: ${{ needs.cross-cutting-full-suite.result }}
           FULL_REQUIRED: ${{ needs.impact.outputs.requires_full_suite }}
+          WIDE_RESULT: ${{ needs.impacted-wide.result }}
+          WIDE_REQUIRED: ${{ needs.impact.outputs.requires_wide_impacted }}
           NATIVE_SCENE_REQUIRED: ${{ needs.impact.outputs.native_scene_required }}
           NATIVE_SCENE_RESULT: ${{ needs.native-scene-linux.result }}
           NATIVE_REQUIRED: ${{ needs.impact.outputs.native_feature_required }}
@@ -528,6 +547,11 @@ jobs:
             test "${FULL_RESULT}" = "success"
           else
             test "${FULL_RESULT}" = "skipped"
+          fi
+          if test "${WIDE_REQUIRED}" = "true"; then
+            test "${WIDE_RESULT}" = "success"
+          else
+            test "${WIDE_RESULT}" = "skipped"
           fi
 
   lint:
