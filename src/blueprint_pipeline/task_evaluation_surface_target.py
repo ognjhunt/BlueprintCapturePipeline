@@ -15,6 +15,9 @@ SCHEMA = "task_evaluation_surface_target.v1"
 #: A subject resting on a surface this far from the region's height (the floor
 #: under a desk) is not in the region, whatever its plan position.
 INITIAL_REGION_HEIGHT_TOLERANCE_M = 0.05
+#: A region sits on its support's top within this, unless an estimated support
+#: declares the wider placement uncertainty its region was found within.
+SUPPORT_HEIGHT_TOLERANCE_M = 0.005
 
 
 def require(condition, code):
@@ -135,8 +138,12 @@ def minimum_container_carry_height(task_spec, *, clearance_m):
 
 
 def derive_surface_target(*, destination, support, source_min, source_max, support_instance_id,
-                          start_support=None):
-    """The region on ``support``; ``start_support`` is the subject's own surface when it differs."""
+                          start_support=None, height_tolerance_m=SUPPORT_HEIGHT_TOLERANCE_M):
+    """The region on ``support``; ``start_support`` is the subject's own surface when it differs.
+
+    ``height_tolerance_m`` widens the region-to-support-top check only for an
+    estimated support, to the placement uncertainty its region was found within.
+    """
     require(destination.get("kind") == "green_region" and destination.get("relation") in {"on", "inside"}
             and destination.get("orientation_xyzw") == [0, 0, 0, 1],
             "surface_target_destination_invalid")
@@ -160,7 +167,9 @@ def derive_surface_target(*, destination, support, source_min, source_max, suppo
     value["target_digest"] = canonical_digest(value, digest_field="target_digest")
     validate_surface_target(value)
     p, radius = value["surface_position_world_m"], value["radius_m"]
-    require(abs(p[2] - support["bounds_max_xyz_m"][2]) <= 0.005,
+    require(type(height_tolerance_m) in (int, float) and math.isfinite(height_tolerance_m)
+            and height_tolerance_m >= SUPPORT_HEIGHT_TOLERANCE_M, "surface_target_height_tolerance_invalid")
+    require(abs(p[2] - support["bounds_max_xyz_m"][2]) <= height_tolerance_m,
             "surface_target_support_height_mismatch")
     require(all(support["bounds_min_xyz_m"][i] <= p[i] - radius
                 and p[i] + radius <= support["bounds_max_xyz_m"][i] for i in (0, 1)),

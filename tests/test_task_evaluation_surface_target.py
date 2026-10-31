@@ -137,6 +137,26 @@ def test_bad_regions_refused_before_execution(position, radius, reason):
         target_fixture(position_world_m=position, radius_m=radius)
 
 
+def test_an_estimated_support_widens_only_the_height_check_to_its_placement_uncertainty():
+    """capture-447ae4f4: the region sat 1.2 cm under the estimated table's highest face (7.2 cm uncertainty)."""
+    def derive(position, **tolerance):
+        return derive_surface_target(
+            destination={"kind": "green_region", "relation": "on", "visible_label": "green spot",
+                         "position_world_m": position, "orientation_xyzw": [0, 0, 0, 1], "radius_m": 0.07},
+            support={"sage_prim_path": "/Room/Table", "bounds_min_xyz_m": [-1, -1, 0], "bounds_max_xyz_m": [1, 1, 0.75]},
+            source_min=[-0.04, -0.03, 0.75], source_max=[0.04, 0.03, 0.89], support_instance_id="table-17",
+            **tolerance)
+
+    with pytest.raises(ValueError, match="height_mismatch"):
+        derive([0.4, 0.0, 0.738])
+    assert derive([0.4, 0.0, 0.738], height_tolerance_m=0.072)["surface_position_world_m"][2] == 0.738
+    with pytest.raises(ValueError, match="height_mismatch"):
+        derive([0.4, 0.0, 0.65], height_tolerance_m=0.072)
+    for tolerance in (0.001, float("nan"), True, "0.07"):
+        with pytest.raises(ValueError, match="height_tolerance_invalid"):
+            derive([0.4, 0.0, 0.75], height_tolerance_m=tolerance)
+
+
 def test_thresholds_are_task_inputs_and_marker_is_bound():
     target = target_fixture(success={"stable_seconds": 2.0, "maximum_tilt_rad": 0.1})
     assert target["stable_seconds"] == 2

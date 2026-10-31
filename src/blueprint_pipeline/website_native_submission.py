@@ -168,10 +168,12 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         bounds_min=support["aabb_min_xyz"], bounds_max=support["aabb_max_xyz"])
     support_record.update(authority="authored_development_surface" if development else "registered_estimated_capture_and_reconstruction",
                           physical_scale_measured=False, source_face_indices=preparation["support"]["face_indices"])
-    from .task_evaluation_surface_target import derive_surface_target, surface_execution_limits, surface_target_for_web
+    from .task_evaluation_surface_target import (SUPPORT_HEIGHT_TOLERANCE_M, derive_surface_target,
+                                                 surface_execution_limits, surface_target_for_web)
+    from .website_support_geometry import DESTINATION_MARGIN_M, destination_clear_of_start
     strategy = owner_task["strategy"]
     articulated = strategy == "articulated_open_close"
-    target_support, start_support = support_record, None
+    target_support, start_support, relocation = support_record, None, None
     task_identity = {"id": owner_task["task_id"], "version": "v1"}
     if articulated:
         require("destination" not in owner_task and isinstance(owner_task.get("articulation"), dict),
@@ -213,10 +215,25 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
             target_support.update(authority=support_record["authority"], physical_scale_measured=False,
                                   source_face_indices=bound["face_indices"])
             start_support = support_record
-        target = derive_surface_target(destination={**destination, "kind": "green_region",
-            "radius_m": math.hypot(*[(upper[i] - lower[i]) / 2 for i in (0, 1)]) + 0.01},
+        radius = math.hypot(*[(upper[i] - lower[i]) / 2 for i in (0, 1)]) + DESTINATION_MARGIN_M
+        if (start_support is None and destination.get("relation") == "on"
+                and not destination_clear_of_start(lower, upper, destination["position_world_m"], up=2,
+                                                   clearance=radius)):
+            # A preparation from before the same-surface rule: move its destination
+            # off the start by that rule, from its own collider, and say so.
+            from .website_task_preparation import relocated_destination
+            moved = relocated_destination(preparation, paths["preparation"])
+            require(moved is not None, "task_destination_overlaps_start")
+            destination, relocation = {**destination, "position_world_m": moved["position_world_m"]}, moved["relocation"]
+        # An estimated support's top is known only to the placement uncertainty
+        # its destination was found within (capture-447ae4f4: 7.2 cm; the region
+        # sat 1.2 cm under the support's highest face, the 5 mm check refused it).
+        uncertainty = preparation["coordinate_frame"].get("placement_uncertainty_m")
+        estimated = (not development and type(uncertainty) in (int, float) and math.isfinite(uncertainty))
+        target = derive_surface_target(destination={**destination, "kind": "green_region", "radius_m": radius},
             support=target_support, source_min=lower, source_max=upper,
-            support_instance_id=target_support["publisher_instance_id"], start_support=start_support)
+            support_instance_id=target_support["publisher_instance_id"], start_support=start_support,
+            height_tolerance_m=max(SUPPORT_HEIGHT_TOLERANCE_M, uncertainty) if estimated else SUPPORT_HEIGHT_TOLERANCE_M)
         position = destination["position_world_m"]
         template, success, execution = records.pick_and_place_task_records(
             task_identity=task_identity, object_identity=construction["subject_identity"],
@@ -234,6 +251,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                     visible_target_label=(owner_task["articulation"]["part_label"] if articulated else destination["visible_label"]),
                     **({} if articulated else {"surface_target": target}),
                     **({"destination_support_plane": target_support} if start_support is not None else {}),
+                    **({"destination_relocation": relocation} if relocation is not None else {}),
                     dimension_authority="estimated", physical_world_truth_claimed=False,
                     physical_property_screen={
                         "basis": physics["basis"], "dimensions_m": physics["dimensions_m"],
