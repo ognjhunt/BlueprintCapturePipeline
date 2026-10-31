@@ -5,7 +5,9 @@ quotes determine what can be scheduled. This pure planner performs no launch.
 It reuses the existing bounded scenario draws under a separate screening seed
 domain and never consumes the private scored matrix. The completed campaign is
 the job's evaluation result; only spend beyond the site allowance needs the
-owner's approval, and no plan can exceed it.
+owner's approval, and no plan can exceed it. A website job's plan is also
+sized to what the job's one dollar ceiling leaves
+(``build_job_ceiling_screening_plan``).
 """
 
 from __future__ import annotations
@@ -13,10 +15,11 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from decimal import ROUND_CEILING, Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlsplit
@@ -36,6 +39,16 @@ QUOTE_SCHEMA_VERSION = "beta_policy_screening_cost_quote.v1"
 CLAIM_CEILING = "diagnostic_policy_execution"
 SITE_BUDGET_USD = Decimal("15.00")
 DEFAULT_EPISODES = 10
+# One dollar ceiling per website job (owner decision 2026-10-30, WebApp #1168).
+# A plan sized to it records the read it was sized from.
+JOB_CEILING_BASIS = "website_job_ceiling"
+JOB_CEILING_SCHEMA_VERSION = "beta_policy_screening_job_ceiling.v1"
+JOB_CEILING_SUMMARY_SCHEMA = "website_job_ceiling.v1"
+JOB_CEILING_DEFERRED = "website_job_ceiling_insufficient"
+_JOB_CEILING_FIELDS = {"budget_basis", "website_job_ceiling"}
+_JOB_CEILING_RECORD = {"schema_version", "read_at", "summary", "summary_digest", "remaining_cost_usd",
+                       "local_screening_holds_usd", "available_usd"}
+_CENT = Decimal("0.01")
 _DIGEST = re.compile(DIGEST_PATTERN)
 _ID = re.compile(ID_PATTERN)
 _CANDIDATE_ID = re.compile(CANDIDATE_ID_PATTERN)
@@ -486,7 +499,8 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                   "family_static_readiness_digest", "scenario_scope"} if family else {"robot_free_probe_digest"})
     # Plans enqueued before the single-tier change carry a digest-bound
     # ``recommendation_eligible: false``; they stay valid and publish alike.
-    if (set(plan) - {"recommendation_eligible"} != required or plan["schema_version"] != PLAN_SCHEMA_VERSION
+    if (set(plan) - {"recommendation_eligible"} - _JOB_CEILING_FIELDS != required
+            or plan["schema_version"] != PLAN_SCHEMA_VERSION
             or plan["purpose"] != "screening" or plan["claim_ceiling"] != CLAIM_CEILING
             or plan.get("recommendation_eligible", False) is not False):
         raise BetaPolicyScreeningPlanError("beta_screening_plan_schema_invalid")
@@ -508,9 +522,7 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         (_digest if key.endswith("digest") else _id)(source[key], "beta_screening_source_invalid")
     if any(source[key] != plan[key] for key in ("capture_id", "task_id", "scene_revision_digest")):
         raise BetaPolicyScreeningPlanError("beta_screening_source_mismatch")
-    budget = money(plan["budget_usd"])
-    if not 0 < budget <= SITE_BUDGET_USD:
-        raise BetaPolicyScreeningPlanError("beta_screening_site_budget_exceeded")
+    budget = _plan_budget(plan)
     cells = plan["scenario_cells"]
     _receipt(plan["scene_inputs"])
     if not isinstance(cells, list) or not 1 <= len(cells) <= DEFAULT_EPISODES:
@@ -607,7 +619,110 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     return plan
 
 
+def _plan_budget(plan: Mapping[str, Any]) -> Decimal:
+    """A plan's budget: positive, within the site allowance and, for a plan
+    sized to its website job's ceiling, within what that read left (possibly
+    nothing). Plans built before the job ceiling carry no basis."""
+    budget = money(plan["budget_usd"])
+    available = None
+    if _JOB_CEILING_FIELDS & set(plan):
+        if plan.get("budget_basis") != JOB_CEILING_BASIS:
+            raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+        available = _job_ceiling_available(plan.get("website_job_ceiling"))
+    if budget > SITE_BUDGET_USD or not (budget > 0 or available is not None and budget == 0):
+        raise BetaPolicyScreeningPlanError("beta_screening_site_budget_exceeded")
+    if available is not None and budget > available:
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_exceeded")
+    return budget
+
+
+def _ceiling_dollars(summary: Mapping[str, Any], key: str) -> Decimal:
+    value = summary.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+    return Decimal(str(value))
+
+
+def job_ceiling_record(summary: Mapping[str, Any], *, local_holds_usd: Decimal, read_at: str) -> dict[str, Any]:
+    """What a website job's one dollar ceiling leaves for a new screening plan.
+
+    ``summary`` is the WebApp's ``job_ceiling`` read (``website_job_ceiling.v1``):
+    its ``remaining_cost_usd`` already counts every ledger the WebApp sees
+    (Atlas, upstream rows, native construction and the last screening
+    publication it accepted). ``local_holds_usd`` is the screening this queue
+    holds that the WebApp cannot see yet. The remaining rounds down to cents
+    and the holds round up, so the plan never gets more than the job has left.
+    """
+    summary = _json(summary)
+    holds = Decimal(local_holds_usd)
+    if not holds.is_finite() or holds < 0:
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+    remaining = _ceiling_dollars(summary, "remaining_cost_usd").quantize(_CENT, rounding=ROUND_FLOOR)
+    holds = holds.quantize(_CENT, rounding=ROUND_CEILING)
+    record = {"schema_version": JOB_CEILING_SCHEMA_VERSION, "read_at": read_at, "summary": summary,
+              "summary_digest": canonical_digest(summary), "remaining_cost_usd": f"{remaining:.2f}",
+              "local_screening_holds_usd": f"{holds:.2f}",
+              "available_usd": f"{max(Decimal(0), remaining - holds):.2f}"}
+    _job_ceiling_available(record)
+    return record
+
+
+def _job_ceiling_available(record: Any) -> Decimal:
+    if (not isinstance(record, dict) or set(record) != _JOB_CEILING_RECORD
+            or record["schema_version"] != JOB_CEILING_SCHEMA_VERSION or not isinstance(record["read_at"], str)
+            or not isinstance(record["summary"], dict)
+            or record["summary"].get("schema_version") != JOB_CEILING_SUMMARY_SCHEMA
+            or record["summary_digest"] != canonical_digest(record["summary"])):
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+    try:
+        read_at = dt.datetime.fromisoformat(record["read_at"].replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid") from exc
+    maximum = _ceiling_dollars(record["summary"], "maximum_cost_usd")
+    remaining = _ceiling_dollars(record["summary"], "remaining_cost_usd")
+    floor, holds, available = (money(record[key]) for key in
+                               ("remaining_cost_usd", "local_screening_holds_usd", "available_usd"))
+    if (read_at.tzinfo is None or maximum <= 0 or remaining > maximum
+            or floor != remaining.quantize(_CENT, rounding=ROUND_FLOOR)
+            or available != max(Decimal(0), floor - holds)):
+        raise BetaPolicyScreeningPlanError("beta_screening_job_ceiling_invalid")
+    return available
+
+
+def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *,
+                                     job_ceiling: Mapping[str, Any], budget_usd: str = "15.00",
+                                     **options: Any) -> dict[str, Any]:
+    """``build_screening_plan`` within its website job's one dollar ceiling.
+
+    The budget is the smaller of ``budget_usd`` and what ``job_ceiling`` (a
+    ``job_ceiling_record``) leaves, decided once: a built plan is never
+    resized. When the ceiling is what binds, every budget deferral names it;
+    with less left than any quote, every candidate is deferred and the plan
+    still publishes, so the job sees why nothing ran.
+    """
+    job_ceiling = _json(job_ceiling)
+    requested = money(budget_usd)
+    budget = min(requested, _job_ceiling_available(job_ceiling))
+    # The planner needs a positive budget. With none left it plans at the
+    # requested one, and every selection is deferred below.
+    plan = build_screening_plan(catalog, scene, budget_usd=f"{budget:.2f}" if budget > 0 else budget_usd, **options)
+    if budget < requested:
+        for row in plan["candidates"]:
+            if (row["status"] == "selected" and budget == 0
+                    or row["status"] == "deferred" and row["blockers"] == ["site_screening_budget_insufficient"]):
+                for key in set(row) - {"candidate_id", "display_name", "configuration_digest", "execution_evidence_kind"}:
+                    del row[key]
+                row.update(status="deferred", blockers=[JOB_CEILING_DEFERRED])
+    planned = sum((money(row["max_cost_usd"]) for row in plan["candidates"] if row["status"] == "selected"), Decimal(0))
+    plan.update(budget_usd=f"{budget:.2f}", maximum_planned_cost_usd=f"{planned:.2f}",
+                budget_basis=JOB_CEILING_BASIS, website_job_ceiling=job_ceiling)
+    plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
+    return validate_screening_plan(plan)
+
+
 __all__ = ["PLAN_SCHEMA_VERSION", "QUOTE_SCHEMA_VERSION", "EXECUTION_SCHEMA_VERSION", "CLAIM_CEILING",
-           "SITE_BUDGET_USD", "DEFAULT_EPISODES", "BetaPolicyScreeningPlanError", "build_screening_plan",
-           "execution_cost_floor", "money", "screening_cells", "validate_cost_quote", "validate_execution_descriptor",
+           "SITE_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
+           "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "BetaPolicyScreeningPlanError",
+           "build_job_ceiling_screening_plan", "build_screening_plan", "execution_cost_floor", "job_ceiling_record",
+           "money", "screening_cells", "validate_cost_quote", "validate_execution_descriptor",
            "validate_screening_plan"]

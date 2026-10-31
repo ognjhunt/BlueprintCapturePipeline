@@ -182,6 +182,10 @@ def prepared_source_queue(tmp_path, monkeypatch, *, revisions=1):
             quote["quote_digest"] = canonical_digest(quote, digest_field="quote_digest")
         return {"scene": facts, "capabilities": admitted, "cost_quotes": quotes}
     monkeypatch.setattr(capabilities, "build_planning_inputs", planning_inputs)
+    # The job's one dollar ceiling leaves more than the $15 site allowance.
+    from blueprint_pipeline import beta_policy_screening_job_ceiling as job_ceiling
+    from tests.test_beta_policy_screening_job_ceiling import ceiling_summary
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", lambda **_: ceiling_summary(40))
     return {"packet_queue": queue, "screening_queue": tmp_path / "screening", "requests": requests,
             "results": results, "validated": validated, "planning_calls": planning_calls, "context": context}
 

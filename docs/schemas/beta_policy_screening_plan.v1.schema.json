@@ -493,9 +493,22 @@
       }
     }
   ],
+  "dependentRequired": {
+    "budget_basis": [
+      "website_job_ceiling"
+    ],
+    "website_job_ceiling": [
+      "budget_basis"
+    ]
+  },
   "description": "Immutable matched diagnostic screening plan. Canonical digests, source/candidate binding, cost arithmetic and shared-cell equality are additionally enforced by validate_screening_plan. Quotes are checked for expiry before reserve/launch, not when reading history.",
   "properties": {
+    "budget_basis": {
+      "const": "website_job_ceiling",
+      "description": "Plans built since the one dollar ceiling per website job (owner decision 2026-10-30) were sized to it: budget_usd is at most website_job_ceiling.available_usd. Older plans omit both fields."
+    },
     "budget_usd": {
+      "description": "Positive and at most 15.00; 0.00 only when budget_basis is website_job_ceiling and the job ceiling left nothing.",
       "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
       "type": "string"
     },
@@ -752,6 +765,66 @@
     "task_success_contract_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "type": "string"
+    },
+    "website_job_ceiling": {
+      "additionalProperties": false,
+      "description": "The job ceiling read this plan's budget was sized from, once. available_usd is remaining_cost_usd (the WebApp's figure rounded down to cents) less local_screening_holds_usd (this queue's screening the WebApp could not see yet, rounded up).",
+      "properties": {
+        "available_usd": {
+          "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+          "type": "string"
+        },
+        "local_screening_holds_usd": {
+          "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+          "type": "string"
+        },
+        "read_at": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "remaining_cost_usd": {
+          "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "beta_policy_screening_job_ceiling.v1"
+        },
+        "summary": {
+          "properties": {
+            "maximum_cost_usd": {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            "remaining_cost_usd": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "schema_version": {
+              "const": "website_job_ceiling.v1"
+            }
+          },
+          "required": [
+            "schema_version",
+            "maximum_cost_usd",
+            "remaining_cost_usd"
+          ],
+          "type": "object"
+        },
+        "summary_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "read_at",
+        "summary",
+        "summary_digest",
+        "remaining_cost_usd",
+        "local_screening_holds_usd",
+        "available_usd"
+      ],
+      "type": "object"
     }
   },
   "required": [
