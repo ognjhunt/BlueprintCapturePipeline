@@ -679,10 +679,10 @@ def _event_names(events: list[tuple[str, object]]) -> list[tuple[str, object]]:
 
 
 def test_scene_configuration_output_role_is_declared_for_a_paid_run() -> None:
-    """2 GiB declared; its entry outlives the dispatcher's 5 h start timeout."""
+    """2 GiB declared; its entry outlives the dispatcher's 9 h start timeout."""
 
     assert disk_budget.ROLE_FOOTPRINT_BYTES[admission.OUTPUT_ROLE] == 2 * GIB
-    assert disk_budget.ROLE_TTL_SECONDS[admission.OUTPUT_ROLE] == 6 * 3600
+    assert disk_budget.ROLE_TTL_SECONDS[admission.OUTPUT_ROLE] == 10 * 3600
     assert admission.OUTPUT_ROLE == "scene_configuration_output"
 
 
