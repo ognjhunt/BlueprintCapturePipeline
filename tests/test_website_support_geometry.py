@@ -275,3 +275,47 @@ def test_a_widened_window_still_refuses_a_probe_past_the_surface_edge():
                          placement_residual_m=.07) is None
     assert "probe_gaps_m" not in support_under(_counter(), [-.2, -.2, .66], [.2, .2, .74], up=2,
                                                meters_per_unit=1, placement_residual_m=.07)
+
+
+def test_a_destination_grounded_as_the_start_surface_moves_to_its_farthest_supported_spot():
+    """capture-447ae4f4: "the other end of the same table" grounded as the whole table, centre under the tray."""
+    from blueprint_pipeline.website_support_geometry import (destination_clear_of_start,
+                                                             farthest_supported_destination)
+
+    table = bumpy_plate(-.6, .6, -.4, .4)
+    start_min, start_max = [-.15, -.1, .7], [.05, .1, .75]
+    support = support_under(table, start_min, start_max, up=2, meters_per_unit=1)
+    clearance = np.hypot(.1, .1) + .01
+    assert not destination_clear_of_start(start_min, start_max, [0, 0, .7], up=2, clearance=clearance)
+    centre, found = farthest_supported_destination(table, start_min, start_max, [-.6, -.4, .6], [.6, .4, .8],
+                                                   support, up=2, meters_per_unit=1, clearance=clearance)
+    assert centre[0] > .3  # the far end from a start left of centre
+    assert destination_clear_of_start(start_min, start_max, centre, up=2, clearance=clearance)
+    # The target disc stays on the surface's bounds, and the footprint rests on the same surface.
+    assert all(support["aabb_min"][a] + clearance - 1e-9 <= centre[a] <= support["aabb_max"][a] - clearance + 1e-9
+               for a in (0, 1))
+    assert centre[2] == pytest.approx(.7, abs=.01) and found["basis"] == support["basis"]
+
+
+def test_no_destination_is_placed_when_the_surface_leaves_no_room_off_the_start():
+    from blueprint_pipeline.website_support_geometry import farthest_supported_destination
+
+    table = bumpy_plate(-.2, .2, -.2, .2)
+    start_min, start_max = [-.1, -.1, .7], [.1, .1, .75]
+    support = support_under(table, start_min, start_max, up=2, meters_per_unit=1)
+    assert farthest_supported_destination(table, start_min, start_max, [-.2, -.2, .6], [.2, .2, .8], support,
+                                          up=2, meters_per_unit=1, clearance=np.hypot(.1, .1) + .01) is None
+
+
+def test_a_relocated_destination_never_lands_on_another_surface():
+    from blueprint_pipeline.website_support_geometry import farthest_supported_destination
+
+    # The grounded region spans a second, separate counter: only the start's own surface is eligible.
+    counter = bumpy_plate(-.6, .1, -.4, .4)
+    mesh = trimesh.util.concatenate([counter, bumpy_plate(.3, 1.0, -.4, .4, seed=3)])
+    start_min, start_max = [-.25, -.1, .7], [-.05, .1, .75]
+    support = support_under(mesh, start_min, start_max, up=2, meters_per_unit=1)
+    clearance = np.hypot(.1, .1) + .01
+    moved = farthest_supported_destination(mesh, start_min, start_max, [-.6, -.4, .6], [1.0, .4, .8], support,
+                                           up=2, meters_per_unit=1, clearance=clearance)
+    assert moved is None or moved[0][0] <= .1

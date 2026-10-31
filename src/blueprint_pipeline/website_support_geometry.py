@@ -270,6 +270,69 @@ def same_support_surface(first: dict[str, Any], second: dict[str, Any]) -> bool:
     return len(a & b) >= SAME_FITTED_SURFACE_MIN_OVERLAP * len(a | b)
 
 
+def destination_clear_of_start(start_min: Sequence[float], start_max: Sequence[float],
+                               centre: Sequence[float], *, up: int, clearance: float) -> bool:
+    """Whether a target disc of radius ``clearance`` at ``centre`` excludes the start's centre.
+
+    The same rule as ``surface_target_initial_overlap``
+    (``task_evaluation_surface_target.region_excludes_start``) in this frame:
+    otherwise the task could begin complete.
+    """
+    plan = [axis for axis in range(3) if axis != up]
+    middle = [(float(start_min[axis]) + float(start_max[axis])) / 2 for axis in plan]
+    return math.dist(middle, [float(centre[axis]) for axis in plan]) > clearance
+
+
+#: The target disc's radius beyond the subject's half-diagonal (the website task's green region).
+DESTINATION_MARGIN_M = 0.01
+#: Plan positions tried along each axis when a destination must move off the start.
+DESTINATION_GRID_STEPS = 9
+#: Footprints checked against the collider, farthest first, before none is placed.
+DESTINATION_MAX_PROBES = 24
+
+
+def farthest_supported_destination(mesh: Any, start_min: Sequence[float], start_max: Sequence[float],
+                                   region_min: Sequence[float], region_max: Sequence[float],
+                                   start_support: dict[str, Any], *, up: int, meters_per_unit: float,
+                                   up_sign: int = 1, placement_residual_m: float | None = None,
+                                   clearance: float) -> tuple[list[float], dict[str, Any]] | None:
+    """The start footprint moved as far from the start as its own surface and ``region`` allow.
+
+    Only for a destination grounded as the very surface the subject rests on
+    (capture-447ae4f4: the whole dining table for "the other end of the same
+    table", whose centre lay under the tray). Each candidate keeps the target
+    disc inside ``region`` and the support's bounds and clear of the start, and
+    must rest on the same surface by ``support_under`` against real triangles.
+    Returns ``(centre, support)`` in runtime units, or None when none does.
+    """
+    start_min, start_max = np.asarray(start_min, dtype=float), np.asarray(start_max, dtype=float)
+    plan = [axis for axis in range(3) if axis != up]
+    half, origin = (start_max - start_min) / 2, (start_min + start_max) / 2
+    steps = []
+    for axis in plan:
+        low = max(float(region_min[axis]) + half[axis], float(start_support["aabb_min"][axis]) + clearance)
+        high = min(float(region_max[axis]) - half[axis], float(start_support["aabb_max"][axis]) - clearance)
+        if low > high:
+            return None
+        steps.append(np.linspace(low, high, DESTINATION_GRID_STEPS))
+    candidates = []
+    for first, second in ((a, b) for a in steps[0] for b in steps[1]):
+        centre = origin.copy()
+        centre[plan[0]], centre[plan[1]] = first, second
+        if destination_clear_of_start(start_min, start_max, centre, up=up, clearance=clearance):
+            candidates.append(centre)
+    candidates.sort(key=lambda centre: -math.dist(centre[plan], origin[plan]))
+    for centre in candidates[:DESTINATION_MAX_PROBES]:
+        offset = centre - origin
+        found = support_under(mesh, start_min + offset, start_max + offset, up=up, meters_per_unit=meters_per_unit,
+                              up_sign=up_sign, placement_residual_m=placement_residual_m)
+        if found is not None and same_support_surface(found, start_support):
+            centre = centre.copy()
+            centre[up] = found["top_runtime_units"]
+            return centre.tolist(), found
+    return None
+
+
 #: The unobserved lowest band of a built-in, floor-standing assembly (a toe
 #: kick and the bottom of a front panel) is at most this tall.
 FLOOR_GROUNDING_MAX_GAP_M = 0.35
