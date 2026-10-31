@@ -84,6 +84,7 @@ def test_real_compiled_task_prepares_native_g1_with_frozen_task_and_visible_assu
     # The stance is the closest clear one the G1's nominal arm span covers the task from, else the closest.
     reach = assumptions["stance_reach"]
     assert reach["rule"] == "closest_clear_stance_within_nominal_arm_span" and reach["clear_stances_measured"] > 1
+    assert reach["shoulder"] == assumptions["task_hand"] == "right"
     assert reach["within_nominal_arm_span"] is (reach["interpretation"] == "nominal_static_reach_candidate")
     assert request["robot_base_pose_world"]["position_world_m"] == assumptions["stance"]["position_world_m"]
     assert root.name == canonical_digest(args["source"])[7:]

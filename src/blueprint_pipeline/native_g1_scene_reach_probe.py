@@ -33,24 +33,27 @@ LIMITATIONS = [
 
 
 def _shoulder_distances(x: float, y: float, yaw: float, *, shoulder_z: float, start: Sequence[float],
-                        target: Sequence[float]) -> tuple[float, float, float, float]:
-    """From the nearer shoulder of a G1 standing at ``(x, y)`` facing ``yaw``: the horizontal and nominal
-    (shoulder-to-point) distances to the pick and to the place, as ``(pick_xy, place_xy, pick, place)``."""
+                        target: Sequence[float], hand: str | None = None) -> tuple[float, float, float, float]:
+    """From a G1 standing at ``(x, y)`` facing ``yaw``: the horizontal and nominal (shoulder-to-point)
+    distances to the pick and to the place, as ``(pick_xy, place_xy, pick, place)``. Measured from the
+    ``hand``'s shoulder (``"left"`` or ``"right"``), or from the nearer shoulder to each point."""
 
     lateral = UNITREE_G1_PROFILE.shoulder_lateral_offset_m
-    shoulders = (
-        (x - lateral * math.sin(yaw), y + lateral * math.cos(yaw)),
-        (x + lateral * math.sin(yaw), y - lateral * math.cos(yaw)),
-    )
+    left = (x - lateral * math.sin(yaw), y + lateral * math.cos(yaw))
+    right = (x + lateral * math.sin(yaw), y - lateral * math.cos(yaw))
+    shoulders = {"left": (left,), "right": (right,), None: (left, right)}[hand]
     pick_xy = min(math.dist(shoulder, start[:2]) for shoulder in shoulders)
     place_xy = min(math.dist(shoulder, target[:2]) for shoulder in shoulders)
     return (pick_xy, place_xy, math.hypot(pick_xy, shoulder_z - start[2]),
             math.hypot(place_xy, shoulder_z - target[2]))
 
 
-def g1_stance_static_reach(stances: Sequence[dict[str, Any]], *, start: Sequence[float],
-                           target: Sequence[float]) -> tuple[int, dict[str, Any]]:
+def g1_stance_static_reach(stances: Sequence[dict[str, Any]], *, start: Sequence[float], target: Sequence[float],
+                           task_hand: str | None = None) -> tuple[int, dict[str, Any]]:
     """The closest of ``stances`` from which the G1's nominal arm span covers both the pick and the place.
+
+    With ``task_hand`` (``"left"`` or ``"right"``) both are measured from that hand's shoulder, since the
+    episode carries the object with that hand; without one, from the nearer shoulder to each.
 
     ``stances`` are clear floor stances, closest first, with the root at pelvis height
     (``team_embodiment_stance.ground_stance``). Returns the chosen index and its record; with none in
@@ -59,7 +62,7 @@ def g1_stance_static_reach(stances: Sequence[dict[str, Any]], *, start: Sequence
     """
 
     profile = UNITREE_G1_PROFILE
-    if not stances or len(start) < 3 or len(target) != 3 or not all(
+    if task_hand not in (None, "left", "right") or not stances or len(start) < 3 or len(target) != 3 or not all(
             math.isfinite(float(value)) for value in (*start[:3], *target)):
         raise ValueError("g1_stance_reach_inputs_invalid")
     rows = []
@@ -68,12 +71,13 @@ def g1_stance_static_reach(stances: Sequence[dict[str, Any]], *, start: Sequence
         qx, qy, qz, qw = (float(value) for value in stance["orientation_xyzw"])
         yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
         rows.append(_shoulder_distances(x, y, yaw, shoulder_z=z + profile.shoulder_above_root_m,
-                                        start=start, target=target))
+                                        start=start, target=target, hand=task_hand))
     index = next((i for i, row in enumerate(rows) if max(row[2:]) <= profile.arm_span_m), None)
     within = index is not None
     _, _, pick, place = rows[index if within else 0]
     record = {"rule": STANCE_RULE, "claim_ceiling": "development_only_static_geometry",
               "robot_profile_id": profile.robot_id, "nominal_arm_span_m": profile.arm_span_m,
+              "shoulder": task_hand or "nearer",
               "clear_stances_measured": len(rows), "chosen_rank": index if within else 0,
               "pick_nominal_shoulder_distance_m": round(pick, 6),
               "place_nominal_shoulder_distance_m": round(place, 6), "within_nominal_arm_span": within,
