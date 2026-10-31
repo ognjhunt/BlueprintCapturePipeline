@@ -165,6 +165,26 @@ def test_a_prepared_scene_compiles_its_own_half_with_no_robot_placement_or_prior
         read_team_scene_inputs(compiled["path"])
 
 
+def test_a_station_refusal_keeps_its_own_name(tmp_path, monkeypatch) -> None:
+    # TeamEmbodimentError is a ValueError: the stance's own reason must not become the generic one.
+    from blueprint_pipeline import team_embodiment_stance as stance
+    from blueprint_pipeline.team_embodiment import TeamEmbodimentError
+
+    def no_clear_stance(**_):
+        raise TeamEmbodimentError(["team_embodiment_task_motion_no_clear_stance"])
+    monkeypatch.setattr(stance, "ground_stance", no_clear_stance)
+    (named := tmp_path / "named").mkdir()
+    with pytest.raises(TeamScenePacketError, match=r"\Ateam_embodiment_task_motion_no_clear_stance\Z"):
+        _compile(named, _scene(named))
+
+    def malformed(**_):
+        raise ValueError("not a stance")
+    monkeypatch.setattr(stance, "ground_stance", malformed)
+    (plain := tmp_path / "plain").mkdir()
+    with pytest.raises(TeamScenePacketError, match=r"\Ateam_scene_station_inputs_invalid\Z"):
+        _compile(plain, _scene(plain))
+
+
 def test_a_scene_is_refused_by_name_before_any_packet(tmp_path) -> None:
     scene = _scene(tmp_path)
     (tmp_path / "other.zip").write_bytes(b"not the published bundle")

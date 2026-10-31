@@ -475,10 +475,11 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
             task_motion=motion)
         station = ground_stance(**place, ranked=CARRY_STATIONS if carry else 0)
+    except TeamEmbodimentError as exc:
+        # A ValueError itself: caught first, so a named stance refusal keeps its own reason.
+        raise TeamScenePacketError(",".join(exc.blockers) or "team_scene_station_inputs_invalid") from exc
     except (KeyError, TypeError, ValueError) as exc:
         raise TeamScenePacketError("team_scene_station_inputs_invalid") from exc
-    except TeamEmbodimentError as exc:
-        raise TeamScenePacketError(",".join(exc.errors)) from exc
     station, station_search = (_carrying_station(station, task_spec=task_spec, collision=assets["collision"],
                                                  profile=profile) if carry else (station, None))
     stations: dict[str, dict[str, Any]] = {}
