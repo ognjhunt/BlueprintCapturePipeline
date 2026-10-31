@@ -102,7 +102,16 @@ def test_selected_delivery_refuses_before_lease_when_owner_api_missing(tmp_path:
     assert result["queue_disposition"] == "retryable"
     assert result["owner_observation_reason"] == ("capture_owner_purpose_mismatch" if error_kind == "typed"
                                                    else "capture_owner_response_unavailable")
-    assert "private" not in json.dumps(result) and "secret" not in json.dumps(result)
+    assert "secret" not in json.dumps(result)
+    if error_kind == "typed":
+        # A typed refusal is its own cause.
+        assert "owner_observation_error" not in result and "private" not in json.dumps(result)
+    else:
+        # The generic code keeps the failure's type and a redacted, trimmed message.
+        assert result["owner_observation_error"] == {
+            "type": ("blueprint_pipeline.capture_original_owner_observer.CaptureOwnerObservationError"
+                     if error_kind == "unsafe_typed" else "builtins.ValueError"),
+            "message": "private response token=<redacted>"}
     assert calls[0].get("expected_purpose") == purpose
     assert not (tmp_path / "capture-bucket" / "scenes" / "site-req-1" / "captures" /
                 "walkthrough-req-1").exists()
@@ -178,6 +187,60 @@ def test_native_owner_read_never_moves_a_claimed_capture_into_preparation(tmp_pa
     assert result["status"] == "capture_owner_observation_unavailable_retryable"
     assert result["owner_observation_reason"] == "capture_owner_response_unavailable"
     assert not (tmp_path / "capture-bucket").exists()
+
+
+@pytest.mark.parametrize("status,reason,error", [
+    (429, "capture_owner_response_rate_limited", None),
+    (503, "capture_owner_response_unavailable",
+     {"type": "urllib.error.HTTPError", "message": "HTTP Error 503: Service Unavailable"}),
+])
+def test_owner_read_names_the_shared_rate_limit_and_keeps_an_outage_cause(tmp_path, monkeypatch, caplog,
+                                                                          status, reason, error):
+    import io
+    from urllib.error import HTTPError
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import capture_original_owner_observer as observer
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://tryblueprint.io/api/internal/pipeline/sync")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "fixture-secret")
+
+    def respond(url, **_kwargs):
+        # The WebApp's shared Pipeline sync limiter answers 429 with a typed body.
+        raise HTTPError(url + "?token=fixture-secret", status,
+                        "Too Many Requests" if status == 429 else "Service Unavailable", {},
+                        io.BytesIO(b'{"code":"pipeline_sync_rate_limited"}'))
+
+    monkeypatch.setattr(observer, "safe_request", respond)
+    with pytest.raises(observer.CaptureOwnerObservationError) as refused:
+        observer.load_original_owner_observation(bucket="capture-bucket", scene_id="site-req-1",
+                                                 capture_id="walkthrough-req-1",
+                                                 marker_generation="17000000000000000001")
+    assert str(refused.value) == reason and isinstance(refused.value.__cause__, HTTPError)
+    payload = {"bucket": "capture-bucket", "scene_id": "site-req-1", "capture_id": "walkthrough-req-1",
+               "raw_prefix_uri": "gs://capture-bucket/scenes/site-req-1/captures/walkthrough-req-1/raw",
+               "source_finalize": {"bucket": "capture-bucket",
+                                   "object_name": "scenes/site-req-1/captures/walkthrough-req-1/raw/capture_upload_complete.json",
+                                   "generation": "17000000000000000001", "event_id": "evt-1", "event_source": "storage"}}
+    with caplog.at_level("WARNING"):
+        result = listener.process_handoff_payload(payload, storage_root=tmp_path, provider="openai",
+                                                  expected_preparation_purpose="scene_preparation",
+                                                  run_e2e=lambda **_: pytest.fail("ran"))
+    assert result["status"] == "capture_owner_observation_unavailable_retryable"
+    assert result["blockers"] == ["capture_owner_observation_unavailable"]
+    assert result["owner_observation_reason"] == reason
+    assert result.get("owner_observation_error") == error
+    assert "fixture-secret" not in json.dumps(result)
+    [record] = [row for row in caplog.records
+                if row.getMessage() == "pubsub_handoff.capture_owner_observation_unavailable"]
+    assert record.owner_observation_reason == reason
+    assert getattr(record, "owner_observation_error", None) == error
+    # A 429 the response itself reports (not raised) is named the same way.
+    from types import SimpleNamespace
+    monkeypatch.setattr(observer, "safe_request", lambda *_a, **_k: SimpleNamespace(status=429, body=b"{}"))
+    with pytest.raises(observer.CaptureOwnerObservationError, match="^capture_owner_response_rate_limited$"):
+        observer.load_original_owner_observation(bucket="capture-bucket", scene_id="site-req-1",
+                                                 capture_id="walkthrough-req-1",
+                                                 marker_generation="17000000000000000001")
 
 
 def test_signed_read_keeps_exact_generation_and_response_bound(monkeypatch):
