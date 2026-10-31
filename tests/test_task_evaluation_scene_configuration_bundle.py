@@ -582,6 +582,28 @@ def test_bundle_zip_is_not_group_writable_before_content_addressing(
     assert os.stat(receipt["bundle_path"]).st_mode & 0o777 == 0o644
 
 
+def test_bundle_ships_bytecode_a_published_toolchain_lists(tmp_path: Path) -> None:
+    # capture-447ae4f4, 2026-10-31: the content-agents Blender runtime lists 926 .pyc
+    # files; dropping them from the copy failed every bundle as
+    # scene_configuration_toolchain_inventory_incomplete.
+    commit = "a" * 40
+    source = tmp_path / "source"
+    source.mkdir()
+    toolchain = tmp_path / "toolchain"
+    build_published_scene_configuration_toolchain(
+        source_commit=commit, output_root=toolchain, readback=lambda path: path.read_bytes(),
+        readback_actor="service-account:test",
+        component_packages=_component_packages(tmp_path, bundled_bytecode=True),
+    )
+    receipt = build_scene_configuration_provider_bundle(
+        construction_envelope_path=_envelope(source, commit), toolchain_root=toolchain,
+        repository_root=_repo(tmp_path / "repo"), output_root=tmp_path / "bundle",
+        expected_source_commit=commit,
+    )
+    with zipfile.ZipFile(receipt["bundle_path"]) as archive:
+        assert any(name.endswith("lib/__pycache__/copy.cpython-311.pyc") for name in archive.namelist())
+
+
 def test_bundle_does_not_retain_its_rebuildable_expansion_tree(
     tmp_path: Path,
 ) -> None:

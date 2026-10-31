@@ -240,6 +240,7 @@ journey and the ADP-009D development rehearsal without raising evidence claims.
 | `retire-scene-workspace` | operate | `scene_id`, optional `bucket`, `apply` (default `false`) | `door-retire-scene-workspace.sh`: the active release's `website_scene_workspace_retention retire` for that scene; without `apply` it only plans. Outcome `planned`, `retained` (code = first reason), `retired` or `failed`; the module's full result is `results/<id>.retirement.json` |
 | `restore-scene-workspace` | operate | `scene_id`, required `bucket` | `door-restore-scene-workspace.sh`: replays the retired receipt to the canonical workspace path, checks every byte and moves the historical receipt aside. Outcome `restored` or `failed`; the module's full result is `results/<id>.restore.json` |
 | `provider-output-resume` | operate | `run` (a canary dispatch directory), `attempt` (1–999), `ingest` (default `false`) | `door-provider-output-resume.sh`: the active release's `provider_output_promotion resume --attempt-root <run>/allocator/attempts/attempt_NNN [--ingest]` for one streamed policy-canary attempt, run as `blueprint` with umask 0077 (the attempt tree is the service user's): promotion to B2, the gated cleanup, the staged-object absence proof and, with `ingest`, the needed members' ingestion, which short-circuits once materialized. It refuses, touching nothing, until the attempt's teardown manifest records `continuing_spend_from_this_run: false` (`provider_output_resume_attempt_not_torn_down`). Outcome `completed`, or `blocked` with the first blocker as its code; the module's summary is `results/<id>.provider-output-resume.json` |
+| `extend-scene-execution-window` | operate | `intent_id` (`scene-<64 hex>`), `intent_digest`, `expires_at` (UTC `YYYY-MM-DDTHH:MM:SSZ`), `authorization_reference` (names the owner's approval, ≤ 500 printable chars), `ack` = `extend-scene-execution-window`, `apply` | `door-extend-scene-execution-window.sh`: the active release's `task_evaluation_scene_execution_window_door`, as `blueprint`. It reads the capture's current rights from the WebApp and refuses a revoked intent, a digest mismatch, a withdrawn capture or revoked consent, and any expiry not after now, more than 7 days ahead, or more than 7 days past the intent's original expiry. Without `apply` it only plans. With `apply` it writes one sealed `authorized_via: operator_door` extension (door caller, door request id, the owner's reference, every execution bound unchanged) and sends it to the WebApp's signed internal endpoint, retrying a transport failure twice. An equal or earlier expiry is `already_covered`; with `apply` it re-sends the covering extension, and a plan never writes or POSTs. Outcome `planned`, `extended`, `already_covered`, `refused` (code) or `failed` (`webapp_notice_failed`); the full result is `results/<id>.scene-window.json` |
 
 **`deploy` is root-equivalent.** Whoever holds it can get code that is on
 `origin/main` running as root, which is what a deploy is. Give it only to
@@ -269,10 +270,11 @@ and archives to the same artifact store as the reclaim timer. See
 
 `door-deploy.sh` repeats the deploy the agent lanes ran by hand over SSH:
 
-1. fetch every branch into one long-lived source clone,
+1. fetch `main` into one long-lived source clone,
    `/opt/blueprint/control-plane-config-tools/operator-door-source` (origin is
    GitHub, so the deploy tool's pushed-commit checks see real refs), with the
-   door's read-only deploy key;
+   door's read-only deploy key, and forget any other remote branch an older door
+   fetched;
 2. require the commit to be an ancestor of `origin/main`;
 3. with `wait_for_idle` (the default), wait for scene progression and
    configured-controls progression: a target tool that supports `--drain-unit`
@@ -284,6 +286,9 @@ and archives to the same artifact store as the reclaim timer. See
    throwaway worktree with `--iteration --preserve-configured-controls-state`,
    receipt `deploy-receipts/iteration_<sha12>_door.json`.
 
+The request log prints `phase=` timestamps for each of these steps, ending at
+`phase=tool_start`; the receipt's stage timings cover the tool from there.
+
 The deploy builds the commit's release checkout and runtime trees first, with
 every timer, path watcher and paid launch still live: those trees are the
 commit's own and nothing reads them until the release link moves. Only then
@@ -292,6 +297,18 @@ the steps that change what a running unit or a launch reads, the switch, the
 intake restart and the re-arm. The receipt's `trigger_pause_seconds` says how
 long drained triggers, all other watchers and new paid launches were held;
 `stage_timings_seconds` splits the whole deploy by stage.
+
+**Request a deploy right after merging.** Run `deploy <merge sha> --wait` at once;
+the build overlaps main's CI. Before anything pauses, the tool waits for that CI
+to list the commit's source attestation (`--attestation-wait-seconds`, default one
+hour). It paces its requests, because this host reads GitHub unauthenticated at 60
+requests an hour. The wait grants nothing: the signed proof is still verified
+after the pause, before the privileged installer runs. If the bound expires, or
+main's CI for that commit finishes without an attestation, the deploy fails with
+`deploy_scene_retirement_runtime_unproven` and nothing has been paused. The
+receipt's `runtime_diagnostic` then has phase `await_attestation` and reason
+`deadline` or `ci_finished_without_attestation`. A successful receipt records
+`attestation_wait_seconds`.
 
 `--preserve-configured-controls-state` keeps the owner's configured-controls
 pause across the deploy; `deploy_control_plane_iteration.sh` and
@@ -472,6 +489,11 @@ python3 scripts/operator_door.py retire-scene-workspace <scene_id> --wait       
 python3 scripts/operator_door.py retire-scene-workspace <scene_id> --apply --wait   # retire behind a receipt
 python3 scripts/operator_door.py restore-scene-workspace <scene_id> --bucket <bucket> --wait
 python3 scripts/operator_door.py provider-output-resume <run> <attempt> --ingest --wait
+python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
+    --expires-at <UTC instant> --authorization-reference "<owner approval>" --wait                    # plan only
+python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
+    --expires-at <UTC instant> --authorization-reference "<owner approval>" \
+    --apply --ack extend-scene-execution-window --wait                                             # record + tell WebApp
 ```
 
 A provider-output resume unit may write only the canary dispatch root, the disk

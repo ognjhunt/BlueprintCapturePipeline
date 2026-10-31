@@ -1,0 +1,704 @@
+{
+  "schema_version": "embodiment_runtime_configuration.v1",
+  "claim_ceiling": "configuration_only",
+  "embodiment_id": "franka_research_3_bimanual",
+  "source_bundle_digest": "sha256:30c44937f97262496625166a24d9bf9a25823abf7ae0ebb30fbfe1a96ea2688d",
+  "station_parameters": {
+    "schema_version": "embodiment_station_parameters.v1",
+    "embodiment_id": "franka_research_3_bimanual",
+    "composition_mode": "two_instances",
+    "station_root_link": "blueprint_station",
+    "arms": [
+      {
+        "name": "left",
+        "prefix": "left_",
+        "source_base_link": "base",
+        "source_mount_joint": null,
+        "station_from_base": {
+          "translation_m": [
+            0.0,
+            0.35,
+            0.0
+          ],
+          "quaternion_wxyz": [
+            1,
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "name": "right",
+        "prefix": "right_",
+        "source_base_link": "base",
+        "source_mount_joint": null,
+        "station_from_base": {
+          "translation_m": [
+            0.0,
+            -0.35,
+            0.0
+          ],
+          "quaternion_wxyz": [
+            1,
+            0,
+            0,
+            0
+          ]
+        }
+      }
+    ]
+  },
+  "manifest_fields": {
+    "schema_version": "blueprint.robot_embodiment.v2",
+    "embodiment_id": "franka_research_3_bimanual",
+    "form": "bimanual_arm",
+    "base": {
+      "mode": "fixed"
+    },
+    "joints": [
+      {
+        "name": "left_fr3_joint1",
+        "control": "position",
+        "lower": -2.9007,
+        "upper": 2.9007,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_fr3_joint2",
+        "control": "position",
+        "lower": -1.8361,
+        "upper": 1.8361,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_fr3_joint3",
+        "control": "position",
+        "lower": -2.9007,
+        "upper": 2.9007,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_fr3_joint4",
+        "control": "position",
+        "lower": -3.077,
+        "upper": -0.1169,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_fr3_joint5",
+        "control": "position",
+        "lower": -2.8763,
+        "upper": 2.8763,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_fr3_joint6",
+        "control": "position",
+        "lower": 0.4398,
+        "upper": 4.6216,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_fr3_joint7",
+        "control": "position",
+        "lower": -3.0508,
+        "upper": 3.0508,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_fr3_joint1",
+        "control": "position",
+        "lower": -2.9007,
+        "upper": 2.9007,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_fr3_joint2",
+        "control": "position",
+        "lower": -1.8361,
+        "upper": 1.8361,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_fr3_joint3",
+        "control": "position",
+        "lower": -2.9007,
+        "upper": 2.9007,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_fr3_joint4",
+        "control": "position",
+        "lower": -3.077,
+        "upper": -0.1169,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_fr3_joint5",
+        "control": "position",
+        "lower": -2.8763,
+        "upper": 2.8763,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_fr3_joint6",
+        "control": "position",
+        "lower": 0.4398,
+        "upper": 4.6216,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_fr3_joint7",
+        "control": "position",
+        "lower": -3.0508,
+        "upper": 3.0508,
+        "max_velocity": 1.0
+      }
+    ],
+    "grippers": [
+      {
+        "name": "left_gripper",
+        "tool_link": "left_fr3_hand",
+        "joints": [
+          {
+            "name": "left_fr3_finger_joint1",
+            "open": 0.04,
+            "closed": 0.0
+          },
+          {
+            "name": "left_fr3_finger_joint2",
+            "open": 0.04,
+            "closed": 0.0
+          }
+        ],
+        "max_width_m": 0.08,
+        "contact_links": [
+          "left_fr3_leftfinger",
+          "left_fr3_rightfinger"
+        ]
+      },
+      {
+        "name": "right_gripper",
+        "tool_link": "right_fr3_hand",
+        "joints": [
+          {
+            "name": "right_fr3_finger_joint1",
+            "open": 0.04,
+            "closed": 0.0
+          },
+          {
+            "name": "right_fr3_finger_joint2",
+            "open": 0.04,
+            "closed": 0.0
+          }
+        ],
+        "max_width_m": 0.08,
+        "contact_links": [
+          "right_fr3_leftfinger",
+          "right_fr3_rightfinger"
+        ]
+      }
+    ],
+    "tool_link": "left_fr3_hand",
+    "reset_joint_positions": {
+      "left_fr3_joint1": 0.0,
+      "left_fr3_joint2": 0.0,
+      "left_fr3_joint3": 0.0,
+      "left_fr3_joint4": -0.41291,
+      "left_fr3_joint5": 0.0,
+      "left_fr3_joint6": 0.85798,
+      "left_fr3_joint7": 0.0,
+      "left_fr3_finger_joint1": 0.04,
+      "left_fr3_finger_joint2": 0.04,
+      "right_fr3_joint1": 0.0,
+      "right_fr3_joint2": 0.0,
+      "right_fr3_joint3": 0.0,
+      "right_fr3_joint4": -0.41291,
+      "right_fr3_joint5": 0.0,
+      "right_fr3_joint6": 0.85798,
+      "right_fr3_joint7": 0.0,
+      "right_fr3_finger_joint1": 0.04,
+      "right_fr3_finger_joint2": 0.04
+    },
+    "actuator": {
+      "stiffness": 100.0,
+      "damping": 20.0
+    },
+    "cameras": [
+      {
+        "name": "overhead",
+        "mount_link": null,
+        "position_m": [
+          0.5,
+          0.0,
+          1.5
+        ],
+        "orientation_xyzw": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "left_wrist",
+        "mount_link": "left_fr3_hand",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "right_wrist",
+        "mount_link": "right_fr3_hand",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      }
+    ],
+    "control_hz": 60,
+    "action_chunk_rows": 48,
+    "reach_m": 1.772662332715346,
+    "arms": [
+      {
+        "name": "left",
+        "joint_names": [
+          "left_fr3_joint1",
+          "left_fr3_joint2",
+          "left_fr3_joint3",
+          "left_fr3_joint4",
+          "left_fr3_joint5",
+          "left_fr3_joint6",
+          "left_fr3_joint7"
+        ],
+        "base_link": "left_fr3_link0",
+        "tool_link": "left_fr3_hand",
+        "gripper_name": "left_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            1.3004675693148964e-18,
+            4.0332895854128375e-17,
+            0.10340000000000009
+          ],
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "right",
+        "joint_names": [
+          "right_fr3_joint1",
+          "right_fr3_joint2",
+          "right_fr3_joint3",
+          "right_fr3_joint4",
+          "right_fr3_joint5",
+          "right_fr3_joint6",
+          "right_fr3_joint7"
+        ],
+        "base_link": "right_fr3_link0",
+        "tool_link": "right_fr3_hand",
+        "gripper_name": "right_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            -2.6455108046314017e-17,
+            -1.5178255377129452e-17,
+            0.1034
+          ],
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      }
+    ]
+  },
+  "source_name_mapping": {
+    "blueprint_station": "blueprint_station",
+    "left_base": "left_base",
+    "left_fr3_base_joint": "left_fr3_base_joint",
+    "left_fr3_finger_joint1": "left_fr3_finger_joint1",
+    "left_fr3_finger_joint2": "left_fr3_finger_joint2",
+    "left_fr3_hand": "left_fr3_hand",
+    "left_fr3_hand_joint": "left_fr3_hand_joint",
+    "left_fr3_hand_tcp": "left_fr3_hand_tcp",
+    "left_fr3_hand_tcp_joint": "left_fr3_hand_tcp_joint",
+    "left_fr3_joint1": "left_fr3_joint1",
+    "left_fr3_joint2": "left_fr3_joint2",
+    "left_fr3_joint3": "left_fr3_joint3",
+    "left_fr3_joint4": "left_fr3_joint4",
+    "left_fr3_joint5": "left_fr3_joint5",
+    "left_fr3_joint6": "left_fr3_joint6",
+    "left_fr3_joint7": "left_fr3_joint7",
+    "left_fr3_joint8": "left_fr3_joint8",
+    "left_fr3_leftfinger": "left_fr3_leftfinger",
+    "left_fr3_link0": "left_fr3_link0",
+    "left_fr3_link0_accelerometer_bottom": "left_fr3_link0_accelerometer_bottom",
+    "left_fr3_link0_accelerometer_bottom_joint": "left_fr3_link0_accelerometer_bottom_joint",
+    "left_fr3_link0_accelerometer_top": "left_fr3_link0_accelerometer_top",
+    "left_fr3_link0_accelerometer_top_joint": "left_fr3_link0_accelerometer_top_joint",
+    "left_fr3_link1": "left_fr3_link1",
+    "left_fr3_link1_accelerometer_bottom": "left_fr3_link1_accelerometer_bottom",
+    "left_fr3_link1_accelerometer_bottom_joint": "left_fr3_link1_accelerometer_bottom_joint",
+    "left_fr3_link1_accelerometer_top": "left_fr3_link1_accelerometer_top",
+    "left_fr3_link1_accelerometer_top_joint": "left_fr3_link1_accelerometer_top_joint",
+    "left_fr3_link2": "left_fr3_link2",
+    "left_fr3_link2_accelerometer_bottom": "left_fr3_link2_accelerometer_bottom",
+    "left_fr3_link2_accelerometer_bottom_joint": "left_fr3_link2_accelerometer_bottom_joint",
+    "left_fr3_link2_accelerometer_top": "left_fr3_link2_accelerometer_top",
+    "left_fr3_link2_accelerometer_top_joint": "left_fr3_link2_accelerometer_top_joint",
+    "left_fr3_link3": "left_fr3_link3",
+    "left_fr3_link3_accelerometer_bottom": "left_fr3_link3_accelerometer_bottom",
+    "left_fr3_link3_accelerometer_bottom_joint": "left_fr3_link3_accelerometer_bottom_joint",
+    "left_fr3_link3_accelerometer_top": "left_fr3_link3_accelerometer_top",
+    "left_fr3_link3_accelerometer_top_joint": "left_fr3_link3_accelerometer_top_joint",
+    "left_fr3_link4": "left_fr3_link4",
+    "left_fr3_link4_accelerometer_bottom": "left_fr3_link4_accelerometer_bottom",
+    "left_fr3_link4_accelerometer_bottom_joint": "left_fr3_link4_accelerometer_bottom_joint",
+    "left_fr3_link4_accelerometer_top": "left_fr3_link4_accelerometer_top",
+    "left_fr3_link4_accelerometer_top_joint": "left_fr3_link4_accelerometer_top_joint",
+    "left_fr3_link5": "left_fr3_link5",
+    "left_fr3_link5_accelerometer_bottom": "left_fr3_link5_accelerometer_bottom",
+    "left_fr3_link5_accelerometer_bottom_joint": "left_fr3_link5_accelerometer_bottom_joint",
+    "left_fr3_link5_accelerometer_top": "left_fr3_link5_accelerometer_top",
+    "left_fr3_link5_accelerometer_top_joint": "left_fr3_link5_accelerometer_top_joint",
+    "left_fr3_link6": "left_fr3_link6",
+    "left_fr3_link7": "left_fr3_link7",
+    "left_fr3_link8": "left_fr3_link8",
+    "left_fr3_rightfinger": "left_fr3_rightfinger",
+    "left_station_mount": "left_station_mount",
+    "right_base": "right_base",
+    "right_fr3_base_joint": "right_fr3_base_joint",
+    "right_fr3_finger_joint1": "right_fr3_finger_joint1",
+    "right_fr3_finger_joint2": "right_fr3_finger_joint2",
+    "right_fr3_hand": "right_fr3_hand",
+    "right_fr3_hand_joint": "right_fr3_hand_joint",
+    "right_fr3_hand_tcp": "right_fr3_hand_tcp",
+    "right_fr3_hand_tcp_joint": "right_fr3_hand_tcp_joint",
+    "right_fr3_joint1": "right_fr3_joint1",
+    "right_fr3_joint2": "right_fr3_joint2",
+    "right_fr3_joint3": "right_fr3_joint3",
+    "right_fr3_joint4": "right_fr3_joint4",
+    "right_fr3_joint5": "right_fr3_joint5",
+    "right_fr3_joint6": "right_fr3_joint6",
+    "right_fr3_joint7": "right_fr3_joint7",
+    "right_fr3_joint8": "right_fr3_joint8",
+    "right_fr3_leftfinger": "right_fr3_leftfinger",
+    "right_fr3_link0": "right_fr3_link0",
+    "right_fr3_link0_accelerometer_bottom": "right_fr3_link0_accelerometer_bottom",
+    "right_fr3_link0_accelerometer_bottom_joint": "right_fr3_link0_accelerometer_bottom_joint",
+    "right_fr3_link0_accelerometer_top": "right_fr3_link0_accelerometer_top",
+    "right_fr3_link0_accelerometer_top_joint": "right_fr3_link0_accelerometer_top_joint",
+    "right_fr3_link1": "right_fr3_link1",
+    "right_fr3_link1_accelerometer_bottom": "right_fr3_link1_accelerometer_bottom",
+    "right_fr3_link1_accelerometer_bottom_joint": "right_fr3_link1_accelerometer_bottom_joint",
+    "right_fr3_link1_accelerometer_top": "right_fr3_link1_accelerometer_top",
+    "right_fr3_link1_accelerometer_top_joint": "right_fr3_link1_accelerometer_top_joint",
+    "right_fr3_link2": "right_fr3_link2",
+    "right_fr3_link2_accelerometer_bottom": "right_fr3_link2_accelerometer_bottom",
+    "right_fr3_link2_accelerometer_bottom_joint": "right_fr3_link2_accelerometer_bottom_joint",
+    "right_fr3_link2_accelerometer_top": "right_fr3_link2_accelerometer_top",
+    "right_fr3_link2_accelerometer_top_joint": "right_fr3_link2_accelerometer_top_joint",
+    "right_fr3_link3": "right_fr3_link3",
+    "right_fr3_link3_accelerometer_bottom": "right_fr3_link3_accelerometer_bottom",
+    "right_fr3_link3_accelerometer_bottom_joint": "right_fr3_link3_accelerometer_bottom_joint",
+    "right_fr3_link3_accelerometer_top": "right_fr3_link3_accelerometer_top",
+    "right_fr3_link3_accelerometer_top_joint": "right_fr3_link3_accelerometer_top_joint",
+    "right_fr3_link4": "right_fr3_link4",
+    "right_fr3_link4_accelerometer_bottom": "right_fr3_link4_accelerometer_bottom",
+    "right_fr3_link4_accelerometer_bottom_joint": "right_fr3_link4_accelerometer_bottom_joint",
+    "right_fr3_link4_accelerometer_top": "right_fr3_link4_accelerometer_top",
+    "right_fr3_link4_accelerometer_top_joint": "right_fr3_link4_accelerometer_top_joint",
+    "right_fr3_link5": "right_fr3_link5",
+    "right_fr3_link5_accelerometer_bottom": "right_fr3_link5_accelerometer_bottom",
+    "right_fr3_link5_accelerometer_bottom_joint": "right_fr3_link5_accelerometer_bottom_joint",
+    "right_fr3_link5_accelerometer_top": "right_fr3_link5_accelerometer_top",
+    "right_fr3_link5_accelerometer_top_joint": "right_fr3_link5_accelerometer_top_joint",
+    "right_fr3_link6": "right_fr3_link6",
+    "right_fr3_link7": "right_fr3_link7",
+    "right_fr3_link8": "right_fr3_link8",
+    "right_fr3_rightfinger": "right_fr3_rightfinger",
+    "right_station_mount": "right_station_mount"
+  },
+  "simulation_assumptions": [
+    "interior_zero_reset_pose",
+    "default_PD_gains_unless_source_drive_present",
+    "arm_velocity_capped_at_1_SI_unit_per_second",
+    "90_degree_simulated_camera_rig_not_site_calibration",
+    "parallel_gripper_width_is_nominal",
+    "reach_is_source_chain_upper_bound",
+    "duplicate_arms_separated_by_0.7_m_simulation_mounts"
+  ],
+  "source_dynamics": {
+    "moving_link_count": 18,
+    "moving_links_without_positive_authored_mass_and_inertia": [],
+    "estimated_inertias_added": false,
+    "simulator_dynamics_validated": false
+  },
+  "source_limitations": [
+    "independent_tool_action_mapping",
+    "controller_reset_and_runtime_receipt"
+  ],
+  "execution_authorized": false,
+  "policy_compatibility_established": false,
+  "source_urdf_sha256": "sha256:5ae1248cbdb65f182e18ff3fb7cf1a9656fcc270497cc866eefbc41a0c5a533d",
+  "generator_module_sha256": "sha256:df0b6c4e7277d4e79b087115852afca8f8ad426e616e0e277cbb4f82e0300469",
+  "generated_files": [
+    {
+      "path": "expanded_source/LICENSE",
+      "sha256": "sha256:4b25434e6ec2012e28a484f1d7924a0fd1a8bf232c2be2d50d584d299d04d6d6",
+      "size_bytes": 12926
+    },
+    {
+      "path": "expanded_source/NOTICE",
+      "sha256": "sha256:13991525876741e3dc94c46e0afce111dc0a5c6156c89bbbefd06547b84738fd",
+      "size_bytes": 581
+    },
+    {
+      "path": "expanded_source/end_effectors/common/ee_with_one_link.xacro",
+      "sha256": "sha256:0640916ae4bb4447347694c163424f74b1f79d86883c79619f2e9e3359584be7",
+      "size_bytes": 1683
+    },
+    {
+      "path": "expanded_source/end_effectors/common/franka_hand.xacro",
+      "sha256": "sha256:54863af0e72a9f5a2a7a78c205d47837c3977a80708c03a3fca99ce7cefeb922",
+      "size_bytes": 4787
+    },
+    {
+      "path": "expanded_source/end_effectors/common/utils.xacro",
+      "sha256": "sha256:c6069ac5a07fccf82031156fd10fd980d9da0d59e1c7c6861a2115a9e7fb1910",
+      "size_bytes": 3402
+    },
+    {
+      "path": "expanded_source/end_effectors/franka_hand/franka_hand.srdf.xacro",
+      "sha256": "sha256:aaf62f22ddb75037d2be41be957446c339418f7e2323f658b09d0c1b4c268b8c",
+      "size_bytes": 2582
+    },
+    {
+      "path": "expanded_source/end_effectors/franka_hand/franka_hand.urdf.xacro",
+      "sha256": "sha256:1f05e37d692d342f121d1bf1807414fa1ce27d2b0c638bd970d05f95c97bae9b",
+      "size_bytes": 1587
+    },
+    {
+      "path": "expanded_source/end_effectors/franka_hand/franka_hand_arguments.xacro",
+      "sha256": "sha256:d4e53068edc8664b9ac265e318747cdc205ccf9a3baea45930aaf0eec0a93a64",
+      "size_bytes": 786
+    },
+    {
+      "path": "expanded_source/end_effectors/franka_hand/inertials.yaml",
+      "sha256": "sha256:6f09ae9ac8838e61d33167d0e6358fd3a61082b432028063805ff6625bc69207",
+      "size_bytes": 432
+    },
+    {
+      "path": "expanded_source/meshes/robot_ee/franka_hand_black/collision/hand.stl",
+      "sha256": "sha256:94493e94f30fe940f2c8ca2f155c3bbe67bbff406d3edf5e261670d2f0f6e2ed",
+      "size_bytes": 10084
+    },
+    {
+      "path": "expanded_source/meshes/robot_ee/franka_hand_black/visual/finger.dae",
+      "sha256": "sha256:12c7bc9b55ffd0d1d0e3442d3e213ecc4fbebbced15259a20195af464f871fcd",
+      "size_bytes": 52371
+    },
+    {
+      "path": "expanded_source/meshes/robot_ee/franka_hand_black/visual/hand.dae",
+      "sha256": "sha256:dfb158b62f22a542f35e5d718f3819e016be5906cd539d041a555f4ef7b218aa",
+      "size_bytes": 561219
+    },
+    {
+      "path": "expanded_source/meshes/robot_ee/franka_hand_white/collision/hand.stl",
+      "sha256": "sha256:94493e94f30fe940f2c8ca2f155c3bbe67bbff406d3edf5e261670d2f0f6e2ed",
+      "size_bytes": 10084
+    },
+    {
+      "path": "expanded_source/meshes/robot_ee/franka_hand_white/visual/finger.dae",
+      "sha256": "sha256:12c7bc9b55ffd0d1d0e3442d3e213ecc4fbebbced15259a20195af464f871fcd",
+      "size_bytes": 52371
+    },
+    {
+      "path": "expanded_source/meshes/robot_ee/franka_hand_white/visual/hand.dae",
+      "sha256": "sha256:1b50601d3157f810176aba6db7164d6bdb4ec8b6546a8a725baba2fa2a21c58a",
+      "size_bytes": 550371
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/collision/link0.stl",
+      "sha256": "sha256:56990396d712b2ebb89f7d29083973c823babd3bfa605f2d2863bd1069d29788",
+      "size_bytes": 18784
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/collision/link1.stl",
+      "sha256": "sha256:e023cf1db282e07f38597d4e7f9edae03cd0dc338974677b31639f677411dc18",
+      "size_bytes": 11884
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/collision/link2.stl",
+      "sha256": "sha256:3117fd3aea238c07fc1bf678784d38497bfdd603a7760bf36b7fb31b15f0624e",
+      "size_bytes": 11484
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/collision/link3.stl",
+      "sha256": "sha256:1f21215bdb62892271a263969c92dc1be15c409ec8fc96b6bdec3c28d77f0e6e",
+      "size_bytes": 13584
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/collision/link4.stl",
+      "sha256": "sha256:b9574ef02cdf234dff9f12359e00f6c11a4b062cf73d1db20894c57f5a9d716a",
+      "size_bytes": 13184
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/collision/link5.stl",
+      "sha256": "sha256:c174872b06547dc6acdd027679e476d4cddffe0224cb048763bdbf4f68fe7542",
+      "size_bytes": 13384
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/collision/link6.stl",
+      "sha256": "sha256:9ad5c4698aed204cd505e74356adfbb955196913d0b75a616c3865b319d39e6b",
+      "size_bytes": 16234
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/collision/link7.stl",
+      "sha256": "sha256:c48646a72ed0264e5f90b221327fd2b72163935ec7bc1cde9612ac1dcf23eabf",
+      "size_bytes": 15784
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/visual/link0.dae",
+      "sha256": "sha256:3c52a112d1610d645934945b80ea8d9bb3d1635f345098480a33a537bd43224e",
+      "size_bytes": 7079719
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/visual/link1.dae",
+      "sha256": "sha256:5c5846eabc714aefc82ef051a4d09c4fc1c092bca6258b1290227345dd217fcb",
+      "size_bytes": 906843
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/visual/link2.dae",
+      "sha256": "sha256:90a1bd38abdc53d0141719cd8e040f788db337b768a845bb6d53c5c52590498f",
+      "size_bytes": 921715
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/visual/link3.dae",
+      "sha256": "sha256:1c7a2a8124e39ad07096c0cce8461b0e650f6752900cfd777bf87c181e81749b",
+      "size_bytes": 2475274
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/visual/link4.dae",
+      "sha256": "sha256:dd134cf13cdaced2b67739e4d9fe2ca011cc533936397d9f6303fc740424e2a2",
+      "size_bytes": 2533228
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/visual/link5.dae",
+      "sha256": "sha256:cbcabd369e044eba3f1c2cab84b9ed2ebc1b2f424c6104ad9c5d7410e92fabfe",
+      "size_bytes": 3259292
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/visual/link6.dae",
+      "sha256": "sha256:907b16fea84931f4881174234065bb647700abf105b432c3ff65360e0ad5cf8b",
+      "size_bytes": 5252660
+    },
+    {
+      "path": "expanded_source/meshes/robots/fr3/visual/link7.dae",
+      "sha256": "sha256:b9d05ac502ff269b1323705de811d07a8eb9920ce711b32ee0497bf16b74989b",
+      "size_bytes": 4243523
+    },
+    {
+      "path": "expanded_source/robots/common/franka_arm.srdf.xacro",
+      "sha256": "sha256:aabbafd94ec8e64f5e6dc0a6a55aea5529bd68662a8ef530f03a66f0e1b51a94",
+      "size_bytes": 3915
+    },
+    {
+      "path": "expanded_source/robots/common/franka_arm.xacro",
+      "sha256": "sha256:f4151426e6f8fe7519bca5d8d9f5834f17df68a311bcbd6a6ef1d5de9a487cb1",
+      "size_bytes": 8591
+    },
+    {
+      "path": "expanded_source/robots/common/franka_robot.xacro",
+      "sha256": "sha256:efba523640922762a89d758fbee1870b2d12b39cdda50e3c142821cc0c8b646f",
+      "size_bytes": 5013
+    },
+    {
+      "path": "expanded_source/robots/common/group_definition.xacro",
+      "sha256": "sha256:5a8c3957a2a9622df0c6116126450e69f3b769a336392a226049196ab19173ca",
+      "size_bytes": 1191
+    },
+    {
+      "path": "expanded_source/robots/common/utils.xacro",
+      "sha256": "sha256:82cf160080db4e6ed05d48162bdcc00881a3e6b2eac0e95e951824bc291cc468",
+      "size_bytes": 7207
+    },
+    {
+      "path": "expanded_source/robots/fr3/accelerometers.yaml",
+      "sha256": "sha256:40fb78a7082e4fb7fc565b5ee3f3be15a4db4a07895cdbadda46c251980320ab",
+      "size_bytes": 1597
+    },
+    {
+      "path": "expanded_source/robots/fr3/dynamics.yaml",
+      "sha256": "sha256:e65e145114b431bd17cdebc58b88c43505f0658472cca6ffbc9c32b7a198f79b",
+      "size_bytes": 1283
+    },
+    {
+      "path": "expanded_source/robots/fr3/fr3.srdf.xacro",
+      "sha256": "sha256:9ba7197b148c7b576b88db4199112ca20de01daeda484858b7f20e5d821e6233",
+      "size_bytes": 984
+    },
+    {
+      "path": "expanded_source/robots/fr3/fr3.urdf.urdf",
+      "sha256": "sha256:8609da038ac4a9b6a0f2a566f37b1629c08f5535eb458c31259f3e94383beb6a",
+      "size_bytes": 16097
+    },
+    {
+      "path": "expanded_source/robots/fr3/fr3.urdf.xacro",
+      "sha256": "sha256:3cb9ba098a600ff6b81be20e44289d086f1a752463ba708d7b87b93afc195c2e",
+      "size_bytes": 1939
+    },
+    {
+      "path": "expanded_source/robots/fr3/inertials.yaml",
+      "sha256": "sha256:02a39046b36303f748c9755b48610b7600fb819d54828475514c36915ae54a89",
+      "size_bytes": 2212
+    },
+    {
+      "path": "expanded_source/robots/fr3/joint_limits.yaml",
+      "sha256": "sha256:42e999184f37689568b58f320d062859053f03c62c8b49bf00a00d69f20d7a65",
+      "size_bytes": 1374
+    },
+    {
+      "path": "expanded_source/robots/fr3/kinematics.yaml",
+      "sha256": "sha256:44326830a6773dd6611cdf9947045eeb3276ea4e3ca47a05272816c862c8e386",
+      "size_bytes": 831
+    },
+    {
+      "path": "robot.urdf",
+      "sha256": "sha256:5ae1248cbdb65f182e18ff3fb7cf1a9656fcc270497cc866eefbc41a0c5a533d",
+      "size_bytes": 32510
+    }
+  ],
+  "configuration_digest": "sha256:9ae634dce1abfa9cc462967e4d19f0274bf588adc19d2df8400f83e97bd2c521"
+}

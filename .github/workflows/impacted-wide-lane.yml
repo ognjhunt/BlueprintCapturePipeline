@@ -1,0 +1,329 @@
+name: Impacted Wide Lane
+
+# Runs every test file the impact plan selected when the selection is above the
+# bounded lane's budget. It has the full lane's environment and marker expression,
+# so slow, root and systemd tests run instead of skipping. The file list comes only
+# from this run's impact plan; this workflow takes no test selection.
+on:
+  workflow_call:
+    inputs:
+      shard_matrix:
+        description: "Shard indices from this run's impact plan. Not a test selection."
+        required: true
+        type: string
+
+jobs:
+  wide-shard:
+    name: Wide impacted shard ${{ matrix.shard_index }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: ${{ fromJSON(inputs.shard_matrix) }}
+    env:
+      # The steps through "Verify production fail-closed posture" are the full
+      # lane's, byte for byte, and read these same variables. A contract test keeps
+      # them equal.
+      BLUEPRINT_ALLOW_REPO_OUTPUT: "0"
+      BLUEPRINT_ALLOW_LARGE_ARTIFACTS: "0"
+      BLUEPRINT_DISPOSABLE_LINUX_TEST: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+      UV_PROJECT_ENVIRONMENT: /var/lib/blueprint-native-test-venv
+      BLUEPRINT_RESEARCH_SDK_PYTHON: /opt/blueprint-research-sdk-proof/bin/python
+      CONTRACTS_REPOSITORY: ognjhunt/BlueprintContracts
+      # Keep this aligned with the blueprint-contracts pin in pyproject.toml.
+      CONTRACTS_REF: 7708a4e4c5dedeeb39cc73d3f6869304de295b81
+      CONTRACTS_TOKEN: ${{ secrets.BLUEPRINT_CONTRACTS_CHECKOUT_TOKEN || github.token }}
+      FULL_TEST_LANE_SHARD_INDEX: ${{ matrix.shard_index }}
+
+    steps:
+      - name: Bind ephemeral artifact roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "BLUEPRINT_ARTIFACT_CACHE_ROOT=${RUNNER_TEMP}/blueprint-artifact-cache" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_EVIDENCE_ROOT=${RUNNER_TEMP}/blueprint-evidence" >> "${GITHUB_ENV}"
+
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The historical evidence test replays an exact retained commit.
+          fetch-depth: 0
+
+      - name: Checkout BlueprintContracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init BlueprintContracts
+          cd BlueprintContracts
+          git remote add origin "https://x-access-token:${CONTRACTS_TOKEN}@github.com/${CONTRACTS_REPOSITORY}.git"
+          fetch_ref="${CONTRACTS_REF:-main}"
+          if git fetch --depth=1 origin "${fetch_ref}"; then
+            echo "Using BlueprintContracts ref ${fetch_ref}."
+          else
+            echo "::error::BlueprintContracts ref '${fetch_ref}' was not available. Push a matching Contracts branch/ref or set CONTRACTS_REF; refusing to validate against an implicit fallback."
+            exit 1
+          fi
+          git checkout --detach FETCH_HEAD
+
+      - name: Bind actual native scene SDK inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test "$(git -C BlueprintContracts rev-parse HEAD)" = "${CONTRACTS_REF}"
+          printf '%s\n' "BLUEPRINT_NATIVE_SOURCE_ROOT=${GITHUB_WORKSPACE}" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_NATIVE_SOURCE_COMMIT=${GITHUB_SHA}" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_NATIVE_CONTRACTS_ROOT=${GITHUB_WORKSPACE}/BlueprintContracts" >> "${GITHUB_ENV}"
+
+      - name: Install uv
+        id: install-uv
+        # A failed tool download is a runner flake, not a verdict on the code, and it
+        # turned main red twice in 41 runs on 2026-10-31. No test runs in this step.
+        continue-on-error: true
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install uv after a failed download
+        if: steps.install-uv.outcome == 'failure'
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install system media dependencies
+        shell: bash
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          # The review-video tests need ffmpeg/ffprobe on PATH -- nothing more.
+          # These runners do not ship them, and Ubuntu's apt mirrors have now
+          # cost this repository three distinct outages in one night: a hung
+          # connection, a drip-feeding package fetch, and an index download
+          # that stalled for eleven minutes. No timeout or retry policy fixes
+          # a mirror that is slow rather than broken, so the mirror is no
+          # longer on this path at all.
+          #
+          # Use versioned GitHub release assets rather than an expiring daily
+          # build or a mirror that serves inconsistent bytes to Actions runners.
+          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+            echo "media toolchain already present: $(ffmpeg -version | head -n1)"
+            exit 0
+          fi
+          FFMPEG_RELEASE="https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1"
+          download_verified() {
+            local name="$1" expected="$2" destination="${RUNNER_TEMP}/$1"
+            for attempt in 1 2 3; do
+              rm -f "${destination}"
+              if curl -fsSL --retry 5 --retry-all-errors --connect-timeout 30 --max-time 420 \
+                -o "${destination}" "${FFMPEG_RELEASE}/${name}" \
+                && echo "${expected}  ${destination}" | sha256sum -c -; then
+                return 0
+              fi
+              echo "${name} attempt ${attempt} failed byte verification"
+            done
+            return 1
+          }
+          download_verified ffmpeg-linux-x64.gz bfe8a8fc511530457b528c48d77b5737527b504a3797a9bc4866aeca69c2dffa
+          download_verified ffprobe-linux-x64.gz 25d9b6ccb05e3d9de9e04e31e2506d8dd7f9f0418981965ac6df12e8d3afd067
+          gzip -dc "${RUNNER_TEMP}/ffmpeg-linux-x64.gz" > "${RUNNER_TEMP}/ffmpeg"
+          gzip -dc "${RUNNER_TEMP}/ffprobe-linux-x64.gz" > "${RUNNER_TEMP}/ffprobe"
+          sudo install -m 0755 "${RUNNER_TEMP}/ffmpeg" /usr/local/bin/ffmpeg
+          sudo install -m 0755 "${RUNNER_TEMP}/ffprobe" /usr/local/bin/ffprobe
+          ffmpeg -version | head -n1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: tools/splat_render/package-lock.json
+
+      - name: Install sealed-camera renderer packages
+        working-directory: tools/splat_render
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          for attempt in 1 2; do
+            if timeout --kill-after=10s 100s npm ci --foreground-scripts --no-audit --no-fund --loglevel=verbose; then
+              exit 0
+            fi
+            echo "renderer package install attempt ${attempt} did not complete"
+          done
+          echo "renderer package install failed after two bounded attempts"
+          exit 1
+
+      # The full collection includes actual SDK-object serialization and its
+      # collector join. Provision the pinned package before that collection;
+      # the tests forbid client construction, authentication and network I/O.
+      - name: Install pinned SDK for offline native reader proof
+        working-directory: tools/autonomy_native_reader
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          timeout --kill-after=10s 140s npm ci --ignore-scripts --no-audit --no-fund
+          node -e 'if (require("./node_modules/@google-cloud/firestore/package.json").version !== "7.11.6") process.exit(1)'
+          printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_SDK=$PWD/node_modules/@google-cloud/firestore" >> "${GITHUB_ENV}"
+          printf '%s\n' "BLUEPRINT_NATIVE_READER_TEST_NODE=$(command -v node)" >> "${GITHUB_ENV}"
+
+      - name: Install sealed-camera renderer dependencies
+        working-directory: tools/splat_render
+        # Root dependencies run in a bounded cgroup so an apt descendant cannot
+        # outlive its parent timeout and keep dpkg locked during the next attempt.
+        # Each later attempt retains apt's completed download cache.
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          task_node="$(command -v node)"
+          # The Azure archive drip-fed font/runtime packages until both bounded
+          # cgroups expired (run 39768835541). Use Ubuntu's primary HTTPS mirror
+          # for that exact source on these disposable runners; keep every
+          # dependency, installation check and cgroup deadline in place.
+          if test -f /etc/apt/apt-mirrors.txt; then
+            sudo --non-interactive sed -i \
+              's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+              /etc/apt/apt-mirrors.txt
+          fi
+          task_deps_ready=0
+          for attempt in 1 2; do
+            task_unit="blueprint-ci-browser-deps-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${FULL_TEST_LANE_SHARD_INDEX}-${attempt}"
+            if sudo --non-interactive systemd-run --unit="$task_unit" --wait --collect --pipe \
+                --property=Type=exec --property=User=root --property=KillMode=control-group \
+                --property=RuntimeMaxSec=240s --property=TimeoutStopSec=10s \
+                --working-directory="$PWD" -- "$task_node" "$PWD/node_modules/playwright/cli.js" install-deps chromium; then
+              task_deps_ready=1
+              break
+            fi
+            echo "playwright system dependency attempt ${attempt} reached terminal failure"
+          done
+          test "$task_deps_ready" = 1
+          for attempt in 1 2; do
+            if timeout --kill-after=10s 80s "$task_node" node_modules/playwright/cli.js install chromium; then
+              exit 0
+            fi
+            echo "playwright chromium download attempt ${attempt} did not finish"
+          done
+          echo "playwright chromium download did not finish in 2 bounded attempts"
+          exit 1
+
+      - name: Install and protect system-Python dependencies for full Linux proof
+        timeout-minutes: 16
+        run: |
+          set -euo pipefail
+          sudo --non-interactive true
+          manager="$(sudo --non-interactive readlink -f /proc/1/exe)"
+          printf 'PID 1 executable: %s\n' "$manager"
+          test "$manager" = /usr/lib/systemd/systemd
+          test -f /sys/fs/cgroup/cgroup.controllers
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/blueprint-native-test-venv
+          uv venv --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
+          uv lock --check
+          for attempt in 1 2; do
+            if timeout --kill-after=10s 360s uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
+                --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3 --link-mode copy \
+              && timeout --kill-after=10s 90s uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts; then
+              break
+            fi
+            if test "${attempt}" = 2; then
+              echo "locked dependency install failed after two bounded attempts"
+              exit 1
+            fi
+            echo "locked dependency install attempt ${attempt} did not complete"
+          done
+          # Noneditable policy CLIs resolve retained documents beside their
+          # installed package. Preserve those exact committed bytes outside
+          # runner home, where the different-UID child can read them safely.
+          native_resource_root="$(/var/lib/blueprint-native-test-venv/bin/python -c 'from pathlib import Path; import blueprint_pipeline; print(Path(blueprint_pipeline.__file__).resolve().parents[2])')"
+          test "$native_resource_root" = /var/lib/blueprint-native-test-venv/lib/python3.12
+          git archive HEAD docs | tar -x -C "$native_resource_root"
+          diff -rq -- docs "$native_resource_root/docs"
+          # The actual different-UID child has ProtectHome=yes. Its interpreter
+          # and imported dependencies must be protected outside /home/runner.
+          sudo chown -hR root:root /var/lib/blueprint-native-test-venv
+
+      - name: Install isolated daily research SDK for wire proof
+        if: hashFiles('tools/daily_research/requirements.txt') != ''
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /opt/blueprint-research-sdk-proof
+          uv venv --python /usr/bin/python3 /opt/blueprint-research-sdk-proof
+          uv pip install --python /opt/blueprint-research-sdk-proof/bin/python \
+            -r tools/daily_research/requirements.txt pytest==9.1.1
+          sudo chown -hR root:root /opt/blueprint-research-sdk-proof
+
+      - name: Validate Python interpreter matrix
+        run: uv run --no-sync python scripts/validate_python_interpreter_matrix.py --assert-current
+
+      - name: Verify shared robot-eval request contract
+        run: |
+          uv run --no-sync python scripts/verify_robot_eval_job_request_contract.py \
+            --contracts-repo BlueprintContracts
+
+      - name: Verify production fail-closed posture
+        env:
+          BLUEPRINT_LAUNCH_PROOF_MODE: production
+          PRIVACY_PIPELINE_ENABLED: "true"
+          PRIVACY_FAIL_CLOSED: "true"
+          PIPELINE_SYNC_REQUIRED: "true"
+          RETRIEVAL_REQUIRE_PRIVACY_SAFE_VIDEO: "true"
+        run: |
+          uv run --no-sync python -m pytest -q \
+            tests/test_launch_proof_policy.py \
+            tests/test_production_runtime_env_guard.py \
+            tests/test_deploy_systemd_contract.py \
+            tests/test_webapp_sync.py::test_production_sync_is_required_and_disables_placeholder_fallback \
+            tests/test_provider_preview_qa.py::test_provider_preview_qa_blocks_raw_bypass_in_production
+
+      - name: Download this run's impact plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: impacted-test-plan-${{ github.sha }}
+          path: ${{ runner.temp }}/blueprint-ci/impact-plan
+
+      - name: Run wide impacted shard
+        env:
+          BLUEPRINT_FULL_LANE_COLLECTION_MANIFEST: ${{ runner.temp }}/blueprint-ci/impacted-wide-shard-executed.json
+          BLUEPRINT_FULL_LANE_EVIDENCE_PHASE: executed
+        run: |
+          set -euo pipefail
+          mapfile -t shard_files < <(
+            jq -r --argjson shard "${FULL_TEST_LANE_SHARD_INDEX}" \
+              '.wide_shards[] | select(.index == $shard) | .files[]' \
+              "${{ runner.temp }}/blueprint-ci/impact-plan/impacted-test-plan.json"
+          )
+          if [[ "${#shard_files[@]}" -eq 0 ]]; then
+            echo "::error::Wide impacted shard ${FULL_TEST_LANE_SHARD_INDEX} has no assigned files."
+            exit 1
+          fi
+          uv run --no-sync scripts/pytest_full.sh \
+            -p blueprint_pipeline.pytest_full_lane_evidence \
+            --junitxml="${{ runner.temp }}/blueprint-ci/impacted-wide-shard-junit.xml" \
+            -m "not external_runtime and not external_data" \
+            "${shard_files[@]}"
+
+      - name: Verify exact wide impacted shard
+        if: ${{ !cancelled() }}
+        run: |
+          uv run --no-sync python scripts/full_lane_sharding.py verify-wide-shard \
+            --impact-plan "${{ runner.temp }}/blueprint-ci/impact-plan/impacted-test-plan.json" \
+            --executed "${{ runner.temp }}/blueprint-ci/impacted-wide-shard-executed.json" \
+            --junit "${{ runner.temp }}/blueprint-ci/impacted-wide-shard-junit.xml" \
+            --shard-index "${FULL_TEST_LANE_SHARD_INDEX}" \
+            --output "${{ runner.temp }}/blueprint-ci/impacted-wide-shard-verification.json"
+
+      - name: Upload wide impacted shard evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: impacted-wide-shard-${{ matrix.shard_index }}-${{ github.run_id }}
+          retention-days: 7
+          if-no-files-found: error
+          overwrite: true
+          path: |
+            ${{ runner.temp }}/blueprint-ci/impact-plan/impacted-test-plan.json
+            ${{ runner.temp }}/blueprint-ci/impacted-wide-shard-executed.json
+            ${{ runner.temp }}/blueprint-ci/impacted-wide-shard-junit.xml
+            ${{ runner.temp }}/blueprint-ci/impacted-wide-shard-verification.json

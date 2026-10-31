@@ -6,12 +6,25 @@ Branch protection for `main` requires one stable aggregate merge check:
 
 | Check | Workflow | Why it is required |
 | --- | --- | --- |
-| `Impacted test and sentinel gate` | `.github/workflows/ci.yml` | Runs dependency-mapped tests plus always-on success-claim, runtime-security, paid-resource-admission, and release-policy sentinels. The ordinary lane is capped at ten minutes. If deterministic impact analysis classifies the change as cross-cutting, this aggregate waits for the reusable full lane and fails unless it passes. |
+| `Impacted test and sentinel gate` | `.github/workflows/ci.yml` | Runs dependency-mapped tests plus always-on success-claim, runtime-security, paid-resource-admission, and release-policy sentinels. The ordinary lane is capped at ten minutes. A selection above its 40-file budget runs in the wide lane instead. If deterministic impact analysis classifies the change as cross-cutting, this aggregate waits for the reusable full lane and fails unless it passes. |
+
+A pull request keeps only its newest CI run. A newer push cancels every job of
+the older run, including this gate. A cancelled gate concludes `cancelled`, which
+never satisfies the required check, so the newest run decides. Runs on `main` are
+never cancelled: each main commit has its own concurrency group, because its
+`supply-chain` job is the only producer of that commit's source attestation.
 
 Other CI, CodeQL, compatibility, container, supply-chain, and simulator jobs are
 hosted diagnostics or claim-specific release evidence. They remain visible and
 must be green when their claim or promotion scope requires them, but they are
 not blanket merge gates for every ordinary PR.
+
+A pull request that changes `uv.lock`, `pyproject.toml`, a `requirements*.txt`,
+`Dockerfile`, `docker-compose.yml`, `deploy/systemd/` or `ci.yml` also runs
+`dependency-security`, `container-contract` and the build, SBOM and license steps
+of `supply-chain`, and this gate fails unless they pass. On main they stay
+`supply-chain`'s prerequisites, where a first failure leaves the commit unattested
+and undeployable. The pull request's copy of those steps has no permission to sign.
 
 The sentinels include the whole-repository paid-resource allocator
 verification and the module line-budget governance policy. `ci.yml` runs those
@@ -24,8 +37,25 @@ CI runs the same plan
 with a 480-second test-process limit inside a ten-minute job limit, leaving time
 for frozen dependency setup and artifact upload. Every plan records changed
 files, selected tests, escalation reasons, and the protected risks. Unknown
-executable surfaces, dependency changes, or an impact set exceeding the bounded
-file/test budgets request the full lane rather than silently reducing coverage.
+executable surfaces, dependency changes, or more than 50 changed files request
+the full lane rather than silently reducing coverage.
+
+A file counts as covered when a test names it, imports it, or loads it by name.
+An importable module no test names (under `src/blueprint_pipeline/` or the operator
+door's package) is covered through what imports it, within two steps, scripts
+included. A file under `src/blueprint_pipeline/config/` is covered through the
+modules that name it or the directory directly under `config/` holding it. A file
+nothing references stays unknown and requests the full lane.
+
+More than 40 impacted test files, with no other reason for the full lane, runs
+`.github/workflows/impacted-wide-lane.yml`. It has the full lane's environment,
+fail-closed posture and marker expression, so every selected file runs with its
+slow, root and systemd tests, and a skip or a selected file with no tests fails
+it. It takes its file list only from that run's impact plan, in at most four
+shards balanced on the committed duration baseline. A selection above 600 files
+or a quarter of all test files still requests the full lane. The full lane also
+runs nightly and on every cross-cutting change. A change to the wide lane's own
+workflow runs that lane.
 
 Canonical Pipeline launch evidence uses Python `3.12`. The source of truth is
 `docs/CI_PYTHON_INTERPRETER_MATRIX.json`, documented in

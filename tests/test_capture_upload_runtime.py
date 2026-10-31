@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from blueprint_pipeline import capture_upload_runtime as runtime
 from blueprint_pipeline.capture_upload_runtime import (
     CaptureUploadRuntimeError,
     verify_capture_upload_runtime,
@@ -64,6 +65,27 @@ def test_non_discriminating_or_failed_scanner_refuses(tmp_path, mode, control):
     evidence = tmp_path / failure.value.diagnostic["evidence_relative_path"]
     assert json.loads(evidence.read_text())["exit_code"] == mode
     assert not list(tmp_path.glob(".scanner-preflight-*"))
+
+
+def test_a_loaded_host_gets_time_to_scan_and_a_hung_scanner_still_refuses(tmp_path, monkeypatch):
+    """A 60 s limit blocked a deploy on 2026-10-31: one scan outlived it at load average 8."""
+    limits = []
+
+    def hung(argv, **kwargs):
+        limits.append(kwargs["timeout"])
+        raise runtime.subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    program = _scanner(tmp_path)
+    monkeypatch.setattr(runtime.subprocess, "run", hung)
+    with pytest.raises(CaptureUploadRuntimeError, match="^capture_transfer_scanner_timed_out$"):
+        verify_capture_upload_runtime(store_root=str(tmp_path), scanner_argv=[str(program)])
+    assert limits == [runtime.SCANNER_CONTROL_TIMEOUT_SECONDS]
+    assert not list(tmp_path.glob(".scanner-preflight-*"))
+
+
+def test_callers_allow_both_controls_their_whole_limit():
+    assert runtime.SCANNER_CONTROL_TIMEOUT_SECONDS >= 240
+    assert runtime.SCANNER_CONTROLS_TIMEOUT_SECONDS > 2 * runtime.SCANNER_CONTROL_TIMEOUT_SECONDS
 
 
 def test_missing_scanner_and_store_alias_are_not_admitted(tmp_path):
@@ -128,7 +150,7 @@ def test_deploy_probes_as_service_user_with_no_provider_environment(tmp_path, mo
         assert json.loads(kwargs["input"]) == configuration
         assert kwargs["env"]["PYTHONPATH"] == str(tmp_path / "src")
         assert not any("KEY" in name or "TOKEN" in name for name in kwargs["env"])
-        assert kwargs["timeout"] == 150
+        assert kwargs["timeout"] == runtime.SCANNER_CONTROLS_TIMEOUT_SECONDS
         return SimpleNamespace(returncode=0, stdout=json.dumps(_ready()))
 
     monkeypatch.setattr(deploy.subprocess, "run", run)

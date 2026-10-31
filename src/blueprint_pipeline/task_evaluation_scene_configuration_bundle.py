@@ -152,13 +152,21 @@ def _provider_reference_suffix(row: Mapping[str, Any], *, source: Path) -> str:
     return suffix
 
 
-def _copy_tree(source: Path, destination: Path) -> None:
+def _copy_tree(source: Path, destination: Path, *, keep_compiled: bool = False) -> None:
+    """Copy a tree read-only. Python bytecode is dropped unless ``keep_compiled``.
+
+    The published toolchain is validated against its own inventory before and
+    after the copy, and that inventory can list bytecode a component ships (the
+    content-agents Blender runtime's bundled Python: 926 ``.pyc`` files). Its copy
+    keeps every file so the copy can match; anything stray in the source already
+    fails the source validation.
+    """
     if source.is_symlink() or not source.is_dir():
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_source_tree_invalid"
         )
     for path in sorted(source.rglob("*")):
-        if path.name == "__pycache__" or path.suffix in {".pyc", ".pyo"}:
+        if not keep_compiled and (path.name == "__pycache__" or path.suffix in {".pyc", ".pyo"}):
             continue
         if path.is_symlink():
             raise TaskEvaluationSceneConfigurationBundleError(
@@ -1063,7 +1071,7 @@ def build_scene_configuration_provider_bundle(
         canonical_json(portable) + "\n", encoding="utf-8"
     )
     portable_toolchain = runtime / "toolchain"
-    _copy_tree(toolchain, portable_toolchain)
+    _copy_tree(toolchain, portable_toolchain, keep_compiled=True)
     copied_toolchain_manifest = validate_scene_configuration_toolchain(
         root=portable_toolchain, expected_source_commit=toolchain_source_commit
     )

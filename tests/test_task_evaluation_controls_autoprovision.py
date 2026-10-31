@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import task_evaluation_controls_autoprovision as worker
+from blueprint_pipeline import task_evaluation_controls_byte_digests as byte_digests
 from blueprint_pipeline import task_evaluation_scene_intake as intake
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_task_evaluation_configured_controls_continuation_provisioning import (
@@ -488,19 +489,52 @@ def test_payload_digest_reuses_its_persisted_verdict_until_bytes_move(tmp_path, 
     big.write_bytes(b"x" * (1024 * 1024 + 7))  # at or above MINIMUM_BYTES: re-proven by stat identity
     (payload / "manifest.json").write_text("{}")
     first = worker.payload_digest(payload)
-    real = worker._consulted_sha256
+    real = byte_digests._consulted_sha256
 
     def refuse(path):
         raise AssertionError(f"re-hashed {path} although nothing moved")
 
-    monkeypatch.setattr(worker, "_consulted_sha256", refuse)
+    monkeypatch.setattr(byte_digests, "_consulted_sha256", refuse)
     assert worker.payload_digest(payload) == first
-    monkeypatch.setattr(worker, "_consulted_sha256", real)
+    monkeypatch.setattr(byte_digests, "_consulted_sha256", real)
     big.write_bytes(b"y" * (1024 * 1024 + 7))
     changed = worker.payload_digest(payload)
     assert changed != first
     (payload / "extra.txt").write_text("added")
     assert worker.payload_digest(payload) not in {first, changed}
+
+
+@pytest.mark.usefixtures("_single_threaded_verdict_persistence")
+def test_byte_digest_verdicts_depend_only_on_the_code_that_hashes(tmp_path, monkeypatch):
+    """A change elsewhere in the package must not make a deploy hash the runtime again.
+
+    Stored against the provisioning worker, these verdicts depended on 1,236 modules:
+    the controls step of a deploy took 291-324 s when one had changed, 9.4 s otherwise.
+    """
+    root = tmp_path / "verdicts"
+    monkeypatch.setenv("BLUEPRINT_VALIDATION_VERDICT_ROOT", str(root))
+    payload = tmp_path / "payload"
+    payload.mkdir()
+    (payload / "model.bin").write_bytes(b"x" * (1024 * 1024 + 7))
+    (payload / "manifest.json").write_text("{}")
+    asset = tmp_path / "robot.usd"
+    asset.write_text("#usda 1.0\n")
+
+    worker.payload_digest(payload)
+    worker._asset({"path": str(asset), "digest": worker.producer._sha256(asset)})
+
+    code = {entry["name"]: {row["module"] for row in entry["code"]}
+            for entry in (json.loads(path.read_text()) for path in root.glob("*.json"))}
+    hashing = {
+        "blueprint_pipeline.task_evaluation_controls_byte_digests",
+        "blueprint_pipeline.validation_code_dependencies",
+        "blueprint_pipeline.validation_file_digests",
+        "blueprint_pipeline.validation_verdict_store",
+    }
+    assert code == {
+        byte_digests.ASSET_DIGEST_VERDICT: hashing,
+        byte_digests.PAYLOAD_DIGEST_VERDICT: hashing | {"blueprint_pipeline.decision_evidence_contracts"},
+    }
 
 
 def test_asset_digest_verdict_fails_closed_when_bytes_change(tmp_path, monkeypatch):

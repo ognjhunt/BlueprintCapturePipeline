@@ -291,6 +291,12 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/preflight" in text
             assert "ReadWritePaths=/var/lib/blueprint " not in text
             continue
+        if unit.name == "blueprint-task-evaluation-configured-controls-progression.service":
+            # Its worker exits 2 whenever a row is blocked; a failed oneshot never
+            # re-arms the OnUnitInactiveSec timer, so exit 2 must count as success.
+            assert "SuccessExitStatus=2" in unit.read_text(encoding="utf-8")
+            timer = unit.with_suffix(".timer").read_text(encoding="utf-8")
+            assert "OnUnitInactiveSec=" in timer
         if unit.name == "blueprint-control-plane-capacity.service":
             # Root housekeeping like the reaper: growing the work volume needs the
             # block device and the online-resize ioctl, nothing wider.  It writes

@@ -1,0 +1,2522 @@
+{
+  "schema_version": "embodiment_runtime_configuration.v1",
+  "claim_ceiling": "configuration_only",
+  "embodiment_id": "kuka_lbr_iiwa_14_robotiq_2f85_sim",
+  "source_bundle_digest": "sha256:72c3dba70aded5a22131f62fb9c5fcf644c49cc261ffb7a668a336f7f8d2fe24",
+  "station_parameters": null,
+  "manifest_fields": {
+    "schema_version": "blueprint.robot_embodiment.v2",
+    "embodiment_id": "kuka_lbr_iiwa_14_robotiq_2f85_sim",
+    "form": "fixed_base_arm",
+    "base": {
+      "mode": "fixed"
+    },
+    "joints": [
+      {
+        "name": "joint1",
+        "control": "position",
+        "lower": -2.96706,
+        "upper": 2.96706,
+        "max_velocity": 1.0,
+        "stiffness": 2000.0,
+        "damping": 200.0
+      },
+      {
+        "name": "joint2",
+        "control": "position",
+        "lower": -2.0944,
+        "upper": 2.0944,
+        "max_velocity": 1.0,
+        "stiffness": 2000.0,
+        "damping": 200.0
+      },
+      {
+        "name": "joint3",
+        "control": "position",
+        "lower": -2.96706,
+        "upper": 2.96706,
+        "max_velocity": 1.0,
+        "stiffness": 2000.0,
+        "damping": 200.0
+      },
+      {
+        "name": "joint4",
+        "control": "position",
+        "lower": -2.0944,
+        "upper": 2.0944,
+        "max_velocity": 1.0,
+        "stiffness": 2000.0,
+        "damping": 200.0
+      },
+      {
+        "name": "joint5",
+        "control": "position",
+        "lower": -2.96706,
+        "upper": 2.96706,
+        "max_velocity": 1.0,
+        "stiffness": 2000.0,
+        "damping": 200.0
+      },
+      {
+        "name": "joint6",
+        "control": "position",
+        "lower": -2.0944,
+        "upper": 2.0944,
+        "max_velocity": 1.0,
+        "stiffness": 2000.0,
+        "damping": 200.0
+      },
+      {
+        "name": "joint7",
+        "control": "position",
+        "lower": -3.05433,
+        "upper": 3.05433,
+        "max_velocity": 1.0,
+        "stiffness": 2000.0,
+        "damping": 200.0
+      }
+    ],
+    "grippers": [
+      {
+        "name": "arm_gripper",
+        "tool_link": "robotiq_85_base_link",
+        "joints": [
+          {
+            "name": "robotiq_85_left_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_finger_tip_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_right_finger_tip_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          }
+        ],
+        "max_width_m": 0.085,
+        "contact_links": [
+          "robotiq_85_left_finger_tip_link",
+          "robotiq_85_right_finger_tip_link"
+        ]
+      }
+    ],
+    "tool_link": "robotiq_85_base_link",
+    "reset_joint_positions": {
+      "joint1": 0.0,
+      "joint2": 0.785398,
+      "joint3": 0.0,
+      "joint4": -1.5708,
+      "joint5": 0.0,
+      "joint6": 0.0,
+      "joint7": 0.0,
+      "robotiq_85_left_knuckle_joint": 0.0,
+      "robotiq_85_right_knuckle_joint": 0.0,
+      "robotiq_85_left_inner_knuckle_joint": 0.0,
+      "robotiq_85_right_inner_knuckle_joint": 0.0,
+      "robotiq_85_left_finger_tip_joint": 0.0,
+      "robotiq_85_right_finger_tip_joint": 0.0
+    },
+    "actuator": {
+      "stiffness": 100.0,
+      "damping": 20.0
+    },
+    "cameras": [
+      {
+        "name": "overhead",
+        "mount_link": null,
+        "position_m": [
+          0.5,
+          0.0,
+          1.5
+        ],
+        "orientation_xyzw": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "arm_wrist",
+        "mount_link": "robotiq_85_base_link",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      }
+    ],
+    "control_hz": 60,
+    "action_chunk_rows": 48,
+    "reach_m": 1.44,
+    "arms": [
+      {
+        "name": "arm",
+        "joint_names": [
+          "joint1",
+          "joint2",
+          "joint3",
+          "joint4",
+          "joint5",
+          "joint6",
+          "joint7"
+        ],
+        "base_link": "base",
+        "tool_link": "robotiq_85_base_link",
+        "gripper_name": "arm_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            1.582978510268527e-32,
+            -2.5206333195730065e-33,
+            0.13400000000000012
+          ],
+          "orientation_xyzw": [
+            4.5916900433169365e-49,
+            -1.3684555315672042e-48,
+            1.0,
+            6.123233995736765e-17
+          ]
+        }
+      }
+    ]
+  },
+  "source_name_mapping": {
+    "attachment_site": "attachment_site",
+    "base": "base",
+    "blueprint_attachment_site": "blueprint_attachment_site",
+    "blueprint_grasp_frame": "blueprint_grasp_frame",
+    "grasp_link": "grasp_link",
+    "joint1": "joint1",
+    "joint2": "joint2",
+    "joint3": "joint3",
+    "joint4": "joint4",
+    "joint5": "joint5",
+    "joint6": "joint6",
+    "joint7": "joint7",
+    "link1": "link1",
+    "link2": "link2",
+    "link3": "link3",
+    "link4": "link4",
+    "link5": "link5",
+    "link6": "link6",
+    "link7": "link7",
+    "robotiq_85_base_joint": "robotiq_85_base_joint",
+    "robotiq_85_base_link": "robotiq_85_base_link",
+    "robotiq_85_left_finger_joint": "robotiq_85_left_finger_joint",
+    "robotiq_85_left_finger_link": "robotiq_85_left_finger_link",
+    "robotiq_85_left_finger_tip_joint": "robotiq_85_left_finger_tip_joint",
+    "robotiq_85_left_finger_tip_link": "robotiq_85_left_finger_tip_link",
+    "robotiq_85_left_inner_knuckle_joint": "robotiq_85_left_inner_knuckle_joint",
+    "robotiq_85_left_inner_knuckle_link": "robotiq_85_left_inner_knuckle_link",
+    "robotiq_85_left_knuckle_joint": "robotiq_85_left_knuckle_joint",
+    "robotiq_85_left_knuckle_link": "robotiq_85_left_knuckle_link",
+    "robotiq_85_right_finger_joint": "robotiq_85_right_finger_joint",
+    "robotiq_85_right_finger_link": "robotiq_85_right_finger_link",
+    "robotiq_85_right_finger_tip_joint": "robotiq_85_right_finger_tip_joint",
+    "robotiq_85_right_finger_tip_link": "robotiq_85_right_finger_tip_link",
+    "robotiq_85_right_inner_knuckle_joint": "robotiq_85_right_inner_knuckle_joint",
+    "robotiq_85_right_inner_knuckle_link": "robotiq_85_right_inner_knuckle_link",
+    "robotiq_85_right_knuckle_joint": "robotiq_85_right_knuckle_joint",
+    "robotiq_85_right_knuckle_link": "robotiq_85_right_knuckle_link"
+  },
+  "simulation_assumptions": [
+    "default_PD_gains_unless_source_drive_present",
+    "arm_velocity_capped_at_1_SI_unit_per_second",
+    "90_degree_simulated_camera_rig_not_site_calibration",
+    "parallel_gripper_width_is_nominal",
+    "reach_is_source_chain_upper_bound",
+    "ideal_fixed_tool_mount_without_adapter_geometry_or_hardware_fit",
+    "native_fixed_arm_gravity_off_is_not_the_source_MuJoCo_gravity_model",
+    "finite_drive_caps_are_simulation_estimates_not_manufacturer_motor_limits",
+    "native_joint_adjacent_collision_filtering_is_a_separate_engine_default",
+    "source_spheres_authored_exactly_tool_mesh_colliders_use_recorded_importer_approximation",
+    "task_and_scene_contact_readback_does_not_measure_arm_arm_contact_forces",
+    "MJCF_specular_0.5_and_shininess_0.25_have_no_exact_standard_URDF_field",
+    "source_home_keyframe_arm_reset_with_source_open_tool"
+  ],
+  "source_dynamics": {
+    "moving_link_count": 13,
+    "moving_links_without_positive_authored_mass_and_inertia": [],
+    "estimated_inertias_added": false,
+    "simulator_dynamics_validated": false
+  },
+  "source_limitations": [
+    "native_import_and_episode_receipts",
+    "publisher_hardware_and_policy_match_not_established"
+  ],
+  "execution_authorized": false,
+  "policy_compatibility_established": false,
+  "source_urdf_sha256": "sha256:70bb46e137342d96dbb1ffa5c59b429393bf24ad3edfa03131389b1791fa8c68",
+  "simulation_model": {
+    "schema_version": "iiwa14_robotiq_simulation_model.v1",
+    "embodiment_id": "kuka_lbr_iiwa_14_robotiq_2f85_sim",
+    "claim_ceiling": "source_dynamics_with_unvalidated_simulation_drive_estimates",
+    "manufacturer_motor_limits": false,
+    "estimated_inertias_added": false,
+    "source_bridge": {
+      "schema_version": "iiwa14_source_bridge.v1",
+      "source_entry_sha256": "sha256:ee7e6d796a9f8642de6097f95077281d15f43678dc5285beafeda99b84cf9ef5",
+      "source_revision": "cda5236f98383f6fbaa4820c6b18dba892cd087f",
+      "source_kinematics": {
+        "format": "mjcf",
+        "compiler_angle": "radian",
+        "bodies": [
+          {
+            "name": "base",
+            "parent": null,
+            "position_m": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "authored_quaternion_wxyz": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "orientation_wxyz": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "inertial": {
+              "mass_kg": 5.0,
+              "principal_inertia_kg_m2": [
+                0.05,
+                0.06,
+                0.03
+              ],
+              "position_m": [
+                -0.1,
+                0.0,
+                0.07
+              ],
+              "authored_quaternion_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              "orientation_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "name": "link1",
+            "parent": "base",
+            "position_m": [
+              0.0,
+              0.0,
+              0.1575
+            ],
+            "authored_quaternion_wxyz": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "orientation_wxyz": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "inertial": {
+              "mass_kg": 5.76,
+              "principal_inertia_kg_m2": [
+                0.0333,
+                0.033,
+                0.0123
+              ],
+              "position_m": [
+                0.0,
+                -0.03,
+                0.12
+              ],
+              "authored_quaternion_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              "orientation_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "name": "link2",
+            "parent": "link1",
+            "position_m": [
+              0.0,
+              0.0,
+              0.2025
+            ],
+            "authored_quaternion_wxyz": [
+              0.0,
+              0.0,
+              1.0,
+              1.0
+            ],
+            "orientation_wxyz": [
+              0.0,
+              0.0,
+              0.7071067811865475,
+              0.7071067811865475
+            ],
+            "inertial": {
+              "mass_kg": 6.35,
+              "principal_inertia_kg_m2": [
+                0.0305,
+                0.0304,
+                0.011
+              ],
+              "position_m": [
+                0.0003,
+                0.059,
+                0.042
+              ],
+              "authored_quaternion_wxyz": [
+                0.0,
+                0.0,
+                1.0,
+                1.0
+              ],
+              "orientation_wxyz": [
+                0.0,
+                0.0,
+                0.7071067811865475,
+                0.7071067811865475
+              ]
+            }
+          },
+          {
+            "name": "link3",
+            "parent": "link2",
+            "position_m": [
+              0.0,
+              0.2045,
+              0.0
+            ],
+            "authored_quaternion_wxyz": [
+              0.0,
+              0.0,
+              1.0,
+              1.0
+            ],
+            "orientation_wxyz": [
+              0.0,
+              0.0,
+              0.7071067811865475,
+              0.7071067811865475
+            ],
+            "inertial": {
+              "mass_kg": 3.5,
+              "principal_inertia_kg_m2": [
+                0.025,
+                0.0238,
+                0.0076
+              ],
+              "position_m": [
+                0.0,
+                0.03,
+                0.13
+              ],
+              "authored_quaternion_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              "orientation_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "name": "link4",
+            "parent": "link3",
+            "position_m": [
+              0.0,
+              0.0,
+              0.2155
+            ],
+            "authored_quaternion_wxyz": [
+              1.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "orientation_wxyz": [
+              0.7071067811865475,
+              0.7071067811865475,
+              0.0,
+              0.0
+            ],
+            "inertial": {
+              "mass_kg": 3.5,
+              "principal_inertia_kg_m2": [
+                0.017,
+                0.0164,
+                0.006
+              ],
+              "position_m": [
+                0.0,
+                0.067,
+                0.034
+              ],
+              "authored_quaternion_wxyz": [
+                1.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "orientation_wxyz": [
+                0.7071067811865475,
+                0.7071067811865475,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "name": "link5",
+            "parent": "link4",
+            "position_m": [
+              0.0,
+              0.1845,
+              0.0
+            ],
+            "authored_quaternion_wxyz": [
+              0.0,
+              0.0,
+              1.0,
+              1.0
+            ],
+            "orientation_wxyz": [
+              0.0,
+              0.0,
+              0.7071067811865475,
+              0.7071067811865475
+            ],
+            "inertial": {
+              "mass_kg": 3.5,
+              "principal_inertia_kg_m2": [
+                0.01,
+                0.0087,
+                0.00449
+              ],
+              "position_m": [
+                0.0001,
+                0.021,
+                0.076
+              ],
+              "authored_quaternion_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              "orientation_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "name": "link6",
+            "parent": "link5",
+            "position_m": [
+              0.0,
+              0.0,
+              0.2155
+            ],
+            "authored_quaternion_wxyz": [
+              1.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "orientation_wxyz": [
+              0.7071067811865475,
+              0.7071067811865475,
+              0.0,
+              0.0
+            ],
+            "inertial": {
+              "mass_kg": 1.8,
+              "principal_inertia_kg_m2": [
+                0.0049,
+                0.0047,
+                0.0036
+              ],
+              "position_m": [
+                0.0,
+                0.0006,
+                0.0004
+              ],
+              "authored_quaternion_wxyz": [
+                1.0,
+                1.0,
+                0.0,
+                0.0
+              ],
+              "orientation_wxyz": [
+                0.7071067811865475,
+                0.7071067811865475,
+                0.0,
+                0.0
+              ]
+            }
+          },
+          {
+            "name": "link7",
+            "parent": "link6",
+            "position_m": [
+              0.0,
+              0.081,
+              0.0
+            ],
+            "authored_quaternion_wxyz": [
+              0.0,
+              0.0,
+              1.0,
+              1.0
+            ],
+            "orientation_wxyz": [
+              0.0,
+              0.0,
+              0.7071067811865475,
+              0.7071067811865475
+            ],
+            "inertial": {
+              "mass_kg": 1.2,
+              "principal_inertia_kg_m2": [
+                0.001,
+                0.001,
+                0.001
+              ],
+              "position_m": [
+                0.0,
+                0.0,
+                0.02
+              ],
+              "authored_quaternion_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ],
+              "orientation_wxyz": [
+                1.0,
+                0.0,
+                0.0,
+                0.0
+              ]
+            }
+          }
+        ],
+        "joints": [
+          {
+            "name": "joint1",
+            "body": "link1",
+            "range_rad": [
+              -2.96706,
+              2.96706
+            ],
+            "position_m": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "axis": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "source_class": "joint1"
+          },
+          {
+            "name": "joint2",
+            "body": "link2",
+            "range_rad": [
+              -2.0944,
+              2.0944
+            ],
+            "position_m": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "axis": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "source_class": "joint2"
+          },
+          {
+            "name": "joint3",
+            "body": "link3",
+            "range_rad": [
+              -2.96706,
+              2.96706
+            ],
+            "position_m": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "axis": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "source_class": "joint1"
+          },
+          {
+            "name": "joint4",
+            "body": "link4",
+            "range_rad": [
+              -2.0944,
+              2.0944
+            ],
+            "position_m": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "axis": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "source_class": "joint2"
+          },
+          {
+            "name": "joint5",
+            "body": "link5",
+            "range_rad": [
+              -2.96706,
+              2.96706
+            ],
+            "position_m": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "axis": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "source_class": "joint1"
+          },
+          {
+            "name": "joint6",
+            "body": "link6",
+            "range_rad": [
+              -2.0944,
+              2.0944
+            ],
+            "position_m": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "axis": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "source_class": "joint2"
+          },
+          {
+            "name": "joint7",
+            "body": "link7",
+            "range_rad": [
+              -3.05433,
+              3.05433
+            ],
+            "position_m": [
+              0.0,
+              0.0,
+              0.0
+            ],
+            "axis": [
+              0.0,
+              0.0,
+              1.0
+            ],
+            "source_class": "joint3"
+          }
+        ],
+        "actuators": {
+          "joint1": {
+            "name": "actuator1",
+            "stiffness": 2000.0,
+            "damping": 200.0,
+            "gainprm": [
+              2000.0
+            ],
+            "biasprm": [
+              0.0,
+              -2000.0,
+              -200.0
+            ]
+          },
+          "joint2": {
+            "name": "actuator2",
+            "stiffness": 2000.0,
+            "damping": 200.0,
+            "gainprm": [
+              2000.0
+            ],
+            "biasprm": [
+              0.0,
+              -2000.0,
+              -200.0
+            ]
+          },
+          "joint3": {
+            "name": "actuator3",
+            "stiffness": 2000.0,
+            "damping": 200.0,
+            "gainprm": [
+              2000.0
+            ],
+            "biasprm": [
+              0.0,
+              -2000.0,
+              -200.0
+            ]
+          },
+          "joint4": {
+            "name": "actuator4",
+            "stiffness": 2000.0,
+            "damping": 200.0,
+            "gainprm": [
+              2000.0
+            ],
+            "biasprm": [
+              0.0,
+              -2000.0,
+              -200.0
+            ]
+          },
+          "joint5": {
+            "name": "actuator5",
+            "stiffness": 2000.0,
+            "damping": 200.0,
+            "gainprm": [
+              2000.0
+            ],
+            "biasprm": [
+              0.0,
+              -2000.0,
+              -200.0
+            ]
+          },
+          "joint6": {
+            "name": "actuator6",
+            "stiffness": 2000.0,
+            "damping": 200.0,
+            "gainprm": [
+              2000.0
+            ],
+            "biasprm": [
+              0.0,
+              -2000.0,
+              -200.0
+            ]
+          },
+          "joint7": {
+            "name": "actuator7",
+            "stiffness": 2000.0,
+            "damping": 200.0,
+            "gainprm": [
+              2000.0
+            ],
+            "biasprm": [
+              0.0,
+              -2000.0,
+              -200.0
+            ]
+          }
+        },
+        "sites": [
+          {
+            "name": "attachment_site",
+            "body": "link7",
+            "position_m": [
+              0.0,
+              0.0,
+              0.045
+            ],
+            "authored_quaternion_wxyz": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "orientation_wxyz": [
+              1.0,
+              0.0,
+              0.0,
+              0.0
+            ]
+          }
+        ],
+        "reset": {
+          "kind": "source_keyframe",
+          "name": "home",
+          "joint_order": [
+            "joint1",
+            "joint2",
+            "joint3",
+            "joint4",
+            "joint5",
+            "joint6",
+            "joint7"
+          ],
+          "qpos_rad": [
+            0.0,
+            0.785398,
+            0.0,
+            -1.5708,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      "source_arm_mass_kg": 30.61,
+      "visuals": [
+        {
+          "link": "base",
+          "name": "base_visual_0",
+          "mesh": "kuka_iiwa_14/assets/link_0.obj",
+          "source_sha256": "sha256:6b607f6b5a601874863897ebfbb9821eb0c831c3115bca8350bf7856db6aaeee",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.4,
+            0.4,
+            0.4,
+            1.0
+          ]
+        },
+        {
+          "link": "link1",
+          "name": "link1_visual_0",
+          "mesh": "kuka_iiwa_14/assets/link_1.obj",
+          "source_sha256": "sha256:47a82247b647639c3e1f384ce5b980d374323ca737d6ebc87447667a71981798",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.4,
+            0.4,
+            0.4,
+            1.0
+          ]
+        },
+        {
+          "link": "link2",
+          "name": "link2_visual_0",
+          "mesh": "kuka_iiwa_14/assets/link_2_orange.obj",
+          "source_sha256": "sha256:0d2d8829d89aa888ee04b0d97bed5f215fa0d9fd03d0d4cee2b2e0c8dd3c0124",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            1.0,
+            0.423529,
+            0.0392157,
+            1.0
+          ]
+        },
+        {
+          "link": "link2",
+          "name": "link2_visual_1",
+          "mesh": "kuka_iiwa_14/assets/link_2_grey.obj",
+          "source_sha256": "sha256:842b8c3a9148b2fdf9c57ddfd80b595f8251792f94b71276dc9ce9a16674ba1a",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.4,
+            0.4,
+            0.4,
+            1.0
+          ]
+        },
+        {
+          "link": "link3",
+          "name": "link3_visual_0",
+          "mesh": "kuka_iiwa_14/assets/link_3.obj",
+          "source_sha256": "sha256:b02d157e8090d82bfb78e7fd4dcd351033e0a5d7bb1937da01e66e7ff91a03a8",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.4,
+            0.4,
+            0.4,
+            1.0
+          ]
+        },
+        {
+          "link": "link3",
+          "name": "link3_visual_1",
+          "mesh": "kuka_iiwa_14/assets/band.obj",
+          "source_sha256": "sha256:02cf16a93140489da3b05ce6bb30c5498bedaa5e5a77e56850ddbedb8d1ed23e",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.6,
+            0.6,
+            0.6,
+            1.0
+          ]
+        },
+        {
+          "link": "link3",
+          "name": "link3_visual_2",
+          "mesh": "kuka_iiwa_14/assets/kuka.obj",
+          "source_sha256": "sha256:204a82d597d450f2a207731f8e3c17089f2de5a54c0d61feac454e96e325b834",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        {
+          "link": "link4",
+          "name": "link4_visual_0",
+          "mesh": "kuka_iiwa_14/assets/link_4_orange.obj",
+          "source_sha256": "sha256:ef4cf2102e9df98636ff03b82d49d914a6e730b299b0a982d64947f038136cb7",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            1.0,
+            0.423529,
+            0.0392157,
+            1.0
+          ]
+        },
+        {
+          "link": "link4",
+          "name": "link4_visual_1",
+          "mesh": "kuka_iiwa_14/assets/link_4_grey.obj",
+          "source_sha256": "sha256:e4555ea6954fffa40174baee25e6dd1b9efcc3eaf830b6e91d13e2ddc10b414a",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.4,
+            0.4,
+            0.4,
+            1.0
+          ]
+        },
+        {
+          "link": "link5",
+          "name": "link5_visual_0",
+          "mesh": "kuka_iiwa_14/assets/link_5.obj",
+          "source_sha256": "sha256:f0eef60cddf06e46bd943abcc49ada87510f095f2840bc9c117ed7a2b1a6a787",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.4,
+            0.4,
+            0.4,
+            1.0
+          ]
+        },
+        {
+          "link": "link5",
+          "name": "link5_visual_1",
+          "mesh": "kuka_iiwa_14/assets/band.obj",
+          "source_sha256": "sha256:02cf16a93140489da3b05ce6bb30c5498bedaa5e5a77e56850ddbedb8d1ed23e",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.6,
+            0.6,
+            0.6,
+            1.0
+          ]
+        },
+        {
+          "link": "link5",
+          "name": "link5_visual_2",
+          "mesh": "kuka_iiwa_14/assets/kuka.obj",
+          "source_sha256": "sha256:204a82d597d450f2a207731f8e3c17089f2de5a54c0d61feac454e96e325b834",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        {
+          "link": "link6",
+          "name": "link6_visual_0",
+          "mesh": "kuka_iiwa_14/assets/link_6_orange.obj",
+          "source_sha256": "sha256:54aa0141e7f48497302f45daf074fd5c69320c620618c12fa76e8841c2a8a9fc",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            1.0,
+            0.423529,
+            0.0392157,
+            1.0
+          ]
+        },
+        {
+          "link": "link6",
+          "name": "link6_visual_1",
+          "mesh": "kuka_iiwa_14/assets/link_6_grey.obj",
+          "source_sha256": "sha256:5b5f9883d4fc181c7aa06cb2037debfa4ca857fa0c3a5d55f8fd3e34d38c3100",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.4,
+            0.4,
+            0.4,
+            1.0
+          ]
+        },
+        {
+          "link": "link7",
+          "name": "link7_visual_0",
+          "mesh": "kuka_iiwa_14/assets/link_7.obj",
+          "source_sha256": "sha256:7307d0c852715ea234e575a0617ea2d8faf053469e7b823ac0c7c6c4dff36dad",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgba": [
+            0.4,
+            0.4,
+            0.4,
+            1.0
+          ]
+        }
+      ],
+      "collision_spheres": [
+        {
+          "link": "base",
+          "name": "base_collision_1",
+          "position_m": [
+            0.0,
+            0.0,
+            0.03
+          ],
+          "radius_m": 0.12
+        },
+        {
+          "link": "base",
+          "name": "base_collision_2",
+          "position_m": [
+            -0.08,
+            0.0,
+            0.103
+          ],
+          "radius_m": 0.08
+        },
+        {
+          "link": "base",
+          "name": "base_collision_3",
+          "position_m": [
+            -0.08,
+            0.0,
+            0.04
+          ],
+          "radius_m": 0.08
+        },
+        {
+          "link": "base",
+          "name": "base_collision_4",
+          "position_m": [
+            0.0,
+            0.0,
+            0.14
+          ],
+          "radius_m": 0.1
+        },
+        {
+          "link": "link1",
+          "name": "link1_collision_1",
+          "position_m": [
+            0.0,
+            0.0,
+            -0.0005
+          ],
+          "radius_m": 0.08
+        },
+        {
+          "link": "link1",
+          "name": "link1_collision_2",
+          "position_m": [
+            0.01,
+            -0.025,
+            0.0425
+          ],
+          "radius_m": 0.075
+        },
+        {
+          "link": "link1",
+          "name": "link1_collision_3",
+          "position_m": [
+            -0.01,
+            -0.025,
+            0.0425
+          ],
+          "radius_m": 0.075
+        },
+        {
+          "link": "link1",
+          "name": "link1_collision_4",
+          "position_m": [
+            0.01,
+            -0.045,
+            0.1025
+          ],
+          "radius_m": 0.07
+        },
+        {
+          "link": "link1",
+          "name": "link1_collision_5",
+          "position_m": [
+            -0.01,
+            -0.045,
+            0.1025
+          ],
+          "radius_m": 0.07
+        },
+        {
+          "link": "link2",
+          "name": "link2_collision_2",
+          "position_m": [
+            0.0,
+            0.0,
+            -0.01
+          ],
+          "radius_m": 0.095
+        },
+        {
+          "link": "link2",
+          "name": "link2_collision_3",
+          "position_m": [
+            0.0,
+            0.0,
+            0.045
+          ],
+          "radius_m": 0.09
+        },
+        {
+          "link": "link2",
+          "name": "link2_collision_4",
+          "position_m": [
+            -0.01,
+            0.04,
+            0.054
+          ],
+          "radius_m": 0.07
+        },
+        {
+          "link": "link2",
+          "name": "link2_collision_5",
+          "position_m": [
+            -0.01,
+            0.09,
+            0.04
+          ],
+          "radius_m": 0.065
+        },
+        {
+          "link": "link2",
+          "name": "link2_collision_6",
+          "position_m": [
+            -0.01,
+            0.13,
+            0.02
+          ],
+          "radius_m": 0.065
+        },
+        {
+          "link": "link2",
+          "name": "link2_collision_7",
+          "position_m": [
+            0.01,
+            0.04,
+            0.054
+          ],
+          "radius_m": 0.07
+        },
+        {
+          "link": "link2",
+          "name": "link2_collision_8",
+          "position_m": [
+            0.01,
+            0.09,
+            0.04
+          ],
+          "radius_m": 0.065
+        },
+        {
+          "link": "link2",
+          "name": "link2_collision_9",
+          "position_m": [
+            0.01,
+            0.13,
+            0.02
+          ],
+          "radius_m": 0.065
+        },
+        {
+          "link": "link2",
+          "name": "link2_collision_10",
+          "position_m": [
+            0.0,
+            0.18,
+            0.0
+          ],
+          "radius_m": 0.075
+        },
+        {
+          "link": "link3",
+          "name": "link3_collision_3",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0355
+          ],
+          "radius_m": 0.075
+        },
+        {
+          "link": "link3",
+          "name": "link3_collision_4",
+          "position_m": [
+            0.01,
+            0.023,
+            0.0855
+          ],
+          "radius_m": 0.06
+        },
+        {
+          "link": "link3",
+          "name": "link3_collision_5",
+          "position_m": [
+            0.01,
+            0.048,
+            0.1255
+          ],
+          "radius_m": 0.055
+        },
+        {
+          "link": "link3",
+          "name": "link3_collision_6",
+          "position_m": [
+            0.01,
+            0.056,
+            0.1755
+          ],
+          "radius_m": 0.06
+        },
+        {
+          "link": "link3",
+          "name": "link3_collision_7",
+          "position_m": [
+            -0.01,
+            0.023,
+            0.0855
+          ],
+          "radius_m": 0.06
+        },
+        {
+          "link": "link3",
+          "name": "link3_collision_8",
+          "position_m": [
+            -0.01,
+            0.048,
+            0.1255
+          ],
+          "radius_m": 0.055
+        },
+        {
+          "link": "link3",
+          "name": "link3_collision_9",
+          "position_m": [
+            -0.01,
+            0.056,
+            0.1755
+          ],
+          "radius_m": 0.06
+        },
+        {
+          "link": "link3",
+          "name": "link3_collision_10",
+          "position_m": [
+            0.0,
+            0.045,
+            0.2155
+          ],
+          "radius_m": 0.075
+        },
+        {
+          "link": "link3",
+          "name": "link3_collision_11",
+          "position_m": [
+            0.0,
+            0.0,
+            0.2155
+          ],
+          "radius_m": 0.075
+        },
+        {
+          "link": "link4",
+          "name": "link4_collision_2",
+          "position_m": [
+            0.0,
+            0.01,
+            0.046
+          ],
+          "radius_m": 0.078
+        },
+        {
+          "link": "link4",
+          "name": "link4_collision_3",
+          "position_m": [
+            0.01,
+            0.06,
+            0.052
+          ],
+          "radius_m": 0.06
+        },
+        {
+          "link": "link4",
+          "name": "link4_collision_4",
+          "position_m": [
+            0.01,
+            0.12,
+            0.034
+          ],
+          "radius_m": 0.065
+        },
+        {
+          "link": "link4",
+          "name": "link4_collision_5",
+          "position_m": [
+            -0.01,
+            0.06,
+            0.052
+          ],
+          "radius_m": 0.06
+        },
+        {
+          "link": "link4",
+          "name": "link4_collision_6",
+          "position_m": [
+            -0.01,
+            0.12,
+            0.034
+          ],
+          "radius_m": 0.065
+        },
+        {
+          "link": "link4",
+          "name": "link4_collision_7",
+          "position_m": [
+            0.0,
+            0.184,
+            0.0
+          ],
+          "radius_m": 0.075
+        },
+        {
+          "link": "link5",
+          "name": "link5_collision_3",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0335
+          ],
+          "radius_m": 0.075
+        },
+        {
+          "link": "link5",
+          "name": "link5_collision_4",
+          "position_m": [
+            -0.012,
+            0.031,
+            0.0755
+          ],
+          "radius_m": 0.05
+        },
+        {
+          "link": "link5",
+          "name": "link5_collision_5",
+          "position_m": [
+            0.012,
+            0.031,
+            0.0755
+          ],
+          "radius_m": 0.05
+        },
+        {
+          "link": "link5",
+          "name": "link5_collision_6",
+          "position_m": [
+            -0.012,
+            0.06,
+            0.1155
+          ],
+          "radius_m": 0.04
+        },
+        {
+          "link": "link5",
+          "name": "link5_collision_7",
+          "position_m": [
+            0.012,
+            0.06,
+            0.1155
+          ],
+          "radius_m": 0.04
+        },
+        {
+          "link": "link5",
+          "name": "link5_collision_8",
+          "position_m": [
+            -0.01,
+            0.065,
+            0.1655
+          ],
+          "radius_m": 0.04
+        },
+        {
+          "link": "link5",
+          "name": "link5_collision_9",
+          "position_m": [
+            0.01,
+            0.065,
+            0.1655
+          ],
+          "radius_m": 0.04
+        },
+        {
+          "link": "link5",
+          "name": "link5_collision_10",
+          "position_m": [
+            -0.012,
+            0.065,
+            0.1855
+          ],
+          "radius_m": 0.035
+        },
+        {
+          "link": "link5",
+          "name": "link5_collision_11",
+          "position_m": [
+            0.012,
+            0.065,
+            0.1855
+          ],
+          "radius_m": 0.035
+        },
+        {
+          "link": "link6",
+          "name": "link6_collision_2",
+          "position_m": [
+            0.0,
+            0.0,
+            -0.059
+          ],
+          "radius_m": 0.055
+        },
+        {
+          "link": "link6",
+          "name": "link6_collision_3",
+          "position_m": [
+            0.0,
+            -0.03,
+            0.011
+          ],
+          "radius_m": 0.065
+        },
+        {
+          "link": "link6",
+          "name": "link6_collision_4",
+          "position_m": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "radius_m": 0.08
+        },
+        {
+          "link": "link7",
+          "name": "link7_collision_1",
+          "position_m": [
+            0.0,
+            0.0,
+            0.001
+          ],
+          "radius_m": 0.06
+        }
+      ],
+      "source_contact_exclusions": [
+        {
+          "body1": "base",
+          "body2": "link1"
+        },
+        {
+          "body1": "base",
+          "body2": "link2"
+        },
+        {
+          "body1": "base",
+          "body2": "link3"
+        },
+        {
+          "body1": "link1",
+          "body2": "link3"
+        },
+        {
+          "body1": "link3",
+          "body2": "link5"
+        },
+        {
+          "body1": "link4",
+          "body2": "link7"
+        },
+        {
+          "body1": "link5",
+          "body2": "link7"
+        }
+      ],
+      "source_force_limits_present": false,
+      "source_velocity_limits_present": false,
+      "simulation_velocity_cap_rad_s": 1.0,
+      "appearance_limitations": [
+        "MJCF_specular_0.5_and_shininess_0.25_have_no_exact_standard_URDF_field"
+      ],
+      "generator_sha256": "sha256:b827b5ff6b34039a4f05f09fb3cab2926e2bd200ebf6a78f66814873f855a965",
+      "bridge_digest": "sha256:05865316490cbde2103adf2a0ae5eb0626030c4aff62a95699c69fd399fced92"
+    },
+    "links": [
+      {
+        "link": "base",
+        "mass_kg": 5.0,
+        "center_of_mass_m": [
+          -0.1,
+          0.0,
+          0.07
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            0.05,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.06,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.03
+          ]
+        ]
+      },
+      {
+        "link": "link1",
+        "mass_kg": 5.76,
+        "center_of_mass_m": [
+          0.0,
+          -0.03,
+          0.12
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            0.0333,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.033,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0123
+          ]
+        ]
+      },
+      {
+        "link": "link2",
+        "mass_kg": 6.35,
+        "center_of_mass_m": [
+          0.0003,
+          0.059,
+          0.042
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            0.03049999999999997,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.010999999999999996,
+            9.192646643896294e-18
+          ],
+          [
+            0.0,
+            9.192646643896294e-18,
+            0.030399999999999986
+          ]
+        ]
+      },
+      {
+        "link": "link3",
+        "mass_kg": 3.5,
+        "center_of_mass_m": [
+          0.0,
+          0.03,
+          0.13
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            0.025,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0238,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.0076
+          ]
+        ]
+      },
+      {
+        "link": "link4",
+        "mass_kg": 3.5,
+        "center_of_mass_m": [
+          0.0,
+          0.067,
+          0.034
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            0.017,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.005999999999999997,
+            2.3092638912203255e-18
+          ],
+          [
+            0.0,
+            2.3092638912203255e-18,
+            0.016399999999999994
+          ]
+        ]
+      },
+      {
+        "link": "link5",
+        "mass_kg": 3.5,
+        "center_of_mass_m": [
+          0.0001,
+          0.021,
+          0.076
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            0.01,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.0087,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.00449
+          ]
+        ]
+      },
+      {
+        "link": "link6",
+        "mass_kg": 1.8,
+        "center_of_mass_m": [
+          0.0,
+          0.0006,
+          0.0004
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            0.0049,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.003599999999999998,
+            2.442490654175345e-19
+          ],
+          [
+            0.0,
+            2.442490654175345e-19,
+            0.0046999999999999984
+          ]
+        ]
+      },
+      {
+        "link": "link7",
+        "mass_kg": 1.2,
+        "center_of_mass_m": [
+          0.0,
+          0.0,
+          0.02
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            0.001,
+            0.0,
+            0.0
+          ],
+          [
+            0.0,
+            0.001,
+            0.0
+          ],
+          [
+            0.0,
+            0.0,
+            0.001
+          ]
+        ]
+      },
+      {
+        "link": "robotiq_85_base_link",
+        "mass_kg": 0.66320197,
+        "center_of_mass_m": [
+          0.0,
+          2.274e-05,
+          0.03232288
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            0.00051617816,
+            2.936e-08,
+            0.0
+          ],
+          [
+            2.936e-08,
+            0.00058802208,
+            -3.2296e-07
+          ],
+          [
+            0.0,
+            -3.2296e-07,
+            0.00039462776
+          ]
+        ]
+      },
+      {
+        "link": "robotiq_85_left_knuckle_link",
+        "mass_kg": 0.01384773208,
+        "center_of_mass_m": [
+          0.01213197,
+          0.0002,
+          -0.00058647
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            3.5232e-07,
+            0.0,
+            1.1744e-07
+          ],
+          [
+            0.0,
+            2.31944e-06,
+            0.0
+          ],
+          [
+            1.1744e-07,
+            0.0,
+            2.23136e-06
+          ]
+        ]
+      },
+      {
+        "link": "robotiq_85_right_knuckle_link",
+        "mass_kg": 0.01384773208,
+        "center_of_mass_m": [
+          -0.01213197,
+          0.0002,
+          -0.00058647
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            3.5232e-07,
+            0.0,
+            -1.1744e-07
+          ],
+          [
+            0.0,
+            2.31944e-06,
+            0.0
+          ],
+          [
+            -1.1744e-07,
+            0.0,
+            2.23136e-06
+          ]
+        ]
+      },
+      {
+        "link": "robotiq_85_left_finger_link",
+        "mass_kg": 0.04260376752,
+        "center_of_mass_m": [
+          0.00346899,
+          -0.00079447,
+          0.01867121
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            1.385792e-05,
+            0.0,
+            -2.17264e-06
+          ],
+          [
+            0.0,
+            1.183208e-05,
+            0.0
+          ],
+          [
+            -2.17264e-06,
+            0.0,
+            5.19672e-06
+          ]
+        ]
+      },
+      {
+        "link": "robotiq_85_right_finger_link",
+        "mass_kg": 0.04260376752,
+        "center_of_mass_m": [
+          -0.00346899,
+          -5.53e-06,
+          0.01867121
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            1.385792e-05,
+            0.0,
+            2.17264e-06
+          ],
+          [
+            0.0,
+            1.183208e-05,
+            0.0
+          ],
+          [
+            2.17264e-06,
+            0.0,
+            5.19672e-06
+          ]
+        ]
+      },
+      {
+        "link": "robotiq_85_left_inner_knuckle_link",
+        "mass_kg": 0.02969376448,
+        "center_of_mass_m": [
+          0.01897699,
+          0.00015001,
+          0.02247101
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            9.57136e-06,
+            0.0,
+            -3.93424e-06
+          ],
+          [
+            0.0,
+            8.69056e-06,
+            0.0
+          ],
+          [
+            -3.93424e-06,
+            0.0,
+            8.19144e-06
+          ]
+        ]
+      },
+      {
+        "link": "robotiq_85_right_inner_knuckle_link",
+        "mass_kg": 0.02969376448,
+        "center_of_mass_m": [
+          -0.01926824,
+          5.001e-05,
+          0.02222178
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            9.42456e-06,
+            0.0,
+            3.9636e-06
+          ],
+          [
+            0.0,
+            8.69056e-06,
+            0.0
+          ],
+          [
+            3.9636e-06,
+            0.0,
+            8.33824e-06
+          ]
+        ]
+      },
+      {
+        "link": "robotiq_85_left_finger_tip_link",
+        "mass_kg": 0.04268588744,
+        "center_of_mass_m": [
+          -0.01456706,
+          -0.0008,
+          0.01649701
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            1.048152e-05,
+            0.0,
+            3.5232e-06
+          ],
+          [
+            0.0,
+            1.197888e-05,
+            0.0
+          ],
+          [
+            3.5232e-06,
+            0.0,
+            4.22784e-06
+          ]
+        ]
+      },
+      {
+        "link": "robotiq_85_right_finger_tip_link",
+        "mass_kg": 0.04268588744,
+        "center_of_mass_m": [
+          0.01456706,
+          5e-05,
+          0.01649701
+        ],
+        "inertia_body_frame_kg_m2": [
+          [
+            1.048152e-05,
+            0.0,
+            -3.5232e-06
+          ],
+          [
+            0.0,
+            1.197888e-05,
+            0.0
+          ],
+          [
+            -3.5232e-06,
+            0.0,
+            4.22784e-06
+          ]
+        ]
+      }
+    ],
+    "joints": [
+      {
+        "joint": "joint1",
+        "effort_limit_nm": 316.1600224124251,
+        "velocity_limit_rad_s": 1.0,
+        "gravity_moment_bound_nm": 151.80646660910924,
+        "inertia_bound_kg_m2": 12.547089194206634,
+        "basis": "simulation_estimate_not_manufacturer_limit"
+      },
+      {
+        "joint": "joint2",
+        "effort_limit_nm": 210.4772021581239,
+        "velocity_limit_rad_s": 1.0,
+        "gravity_moment_bound_nm": 101.56874374194138,
+        "inertia_bound_kg_m2": 7.339714674241146,
+        "basis": "simulation_estimate_not_manufacturer_limit"
+      },
+      {
+        "joint": "joint3",
+        "effort_limit_nm": 136.1158312101141,
+        "velocity_limit_rad_s": 1.0,
+        "gravity_moment_bound_nm": 66.12077223393591,
+        "inertia_bound_kg_m2": 3.874286742242266,
+        "basis": "simulation_estimate_not_manufacturer_limit"
+      },
+      {
+        "joint": "joint4",
+        "effort_limit_nm": 74.31395168648952,
+        "velocity_limit_rad_s": 1.0,
+        "gravity_moment_bound_nm": 36.33854915677656,
+        "inertia_bound_kg_m2": 1.6368533729364034,
+        "basis": "simulation_estimate_not_manufacturer_limit"
+      },
+      {
+        "joint": "joint5",
+        "effort_limit_nm": 37.65201395146927,
+        "velocity_limit_rad_s": 1.0,
+        "gravity_moment_bound_nm": 18.517549032224174,
+        "inertia_bound_kg_m2": 0.6169158870209244,
+        "basis": "simulation_estimate_not_manufacturer_limit"
+      },
+      {
+        "joint": "joint6",
+        "effort_limit_nm": 10.9337098758339,
+        "velocity_limit_rad_s": 1.0,
+        "gravity_moment_bound_nm": 5.407324600939345,
+        "inertia_bound_kg_m2": 0.11906067395520893,
+        "basis": "simulation_estimate_not_manufacturer_limit"
+      },
+      {
+        "joint": "joint7",
+        "effort_limit_nm": 5.87499328767085,
+        "velocity_limit_rad_s": 1.0,
+        "gravity_moment_bound_nm": 2.914721276054603,
+        "inertia_bound_kg_m2": 0.04555073556164408,
+        "basis": "simulation_estimate_not_manufacturer_limit"
+      },
+      {
+        "joint": "robotiq_85_left_knuckle_joint",
+        "effort_limit_nm": 50.0,
+        "velocity_limit_rad_s": 0.5,
+        "basis": "authored_tool_URDF_limit"
+      },
+      {
+        "joint": "robotiq_85_right_knuckle_joint",
+        "effort_limit_nm": 50.0,
+        "velocity_limit_rad_s": 0.5,
+        "basis": "authored_tool_URDF_limit"
+      },
+      {
+        "joint": "robotiq_85_left_inner_knuckle_joint",
+        "effort_limit_nm": 50.0,
+        "velocity_limit_rad_s": 0.5,
+        "basis": "authored_tool_URDF_limit"
+      },
+      {
+        "joint": "robotiq_85_right_inner_knuckle_joint",
+        "effort_limit_nm": 50.0,
+        "velocity_limit_rad_s": 0.5,
+        "basis": "authored_tool_URDF_limit"
+      },
+      {
+        "joint": "robotiq_85_left_finger_tip_joint",
+        "effort_limit_nm": 50.0,
+        "velocity_limit_rad_s": 0.5,
+        "basis": "authored_tool_URDF_limit"
+      },
+      {
+        "joint": "robotiq_85_right_finger_tip_joint",
+        "effort_limit_nm": 50.0,
+        "velocity_limit_rad_s": 0.5,
+        "basis": "authored_tool_URDF_limit"
+      }
+    ],
+    "combined_mass_total_kg": 31.53086427304,
+    "drive_estimates": {
+      "hypothetical_payload_kg": 1.0,
+      "payload_frame": "grasp_link",
+      "gravity_margin": 2.0,
+      "acceleration_allowance_rad_s2": 1.0,
+      "method": "triangle_inequality_descendant_COM_radius_bound"
+    },
+    "runtime_self_collisions_enabled": true,
+    "native_fixed_base_gravity_disabled": true,
+    "limitations": [
+      "ideal_fixed_tool_mount_without_adapter_geometry_or_hardware_fit",
+      "native_fixed_arm_gravity_off_is_not_the_source_MuJoCo_gravity_model",
+      "finite_drive_caps_are_simulation_estimates_not_manufacturer_motor_limits",
+      "native_joint_adjacent_collision_filtering_is_a_separate_engine_default",
+      "source_spheres_authored_exactly_tool_mesh_colliders_use_recorded_importer_approximation",
+      "task_and_scene_contact_readback_does_not_measure_arm_arm_contact_forces",
+      "MJCF_specular_0.5_and_shininess_0.25_have_no_exact_standard_URDF_field"
+    ],
+    "generator_sha256": "sha256:f68fe5abfe0e8455e68c00517083c0d63ec2211179cf97245ab4eabbc875e52c",
+    "physics_application_sha256": "sha256:d3fbccab3d329b00ff8dca2e22c3d2ed80b1d5b1486fea08148d9d759ae2618a",
+    "model_digest": "sha256:bbeacdbe4571d5d5c307bd76763e7d42c9f00f6f67341560da27ff22d609c739"
+  },
+  "generator_module_sha256": "sha256:df0b6c4e7277d4e79b087115852afca8f8ad426e616e0e277cbb4f82e0300469",
+  "generated_files": [
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/CHANGELOG.md",
+      "sha256": "sha256:32fcfa98b81cc4f8a27babefd12fb47603c96dee109119a390dccc3607fbd854",
+      "size_bytes": 149
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/LICENSE",
+      "sha256": "sha256:c0ddafa1e3b5f0edcb02b6ef477a9792e3e423b8fcd20abbd7654f4005e21ef8",
+      "size_bytes": 1697
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/README.md",
+      "sha256": "sha256:ea93a6da6960921563494c8e0b2d544f9b473c96508aad45bca9d35f7841a42a",
+      "size_bytes": 1746
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/band.obj",
+      "sha256": "sha256:02cf16a93140489da3b05ce6bb30c5498bedaa5e5a77e56850ddbedb8d1ed23e",
+      "size_bytes": 56069
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/kuka.obj",
+      "sha256": "sha256:204a82d597d450f2a207731f8e3c17089f2de5a54c0d61feac454e96e325b834",
+      "size_bytes": 17749
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_0.obj",
+      "sha256": "sha256:6b607f6b5a601874863897ebfbb9821eb0c831c3115bca8350bf7856db6aaeee",
+      "size_bytes": 633341
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_1.obj",
+      "sha256": "sha256:47a82247b647639c3e1f384ce5b980d374323ca737d6ebc87447667a71981798",
+      "size_bytes": 662595
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_2_grey.obj",
+      "sha256": "sha256:842b8c3a9148b2fdf9c57ddfd80b595f8251792f94b71276dc9ce9a16674ba1a",
+      "size_bytes": 503388
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_2_orange.obj",
+      "sha256": "sha256:0d2d8829d89aa888ee04b0d97bed5f215fa0d9fd03d0d4cee2b2e0c8dd3c0124",
+      "size_bytes": 245774
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_3.obj",
+      "sha256": "sha256:b02d157e8090d82bfb78e7fd4dcd351033e0a5d7bb1937da01e66e7ff91a03a8",
+      "size_bytes": 591672
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_4_grey.obj",
+      "sha256": "sha256:e4555ea6954fffa40174baee25e6dd1b9efcc3eaf830b6e91d13e2ddc10b414a",
+      "size_bytes": 489420
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_4_orange.obj",
+      "sha256": "sha256:ef4cf2102e9df98636ff03b82d49d914a6e730b299b0a982d64947f038136cb7",
+      "size_bytes": 213084
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_5.obj",
+      "sha256": "sha256:f0eef60cddf06e46bd943abcc49ada87510f095f2840bc9c117ed7a2b1a6a787",
+      "size_bytes": 287260
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_6_grey.obj",
+      "sha256": "sha256:5b5f9883d4fc181c7aa06cb2037debfa4ca857fa0c3a5d55f8fd3e34d38c3100",
+      "size_bytes": 384096
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_6_orange.obj",
+      "sha256": "sha256:54aa0141e7f48497302f45daf074fd5c69320c620618c12fa76e8841c2a8a9fc",
+      "size_bytes": 154514
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/assets/link_7.obj",
+      "sha256": "sha256:7307d0c852715ea234e575a0617ea2d8faf053469e7b823ac0c7c6c4dff36dad",
+      "size_bytes": 767657
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/iiwa14.xml",
+      "sha256": "sha256:ee7e6d796a9f8642de6097f95077281d15f43678dc5285beafeda99b84cf9ef5",
+      "size_bytes": 8772
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/iiwa_14.png",
+      "sha256": "sha256:a5807fe5b9788ef49f0a9901a58d93f179d603c2fac24bc68d0a955495de51db",
+      "size_bytes": 2135973
+    },
+    {
+      "path": "expanded_source/arm/source/kuka_iiwa_14/scene.xml",
+      "sha256": "sha256:46491c7cd161130b684bd8724060cca2777573e431eda04d6becd7e8a1a98045",
+      "size_bytes": 822
+    },
+    {
+      "path": "expanded_source/arm/source-bundle.json",
+      "sha256": "sha256:9a5532b32513eb1942378310d69173678e89162fc02a95bbe7f7840d2dc174d3",
+      "size_bytes": 5803
+    },
+    {
+      "path": "expanded_source/assembly.urdf.urdf",
+      "sha256": "sha256:04b1978d6e33c1c1752dae7d9c14e3f6e00616931293ba41a9c23686ffbdef90",
+      "size_bytes": 22954
+    },
+    {
+      "path": "expanded_source/assembly.urdf.xacro",
+      "sha256": "sha256:38ed49e02f51d3f2759a004f09c3c5fedbba4df0a74b9e6a5fd0f56f5599e9ba",
+      "size_bytes": 815
+    },
+    {
+      "path": "expanded_source/iiwa14.bridge.json",
+      "sha256": "sha256:26e0306c545b7feab72e183837ab7c421c703c8b29caa4f09f2084c796515727",
+      "size_bytes": 26257
+    },
+    {
+      "path": "expanded_source/iiwa14.generated.urdf",
+      "sha256": "sha256:c1e73b9930b2ccc5d89db75ff3457cbf91db485feb9045bf6c477e04307c2e47",
+      "size_bytes": 14724
+    },
+    {
+      "path": "expanded_source/tool/source/LICENSE",
+      "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8",
+      "size_bytes": 1524
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_finger.stl",
+      "sha256": "sha256:f39a50be121122fc1c53c588a762ad1da8a0f64d39bc6f299cbe9b0597e7257b",
+      "size_bytes": 19684
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_finger_tip.stl",
+      "sha256": "sha256:9d90031cd99106a8be63609f8ff78580638d91cc4167bf66c09198329f2e65cf",
+      "size_bytes": 11284
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_inner_knuckle.stl",
+      "sha256": "sha256:f250a3fea49be4d1bb2383d9980172c59fc44031193ef2293ca540f756f6c1e6",
+      "size_bytes": 17984
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_knuckle.stl",
+      "sha256": "sha256:b7ec787f57a7db5b2b14e64ffbedaac28739e38f14aac8afa8b575bac941feb7",
+      "size_bytes": 4384
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_finger.stl",
+      "sha256": "sha256:1d018fa2f0b50aca5941778d78810b211b1abfc8637c7953451d76d4833ba6f8",
+      "size_bytes": 19684
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_finger_tip.stl",
+      "sha256": "sha256:126f1559f2f7dca62449a6ca926c609fbdaa93ca66df805ff7c069bb206e3d10",
+      "size_bytes": 11284
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_inner_knuckle.stl",
+      "sha256": "sha256:c936d951ede875b91c180bd41d45b22ae23f8a39d9c3e09e29066453a8e863ef",
+      "size_bytes": 17784
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_knuckle.stl",
+      "sha256": "sha256:d151fb38f59748f1e6e627312e2ede96f2c98ba267bf722091665b20c78e7a8d",
+      "size_bytes": 4384
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/robotiq_base.stl",
+      "sha256": "sha256:ede5cd7d7846c051b88645f33d6bbb5ed9b36bbef404a19a46557639bfab7060",
+      "size_bytes": 20084
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/ur_to_robotiq_adapter.stl",
+      "sha256": "sha256:e5b4eaba7f75c4071c9c0213281af4798098c971891808d87e948383cd2b9aa9",
+      "size_bytes": 48884
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_finger.dae",
+      "sha256": "sha256:5fb9e5659c735e48eb55269da431cf61b3b7a6745922c1932a7adefb1db86dc3",
+      "size_bytes": 191399
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_finger_tip.dae",
+      "sha256": "sha256:785ec7a83b4fc6357c211a39bb117833b1cfd4e9bccbef2efc7f35aeb2fdb92e",
+      "size_bytes": 174578
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_inner_knuckle.dae",
+      "sha256": "sha256:2df009ef28868c90a4904370f5f4995c74ec84e0b8ca1371044e0ea669edcd71",
+      "size_bytes": 110219
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_knuckle.dae",
+      "sha256": "sha256:1b82214363d9548f3562be70e25cd23217a304c72ccd37bc1551cf1a3a64029d",
+      "size_bytes": 78865
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_finger.dae",
+      "sha256": "sha256:3b2245b5537eb596d7f8a4c64b12e3aedea46e365fc589019184d3b4200e664f",
+      "size_bytes": 190861
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_finger_tip.dae",
+      "sha256": "sha256:568371d25ddbcee8e432c0610bdcc7afcd1393d48d973eed92168e353eb4edf5",
+      "size_bytes": 173460
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_inner_knuckle.dae",
+      "sha256": "sha256:4cc6de99e177773ba755805b58b67537c3af24b2fd8f3a1bf4bbced87d6240a5",
+      "size_bytes": 111109
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_knuckle.dae",
+      "sha256": "sha256:532b6f6f8794883ff34995701036ca392461f26127757f92003db127693bc57c",
+      "size_bytes": 79122
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/robotiq_base.dae",
+      "sha256": "sha256:761a79d586a48d367d60f146ca77ef7d2821ad790f7b1b1c93b061ac59799267",
+      "size_bytes": 2159533
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/ur_to_robotiq_adapter.dae",
+      "sha256": "sha256:ed326c745df2942d2efb8dd902ecfafa84c692d360a7c03ce9276ad491614ac4",
+      "size_bytes": 188335
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/package.xml",
+      "sha256": "sha256:5395e79f5aa69af743f6dcec774107b6470ecd3bd87ab35f0556e1783ebe640f",
+      "size_bytes": 1236
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/urdf/2f_85.ros2_control.xacro",
+      "sha256": "sha256:024b33f6c1efe70aea47d8b26eabed8a9f8dd87a24aa523613ce5e76fc40cfce",
+      "size_bytes": 4788
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+      "sha256": "sha256:3d051d1d3ccc9c4d226231736422262c3808afafb6182da4b6d4694f97e0b30d",
+      "size_bytes": 13883
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+      "sha256": "sha256:31b584b9d013d816fb0bd98df0dcda6bfa7d45305563cd51169ca8d3c8eb66b3",
+      "size_bytes": 1377
+    },
+    {
+      "path": "expanded_source/tool/source-bundle.json",
+      "sha256": "sha256:a4c5ddb4c4edfe0f1b6ab1e588f812c0902bfa98d3f5744399f10bbdab2101df",
+      "size_bytes": 7849
+    },
+    {
+      "path": "robot.urdf",
+      "sha256": "sha256:70bb46e137342d96dbb1ffa5c59b429393bf24ad3edfa03131389b1791fa8c68",
+      "size_bytes": 23440
+    },
+    {
+      "path": "simulation-source.urdf",
+      "sha256": "sha256:e8ff5fa7ce6d8e660d7025cc877a9e1ad303e07a4188c3aeec13dab56b74d018",
+      "size_bytes": 23316
+    }
+  ],
+  "configuration_digest": "sha256:6bbe032454276e90f1ba764dc1a87ee55d0a69c887d2259b096c8a04003a00b3"
+}

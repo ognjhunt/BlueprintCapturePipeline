@@ -34,6 +34,7 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
 )
 from blueprint_pipeline.service_account_reader import ServiceAccountReader
 from blueprint_pipeline.immutable_file_digest import immutable_file_digest_cache
+from blueprint_pipeline.provision_phase_clock import mark_phase, phase_clock
 from blueprint_pipeline.provision_staging_sweep import (  # the provision CLI's startup sweep
     remove_tree as _remove_tree,
     sweep_stale_staging,
@@ -270,6 +271,7 @@ def provision_scene_configuration_release(
             readback=readback,
             readback_actor=readback_actor,
         )
+    mark_phase("splat_render_runtime")
     if toolchain_root.exists():
         toolchain = validate_scene_configuration_toolchain(
             root=toolchain_root,
@@ -291,9 +293,11 @@ def provision_scene_configuration_release(
         # Before any component copies them: inodes an earlier toolchain's
         # readback read in full are not digested or read through again.
         proven_readback = admit_proven_readback(toolchain_root, readback_actor=readback_actor)
+        mark_phase("readback_ledgers_admitted")
         vgg16_weights = materialize_vgg16_weights(
             cache_root=runtimes / "public-model-cache"
         )
+        mark_phase("vgg16_weights")
         component_parent = Path(
             tempfile.mkdtemp(prefix="scene-configuration-components-")
         )
@@ -314,6 +318,7 @@ def provision_scene_configuration_release(
                     "artifixer3d_observed_object_removal"
                 ],
             )
+            mark_phase("artifixer_component")
             if authoring_backend == "artisan_v1":
                 from scripts.build_task_evaluation_scene_configuration_artisan_component import build_artisan_scene_configuration_component
                 build_artisan_scene_configuration_component(repository_root=repository,
@@ -327,6 +332,7 @@ def provision_scene_configuration_release(
                     content_agents_root=content_agents_root, text_to_cad_root=text_to_cad_root,
                     multi_agent_cad_root=multi_agent_cad_root, blender_archive_path=astra_blender_archive_path,
                     output_root=component_packages["content_agents_rigid_replacement"])
+            mark_phase("rigid_replacement_package")
             build_native_import_scene_configuration_component(
                 repository_root=repository,
                 expected_blueprint_commit=source_commit,
@@ -334,6 +340,7 @@ def provision_scene_configuration_release(
                     "simready_native_import_qualification"
                 ],
             )
+            mark_phase("native_import_component")
             toolchain_receipt = build_published_scene_configuration_toolchain(
                 source_commit=source_commit,
                 output_root=toolchain_root,
@@ -344,6 +351,7 @@ def provision_scene_configuration_release(
             )
         finally:
             _remove_tree(component_parent)
+        mark_phase("component_staging_removed")
     return {
         "schema_version": SCHEMA_VERSION,
         "status": "ready",
@@ -401,10 +409,11 @@ def main() -> int:
         print("removed stale provision staging: " + ", ".join(removed), file=sys.stderr, flush=True)
     readback = service_account_readback(args.readback_user)
     try:
-        value = _provision_from_arguments(args, readback)
+        with phase_clock() as phases:
+            value = _provision_from_arguments(args, readback)
     finally:
         readback.close()
-    print(json.dumps(value, sort_keys=True))
+    print(json.dumps({**value, "phase_seconds": phases}, sort_keys=True))
     return 0
 
 

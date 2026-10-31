@@ -105,6 +105,12 @@ def review_whole_views(*, views, root: Path, task_context, policy, source_video_
              "status": "no_overlapping_real_frame" if candidates else "not_required",
              "verdicts": [{"position": base, "frame_id": view["frame_id"], "admit_whole": False,
                            "reason": "not_reviewed"} for base, view in candidates]}
+    # Candidates rebuilt around the capture (atlas_gap_composite) say so, with
+    # what each pixel came from; a record without it judged provider frames.
+    composites = [{"position": base, "frame_id": view["frame_id"], **view["gap_composite"]}
+                  for base, view in candidates if view.get("gap_composite")]
+    if composites:
+        value.update(candidate_basis=composites[0]["candidate_basis"], gap_composites=composites)
     pairs = {}
     for base, view in candidates:
         ranked = sorted(((overlap, ref) for ref, real in whole
@@ -124,6 +130,8 @@ def review_whole_views(*, views, root: Path, task_context, policy, source_video_
                    "max_output_tokens": MAX_OUTPUT_TOKENS, "media_resolution": "MEDIA_RESOLUTION_HIGH",
                    "images": [{"label": label, "frame_id": view["frame_id"], "rgb_sha256": _digest(view["rgb"])}
                               for label, _, view in labels]}
+        if composites:
+            binding["candidate_basis"] = value["candidate_basis"]
         # HIGH media is at most 1120 tokens per image; bytes bound the text.
         input_tokens = len(PROMPT.encode()) + 1024 + sum(len(label.encode()) + 32 + 1120 for label, _, _ in labels)
         quote = gemini_quote(model=DEFAULT_MODEL, input_tokens=input_tokens, max_output_tokens=MAX_OUTPUT_TOKENS)

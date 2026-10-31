@@ -24,6 +24,9 @@ jobs:
     outputs:
       requires_full_suite: ${{ steps.plan.outputs.requires_full_suite }}
       selected_test_count: ${{ steps.plan.outputs.selected_test_count }}
+      requires_wide_impacted: ${{ steps.plan.outputs.requires_wide_impacted }}
+      wide_shard_matrix: ${{ steps.plan.outputs.wide_shard_matrix }}
+      supply_chain_inputs_changed: ${{ steps.plan.outputs.supply_chain_inputs_changed }}
       native_feature_required: ${{ steps.native-plan.outputs.required }}
       native_scene_required: ${{ steps.native-scene-plan.outputs.required }}
       native_reader_sdk_required: ${{ steps.native-reader-plan.outputs.required }}
@@ -479,7 +482,7 @@ jobs:
     name: Cross-cutting full suite
     needs: [impact, native-feature-linux, native-scene-linux]
     if: >-
-      always() && needs.impact.result == 'success' &&
+      !cancelled() && needs.impact.result == 'success' &&
       needs.impact.outputs.requires_full_suite == 'true' &&
       ((needs.impact.outputs.native_feature_required == 'true' && needs.native-feature-linux.result == 'success') ||
        (needs.impact.outputs.native_feature_required != 'true' && needs.native-feature-linux.result == 'skipped')) &&
@@ -490,10 +493,30 @@ jobs:
       reason: cross_cutting_dependency_impact
     secrets: inherit
 
+  impacted-wide:
+    name: Wide impacted lane
+    needs: [impact, native-feature-linux, native-scene-linux]
+    if: >-
+      !cancelled() && needs.impact.result == 'success' &&
+      needs.impact.outputs.requires_wide_impacted == 'true' &&
+      ((needs.impact.outputs.native_feature_required == 'true' && needs.native-feature-linux.result == 'success') ||
+       (needs.impact.outputs.native_feature_required != 'true' && needs.native-feature-linux.result == 'skipped')) &&
+      ((needs.impact.outputs.native_scene_required == 'true' && needs.native-scene-linux.result == 'success') ||
+       (needs.impact.outputs.native_scene_required != 'true' && needs.native-scene-linux.result == 'skipped'))
+    uses: ./.github/workflows/impacted-wide-lane.yml
+    with:
+      shard_matrix: ${{ needs.impact.outputs.wide_shard_matrix }}
+    secrets: inherit
+
   impacted-gate:
     name: Impacted test and sentinel gate
-    needs: [impact, impacted-tests, native-scene-linux, native-feature-linux, cross-cutting-full-suite]
-    if: always()
+    needs: [impact, impacted-tests, native-scene-linux, native-feature-linux, cross-cutting-full-suite, impacted-wide,
+            dependency-security, container-contract, supply-chain-preview]
+    # Reports after failed or skipped needs, but not after cancellation: GitHub
+    # keeps any job whose `if` is still true, so always() held a superseded run
+    # open and left the pull request's newest run pending behind it. A cancelled
+    # gate concludes `cancelled`, which never satisfies the required check.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -503,6 +526,13 @@ jobs:
           IMPACTED_RESULT: ${{ needs.impacted-tests.result }}
           FULL_RESULT: ${{ needs.cross-cutting-full-suite.result }}
           FULL_REQUIRED: ${{ needs.impact.outputs.requires_full_suite }}
+          WIDE_RESULT: ${{ needs.impacted-wide.result }}
+          WIDE_REQUIRED: ${{ needs.impact.outputs.requires_wide_impacted }}
+          EVENT_NAME: ${{ github.event_name }}
+          SUPPLY_INPUTS_CHANGED: ${{ needs.impact.outputs.supply_chain_inputs_changed }}
+          DEPENDENCY_RESULT: ${{ needs.dependency-security.result }}
+          CONTAINER_RESULT: ${{ needs.container-contract.result }}
+          SUPPLY_PREVIEW_RESULT: ${{ needs.supply-chain-preview.result }}
           NATIVE_SCENE_REQUIRED: ${{ needs.impact.outputs.native_scene_required }}
           NATIVE_SCENE_RESULT: ${{ needs.native-scene-linux.result }}
           NATIVE_REQUIRED: ${{ needs.impact.outputs.native_feature_required }}
@@ -524,6 +554,18 @@ jobs:
             test "${FULL_RESULT}" = "success"
           else
             test "${FULL_RESULT}" = "skipped"
+          fi
+          if test "${WIDE_REQUIRED}" = "true"; then
+            test "${WIDE_RESULT}" = "success"
+          else
+            test "${WIDE_RESULT}" = "skipped"
+          fi
+          # On main these are supply-chain's own prerequisites. A pull request that
+          # changes what they read runs them here, so they cannot first fail after merge.
+          if test "${EVENT_NAME}" = "pull_request" && test "${SUPPLY_INPUTS_CHANGED}" = "true"; then
+            test "${DEPENDENCY_RESULT}" = "success"
+            test "${CONTAINER_RESULT}" = "success"
+            test "${SUPPLY_PREVIEW_RESULT}" = "success"
           fi
 
   lint:
@@ -845,8 +887,68 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # supply-chain's build, SBOM and license steps, before merge. Its own job stays
+  # push-only: this one never holds id-token or attestation permission.
+  supply-chain-preview:
+    name: SBOM and license contract before merge
+    needs: impact
+    if: github.event_name == 'pull_request' && needs.impact.outputs.supply_chain_inputs_changed == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Verify lock and build distributions
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+          uv build --out-dir "${{ runner.temp }}/blueprint-ci/dist"
+          uv run python scripts/verify_distribution_metadata.py \
+            --dist-dir "${{ runner.temp }}/blueprint-ci/dist"
+
+      - name: Generate CycloneDX, SPDX, license, and unsigned provenance evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv export \
+            --preview-features sbom-export \
+            --frozen \
+            --no-dev \
+            --format cyclonedx1.5 \
+            --output-file "${{ runner.temp }}/blueprint-ci/runtime.cyclonedx.input.json"
+          mapfile -t artifacts < <(
+            find "${{ runner.temp }}/blueprint-ci/dist" -maxdepth 1 -type f \
+              \( -name '*.whl' -o -name '*.tar.gz' \) -print | sort
+          )
+          artifact_args=()
+          for artifact in "${artifacts[@]}"; do
+            artifact_args+=(--artifact "${artifact}")
+          done
+          uv run python scripts/build_supply_chain_evidence.py \
+            --cyclonedx "${{ runner.temp }}/blueprint-ci/runtime.cyclonedx.input.json" \
+            --output-dir "${{ runner.temp }}/blueprint-ci/supply-chain" \
+            "${artifact_args[@]}"
+
+      - name: Upload supply-chain preview evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: supply-chain-preview-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/blueprint-ci/dist/*
+            ${{ runner.temp }}/blueprint-ci/supply-chain/*.json
+          if-no-files-found: error
+          retention-days: 7
+
   dependency-security:
-    if: github.event_name == 'push'
+    needs: impact
+    if: github.event_name == 'push' || needs.impact.outputs.supply_chain_inputs_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -874,7 +976,8 @@ jobs:
 
   container-contract:
     name: Container production contract
-    if: github.event_name == 'push'
+    needs: impact
+    if: github.event_name == 'push' || needs.impact.outputs.supply_chain_inputs_changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
