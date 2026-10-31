@@ -339,3 +339,14 @@ def test_a_round_table_is_searched_past_its_unsupported_bounding_box_corners():
     assert destination_clear_of_start(start_min, start_max, centre, up=2, clearance=clearance)
     # Every corner of the moved footprint is on the round top.
     assert all(np.hypot(centre[0] + a * .1, centre[1] + b * .1) <= .8 for a in (-1, 1) for b in (-1, 1))
+
+
+def test_a_coarsely_triangulated_surface_keeps_its_supported_destinations():
+    """Codex review of #3139: a 2 m plate of two triangles has no face centre near most footprints."""
+    from blueprint_pipeline.website_support_geometry import farthest_supported_destination
+
+    start_min, start_max = [-.1, -.1, .7], [.1, .1, .75]
+    support = support_under(plate(), start_min, start_max, up=2, meters_per_unit=1)
+    moved = farthest_supported_destination(plate(), start_min, start_max, [-1, -1, .6], [1, 1, .8], support,
+                                           up=2, meters_per_unit=1, clearance=np.hypot(.1, .1) + .01)
+    assert moved is not None and max(abs(moved[0][0]), abs(moved[0][1])) > .5
