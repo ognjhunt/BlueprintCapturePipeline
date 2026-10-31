@@ -113,8 +113,10 @@ def test_real_shell_child_is_terminated_by_the_bound(tmp_path):
     stat = Path(f"/proc/{pid}/stat")
     try:
         state = stat.read_text().split()[2]
-    except FileNotFoundError:
-        state = None  # Reaped between parent exit and this read.
+    except (FileNotFoundError, ProcessLookupError):
+        # Reaped between parent exit and this read. A reap after open() and
+        # before read() surfaces as ESRCH (ProcessLookupError), not ENOENT.
+        state = None
     assert state in (None, "Z")
     assert pid != os.getpid()
 
