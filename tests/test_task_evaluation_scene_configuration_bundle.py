@@ -5511,3 +5511,31 @@ def test_agents_api_project_guard_refuses_before_paid_allocation(tmp_path, monke
     with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError,
                        match="agents_api_project_guard_invalid"):
         scene_vast._provider_runtime_inputs(authority, receipt)
+
+
+def test_bundle_archive_bounds_fit_the_provider_disk_and_still_refuse_past_them(tmp_path, monkeypatch):
+    """2026-10-31: a real stage carrying the CUDA Torch runtime passed the old 8 GiB total."""
+    import re as _re
+    from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle_module
+    from blueprint_pipeline.task_evaluation_scene_configuration_bundle_evidence import (
+        TaskEvaluationSceneConfigurationBundleError,
+    )
+
+    vast = (Path(bundle_module.__file__).with_name("task_evaluation_scene_configuration_vast.py")).read_text()
+    [disk_gb] = {int(value) for value in _re.findall(r"disk_gb=(\d+)", vast)}
+    assert bundle_module._MAX_TOTAL_BYTES > 8 * 1024**3
+    assert bundle_module._MAX_MEMBER_BYTES > 2 * 1024**3
+    # The archive and its expansion both land on the instance before any output.
+    assert 2 * bundle_module._MAX_TOTAL_BYTES < disk_gb * 10**9 * 0.6
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "a.bin").write_bytes(b"a" * 64)
+    (stage / "b.bin").write_bytes(b"b" * 64)
+    monkeypatch.setattr(bundle_module, "_MAX_TOTAL_BYTES", 100)
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="archive_limit_exceeded"):
+        bundle_module._zip_tree(stage, tmp_path / "over_total.zip")
+    monkeypatch.setattr(bundle_module, "_MAX_TOTAL_BYTES", 1000)
+    monkeypatch.setattr(bundle_module, "_MAX_MEMBER_BYTES", 32)
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="archive_limit_exceeded"):
+        bundle_module._zip_tree(stage, tmp_path / "over_member.zip")

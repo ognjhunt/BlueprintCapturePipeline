@@ -91,8 +91,13 @@ RESULT_FILENAME = "task_evaluation_scene_configuration_provider_result.v1.json"
 DIAGNOSTIC_RUNNER = (
     "scripts/task_evaluation_scene_configuration_diagnostic_provider_runner.py"
 )
-_MAX_MEMBER_BYTES = 2 * 1024**3
-_MAX_TOTAL_BYTES = 8 * 1024**3
+#: Archive bounds. The provider toolchain now ships an unpacked CUDA Torch
+#: runtime (libtorch_cuda.so alone is 1.2 GiB), so on 2026-10-31 a real scene's
+#: stage passed the old 8 GiB total and its activation failed with
+#: scene_configuration_bundle_archive_limit_exceeded. The provider instance
+#: has 100 GB of disk for the archive, its expansion and the outputs.
+_MAX_MEMBER_BYTES = 4 * 1024**3
+_MAX_TOTAL_BYTES = 24 * 1024**3
 _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE = Path(
     "components/artifixer3d_observed_object_removal/package/python_wheelhouse"
 )
