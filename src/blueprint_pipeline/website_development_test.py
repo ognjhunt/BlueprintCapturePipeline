@@ -69,10 +69,8 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
                "task_distinct_destination_surface_binding_required"} | REGISTRATION_REFUSALS
     if preparation.get("registration", {}).get("schema_version") == "website_object_local_frame.v1":
         allowed.add("task_destination_pose_required")
-    # The captured target region (website_surface_target_admission) is replaced
-    # by the authored surface's own region, like its support.
     if (preparation.get("claim_ceiling") != "development_only"
-            or {code for code in preparation.get("blockers", []) if not code.startswith("surface_target_")} - allowed):
+            or set(preparation.get("blockers", [])) - allowed):
         raise ValueError("website_development_test_source_not_admitted")
     value = copy.deepcopy(preparation)
     output_root = output_root.resolve()
@@ -127,6 +125,9 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
             "captured_scene_integration": "pending", "captured_scene_evaluation_allowed": False,
             "source_scene_blockers": preparation["blockers"]}
     value.update(status="intake_ready", blockers=[], development_test=test, simulator_ready=False)
+    # The authored surface has its own region; the captured region's advisory
+    # stays in the source preparation, which source_preparation_digest binds.
+    value.pop("surface_target_admission", None)
     value["binding"].update(appearance_digest=_record(appearance_path)["digest"],
         collision_mesh_digest=_record(mesh)["digest"], provider="blueprint_authored_test_surface", operation_id=None)
     value["binding"].pop("splat_digest", None)

@@ -1143,8 +1143,10 @@ def _on_another_level_surface(monkeypatch):
     # The region's centre lies under the subject, on a second surface level with its own.
     ("centre_under_the_subject", "surface_target_initial_overlap"),
 ])
-def test_a_region_evaluation_would_refuse_is_held_at_preparation_with_its_code(tmp_path, monkeypatch, case, code):
+def test_a_region_evaluation_would_refuse_is_recorded_at_preparation_and_the_job_continues(
+        tmp_path, monkeypatch, case, code):
     # capture-447ae4f4: preparation reported intake_ready, evaluation refused the same geometry 82 minutes later.
+    # Geometry is not a hard stop (privacy, rights, money): the refusal is advisory evidence, not a blocker.
     from tests.test_website_native_submission import legacy_native_surface_target
     args = _arguments(tmp_path)
     if case == "region_off_its_support":
@@ -1160,10 +1162,11 @@ def test_a_region_evaluation_would_refuse_is_held_at_preparation_with_its_code(t
     with pytest.raises(ValueError, match=code):
         legacy_native_surface_target(unchecked)
     value = preparation.compile_website_scene_preparation(**args)
-    assert value["status"] == "needs_input"
-    assert value["blockers"] == [code]
-    # The output keeps its shape: the refusal is a blocker code, nothing else changes.
-    assert set(value) == set(unchecked)
+    assert value["status"] == "intake_ready" and value["blockers"] == []
+    assert value["surface_target_admission"] == {"status": "refused", "code": code,
+                                                 "basis": "evaluation_admission_rule"}
+    # One Pipeline-internal key; the WebApp-facing destination and intake request are unchanged.
+    assert set(value) == set(unchecked) | {"surface_target_admission"}
     assert value["destination"] == unchecked["destination"]
     assert value["intake_request"] == unchecked["intake_request"]
 
@@ -1178,5 +1181,6 @@ def test_a_region_evaluation_admits_leaves_the_preparation_unchanged(tmp_path, m
     value = preparation.compile_website_scene_preparation(**args)
     assert value["status"] == "intake_ready", value["blockers"]
     assert ("support" in value["destination"]) is (case != "same_surface")
+    assert "surface_target_admission" not in value
     monkeypatch.setattr(preparation, "admit_surface_target", lambda **_: None)
     assert preparation.compile_website_scene_preparation(**args)["digest"] == value["digest"]

@@ -61,14 +61,16 @@ def test_no_automatic_fallback_or_bypass_of_unrelated_refusals(tmp_path, monkeyp
             task_masks=args['task_masks'], output_root=tmp_path / 'no-output')
 
 
-def test_a_captured_region_evaluation_would_refuse_is_replaced_by_the_authored_surface(tmp_path, monkeypatch):
+def test_the_captured_region_advisory_stays_with_the_source_not_the_authored_surface(tmp_path, monkeypatch):
     args, original = setup(tmp_path, monkeypatch)
-    original['blockers'].append('surface_target_outside_support')
+    advisory = {'status': 'refused', 'code': 'surface_target_outside_support', 'basis': 'evaluation_admission_rule'}
+    original['surface_target_admission'] = advisory
     original['digest'] = canonical_digest(original, digest_field='digest')
     prepared, _ = prepare_development_test(preparation=original, source_geometry=args['source_geometry'],
         task_masks=args['task_masks'], output_root=tmp_path / 'development')
-    assert prepared['status'] == 'intake_ready'
-    assert prepared['development_test']['source_scene_blockers'] == original['blockers']
+    assert prepared['status'] == 'intake_ready' and 'surface_target_admission' not in prepared
+    assert original['surface_target_admission'] == advisory
+    assert prepared['development_test']['source_preparation_digest'] == original['digest']
 
 
 def test_development_surface_reaches_real_native_submission_with_separate_identity(tmp_path, monkeypatch):

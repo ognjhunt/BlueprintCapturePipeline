@@ -943,7 +943,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     sim_support = (_runtime_bounds({"minimum": support["aabb_min"], "maximum": support["aabb_max"]}, runtime_to_sim)
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
-    destination = distinct_support = relocation = None
+    destination = distinct_support = relocation = surface_target_admission = None
     interior = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
@@ -1047,9 +1047,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         if support is not None and len(blockers) == blockers_before:
             # A destination held above keeps its own code. Otherwise the region
             # evaluation will seal goes through the same admission, from the same
-            # simulator-frame inputs, so one it would refuse is held here, before
+            # simulator-frame inputs, so its refusal is known now rather than after
             # construction (capture-447ae4f4: intake_ready at 03:39Z, refused by
-            # evaluation preparation at 05:01Z). A compiled support is captured,
+            # evaluation preparation at 05:01Z). Geometry is not a hard stop: the
+            # job keeps going and the code travels as advisory evidence, which the
+            # capability verdict carries as a risk. A compiled support is captured,
             # never an authored development surface.
             try:
                 admit_surface_target(destination=destination,
@@ -1058,7 +1060,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
                     development_support=False)
             except ValueError as exc:
-                blockers.append(str(exc))
+                surface_target_admission = {"status": "refused", "code": str(exc),
+                                            "basis": "evaluation_admission_rule"}
     else:
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]
@@ -1407,6 +1410,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
+        **({"surface_target_admission": surface_target_admission} if surface_target_admission is not None else {}),
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
                              else "provided_mesh_rigid_authoring" if synthetic is not None
