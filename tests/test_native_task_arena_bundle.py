@@ -4440,3 +4440,36 @@ def test_a_team_robot_run_is_checked_as_that_robot_and_never_as_the_franka_it_re
     assert error.value.errors == (
         "native_task_arena_bundle_team_embodiment_invalid:team_embodiment_binding_invalid",)
     assert not (tmp_path / "job-invalid").exists()
+
+
+def test_a_team_runs_world_cameras_are_measured_in_each_cell_with_its_binding_applied(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_task_arena_bundle as bundle
+    from blueprint_pipeline import policy_canary_scene_resolution as resolution
+    from blueprint_pipeline import team_embodiment
+
+    packet = _packet(tmp_path, scene_id="840313")
+    inputs = tmp_path / "policy_canary_runtime_inputs.json"
+    inputs.write_text(json.dumps({"task_success_contract": {"contract_digest": "sha256:c"},
+                                  "cells": [{"shift": 0.0}, {"shift": 0.0}, {"shift": 0.02}]}))
+    monkeypatch.setattr(resolution, "resolved_scene_plan", lambda plan, cell, task_success_contract: {
+        "shift": cell["shift"], "objects": [{"task_subject": True, "object_type": "RIGID", "pose_world": {}}]})
+    binding = {"binding_digest": "sha256:" + "b" * 64}
+    applied = []
+
+    def apply(plan, given):
+        assert given is binding
+        applied.append(plan["shift"])
+        camera = {"policy_input": True, "review_only": False, "intrinsics": {}}
+        return {**plan, "cameras": [
+            {**camera, "role": "team_camera_0", "pose_frame": "world", "frame_from_camera_matrix": [plan["shift"]]},
+            {**camera, "role": "team_camera_1", "pose_frame": "robot_body", "frame_from_camera_matrix": [0.0]},
+            {"role": "overview", "pose_frame": "world", "policy_input": False, "review_only": True,
+             "intrinsics": {}, "frame_from_camera_matrix": [9.0]}]}
+
+    monkeypatch.setattr(team_embodiment, "apply_team_embodiment", apply)
+    views = bundle._rendered_external_views(packet, {"policy_canary_runtime_inputs.json": inputs}, binding)
+    # Each cell is resolved and then given the team's robot, as the worker runs it; only the
+    # team's world-fixed policy camera is measured, once per distinct placement.
+    assert applied == [0.0, 0.0, 0.02]
+    assert [(row["role"], row["frame_from_camera_matrix"]) for row, _ in views] == [
+        ("team_camera_0", [0.0]), ("team_camera_0", [0.02])]

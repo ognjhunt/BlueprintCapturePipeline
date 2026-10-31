@@ -225,3 +225,21 @@ def test_a_team_robots_own_cameras_are_measured_in_place_of_blueprints(tmp_path)
     # Blueprint's own robot with no world-fixed policy camera is still refused.
     with pytest.raises(scv.SceneCameraVisibilityBlocked, match="policy_camera_missing"):
         scv.require_scene_camera_admission(root, scene_plan={**plan, "cameras": [wrist, review]})
+
+
+def test_a_team_camera_is_measured_where_each_cell_renders_it(tmp_path):
+    root, plan = _packet(tmp_path)
+    team_robot = {"robot_id": "team_embodiment", "embodiment_id": "acme-arm"}
+    nominal = {"role": "team_camera_0", "pose_frame": "world", "policy_input": True, "review_only": False,
+               "optical_convention": "opencv", "frame_from_camera_matrix": sum(AWAY, []), "intrinsics": INTRINSICS}
+    team = {**plan, "robot": team_robot, "cameras": [nominal, plan["cameras"][1]]}
+    shifted = {**nominal, "frame_from_camera_matrix": sum(FACING, [])}
+    # Every cell renders the shifted camera, which sees the contact: the nominal row only reports.
+    report = scv.require_scene_camera_admission(root, rendered_external_views=[(shifted, team)], scene_plan=team)
+    assert report["status"] == "passed"
+    assert "scene_camera_plan_row_not_rendered:team_camera_0" in report["notices"]
+    assert [row.get("rendered_by_policy_runtime", False) for row in report["cameras"] if row["required"]] == [True]
+    # A cell whose camera looks away blocks, though the nominal one would have passed.
+    with pytest.raises(scv.SceneCameraVisibilityBlocked, match="outside_view:team_camera_0"):
+        scv.require_scene_camera_admission(root, scene_plan={**team, "cameras": [shifted, plan["cameras"][1]]},
+                                           rendered_external_views=[(shifted, team), (nominal, team)])
