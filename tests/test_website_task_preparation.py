@@ -1184,3 +1184,46 @@ def test_a_region_evaluation_admits_leaves_the_preparation_unchanged(tmp_path, m
     assert "surface_target_admission" not in value
     monkeypatch.setattr(preparation, "admit_surface_target", lambda **_: None)
     assert preparation.compile_website_scene_preparation(**args)["digest"] == value["digest"]
+
+
+#: Destinations grounded as the whole surface the cup rests on. The first's centre lies
+#: under the cup; the second's 10.5 cm from its centre, clear of the 9.2 cm disc that
+#: holds the estimate, inside the 11.3 cm one that holds a 25% larger replacement.
+UNDER_THE_SUBJECT = ([-0.19, 0.48, 1.34], [0.46, 0.5, 1.84])
+INSIDE_ONLY_THE_LARGER_DISC = ([-0.25, 0.48, 1.25], [0.4, 0.5, 1.75])
+
+
+def test_a_relocated_destination_clears_the_region_that_holds_the_largest_admitted_replacement(tmp_path, monkeypatch):
+    """capture-447ae4f4: relocation, admission, the scorer and native bind read one radius."""
+    from blueprint_pipeline.website_surface_target_admission import website_target_radius
+    args = _destination_bounds(_arguments(tmp_path), *INSIDE_ONLY_THE_LARGER_DISC)
+    with monkeypatch.context() as before_this_rule:
+        before_this_rule.setattr(preparation, "replacement_size_tolerance", lambda **_: 0.0)
+        before = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "before"})
+    assert before["status"] == "intake_ready" and "destination_relocation" not in before
+    real, clearances = preparation.farthest_supported_destination, []
+
+    def recording(*args, **kwargs):
+        clearances.append(kwargs["clearance"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preparation, "farthest_supported_destination", recording)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready" and value["blockers"] == []
+    assert value["authoring_inputs"]["metric_envelope"]["maximum_dimension_relative_error"] == 0.25
+    assert value["destination_relocation"]["replacement_size_tolerance"] == 0.25
+    assert "surface_target_admission" not in value  # admitted with the larger region
+    subject, mpu = value["subject"], value["coordinate_frame"]["declared_meters_per_unit"]
+    radius = website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
+    assert radius > website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0)
+    # The clearance is that radius in runtime units, and the moved centre lies outside it.
+    assert clearances == [pytest.approx(radius / mpu, rel=1e-9)]
+    start = [(subject["aabb_min_xyz"][i] + subject["aabb_max_xyz"][i]) / 2 for i in (0, 1)]
+    assert math.dist(start, value["destination"]["position_world_m"][:2]) > radius
+    # An older preparation is moved at native submission by the same rule and the same clearance.
+    for name, record in (("base_scene.json", args["base_scene"]), ("task_masks.geometry.json", args["task_masks"])):
+        (args["output_root"] / name).write_text(json.dumps(record))
+    moved = preparation.relocated_destination(value, args["output_root"] / "preparation.json")
+    assert clearances[1] == pytest.approx(clearances[0], rel=1e-9)
+    assert moved["position_world_m"] == pytest.approx(value["destination"]["position_world_m"], abs=1e-9)
+    assert moved["relocation"] == {**value["destination_relocation"], "applied_at": "native_submission"}

@@ -297,6 +297,23 @@ def test_a_destination_grounded_as_the_start_surface_moves_to_its_farthest_suppo
     assert centre[2] == pytest.approx(.7, abs=.01) and found["basis"] == support["basis"]
 
 
+def test_a_relocated_disc_tangent_to_its_surface_stays_inside_it():
+    """capture-447ae4f4 at the 0.25 size tolerance: the farthest spot left the disc on the table's
+    bounds, and the conversion to the simulator frame put it 5.6e-17 m past them (refused)."""
+    from blueprint_pipeline.website_support_geometry import DESTINATION_EDGE_GUARD_M, farthest_supported_destination
+
+    table = bumpy_plate(-.6, .6, -.4, .4)
+    start_min, start_max = [-.15, -.1, .7], [.05, .1, .75]
+    support = support_under(table, start_min, start_max, up=2, meters_per_unit=1)
+    clearance = 1.25 * np.hypot(.1, .1) + .01
+    # The destination's region reaches past the surface: the surface's bounds limit the move.
+    centre, _ = farthest_supported_destination(table, start_min, start_max, [-1, -1, .6], [1, 1, .8], support,
+                                               up=2, meters_per_unit=1, clearance=clearance)
+    margins = [min(centre[a] - clearance - support["aabb_min"][a], support["aabb_max"][a] - centre[a] - clearance)
+               for a in (0, 1)]
+    assert min(margins) > 0 and min(margins) == pytest.approx(DESTINATION_EDGE_GUARD_M, abs=1e-12)
+
+
 def test_no_destination_is_placed_when_the_surface_leaves_no_room_off_the_start():
     from blueprint_pipeline.website_support_geometry import farthest_supported_destination
 
