@@ -222,13 +222,14 @@ def process_reserved_entry(item: Path, *, root: Path, store: Path, commit: str) 
     resumed = (job / "allocator_launch_intent.json").exists() or (job / "allocator_result.json").exists()
     runtime = None if resumed else runtime_source_receipt()
     packet = None if resumed else verify_native_task_runtime_source_packet(runtime)
-    # Native packet staging + compressed bundle, plus source cache/staging and
-    # program overhead. The returned ZIP and its extraction each take their own
-    # exact reservation when they arrive. Holding them here as well counted this
-    # job's own hold against its download, so even a 50 KB result was refused
-    # once the bundle was written (public-robot-imports-20261030-05).
+    # The bundle carries the native packet streamed from its verified path, plus
+    # source cache/staging and program overhead. The returned ZIP and its
+    # extraction each take their own exact reservation when they arrive. Holding
+    # them here as well counted this job's own hold against its download, so even
+    # a 50 KB result was refused once the bundle was written
+    # (public-robot-imports-20261030-05).
     peak = (MAX_OUTPUT_BYTES if resumed else
-            2 * packet["packet_size_bytes"] + 4 * 1024**3)
+            packet["packet_size_bytes"] + 4 * 1024**3)
     ledger = os.environ.get("BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT") or DEFAULT_RESERVATION_ROOT
     with reserve_control_plane_disk("embodiment_preparation", target_root=workspace, expected_bytes=peak,
             reservation_root=ledger, workspace=workspace, ttl_seconds=6 * 3600) as work_hold:
@@ -238,7 +239,20 @@ def process_reserved_entry(item: Path, *, root: Path, store: Path, commit: str) 
             if not (job / "disk-admission.json").exists():
                 write_once(job / "disk-admission.json", {"workspace": work_hold.receipt(), "models": model_hold.receipt(),
                     "workspace_path": str(workspace), "authorization_id": request["authorization_id"]})
-            return process_entry(item, root=root, store=store, commit=commit, resolve_runtime=lambda: runtime)
+            # The allocator inherits this; its download and extraction write
+            # inside the workspace hold rather than beside it.
+            from .control_plane_disk_budget import ENCLOSING_RESERVATIONS_ENV
+            previous = os.environ.get(ENCLOSING_RESERVATIONS_ENV)
+            token = work_hold.receipt().get("reservation_token")
+            if isinstance(token, str):
+                os.environ[ENCLOSING_RESERVATIONS_ENV] = ",".join(filter(None, (previous, token)))
+            try:
+                return process_entry(item, root=root, store=store, commit=commit, resolve_runtime=lambda: runtime)
+            finally:
+                if previous is None:
+                    os.environ.pop(ENCLOSING_RESERVATIONS_ENV, None)
+                else:
+                    os.environ[ENCLOSING_RESERVATIONS_ENV] = previous
 
 
 def process_entry(item: Path, *, root: Path, store: Path, commit: str, build=build_bundle,

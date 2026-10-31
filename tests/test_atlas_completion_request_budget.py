@@ -75,6 +75,9 @@ def test_completed_and_admitted_stages_are_not_counted_a_second_time(tmp_path):
 
 
 def test_production_forecast_reads_current_noncreating_allowance_after_planning(tmp_path, monkeypatch):
+    # Import first: website_atlas_pipeline binds load_atlas_configuration at import,
+    # and importing it under the patch below would leak the fake into later tests.
+    from blueprint_pipeline import website_atlas_pipeline  # noqa: F401
     from blueprint_pipeline import website_task_context
 
     config = {**configuration(40), 'schema_version': 'website_atlas_configuration.v1'}

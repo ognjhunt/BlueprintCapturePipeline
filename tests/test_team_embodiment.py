@@ -33,6 +33,7 @@ from blueprint_pipeline.team_candidate_quick10_result import (
 from blueprint_pipeline.team_embodiment import (
     TeamEmbodimentError,
     apply_team_embodiment,
+    model_structure_blockers,
     read_model_structure,
     team_embodiment_binding,
     validate_embodiment_manifest,
@@ -961,3 +962,33 @@ def test_native_builder_enables_self_collision_for_v2_without_changing_v1(tmp_pa
     if v2:
         assert plan["policy_canary_embodiment_profile"]["claim_boundary"]["self_collision_mode"] == {
             "enabled": True, "force_readback": "task_and_scene_only_no_arm_arm_force_channel", "qualified": False}
+
+
+@pytest.mark.parametrize("body0,enabled,anchored", [
+    (None, True, True),  # empty body0 (Isaac's apply_fix_base fix_base_joint)
+    ("/acme_arm", True, True),  # Isaac 6 / urdf-usd-converter: default prim behind a massless root link
+    ("/acme_arm/mount", True, True),  # Isaac 6: a massless URDF link left as a plain Xform
+    ("/acme_arm/upper_arm/flange", True, False),  # a frame that moves with a rigid body
+    ("/acme_arm/upper_arm", True, False),  # two rigid bodies: an internal joint
+    ("/acme_arm/missing", True, False),  # a dangling target pins nothing
+    ("/acme_arm", False, False),  # a disabled joint pins nothing
+])
+def test_world_anchor_is_a_fixed_joint_between_the_static_world_and_one_rigid_body(tmp_path, body0, enabled, anchored):
+    from pxr import Usd, UsdPhysics
+
+    path = write_robot_usd(tmp_path / "robot.usda", anchored=False)
+    stage = Usd.Stage.Open(str(path))
+    stage.DefinePrim("/acme_arm/mount", "Xform")
+    stage.DefinePrim("/acme_arm/upper_arm/flange", "Xform")
+    joint = UsdPhysics.FixedJoint.Define(stage, "/acme_arm/joints/station_mount")
+    joint.CreateBody1Rel().SetTargets(["/acme_arm/base_link"])
+    if body0 is not None:
+        joint.CreateBody0Rel().SetTargets([body0])
+    if not enabled:
+        joint.CreateJointEnabledAttr(False)
+    stage.GetRootLayer().Save()
+    structure = read_model_structure(path)
+    assert structure["world_anchor_links"] == (["base_link"] if anchored else [])
+    declared = validate_embodiment_manifest(manifest(path))
+    blockers = model_structure_blockers(declared, structure)
+    assert ("team_embodiment_model_base_not_anchored_to_world" in blockers) is not anchored

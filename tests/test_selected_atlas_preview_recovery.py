@@ -454,6 +454,27 @@ def test_selected_retry_never_requeues_a_running_ready_or_withdrawn_job(site, st
     assert site.job_path.read_bytes() == before
 
 
+def test_selected_retry_reopens_a_ready_job_only_for_its_untried_gap_preserving_form(site):
+    from blueprint_pipeline import atlas_native_splat as native
+    root = site.atlas / "automation/background_splat-refined-minimal"
+    root.mkdir(parents=True)
+    manifest = {"schema_version": "atlas_refined_splat.v1", "request_form": "documented_minimal"}
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    (root / native.MANIFEST).write_text(json.dumps(manifest))
+    marker = {"request_form": "documented_minimal", "splat_root": str(root), "splat_manifest_digest": manifest["digest"],
+              "left_out_admitted_view_ids": ["gap", "gap-2"], "gap_preserving_form_untried": True}
+    write_job(site, state="ready", reason=None, refined_splat=marker)
+    status = recover(site)["atlas"]
+    assert status["job"]["gap_preserving_upgrade"] == {"left_out_admitted_view_count": 2}
+    assert "splat_root" not in json.dumps(status)
+    result = recover(site, retry_digest=status["atlas_status_digest"])
+    assert result["status"] == "atlas_retry_queued" and result["later_timer_may_make_paid_calls"] is True
+    after = json.loads(site.job_path.read_text())
+    assert after["state"] == "processing" and after["revision"] == site.job["revision"] + 1
+    assert after["retries"][-1]["reason"] == "refined_splat_gap_preserving_form_untried"
+    assert json.loads((root / native.UPGRADE).read_text())["splat_manifest_digest"] == manifest["digest"]
+
+
 @pytest.mark.parametrize("reason", ["atlas_task_and_scene_coverage_gap", "atlas_preview_expired",
                                   "atlas_preview_source_video_unavailable"])
 def test_selected_retry_preserves_nonrecoverable_stopped_jobs(site, reason):
@@ -631,3 +652,40 @@ def test_native_resume_preserves_only_a_bounded_refusal_code(site, monkeypatch, 
     assert len(calls) == 1 and calls[0][0] == b'original selected bytes'
     assert calls[0][1]['expected_preparation_purpose'] == 'scene_preparation'
     assert tree_bytes(site) == before
+
+
+@pytest.mark.parametrize('staging_error,expected', [
+    ({'type': 'blueprint_pipeline.pubsub_handoff_disk_admission.HandoffStagingCapacityError',
+      'message': 'pubsub_handoff_staging_capacity_insufficient'},
+     {'type': 'blueprint_pipeline.pubsub_handoff_disk_admission.HandoffStagingCapacityError',
+      'message': 'pubsub_handoff_staging_capacity_insufficient'}),
+    # A native result is bounded again here, whatever produced it.
+    ({'type': 'builtins.OSError', 'message': 'GET https://h/o?X-Goog-Signature=abc token=secret ' + 'y' * 300},
+     {'type': 'builtins.OSError', 'message': ('GET https://h/o?<redacted> token=<redacted> ' + 'y' * 300)[:197] + '...'}),
+    ({'type': 'builtins.OSError', 'message': 'boom', 'traceback': 'private token=secret'}, None),
+    ('builtins.OSError: private token=secret', None),
+])
+def test_native_resume_preserves_a_bounded_unrecognized_staging_error(site, monkeypatch, staging_error, expected):
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+
+    delivery = 'sha256:' + '8' * 64
+    site.observation['producer_delivery']['delivery_key'] = delivery
+    ledger = {'scene_id': 'site-fixture', 'capture_id': 'walkthrough-fixture',
+              'status': 'failed_retryable', 'revision': 13, 'attempt_count': 5,
+              'source_payload_sha256': '7' * 64, 'producer_delivery_key': delivery}
+    (site.capture / listener.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
+    write_job(site, state='ready')
+    reviewed = recover(site)['atlas']['atlas_status_digest']
+    monkeypatch.setenv('BLUEPRINT_PUBSUB_HANDOFF_PROVIDER', 'openai')
+    result = recovery.recover_selected_atlas_preview(
+        {**site.selection, 'mode': 'preparation-resume', 'atlas_status_digest': reviewed},
+        observation=site.observation, membership=site.membership,
+        capture_root=site.capture, storage_root=site.storage,
+        handoff_payload=b'original selected bytes',
+        listener=SimpleNamespace(process_handoff_payload=lambda *_a, **_k: {
+            'status': 'capture_source_membership_unavailable_retryable', 'queue_disposition': 'retryable',
+            'staging_reason': 'capture_staging_unavailable', 'staging_error': staging_error}))
+    assert result['status'] == 'blocked'
+    assert result['staging_reason'] == 'capture_staging_unavailable'
+    assert result.get('staging_error') == expected
+    assert 'secret' not in json.dumps(result) and 'X-Goog' not in json.dumps(result)

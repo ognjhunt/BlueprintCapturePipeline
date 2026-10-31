@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from decimal import Decimal
-import hashlib
 import json
 import os
 import subprocess
@@ -18,36 +17,17 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+# Sealed input records are shared with planning and the effective catalog.
+from .beta_policy_screening_files import _bound_path, _read, _record
 from .decision_evidence_contracts import canonical_digest
 from .native_task_arena_policy_canary_session import (
     BETA_ADMISSION_SCHEMA_VERSION, BETA_RUN_KIND, CLAIM_CEILING, PROBE_KIND,
     build_session_authority, validate_runtime_input_manifest, validate_session_result,
 )
+from .openpi_droid_policy_runtime import BETA_POLARIS_VARIANT_CANDIDATE_IDS
 from .team_candidate_quick10_staging import SCENE_INPUT_FIELDS
 
 EXECUTION_SCHEMA = "blueprint.beta_policy_screening_execution.v1"
-
-
-def _read(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError("beta_screening_record_invalid")
-    return value
-
-
-def _record(path: Path) -> dict[str, Any]:
-    data = path.read_bytes()
-    return {"path": str(path.resolve()), "size_bytes": len(data),
-            "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
-
-
-def _bound_path(record: Mapping[str, Any]) -> Path:
-    path = Path(str(record.get("path") or ""))
-    if (not path.is_absolute() or path.is_symlink() or not path.is_file()
-            or _record(path)["sha256"] != record.get("sha256")
-            or ("size_bytes" in record and path.stat().st_size != record["size_bytes"])):
-        raise ValueError("beta_screening_input_bytes_changed")
-    return path
 
 
 def _write(path: Path, value: Mapping[str, Any]) -> Path:
@@ -187,7 +167,8 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     elif native_spec.get("policy_interface_id") == "molmoact2_droid_joint8.v1":
         from .molmoact2_droid_runtime import validate_execution_spec
         validate_execution_spec(native_spec)
-    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid"}:
+    elif native_spec.get("candidate_id") not in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid",
+                                                 "cosmos3_nano_policy_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS}:
         raise ValueError("beta_screening_policy_provisioning_not_configured")
     if (native_spec["runtime_identity_digest"] != execution["runtime_digest"]
             or native_spec["task_success_contract_digest"] != scene["task_success_contract_digest"]):

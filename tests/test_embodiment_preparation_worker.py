@@ -39,7 +39,7 @@ def batch(tmp_path, monkeypatch):
     monkeypatch.setattr(assets, "verify_source_bundle", verify_source)
     # This suite isolates scheduling. Real checkpoint/source/model verification
     # and the terminating SDK subprocess are covered by the parent-smoke tests.
-    monkeypatch.setattr(worker, "verified_import_checkpoint",
+    monkeypatch.setattr(worker, "checkpoint_row",
                         lambda body, _identity: worker.read(body / "import-checkpoint.json")["body_result"])
     from blueprint_pipeline import deployment_embodiment_native_smoke as smoke
     monkeypatch.setattr(smoke, "run_bounded_smoke_process", lambda *_args, **_kwargs: {
@@ -272,3 +272,23 @@ def test_binding_failure_log_carries_imported_structure_names_only(tmp_path, cap
     assert set(summary) == {"body_paths", "joint_names", "world_anchor_links"}
     assert len(summary["body_paths"]) == 400 and summary["world_anchor_links"] == []
     assert "/private/x" not in line
+    # Isaac Sim 6 transcodes link6-7 and records the source name; the log shows both.
+    (prepared / "asset-import.json").write_text(json.dumps({"structure": {
+        "body_paths": ["/station/Geometry/tn__left_link67_sG"], "joint_names": [], "world_anchor_links": [],
+        "body_source_names": {"/station/Geometry/tn__left_link67_sG": "left_link6-7"}}}))
+    module.print_imported_structure(prepared)
+    summary = json.loads(capsys.readouterr().err.strip().split(" ", 1)[1])
+    assert summary["body_source_names"] == {"/station/Geometry/tn__left_link67_sG": "left_link6-7"}
+
+
+def test_an_unimportable_check_fails_only_its_own_body(batch, monkeypatch):
+    """Batch07 aborted all 24 bodies on one ModuleNotFoundError in the parent."""
+    batch.inputs(ids=IDS[:2])
+    def check(body, identity):
+        if identity == IDS[0]:
+            raise ModuleNotFoundError("No module named 'pxr'")
+        return worker.read(body / "import-checkpoint.json")["body_result"]
+    monkeypatch.setattr(worker, "checkpoint_row", check)
+    result = batch.execute(lambda command, **_options: imported(command))
+    assert [(row["status"], row.get("reason")) for row in result["results"]] == [
+        ("import_failed", "ModuleNotFoundError"), ("imported", None)]

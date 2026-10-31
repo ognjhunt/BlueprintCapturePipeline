@@ -5,7 +5,11 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# One tick advances each preview job one bounded step (CPU depth fusion is the longest).
+# One tick advances each preview job one bounded step (CPU depth fusion is the longest),
+# then steps the jobs that advanced again at once for up to
+# BLUEPRINT_WEBSITE_ATLAS_PREVIEW_CONTINUE_SECONDS (default 480, at most 3600; 0 turns
+# it off). A job waiting on a provider, an admission or a budget is left to the timer;
+# a hold, a deploy's quiesce (both stop the timer) or a new release ends the tick.
 TimeoutStartSec=2h
 User=blueprint
 Group=blueprint

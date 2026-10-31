@@ -80,3 +80,30 @@ def test_real_pinned_splat_converter_normalizes_y_up_without_training_or_repeati
     assert normalize_completed_splat(source=source, coordinate_frame={"meters_per_unit": 0.01, "up_axis": "Y"},
         output_root=tmp_path / "out", runtime_resolver=runtime) == result
     assert result["reconstruction_performed"] is False and result["renderer_qualified"] is False
+
+
+def test_normalized_ascii_layer_larger_than_the_source_cap_is_read_back(tmp_path, monkeypatch):
+    # 2026-10-30 capture-447ae4f4: a 70.6 MB Atlas GLB wrote a 292 MB normalized_scene.usda, and
+    # the read-back of the pipeline's own layer refused it under the 256 MiB source cap.
+    import trimesh
+    from blueprint_pipeline import provided_scene_mesh
+    from blueprint_pipeline.provided_scene_mesh import inspect_mesh
+    from blueprint_pipeline.reconstruction_capability import ReconstructionContractError
+
+    source = tmp_path / "atlas_mesh_levelled.glb"
+    source.write_bytes(trimesh.creation.icosphere(subdivisions=4).export(file_type="glb"))
+    frame = {"meters_per_unit": 1.1, "up_axis": "Y"}
+    monkeypatch.setattr(provided_scene_mesh, "MAX_INSPECTION_BYTES", source.stat().st_size)
+    root = tmp_path / "normalized"
+    normalized = normalize_completed_mesh(source=source, original_filename=source.name,
+                                          coordinate_frame=frame, output_root=root)
+    output = root / normalized["output"]["relative_path"]
+    assert normalized["output"]["size_bytes"] > source.stat().st_size
+    # Only the pipeline's own layer is read back past the cap; a source of that size is still refused.
+    with pytest.raises(ReconstructionContractError, match="inspection_size_limit"):
+        inspect_mesh(output, original_filename=output.name,
+                     coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"})
+    monkeypatch.setattr(provided_scene_mesh, "MAX_INSPECTION_BYTES", source.stat().st_size - 1)
+    with pytest.raises(ReconstructionContractError, match="inspection_size_limit"):
+        normalize_completed_mesh(source=source, original_filename=source.name,
+                                 coordinate_frame=frame, output_root=tmp_path / "refused")
