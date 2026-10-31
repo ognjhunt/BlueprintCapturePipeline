@@ -994,19 +994,24 @@ def link_bounds(robot_usd: Any, chain: ArmChain, *, hand: bool = True,
         model.stage.GetPrimAtPath(chain.tool_path)))
     on_chain = {body.path for body in chain.bodies} | {STATIC}
     tool = chain.bodies[tool_index].path
+    # Bodies welded in the tool's own frame (a gripper housing) are chain bodies already measured above;
+    # the search passes through them to the fingers beyond, never back up the arm.
+    welded = {body.path for body in chain.bodies if body.joint == chain.bodies[tool_index].joint}
     seen, queue, hand_bodies = {tool}, deque([tool]), []
     while queue:
         node = queue.popleft()
         for edge in model.edges:
             if node in edge.ends:
                 other = edge.ends[1] if edge.ends[0] == node else edge.ends[0]
-                if other not in seen and other not in on_chain:
-                    seen.add(other)
-                    queue.append(other)
+                if other in seen or (other in on_chain and other not in welded):
+                    continue
+                seen.add(other)
+                queue.append(other)
+                if other not in on_chain:
                     hand_bodies.append(other)
     excluded = set(hand_exclude)
     frame = _inverse(model.frame(tool))
-    supports, parts, sources = [], [], set()
+    supports, parts, sources, missing = [], [], set(), []
     for path in hand_bodies:
         prim = model.bodies[path]
         if _names(prim) & excluded:
@@ -1016,10 +1021,14 @@ def link_bounds(robot_usd: Any, chain: ArmChain, *, hand: bool = True,
             supports.extend(found)
             parts.append(prim.GetName())
             sources.add(source)
+        else:
+            missing.append(prim.GetName())
     if hand_bodies:
         source = "collision" if sources == {"collision"} else ("visual" if sources == {"visual"} else
                                                                ("mixed" if sources else None))
-        bounds.append(_bound("hand", tool_index, supports, parts, source, False, model.metres, "hand_geometry_missing"))
+        # One unbounded hand body leaves the whole hand unmeasured: a partial bound would read as clear.
+        bounds.append(_bound("hand", tool_index, [] if missing else supports, parts, source, False, model.metres,
+                             "hand_geometry_missing" + (":" + ",".join(sorted(missing)) if missing else "")))
     return tuple(bounds)
 
 

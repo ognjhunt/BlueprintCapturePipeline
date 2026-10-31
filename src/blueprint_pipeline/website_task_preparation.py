@@ -34,6 +34,7 @@ from .website_assembly_coverage import assembly_constraints, assembly_contract, 
 from .website_task_masks import decode_track_mask, estimate_target_bounds
 from .website_support_geometry import (DESTINATION_MARGIN_M, destination_clear_of_start, farthest_supported_destination,
                                        ground_on_observed_floor, same_support_surface, support_under)
+from .website_surface_target_admission import admit_surface_target
 
 
 class RegistrationRefusal(ValueError):
@@ -942,7 +943,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     sim_support = (_runtime_bounds({"minimum": support["aabb_min"], "maximum": support["aabb_max"]}, runtime_to_sim)
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
-    destination = distinct_support = relocation = None
+    destination = distinct_support = relocation = surface_target_admission = None
     interior = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
@@ -966,6 +967,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             if coverage_bound:
                 blockers.extend(coverage_blockers(coverage, target_id=subject_entry["target_id"], several=False))
     elif len(destination_rows) == 1 and not independent_object:
+        blockers_before = len(blockers)
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
         position[up] = (high if up_sign == 1 else low)[up]
@@ -1042,6 +1044,24 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                        "basis": "registered_reconstructed_container_interior" if interior is not None
                        else "registered_estimated_visible_bounds_and_collider_contact" if contact_bound
                        else "registered_estimated_visible_bounds"}
+        if support is not None and len(blockers) == blockers_before:
+            # A destination held above keeps its own code. Otherwise the region
+            # evaluation will seal goes through the same admission, from the same
+            # simulator-frame inputs, so its refusal is known now rather than after
+            # construction (capture-447ae4f4: intake_ready at 03:39Z, refused by
+            # evaluation preparation at 05:01Z). Geometry is not a hard stop: the
+            # job keeps going and the code travels as advisory evidence, which the
+            # capability verdict carries as a risk. A compiled support is captured,
+            # never an authored development surface.
+            try:
+                admit_surface_target(destination=destination,
+                    support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), sim_support)),
+                    subject_min=sim_min, subject_max=sim_max,
+                    placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
+                    development_support=False)
+            except ValueError as exc:
+                surface_target_admission = {"status": "refused", "code": str(exc),
+                                            "basis": "evaluation_admission_rule"}
     else:
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]
@@ -1390,6 +1410,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
+        **({"surface_target_admission": surface_target_admission} if surface_target_admission is not None else {}),
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
                              else "provided_mesh_rigid_authoring" if synthetic is not None

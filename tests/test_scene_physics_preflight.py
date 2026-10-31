@@ -454,7 +454,12 @@ def test_a_team_robot_at_the_station_is_not_measured_as_the_franka_it_replaces(t
     with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
         spp.require_scene_physics_admission(bump, scene_plan={**bump_plan, "robot": team["robot"]}, **FAST)
     assert blocked.value.blockers == ["task_object:scene_physics_motion_contact:door_hinge@90deg"]
-    # A team that brings a body this module measured is measured as that body.
-    franka = {**team, "robot": {**team["robot"], "embodiment_id": "franka_panda"}}
+    # A team that brings the very model this module measured is measured as that body ...
+    measured = spp.ROBOT_FIXED_VOLUMES["franka_panda"]["measured_from_sha256"]
+    franka = {**team, "robot": {**team["robot"], "embodiment_id": "franka_panda", "usd_sha256": measured}}
     with pytest.raises(spp.ScenePhysicsAdmissionBlocked, match="robot_in_motion_path"):
         spp.require_scene_physics_admission(root, scene_plan=franka, **FAST)
+    # ... but the name alone, on another model, is not that body.
+    renamed = {**franka, "robot": {**franka["robot"], "usd_sha256": "sha256:" + "f" * 64}}
+    report = spp.require_scene_physics_admission(root, scene_plan=renamed, **FAST)
+    assert report["robot_clearance"]["status"] == "unassessed" and report["blockers"] == []

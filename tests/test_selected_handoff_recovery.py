@@ -193,7 +193,7 @@ def test_faults_never_reach_native_dispatch(tmp_path, monkeypatch, fault):
     monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
 
     def fail(*a, **k):
-        raise ValueError("private signed URL must never escape")
+        raise ValueError("read failed: https://storage.googleapis.com/b/o?X-Goog-Signature=0f9e8d7c6b5a")
 
     if fault == "digest":
         s["handoff_sha256"] = "sha256:" + "0" * 64
@@ -236,7 +236,14 @@ def test_faults_never_reach_native_dispatch(tmp_path, monkeypatch, fault):
         membership_reader=lambda **kw: None,
     )
     assert result["status"] == "blocked" and not calls
-    assert "private signed URL" not in json.dumps(result)
+    assert "X-Goog-Signature" not in json.dumps(result) and "0f9e8d7c6b5a" not in json.dumps(result)
+    if fault in {"owner_failure", "admission_failure"}:
+        # The generic code keeps the failure's type and a redacted, trimmed message.
+        assert result["blockers"] == ["selected_handoff_current_lookup_or_admission_failed"]
+        assert result["error"] == {"type": "builtins.ValueError",
+                                   "message": "read failed: https://storage.googleapis.com/b/o?<redacted>"}
+    else:
+        assert re.fullmatch(r"selected_handoff_[a-z_]+", result["blockers"][0]) and "error" not in result
 
 
 def test_unknown_native_outcome_is_not_reported_as_no_dispatch(tmp_path, monkeypatch):
@@ -478,14 +485,17 @@ def test_unavailable_membership_blocks_inspection_and_dispatch(tmp_path, monkeyp
     monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
 
     def unavailable(**kw):
-        raise RuntimeError("private missing member must not leak")
+        raise RuntimeError("missing member gs://b/o?token=private-member-token must not leak")
 
     for mode in ("inspect", "dispatch"):
         result, calls, _, _ = run(
             tmp_path, lambda s, o, listener: s.update(mode=mode), membership=unavailable
         )
         assert result["status"] == "blocked" and not calls
-        assert "private missing" not in json.dumps(result)
+        assert "private-member-token" not in json.dumps(result)
+        # Only the redacted, trimmed message stands beside the generic code.
+        assert result["error"] == {"type": "builtins.RuntimeError",
+                                   "message": "missing member gs://b/o?<redacted> must not leak"}
         assert not result.get("source_membership_verified", False)
 
 
@@ -550,6 +560,51 @@ def test_native_dispatch_preserves_a_bounded_unrecognized_staging_error(tmp_path
     assert "hunter2" not in json.dumps(result) and "sig=abc" not in json.dumps(result)
 
 
+@pytest.mark.parametrize("described,kept", [
+    ({"type": "urllib.error.URLError", "message": "<urlopen error timed out> Bearer ya29.secret"},
+     {"type": "urllib.error.URLError", "message": "<urlopen error timed out> Bearer <redacted>"}),
+    ("urllib.error.URLError: timed out", None),
+    ({"type": "urllib.error.URLError", "message": "timed out", "traceback": "..."}, None),
+])
+def test_native_dispatch_preserves_a_bounded_owner_observation_error(tmp_path, monkeypatch, described, kept):
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    s, _, c, listener, owner, ret, admit, _, _ = fixture(tmp_path)
+    s["mode"] = "dispatch"
+    listener.process_handoff_payload = lambda *a, **kw: {
+        "status": "capture_owner_observation_unavailable_retryable", "queue_disposition": "retryable",
+        "owner_observation_reason": "capture_owner_response_unavailable", "owner_observation_error": described,
+    }
+    result = recover_selected_handoff(
+        s, storage_root=tmp_path, client=c, listener=listener,
+        owner_reader=owner, retirement_reader=ret, admission_reader=admit,
+        membership_reader=lambda **kw: None,
+    )
+    assert result["blockers"] == ["selected_handoff_native_admission_or_result_blocked"]
+    assert result["owner_observation_reason"] == "capture_owner_response_unavailable"
+    # Only the exact shape is repeated, bounded again; anything else is dropped.
+    assert result.get("owner_observation_error") == kept
+    assert "ya29" not in json.dumps(result) and "traceback" not in json.dumps(result)
+
+
+def test_generic_dispatch_failure_keeps_a_bounded_cause(tmp_path, monkeypatch):
+    monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
+    s, _, c, listener, owner, ret, admit, _, _ = fixture(tmp_path)
+    s["mode"] = "dispatch"
+
+    def raised(*_a, **_kw):
+        # The native handler records its failure and re-raises it.
+        raise OSError(28, "No space left on device")
+    listener.process_handoff_payload = raised
+    result = recover_selected_handoff(
+        s, storage_root=tmp_path, client=c, listener=listener,
+        owner_reader=owner, retirement_reader=ret, admission_reader=admit,
+        membership_reader=lambda **kw: None,
+    )
+    assert result["status"] == "blocked"
+    assert result["blockers"] == ["selected_handoff_current_lookup_or_admission_failed"]
+    assert result["error"] == {"type": "builtins.OSError", "message": "[Errno 28] No space left on device"}
+
+
 def test_selected_staging_recovery_refuses_partial_local_state_before_native_call(tmp_path, monkeypatch):
     monkeypatch.setenv("BLUEPRINT_PUBSUB_HANDOFF_PROVIDER", "openai")
     root = tmp_path / "capture"
@@ -605,13 +660,15 @@ def test_selected_atlas_inherits_current_owner_membership_and_retirement_refusal
         selection["atlas_status_digest"] = "sha256:" + "c" * 64
     monkeypatch.setattr(atlas, "recover_selected_atlas_preview", lambda *a, **kw: pytest.fail("Atlas reached"))
     for changed in ({"owner_reader": lambda **kw: {"producer_delivery": {"kind": "other"}}},
-                    {"membership_reader": lambda **kw: (_ for _ in ()).throw(ValueError("private secret"))},
+                    {"membership_reader": lambda **kw: (_ for _ in ()).throw(ValueError("private secret=hunter2"))},
                     {"retirement_reader": lambda **kw: {"status": "retired"}}):
         arguments = dict(owner_reader=owner, retirement_reader=retirement, admission_reader=admission,
                          membership_reader=lambda **kw: None)
         result = recover_selected_handoff(selection, storage_root=tmp_path, client=client, listener=listener,
                                           **{**arguments, **changed})
-        assert result["status"] == "blocked" and "private" not in json.dumps(result)
+        assert result["status"] == "blocked" and "hunter2" not in json.dumps(result)
+        if "error" in result:
+            assert result["error"] == {"type": "builtins.ValueError", "message": "private secret=<redacted>"}
 
 
 def discovery_fixture(tmp_path, *, fault=None):
