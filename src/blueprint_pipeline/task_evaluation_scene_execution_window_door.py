@@ -169,9 +169,11 @@ def run(request: Mapping[str, Any], *, door_caller: str, door_request_id: str, n
         "result": result, "spend_caps_changed": False, "provider_mutation_performed": False}
     extension = result.get("extension") if status != "execution_window_already_covers_request" \
         else result.get("covering_extension")
-    if status == "execution_window_extension_planned" or extension is None:
-        # A plan writes nothing and tells the WebApp nothing; a window covered by
-        # another issuer's record has nothing for this door to deliver.
+    if request["apply"] is not True or extension is None:
+        # A plan never writes and never POSTs, even when the window is already
+        # covered; re-delivering an undelivered notice takes the same request
+        # with apply. A window covered by another issuer's record has nothing
+        # for this door to deliver.
         return 0, report
     report["webapp_notice"] = deliver_notice(extension_notice(extension), transport=transport, sleep=sleep)
     if report["webapp_notice"]["status"] != "acknowledged":

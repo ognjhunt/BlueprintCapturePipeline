@@ -253,6 +253,27 @@ def test_door_plan_sends_nothing(door_env):
     assert not _records(door_env, owner)
 
 
+def test_plan_never_notifies_even_when_already_covered_and_apply_resends(door_env):
+    owner = stage(door_env)
+    extend(door_env, owner)  # recorded earlier; its notice was never delivered
+    code, report = door.run(_door_request(owner, apply=False), door_caller="cloud-scene-runs",
+                            door_request_id=REQUEST_ID, now=1005, rights_reader=_rights(),
+                            transport=lambda _n: pytest.fail("a plan must never POST"))
+    assert code == 0 and report["door_outcome"] == "already_covered" and "webapp_notice" not in report
+    sent = []
+
+    def transport(notice):
+        sent.append(dict(notice))
+        return {"status": "recorded", "intent_id": notice["intent_id"],
+                "extension_digest": notice["extension_digest"], "expires_at_epoch": notice["expires_at_epoch"]}
+
+    code, report = door.run(_door_request(owner), door_caller="cloud-scene-runs", door_request_id=REQUEST_ID,
+                            now=1006, rights_reader=_rights(), transport=transport, sleep=lambda _s: None)
+    assert code == 0 and report["door_outcome"] == "already_covered"
+    assert report["webapp_notice"]["status"] == "acknowledged" and len(sent) == 1
+    assert len(_records(door_env, owner)) == 1
+
+
 def test_failed_notice_is_retried_then_visible_never_silent(door_env):
     owner = stage(door_env)
     calls, sleeps = [], []
