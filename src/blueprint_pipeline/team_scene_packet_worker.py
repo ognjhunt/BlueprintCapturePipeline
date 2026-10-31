@@ -27,7 +27,8 @@ and this no-spend worker, woken by its path unit, does the rest on the CPU:
   the root compiled halves are written under. A registry without that block
   keeps this off, by name; an invalid block refuses. Every team body the
   derived defaults register for screening is compiled with the scene too, so
-  each gets its own station (``registered_embodiments``).
+  each gets its own station (``registered_embodiments``), chosen with its own
+  arm where its registered robot model is intact (``registered_embodiment_models``).
 
 The scenario is ``nominal``: the website journey never names one (the WebApp
 copies the offer's scenario into the run request it prepares), and a team
@@ -282,6 +283,34 @@ def registered_embodiments(registry: Mapping[str, Any]) -> tuple[list[dict[str, 
     return [manifests[digest] for digest in sorted(manifests)], unreadable
 
 
+def registered_embodiment_models(registry: Mapping[str, Any]) -> dict[str, Path]:
+    """Each registered body's own robot model, by embodiment digest, so its station is chosen with its own arm.
+
+    A model is kept only when its bytes are still the registration's bound record and that record is the
+    manifest's declared model; any other is left out, and that body's station keeps its declared reach.
+    """
+
+    from .beta_policy_screening_launch import _bound_path, _read
+    from .team_candidate_quick10_registry import _derived_settings
+    from .team_embodiment import validate_embodiment_manifest
+
+    configured = ((_derived_settings(registry) or {}).get("defaults") or {}).get("screening_candidates") or {}
+    models: dict[str, Path] = {}
+    for _key, settings in sorted(configured.items()):
+        registration = settings.get("robot_policy") if isinstance(settings, Mapping) else None
+        if not isinstance(registration, Mapping) or not all(
+                isinstance(registration.get(field), Mapping) for field in ("manifest", "model")):
+            continue
+        try:
+            manifest = validate_embodiment_manifest(_read(_bound_path(registration["manifest"])))
+            if registration["model"].get("sha256") != manifest["model"]["sha256"]:
+                continue
+            models.setdefault(manifest["embodiment_digest"], _bound_path(registration["model"]))
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return models
+
+
 def resolve_capture_root(request: Mapping[str, Any], *, partition: str | Path | None = None) -> Path:
     """The request's website capture inside the executor's partition, bound to the scene's task."""
 
@@ -362,7 +391,8 @@ def _discard_unreferenced(attempt_root: Any, capture_root: Any) -> None:
 
 def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any], capture: Path,
              inputs: Mapping[str, Any], fetcher: Fetcher | None,
-             embodiments: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+             embodiments: Sequence[Mapping[str, Any]] = (),
+             models: Mapping[str, Path] | None = None) -> dict[str, Any]:
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_scene_packet import prepare_team_scene
 
@@ -386,7 +416,8 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
             configured_scene_bundle_path=bundle, droid_profile_path=inputs["droid_profile_path"],
             droid_profile_digest=inputs["droid_profile_digest"],
             runtime_source_receipt_path=inputs["runtime_source_receipt_path"],
-            **({"embodiment_manifests": list(embodiments)} if embodiments else {}))
+            **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
+            **({"embodiment_models": dict(models)} if embodiments and models else {}))
         written = dict(prepared.get("registry") or {})
         if written.get("status") != "written":
             raise TeamScenePacketRequestRefused(
@@ -449,7 +480,8 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
             if unreadable:
                 status["embodiment_manifests_unreadable"] = unreadable
             status.update(_compile(root, request, status=status, capture=capture, inputs=inputs, fetcher=fetcher,
-                                   embodiments=embodiments))
+                                   embodiments=embodiments,
+                                   models=registered_embodiment_models(registry) if embodiments else None))
     except Exception as exc:  # noqa: BLE001 - every request ends in a typed status; the queue keeps moving
         blocker = _blocker(exc)
         if not blocker.startswith("team_scene_packet_failed:"):
@@ -555,6 +587,7 @@ __all__ = [
     "enqueue_team_scene_request",
     "packet_inputs",
     "process_team_scene_queue",
+    "registered_embodiment_models",
     "registered_embodiments",
     "request_key",
     "requeue_unfinished",

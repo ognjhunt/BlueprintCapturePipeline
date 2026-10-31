@@ -62,7 +62,11 @@ def candidate_feasibility(*, scene_plan: Mapping[str, Any], catalog: Mapping[str
             continue
         own = stations.get(manifest["embodiment_digest"])
         if manifest["base"]["mode"] != "fixed":
-            rows[key] = {"status": "unassessed", "blockers": ["embodiment_free_base_reach_not_modeled"],
+            # A free base whose own arm reached the task from the floor stance it starts at is feasible
+            # there (team_scene_packet._own_arm_stations); otherwise its reach stays unassessed.
+            arm = ((own or {}).get("reach") or {}).get("own_arm") or {}
+            blockers = [] if arm.get("status") == "passed" else ["embodiment_free_base_reach_not_modeled"]
+            rows[key] = {"status": _status(blockers), "blockers": blockers,
                          "embodiment_id": manifest["embodiment_id"],
                          **({"own_station": _own(own)} if own is not None else {})}
             continue

@@ -11,7 +11,7 @@ pytest.importorskip("pxr")
 from blueprint_pipeline import native_task_construction_plan, scripted_robot_runtime_dispatch  # noqa: E402
 from blueprint_pipeline import team_body_kinematics as kinematics  # noqa: E402
 from blueprint_pipeline.team_arm_kinematics import pose_matrix  # noqa: E402
-from blueprint_pipeline.team_arm_reach import team_arm_reach  # noqa: E402
+from blueprint_pipeline.team_arm_reach import first_reaching_stance, team_arm_reach  # noqa: E402
 from tests.test_team_body_kinematics import body  # noqa: E402
 
 IDENTITY = "universal_robots_ur5e_robotiq_2f85_sim"
@@ -134,3 +134,44 @@ def test_another_model_a_free_base_or_another_task_is_unassessed_never_measured(
     for report, reason in cases:
         assert (report["status"], report["reason"], report["blockers"]) == ("unassessed", reason, [])
         assert report["advisories"] == ["robot_arm_path_unassessed:" + manifest["embodiment_id"]]
+
+
+def test_the_closest_stance_the_arm_reaches_every_phase_from_is_found_within_a_bounded_search(ur5e, monkeypatch):
+    usd, manifest, chains = ur5e
+    (name, chain), = chains.items()
+    _phases(monkeypatch, chain, _joint_sets(chain, 3))
+    _identity_grasp(monkeypatch, chains)
+    far = {"position_world_m": [6.0, 6.0, 0.0], "orientation_xyzw": STATION["orientation_xyzw"]}
+    # Closest first: the two before the station are too far, so the station is chosen and nothing after it is solved.
+    found = first_reaching_stance(_plan(usd, manifest), [far, far, STATION, far], model_path=usd, manifest=manifest)
+    assert (found["index"], found["stances_solved"]) == (2, 3)
+    assert found["report"]["status"] == "passed" and found["report"]["reaching_arms"] == [name]
+    assert found["report"]["claim_ceiling"] == "cpu_bounded_estimate" and found["report"]["blockers"] == []
+    # None reaches: no index, at most ``limit`` solved, and the first stance's verdict is kept; nothing is refused.
+    missed = first_reaching_stance(_plan(usd, manifest), [far] * 5 + [STATION], model_path=usd, manifest=manifest,
+                                   limit=3)
+    assert (missed["index"], missed["stances_solved"]) == (None, 3)
+    assert missed["report"]["status"] in {"out_of_reach", "flagged"} and missed["report"]["blockers"] == []
+    # A model that is not the bound one is never solved.
+    unbound = first_reaching_stance(_plan(usd, manifest, usd_sha256="sha256:" + "0" * 64), [STATION],
+                                    model_path=usd, manifest=manifest)
+    assert (unbound["index"], unbound["stances_solved"]) == (None, 0)
+    assert (unbound["report"]["status"], unbound["report"]["reason"]) == ("unassessed", "team_model_unbound")
+
+
+def test_a_free_base_is_measured_only_from_the_stance_it_starts_at_and_never_proven_out_of_reach(ur5e, monkeypatch):
+    usd, manifest, chains = ur5e
+    (name, chain), = chains.items()
+    _phases(monkeypatch, chain, _joint_sets(chain, 3))
+    _identity_grasp(monkeypatch, chains)
+    far = {"position_world_m": [6.0, 6.0, 0.0], "orientation_xyzw": STATION["orientation_xyzw"]}
+    plan = _plan(usd, manifest, base_mode="free_on_floor")
+    found = first_reaching_stance(plan, [far, STATION], model_path=usd, manifest=manifest, free_base=True)
+    assert (found["index"], found["report"]["status"], found["report"]["reaching_arms"]) == (1, "passed", [name])
+    assert "robot_free_base_measured_from_start_stance" in found["report"]["advisories"]
+    # Every phase beyond the chain's bound from each stance: still only flagged, since the base can move.
+    missed = first_reaching_stance(plan, [far], model_path=usd, manifest=manifest, free_base=True)
+    assert missed["index"] is None and missed["report"]["status"] == "flagged" and missed["report"]["blockers"] == []
+    # Without free_base (as the bundle's gate calls it) a free base stays unassessed.
+    unmeasured = first_reaching_stance(plan, [STATION], model_path=usd, manifest=manifest)
+    assert unmeasured["report"]["reason"] == "robot_base_not_fixed_at_station"
