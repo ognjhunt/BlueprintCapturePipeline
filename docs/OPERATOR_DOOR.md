@@ -293,6 +293,18 @@ intake restart and the re-arm. The receipt's `trigger_pause_seconds` says how
 long drained triggers, all other watchers and new paid launches were held;
 `stage_timings_seconds` splits the whole deploy by stage.
 
+**Request a deploy right after merging.** Run `deploy <merge sha> --wait` at once;
+the build overlaps main's CI. Before anything pauses, the tool waits for that CI
+to list the commit's source attestation (`--attestation-wait-seconds`, default one
+hour). It paces its requests, because this host reads GitHub unauthenticated at 60
+requests an hour. The wait grants nothing: the signed proof is still verified
+after the pause, before the privileged installer runs. If the bound expires, or
+main's CI for that commit finishes without an attestation, the deploy fails with
+`deploy_scene_retirement_runtime_unproven` and nothing has been paused. The
+receipt's `runtime_diagnostic` then has phase `await_attestation` and reason
+`deadline` or `ci_finished_without_attestation`. A successful receipt records
+`attestation_wait_seconds`.
+
 `--preserve-configured-controls-state` keeps the owner's configured-controls
 pause across the deploy; `deploy_control_plane_iteration.sh` and
 `deploy_control_plane_canary.sh` do not pass it, which is why the door does
