@@ -157,3 +157,21 @@ def test_the_closest_stance_the_arm_reaches_every_phase_from_is_found_within_a_b
                                     model_path=usd, manifest=manifest)
     assert (unbound["index"], unbound["stances_solved"]) == (None, 0)
     assert (unbound["report"]["status"], unbound["report"]["reason"]) == ("unassessed", "team_model_unbound")
+
+
+def test_a_free_base_is_measured_only_from_the_stance_it_starts_at_and_never_proven_out_of_reach(ur5e, monkeypatch):
+    usd, manifest, chains = ur5e
+    (name, chain), = chains.items()
+    _phases(monkeypatch, chain, _joint_sets(chain, 3))
+    _identity_grasp(monkeypatch, chains)
+    far = {"position_world_m": [6.0, 6.0, 0.0], "orientation_xyzw": STATION["orientation_xyzw"]}
+    plan = _plan(usd, manifest, base_mode="free_on_floor")
+    found = first_reaching_stance(plan, [far, STATION], model_path=usd, manifest=manifest, free_base=True)
+    assert (found["index"], found["report"]["status"], found["report"]["reaching_arms"]) == (1, "passed", [name])
+    assert "robot_free_base_measured_from_start_stance" in found["report"]["advisories"]
+    # Every phase beyond the chain's bound from each stance: still only flagged, since the base can move.
+    missed = first_reaching_stance(plan, [far], model_path=usd, manifest=manifest, free_base=True)
+    assert missed["index"] is None and missed["report"]["status"] == "flagged" and missed["report"]["blockers"] == []
+    # Without free_base (as the bundle's gate calls it) a free base stays unassessed.
+    unmeasured = first_reaching_stance(plan, [STATION], model_path=usd, manifest=manifest)
+    assert unmeasured["report"]["reason"] == "robot_base_not_fixed_at_station"

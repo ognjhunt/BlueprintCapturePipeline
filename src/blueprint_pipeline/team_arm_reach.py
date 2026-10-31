@@ -65,13 +65,16 @@ def _finish(plan: Mapping[str, Any], status: str, *, reason: str | None = None, 
     return result
 
 
-def _prepare(plan: Mapping[str, Any], model_path: str | Path,
-             manifest: Mapping[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """The body's arms, grasp bindings and the task's phases, read once; or the unassessed report."""
+def _prepare(plan: Mapping[str, Any], model_path: str | Path, manifest: Mapping[str, Any], *,
+             free_base: bool = False) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The body's arms, grasp bindings and the task's phases, read once; or the unassessed report.
+
+    ``free_base`` also measures a free base (``free_on_floor``) from the stance it starts at.
+    """
     from .team_arm_kinematics import pose_matrix
 
     robot = plan.get("robot") or {}
-    if robot.get("base_mode") != "fixed_at_station":
+    if robot.get("base_mode") != "fixed_at_station" and not (free_base and robot.get("base_mode") == "free_on_floor"):
         return _finish(plan, "unassessed", reason="robot_base_not_fixed_at_station"), None
     if plan.get("task_kind") != "rigid_pick_place":
         return _finish(plan, "unassessed", reason="task_kind_unmodeled"), None
@@ -115,6 +118,10 @@ def _evaluate(plan: Mapping[str, Any], prepared: Mapping[str, Any], base_pose_wo
 
     phases, found, bindings = prepared["phases"], prepared["found"], prepared["bindings"]
     advisories = list(prepared["advisories"])
+    fixed = (plan.get("robot") or {}).get("base_mode") == "fixed_at_station"
+    if not fixed:
+        # The base can move during the episode: the verdict is from the stance it starts at, never a proof.
+        advisories.append("robot_free_base_measured_from_start_stance")
     world_from_root = pose_matrix(base_pose_world["position_world_m"], base_pose_world["orientation_xyzw"])
     arms: dict[str, Any] = {}
     for name, chain in sorted(found["chains"].items()):
@@ -141,7 +148,7 @@ def _evaluate(plan: Mapping[str, Any], prepared: Mapping[str, Any], base_pose_wo
     if reached:
         return _finish(plan, "passed", advisories=advisories, arms=arms, reaching_arms=reached, phase_ids=phase_ids)
     misses = {name: row["phases"][-1] for name, row in arms.items()}
-    if all(miss["detail"] == "beyond_reach_bound" for miss in misses.values()) and not found["unassessed"]:
+    if fixed and all(miss["detail"] == "beyond_reach_bound" for miss in misses.values()) and not found["unassessed"]:
         # Furthest phase first: the one the best arm got to.
         name, miss = max(misses.items(), key=lambda item: len(arms[item[0]]["phases"]))
         return _finish(plan, "out_of_reach", advisories=[*advisories, "robot_arm_task_beyond_reach:" + miss["phase_id"]],
@@ -164,15 +171,16 @@ def team_arm_reach(plan: Mapping[str, Any], *, model_path: str | Path, manifest:
 
 
 def first_reaching_stance(plan: Mapping[str, Any], stances: Sequence[Mapping[str, Any]], *, model_path: str | Path,
-                          manifest: Mapping[str, Any], limit: int = 24) -> dict[str, Any]:
+                          manifest: Mapping[str, Any], limit: int = 24, free_base: bool = False) -> dict[str, Any]:
     """The first of ``stances`` (closest first) from which one of the body's arms reaches every phase.
 
     ``plan`` carries the team robot row (``base_mode`` and the bound ``usd_sha256``); its station is
     replaced by each stance in turn. At most ``limit`` stances are solved, each without the slower
-    miss classification. Returns ``{"index", "stances_solved", "report"}``: ``index`` is ``None`` when
+    miss classification. ``free_base`` also measures a free base from each floor stance it could start
+    at; a miss there is never ``out_of_reach``, since the base can move. Returns ``{"index", "stances_solved", "report"}``: ``index`` is ``None`` when
     none of them reached, and ``report`` is the chosen stance's verdict, or the first stance's.
     """
-    refused, prepared = _prepare(plan, model_path, manifest)
+    refused, prepared = _prepare(plan, model_path, manifest, free_base=free_base)
     if refused is not None:
         return {"index": None, "stances_solved": 0, "report": refused}
     first = None

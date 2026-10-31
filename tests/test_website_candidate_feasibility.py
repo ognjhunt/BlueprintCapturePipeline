@@ -284,3 +284,28 @@ def test_coordinator_starts_new_work_in_the_plan_priority_order(tmp_path):
         coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
                                             executor=Ordered(), max_launches=1)
     assert launched == ["candidate-002", "candidate-000", "candidate-001"]
+
+
+def test_a_free_base_whose_own_arm_reached_from_its_start_stance_is_feasible_there(tmp_path, monkeypatch):
+    from blueprint_pipeline import team_scene_packet
+    from tests.test_team_scene_packet import bodies
+
+    wheeled = bodies(tmp_path)["wheeled"]
+    path = launch._write(tmp_path / "wheeled.manifest.json", wheeled)
+    stance = {"position_world_m": [1.0, 0.0, 0.9], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0], "floor_z_m": 0.0}
+
+    def recorded(status):
+        return {wheeled["embodiment_digest"]: {
+            "base_mode": "free", "station": stance, "blockers": [], "unassessed": [],
+            "reach": {"rule": "closest_clear_stance_own_arm_reaches_every_phase", "own_arm": {"status": status}}}}
+    profile = {"team_scene_inputs_path": str(tmp_path / "inputs.json"),
+               "screening_candidates": {"rover": {"robot_policy": {"manifest": launch._record(path)}}}}
+    for status, expected in (("passed", ("feasible", [])),
+                             ("flagged", ("unassessed", ["embodiment_free_base_reach_not_modeled"]))):
+        monkeypatch.setattr(team_scene_packet, "recorded_embodiment_stations",
+                            lambda *_, status=status, **__: recorded(status))
+        [row] = candidate_feasibility(scene_plan={"plan_digest": "sha256:" + "a" * 64},
+                                      catalog={"candidates": [{"candidate_id": "rover"}]},
+                                      profile=profile)["candidates"].values()
+        assert (row["status"], row["blockers"]) == expected
+        assert row["own_station"]["station"] == stance and row["own_station"]["reach"]["own_arm"]["status"] == status

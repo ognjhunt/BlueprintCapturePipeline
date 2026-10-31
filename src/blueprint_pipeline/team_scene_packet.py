@@ -27,9 +27,9 @@ compiled here straight into the scene half a team run reads:
   declared reach) on the same floor, task and moving part, never with the
   Franka's model or numbers; what a body declares no model for stays
   unassessed (``_embodiment_stations``, recorded as ``embodiment_stations``).
-  A fixed body given its robot model takes the closest such stance from which
-  its own arm reaches every phase of the task in that model, else keeps the
-  declared-reach one (``_own_arm_stations``);
+  A body given its robot model (fixed, or free from where it starts) takes
+  the closest such stance from which its own arm reaches every phase of the
+  task in that model, else keeps the earlier one (``_own_arm_stations``);
 - the right exterior camera, for DROID policies that read both exteriors,
   where a pose beside the station sees the task clear of the captured scene
   (``droid_exterior_cameras``); the packet is then compiled once more with it,
@@ -172,7 +172,7 @@ def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mappi
     number enters: a moving part is kept off the mount or footprint, and the body itself, its reach without
     one, and a grip force no manifest declares stay unassessed. Each declared tool is screened against the
     ``grasp`` (``website_task_preparation.screen_physics``, or the handle screen for a jointed part). A fixed
-    base's clear stances, closest first, are kept in ``ranked`` for ``_own_arm_stations``.
+    or free base's clear stances, closest first, are kept in ``ranked`` for ``_own_arm_stations``.
     """
     from .team_embodiment import ROBOT_ID, TeamEmbodimentError, validate_embodiment_manifest
     from .team_embodiment_stance import GRID_STEP_M, SEARCH_RADIUS_M, ground_stance
@@ -205,10 +205,13 @@ def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mappi
                                   "task_points_world_m": [list(point) for point in points],
                                   "farthest_task_point_m": farthest[index], "clear_stances_measured": len(stances)})
             else:
-                station = ground_stance(**{**search, "root_world_z_m": None,
+                stances = ground_stance(**{**search, "root_world_z_m": None,
                                            "root_height_m": float(base["root_height_m"]),
-                                           "footprint_half_extent_m": list(base["footprint_half_extent_m"])})
-                row.update(status="chosen", station=station, mount="own_footprint_on_floor_at_root_height")
+                                           "footprint_half_extent_m": list(base["footprint_half_extent_m"])},
+                                        ranked=every)
+                if ranked is not None:
+                    ranked[manifest["embodiment_digest"]] = stances
+                row.update(status="chosen", station=stances[0], mount="own_footprint_on_floor_at_root_height")
                 unassessed.append("embodiment_free_base_reach_not_modeled")
         except TeamEmbodimentError as exc:
             row["blockers"] = list(exc.blockers)
@@ -228,46 +231,62 @@ def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mappi
 def _own_arm_stations(stations: dict[str, dict[str, Any]], ranked: Mapping[str, Sequence[Mapping[str, Any]]], *,
                       plan: Mapping[str, Any], manifests: Mapping[str, Mapping[str, Any]],
                       models: Mapping[str, str | Path]) -> None:
-    """Choose each fixed body's station with its own arm, where its robot model is given.
+    """Choose each body's station with its own arm, where its robot model is given.
 
     The closest clear stance from which one of the body's own arms reaches every authored phase of the
     task in its own model (``team_arm_reach.first_reaching_stance``) replaces the declared-reach choice;
-    a stance its declared ``reach_m`` missed is then chosen too, since the model measured it. When no
-    stance reaches, or the body or task cannot be modelled, the declared-reach choice stands. The arm's
-    verdict is recorded either way (``reach.own_arm``) and refuses nothing: reach is not a privacy, rights
-    or money control (``AGENTS.md``).
+    a stance its declared ``reach_m`` missed is then chosen too, since the model measured it. A free base
+    is measured the same way from each floor stance it could start at (its own footprint and root
+    height), so it starts where its arm already reaches. When no stance reaches, or the body or task
+    cannot be modelled, the earlier choice stands. The arm's verdict is recorded either way
+    (``reach.own_arm``) and refuses nothing: reach is not a privacy, rights or money control
+    (``AGENTS.md``).
     """
     from .team_arm_reach import first_reaching_stance
     from .team_embodiment import ROBOT_ID
 
     for digest, row in stations.items():
         stances, model, manifest = ranked.get(digest), models.get(digest), manifests.get(digest)
-        if row.get("base_mode") != "fixed" or not row.get("reach") or not stances or model is None or not manifest:
+        free = row.get("base_mode") == "free"
+        if not stances or model is None or not manifest or not (free or row.get("reach")):
             continue
         robot = {"robot_id": ROBOT_ID, "embodiment_id": row["embodiment_id"], "embodiment_digest": digest,
-                 "base_mode": "fixed_at_station", "usd_sha256": manifest["model"]["sha256"],
+                 "base_mode": "free_on_floor" if free else "fixed_at_station",
+                 "usd_sha256": manifest["model"]["sha256"],
                  "base_pose_world": {"position_world_m": list(row["station"]["position_world_m"]),
                                      "orientation_xyzw": list(row["station"]["orientation_xyzw"])}}
+        found = None
         try:
-            found = first_reaching_stance({**plan, "robot": robot}, stances, model_path=model, manifest=manifest)
+            found = first_reaching_stance({**plan, "robot": robot}, stances, model_path=model, manifest=manifest,
+                                          free_base=free)
         except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
-            row["reach"]["own_arm"] = {"rule": OWN_ARM_RULE, "status": "unassessed",
-                                       "reason": "own_arm_reach_inputs_invalid", "detail": type(exc).__name__}
-            continue
-        report = found["report"]
-        row["reach"]["own_arm"] = {
-            "rule": OWN_ARM_RULE, "status": report["status"], "chosen_rank": found["index"],
-            "stances_solved": found["stances_solved"], "reaching_arms": list(report.get("reaching_arms") or []),
-            "advisories": list(report["advisories"]), "claim_ceiling": report["claim_ceiling"],
-            "report_digest": report["report_digest"], **({"reason": report["reason"]} if "reason" in report else {})}
-        if found["index"] is None:
+            arm = {"rule": OWN_ARM_RULE, "status": "unassessed", "reason": "own_arm_reach_inputs_invalid",
+                   "detail": type(exc).__name__}
+        else:
+            report = found["report"]
+            arm = {"rule": OWN_ARM_RULE, "status": report["status"], "chosen_rank": found["index"],
+                   "stances_solved": found["stances_solved"],
+                   "reaching_arms": list(report.get("reaching_arms") or []),
+                   "advisories": list(report["advisories"]), "claim_ceiling": report["claim_ceiling"],
+                   "report_digest": report["report_digest"],
+                   **({"reason": report["reason"]} if "reason" in report else {})}
+        reached = found is not None and found["index"] is not None
+        if free:
+            row["reach"] = {"rule": OWN_ARM_RULE if reached else "closest_clear_floor_stance", "own_arm": arm}
+            if arm["status"] != "unassessed":
+                row["unassessed"] = [code for code in row["unassessed"]
+                                     if code != "embodiment_free_base_reach_not_modeled"]
+        else:
+            row["reach"]["own_arm"] = arm
+        if not reached:
             continue
         station = stances[found["index"]]
-        points = row["reach"]["task_points_world_m"]
-        farthest = max(math.dist(station["position_world_m"], point) for point in points)
         row.update(status="chosen", station=station, blockers=[])
-        row["reach"].update(rule=OWN_ARM_RULE, farthest_task_point_m=farthest,
-                            declared_reach_covers=farthest <= row["reach"]["reach_m"])
+        if not free:
+            points = row["reach"]["task_points_world_m"]
+            farthest = max(math.dist(station["position_world_m"], point) for point in points)
+            row["reach"].update(rule=OWN_ARM_RULE, farthest_task_point_m=farthest,
+                                declared_reach_covers=farthest <= row["reach"]["reach_m"])
 
 
 def _cameras(profile: Mapping[str, Any], *, base: list[float], start: list[float],
@@ -396,7 +415,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     """Compile the revision's scene half under ``output_root`` and seal its team scene inputs.
 
     Each of ``embodiment_manifests`` (registered team bodies) also gets its own station on the same scene
-    (``_embodiment_stations``); without any, the record is exactly the Franka-only one. A fixed body whose
+    (``_embodiment_stations``); without any, the record is exactly the Franka-only one. A body whose
     robot model is in ``embodiment_models`` (by embodiment digest) has that station chosen with its own
     arm (``_own_arm_stations``).
     """
