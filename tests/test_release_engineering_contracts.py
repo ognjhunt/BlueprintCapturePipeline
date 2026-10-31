@@ -396,6 +396,8 @@ def test_codeql_analyzes_only_the_newest_commit_and_gates_nothing() -> None:
     # YAML reads the bare `on:` key as true. The weekly analysis stays.
     assert workflow[True]["schedule"] == [{"cron": "31 7 * * 2"}]
     assert workflow[True]["push"] == {"branches": ["main"]}
+    # Exact-commit release evidence stays reachable for a superseded commit.
+    assert "workflow_dispatch" in workflow[True]
     queries = workflow["jobs"]["analyze"]["steps"][1]["with"]["queries"]
     assert queries == "security-extended,security-and-quality"
     # Cancelling a superseded analysis is safe only while nothing depends on it.
