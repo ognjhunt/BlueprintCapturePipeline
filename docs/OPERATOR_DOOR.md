@@ -269,10 +269,11 @@ and archives to the same artifact store as the reclaim timer. See
 
 `door-deploy.sh` repeats the deploy the agent lanes ran by hand over SSH:
 
-1. fetch every branch into one long-lived source clone,
+1. fetch `main` into one long-lived source clone,
    `/opt/blueprint/control-plane-config-tools/operator-door-source` (origin is
    GitHub, so the deploy tool's pushed-commit checks see real refs), with the
-   door's read-only deploy key;
+   door's read-only deploy key, and forget any other remote branch an older door
+   fetched;
 2. require the commit to be an ancestor of `origin/main`;
 3. with `wait_for_idle` (the default), wait for scene progression and
    configured-controls progression: a target tool that supports `--drain-unit`
@@ -283,6 +284,9 @@ and archives to the same artifact store as the reclaim timer. See
 4. run the **target commit's** `scripts/deploy_control_plane_commit.py` from a
    throwaway worktree with `--iteration --preserve-configured-controls-state`,
    receipt `deploy-receipts/iteration_<sha12>_door.json`.
+
+The request log prints `phase=` timestamps for each of these steps, ending at
+`phase=tool_start`; the receipt's stage timings cover the tool from there.
 
 The deploy builds the commit's release checkout and runtime trees first, with
 every timer, path watcher and paid launch still live: those trees are the
