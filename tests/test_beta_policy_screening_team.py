@@ -298,3 +298,37 @@ def test_a_free_base_is_bound_at_its_own_floor_stance_and_refused_by_name_withou
               "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
     spec, _ = build_registered_team_spec(**kwargs, stance=stance)
     assert spec["team_embodiment"]["stance"] == stance
+
+
+def test_a_fixed_body_runs_at_the_own_station_its_arm_reached_from_whatever_its_declared_reach(tmp_path, monkeypatch):
+    from tests.test_team_embodiment import manifest
+
+    base, facts = _plan(tmp_path, monkeypatch, scene_half="team_scene")
+    model = write_robot_usd(tmp_path / "short.usda")
+    declared = validate_embodiment_manifest(manifest(model, control_hz=60, embodiment_id="short-arm", reach_m=0.2))
+    manifest_path = launch._write(tmp_path / "short.manifest.json", declared)
+    rights = {"schema_version": "blueprint.team_policy_candidate_rights.v1", "status": "admitted",
+        "team_id": "test-team", "checkpoint_id": "short", "candidate_id": "short", "license_to_run_granted": True,
+        "policy_self_grading_permitted": False, "official_ranking_permitted": False,
+        "secret_material_recorded": False, "adp_qualified_evidence_permitted": False}
+    rights["rights_digest"] = canonical_digest(rights, digest_field="rights_digest")
+    registration = {"manifest": launch._record(manifest_path), "model": launch._record(model),
+        "team_id": "test-team", "checkpoint_id": "short", "rights_binding": rights,
+        "policy_spec": {"policy_id": "short", "policy_interface_id": "blueprint_policy_https.v1",
+            "endpoint_url": "https://policy.example.com/infer", "metadata_url": "https://policy.example.com/metadata",
+            "allowed_origin": "https://policy.example.com", "model_identity_digest": canonical_digest({"policy": "short"}),
+            "embodiment_id": declared["embodiment_id"], "action_chunk_rows": 4, "open_loop_horizon": 4,
+            "camera_names": [camera["name"] for camera in declared["cameras"]]}}
+    scene = facts["scene"]
+    robot = scene["native_scene_plan"]["robot"]["base_pose_world"]
+    station = {"position_world_m": [robot["position_world_m"][0] - 1.0, *robot["position_world_m"][1:]],
+               "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    kwargs = {"candidate_id": "short", "registration": registration, "scene_plan": scene["native_scene_plan"],
+              "contract": scene["task_spec"]["task_success_contract"], "prompt": "pick it up",
+              "scene_revision_digest": scene["scene_revision_digest"], "station": station}
+    # A declared 20 cm misses the task from that station: refused by name, as before.
+    with pytest.raises(ValueError, match="team_embodiment_station_out_of_reach"):
+        build_registered_team_spec(**kwargs)
+    # The scene compile chose it because the body's own arm reaches every phase from there: it runs there.
+    spec, _ = build_registered_team_spec(**kwargs, station_reached_by_own_arm=True)
+    assert spec["team_embodiment"]["station"] == station
