@@ -257,3 +257,70 @@ def test_reconciler_service_binds_the_published_profile_directory() -> None:
 
     assert "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR" in service
     assert "--profile-dir" in service
+
+
+def _pre_run_request(tmp_path: Path, *, age_seconds: float) -> tuple[Path, Path, Path]:
+    """A claimed request whose dispatcher stopped before creating its run directory."""
+    import os
+
+    profile = _profile(reconciliation=True)
+    request = {
+        "launch_id": LAUNCH_ID,
+        "run_id": LAUNCH_ID,
+        "launch_profile_id": PROFILE_ID,
+        "launch_profile_digest": profile["profile_digest"],
+    }
+    request["request_digest"] = canonical_digest(request, digest_field="request_digest")
+    processing = tmp_path / "queue" / "processing" / f"{LAUNCH_ID}-pre-run.json"
+    _write(processing, request)
+    claimed = datetime.now(timezone.utc).timestamp() - age_seconds
+    os.utime(processing, (claimed, claimed))
+    profile_dir = tmp_path / "profiles"
+    _write(profile_dir / f"{PROFILE_ID}.json", profile)
+    run_root = tmp_path / "state" / LAUNCH_ID
+    assert not run_root.exists()
+    return processing, profile_dir, run_root
+
+
+def test_pre_run_lease_is_contained_after_a_dispatcher_pass_not_the_full_fallback(tmp_path: Path) -> None:
+    """2026-10-31: a dispatcher refused before its run directory; succession waited on a 4 h fallback."""
+    observed_at = datetime.now(timezone.utc)
+    processing, profile_dir, run_root = _pre_run_request(tmp_path, age_seconds=20 * 60)
+    guard_path = tmp_path / "guard.json"
+    _write(guard_path, _zero_guard(observed_at=observed_at))
+
+    report = reconcile_launches(
+        queue_root=tmp_path / "queue",
+        state_root=tmp_path / "state",
+        profile_dir=profile_dir,
+        guard_report_path=guard_path,
+        now=observed_at,
+        publish_progress=False,
+    )
+
+    assert report["launches"][0]["status"] != "processing_within_ttl"
+    assert not processing.exists()
+    assert (tmp_path / "queue" / "blocked" / processing.name).is_file()
+    recovery = json.loads((run_root / "orphan_recovery_receipt.json").read_text())
+    assert recovery["provider_zero_confirmed"] is True
+    assert recovery["allocator_invoked"] is False
+
+
+def test_fresh_pre_run_lease_and_unproven_zero_stay_in_processing(tmp_path: Path) -> None:
+    observed_at = datetime.now(timezone.utc)
+    processing, profile_dir, run_root = _pre_run_request(tmp_path, age_seconds=60)
+    guard_path = tmp_path / "guard.json"
+    _write(guard_path, _zero_guard(observed_at=observed_at))
+    report = reconcile_launches(queue_root=tmp_path / "queue", state_root=tmp_path / "state",
+        profile_dir=profile_dir, guard_report_path=guard_path, now=observed_at, publish_progress=False)
+    assert report["launches"][0]["status"] == "processing_within_ttl"
+    assert processing.is_file()
+
+    os_age = observed_at.timestamp() - 20 * 60
+    import os
+    os.utime(processing, (os_age, os_age))
+    _write(guard_path, _zero_guard(observed_at=observed_at, live_count=1))
+    reconcile_launches(queue_root=tmp_path / "queue", state_root=tmp_path / "state",
+        profile_dir=profile_dir, guard_report_path=guard_path, now=observed_at, publish_progress=False)
+    assert processing.is_file()
+    assert not (run_root / "orphan_recovery_receipt.json").exists()
