@@ -201,7 +201,7 @@ def test_status_assembles_every_section(host_tree: dict[str, Path]) -> None:
     assert status["paid_launch_locks"][0]["held"] in (True, False)
     assert status["spend_guard"] == {"live_resource_count": 0, "spend_usd": 1.2}
     assert status["failed_units"] == ["blueprint-a.service"]
-    assert status["door_requests"] == {"pending": 1, "processing": 0}
+    assert status["door_requests"] == {"pending": 1, "processing": 0, "parked": 0}
     assert status["holds"] == []
     assert status["break_glass"] == {"unreported": 0, "latest": None}
     assert status["door"]["caller"] == {"name": "cloud"}

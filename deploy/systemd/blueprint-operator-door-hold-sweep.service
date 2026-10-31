@@ -38,6 +38,9 @@ ReadWritePaths=/var/lib/blueprint-operator-door/requests
 TasksMax=32
 MemoryMax=256M
 TimeoutStartSec=5min
+# Also how a parked deploy notices that the running one ended, within about a minute.
+# After a failed sweep too, and it never decides this unit's result.
+ExecStopPost=-/usr/bin/python3 -m operator_door wake-parked
 
 [Install]
 WantedBy=timers.target paths.target

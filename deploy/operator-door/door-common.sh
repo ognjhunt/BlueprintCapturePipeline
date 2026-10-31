@@ -71,10 +71,61 @@ door_fail() {
 
 door_on_exit() {
   local rc="$1"
+  set +e
   door_remove_tool
   if [ -z "${DOOR_OUTCOME_WRITTEN:-}" ] && [ -n "${DOOR_OUTCOME:-}" ]; then
     door_outcome failed "script_exited_early" "$rc"
   fi
+  # This request is done, and the others stay parked for the next wake-up. A record
+  # goes only once its outcome exists: a kill skips this, and the runner then reports
+  # it. An outcome that could not be written leaves the record to try again.
+  if [ -n "${DOOR_PARKED:-}" ] && [ -z "${DOOR_PARKED_KEEP:-}" ] && [ -n "${DOOR_PARKED_DIR:-}" ] \
+    && [ -f "${DOOR_OUTCOME:-}" ] && [ -s "${DOOR_OUTCOME:-}" ]; then
+    rm -f -- "$DOOR_PARKED_DIR/$DOOR_REQUEST_ID.json"
+  fi
+}
+
+# door_stay_parked REASON: nothing here says anything about this request, so it and
+# every other parked request wait for a later wake-up.
+door_stay_parked() {
+  echo "staying parked: $1"
+  DOOR_OUTCOME_WRITTEN=1
+  DOOR_PARKED_KEEP=1
+  exit 0
+}
+
+# door_settle_parked: for a parked deploy, parked_settle.py decides what this fetch
+# makes true: which commit to deploy, and which parked requests are already settled.
+door_settle_parked() {
+  [ -n "${DOOR_PARKED:-}" ] || return 0
+  local decision rc=0
+  export DOOR_RESULTS_DIR DOOR_PARKED_DIR DOOR_SOURCE_CLONE DOOR_ACTIVE_RELEASE_LINK DOOR_STATE_ROOT DOOR_REQUEST_ID
+  decision="$(python3 -I -S "$DOOR_INSTALLED_DIR/operator_door/parked_settle.py")" || rc=$?
+  case "$rc" in
+    0)
+      [[ "$decision" =~ ^([0-9a-f]{40})\ ([0-9]{8}T[0-9]{6}Z-deploy-[0-9a-f]{8})$ ]] \
+        || door_fail parked_settle_invalid
+      DOOR_COMMIT="${BASH_REMATCH[1]}"
+      if [ "${BASH_REMATCH[2]}" != "$DOOR_REQUEST_ID" ]; then
+        # This request stays parked, and the outcome is the one whose commit goes out.
+        echo "staying parked: deploying $DOOR_COMMIT for request ${BASH_REMATCH[2]}"
+        DOOR_REQUEST_ID="${BASH_REMATCH[2]}"
+        DOOR_LOG="$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.log"
+        DOOR_OUTCOME="$DOOR_RESULTS_DIR/$DOOR_REQUEST_ID.outcome.json"
+        exec >>"$DOOR_LOG" 2>&1
+        echo "[$(date -u +%FT%TZ)] deploy $DOOR_COMMIT (request $DOOR_REQUEST_ID)"
+      fi
+      ;;
+    3)
+      echo "not deploying: see this request's outcome"
+      DOOR_OUTCOME_WRITTEN=1
+      exit 0
+      ;;
+    4)
+      door_stay_parked "cannot tell now, or another deploy holds the deploy lock"
+      ;;
+    *) door_fail parked_settle_failed ;;
+  esac
 }
 
 # Keep one long-lived source clone whose origin is GitHub, so every deploy's
@@ -122,7 +173,10 @@ door_prepare_source() {
   # Only main decides what the door may deploy, and nothing on the door's path
   # reads another remote branch: this script and the tool never pass --canary.
   door_phase fetch_main_start
-  git -C "$src" fetch --quiet origin '+refs/heads/main:refs/remotes/origin/main' || door_fail fetch_failed
+  if ! git -C "$src" fetch --quiet origin '+refs/heads/main:refs/remotes/origin/main'; then
+    [ -z "${DOOR_PARKED:-}" ] || door_stay_parked fetch_failed
+    door_fail fetch_failed
+  fi
   door_phase fetch_main_done
   door_forget_other_remote_branches "$src"
   if ! git -C "$src" cat-file -e "${DOOR_COMMIT}^{commit}" 2>/dev/null; then

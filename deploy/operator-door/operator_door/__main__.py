@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="operator_door")
     parser.add_argument("--config", default=DEFAULT_CONFIG)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("serve", "run-spool", "self-test", "hash-token"):
+    for name in ("serve", "run-spool", "wake-parked", "self-test", "hash-token"):
         sub = commands.add_parser(name)
         sub.add_argument("--config", default=argparse.SUPPRESS)
         if name == "self-test":
@@ -104,6 +104,10 @@ def main(argv: list[str] | None = None) -> int:
         from .spool_runner import process_spool
 
         return process_spool(config)
+    if args.command == "wake-parked":
+        from .spool_runner import wake_parked
+
+        return wake_parked(config)
     if args.token_command == "add":
         add_token(config.token_file, name=args.name, sha256=args.sha256,
                   scopes=[scope.strip() for scope in args.scopes.split(",") if scope.strip()])

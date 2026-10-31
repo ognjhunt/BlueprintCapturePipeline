@@ -15,10 +15,13 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
+import shutil
 import stat
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -32,6 +35,7 @@ from .hostinfo import CommandRunner, SubprocessRunner
 from .requests import (
     SCHEMA,
     RequestRefused,
+    _json_or_none,
     load_request_file,
     validate_request,
     validate_request_id,
@@ -42,6 +46,13 @@ RESULT_SCHEMA = "blueprint_operator_door_result.v1"
 _CALLER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _ACTIVE_STATES = "active,activating,deactivating,reloading"
 _UNIT_OBSERVATION_PROPERTIES = "ActiveState,SubState,Result,InvocationID,ExecMainStatus,Type"
+_PARKED_SCHEMA = "blueprint_operator_door_parked_deploy.v1"
+_PARKED_MAX = 16
+_PARKED_ID = re.compile(r"[0-9]{8}T[0-9]{6}Z-deploy-[0-9a-f]{8}")
+# As long as a client waits: two deploys at their 3 h limit, and the deploy lock. A request
+# this old has nobody waiting for it and may no longer be wanted, and a new one deploys.
+_PARKED_MAX_AGE_SECONDS = 8 * 3600
+_UNKNOWN_DEPLOY_ACTIVITY = "unknown:deploy_units_unreadable"
 
 
 def _now() -> str:
@@ -513,7 +524,7 @@ def _stage_selected_recovery(config: DoorConfig, request_id: str, request: dict[
 
 
 def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
-                requested_by: str = "") -> list[str]:
+                requested_by: str = "", extra: dict[str, str] | None = None) -> list[str]:
     """Only the values the request's own kind defines, each already validated."""
 
     _stage_selected_recovery(config, request_id, request)
@@ -522,6 +533,7 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
         "DOOR_RESULTS_DIR": str(Path(config.spool_root) / "results"),
         **_LAUNCHES[request["kind"]].environment(config, request),
         **_stage_release_provenance(config, request_id, request),
+        **(extra or {}),
     }
     if request["kind"] == "extend-scene-execution-window":
         # The authenticated token name, recorded in the extension as who asked.
@@ -532,7 +544,7 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
 
 
 def _launch(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any],
-            requested_by: str = "") -> dict[str, Any]:
+            requested_by: str = "", *, extra_environment: dict[str, str] | None = None) -> dict[str, Any]:
     spec = _LAUNCHES[request["kind"]]
     # A .service name is what `unit_properties` accepts, so the request's live state can be shown.
     unit = f"{spec.unit_prefix}-{spec.label(request)}-{request_id[-8:]}.service"
@@ -541,7 +553,7 @@ def _launch(config: DoorConfig, runner: CommandRunner, request_id: str, request:
         f"--property=TimeoutStartSec={spec.runtime_max}", "--setenv=PYTHONDONTWRITEBYTECODE=1",
         f"--property=RuntimeMaxSec={spec.runtime_max}",
         *(f"--property={value}" for value in spec.properties(config, request)),
-        *_script_env(config, request_id, request, requested_by),
+        *_script_env(config, request_id, request, requested_by, extra_environment),
         "--", "/bin/bash", f"{config.install_root}/{spec.script}",
     ]
     result = runner.run(argv, timeout=60)
@@ -557,11 +569,145 @@ def _active_deploy_unit(runner: CommandRunner) -> str | None:
          f"--state={_ACTIVE_STATES}", "--", "blueprint-*deploy*"],
         timeout=15,
     )
+    if result.returncode != 0:
+        # A failed or timed-out listing must not read as "nothing is deploying".
+        return _UNKNOWN_DEPLOY_ACTIVITY
     for line in result.stdout.splitlines():
         parts = line.split()
         if parts and parts[0].startswith("blueprint-"):
             return parts[0]
     return None
+
+
+def _parkable(request: dict[str, Any]) -> bool:
+    """A canonical deploy carries one commit's provenance, so it never waits to be replaced."""
+
+    return request["kind"] == "deploy" and "release_provenance_json" not in request
+
+
+def _active_release_commit(config: DoorConfig) -> str:
+    """What runs now, read without git; empty when the link cannot be read."""
+
+    try:
+        name = Path(os.readlink(config.active_release_link)).name
+    except OSError:
+        return ""
+    return name if re.fullmatch(r"[0-9a-f]{40}", name) else ""
+
+
+def _park_deploy(config: DoorConfig, request_id: str, request: dict[str, Any], busy: str) -> dict[str, Any]:
+    """Keep what the deploy needs in a record only root can write.
+
+    The request's own file in completed/ is the door's, so it is never read again.
+    The active commit now tells a stale request from a rollback when this one starts.
+    """
+
+    parked = Path(config.spool_root) / "parked"
+    if len(list(parked.glob("*.json"))) >= _PARKED_MAX:
+        return {"status": "refused", "code": f"deploy_in_progress:{busy}"}
+    record = {"schema": _PARKED_SCHEMA, "id": request_id, "commit": request["commit"],
+              "wait_for_idle": request["wait_for_idle"], "parked_at_epoch": time.time(),
+              "active_release_at_park": _active_release_commit(config)}
+    handle, temporary = tempfile.mkstemp(dir=parked, prefix=f".{request_id}.", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as stream:
+            json.dump(record, stream, sort_keys=True)
+        os.chmod(temporary, 0o644)
+        os.replace(temporary, parked / f"{request_id}.json")
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+    return {"status": "parked", "parked_behind": busy, "commit": request["commit"]}
+
+
+def _parked_request(path: Path) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """The checks a request passes on its way out of pending/, repeated before it starts."""
+
+    request_id = validate_request_id(path.stem)
+    record = load_request_file(path)
+    parked_at = record.get("parked_at_epoch")
+    if (_PARKED_ID.fullmatch(request_id) is None or record.get("schema") != _PARKED_SCHEMA
+            or record.get("id") != request_id or isinstance(parked_at, bool)
+            or not isinstance(parked_at, (int, float)) or not math.isfinite(parked_at)):
+        raise RequestRefused("deploy_parked_record_invalid")
+    request = validate_request({"kind": "deploy", "commit": record.get("commit"),
+                                "wait_for_idle": record.get("wait_for_idle")})
+    return request_id, request, record
+
+
+def _drop_parked_record(results: Path, path: Path, error: Exception) -> None:
+    """One file nothing can use must not hold up the requests after it."""
+
+    print(f"parked_record_dropped:{path.name}:{type(error).__name__}", file=sys.stderr)
+    if _PARKED_ID.fullmatch(path.stem):
+        _write_result(results, path.stem, {"status": "refused", "code": "deploy_parked_record_invalid"})
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def _parked_still_waiting(results: Path, path: Path, now: float) -> tuple[str, dict[str, Any]] | None:
+    """The record's request if it can still start. Otherwise end it, saying why."""
+
+    request_id, request, record = _parked_request(path)
+    if _json_or_none(results / f"{request_id}.outcome.json") is not None:
+        path.unlink(missing_ok=True)  # finished; only the record's removal was lost
+        return None
+    if record.get("deploying_commit"):
+        code = "parked_deploy_interrupted"
+    elif now - record["parked_at_epoch"] > _PARKED_MAX_AGE_SECONDS:
+        code = "deploy_parked_expired"
+    else:
+        return request_id, request
+    _write_result(results, request_id, {"status": "refused", "code": code})
+    path.unlink(missing_ok=True)
+    return None
+
+
+def _release_parked(config: DoorConfig, runner: CommandRunner) -> None:
+    """When no deploy runs, start the newest parked deploy.
+
+    This process has no network and no git, on purpose, and a fresh commit may be in
+    no local clone. So it decides nothing about commits: door-deploy.sh does, after
+    its fetch, through parked_settle.py. A record stays here until its outcome is
+    written. One that says it was deploying, with no deploy running, was killed.
+    """
+
+    spool = Path(config.spool_root)
+    results = spool / "results"
+    paths = sorted((spool / "parked").glob("*.json"), key=lambda path: path.name)
+    if not paths or _active_deploy_unit(runner) is not None:
+        return
+    now = time.time()
+    live: list[tuple[str, dict[str, Any]]] = []
+    for path in paths:
+        try:
+            waiting = _parked_still_waiting(results, path, now)
+            if waiting:
+                live.append(waiting)
+        except Exception as error:  # noqa: BLE001 - whatever is wrong with this file, the queue goes on
+            try:
+                _drop_parked_record(results, path, error)
+            except (OSError, RequestRefused) as drop_error:
+                print(f"parked_record_kept:{path.name}:{type(drop_error).__name__}", file=sys.stderr)
+    if not live:
+        return
+    request_id, request = live[-1]
+    outcome = _launch(config, runner, request_id,
+                      # The deploy that goes out may be any of theirs, so any of them can ask it to drain.
+                      {**request, "wait_for_idle": any(row["wait_for_idle"] for _, row in live)},
+                      extra_environment={
+        "DOOR_PARKED": "1",
+        "DOOR_PARKED_DIR": str(spool / "parked"),
+        "DOOR_ACTIVE_RELEASE_LINK": config.active_release_link,
+    })
+    if outcome["status"] == "launched":
+        _write_result(results, request_id, outcome)
+    else:
+        # A failed launch says nothing about this request: it stays parked for the next wake-up.
+        print(f"parked_launch_failed:{request_id}:{outcome.get('returncode')}:{outcome.get('stderr_tail', '')[-200:]}",
+              file=sys.stderr)
 
 
 def _has_hold_guard(runner: CommandRunner, unit: str, root: Path) -> bool:
@@ -781,6 +927,8 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
     if request["kind"] == "deploy":
         busy = _active_deploy_unit(runner)
         if busy is not None:
+            if _parkable(request):
+                return _park_deploy(config, request_id, request, busy)
             return {"status": "refused", "code": f"deploy_in_progress:{busy}"}
     if request["kind"] not in _LAUNCHES:
         return {"status": "refused", "code": "kind_unknown"}
@@ -844,6 +992,12 @@ def _prune(spool: Path, retention_days: int) -> None:
                     path.unlink()
             except OSError:
                 continue
+    for path in (spool / "parked").glob(".*.tmp"):
+        try:
+            if path.lstat().st_mtime < now - 3600:
+                path.unlink()
+        except OSError:
+            continue
     for path in (spool / "processing").glob("*.json"):
         try:
             if path.lstat().st_mtime < now - 3600:
@@ -860,10 +1014,25 @@ def _prune(spool: Path, retention_days: int) -> None:
             continue
 
 
+def wake_parked(config: DoorConfig, *, runner: CommandRunner | None = None) -> int:
+    """Start the runner if a deploy is parked. The hold sweep's one-minute timer calls this.
+
+    A new request starts the runner by itself, but nothing else notices a deploy
+    ending. This timer already runs every minute and at boot, so nothing can strand
+    a parked request by losing a race with its own re-arming.
+    """
+
+    if not any((Path(config.spool_root) / "parked").glob("*.json")):
+        return 0
+    runner = runner or SubprocessRunner()
+    return runner.run(["systemctl", "start", "--no-block", "blueprint-operator-door-runner.service"],
+                      timeout=30).returncode
+
+
 def process_spool(config: DoorConfig, *, runner: CommandRunner | None = None) -> int:
     runner = runner or SubprocessRunner()
     spool = Path(config.spool_root)
-    for state in ("pending", "processing", "completed", "results"):
+    for state in ("pending", "processing", "completed", "results", "parked"):
         (spool / state).mkdir(parents=True, exist_ok=True)
     _prune(spool, config.spool_retention_days)
     for _ in range(100):  # requests that arrive while we work are picked up too
@@ -888,4 +1057,10 @@ def process_spool(config: DoorConfig, *, runner: CommandRunner | None = None) ->
                 _process_one(config, runner, claimed, request_id)
             except OSError:
                 _quarantine(spool, claimed)
+    # After pending/: a queue that cannot start must not keep a new direct deploy, which
+    # may be what repairs it, behind a unit that only comes back to say it cannot start.
+    try:
+        _release_parked(config, runner)
+    except Exception as error:  # noqa: BLE001 - parked deploys must never stop every other request
+        print(f"parked_release_failed:{type(error).__name__}", file=sys.stderr)
     return 0
