@@ -746,3 +746,40 @@ def test_real_bodies_measure_every_chain_link_and_hand(models):
     box = kinematics.OrientedBox(tool, np.array([.01, .01, .01]))
     hit = kinematics.clearance(chain, bounds, chain.reset, boxes=[box])
     assert hit["colliding"] and hit["link"] in {chain.bodies[-1].name, "hand"}
+
+
+def _housed_hand(tmp_path, *, marker=False):
+    """A flange tool with a gripper housing welded on, fingers beyond it, and optionally a bare marker."""
+    urdf = tmp_path / "housed.urdf"
+    box = '<collision><origin xyz="0 0 {z}"/><geometry><box size="{x} {y} {h}"/></geometry></collision>'
+    extra = ('<link name="marker"><inertial><mass value="1"/></inertial></link>'
+             '<joint name="marker_mount" type="fixed"><parent link="finger_link"/><child link="marker"/>'
+             '<origin xyz="0 0 0.05"/></joint>') if marker else ""
+    urdf.write_text(f'''<robot name="housed">
+      <link name="base"><inertial><mass value="1"/></inertial>{box.format(z=.05, x=.2, y=.2, h=.1)}</link>
+      <link name="flange"><inertial><mass value="1"/></inertial>{box.format(z=.02, x=.06, y=.06, h=.04)}</link>
+      <link name="housing"><inertial><mass value="1"/></inertial>{box.format(z=.03, x=.08, y=.04, h=.06)}</link>
+      <link name="finger_link"><inertial><mass value="1"/></inertial>{box.format(z=.02, x=.01, y=.02, h=.04)}</link>
+      <joint name="wrist" type="revolute"><parent link="base"/><child link="flange"/><origin xyz="0 0 0.1"/>
+        <axis xyz="0 0 1"/><limit lower="-2" upper="2" effort="1" velocity="1"/></joint>
+      <joint name="housing_mount" type="fixed"><parent link="flange"/><child link="housing"/><origin xyz="0 0 0.04"/></joint>
+      <joint name="finger" type="prismatic"><parent link="housing"/><child link="finger_link"/><origin xyz="0 0 0.06"/>
+        <axis xyz="1 0 0"/><limit lower="0" upper="0.04" effort="1" velocity="1"/></joint>
+      {extra}
+    </robot>''')
+    usd = kinematic_usd(urdf, tmp_path / "housed.usda")
+    return usd, kinematics.arm_chain(usd, kinematics.ArmSpec("arm", "base", "flange", ("wrist",), np.eye(4), {}, {}))
+
+
+def test_fingers_beyond_a_welded_gripper_housing_are_measured_once(tmp_path):
+    usd, chain = _housed_hand(tmp_path)
+    bounds = {bound.name: bound for bound in kinematics.link_bounds(usd, chain)}
+    # The housing is a chain body (welded to the tool); the finger beyond it is the hand, not dropped.
+    assert "housing" in bounds and bounds["hand"].parts == ("finger_link",)
+    assert bounds["hand"].unmeasured is None and bounds["hand"].offsets is not None
+
+
+def test_a_hand_body_without_geometry_leaves_the_whole_hand_unmeasured(tmp_path):
+    usd, chain = _housed_hand(tmp_path, marker=True)
+    hand = {bound.name: bound for bound in kinematics.link_bounds(usd, chain)}["hand"]
+    assert hand.offsets is None and hand.unmeasured == "hand_geometry_missing:marker"
