@@ -3695,16 +3695,29 @@ def test_a_small_immutable_input_is_hashed_without_a_stored_verdict(tmp_path, mo
     assert not root.exists()
 
 
-def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypatch):
-    from blueprint_pipeline import control_plane_registered_reference_gate as gate
+def _real_launch_admission():
     from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
-    clock = [0.0]
-    budgets = []
+    return ReferenceCollectionBudget._for_launch_admission
+
+
+_REAL_LAUNCH_ADMISSION = _real_launch_admission()
+
+
+def _launch_admission_clock(monkeypatch, clock, budgets):
+    """Give the dispatcher's own admission budget a test clock."""
+    from blueprint_pipeline.control_plane_reference_budget import ReferenceCollectionBudget
+    original = _REAL_LAUNCH_ADMISSION
     def create(**kw):
-        budget = ReferenceCollectionBudget(monotonic=lambda: clock[0], **kw)
+        budget = original(monotonic=lambda: clock[0], **kw)
         budgets.append(budget)
         return budget
-    monkeypatch.setattr(gate, 'ReferenceCollectionBudget', create)
+    monkeypatch.setattr(ReferenceCollectionBudget, '_for_launch_admission', staticmethod(create))
+
+
+def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypatch):
+    clock = [0.0]
+    budgets = []
+    _launch_admission_clock(monkeypatch, clock, budgets)
     profile_dir, request_path = _write_profile_and_request(tmp_path, _profile(tmp_path))
     def runner(_argv):
         assert len(budgets) == 1 and budgets[0].closed
@@ -3717,7 +3730,36 @@ def test_long_allocator_preserves_original_terminal_evidence(tmp_path, monkeypat
     assert json.loads((run/'launch_receipt.json').read_text()) == receipt
     assert 'retained fake allocator terminal output' in (run/'allocator.stdout.log').read_text()
     assert len(budgets) == 1 and budgets[0].closed
-    assert budgets[0].deadline == 5.0 and budgets[0].failure is None
+    assert budgets[0].deadline == 30.0 and budgets[0].failure is None
+
+
+def test_launch_admission_holds_a_slow_hosts_verification_and_still_ends(tmp_path, monkeypatch):
+    # capture-447ae4f4, 2026-10-31: on the CPU-throttled control plane the
+    # dispatcher's catalog and input verification outran the publishers' five
+    # seconds, and the launch died at its first write with OwnerTargetVersionError.
+    import blueprint_pipeline.task_evaluation_launch_dispatcher as dispatcher
+    original_verify = dispatcher.verify_profile_immutable_inputs
+    for elapsed, admitted in ((6.0, True), (31.0, False)):
+        root = tmp_path / str(int(elapsed))
+        root.mkdir()
+        clock, budgets, calls = [0.0], [], []
+        _launch_admission_clock(monkeypatch, clock, budgets)
+        def slow_verify(profile, *, observed=None, _elapsed=elapsed):
+            clock[0] = _elapsed
+            return original_verify(profile, observed=observed)
+        monkeypatch.setattr(dispatcher, 'verify_profile_immutable_inputs', slow_verify)
+        profile_dir, request_path = _write_profile_and_request(root, _profile(root))
+        def dispatch(request_path=request_path, profile_dir=profile_dir, root=root, calls=calls):
+            return dispatch_launch_request(
+                request_path=request_path, profile_dir=profile_dir, state_root=root / 'state',
+                allocator_runner=lambda argv: calls.append(argv) or 0)
+        if admitted:
+            assert dispatch()['status'] == 'dry_run_completed' and len(calls) == 1
+        else:
+            with pytest.raises(ValueError, match='experiment_publisher_input_limit'):
+                dispatch()
+            assert calls == [] and not (root / 'state').exists()
+        assert len(budgets) == 1 and budgets[0].closed
 
 
 def test_nested_dispatch_cannot_end_parent_publisher_allowance(tmp_path):

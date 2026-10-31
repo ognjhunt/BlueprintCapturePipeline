@@ -39,7 +39,7 @@ from .control_plane_disk_budget import (
     reserve_control_plane_disk,
 )
 from .control_plane_registered_reference_gate import (
-    _finish_publisher_admission,
+    _finish_publisher_admission, _launch_admission_observation,
     _profile_refusal,
     _publisher_checkpoint,
     _publisher_observation,
@@ -1461,7 +1461,7 @@ def _native_policy_terminal_visual_evidence(
 
 
 @scene_participant('request_path', 'profile_dir', 'state_root')
-@_publisher_observation
+@_launch_admission_observation
 def dispatch_launch_request(
     *,
     request_path: str | Path,
