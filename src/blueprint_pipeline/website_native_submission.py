@@ -221,7 +221,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         size_tolerance = preparation_size_tolerance(preparation)
         recorded = preparation.get("destination_relocation")
         if (start_support is None and destination.get("relation") == "on"
-                and (recorded is not None and recorded.get("replacement_size_tolerance", 0.0) != size_tolerance
+                and (recorded is not None and recorded.get("replacement_size_tolerance", 0.0) < size_tolerance
                      or not destination_clear_of_start(lower, upper, destination["position_world_m"], up=2,
                          clearance=website_target_radius(lower, upper, relative_error=size_tolerance)))):
             # A preparation from before the same-surface rule, or one that moved its
