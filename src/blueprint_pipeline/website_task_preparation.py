@@ -33,8 +33,10 @@ from .external_scene_frame_registration import _axis_rotations, _sample, _trimme
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
-from .website_support_geometry import (destination_clear_of_start, farthest_supported_destination,
-                                       ground_on_observed_floor, same_support_surface, support_under)
+from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start,
+                                       farthest_supported_destination, ground_on_observed_floor,
+                                       nearest_supported_destination, same_support_surface, support_outline,
+                                       support_under)
 from .website_surface_target_admission import (admit_surface_target, preparation_size_tolerance,
                                                replacement_size_tolerance, website_target_radius)
 
@@ -599,7 +601,9 @@ def relocated_destination(preparation: Mapping[str, Any], preparation_path: Path
 
     Rereads only the preparation's own digest-bound collider and task masks
     (no provider call, no write) and moves the destination exactly as a new
-    preparation would. None when no supported footprint clears the start.
+    preparation would: where its whole region lies on the start's surface,
+    else where the footprint alone does, recorded as such. None when no
+    supported footprint clears the start.
     """
     import trimesh
 
@@ -634,11 +638,12 @@ def relocated_destination(preparation: Mapping[str, Any], preparation_path: Path
     # Moved at preparation with a smaller clearance: the grounded centre is the one it recorded.
     grounded = (preparation.get("destination_relocation") or {}).get("grounded_centre_world_m",
                                                                      preparation["destination"]["position_world_m"])
-    return {"position_world_m": (runtime_to_sim @ [*moved[0], 1.0])[:3].tolist(),
+    return {"position_world_m": (runtime_to_sim @ [*moved.centre, 1.0])[:3].tolist(),
             "relocation": {"reason": "grounded_destination_centre_overlapped_start",
                            "rule": "farthest_supported_footprint_on_start_surface",
                            "grounded_centre_world_m": list(grounded),
                            "harness_choice": True, "applied_at": "native_submission",
+                           **({} if moved.region_on_surface else {"region_on_support_surface": False}),
                            **({"replacement_size_tolerance": tolerance} if tolerance else {})}}
 
 
@@ -1054,7 +1059,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     # The replacement is qualified within this of each estimated dimension; the region holds it.
     size_tolerance = replacement_size_tolerance(dimension_authority=subject_dimension_authority,
                                                 relative_error=DIMENSION_RELATIVE_ERROR, development=False)
-    destination = distinct_support = relocation = surface_target_admission = None
+    destination = distinct_support = relocation = surface_target_admission = region_outline = None
     interior = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
@@ -1101,36 +1106,59 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             # Test the subject's footprint at the destination against real
             # triangles, not the destination mask's enclosing box.
             # The destination is placed by the same registration as the subject.
-            destination_support = lookup(collider, *_set_down(subject_min, subject_max, position, up=up,
-                                                              up_sign=up_sign),
+            destination_min, destination_max = _set_down(subject_min, subject_max, position, up=up, up_sign=up_sign)
+            destination_support = lookup(collider, destination_min, destination_max,
                                          up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
                 position[up] = destination_support["top_runtime_units"]
                 contact_bound = True
-                if not same_support_surface(destination_support, support):
+                same_surface = same_support_surface(destination_support, support)
+                if not same_surface:
                     # The object ends on another surface (floor to desk): bind that one by name.
                     distinct_support = destination_support
-                else:
+                region_support = support if same_surface else destination_support
+                # The region lies on that surface itself, not merely in its bounding box: the
+                # scorer accepts the subject anywhere in the region (capture-447ae4f4: an oval table).
+                outline = support_outline(collider, region_support, up=up, meters_per_unit=mpu,
+                                          placement_residual_m=residual)
+                clearance = website_target_radius(subject_min, subject_max, relative_error=size_tolerance,
+                                                  up=up, meters_per_unit=mpu)
+                stated = (runtime_to_sim @ [*position, 1.0])[:3].tolist()
+                recorded_tolerance = {"replacement_size_tolerance": size_tolerance} if size_tolerance else {}
+                plan_axes = [axis for axis in range(3) if axis != up]
+                if same_surface and not destination_clear_of_start(subject_min, subject_max, position, up=up,
+                                                                   clearance=clearance):
                     # Grounded as the surface it already rests on, the region's centre
                     # can lie under the subject: the task would start complete.
-                    clearance = website_target_radius(subject_min, subject_max, relative_error=size_tolerance,
-                                                      up=up, meters_per_unit=mpu)
-                    if not destination_clear_of_start(subject_min, subject_max, position, up=up, clearance=clearance):
-                        stated = (runtime_to_sim @ [*position, 1.0])[:3].tolist()
-                        moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, support,
-                            up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
-                            placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"))
-                        if moved is None:
-                            blockers.append("task_destination_overlaps_start")
-                        else:
-                            position = moved[0]
-                            relocation = {"reason": "grounded_destination_centre_overlapped_start",
-                                          "rule": "farthest_supported_footprint_on_start_surface",
-                                          "grounded_centre_world_m": stated, "harness_choice": True,
-                                          **({"replacement_size_tolerance": size_tolerance}
-                                             if size_tolerance else {})}
+                    moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, support,
+                        up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
+                        placement_residual_m=residual, outline=outline)
+                    if moved is None:
+                        blockers.append("task_destination_overlaps_start")
+                    else:
+                        position = moved.centre
+                        relocation = {"reason": "grounded_destination_centre_overlapped_start",
+                                      "rule": "farthest_supported_footprint_on_start_surface",
+                                      "grounded_centre_world_m": stated, "harness_choice": True,
+                                      **({} if moved.region_on_surface else {"region_on_support_surface": False}),
+                                      **recorded_tolerance}
+                elif outline is not None and not outline.holds(np.asarray(position)[plan_axes], clearance,
+                                                               tolerance=REGION_EDGE_ROUNDING_M / mpu):
+                    # Grounded where its region reaches past the surface's edge: the nearest
+                    # spot where it does not. None leaves it, and the admission flags it.
+                    moved = nearest_supported_destination(collider, destination_min, destination_max, low, high,
+                        region_support, up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
+                        placement_residual_m=residual, outline=outline,
+                        start_min=subject_min if same_surface else None, start_max=subject_max if same_surface else None)
+                    if moved is not None:
+                        position = moved.centre
+                        relocation = {"reason": "grounded_region_reached_past_its_surface",
+                                      "rule": "nearest_region_on_destination_surface",
+                                      "grounded_centre_world_m": stated, "harness_choice": True, **recorded_tolerance}
+                if outline is not None:
+                    region_outline = outline.in_frame(runtime_to_sim)
         label = destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"]
         destination = {"relation": relation, "visible_label": label,
                        **({"mode": "existing_support_surface"} if relation == "on" or interior is not None else {}),
@@ -1161,7 +1189,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), sim_support)),
                     subject_min=sim_min, subject_max=sim_max,
                     placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
-                    development_support=False, relative_error=size_tolerance)
+                    development_support=False, relative_error=size_tolerance, support_outline=region_outline)
             except ValueError as exc:
                 surface_target_admission = {"status": "refused", "code": str(exc),
                                             "basis": "evaluation_admission_rule"}

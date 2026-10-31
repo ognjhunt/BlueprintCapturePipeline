@@ -17,8 +17,8 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .task_evaluation_surface_target import SUPPORT_HEIGHT_TOLERANCE_M, derive_surface_target
-from .website_support_geometry import DESTINATION_MARGIN_M
+from .task_evaluation_surface_target import SUPPORT_HEIGHT_TOLERANCE_M, derive_surface_target, require
+from .website_support_geometry import DESTINATION_MARGIN_M, REGION_EDGE_ROUNDING_M, SupportOutline
 
 #: How the native request names the website's surfaces; the region is bound to these.
 SUPPORT_PRIM_PATH = "/Root"
@@ -80,7 +80,7 @@ def _surface(instance_id: str, bounds: Mapping[str, Any]) -> dict[str, Any]:
 def admit_surface_target(*, destination: Mapping[str, Any], support: Mapping[str, Any],
                          subject_min: Sequence[float], subject_max: Sequence[float],
                          placement_uncertainty_m: Any, development_support: bool,
-                         relative_error: float = 0.0) -> dict[str, Any]:
+                         relative_error: float = 0.0, support_outline: SupportOutline | None = None) -> dict[str, Any]:
     """The sealed region on the destination's surface, or the typed code evaluation refuses it with.
 
     All inputs are in the simulator frame. ``destination`` is the preparation's
@@ -90,8 +90,14 @@ def admit_surface_target(*, destination: Mapping[str, Any], support: Mapping[str
     under the subject (``aabb_min_xyz``/``aabb_max_xyz``). A captured support's
     top is known only to its ``placement_uncertainty_m``; an authored
     development surface keeps the 5 mm check. ``relative_error`` is the
-    subject's ``replacement_size_tolerance``. Raises ``ValueError`` with the
-    ``surface_target_*`` code of ``derive_surface_target``.
+    subject's ``replacement_size_tolerance``. ``support_outline`` is the
+    region's surface itself (``SupportOutline.in_frame``): the region must lie
+    wholly on it, not only in its bounding box (capture-447ae4f4: an oval
+    table). Preparation, which holds the collider, passes it and records a
+    refusal as advisory; native submission seals without it, its relocation
+    having placed the region on the surface where any spot allows. Raises
+    ``ValueError`` with the ``surface_target_*`` code of
+    ``derive_surface_target``.
     """
     start = _surface(SUPPORT_INSTANCE_ID, support)
     target_support, start_support = start, None
@@ -105,9 +111,14 @@ def admit_surface_target(*, destination: Mapping[str, Any], support: Mapping[str
     if (not development_support and isinstance(placement_uncertainty_m, (int, float))
             and not isinstance(placement_uncertainty_m, bool) and math.isfinite(placement_uncertainty_m)):
         tolerance = max(SUPPORT_HEIGHT_TOLERANCE_M, float(placement_uncertainty_m))
-    return derive_surface_target(
+    target = derive_surface_target(
         destination={**destination, "kind": "green_region", "radius_m": website_target_radius(
             subject_min, subject_max, relative_error=relative_error)},
         support=target_support, source_min=subject_min, source_max=subject_max,
         support_instance_id=target_support["publisher_instance_id"], start_support=start_support,
         height_tolerance_m=tolerance)
+    if support_outline is not None:
+        # Twice placement's rounding allowance: converting a placed region to this frame cannot refuse it.
+        require(support_outline.holds(target["surface_position_world_m"][:2], target["radius_m"],
+                                      tolerance=2 * REGION_EDGE_ROUNDING_M), "surface_target_outside_support")
+    return target

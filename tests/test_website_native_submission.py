@@ -687,7 +687,8 @@ def test_a_destination_on_another_surface_reaches_the_frozen_template_by_name(tm
         calls.append(found)
         # Each preparation looks up the subject's support, then the destination's.
         if len(calls) % 2 == 0 and found is not None:
-            found = {**found, "face_indices": [index + 10 ** 6 for index in found["face_indices"]]}
+            # Real faces of the collider, a different set: the region is checked against them.
+            found = {**found, "face_indices": found["face_indices"][1:]}
         return found
     monkeypatch.setattr(preparation_module, "support_under", another_surface)
     monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
