@@ -5,8 +5,8 @@ gap review. When the reviewed policy prices a refined splat, the views that
 draft fused are posted once to posedImages2Splats in World Labs' documented
 frame shape (image, linear depth, camera): real frames whole, and a generated
 view whole only where an independent whole-view agreement review admitted it.
-That review judges, and the request posts, each generated view rebuilt around
-what the real frames observed (``atlas_gap_composite``). Its SPZ replaces the
+That review judges, and the request posts, each generated view corrected where
+it contradicts a well-observed capture (``atlas_gap_composite``). Its SPZ replaces the
 draft for meshing, export and scene handoff. Refinement is generated
 appearance: it never proves metric scale, source-geometry preservation or
 physics.
@@ -97,11 +97,10 @@ def merge_duplicate_views(frames):
 def composited_views(frames):
     """``merge_duplicate_views`` with each partly admitted view rebuilt around what was observed.
 
-    Real (whole) views are the references. A generated or recovered view keeps
-    the provider's pixels in its admitted region and where no real frame observed
-    anything; everywhere else it takes the real frames' pixels and depth
-    (``atlas_gap_composite``), so the whole-view review judges, and the request
-    posts, a frame that agrees with the capture wherever the capture saw.
+    Real (whole) views are the references. A generated or recovered view starts
+    from the provider's own pixels and takes the real frames' pixels and depth
+    only where it contradicts a well-observed capture (``atlas_gap_composite``),
+    so the whole-view review judges, and the request posts, that frame.
     """
     from .atlas_gap_composite import composite_view, observation_references
 
@@ -120,19 +119,29 @@ def composited_views(frames):
     return result
 
 
-def _review_views(root: Path, frames):
-    """The candidates a root's whole-view review judges.
+CANDIDATE_RECORD = "whole_view_candidates.json"
 
-    A review recorded before composites judged the provider's frames; that root
-    keeps them, so a restart neither re-buys its review nor changes what it sends.
+
+def _review_views(root: Path, frames):
+    """The candidates a root's whole-view review judges, decided once and recorded before any call.
+
+    The review's receipts are found by a binding that includes the candidates'
+    pixels. A root an earlier release reviewed, or began to review (a receipt,
+    an intent or its lock with or without ``whole_view_review.json``), keeps the
+    provider's frames, so that call is found again and never bought twice.
     """
     from .atlas_gap_composite import CANDIDATE_BASIS
 
-    record = root / REVIEW_RECORD
-    if (record.is_file() and not record.is_symlink()
-            and json.loads(record.read_text()).get("candidate_basis") != CANDIDATE_BASIS):
-        return merge_duplicate_views(frames)
-    return composited_views(frames)
+    chosen = root / CANDIDATE_RECORD
+    if chosen.is_file() and not chosen.is_symlink():
+        basis = json.loads(chosen.read_text()).get("candidate_basis")
+    elif (root / REVIEW_RECORD).exists() or any((root / "whole_view_review" / "receipts").glob("*")):
+        basis = None
+    else:
+        basis = CANDIDATE_BASIS
+        root.mkdir(parents=True, exist_ok=True)
+        write_json(chosen, {"candidate_basis": basis})
+    return composited_views(frames) if basis == CANDIDATE_BASIS else merge_duplicate_views(frames)
 
 
 def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None):
