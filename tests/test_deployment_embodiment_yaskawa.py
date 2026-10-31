@@ -20,6 +20,7 @@ from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from tests.test_deployment_embodiment_gofa import _stl, _sdk
 from tests.test_deployment_embodiment_industrial import _poses
 from tests.test_deployment_embodiment_industrial import public_sources as industrial_sources  # noqa: F401
+from tests.scripted_controller_supersession import current as with_reviewed_revisions
 
 FIXTURE = Path(__file__).parent / "fixtures/yaskawa_robotiq"
 
@@ -225,7 +226,7 @@ def previous_runtime():
 
 
 def test_original28_profiles_34_recipes_109_rows_18_policy_identities_unchanged():
-    previous = json.loads((FIXTURE / "predecessor_identities.json").read_text())
+    previous = with_reviewed_revisions(json.loads((FIXTURE / "predecessor_identities.json").read_text()))
     package = Path(assets.__file__).parent
     root = package.parents[1]
     recipes = {r["embodiment_id"]: r for r in assets.asset_recipes()["recipes"]}
