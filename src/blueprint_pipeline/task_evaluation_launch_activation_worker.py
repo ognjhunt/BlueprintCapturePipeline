@@ -1103,13 +1103,6 @@ def _build_scene_configuration_context(
     }
 
 
-#: Wall-clock bound on one preparation command. A scene-configuration activation
-#: stages and archives a multi-gigabyte provider bundle on a shared host; on
-#: 2026-10-31 that alone outlasted the old one-hour bound. The unit's
-#: TimeoutStartSec stays a little above this so the worker records the outcome.
-ACTIVATION_PREPARER_TIMEOUT_SECONDS = 4 * 3600
-
-
 def default_activation_preparer(
     *, lane: str, context_path: Path, receipt_path: Path, repository_root: Path
 ) -> dict[str, Any]:
@@ -1126,8 +1119,7 @@ def default_activation_preparer(
         str(receipt_path),
     ]
     completed = subprocess.run(  # nosec B603 - fixed argv, no shell
-        command, capture_output=True, text=True, check=False,
-        timeout=ACTIVATION_PREPARER_TIMEOUT_SECONDS,
+        command, capture_output=True, text=True, check=False, timeout=4 * 3600
     )
     if receipt_path.is_symlink() or not receipt_path.is_file():
         raise TaskEvaluationLaunchActivationWorkerError(

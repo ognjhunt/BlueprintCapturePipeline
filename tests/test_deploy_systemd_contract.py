@@ -1,4 +1,5 @@
 import re
+import subprocess
 from pathlib import Path
 
 
@@ -1100,14 +1101,24 @@ def test_intake_reads_website_preparation_status_from_the_listener_tree() -> Non
         assert binding in _read(name).splitlines(), name
 
 
-def test_launch_activation_unit_outlasts_its_preparation_command():
-    """2026-10-31: a scene-configuration bundle was still being written when the 1h unit timeout fired."""
-    from blueprint_pipeline.task_evaluation_launch_activation_worker import (
-        ACTIVATION_PREPARER_TIMEOUT_SECONDS,
-    )
 
+def test_launch_activation_unit_outlasts_its_preparation_command(tmp_path, monkeypatch):
+    """2026-10-31: a scene-configuration bundle was still being written when the 1h unit timeout fired."""
+    import json
+    from blueprint_pipeline import task_evaluation_launch_activation_worker as worker
+
+    seen = {}
+    receipt = tmp_path / "receipt.json"
+
+    def fake_run(command, **kwargs):
+        seen.update(kwargs)
+        receipt.write_text(json.dumps({"status": "prepared"}), encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(worker.subprocess, "run", fake_run)
+    worker.default_activation_preparer(
+        lane="lane", context_path=tmp_path / "context.json", receipt_path=receipt, repository_root=tmp_path)
     text = _read("blueprint-task-evaluation-launch-activation.service")
     timeouts = [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("TimeoutStartSec=")]
-    assert timeouts == ["4h15min"]
-    assert ACTIVATION_PREPARER_TIMEOUT_SECONDS == 4 * 3600
-    assert ACTIVATION_PREPARER_TIMEOUT_SECONDS < 4 * 3600 + 15 * 60
+    assert seen["timeout"] == 4 * 3600
+    assert timeouts == ["255min"] and seen["timeout"] < 255 * 60

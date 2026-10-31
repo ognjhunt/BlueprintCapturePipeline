@@ -67,7 +67,7 @@ DEFAULT_TTL_SECONDS = 2 * 60 * 60
 # TimeoutStartSec, so each role's entry must outlive that timeout (pinned by a
 # test against deploy/systemd), or the ledger deletes a running job's
 # reservation as stale.  The canary and launch dispatchers hold theirs through a
-# paid run under a 5 h start timeout.
+# paid run under a 5 h start timeout; activation builds a scene bundle in 4 h.
 ROLE_TTL_SECONDS: Mapping[str, int] = {
     "embodiment_preparation": 6 * 3600,
     "g1_checkpoint_cache": 4 * 3600,
@@ -77,6 +77,7 @@ ROLE_TTL_SECONDS: Mapping[str, int] = {
     "stage_replay": 6 * 3600,
     "policy_canary_dispatch": 6 * 3600,
     "launch_dispatch": 6 * 3600,
+    "launch_activation": 6 * 3600,
     "scene_configuration_output": 6 * 3600,
     "policy_canary_output": 6 * 3600,
     "control_plane_deploy": 4 * 3600,
