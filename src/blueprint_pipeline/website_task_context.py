@@ -231,9 +231,13 @@ def load_atlas_operator_admission(path: Path, *, command: Mapping[str, Any],
     return dict(admission)
 
 
-def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: float, create: bool = True) -> dict[str, Any]:
+def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: float, create: bool = True,
+                                   valid_until: float | None = None) -> dict[str, Any]:
+    """``valid_until`` (a non-creating read only) is the bound intent's verified effective expiry."""
     if type(create) is not bool:
         raise ValueError("website_scene_sponsorship_create_invalid")
+    if valid_until is not None and create is not False:
+        raise ValueError("website_scene_sponsorship_extension_requires_read")
     payload = {"request_id": task_context["request_id"], "scene_id": task_context["scene_id"]}
     if task_context.get("purpose") == "scene_preparation":
         validate_website_task_context(task_context, request_id=task_context["request_id"],
@@ -284,12 +288,13 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
             or not isinstance(value.get("expires_at_epoch"), (int, float))
             or isinstance(issued, bool) or not isinstance(issued, (int, float)) or not isfinite(issued)
             or issued > now + 60
-            or not now < value["expires_at_epoch"]
+            or not now < (value["expires_at_epoch"] if valid_until is None else min(
+                max(value["expires_at_epoch"], valid_until), value["expires_at_epoch"] + 7 * 86400))
             or not 0 < value["expires_at_epoch"] - issued <= 86400):
         raise ValueError("website_scene_sponsorship_binding_invalid")
     if task_context.get("purpose") == "scene_preparation":
         from .website_preparation_contracts import validate_preparation_authority
-        validate_preparation_authority(task_context=task_context, authority=value, now=now)
+        validate_preparation_authority(task_context=task_context, authority=value, now=now, valid_until=valid_until)
     return value
 
 
