@@ -58,8 +58,9 @@ def test_full_lane_waits_for_requested_native_acceptance():
     job = jobs['cross-cutting-full-suite']
     assert set(job['needs']) == {'impact', 'native-feature-linux', 'native-scene-linux'}
     condition = job['if'].replace('${{', '').replace('}}', '').strip()
-    for full, registered, scene, impact, first, second in itertools.product(
-            (False, True), (False, True), (False, True), ('success', 'failure'),
+    assert 'always()' not in condition
+    for cancelled, full, registered, scene, impact, first, second in itertools.product(
+            (False, True), (False, True), (False, True), (False, True), ('success', 'failure'),
             ('success', 'failure', 'skipped', 'cancelled'),
             ('success', 'failure', 'skipped', 'cancelled')):
         observed = condition
@@ -73,12 +74,31 @@ def test_full_lane_waits_for_requested_native_acceptance():
         }
         for key, value in values.items():
             observed = observed.replace(key, repr(value))
-        observed = observed.replace('always()', 'True').replace('&&', ' and ').replace('||', ' or ')
+        observed = observed.replace('!cancelled()', repr(not cancelled))
+        observed = observed.replace('&&', ' and ').replace('||', ' or ')
         assert 'needs.' not in observed
-        expected = (full and impact == 'success'
+        expected = (not cancelled and full and impact == 'success'
                     and first == ('success' if registered else 'skipped')
                     and second == ('success' if scene else 'skipped'))
         assert eval('(' + observed + ')', {'__builtins__': {}}, {}) is expected
+
+
+def test_cancellation_stops_every_job_of_a_superseded_run():
+    """GitHub keeps any job whose `if` is still true when a run is cancelled.
+
+    With always() on these jobs a superseded pull request run kept starting
+    shards (1,318 runner-minutes on 2026-10-31) and its pull request's newest
+    run stayed pending behind it for 30-105 minutes.
+    """
+    import yaml
+
+    ci = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+    full = yaml.safe_load((ROOT / '.github/workflows/full-test-lane.yml').read_text())['jobs']
+    assert ci['impacted-gate']['if'] == '${{ !cancelled() }}'
+    assert full['full-pytest']['if'] == '${{ !cancelled() }}'
+    for jobs in (ci, full):
+        for name, job in jobs.items():
+            assert 'always()' not in str(job.get('if', '')), name
 
 
 def test_final_gate_refuses_missing_requested_full_evidence():

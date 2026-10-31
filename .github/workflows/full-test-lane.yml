@@ -363,7 +363,7 @@ jobs:
   full-pytest:
     name: Full pytest lane on CPU runner
     needs: full-pytest-shard
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
