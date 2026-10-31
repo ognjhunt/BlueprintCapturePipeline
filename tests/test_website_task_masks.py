@@ -116,7 +116,7 @@ def test_person_only_plan_still_needs_a_task_object():
         masks.run_website_task_masks(plan={"targets": [person]}, source_geometry={}, output_root=None)
 
 
-def test_view_first_proves_task_noun_before_short_hosted_clip(tmp_path, monkeypatch):
+def test_view_first_proves_the_grounded_noun_before_short_hosted_clip(tmp_path, monkeypatch):
     from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 
@@ -135,7 +135,7 @@ def test_view_first_proves_task_noun_before_short_hosted_clip(tmp_path, monkeypa
 
     def ground(**kwargs):
         calls.append("ground")
-        return {**target, "grounding": {"source_frame_id": "frame-0"}}
+        return {**target, "segmentation_prompt": "dresser", "grounding": {"source_frame_id": "frame-0"}}
 
     def probe(**kwargs):
         calls.append("probe:" + kwargs["concept"])
@@ -154,7 +154,8 @@ def test_view_first_proves_task_noun_before_short_hosted_clip(tmp_path, monkeypa
         plan={"targets": [target], "task_context_sha256": "task"}, source_geometry=source,
         source_video=tmp_path / "source.mov", output_root=tmp_path / "masks",
         task_context={"description": "Open drawer"}, view_plan=plan)
-    assert calls == ["ground", "probe:under-desk cabinet", "clip:under-desk cabinet"]
+    # The task names the cabinet under the desk; the noun is still the grounding model's.
+    assert calls == ["ground", "probe:dresser", "clip:dresser"]
     assert result["binding"]["mask_input_pixels"] == "selected_original_views_v1"
     assert result["source_frame_registry"] == sparse
 
@@ -532,26 +533,156 @@ def test_target_bounds_rotate_observations_not_their_enclosing_box(tmp_path):
         estimate_target_bounds(_track(), [frame], source_to_target=np.ones((4, 4)))
 
 
-def test_task_supported_under_desk_concept_is_probed_before_more_model_calls(tmp_path, monkeypatch):
-    from blueprint_pipeline import website_task_masks as masks, website_task_grounding as grounding
+# Owner rule 2026-10-29: one harness for every site, task and object. Whatever
+# the task says, the concept comes from the plan and the grounding model.
+TASK_TEXTS = [
+    "",
+    "Open the middle drawer of the cabinet under the desk.",
+    ("Open the middle drawer of the three-drawer wood-front cabinet with silver bar handles "
+     "(the mobile pedestal under the desk)."),
+    "Open the under-desk cabinet.",
+    "Move the tray from the counter beside the sink to the shelf above the dishwasher.",
+    "Put the cup in the cupboard under the stairs.",
+]
 
-    target = {"target_id": "pedestal_cabinet", "segmentation_prompt": "filing cabinet",
-              "task_basis_quote": "Open the middle drawer of the cabinet under the desk."}
-    calls = []
+
+@pytest.mark.parametrize("quote", TASK_TEXTS)
+def test_no_task_text_selects_a_fixed_concept(tmp_path, monkeypatch, quote):
+    from blueprint_pipeline import website_task_grounding as grounding
+    from blueprint_pipeline import website_task_masks as masks
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from blueprint_pipeline.website_task_target_choice import TaskTargetAmbiguous
+
+    proposals = iter(["model noun 1", "model noun 2", "model noun 3", "model noun 4"])
+    grounds, probed = [], []
+
+    def ground(**kwargs):
+        grounds.append(kwargs)
+        return {**kwargs["target"], "segmentation_prompt": next(proposals),
+                "grounding": {"source_frame_id": "frame-0"}}
 
     def probe(**kwargs):
-        calls.append(kwargs["concept"])
+        probed.append(kwargs["concept"])
         assert kwargs["target"]["segmentation_prompt"] == kwargs["concept"]
-        return masks.CONCEPT_RESOLVED
+        return masks.CONCEPT_NO_INSTANCE
 
+    monkeypatch.setattr(grounding, "ground_task_target", ground)
     monkeypatch.setattr(masks, "probe_segmentation_concept", probe)
-    monkeypatch.setattr(grounding, "ground_task_target", lambda **kwargs: pytest.fail("unexpected model call"))
+
+    # The controller's recovery after the video-analysis noun bought a clip and
+    # found nothing: the grounded noun first, then one new proposal per probe.
+    target = {"target_id": "task-object", "segmentation_prompt": "grounded noun", "task_basis_quote": quote}
+    with pytest.raises(TaskTargetAmbiguous):
+        masks.resolve_video_segmentation_concept(
+            target=target, tracks=[], registry=[], video={}, task_context={},
+            grounding_root=tmp_path / "grounding", probe_root=tmp_path / "probes",
+            failed_concept="video noun")
+    assert probed == ["grounded noun", "model noun 1", "model noun 2", "model noun 3"]
+    assert [row["failed_segmentation_prompt"] for row in grounds] == probed[:3]
+
+    # The view-first path probes the grounding model's own noun first.
+    grounds.clear()
+    probed.clear()
+    proposals = iter(["model noun 1", "model noun 2", "model noun 3", "model noun 4"])
+    plan_target = {**_target(), "semantic_label": "task object", "segmentation_prompt": "video noun",
+                   "task_basis_quote": quote, "task_effect": "manipulated", "disposition": "remove"}
+    sparse = [{"source_frame_id": "frame-0", "model_frame_index": 0, "decoded_pts_seconds": 0,
+               "width": 4, "height": 4}]
+    view_plan = {"sparse_registry": sparse, "source_frame_registry": sparse,
+                 "video": {"path": "selected.mp4", "sha256": "clip", "source_video_digest": "video"}}
+    view_plan["digest"] = canonical_digest(view_plan, digest_field="digest")
+    monkeypatch.setenv("BLUEPRINT_WEBSITE_SAM31_PROVIDER", "meta")
+    monkeypatch.setattr(masks, "run_meta_sam31", lambda **kwargs: pytest.fail("no noun was proved"))
+    with pytest.raises(TaskTargetAmbiguous):
+        masks.run_website_task_masks(
+            plan={"targets": [plan_target], "task_context_sha256": "task"},
+            source_geometry={"digest": "source", "geometry_available": False,
+                             "binding": {"source_video_digest": "video"},
+                             "frames": [{"frame_id": "frame-0", "timestamp_seconds": 0, "width": 4, "height": 4}]},
+            source_video=tmp_path / "source.mov", output_root=tmp_path / "masks",
+            task_context={"description": "task"}, view_plan=view_plan)
+    assert probed == ["model noun 1", "model noun 2", "model noun 3", "model noun 4"]
+    assert grounds[0].get("failed_segmentation_prompt") is None
+
+
+def test_the_drawer_scene_reaches_its_whole_cabinet_through_the_general_search(tmp_path, monkeypatch):
+    """The drawer video of #2103 and #2116: a cabinet under a desk.
+
+    Measured on one grounded frame, `under-desk cabinet` covered 0.983 of the
+    grounded box, `drawer unit` found three drawer fronts and `wooden cabinet`
+    found nothing. The noun is not
+    written into the harness: the grounding model is shown the crop, the task
+    in its own words and every noun that failed, and is asked for the name a
+    person there would use. The real prompt builder and probe run here; only
+    the two providers are fakes, and no clip is bought.
+    """
+    from PIL import Image
+
+    from blueprint_pipeline import website_task_grounding as grounding
+    from blueprint_pipeline import website_task_masks as masks
+
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"retained video")
+    monkeypatch.setattr(grounding.subprocess, "run",
+                        lambda args, **kwargs: Image.new("RGB", (16, 16), "white").save(args[-1]))
+    box = [0.0, 0.5, 0.5, 0.5]
+    quote = ("Open the middle drawer of the three-drawer wood-front cabinet with silver bar handles "
+             "(the mobile pedestal under the desk).")
+    proposals = iter(["wooden cabinet", "drawer unit", "under-desk cabinet"])
+    prompts = []
+
+    def gemini(**kwargs):
+        prompts.append(kwargs["binding"]["prompt"])
+        return {"observation": {"visible": True, "confidence": 0.9, "box_xywh_normalized": box,
+                                "segmentation_prompt": next(proposals), "reason": "the cabinet under the desk"}}
+
+    monkeypatch.setattr(grounding, "retained_gemini_call", gemini)
+
+    def rows(first, count):
+        return {"source_frame_id": "frame-150", "width": 16, "height": 16,
+                "runs": [{"start": row * 16, "length": 8} for row in range(first, first + count)]}
+
+    sam = []
+
+    def segment(**kwargs):
+        concept = kwargs["prompts"][0]["text"]
+        sam.append((concept, kwargs.get("video_artifact") is not None))
+        if concept == "drawer unit":
+            return {"tracks": [
+                {"track_id": "front-0", "label": "pedestal_cabinet", "observations": [rows(8, 4)]},
+                {"track_id": "front-1", "label": "pedestal_cabinet", "observations": [rows(12, 2)]},
+                {"track_id": "front-2", "label": "pedestal_cabinet", "observations": [rows(14, 2)]}]}
+        if concept == "under-desk cabinet":
+            return {"tracks": [{"track_id": "assembly", "label": "pedestal_cabinet", "observations": [rows(8, 8)]}]}
+        return {"tracks": []}
+
+    monkeypatch.setattr(masks, "run_meta_sam31", segment)
+    plan_target = {"target_id": "pedestal_cabinet", "semantic_label": "three-drawer wood-front cabinet",
+                   "segmentation_prompt": "cabinet", "task_basis_quote": quote, "task_effect": "manipulated",
+                   "disposition": "remove", "articulated_part": "middle drawer",
+                   "spatial_evidence": [{"timestamp_seconds": 5.0, "box_xywh_normalized": box}]}
+    registry = [{"source_frame_id": "frame-150", "model_frame_index": 150, "decoded_pts_seconds": 5.0}]
+    video_artifact = {"path": str(video), "sha256": _sha256_file(video)}
+    context = {"description": quote}
+    # The controller's own first grounding, after `cabinet` found no track in the clip.
+    grounded = grounding.ground_task_target(target=plan_target, tracks=[], registry=registry,
+        video=video_artifact, task_context=context, output_root=tmp_path / "grounding")
     resolved = masks.resolve_video_segmentation_concept(
-        target=target, tracks=[], registry=[], video={}, task_context={},
-        grounding_root=tmp_path / "grounding", probe_root=tmp_path / "probes",
-        failed_concept="cabinet")
-    assert calls == ["under-desk cabinet"]
+        target=grounded, tracks=[], registry=registry, video=video_artifact, task_context=context,
+        grounding_root=tmp_path / "grounding", probe_root=tmp_path / "probes", failed_concept="cabinet")
+
     assert resolved["segmentation_prompt"] == "under-desk cabinet"
+    # Three of the four probes, each on one frame; no clip was bought.
+    assert sam == [("wooden cabinet", False), ("drawer unit", False), ("under-desk cabinet", False)]
+    recovery = prompts[1:]
+    assert len(recovery) == 2
+    for prompt in recovery:
+        # The task's own words for where the object sits, and the general naming rule.
+        assert "the mobile pedestal under the desk" in prompt
+        assert "ordinary compound name" in prompt and "its setting or role" in prompt
+    assert '"wooden cabinet" found no matching instance' in recovery[0]
+    assert '"drawer unit" selected only a sub-part' in recovery[1]
+    assert '["cabinet", "wooden cabinet"]' in recovery[1]
 
 
 def test_a_concept_that_resolves_only_a_sub_part_is_never_spent_on_a_clip(tmp_path, monkeypatch):
