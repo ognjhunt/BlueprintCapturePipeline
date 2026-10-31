@@ -2833,16 +2833,19 @@ def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
     if not estimate["basis"].startswith(prefix):
         return None
     previous = Path(runtime_root) / "scene-configuration" / estimate["basis"][len(prefix):]
+    directory = Path(state_root) / "deploy-vendor-reuse"
+    planning_started = time.monotonic()
     plan = prepare_vendor_reuse(toolchain_root=previous, site_packages_root=site_packages_root,
                                blender_root=blender_root,
-                               staging_device=previous.parent.stat().st_dev)
+                               staging_device=previous.parent.stat().st_dev,
+                               previous_plans=directory)
     if plan is None:
         return None
+    planning_seconds = round(time.monotonic() - planning_started, 1)
     files = json.loads((previous / SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST).read_text())["files"]
     unshared = sum(int(row["size_bytes"]) for row in files) - plan["shared_bytes"]
     if unshared < 0:
         raise ControlPlaneDeployError("deploy_vendor_reuse_size_invalid")
-    directory = Path(state_root) / "deploy-vendor-reuse"
     directory.mkdir(parents=True, exist_ok=True, mode=0o750)
     path = directory / (plan["digest"][7:] + ".json")
     payload = (json.dumps(plan, sort_keys=True) + "\n").encode()
@@ -2860,7 +2863,10 @@ def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
     estimate["bytes"] = (math.ceil(unshared * SCENE_CONFIGURATION_STAGING_HEADROOM)
                          + RELEASE_ESTIMATE_BLOCK_BYTES * len(files) + RELEASE_ESTIMATE_OVERHEAD_BYTES)
     estimate["vendor_reuse"] = {"path": str(path), "digest": plan["digest"],
-                               "shared_bytes": plan["shared_bytes"], "file_count": len(plan["files"])}
+                               "shared_bytes": plan["shared_bytes"], "file_count": len(plan["files"]),
+                               "source_files_hashed": plan["source_files_hashed"],
+                               "source_bytes_hashed": plan["source_bytes_hashed"],
+                               "planning_seconds": planning_seconds}
     return path
 
 
