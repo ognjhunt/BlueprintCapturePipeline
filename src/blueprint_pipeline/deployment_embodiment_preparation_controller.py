@@ -304,6 +304,52 @@ def process_entry(item: Path, *, root: Path, store: Path, commit: str, build=bui
     return promote(request=request, bundle=bundle, allocator_result=result, job=job, store=store)
 
 
+BUNDLE_ARCHIVE = "embodiment_asset_preparation.zip"
+WORKSPACE_RELEASE = "workspace-release.json"
+
+
+def _terminal(job: Path) -> bool:
+    """Nothing reads this job's upload again: it is published, or its one GPU attempt ended unpromotable."""
+    if (job / "publication.json").exists():
+        return True
+    result = job / "allocator_result.json"
+    return result.is_file() and read(result, limit=32 * 1024**2).get("status") != "completed"
+
+
+def release_terminal_workspaces(root: Path, *, commit: str) -> list[dict]:
+    """Free each terminal batch's uploaded bundle archive and other releases' source caches.
+
+    The archive (the 4.5 GB runtime packet plus sources) is only the GPU upload: a
+    published or unpromotable batch never reads it again, and a batch is never
+    relaunched. Its receipt, the job state and the model store are kept; the archive's
+    digest is recorded in the job's ``workspace-release.json``. Source caches of
+    other releases are verified public downloads a later build re-materialises.
+    Twelve batches had kept 53 GB on the shared work disk (2026-10-31).
+    """
+    released = []
+    for job in sorted(path for path in (root / "jobs").glob("*") if path.is_dir()):
+        archive = workspace_for(job) / "bundle" / BUNDLE_ARCHIVE
+        if archive.is_symlink() or not archive.is_file() or not _terminal(job):
+            continue
+        receipt = read(archive.parent / RECEIPT, limit=32 * 1024**2)
+        size = archive.stat().st_size
+        record = {"schema_version": "embodiment_preparation_workspace_release.v1", "authorization_id": job.name,
+                  "bundle_path": str(archive), "bundle_sha256": receipt.get("bundle_sha256"), "released_bytes": size,
+                  "model_store_changed": False}
+        if not (job / WORKSPACE_RELEASE).exists():
+            write_once(job / WORKSPACE_RELEASE, record)
+        archive.unlink()
+        released.append(record)
+    sources = (WORK_ROOT if root == STATE_ROOT else root / "work") / "sources"
+    for cache in sorted(path for path in sources.glob("*") if path.is_dir() and not path.is_symlink()):
+        if cache.name != commit:
+            for directory in (cache, *(p for p in cache.rglob("*") if p.is_dir() and not p.is_symlink())):
+                directory.chmod(0o700)
+            shutil.rmtree(cache)
+            released.append({"source_cache_release": cache.name})
+    return released
+
+
 def run_queue(*, root: Path = STATE_ROOT, store: Path = MODEL_ROOT) -> dict:
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (root / ".controller.lock").open("a+") as lock:
@@ -311,6 +357,7 @@ def run_queue(*, root: Path = STATE_ROOT, store: Path = MODEL_ROOT) -> dict:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"status": "already_running"}
+        released = release_terminal_workspaces(root, commit=source_commit())
         outcomes = []
         for item in sorted((root / "pending").glob("*.json")):
             try:
@@ -329,7 +376,8 @@ def run_queue(*, root: Path = STATE_ROOT, store: Path = MODEL_ROOT) -> dict:
             # One operator grant per service pass; each already bound to <=one GPU.
             if outcome["status"] not in {"completed", "not_completed", "blocked"}:
                 break
-        summary = {"status": "checked", "results": outcomes}
+        released += release_terminal_workspaces(root, commit=source_commit())
+        summary = {"status": "checked", "results": outcomes, "workspace_releases": released}
         path = root / "latest.json"
         temporary = root / ".latest.json"
         temporary.write_text(json.dumps(summary, indent=2) + "\n")
