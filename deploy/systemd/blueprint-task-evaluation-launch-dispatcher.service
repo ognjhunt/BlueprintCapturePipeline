@@ -48,7 +48,12 @@ TasksMax=512
 LimitNOFILE=65536
 MemoryMax=8G
 CPUQuota=200%
-TimeoutStartSec=5h
+# The allocator child may run for the profile's hard TTL plus 300 s (7 h 35 min
+# for a scene configuration: REQUIRED_PARENT_TTL_SECONDS), after the bundle is
+# hashed and staged and before the result is published. At 5 h systemd ended
+# a run the authority had admitted for 7.5 h, and ExecStopPost then reaped the
+# allocator, leaving its instance to the watchdog and its result unadmitted.
+TimeoutStartSec=9h
 # The mutable build checkout may advance with protected main. The dispatcher
 # runs only through this atomically promoted, detached release link so its
 # allocator identity cannot drift after a profile has been published.
