@@ -1081,6 +1081,17 @@ def test_dependabot_covers_every_dockerfile_directory() -> None:
         ), directory
 
 
+def test_dependabot_docker_updates_never_rebase_into_a_full_suite() -> None:
+    """A docker update changes the cross-cutting Dockerfile, so each rebase ran the full suite."""
+    config = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    docker = [row for row in config["updates"] if row["package-ecosystem"] == "docker"]
+    assert len(docker) == 2
+    for row in docker:
+        assert row["rebase-strategy"] == "disabled"
+        assert row["open-pull-requests-limit"] <= 2
+        assert [group["patterns"] for group in row["groups"].values()] == [["*"]]
+
+
 def test_package_import_is_lazy_and_module_entrypoints_are_not_preloaded() -> None:
     completed = subprocess.run(
         [
