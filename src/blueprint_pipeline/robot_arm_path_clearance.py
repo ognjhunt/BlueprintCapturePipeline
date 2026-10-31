@@ -80,6 +80,10 @@ IK_MAX_ITERATIONS = 200
 # struck the door from the reach check's solution and cleared it by 9 cm from either of these.
 NOMINAL_SEED_RAD = (0.0, -0.3, 0.0, -1.8, 0.0, 1.6, 0.785)
 REST_SEED_RAD = {"franka_panda": (0.0, -0.6283, 0.0, -2.5133, 0.0, 1.8850, 0.0)}
+#: The arm model each enabled candidate's robot profile runs on; a profile not named here is unassessed.
+#: Kept here, beside the arm models, so the read-only website outcome can bind a verdict's arm without
+#: importing the rigid feasibility gate (and through it the scene packet's hot lane).
+ROBOT_PROFILE_ARMS = {"droid_franka_panda_robotiq_2f85_v1": "franka_panda"}
 
 
 class RobotArmPathClearanceError(ValueError):

@@ -58,7 +58,7 @@ def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
                 "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
     ref = handoff.get("capability_verdict")
     if isinstance(ref, dict) and ref.get("status") == "abstained":
-        from .website_rigid_feasibility import ROBOT_PROFILE_ARMS
+        from .robot_arm_path_clearance import ROBOT_PROFILE_ARMS
 
         preparation = _load(Path(handoff["preparation_path"]), root, "digest")
         verdict = _load(Path(ref["path"]), root, "verdict_digest")
