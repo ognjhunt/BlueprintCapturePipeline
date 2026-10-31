@@ -18,6 +18,7 @@ from typing import Any
 
 from .beta_policy_screening_launch import EXECUTION_SCHEMA, _bound_path, _read, _record, _write
 from .decision_evidence_contracts import canonical_digest
+from .openpi_droid_policy_runtime import BETA_POLARIS_VARIANT_CANDIDATE_IDS
 
 DEFAULT_HARD_TTL_SECONDS = 14_400
 DEFAULT_CANDIDATE_CAP_USD = Decimal("4.00")
@@ -57,7 +58,8 @@ def _interface_matches(configured: Mapping[str, Any], spec: Mapping[str, Any]) -
     if interface not in {"openpi_droid.v1", "groot_n17_droid.v1", "openpi_droid_https.v1"}:
         return False
     family = "groot_n17_droid" if interface == "groot_n17_droid.v1" else "pi05_droid"
-    if interface != "openpi_droid_https.v1" and spec.get("candidate_id") != family:
+    local = (family, *BETA_POLARIS_VARIANT_CANDIDATE_IDS) if interface == "openpi_droid.v1" else (family,)
+    if interface != "openpi_droid_https.v1" and spec.get("candidate_id") not in local:
         return False  # The existing local provisioner admits exact pinned identities.
     reference = next(row for row in load_catalog(
         Path(__file__).resolve().parents[2] / "config" / "beta_policy_candidates.v1.json")["candidates"]
@@ -113,6 +115,22 @@ def _native_templates(*, repo: Path, scene_plan: Mapping[str, Any], contract: Ma
         spec["policy_interface_id"] = "openpi_droid.v1" if key == "pi05_droid" else "groot_n17_droid.v1"
         spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
         result[key] = (spec, repo / MANIFESTS["pi05_checkpoint_inventory"] if key == "pi05_droid" else None)
+        if key != "pi05_droid":
+            continue
+        # The beta PolaRiS variants share pi05_droid's pinned OpenPI source, its
+        # license treatment, its interface adapters and its frozen checkpoint
+        # inventory; only the served checkpoint binding differs. A variant that
+        # cannot be bound stays unavailable without affecting pi05_droid.
+        for variant in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
+            try:
+                spec = _candidate_spec(candidate={**candidate, "candidate_id": variant}, source_commit=commit,
+                                       scene_plan=scene_plan, task_success_contract=contract)
+            except (ValueError, OSError, KeyError, TypeError):
+                continue
+            spec["evaluation_backend"] = "robolab.v1"
+            spec["policy_interface_id"] = "openpi_droid.v1"
+            spec["execution_spec_digest"] = canonical_digest(spec, digest_field="execution_spec_digest")
+            result[variant] = (spec, repo / MANIFESTS["pi05_checkpoint_inventory"])
     return result
 
 
@@ -185,7 +203,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                 contract=inputs["task_success_contract"], commit=commit)
         except (ValueError, OSError, KeyError, TypeError):
             template_failures.update({key: "beta_screening_baseline_runtime_template_unavailable"
-                                      for key in ("pi05_droid", "groot_n17_droid")})
+                                      for key in ("pi05_droid", "groot_n17_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS)})
     from .cosmos_droid_bundle import CANDIDATES, profile as cosmos_profile
     for candidate in CANDIDATES:
         if family or not any(row["candidate_id"] == candidate for row in catalog["candidates"]):

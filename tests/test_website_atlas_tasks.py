@@ -795,3 +795,13 @@ def test_an_unusable_webhook_url_is_left_out_rather_than_sent(monkeypatch, url):
     assert json.loads(pose.new_request_body({"prompt": "room"})) == {"prompt": "room"}
     monkeypatch.setenv(pose.ATLAS_WEBHOOK_URL_ENV, "https://hooks.example.com:443/marble?job=42")
     assert json.loads(pose.new_request_body({"prompt": "room"}))["webhookUrl"] == "https://hooks.example.com:443/marble?job=42"
+
+
+def test_a_rate_limit_refusal_keeps_the_providers_explanation():
+    body = json.dumps({"error": {"code": "RATE_LIMIT_EXCEEDED", "message": "Too many requests in the current window.",
+                                 "details": [{"reason": "TASK_SUBMISSIONS_PER_HOUR"}]}}).encode()
+    result = tasks._capacity_refusal(body, "90", now=1000, attempt=1,
+                                     rate_limit_headers={"ratelimit-remaining": "0", "ratelimit-reset": "1800"})
+    assert result["code"] == "RATE_LIMIT_EXCEEDED" and result["message"].startswith("Too many requests")
+    assert "TASK_SUBMISSIONS_PER_HOUR" in result["details"]
+    assert result["rate_limit_headers"] == {"ratelimit-remaining": "0", "ratelimit-reset": "1800"}

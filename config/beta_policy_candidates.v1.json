@@ -49,6 +49,499 @@
       ]
     },
     {
+      "candidate_id": "pi0_droid_jointpos_polaris",
+      "configuration_digest": "sha256:12cc34946cc986fb92ab2e401d48a76da7b9d00ec548b718cb73c2b575c63adb",
+      "display_name": "\u03c00 DROID joint position (PolaRiS)",
+      "eligibility": {
+        "blockers": [],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": true,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": {
+        "action_horizon": 10,
+        "action_schema_id": "droid_absolute_joint_position_v1",
+        "camera_roles": [
+          "external",
+          "wrist"
+        ],
+        "control_hz": 15,
+        "execution_horizon": 8,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 224,
+        "image_preprocessing": "resize_with_padding",
+        "image_width": 224,
+        "normalization_digest": null,
+        "observation_profile_id": "droid_two_camera_robot_state_v1",
+        "policy_interface_id": "openpi_droid.v1",
+        "robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"
+      },
+      "policy": {
+        "digest": "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "digest_kind": "downloaded_snapshot_inventory",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-inventory:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "source": "gs://openpi-assets/checkpoints/polaris/pi0_droid_jointpos_polaris"
+      },
+      "runtime": {
+        "backend": "robolab.v1",
+        "minimum_gpu_memory_gb": 12,
+        "runtime_id": "native_task_arena_policy_canary.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place",
+        "articulated_open_close"
+      ]
+    },
+    {
+      "candidate_id": "pi0_droid_jointpos_100k_polaris",
+      "configuration_digest": "sha256:129cea58aa5b67d7e42e87cc250438928cb22ef8ecc8127dc14559f4194d59a2",
+      "display_name": "\u03c00 DROID joint position 100k (PolaRiS)",
+      "eligibility": {
+        "blockers": [],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": true,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": {
+        "action_horizon": 10,
+        "action_schema_id": "droid_absolute_joint_position_v1",
+        "camera_roles": [
+          "external",
+          "wrist"
+        ],
+        "control_hz": 15,
+        "execution_horizon": 8,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 224,
+        "image_preprocessing": "resize_with_padding",
+        "image_width": 224,
+        "normalization_digest": null,
+        "observation_profile_id": "droid_two_camera_robot_state_v1",
+        "policy_interface_id": "openpi_droid.v1",
+        "robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"
+      },
+      "policy": {
+        "digest": "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "digest_kind": "downloaded_snapshot_inventory",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-inventory:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "source": "gs://openpi-assets/checkpoints/polaris/pi0_droid_jointpos_100k_polaris"
+      },
+      "runtime": {
+        "backend": "robolab.v1",
+        "minimum_gpu_memory_gb": 12,
+        "runtime_id": "native_task_arena_policy_canary.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place",
+        "articulated_open_close"
+      ]
+    },
+    {
+      "candidate_id": "pi0_fast_droid_jointpos_polaris",
+      "configuration_digest": "sha256:9dfe46a48da2627787f338d2aa4063f75d977485e21fbcadb72a52cf8b1c170a",
+      "display_name": "\u03c00-FAST DROID joint position (PolaRiS)",
+      "eligibility": {
+        "blockers": [],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": true,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": {
+        "action_horizon": 10,
+        "action_schema_id": "droid_absolute_joint_position_v1",
+        "camera_roles": [
+          "external",
+          "wrist"
+        ],
+        "control_hz": 15,
+        "execution_horizon": 8,
+        "history_frames": 1,
+        "image_encoding": "rgb_uint8",
+        "image_height": 224,
+        "image_preprocessing": "resize_with_padding",
+        "image_width": 224,
+        "normalization_digest": null,
+        "observation_profile_id": "droid_two_camera_robot_state_v1",
+        "policy_interface_id": "openpi_droid.v1",
+        "robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"
+      },
+      "policy": {
+        "digest": "sha256:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "digest_kind": "downloaded_snapshot_inventory",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-inventory:492ef95fa2e0ea8c026fda4bf6a2662758e7958ab5223ecb270cde5bc3797063",
+        "source": "gs://openpi-assets/checkpoints/polaris/pi0_fast_droid_jointpos_polaris"
+      },
+      "runtime": {
+        "backend": "robolab.v1",
+        "minimum_gpu_memory_gb": 12,
+        "runtime_id": "native_task_arena_policy_canary.v1"
+      },
+      "supported_task_kinds": [
+        "rigid_pick_place",
+        "articulated_open_close"
+      ]
+    },
+    {
+      "candidate_id": "pi0_droid",
+      "configuration_digest": "sha256:67b7ac666fba6f25659bc82bd7710df3077d3ba6014760dc2e0b0542bb231204",
+      "display_name": "\u03c00 DROID (joint velocity)",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_action_space_unsupported:joint_velocity",
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:496d73c7e704f7ba4000ea3a090550d59b73c984795d0d797bb318c5fb099118",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:496d73c7e704f7ba4000ea3a090550d59b73c984795d0d797bb318c5fb099118",
+        "source": "gs://openpi-assets/checkpoints/pi0_droid"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "pi0_fast_droid",
+      "configuration_digest": "sha256:52baace909fa59d4d82780c3b87bbe11f93f2fa030cc8cd05620d597dca076f6",
+      "display_name": "\u03c00-FAST DROID (joint velocity)",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_action_space_unsupported:joint_velocity",
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:2ddc2fb2c3701ec9dc0fd19468a4e366d40ea9e836814a78b56a45e6369525ec",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:2ddc2fb2c3701ec9dc0fd19468a4e366d40ea9e836814a78b56a45e6369525ec",
+        "source": "gs://openpi-assets/checkpoints/pi0_fast_droid"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "pi0_droid_jointpos",
+      "configuration_digest": "sha256:0c1b9692df6e82968e7a83c73f92d8283fffd796ea678d26cb467d9200645d30",
+      "display_name": "\u03c00 DROID joint position",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory",
+          "openpi_train_config_absent_at_pinned_revision=15a9616a00943ada6c20a0f158e3adb39df2ccac"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:e2b12f983cb9683710b83adf17a95bc83604f12c214179d371028c844fa3acd4",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:e2b12f983cb9683710b83adf17a95bc83604f12c214179d371028c844fa3acd4",
+        "source": "gs://openpi-assets/checkpoints/pi0_droid_jointpos"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "pi0_droid_jointpos_100k",
+      "configuration_digest": "sha256:47a25952b86784846e5ff501c877ea27842e3ece9660262a2105659e0e1eae34",
+      "display_name": "\u03c00 DROID joint position 100k",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory",
+          "openpi_train_config_absent_at_pinned_revision=15a9616a00943ada6c20a0f158e3adb39df2ccac"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:ace543276564674499ea553a6b1c27d27b7e7c14936abd444bf208297f4e1296",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:ace543276564674499ea553a6b1c27d27b7e7c14936abd444bf208297f4e1296",
+        "source": "gs://openpi-assets/checkpoints/pi0_droid_jointpos_100k"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "pi0_fast_droid_jointpos",
+      "configuration_digest": "sha256:5f300b59d821e8b6d087d39cda2df1ebebfe8ecbf5eb8e6f06a2e8acaf98dcf7",
+      "display_name": "\u03c00-FAST DROID joint position",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory",
+          "openpi_train_config_absent_at_pinned_revision=15a9616a00943ada6c20a0f158e3adb39df2ccac"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:2aca5e26438c45d1329c4d7cd627a249aab47309fa55ef7720b0c2a5e3ed629e",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:2aca5e26438c45d1329c4d7cd627a249aab47309fa55ef7720b0c2a5e3ed629e",
+        "source": "gs://openpi-assets/checkpoints/pi0_fast_droid_jointpos"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "pi05_droid_jointpos",
+      "configuration_digest": "sha256:d4f8fe538b18f5527bcff8e9d0e08d4dde2f4ed5343453faa3a33c2af314fccf",
+      "display_name": "\u03c00.5 DROID joint position",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory",
+          "openpi_train_config_absent_at_pinned_revision=15a9616a00943ada6c20a0f158e3adb39df2ccac"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:da3ce3e4ee64c5e04ebe4b8171e000f234e4a24f040e331efe32bd9280106130",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:da3ce3e4ee64c5e04ebe4b8171e000f234e4a24f040e331efe32bd9280106130",
+        "source": "gs://openpi-assets/checkpoints/pi05_droid_jointpos"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "paligemma_binning_droid_jointpos",
+      "configuration_digest": "sha256:0e76fe7e27989fc7981a03e8d99572a593a5790f7fa94ea46d0bfe640164f21f",
+      "display_name": "PaliGemma binning DROID joint position",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:6b978eff05060c15064940ff77f4028164b732d415e0fe1e3d5b26921f6459ef",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:6b978eff05060c15064940ff77f4028164b732d415e0fe1e3d5b26921f6459ef",
+        "source": "gs://openpi-assets/checkpoints/paligemma_binning_droid_jointpos"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "paligemma_binning_droid_jointpos_polaris",
+      "configuration_digest": "sha256:4c51ddd7b56509f7559804ff8f333f77531d855097fcb1d595ae36c9084723f1",
+      "display_name": "PaliGemma binning DROID joint position (PolaRiS)",
+      "eligibility": {
+        "blockers": [
+          "checkpoint_not_in_frozen_openpi_polaris_inventory",
+          "openpi_config_checkpoint_pairing_unstated:paligemma_binning_droid_jointpos"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:3c9a1d0340585e0398731e4273ceeef0cbadc80c815b849654f7594233854421",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:3c9a1d0340585e0398731e4273ceeef0cbadc80c815b849654f7594233854421",
+        "source": "gs://openpi-assets/checkpoints/polaris/paligemma_binning_droid_jointpos_polaris"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "paligemma_binning_droid",
+      "configuration_digest": "sha256:122c850bc515f7b04411649e32d4d117e1ee8c8486fa683df5fdfebe5c112379",
+      "display_name": "PaliGemma binning DROID (RoboArena)",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_action_space_unsupported:joint_velocity",
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:ae42d454bebb66b0084d72f43bceb4a0f55c637148f99134c3d3bad255c97dc1",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:ae42d454bebb66b0084d72f43bceb4a0f55c637148f99134c3d3bad255c97dc1",
+        "source": "gs://openpi-assets/checkpoints/roboarena/paligemma_binning_droid"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "paligemma_fast_droid",
+      "configuration_digest": "sha256:d213a8ba2d805ad2884c49602ec6ac790de50edcf6dfb5f03d5d80e30b2e4eef",
+      "display_name": "PaliGemma FAST DROID (RoboArena)",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_action_space_unsupported:joint_velocity",
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:d7e0f2e9671576d7904135e39034bf45dd7f11f3ae8f20754395633f9d8df140",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:d7e0f2e9671576d7904135e39034bf45dd7f11f3ae8f20754395633f9d8df140",
+        "source": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_droid"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "paligemma_fast_specialist_droid",
+      "configuration_digest": "sha256:88485512fb5f609412d80578e34984cded0f1cc7b37126d4f721978efd840160",
+      "display_name": "PaliGemma FAST specialist DROID (RoboArena)",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_action_space_unsupported:joint_velocity",
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:3b0e00fdb6e681e27bd59e3259b3b89577ec983b9ee5e3a527ed92e729a60808",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:3b0e00fdb6e681e27bd59e3259b3b89577ec983b9ee5e3a527ed92e729a60808",
+        "source": "gs://openpi-assets/checkpoints/roboarena/paligemma_fast_specialist_droid"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "paligemma_vq_droid",
+      "configuration_digest": "sha256:615000963a8dfe0bf758f4124643b02a9824c8f7039c8f52ab2b1afaa5bf48ef",
+      "display_name": "PaliGemma VQ DROID (RoboArena)",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_action_space_unsupported:joint_velocity",
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:90e80a19ae9b579d03823835549fa3a8267f8916b520a862cbe8305e76a868e9",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:90e80a19ae9b579d03823835549fa3a8267f8916b520a862cbe8305e76a868e9",
+        "source": "gs://openpi-assets/checkpoints/roboarena/paligemma_vq_droid"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
+      "candidate_id": "paligemma_diffusion_droid",
+      "configuration_digest": "sha256:56519d7063d95aa19385493ad3ecada7954b86fc510f00f76426832980515011",
+      "display_name": "PaliGemma diffusion DROID (RoboArena)",
+      "eligibility": {
+        "blockers": [
+          "openpi_droid_runtime_action_space_unsupported:joint_velocity",
+          "openpi_droid_runtime_requires_polaris_checkpoint_prefix",
+          "checkpoint_not_in_frozen_openpi_polaris_inventory"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "apache-2.0-gemma-terms",
+        "license_note": "Apache-2.0 code; PaliGemma-derived weights under the Gemma Terms of Use.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:c6a6a08597ec496bc0cf4cedbb23fb0cf87365f88f9f16190a3dd9e2f7e2802e",
+        "digest_kind": "hub_tree_listing",
+        "kind": "checkpoint",
+        "revision": "gcs-generation-manifest:c6a6a08597ec496bc0cf4cedbb23fb0cf87365f88f9f16190a3dd9e2f7e2802e",
+        "source": "gs://openpi-assets/checkpoints/roboarena/paligemma_diffusion_droid"
+      },
+      "runtime": null,
+      "supported_task_kinds": []
+    },
+    {
       "candidate_id": "groot_n17_droid",
       "configuration_digest": "sha256:bee000dea18063838a80c1f4e362b3e6b360c5c32c1a5824c3e77b86e0e58692",
       "display_name": "GR00T N1.7 DROID",
@@ -4116,10 +4609,293 @@
         "rigid_pick_place"
       ],
       "configuration_digest": "sha256:dc085bf74204124b707cb69c1c1145e553eabdf906e45a3cbea35a1b9e7da68b"
+    },
+    {
+      "candidate_id": "blueprint_scripted_fanuc_m10id_12_robotiq_2f85_sim",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "fanuc_m10id_12_robotiq_2f85_sim",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u00b7 fanuc_m10id_12_robotiq_2f85_sim",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation. The Robotiq2F85 on this body is a simulation stand-in, and this Blueprint-owned baseline is never a deployment company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:df281bd17bc6d47c02d8be8011e3f7f54cbffa6bddec98aabffebecfb6dbd8c3",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ],
+      "configuration_digest": "sha256:8fff97e329a513f00e6a1e39d7cc2015d807b94177c524c9c3e5b7d8216b4d07"
+    },
+    {
+      "candidate_id": "blueprint_scripted_yaskawa_hc20_robotiq_2f85_sim",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "yaskawa_hc20_robotiq_2f85_sim",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u00b7 yaskawa_hc20_robotiq_2f85_sim",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation. The Robotiq2F85 on this body is a simulation stand-in, and this Blueprint-owned baseline is never a deployment company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:df281bd17bc6d47c02d8be8011e3f7f54cbffa6bddec98aabffebecfb6dbd8c3",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ],
+      "configuration_digest": "sha256:24b854feebe95c5676950516d371cb61b4f463c636a62d28c5ee97d58a5c8a57"
+    },
+    {
+      "candidate_id": "blueprint_scripted_agile_robots_diana_7_robotiq_2f85_sim",
+      "deployment": {
+        "companies": [],
+        "configuration_id": "agile_robots_diana_7_robotiq_2f85_sim",
+        "evidence_url": "BlueprintCapturePipeline:docs/scripted_robot_baseline.md",
+        "policy_route_id": "blueprint_scripted_baseline",
+        "relationship": "public_controller_integration"
+      },
+      "display_name": "Blueprint scripted pick/place \u00b7 agile_robots_diana_7_robotiq_2f85_sim",
+      "eligibility": {
+        "blockers": [
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "allowed_with_conditions",
+        "enabled": false,
+        "license_id": "MIT",
+        "license_note": "Blueprint-owned MIT controller source; source-bound robot-model rights remain separate. This simulator-state baseline requires an imported body and exact tool/grasp registration. It is not learned inference, vendor endorsement, native execution evidence or physical validation. The Robotiq2F85 on this body is a simulation stand-in, and this Blueprint-owned baseline is never a deployment company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": "sha256:df281bd17bc6d47c02d8be8011e3f7f54cbffa6bddec98aabffebecfb6dbd8c3",
+        "digest_kind": "source_code_inventory",
+        "kind": "scripted",
+        "revision": "1",
+        "source": "blueprint-owned:scripted_pick_place"
+      },
+      "runtime": null,
+      "supported_task_kinds": [
+        "rigid_pick_place"
+      ],
+      "configuration_digest": "sha256:e1fee1b81105d46efb329ffd8ee4f10a256634278da6961a8b1ac7b565c4e302"
+    },
+    {
+      "candidate_id": "sewts_fanuc_m10id_12_velum",
+      "deployment": {
+        "companies": [
+          "sewts"
+        ],
+        "configuration_id": "fanuc_m10id_12",
+        "evidence_url": "https://www.fanuc.eu/eu-en/news/intelligent-robots-commercial-laundries",
+        "relationship": "company_deployment"
+      },
+      "display_name": "sewts FANUC M-10iD/12 \u00b7 VELUM textile handling",
+      "eligibility": {
+        "blockers": [
+          "sewts_velum_policy_private_no_access",
+          "textile_gripper_and_vision_system_not_modeled",
+          "deformable_textile_task_not_modeled_as_rigid_pick_place",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.fanuc.eu/eu-en/news/intelligent-robots-commercial-laundries"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:de8f11f78eda28a6c2fb81aced9986501ab08260d9dba0a6636029210e909000"
+    },
+    {
+      "candidate_id": "formic_yaskawa_hc20_palletizing",
+      "deployment": {
+        "companies": [
+          "Formic"
+        ],
+        "configuration_id": "yaskawa_hc20",
+        "evidence_url": "https://www.casestudies.com/company/formic-technologies/case-study/georgia-nut-and-formic-deploy-first-robot-in-companys-history",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Formic Yaskawa HC20 \u00b7 palletizing",
+      "eligibility": {
+        "blockers": [
+          "formic_palletizing_controller_private_no_access",
+          "deployed_hc20_variant_unconfirmed",
+          "palletizing_tool_not_modeled",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.casestudies.com/company/formic-technologies/case-study/georgia-nut-and-formic-deploy-first-robot-in-companys-history"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:d5b496824f8bc4c1c5d587738fffe0bc323cff0fa2da7f04b7c7aca1d361d75d"
+    },
+    {
+      "candidate_id": "agile_robots_diana_7_controller",
+      "deployment": {
+        "companies": [
+          "Agile Robots"
+        ],
+        "configuration_id": "agile_robots_diana_7",
+        "evidence_url": "https://github.com/AgileRobots-APAC/diana_description",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Agile Robots Diana 7 \u00b7 Agile Robots controller",
+      "eligibility": {
+        "blockers": [
+          "agile_robots_controller_or_policy_private_no_access",
+          "publisher_status_of_new_description_repository_unconfirmed",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://github.com/AgileRobots-APAC/diana_description"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:0fcafd942ac9a5efcb673cd8ad61afef76ee2554436cbb02e30ac8a04528dd7c"
+    },
+    {
+      "candidate_id": "diligent_moxi_kinova_jaco2",
+      "deployment": {
+        "companies": [
+          "Diligent Robotics"
+        ],
+        "configuration_id": "kinova_jaco2_j2n6s300",
+        "evidence_url": "https://www.therobotreport.com/diligent-robotics-raises-seed-funding-launches-moxi-robot/",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Diligent Robotics Moxi \u00b7 Kinova Gen2 arm (variant unconfirmed)",
+      "eligibility": {
+        "blockers": [
+          "diligent_moxi_policy_private_no_access",
+          "moxi_kinova_variant_and_tool_unconfirmed",
+          "press_reports_robotiq_gripper_not_source_three_finger_hand",
+          "moxi_mobile_base_not_modeled_fetch_description_is_non_commercial",
+          "three_finger_hand_runtime_profile_not_registered",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.therobotreport.com/diligent-robotics-raises-seed-funding-launches-moxi-robot/"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:31f85a6c04244053a26d7bb99caf42f6b4239387dad2557546fd8fbb744e2074"
+    },
+    {
+      "candidate_id": "contoro_kuka_kr_iontec_adaptai",
+      "deployment": {
+        "companies": [
+          "Contoro Robotics"
+        ],
+        "configuration_id": "kuka_kr_iontec_variant_unconfirmed",
+        "evidence_url": "https://www.kuka.com/en-us/industries/solutions-database/2026/04/robots-unload-truck-trailers",
+        "relationship": "company_deployment"
+      },
+      "display_name": "Contoro Robotics KUKA KR IONTEC \u00b7 AdaptAI trailer unloading",
+      "eligibility": {
+        "blockers": [
+          "contoro_adaptai_policy_private_no_access",
+          "deployed_kr_iontec_variant_not_public",
+          "suction_end_effector_and_mobile_platform_not_modeled",
+          "prepared_robot_policy_registration_missing"
+        ],
+        "commercial_use": "under_review",
+        "enabled": false,
+        "license_id": "operator-policy-license-required",
+        "license_note": "Deployment association identifies a candidate, not access to that company policy. A scoped license and matching served policy identity are required. A Blueprint scripted baseline on a public stand-in configuration is Blueprint's own baseline, never this company's policy.",
+        "requires_credentials": []
+      },
+      "interface": null,
+      "policy": {
+        "digest": null,
+        "digest_kind": "unverified",
+        "kind": "hosted",
+        "revision": null,
+        "source": "https://www.kuka.com/en-us/industries/solutions-database/2026/04/robots-unload-truck-trailers"
+      },
+      "runtime": null,
+      "supported_task_kinds": [],
+      "configuration_digest": "sha256:1d0dd8c145e3564594aacec0169e1f5afea746c8e62b98f6ea7fdcb3a7c54381"
     }
   ],
   "catalog_id": "blueprint-beta-policies",
-  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility:trlc-community-pi05:single-ur-robotiq-scripted",
+  "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility:trlc-community-pi05:single-ur-robotiq-scripted:public-fixed-arms-batch1:openpi-polaris-droid-variants",
   "schema_version": "beta_policy_candidate_catalog.v1",
-  "catalog_digest": "sha256:8e1d6242b9f81650cd5763ffd861bda0f09d2eec0e9453852a0ad3c4fc386918"
+  "catalog_digest": "sha256:62ae002345dc9c257ac16df9447c158d4318eb253e6d2b0ef455b31e939de1fd"
 }

@@ -33,8 +33,11 @@ def test_catalog_and_existing_compatibility_identities_have_explicit_source_stat
         'fanuc_m710ic_45m_robotiq_2f85_sim',
         'abb_gofa_crb15000_5_95_robotiq_2f85_sim',
         'abb_gofa_crb15000_12_127_robotiq_2f85_sim',
+        "fanuc_m10id_12", "fanuc_m10id_12_robotiq_2f85_sim", "yaskawa_hc20", "yaskawa_hc20_robotiq_2f85_sim",
+        "agile_robots_diana_7", "agile_robots_diana_7_robotiq_2f85_sim", "kinova_jaco2_j2n6s300",
+        "kuka_kr20_r3100", "kuka_kr30_r2100", "kuka_kr50_r2100", "kuka_kr50_r2500", "kuka_kr70_r2100",
     }
-    assert len(rows) == 37
+    assert len(rows) == 49
     for row in rows.values():
         assert row["status"] in {"source_available", "source_unavailable", "existing_runtime"}
         assert bool(row["source"]) == (row["status"] == "source_available")

@@ -3,6 +3,7 @@ import fcntl
 import hashlib
 import io
 import json
+import os
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -659,6 +660,95 @@ def test_a_retry_refuses_an_expired_or_withdrawn_job(monkeypatch, site):
     assert _job(site)["state"] == "failed"
 
 
+def _minimal_splat(root):
+    """An adopted minimal refined splat whose request left a generated gap view out."""
+    from blueprint_pipeline import atlas_native_splat as native
+    root.mkdir(parents=True)
+    manifest = {"schema_version": "atlas_refined_splat.v1", "request_form": "documented_minimal"}
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    (root / native.MANIFEST).write_text(json.dumps(manifest))
+    return {"request_form": "documented_minimal", "splat_root": str(root), "splat_manifest_digest": manifest["digest"],
+            "left_out_admitted_view_ids": ["gap"], "gap_preserving_form_untried": True}
+
+
+def test_a_ready_job_reopens_once_to_send_the_gap_views_its_minimal_splat_left_out(monkeypatch, site):
+    from blueprint_pipeline import atlas_native_splat as native
+    _enqueue(site)
+    marker = _minimal_splat(site.job.parent / "automation/background_splat-refined-minimal")
+    tried = {**marker, "gap_preserving_form_untried": False}
+    world = World(monkeypatch, site, [lambda kw: {**_completed(kw), "refined_splat": marker},
+                                      lambda kw: {**_completed(kw), "refined_splat": tried}])
+    assert world.advance() == "ready" and _job(site)["refined_splat"] == marker
+    ready = _job(site)
+    world.clock += 60
+    job = preview.retry_failed_job(site.job, now=world.now)
+    assert (job["state"], job["revision"]) == ("processing", ready["revision"] + 1)
+    assert job["retries"] == [{"reason": "refined_splat_gap_preserving_form_untried", "at_epoch": world.clock}]
+    request = json.loads((Path(marker["splat_root"]) / native.UPGRADE).read_text())
+    assert request["roots"] == ["background_splat-refined-whole"]
+    assert world.advance() == "ready" and len(world.runs) == 2
+    assert _job(site)["refined_splat"] == tried and _job(site)["archive"] == ready["archive"]
+    # The upgrade was spent: the finished job is not reopened again.
+    with pytest.raises(ValueError, match="requires_recoverable_failure"):
+        preview.retry_failed_job(site.job, now=world.now)
+
+
+def test_a_job_ready_before_the_marker_derives_its_upgrade_from_retained_records(site):
+    """capture-447ae4f4: an earlier release adopted its minimal splat and recorded no marker."""
+    from blueprint_pipeline import atlas_native_splat as native
+    _enqueue(site)
+    automation = site.job.parent / "automation"
+    camera = {"intrinsics": {"width": 4, "height": 3}, "extrinsics": {"position": [0, 0, 0]}}
+    gap_camera = {**camera, "extrinsics": {"position": [1, 0, 0]}}
+    real = [{"frame_id": f"real-{i}", "camera": camera, "rgb_sha256": f"sha256:real{i}"} for i in range(2)]
+    sent = [*real, {"frame_id": "gap", "camera": gap_camera, "rgb_sha256": "sha256:gap", "mask_sha256": "m1"},
+            # Recovered views repeating a real frame and the gap view: counted once, or not at all.
+            {"frame_id": "recovered-0", "camera": camera, "rgb_sha256": "sha256:real0", "mask_sha256": "m2"},
+            {"frame_id": "recovered-1", "camera": gap_camera, "rgb_sha256": "sha256:gap", "mask_sha256": "m3"}]
+    (automation / "draft-refined").mkdir(parents=True)
+    (automation / "draft-refined/input_binding.json").write_text(json.dumps(
+        {"request_form": "reviewed_masks_and_confidence", "frames": sent}))
+    minimal = automation / "draft-refined-minimal"
+    minimal.mkdir()
+    manifest = {"schema_version": "atlas_refined_splat.v1", "request_form": "documented_minimal", "frames": real}
+    manifest["digest"] = canonical_digest(manifest, digest_field="digest")
+    (minimal / native.MANIFEST).write_text(json.dumps(manifest))
+    result = {"status": "needs_input", "splat_manifest_digest": manifest["digest"]}
+    result["digest"] = canonical_digest(result, digest_field="digest")
+    (site.job.parent / "result.json").write_text(json.dumps(result))
+    site.job.write_text(json.dumps({**_job(site), "state": "ready", "stage": "archived",
+                                    "result_digest": result["digest"]}))
+    from blueprint_pipeline.atlas_refined_splat_forms import REVIEW_RECORD, retained_minimal_marker
+    assert retained_minimal_marker(site.job.parent, result["digest"]) == {
+        "request_form": "documented_minimal", "splat_root": str(minimal), "splat_manifest_digest": manifest["digest"],
+        "left_out_admitted_view_ids": ["gap"], "gap_preserving_form_untried": True}
+    assert retained_minimal_marker(site.job.parent, "sha256:" + "0" * 64) is None
+    job = preview.retry_failed_job(site.job)
+    assert job["state"] == "processing" and job["retries"][-1]["reason"] == "refined_splat_gap_preserving_form_untried"
+    assert json.loads((minimal / native.UPGRADE).read_text())["roots"] == ["draft-refined-whole"]
+    # Once the reviewed whole form has been tried, the same finished job stays finished.
+    (automation / "draft-refined-whole").mkdir()
+    (automation / "draft-refined-whole" / REVIEW_RECORD).write_text("{}")
+    site.job.write_text(json.dumps({**job, "state": "ready", "stage": "archived"}))
+    with pytest.raises(ValueError, match="requires_recoverable_failure"):
+        preview.retry_failed_job(site.job)
+
+
+def test_a_ready_job_without_an_untried_gap_form_in_its_own_tree_stays_finished(site):
+    _enqueue(site)
+    marker = _minimal_splat(site.job.parent / "automation/background_splat-refined-minimal")
+    for value in ({}, {"refined_splat": {**marker, "gap_preserving_form_untried": False}}):
+        site.job.write_text(json.dumps({**_job(site), "state": "ready", "refined_splat": None, **value}))
+        with pytest.raises(ValueError, match="requires_recoverable_failure"):
+            preview.retry_failed_job(site.job)
+    elsewhere = _minimal_splat(site.capture.parent / "elsewhere-refined-minimal")
+    site.job.write_text(json.dumps({**_job(site), "refined_splat": elsewhere}))
+    before = site.job.read_bytes()
+    with pytest.raises(ValueError, match="upgrade_invalid"):
+        preview.retry_failed_job(site.job)
+    assert site.job.read_bytes() == before
+
+
 def test_cleanup_waits_for_operations_it_never_collected_and_deletes_their_outputs(monkeypatch, site):
     _enqueue(site)
 
@@ -756,3 +846,203 @@ def test_the_provider_poll_reads_website_jobs_until_withdrawal_and_never_writes_
     _withdraw(site)
     assert preview.poll(site.storage) == {"idle": 1} and len(polled) == 1
     assert site.job.read_bytes() == before  # the withdrawal itself is the next tick's to record
+
+
+# capture-447ae4f4 (2026-10-30): every tick re-adopted the retained work, so a
+# pass that advanced a job then idled for the timer's 60 s before the next step.
+
+
+def _tick(site, world, *, budget=480, stop=lambda: None, clock=None):
+    return preview.tick(site.storage, now=world.now, continue_seconds=budget, stop_reason=stop,
+                        **({"clock": clock} if clock is not None else {}))
+
+
+def _submission(kwargs, status, relative="refined/native"):
+    record = kwargs["output_root"] / relative / "atlas_pose/submission.json"
+    record.parent.mkdir(parents=True, exist_ok=True)
+    record.write_text(json.dumps({"status": status, "operation_id": "op1"}))
+
+
+def test_a_pass_that_advances_a_job_steps_it_again_at_once(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"},
+                                      {"status": "processing", "stage": "pose"},
+                                      {"status": "processing", "stage": "pose"}])
+    assert _tick(site, world) == {"processing": 1}
+    assert len(world.runs) == 3 and _job(site)["stage"] == "pose"
+
+
+def test_a_pass_without_progress_returns_for_the_timer(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "queued"}])
+    assert _tick(site, world) == {"processing": 1} and len(world.runs) == 1
+
+
+def test_a_tick_without_a_budget_steps_each_job_once(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"}])
+    assert preview.tick(site.storage, now=world.now) == {"processing": 1} and len(world.runs) == 1
+
+
+def test_a_collected_provider_result_is_progress(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [
+        lambda kwargs: _submission(kwargs, "submitted") or {"status": "processing", "stage": "refined_splat"},
+        lambda kwargs: _submission(kwargs, "completed") or {"status": "processing", "stage": "refined_splat"},
+        {"status": "processing", "stage": "refined_splat"}])
+    assert _tick(site, world, budget=0) == {"processing": 1}  # the timer's tick that submits
+    assert _tick(site, world) == {"processing": 1}
+    assert len(world.runs) == 3  # collected (same stage), then one more step
+
+
+@pytest.mark.parametrize("waiting", ["paid_admission_wait", "capacity_wait", "submitted", "submitting",
+                                     "capacity_wait_submission"])
+def test_a_job_waiting_on_an_admission_budget_or_provider_is_left_to_the_timer(monkeypatch, site, waiting):
+    _enqueue(site)
+
+    def step(kwargs):
+        if waiting in {"paid_admission_wait", "capacity_wait"}:
+            return {"status": "processing", "stage": waiting}
+        _submission(kwargs, waiting.removesuffix("_submission"))
+        return {"status": "processing", "stage": "refined_splat", "operation_id": "op1"}
+    world = World(monkeypatch, site, [step, step])
+    assert _tick(site, world) == {"processing": 1} and len(world.runs) == 1
+
+
+def test_a_job_backing_off_after_a_transient_failure_is_not_stepped_again(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"}, OSError("disk"), OSError("disk")])
+    assert _tick(site, world) == {"processing": 1}
+    assert len(world.runs) == 2 and _job(site)["transient_failures"] == 1
+
+
+def test_the_continuation_budget_is_enforced(monkeypatch, site):
+    _enqueue(site)
+    stages = iter(["plan", "pose", "generated_rgbd", "mesh", "automation", "refined_splat"])
+    world = World(monkeypatch, site, [lambda _kwargs: {"status": "processing", "stage": next(stages)}] * 6)
+    readings = iter(range(0, 1000, 100))  # every pass takes 100 s
+    assert _tick(site, world, budget=250, clock=lambda: next(readings)) == {"processing": 1}
+    assert len(world.runs) == 3 and _job(site)["stage"] == "generated_rgbd"
+
+
+def test_an_operator_hold_or_a_deploy_quiesce_stops_the_continuation(monkeypatch, site, tmp_path):
+    import subprocess
+    hold = tmp_path / "holds" / f"{preview.TRIGGER_UNIT}.json"
+    timer = {"active": True}
+    asked = []
+
+    def systemctl(argv, **_):
+        asked.append(argv)
+        return SimpleNamespace(returncode=0 if timer["active"] else 3)
+    monkeypatch.setattr(subprocess, "run", systemctl)
+    monkeypatch.delenv(preview.RELEASE_ENV, raising=False)
+    stop = preview.trigger_stop_reason(hold_record=hold)
+    assert stop() is None and asked[-1] == ["systemctl", "is-active", "--quiet", preview.TRIGGER_UNIT]
+    _enqueue(site)
+
+    def holding(_kwargs):
+        hold.parent.mkdir()
+        hold.write_text("{}")
+        return {"status": "processing", "stage": "plan"}
+    world = World(monkeypatch, site, [holding, {"status": "processing", "stage": "pose"}])
+    assert _tick(site, world, stop=stop) == {"processing": 1} and len(world.runs) == 1
+    assert stop() == "operator_hold"
+    hold.unlink()
+
+    def quiescing(_kwargs):
+        timer["active"] = False  # the deploy stops the timer before it moves the release
+        return {"status": "processing", "stage": "pose"}
+    world.steps = [quiescing, {"status": "processing", "stage": "mesh"}]
+    assert _tick(site, world, stop=stop) == {"processing": 1} and len(world.runs) == 2
+    assert stop() == "trigger_inactive"
+
+
+def test_a_new_release_or_an_unknown_timer_state_stops_the_continuation(monkeypatch, tmp_path):
+    import subprocess
+    releases = [tmp_path / "release-a", tmp_path / "release-b"]
+    for release in releases:
+        release.mkdir()
+    active = tmp_path / "active"
+    active.symlink_to(releases[0])
+    monkeypatch.setenv(preview.RELEASE_ENV, str(active))
+    monkeypatch.setattr(subprocess, "run", lambda argv, **_: SimpleNamespace(returncode=0))
+    stop = preview.trigger_stop_reason(hold_record=tmp_path / "no-hold.json")
+    assert stop() is None
+    active.unlink()
+    active.symlink_to(releases[1])  # a finished deploy re-armed the timer on a new release
+    assert stop() == "release_changed"
+
+    def missing(argv, **_):
+        raise FileNotFoundError(argv[0])
+    monkeypatch.setattr(subprocess, "run", missing)
+    assert preview.trigger_stop_reason(hold_record=tmp_path / "no-hold.json")() == "trigger_state_unknown"
+    # No bus to ask (exit 1) is not proof the timer runs either.
+    monkeypatch.setattr(subprocess, "run", lambda argv, **_: SimpleNamespace(returncode=1))
+    assert preview.trigger_stop_reason(hold_record=tmp_path / "no-hold.json")() == "trigger_state_unknown"
+
+
+def test_each_further_pass_still_takes_the_job_lock(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"},
+                                      {"status": "processing", "stage": "pose"}])
+    held = []
+
+    def another_worker_takes_the_job():
+        lock = (site.job.parent / "preview.lock").open("a")
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        held.append(lock)
+    assert _tick(site, world, stop=lambda: another_worker_takes_the_job()) == {"busy": 1}
+    assert len(world.runs) == 1
+    held[0].close()
+
+
+@pytest.mark.parametrize(("value", "seconds"), [(None, 480), ("", 480), ("120", 120), ("0", 0), ("-5", 480),
+                                                ("soon", 480), ("nan", 480), ("inf", 480), ("100000", 3600)])
+def test_the_continuation_budget_setting(monkeypatch, value, seconds):
+    if value is None:
+        monkeypatch.delenv(preview.CONTINUE_SECONDS_ENV, raising=False)
+    else:
+        monkeypatch.setenv(preview.CONTINUE_SECONDS_ENV, value)
+    assert preview.continue_seconds_from_environment() == seconds
+
+
+def test_the_tick_command_turns_the_budget_off_with_zero(monkeypatch, site, capsys):
+    from blueprint_pipeline import owned_capture_atlas_worker
+    _enqueue(site)
+    world = World(monkeypatch, site, [{"status": "processing", "stage": "plan"}])
+    monkeypatch.setattr(owned_capture_atlas_worker, "tick_from_environment", lambda: {})
+    monkeypatch.setenv(preview.CONTINUE_SECONDS_ENV, "0")
+    assert preview.main(["tick", "--storage-root", str(site.storage)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"processing": 1} and len(world.runs) == 1
+
+
+def test_the_digest_cache_is_invisible_to_the_job_and_still_catches_a_changed_file(monkeypatch, site):
+    import time
+    from blueprint_pipeline import file_digest_cache
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    monkeypatch.setattr(file_digest_cache, "RACY_NANOSECONDS", -60 * 10**9)  # the capture is long settled
+    _enqueue(site)
+    source = site.capture / "raw/walkthrough.mov"
+    retained = "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest()
+
+    def verify(_kwargs):
+        if _sha256_file(source) != retained:
+            raise ValueError("atlas_runtime_source_changed")
+        return {"status": "processing", "stage": "plan"}
+    world = World(monkeypatch, site, [verify, verify, verify])
+    assert world.advance() == "processing"
+    first = _job(site)
+    world.clock += 60
+    assert world.advance() == "processing"
+    sidecar = site.job.parent / file_digest_cache.SIDECAR
+    assert set(json.loads(sidecar.read_text())["entries"]) == {str(source)}
+    assert {key: value for key, value in _job(site).items() if key not in {"last_tick_epoch", "updated_at_epoch",
+            "next_attempt_at_epoch"}} == {key: value for key, value in first.items() if key not in {
+            "last_tick_epoch", "updated_at_epoch", "next_attempt_at_epoch"}}
+    assert not set(_job(site)) & {"file_digest_cache", "entries"}
+    original = source.stat()
+    time.sleep(.05)
+    source.write_bytes(b"VIDEO")  # same size, mtime put back: only ctime tells
+    os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+    world.clock += 60
+    assert world.advance() == "failed" and _job(site)["reason"] == "atlas_runtime_source_changed"

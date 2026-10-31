@@ -1827,6 +1827,656 @@
           "mount_kind": "ideal_fixed_simulation_mount"
         }
       }
+    },
+    {
+      "embodiment_id": "fanuc_m10id_12",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+        "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2",
+        "entry_path": "fanuc_m10_description/robot/m10_12_14d.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSES/Apache-2.0.txt",
+        "license_url": "https://github.com/fanuc-corporation/fanuc_description/blob/fb40c9803a826ba68c7c8e28ba904a25efa7fcd2/LICENSES/Apache-2.0.txt",
+        "license_note": "Official FANUC description package; package.xml and source SPDX headers declare Apache-2.0. The macro header names this model M-10/12-14D (M-10iD/12). Preserve exact mesh/source attribution; this is separate from NVIDIA USD asset agreements and driver/hardware access.",
+        "include_paths": [
+          "fanuc_m10_description/robot/m10_12_14d.urdf.xacro",
+          "fanuc_m10_description/urdf/m10_12_14d_urdf_macro.xacro",
+          "fanuc_m10_description/meshes/m10_12_14d",
+          "fanuc_m10_description/package.xml",
+          "README.md",
+          "LICENSES/Apache-2.0.txt"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "fanuc_m10_description": "fanuc_m10_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public M-10iD/12 source with authored inertias. M-10iD/10L, /16S and /8L are different variants in the same package and are not substitutes."
+    },
+    {
+      "embodiment_id": "yaskawa_hc20",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/ros-industrial/motoman",
+        "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+        "entry_path": "motoman_hc20_support/urdf/hc20.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "motoman_hc20_support/package.xml",
+        "license_url": "https://github.com/ros-industrial/motoman/blob/846fbbc57c60223f12bf4795ea6404982d57709e/motoman_hc20_support/package.xml",
+        "license_note": "ROS-Industrial HC20 package declares BSD-3-Clause in package.xml for its configuration data and 3D models; the repository has no standalone LICENSE file. The package states that this HC20 model also covers HC20DT and HC20XP; HC20DTP and HC30PL are separate models. The macro has no inertial elements; no measured dynamics or use-rights admission is inferred.",
+        "include_paths": [
+          "motoman_hc20_support/urdf/hc20.xacro",
+          "motoman_hc20_support/urdf/hc20_macro.xacro",
+          "motoman_hc20_support/meshes/hc20",
+          "motoman_hc20_support/package.xml",
+          "motoman_resources"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "motoman_hc20_support": "motoman_hc20_support",
+          "motoman_resources": "motoman_resources"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_deployed_hc20_variant_dt_xp_or_dtp",
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "inertial_parameters_not_present_in_hc20_macro",
+        "tool_asset_and_license",
+        "exact_mesh_notice_closure",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public HC20 source; the package says HC20DT and HC20XP share it, while HC20DTP has its own wrist links and is not this model. Its macro has no inertial elements; no importer-authored masses may be promoted to measured dynamics."
+    },
+    {
+      "embodiment_id": "agile_robots_diana_7",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/AgileRobots-APAC/diana_description",
+        "revision": "92786660df762ff4cb803ab508d28a935ae87e96",
+        "entry_path": "robots/diana7/diana7.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/AgileRobots-APAC/diana_description/blob/92786660df762ff4cb803ab508d28a935ae87e96/LICENSE",
+        "license_note": "LICENSE and package.xml declare Apache-2.0. NOTICE states 'Copyright 2026 Agile Robots SE' and that the package is a migration of franka_description (Copyright 2023 Franka Robotics GmbH, Apache-2.0); retain LICENSE and NOTICE. The AgileRobots-APAC repository was created 2026-10-20; its official publisher status rests on that NOTICE and has not been separately confirmed.",
+        "include_paths": [
+          "robots/common",
+          "robots/diana7",
+          "end_effectors/common",
+          "meshes/robots/diana7",
+          "package.xml",
+          "LICENSE",
+          "NOTICE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "diana_description": "."
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "exact_application_tool_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt",
+        "link0_inertial_values_appear_to_be_placeholders",
+        "publisher_status_of_new_agilerobots_apac_repository_unconfirmed"
+      ],
+      "reason": "First-generation Diana 7 from a public Apache-2.0 description created 2026-10-20; Diana 7 G2 is a separate model and is not substituted. link0 inertial values are round placeholder-like numbers (5.0 kg); link1-link7 authored values are retained as publisher source data, not Blueprint measurements."
+    },
+    {
+      "embodiment_id": "kinova_jaco2_j2n6s300",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/Kinovarobotics/kinova-ros",
+        "revision": "924781d3dfe241b2b94b3c72a804b80d3658cf02",
+        "entry_path": "kinova_description/urdf/j2n6s300_standalone.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/Kinovarobotics/kinova-ros/blob/924781d3dfe241b2b94b3c72a804b80d3658cf02/LICENSE",
+        "license_note": "Root LICENSE is the three-clause BSD text, 'Copyright (c) 2017, Kinova Robotics inc.'; kinova_description/package.xml says only 'BSD'. Retain the notice. Only the exact j2n6s300 Xacro closure and referenced meshes are retained.",
+        "include_paths": [
+          "kinova_description/urdf/j2n6s300_standalone.xacro",
+          "kinova_description/urdf/j2n6s300.xacro",
+          "kinova_description/urdf/kinova_common.xacro",
+          "kinova_description/urdf/kinova_finger_set.xacro",
+          "kinova_description/urdf/kinova_inertial.xacro",
+          "kinova_description/urdf/kinova.gazebo",
+          "kinova_description/meshes/base.dae",
+          "kinova_description/meshes/shoulder.dae",
+          "kinova_description/meshes/arm.dae",
+          "kinova_description/meshes/forearm.dae",
+          "kinova_description/meshes/wrist.dae",
+          "kinova_description/meshes/hand_3finger.dae",
+          "kinova_description/meshes/ring_big.dae",
+          "kinova_description/meshes/ring_small.dae",
+          "kinova_description/meshes/finger_proximal.dae",
+          "kinova_description/meshes/finger_distal.dae",
+          "kinova_description/package.xml",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "kinova_description": "kinova_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_exact_kinova_gen2_variant_and_tool_used_by_deployment",
+        "three_finger_hand_closure_and_width_mapping",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "runtime_profile_not_registered_for_three_finger_hand",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public Jaco v2 six-DoF non-spherical arm with its own three-finger hand: six arm joints (four continuous), three proximal finger joints (0 to 1.51 rad) and three distal finger joints (0 to 2 rad), all independent with no mimic. No runtime profile or scripted configuration is registered: mapping an underactuated three-finger hand onto the parallel-gripper channel would need an invented width and closure. Diligent Robotics' Moxi reportedly uses a Kinova arm with a Robotiq gripper; its exact variant and tool are unconfirmed."
+    },
+    {
+      "embodiment_id": "kuka_kr20_r3100",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/kuka-ros/kuka_robot_descriptions",
+        "revision": "5ddbc41ce8726fd680bcc19562d78bcabfbdf96d",
+        "entry_path": "kuka_iontec_support/urdf/kr20_r3100.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/kuka-ros/kuka_robot_descriptions/blob/5ddbc41ce8726fd680bcc19562d78bcabfbdf96d/LICENSE",
+        "license_note": "Repository LICENSE is Apache-2.0; kuka_iontec_support/package.xml and kuka_gazebo/package.xml declare Apache-2.0. The entry also instantiates a ros2_control block; with its default mode=hardware the kuka_gazebo macro is retained only for package resolution and is never included.",
+        "include_paths": [
+          "kuka_iontec_support/urdf/kr20_r3100.urdf.xacro",
+          "kuka_iontec_support/urdf/kr20_r3100_macro.xacro",
+          "kuka_iontec_support/urdf/kr_iontec_ros2_control_macro.xacro",
+          "kuka_iontec_support/meshes/kr20_r3100",
+          "kuka_gazebo/gazebo/kuka_gazebo.xacro",
+          "kuka_gazebo/package.xml",
+          "kuka_iontec_support/package.xml",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "kuka_iontec_support": "kuka_iontec_support",
+          "kuka_gazebo": "kuka_gazebo"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_deployed_kr_iontec_variant",
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "deployed_kr_iontec_variant_unconfirmed",
+        "suction_end_effector_not_modeled",
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public KUKA KR IONTEC KR 20 R3100 source with authored inertias; bare body only. A KUKA case study names a KR IONTEC arm for Contoro Robotics' trailer unloading without naming the variant, so this is one public family member, not Contoro's confirmed robot. Its suction tool is not modeled."
+    },
+    {
+      "embodiment_id": "kuka_kr30_r2100",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/kuka-ros/kuka_robot_descriptions",
+        "revision": "5ddbc41ce8726fd680bcc19562d78bcabfbdf96d",
+        "entry_path": "kuka_iontec_support/urdf/kr30_r2100.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/kuka-ros/kuka_robot_descriptions/blob/5ddbc41ce8726fd680bcc19562d78bcabfbdf96d/LICENSE",
+        "license_note": "Repository LICENSE is Apache-2.0; kuka_iontec_support/package.xml and kuka_gazebo/package.xml declare Apache-2.0. The entry also instantiates a ros2_control block; with its default mode=hardware the kuka_gazebo macro is retained only for package resolution and is never included.",
+        "include_paths": [
+          "kuka_iontec_support/urdf/kr30_r2100.urdf.xacro",
+          "kuka_iontec_support/urdf/kr30_r2100_macro.xacro",
+          "kuka_iontec_support/urdf/kr_iontec_ros2_control_macro.xacro",
+          "kuka_iontec_support/meshes/kr30_r2100",
+          "kuka_gazebo/gazebo/kuka_gazebo.xacro",
+          "kuka_gazebo/package.xml",
+          "kuka_iontec_support/package.xml",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "kuka_iontec_support": "kuka_iontec_support",
+          "kuka_gazebo": "kuka_gazebo"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_deployed_kr_iontec_variant",
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "deployed_kr_iontec_variant_unconfirmed",
+        "suction_end_effector_not_modeled",
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public KUKA KR IONTEC KR 30 R2100 source with authored inertias; bare body only. A KUKA case study names a KR IONTEC arm for Contoro Robotics' trailer unloading without naming the variant, so this is one public family member, not Contoro's confirmed robot. Its suction tool is not modeled."
+    },
+    {
+      "embodiment_id": "kuka_kr50_r2100",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/kuka-ros/kuka_robot_descriptions",
+        "revision": "5ddbc41ce8726fd680bcc19562d78bcabfbdf96d",
+        "entry_path": "kuka_iontec_support/urdf/kr50_r2100.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/kuka-ros/kuka_robot_descriptions/blob/5ddbc41ce8726fd680bcc19562d78bcabfbdf96d/LICENSE",
+        "license_note": "Repository LICENSE is Apache-2.0; kuka_iontec_support/package.xml and kuka_gazebo/package.xml declare Apache-2.0. The entry also instantiates a ros2_control block; with its default mode=hardware the kuka_gazebo macro is retained only for package resolution and is never included.",
+        "include_paths": [
+          "kuka_iontec_support/urdf/kr50_r2100.urdf.xacro",
+          "kuka_iontec_support/urdf/kr50_r2100_macro.xacro",
+          "kuka_iontec_support/urdf/kr_iontec_ros2_control_macro.xacro",
+          "kuka_iontec_support/meshes/kr50_r2100",
+          "kuka_gazebo/gazebo/kuka_gazebo.xacro",
+          "kuka_gazebo/package.xml",
+          "kuka_iontec_support/package.xml",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "kuka_iontec_support": "kuka_iontec_support",
+          "kuka_gazebo": "kuka_gazebo"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_deployed_kr_iontec_variant",
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "deployed_kr_iontec_variant_unconfirmed",
+        "suction_end_effector_not_modeled",
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public KUKA KR IONTEC KR 50 R2100 source with authored inertias; bare body only. A KUKA case study names a KR IONTEC arm for Contoro Robotics' trailer unloading without naming the variant, so this is one public family member, not Contoro's confirmed robot. Its suction tool is not modeled."
+    },
+    {
+      "embodiment_id": "kuka_kr50_r2500",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/kuka-ros/kuka_robot_descriptions",
+        "revision": "5ddbc41ce8726fd680bcc19562d78bcabfbdf96d",
+        "entry_path": "kuka_iontec_support/urdf/kr50_r2500.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/kuka-ros/kuka_robot_descriptions/blob/5ddbc41ce8726fd680bcc19562d78bcabfbdf96d/LICENSE",
+        "license_note": "Repository LICENSE is Apache-2.0; kuka_iontec_support/package.xml and kuka_gazebo/package.xml declare Apache-2.0. The entry also instantiates a ros2_control block; with its default mode=hardware the kuka_gazebo macro is retained only for package resolution and is never included.",
+        "include_paths": [
+          "kuka_iontec_support/urdf/kr50_r2500.urdf.xacro",
+          "kuka_iontec_support/urdf/kr50_r2500_macro.xacro",
+          "kuka_iontec_support/urdf/kr_iontec_ros2_control_macro.xacro",
+          "kuka_iontec_support/meshes/kr50_r2500",
+          "kuka_gazebo/gazebo/kuka_gazebo.xacro",
+          "kuka_gazebo/package.xml",
+          "kuka_iontec_support/package.xml",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "kuka_iontec_support": "kuka_iontec_support",
+          "kuka_gazebo": "kuka_gazebo"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_deployed_kr_iontec_variant",
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "deployed_kr_iontec_variant_unconfirmed",
+        "suction_end_effector_not_modeled",
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public KUKA KR IONTEC KR 50 R2500 source with authored inertias; bare body only. A KUKA case study names a KR IONTEC arm for Contoro Robotics' trailer unloading without naming the variant, so this is one public family member, not Contoro's confirmed robot. Its suction tool is not modeled."
+    },
+    {
+      "embodiment_id": "kuka_kr70_r2100",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/kuka-ros/kuka_robot_descriptions",
+        "revision": "5ddbc41ce8726fd680bcc19562d78bcabfbdf96d",
+        "entry_path": "kuka_iontec_support/urdf/kr70_r2100.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/kuka-ros/kuka_robot_descriptions/blob/5ddbc41ce8726fd680bcc19562d78bcabfbdf96d/LICENSE",
+        "license_note": "Repository LICENSE is Apache-2.0; kuka_iontec_support/package.xml and kuka_gazebo/package.xml declare Apache-2.0. The entry also instantiates a ros2_control block; with its default mode=hardware the kuka_gazebo macro is retained only for package resolution and is never included.",
+        "include_paths": [
+          "kuka_iontec_support/urdf/kr70_r2100.urdf.xacro",
+          "kuka_iontec_support/urdf/kr70_r2100_macro.xacro",
+          "kuka_iontec_support/urdf/kr_iontec_ros2_control_macro.xacro",
+          "kuka_iontec_support/meshes/kr70_r2100",
+          "kuka_gazebo/gazebo/kuka_gazebo.xacro",
+          "kuka_gazebo/package.xml",
+          "kuka_iontec_support/package.xml",
+          "LICENSE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "kuka_iontec_support": "kuka_iontec_support",
+          "kuka_gazebo": "kuka_gazebo"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "confirm_deployed_kr_iontec_variant",
+        "exact_application_tool_payload_and_tcp",
+        "site_camera_rig"
+      ],
+      "missing": [
+        "deployed_kr_iontec_variant_unconfirmed",
+        "suction_end_effector_not_modeled",
+        "tool_asset_and_license",
+        "controller_reset_and_runtime_receipt"
+      ],
+      "reason": "Exact public KUKA KR IONTEC KR 70 R2100 source with authored inertias; bare body only. A KUKA case study names a KR IONTEC arm for Contoro Robotics' trailer unloading without naming the variant, so this is one public family member, not Contoro's confirmed robot. Its suction tool is not modeled."
+    },
+    {
+      "embodiment_id": "fanuc_m10id_12_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/fanuc-corporation/fanuc_description",
+        "revision": "fb40c9803a826ba68c7c8e28ba904a25efa7fcd2",
+        "entry_path": "fanuc_m10_description/robot/m10_12_14d.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSES/Apache-2.0.txt",
+        "license_url": "https://github.com/fanuc-corporation/fanuc_description/blob/fb40c9803a826ba68c7c8e28ba904a25efa7fcd2/LICENSES/Apache-2.0.txt",
+        "license_note": "Official FANUC description package; package.xml and source SPDX headers declare Apache-2.0. The macro header names this model M-10/12-14D (M-10iD/12). Preserve exact mesh/source attribution; this is separate from NVIDIA USD asset agreements and driver/hardware access.",
+        "include_paths": [
+          "fanuc_m10_description/robot/m10_12_14d.urdf.xacro",
+          "fanuc_m10_description/urdf/m10_12_14d_urdf_macro.xacro",
+          "fanuc_m10_description/meshes/m10_12_14d",
+          "fanuc_m10_description/package.xml",
+          "README.md",
+          "LICENSES/Apache-2.0.txt"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "fanuc_m10_description": "fanuc_m10_description"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established",
+        "robotiq_2f85_is_simulation_stand_in_not_deployed_tool"
+      ],
+      "reason": "Exact public fanuc_m10id_12 with the licensed Robotiq2F85 as an explicit simulation stand-in tool at an ideal fixed simulation mount, with no adapter geometry or hardware fit/calibration claim. It is not any deployment's gripper. Authored arm and tool inertias are retained.",
+      "composition": {
+        "schema_version": "public_arm_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "fanuc_m10id_12",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "tool_role": "simulation_stand_in_not_deployed_tool",
+        "assembly_convention": "Identity mount at source fanuc_flange, preserving the full source flange rotation; no UR adapter/spacer or application hardware equivalence.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "fanuc_flange",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
+    },
+    {
+      "embodiment_id": "yaskawa_hc20_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/ros-industrial/motoman",
+        "revision": "846fbbc57c60223f12bf4795ea6404982d57709e",
+        "entry_path": "motoman_hc20_support/urdf/hc20.xacro",
+        "format": "xacro",
+        "license_id": "BSD-3-Clause",
+        "license_path": "motoman_hc20_support/package.xml",
+        "license_url": "https://github.com/ros-industrial/motoman/blob/846fbbc57c60223f12bf4795ea6404982d57709e/motoman_hc20_support/package.xml",
+        "license_note": "ROS-Industrial HC20 package declares BSD-3-Clause in package.xml for its configuration data and 3D models; the repository has no standalone LICENSE file. The package states that this HC20 model also covers HC20DT and HC20XP; HC20DTP and HC30PL are separate models. The macro has no inertial elements; no measured dynamics or use-rights admission is inferred.",
+        "include_paths": [
+          "motoman_hc20_support/urdf/hc20.xacro",
+          "motoman_hc20_support/urdf/hc20_macro.xacro",
+          "motoman_hc20_support/meshes/hc20",
+          "motoman_hc20_support/package.xml",
+          "motoman_resources"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "motoman_hc20_support": "motoman_hc20_support",
+          "motoman_resources": "motoman_resources"
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established",
+        "link_dynamics_are_declared_simulation_estimates",
+        "exact_hc20_variant_unverified",
+        "mass_anchor_is_hc20dtp_flyer_not_source_variant",
+        "current_primary_flyer_s_limit_differs_from_retained_source",
+        "robotiq_2f85_is_simulation_stand_in_not_deployed_tool"
+      ],
+      "reason": "Public yaskawa_hc20 geometry with the licensed Robotiq2F85 as an explicit simulation stand-in tool at an ideal fixed simulation mount. Arm-only collision-volume dynamics are estimates normalized to the 140 kg published for HC20DTP, a variant with different wrist links, with explicit variant ambiguity; source S limits remain +/-pi rad. Tool source inertias are added separately. No factory dynamics, hardware fit, policy or native execution claim.",
+      "composition": {
+        "schema_version": "public_arm_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "yaskawa_hc20",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "tool_role": "simulation_stand_in_not_deployed_tool",
+        "assembly_convention": "Identity simulation mount at source tool0, retaining authored flange translation/rotation and all source joint limits; no adapter geometry or physical calibration.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "tool0",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
+    },
+    {
+      "embodiment_id": "agile_robots_diana_7_robotiq_2f85_sim",
+      "arm_count": 1,
+      "status": "source_available",
+      "source": {
+        "repository_url": "https://github.com/AgileRobots-APAC/diana_description",
+        "revision": "92786660df762ff4cb803ab508d28a935ae87e96",
+        "entry_path": "robots/diana7/diana7.urdf.xacro",
+        "format": "xacro",
+        "license_id": "Apache-2.0",
+        "license_path": "LICENSE",
+        "license_url": "https://github.com/AgileRobots-APAC/diana_description/blob/92786660df762ff4cb803ab508d28a935ae87e96/LICENSE",
+        "license_note": "LICENSE and package.xml declare Apache-2.0. NOTICE states 'Copyright 2026 Agile Robots SE' and that the package is a migration of franka_description (Copyright 2023 Franka Robotics GmbH, Apache-2.0); retain LICENSE and NOTICE. The AgileRobots-APAC repository was created 2026-10-20; its official publisher status rests on that NOTICE and has not been separately confirmed.",
+        "include_paths": [
+          "robots/common",
+          "robots/diana7",
+          "end_effectors/common",
+          "meshes/robots/diana7",
+          "package.xml",
+          "LICENSE",
+          "NOTICE"
+        ],
+        "import_arguments": {},
+        "package_roots": {
+          "diana_description": "."
+        },
+        "source_arm_count": 1
+      },
+      "composition_required": [
+        "site_mount_and_camera_calibration"
+      ],
+      "missing": [
+        "native_import_and_episode_receipts",
+        "publisher_hardware_and_policy_match_not_established",
+        "link0_inertial_values_appear_to_be_placeholders",
+        "publisher_status_of_new_agilerobots_apac_repository_unconfirmed",
+        "robotiq_2f85_is_simulation_stand_in_not_deployed_tool"
+      ],
+      "reason": "Public first-generation Diana 7 with the licensed Robotiq2F85 as an explicit simulation stand-in tool at an ideal fixed mount on source diana7_link8, with no adapter geometry or hardware fit/calibration claim. Authored arm and tool inertias are retained; the stationary link0 values look like placeholders and the new repository's publisher status is unconfirmed.",
+      "composition": {
+        "schema_version": "public_arm_robotiq2f85_sim_composition.v1",
+        "arm_embodiment_id": "agile_robots_diana_7",
+        "tool_component_id": "robotiq_2f85_direct_sim_mount",
+        "tool_source": {
+          "repository_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper",
+          "revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+          "entry_path": "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+          "format": "xacro",
+          "source_arm_count": 0,
+          "license_id": "BSD-3-Clause",
+          "license_path": "LICENSE",
+          "license_url": "https://github.com/PickNikRobotics/ros2_robotiq_gripper/blob/a74d007d8f2f06dc6a503ad21038ba869d4999a6/LICENSE",
+          "license_note": "PickNik maintained public Robotiq2F85 description and UR adapter; root and package license BSD3. Not maintained or sponsored by Robotiq. Independent of Kinova-specific mounting and Dream hardware compatibility.",
+          "include_paths": [
+            "LICENSE",
+            "robotiq_description/package.xml",
+            "robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+            "robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+            "robotiq_description/urdf/2f_85.ros2_control.xacro",
+            "robotiq_description/meshes/visual/2f_85",
+            "robotiq_description/meshes/collision/2f_85"
+          ],
+          "package_roots": {
+            "robotiq_description": "robotiq_description"
+          },
+          "import_arguments": {}
+        },
+        "tool_role": "simulation_stand_in_not_deployed_tool",
+        "assembly_convention": "Identity mount at source diana7_link8 flange frame, retaining all source joints and limits; no adapter geometry or application hardware equivalence.",
+        "grasp_frame_reference": "https://github.com/PickNikRobotics/moveit_pro_ur_ws/blob/bab77dd0862bd6dea828ec41fb60b39d22c6f2c0/src/ur_mock/description/picknik_ur.xacro",
+        "grasp_frame": "gripper base +134mmZ and yaw pi; explicit simulation frame, not measured hardware calibration.",
+        "policy_compatibility_established": false,
+        "publisher_hardware_match_established": false,
+        "mount": {
+          "parent_link": "diana7_link8",
+          "translation_m": [
+            0,
+            0,
+            0
+          ],
+          "rpy_rad": [
+            0,
+            0,
+            0
+          ],
+          "adapter_geometry_present": false,
+          "mount_kind": "ideal_fixed_simulation_mount"
+        }
+      }
     }
   ]
 }

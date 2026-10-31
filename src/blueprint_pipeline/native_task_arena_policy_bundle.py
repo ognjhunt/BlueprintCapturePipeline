@@ -419,11 +419,22 @@ def build_native_task_policy_execution_spec(
 def _candidate_runtime_binding(
     candidate_id: str,
 ) -> tuple[Any, dict[str, Any], dict[str, Any]]:
-    """Return the frozen runtime binding without inspecting outcome receipts."""
+    """Return the frozen runtime binding without inspecting outcome receipts.
 
-    if candidate_id == "pi05_droid":
-        from .openpi_droid_policy_runtime import OpenPIDroidPolicySpec
+    Every OpenPI candidate (pi05_droid and the beta PolaRiS variants) is one
+    entry of the same frozen checkpoint inventory. Callers that admit only the
+    ADP-009D pair check ``FROZEN_CANDIDATES`` before reaching this function.
+    """
 
+    from .openpi_droid_policy_runtime import ARENA_CANDIDATE_POLICY_IDS
+
+    if candidate_id in ARENA_CANDIDATE_POLICY_IDS:
+        from .openpi_droid_policy_runtime import (
+            OPENPI_POLICY_ACTION_CHUNK_ROWS,
+            OpenPIDroidPolicySpec,
+        )
+
+        policy_id = ARENA_CANDIDATE_POLICY_IDS[candidate_id]
         inventory = _read(
             OPENPI_CHECKPOINT_INVENTORY_PATH,
             error="native_task_policy_openpi_checkpoint_inventory_invalid",
@@ -432,14 +443,14 @@ def _candidate_runtime_binding(
             row
             for row in inventory.get("entries") or []
             if isinstance(row, Mapping)
-            and row.get("policy_id") == "pi05_droid_jointpos_polaris"
+            and row.get("policy_id") == policy_id
         ]
         if len(entries) != 1:
             raise ValueError("native_task_policy_openpi_checkpoint_inventory_invalid")
         entry = entries[0]
         policy = OpenPIDroidPolicySpec(
-            policy_id="pi05_droid_jointpos_polaris",
-            config_name="pi05_droid_jointpos_polaris",
+            policy_id=policy_id,
+            config_name=policy_id,
             checkpoint_uri=str(entry.get("checkpoint_uri") or ""),
             checkpoint_object_manifest_sha256=str(
                 entry.get("legacy_object_manifest_sha256") or ""
@@ -453,9 +464,11 @@ def _candidate_runtime_binding(
             checkpoint_object_count=int(entry.get("object_count") or 0),
             checkpoint_size_bytes=int(entry.get("size_bytes") or 0),
             action_space="joint_position",
-            action_chunk_rows=15,
+            action_chunk_rows=OPENPI_POLICY_ACTION_CHUNK_ROWS[policy_id],
         )
         policy.validate()
+        # One loopback OpenPI server per session; the variants reuse its
+        # optional API-key slot rather than inventing another variable.
         endpoint: dict[str, Any] = {
             "host": "127.0.0.1",
             "port": 8000,

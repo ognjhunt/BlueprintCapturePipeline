@@ -31,6 +31,22 @@ ORIGINAL_IDS = {
     "graymatter_fanuc_crx_10ia_l", "unchained_yaskawa_gp12_luna", "unchained_yaskawa_gp20_luna",
     "standard_bots_ro1_controller", "standard_bots_core_controller",
 }
+# Public gs://openpi-assets DROID checkpoints beside pi05_droid: three runnable
+# PolaRiS joint-position variants and thirteen rows held with their reasons.
+OPENPI_DROID_IDS = {
+    "pi0_droid_jointpos_polaris", "pi0_droid_jointpos_100k_polaris", "pi0_fast_droid_jointpos_polaris",
+    "pi0_droid", "pi0_fast_droid", "pi0_droid_jointpos", "pi0_droid_jointpos_100k", "pi0_fast_droid_jointpos",
+    "pi05_droid_jointpos", "paligemma_binning_droid_jointpos", "paligemma_binning_droid_jointpos_polaris",
+    "paligemma_binning_droid", "paligemma_fast_droid", "paligemma_fast_specialist_droid", "paligemma_vq_droid",
+    "paligemma_diffusion_droid",
+}
+# Public fixed-arm batch 1: deployment associations only, without a packaged
+# policy route. Each company's own policy is private and stays unavailable.
+PUBLIC_ARM_COMPANY_IDS = {
+    "sewts_fanuc_m10id_12_velum": "sewts", "formic_yaskawa_hc20_palletizing": "Formic",
+    "agile_robots_diana_7_controller": "Agile Robots", "diligent_moxi_kinova_jaco2": "Diligent Robotics",
+    "contoro_kuka_kr_iontec_adaptai": "Contoro Robotics",
+}
 
 
 def test_packaged_routes_cover_every_recorded_pair_once_without_changing_enabled_identities():
@@ -40,13 +56,14 @@ def test_packaged_routes_cover_every_recorded_pair_once_without_changing_enabled
     public_baselines = {row["candidate_id"] for row in catalog["candidates"]
                         if (row.get("deployment") or {}).get("relationship") == "public_controller_integration"
                         and not row["deployment"]["companies"]}
-    assert len(public_baselines) == 24
+    assert len(public_baselines) == 27
     pairs = Counter((row["deployment"]["configuration_id"], row["deployment"]["policy_route_id"])
                     for row in catalog["candidates"] if (row.get("deployment") or {}).get("policy_route_id")
                     and row["candidate_id"] not in public_baselines)
-    assert len(catalog["candidates"]) == 112 and len(expected) == 74
+    assert len(catalog["candidates"]) == 136 and len(expected) == 74
     assert pairs == Counter({pair: 1 for pair in expected})
-    assert ORIGINAL_IDS <= {row["candidate_id"] for row in catalog["candidates"]}
+    assert ORIGINAL_IDS | OPENPI_DROID_IDS <= {row["candidate_id"] for row in catalog["candidates"]}
+    assert all(catalog_candidate(catalog, key).get("deployment") is None for key in OPENPI_DROID_IDS)
     assert {row["candidate_id"]: row["configuration_digest"] for row in catalog["candidates"]
             if row["candidate_id"] in {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid"}} == {
         "pi05_droid": "sha256:667f2ad06a2e65e82b8876736f93ddbc11e3b875d0c92a0946ae84a2573cd445",
@@ -54,10 +71,20 @@ def test_packaged_routes_cover_every_recorded_pair_once_without_changing_enabled
         "cosmos3_edge_policy_droid": "sha256:2ef6b265d6a79187db6079230e6f9a9ac0b7477eeeb7fb1e561bf222518c4be7",
     }
     added = [row for row in catalog["candidates"]
-             if row["candidate_id"] not in ORIGINAL_IDS | set(G1_CANDIDATES) | public_baselines]
+             if row["candidate_id"] not in ORIGINAL_IDS | OPENPI_DROID_IDS | set(G1_CANDIDATES) | public_baselines
+                 | set(PUBLIC_ARM_COMPANY_IDS)]
     assert len(added) == 58
     assert all(row["deployment"]["relationship"] == "planning_candidate" for row in added)
     assert all(row["interface"] is None and row["runtime"] is None for row in added)
+    companies = {row["candidate_id"]: row for row in catalog["candidates"] if row["candidate_id"] in PUBLIC_ARM_COMPANY_IDS}
+    assert set(companies) == set(PUBLIC_ARM_COMPANY_IDS)
+    for key, row in companies.items():
+        assert row["deployment"]["companies"] == [PUBLIC_ARM_COMPANY_IDS[key]]
+        assert row["deployment"]["relationship"] == "company_deployment" and "policy_route_id" not in row["deployment"]
+        assert row["eligibility"]["enabled"] is False and row["policy"]["digest"] is None
+        assert any(blocker.endswith("_private_no_access") for blocker in row["eligibility"]["blockers"])
+        assert "never this company's policy" in row["eligibility"]["license_note"]
+        assert row["interface"] is None and row["runtime"] is None
 
 
 def test_all_74_route_reasons_survive_real_planning_queue_and_publication(tmp_path):
@@ -66,7 +93,7 @@ def test_all_74_route_reasons_survive_real_planning_queue_and_publication(tmp_pa
     coordinator.enqueue_screening_campaign(plan, queue_root=tmp_path)
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
     published = {row["candidate_id"]: row for row in publication["candidates"]}
-    assert len(published) == len(plan["candidates"]) == 112
+    assert len(published) == len(plan["candidates"]) == 136
     for candidate in catalog["candidates"]:
         row = published[candidate["candidate_id"]]
         assert row["status"] == "unavailable"
@@ -119,7 +146,7 @@ def _rename_registration(registrations, old, new):
 def test_distinct_registered_checkpoints_on_one_body_and_route_are_not_collapsed(tmp_path, monkeypatch):
     base, registrations = _registered_pair(tmp_path, monkeypatch)
     catalog = catalog_for_profile({"screening_candidates": registrations}, base)
-    assert len(catalog["candidates"]) == 114
+    assert len(catalog["candidates"]) == 138
     first, second = [catalog_candidate(catalog, key) for key in registrations]
     assert first["deployment"] == second["deployment"]
     assert first["policy"]["digest"] != second["policy"]["digest"]
@@ -176,4 +203,4 @@ def test_custom_body_and_route_are_not_excluded_by_the_packaged_picker(tmp_path,
     plan = build_screening_plan(catalog, scene(), campaign_id="custom-routes", now=NOW)
     planned = next(row for row in plan["candidates"] if row["candidate_id"] == "team_policy_00")
     assert planned["status"] == "unavailable" and "runtime_candidate_binding_missing" in planned["blockers"]
-    assert len(plan["candidates"]) == 114
+    assert len(plan["candidates"]) == 138

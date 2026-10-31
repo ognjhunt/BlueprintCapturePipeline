@@ -180,7 +180,7 @@ def test_a_failed_job_is_retried_in_the_overlay_and_a_missing_input_names_its_pa
     assert report["retried_in_overlay"] is True
     assert {key: report["first_stop"][key] for key in ("kind", "stage", "code")} == {
         "kind": "missing_input", "stage": "queued", "code": str(site.capture / "raw/walkthrough.mov")}
-    assert report["first_stop"]["raised_at"].split(" > ")[-1].startswith("local_reconstruction_adapters._sha256_file:")
+    assert report["first_stop"]["raised_at"].split(" > ")[-1].startswith("file_digest_cache.file_sha256:")
     assert json.loads(site.job.read_text())["state"] == "failed"  # the pulled job is untouched
 
 
