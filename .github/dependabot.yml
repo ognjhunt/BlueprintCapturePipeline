@@ -27,7 +27,13 @@ updates:
       day: monday
       time: "08:30"
       timezone: America/Chicago
-    open-pull-requests-limit: 10
+    # The root Dockerfile is cross-cutting for CI, so a rebase of its update costs
+    # a full test suite (about 250 runner-minutes). Group updates and rebase on request.
+    open-pull-requests-limit: 2
+    rebase-strategy: disabled
+    groups:
+      root-container-base:
+        patterns: ["*"]
     labels: [dependencies, security]
 
   - package-ecosystem: docker
@@ -52,5 +58,10 @@ updates:
       day: monday
       time: "08:45"
       timezone: America/Chicago
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 2
+    rebase-strategy: disabled
+    groups:
+      deploy-container-bases:
+        group-by: dependency-name
+        patterns: ["*"]
     labels: [dependencies, security]
