@@ -574,7 +574,10 @@ def completion_summary(completion):
         value['gap_survey']['views'] = [{
             'camera_id': row['camera_id'],
             **({'outline': True} if row.get('gap_domain') == 'projected_scene_outline_hypothesis' else {}),
-            'gaps': [[r['label'], r['pixel_count'], [round(v, 4) for v in r['box_xywh_normalized']]] for r in row['gaps']]
+            # A fourth entry only on gaps a v2 survey flagged; v1 rows stay byte-identical.
+            'gaps': [[r['label'], r['pixel_count'], [round(v, 4) for v in r['box_xywh_normalized']],
+                      *(['photographed_without_depth'] if r.get('photographed_without_depth') else [])]
+                     for r in row['gaps']]
         } for row in full['views']]
     for index, row in enumerate(value.get('candidate_camera_ids', [])):
         if isinstance(row, dict) and 'camera' in row:

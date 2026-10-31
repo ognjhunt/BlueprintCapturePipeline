@@ -716,6 +716,16 @@ def test_compact_completion_keeps_every_exact_gap_and_source_survey_unchanged():
     assert 'label_path' not in view and compact['candidate_camera_ids'][0]['pose_rub'] == [1., 2., 3., 0., 0., 0., 1.]
 
 
+def test_compact_completion_tags_only_gaps_photographed_without_depth():
+    box = [.1, .2, .3, .4]
+    original = {'previews': [], 'gap_survey': {'digest': 'v2', 'legend': 'cyan', 'views': [{'camera_id': 'c', 'gaps': [
+        {'label': 1, 'gap_id': 'c-gap-1', 'pixel_count': 50, 'box_xywh_normalized': box},
+        {'label': 2, 'gap_id': 'c-gap-2', 'pixel_count': 60, 'box_xywh_normalized': box,
+         'photographed_without_depth': True}]}]}}
+    gaps = planner.completion_summary(original)['gap_survey']['views'][0]['gaps']
+    assert gaps == [[1, 50, box], [2, 60, box, 'photographed_without_depth']]
+
+
 def test_gap_review_preserves_state_quality_and_original_views(tmp_path):
     _, survey, proposal, policy = fixture(tmp_path)
     from copy import deepcopy
