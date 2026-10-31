@@ -260,6 +260,7 @@ def test_github_output_matrix_names_every_planned_shard(tmp_path: Path) -> None:
     plan = {
         "requires_full_suite": False,
         "selected_tests": [],
+        "supply_chain_inputs_changed": False,
         "requires_wide_impacted": True,
         "wide_shards": MODULE._wide_shards(tmp_path, files=sorted(files), test_sources={}),
     }
@@ -535,6 +536,32 @@ def test_the_recurring_unmapped_surfaces_of_2026_10_31_now_map() -> None:
     ):
         plan = MODULE.build_plan(ROOT, [path])
         assert not any(reason.startswith("unmapped_executable_surface") for reason in plan["reasons"]), path
+
+
+@pytest.mark.parametrize(("changed", "expected"), [
+    ("uv.lock", True),
+    ("pyproject.toml", True),
+    ("requirements.txt", True),
+    ("requirements-geometry.txt", True),
+    ("Dockerfile", True),
+    ("docker-compose.yml", True),
+    ("deploy/systemd/blueprint-operator-door.service", True),
+    (".github/workflows/ci.yml", True),
+    ("src/blueprint_pipeline/impacted_test_selection.py", False),
+    ("docs/requirements.txt", False),
+    ("deploy/docker/sam3/Dockerfile", False),
+    ("deploy/operator-door/install.sh", False),
+    (".github/workflows/full-test-lane.yml", False),
+])
+def test_supply_chain_inputs_are_named_in_the_plan_and_its_output(tmp_path: Path, changed: str, expected: bool) -> None:
+    plan = MODULE.build_plan(tmp_path, [changed])
+    (tmp_path / "tests").mkdir(exist_ok=True)
+    output = tmp_path / "github-output"
+
+    MODULE.write_github_output(plan, output)
+
+    assert plan["supply_chain_inputs_changed"] is expected
+    assert f"supply_chain_inputs_changed={str(expected).lower()}" in output.read_text().splitlines()
 
 
 def test_changed_test_is_selected_directly() -> None:

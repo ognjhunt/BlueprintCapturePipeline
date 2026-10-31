@@ -96,6 +96,10 @@ def test_cancellation_stops_every_job_of_a_superseded_run():
     assert ci['impacted-gate']['if'] == '${{ !cancelled() }}'
     for name, job in ci.items():
         assert 'always()' not in str(job.get('if', '')), name
+    full_lane = yaml.safe_load((ROOT / '.github/workflows/full-test-lane.yml').read_text())['jobs']
+    # Still true when a shard failed, so a red shard still reaches the canonical verdict.
+    assert full_lane['full-pytest']['if'] == '${{ !cancelled() }}'
+    assert full_lane['full-pytest']['needs'] == 'full-pytest-shard'
 
 
 def test_final_gate_refuses_missing_requested_full_evidence():
@@ -219,7 +223,9 @@ def test_wide_lane_has_the_full_lanes_environment_and_takes_no_test_selection():
         assert shared_text in full_run
     assert '-n ' not in run
     assert '--dist' not in run
-    assert 'continue-on-error' not in source
+    for step in shard['steps']:
+        if 'pytest' in step.get('run', ''):
+            assert 'continue-on-error' not in step, step['name']
     verify = next(step for step in shard['steps'] if step['name'] == 'Verify exact wide impacted shard')
     assert 'scripts/full_lane_sharding.py verify-wide-shard' in verify['run']
 
@@ -251,6 +257,105 @@ def test_release_signing_accepts_validated_optional_skips_but_requires_every_gat
                     assert 'needs.' not in observed
                     expected = event == 'push' and not cancelled and result == 'success'
                     assert eval('(' + observed + ')', {'__builtins__': {}}, {}) is expected
+
+
+def _ci_jobs():
+    import yaml
+
+    return yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+
+
+def _evaluate(condition, *, event, inputs_changed):
+    observed = condition.replace('github.event_name', repr(event))
+    observed = observed.replace('needs.impact.outputs.supply_chain_inputs_changed', repr(inputs_changed))
+    observed = observed.replace('&&', ' and ').replace('||', ' or ')
+    assert 'needs.' not in observed and 'github.' not in observed
+    return eval('(' + observed + ')', {'__builtins__': {}}, {})
+
+
+def test_supply_chain_checks_run_on_main_and_on_pull_requests_changing_their_inputs():
+    jobs = _ci_jobs()
+    for name in ('dependency-security', 'container-contract'):
+        assert jobs[name]['needs'] == 'impact'
+        for event in ('push', 'pull_request'):
+            for changed in ('true', 'false'):
+                expected = event == 'push' or changed == 'true'
+                assert _evaluate(jobs[name]['if'], event=event, inputs_changed=changed) is expected, (name, event)
+
+
+def test_the_preview_is_the_attesting_jobs_build_and_nothing_that_attests():
+    jobs = _ci_jobs()
+    preview = jobs['supply-chain-preview']
+    attesting = jobs['supply-chain']
+    for event in ('push', 'pull_request'):
+        for changed in ('true', 'false'):
+            expected = event == 'pull_request' and changed == 'true'
+            assert _evaluate(preview['if'], event=event, inputs_changed=changed) is expected
+    # Byte-equal steps, so the check a pull request passes is the check main runs.
+    names = ['Checkout', 'Install uv', 'Verify lock and build distributions',
+             'Generate CycloneDX, SPDX, license, and unsigned provenance evidence']
+    assert [step['name'] for step in preview['steps'][:4]] == names
+    assert preview['steps'][:4] == attesting['steps'][:4]
+    # A pull request's code never runs with the power to sign.
+    assert 'permissions' not in preview
+    assert not any('attest' in step.get('uses', '') for step in preview['steps'])
+    # The kit and --latest-attested find the attesting job by its exact name.
+    assert preview['name'] != attesting['name'] == 'SBOM, license, and provenance contract'
+    # Attestation itself keeps its prerequisites and stays on push.
+    assert 'supply-chain-preview' not in attesting['needs']
+
+
+def test_final_gate_refuses_a_failed_supply_chain_check_on_a_pull_request():
+    import itertools
+
+    jobs = _ci_jobs()
+    gate = jobs['impacted-gate']
+    assert {'dependency-security', 'container-contract', 'supply-chain-preview'} <= set(gate['needs'])
+    # No cycle: supply-chain needs the gate, so the gate must never need supply-chain.
+    assert 'supply-chain' not in gate['needs']
+    results = ('success', 'failure', 'skipped', 'cancelled')
+    for event, changed, dependency, container, preview in itertools.product(
+            ('push', 'pull_request'), ('true', 'false'), results, results, results):
+        environment = os.environ | {
+            'IMPACT_RESULT': 'success', 'IMPACTED_RESULT': 'success',
+            'NATIVE_REQUIRED': 'false', 'NATIVE_RESULT': 'skipped',
+            'NATIVE_SCENE_REQUIRED': 'false', 'NATIVE_SCENE_RESULT': 'skipped',
+            'FULL_REQUIRED': 'false', 'FULL_RESULT': 'skipped',
+            'WIDE_REQUIRED': 'false', 'WIDE_RESULT': 'skipped',
+            'EVENT_NAME': event, 'SUPPLY_INPUTS_CHANGED': changed,
+            'DEPENDENCY_RESULT': dependency, 'CONTAINER_RESULT': container, 'SUPPLY_PREVIEW_RESULT': preview,
+        }
+        outcome = subprocess.run(['bash', '-e', '-c', gate['steps'][0]['run']],
+                                 env=environment, capture_output=True, check=False)
+        # On main they stay supply-chain's prerequisites and never turn the gate red.
+        expected = not (event == 'pull_request' and changed == 'true') or (
+            dependency == container == preview == 'success')
+        assert (outcome.returncode == 0) is expected, (event, changed, dependency, container, preview)
+
+
+def test_network_installs_get_one_more_attempt_and_tests_never_do():
+    import yaml
+
+    for workflow in ('full-test-lane.yml', 'impacted-wide-lane.yml'):
+        document = yaml.load((ROOT / '.github/workflows' / workflow).read_text(), Loader=yaml.BaseLoader)
+        steps = document['jobs']['full-pytest-shard' if workflow == 'full-test-lane.yml' else 'wide-shard']['steps']
+        first = next(step for step in steps if step['name'] == 'Install uv')
+        second = next(step for step in steps if step['name'] == 'Install uv after a failed download')
+        assert first['continue-on-error'] == 'true' and first['id'] == 'install-uv'
+        assert second['if'] == "steps.install-uv.outcome == 'failure'"
+        assert 'continue-on-error' not in second, 'a second failure must fail the job'
+        assert (first['uses'], first['with']) == (second['uses'], second['with'])
+
+        install = next(step for step in steps if 'uv sync --frozen' in step.get('run', ''))
+        assert 'for attempt in 1 2; do' in install['run']
+        assert 'timeout --kill-after=10s 360s uv sync --frozen' in install['run']
+        assert 'timeout --kill-after=10s 90s uv pip install' in install['run']
+        assert int(install['timeout-minutes']) < int(document['jobs'][next(iter(document['jobs']))]['timeout-minutes'])
+
+        for step in steps:
+            if 'pytest' in step.get('run', ''):
+                assert 'continue-on-error' not in step, step['name']
+                assert 'for attempt' not in step['run'], step['name']
 
 
 def _run_script(name: str, *args: str) -> subprocess.CompletedProcess[str]:
