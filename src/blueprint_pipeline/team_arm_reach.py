@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -42,54 +42,60 @@ def _sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def team_arm_reach(plan: Mapping[str, Any], *, model_path: str | Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
-    """The arm-path report for a team robot applied at the station of ``plan``."""
-    from .decision_evidence_contracts import canonical_digest
+def _head(plan: Mapping[str, Any]) -> dict[str, Any]:
     from .robot_arm_path_clearance import SCHEMA_VERSION
-    from .team_arm_kinematics import pose_matrix
 
     robot = plan.get("robot") or {}
-    head = {"schema_version": SCHEMA_VERSION, "task_kind": plan.get("task_kind"), "robot_id": robot.get("robot_id"),
+    return {"schema_version": SCHEMA_VERSION, "task_kind": plan.get("task_kind"), "robot_id": robot.get("robot_id"),
             "embodiment_id": robot.get("embodiment_id"), "embodiment_digest": robot.get("embodiment_digest"),
             "base_mode": robot.get("base_mode"), "arena_scene_plan_digest": plan.get("plan_digest"),
             "claim_ceiling": CLAIM_CEILING, "simulator_executed": False, "scene_clearance_measured": False}
 
-    def finish(status: str, *, reason: str | None = None, blockers: list[str] | None = None,
-               advisories: list[str] | None = None, **extra: Any) -> dict[str, Any]:
-        result = {**head, "status": status, **({"reason": reason} if reason else {}), "blockers": blockers or [],
-                  "advisories": advisories if advisories is not None else (
-                      ["robot_arm_path_unassessed:" + str(robot.get("embodiment_id"))] if status == "unassessed" else []),
-                  **extra, "report_digest": ""}
-        result["report_digest"] = canonical_digest(result, digest_field="report_digest")
-        return result
 
+def _finish(plan: Mapping[str, Any], status: str, *, reason: str | None = None, advisories: list[str] | None = None,
+            **extra: Any) -> dict[str, Any]:
+    from .decision_evidence_contracts import canonical_digest
+
+    robot = plan.get("robot") or {}
+    result = {**_head(plan), "status": status, **({"reason": reason} if reason else {}), "blockers": [],
+              "advisories": advisories if advisories is not None else (
+                  ["robot_arm_path_unassessed:" + str(robot.get("embodiment_id"))] if status == "unassessed" else []),
+              **extra, "report_digest": ""}
+    result["report_digest"] = canonical_digest(result, digest_field="report_digest")
+    return result
+
+
+def _prepare(plan: Mapping[str, Any], model_path: str | Path,
+             manifest: Mapping[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """The body's arms, grasp bindings and the task's phases, read once; or the unassessed report."""
+    from .team_arm_kinematics import pose_matrix
+
+    robot = plan.get("robot") or {}
     if robot.get("base_mode") != "fixed_at_station":
-        return finish("unassessed", reason="robot_base_not_fixed_at_station")
+        return _finish(plan, "unassessed", reason="robot_base_not_fixed_at_station"), None
     if plan.get("task_kind") != "rigid_pick_place":
-        return finish("unassessed", reason="task_kind_unmodeled")
+        return _finish(plan, "unassessed", reason="task_kind_unmodeled"), None
     model = Path(model_path)
     if not model.is_file() or _sha256(model) != robot.get("usd_sha256"):
-        return finish("unassessed", reason="team_model_unbound")
+        return _finish(plan, "unassessed", reason="team_model_unbound"), None
     try:
         from .native_task_construction_plan import materialize_native_task_construction_phase_plan
 
         authored = materialize_native_task_construction_phase_plan(plan)
         if authored.get("manipulation_strategy") != "pick_and_place":
-            return finish("unassessed", reason="manipulation_strategy_unmodeled")
+            return _finish(plan, "unassessed", reason="manipulation_strategy_unmodeled"), None
         phases = [(str(row["phase_id"]), pose_matrix(row["position_world_m"], row["orientation_world_xyzw"]))
                   for row in authored["phases"] if row.get("phase_id") != "recovery"]
-        world_from_root = pose_matrix(robot["base_pose_world"]["position_world_m"],
-                                      robot["base_pose_world"]["orientation_xyzw"])
     except (KeyError, TypeError, ValueError) as exc:
-        return finish("unassessed", reason="task_phases_unavailable", detail=type(exc).__name__)
+        return _finish(plan, "unassessed", reason="task_phases_unavailable", detail=type(exc).__name__), None
     if not phases:
-        return finish("unassessed", reason="task_phases_unavailable")
+        return _finish(plan, "unassessed", reason="task_phases_unavailable"), None
 
-    from .team_body_kinematics import IK_ORIENTATION_WEIGHT_M, body_arm_chains, solve
+    from .team_body_kinematics import body_arm_chains
 
     found = body_arm_chains(model, manifest)
     if not found["chains"]:
-        return finish("unassessed", reason="robot_arm_unmodeled", unassessed_arms=dict(found["unassessed"]))
+        return _finish(plan, "unassessed", reason="robot_arm_unmodeled", unassessed_arms=dict(found["unassessed"])), None
     advisories = [f"robot_arm_unmodeled:{arm}:{code}" for arm, code in sorted(found["unassessed"].items())]
     try:
         from .scripted_robot_runtime_dispatch import build_policy_spec
@@ -98,7 +104,18 @@ def team_arm_reach(plan: Mapping[str, Any], *, model_path: str | Path, manifest:
     except (KeyError, TypeError, ValueError):
         bindings = None
         advisories.append("robot_grasp_orientation_unbound:position_only")
+    return None, {"phases": phases, "found": found, "bindings": bindings, "advisories": advisories}
 
+
+def _evaluate(plan: Mapping[str, Any], prepared: Mapping[str, Any], base_pose_world: Mapping[str, Any], *,
+              classify: bool = True) -> dict[str, Any]:
+    """The verdict with the body's base at ``base_pose_world``."""
+    from .team_arm_kinematics import pose_matrix
+    from .team_body_kinematics import IK_ORIENTATION_WEIGHT_M, solve
+
+    phases, found, bindings = prepared["phases"], prepared["found"], prepared["bindings"]
+    advisories = list(prepared["advisories"])
+    world_from_root = pose_matrix(base_pose_world["position_world_m"], base_pose_world["orientation_xyzw"])
     arms: dict[str, Any] = {}
     for name, chain in sorted(found["chains"].items()):
         base_from_world = np.linalg.inv(world_from_root @ chain.root_from_base)
@@ -109,7 +126,7 @@ def team_arm_reach(plan: Mapping[str, Any], *, model_path: str | Path, manifest:
         weight = IK_ORIENTATION_WEIGHT_M if grasp else 0.0
         rows, previous = [], None
         for phase_id, world_from_grasp in phases:
-            result = solve(chain, base_from_world @ world_from_grasp @ grasp_from_tcp,
+            result = solve(chain, base_from_world @ world_from_grasp @ grasp_from_tcp, classify=classify,
                            seeds=None if previous is None else [previous], orientation_weight_m=weight)
             rows.append({"phase_id": phase_id, "reached": bool(result.ok), "failure": result.failure,
                          "detail": result.detail, "position_error_m": (float(result.position_error_m)
@@ -119,20 +136,53 @@ def team_arm_reach(plan: Mapping[str, Any], *, model_path: str | Path, manifest:
             previous = result.joints
         arms[name] = {"orientation_bound": bool(grasp), "phases": rows,
                       "reached_every_phase": len(rows) == len(phases) and rows[-1]["reached"]}
-
+    phase_ids = [phase_id for phase_id, _ in phases]
     reached = sorted(name for name, row in arms.items() if row["reached_every_phase"])
     if reached:
-        return finish("passed", advisories=advisories, arms=arms, reaching_arms=reached,
-                      phase_ids=[phase_id for phase_id, _ in phases])
+        return _finish(plan, "passed", advisories=advisories, arms=arms, reaching_arms=reached, phase_ids=phase_ids)
     misses = {name: row["phases"][-1] for name, row in arms.items()}
     if all(miss["detail"] == "beyond_reach_bound" for miss in misses.values()) and not found["unassessed"]:
         # Furthest phase first: the one the best arm got to.
         name, miss = max(misses.items(), key=lambda item: len(arms[item[0]]["phases"]))
-        return finish("out_of_reach", advisories=[*advisories, "robot_arm_task_beyond_reach:" + miss["phase_id"]],
-                      arms=arms, phase_ids=[phase_id for phase_id, _ in phases])
+        return _finish(plan, "out_of_reach", advisories=[*advisories, "robot_arm_task_beyond_reach:" + miss["phase_id"]],
+                       arms=arms, phase_ids=phase_ids)
     advisories += [f"robot_arm_task_unreached:{name}:{miss['phase_id']}:{miss['failure']}:{miss['detail']}"
                    for name, miss in sorted(misses.items())]
-    return finish("flagged", advisories=advisories, arms=arms, phase_ids=[phase_id for phase_id, _ in phases])
+    return _finish(plan, "flagged", advisories=advisories, arms=arms, phase_ids=phase_ids)
 
 
-__all__ = ["CLAIM_CEILING", "team_arm_reach"]
+def team_arm_reach(plan: Mapping[str, Any], *, model_path: str | Path, manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """The arm-path report for a team robot applied at the station of ``plan``."""
+    refused, prepared = _prepare(plan, model_path, manifest)
+    if refused is not None:
+        return refused
+    try:
+        base = (plan.get("robot") or {})["base_pose_world"]
+        return _evaluate(plan, prepared, base)
+    except (KeyError, TypeError, ValueError) as exc:
+        return _finish(plan, "unassessed", reason="task_phases_unavailable", detail=type(exc).__name__)
+
+
+def first_reaching_stance(plan: Mapping[str, Any], stances: Sequence[Mapping[str, Any]], *, model_path: str | Path,
+                          manifest: Mapping[str, Any], limit: int = 24) -> dict[str, Any]:
+    """The first of ``stances`` (closest first) from which one of the body's arms reaches every phase.
+
+    ``plan`` carries the team robot row (``base_mode`` and the bound ``usd_sha256``); its station is
+    replaced by each stance in turn. At most ``limit`` stances are solved, each without the slower
+    miss classification. Returns ``{"index", "stances_solved", "report"}``: ``index`` is ``None`` when
+    none of them reached, and ``report`` is the chosen stance's verdict, or the first stance's.
+    """
+    refused, prepared = _prepare(plan, model_path, manifest)
+    if refused is not None:
+        return {"index": None, "stances_solved": 0, "report": refused}
+    first = None
+    for index, stance in enumerate(stances[:max(0, int(limit))]):
+        report = _evaluate(plan, prepared, stance, classify=False)
+        first = first or report
+        if report["status"] == "passed":
+            return {"index": index, "stances_solved": index + 1, "report": report}
+    return {"index": None, "stances_solved": min(len(stances), max(0, int(limit))),
+            "report": first or _finish(plan, "unassessed", reason="no_clear_stance")}
+
+
+__all__ = ["CLAIM_CEILING", "first_reaching_stance", "team_arm_reach"]

@@ -183,10 +183,12 @@ def test_every_registered_team_body_is_compiled_with_the_scene_at_its_own_statio
     records = {name: launch._record(launch._write(tmp_path / f"{name}.manifest.json", value))
                for name, value in body.items()}
     changed = {**records["short"], "sha256": "sha256:" + "0" * 64}
+    # The long arm's own model, as registered; the rover is registered with a model that is not its own.
+    arm = launch._record(tmp_path / "robot.usda")
     _registry(world["operator"], packet_inputs=world["inputs"], defaults={"screening_candidates": {
-        "team_long": {"robot_policy": {"manifest": records["long"]}},
+        "team_long": {"robot_policy": {"manifest": records["long"], "model": arm}},
         "team_long_again": {"robot_policy": {"manifest": records["long"]}},
-        "team_rover": {"robot_policy": {"manifest": records["wheeled"]}},
+        "team_rover": {"robot_policy": {"manifest": records["wheeled"], "model": arm}},
         "team_changed": {"robot_policy": {"manifest": changed}},
         "team_g1": {"native_g1": {"registered": "with its own scene packet"}}}})
     [status] = world["process"]()["results"]
@@ -198,6 +200,13 @@ def test_every_registered_team_body_is_compiled_with_the_scene_at_its_own_statio
                                                   body["wheeled"]["embodiment_digest"]}
     assert read_team_scene_inputs(status["team_scene_inputs_path"])["scene_revision_digest"] == (
         world["scene"]["revision"]["revision_digest"])
+    # Only the model that is the body's own is handed on: the long arm's station is also solved with its arm.
+    assert worker.registered_embodiment_models(json.loads((world["operator"] / "registry.json").read_text())) == {
+        body["long"]["embodiment_digest"]: tmp_path / "robot.usda"}
+    long = record["embodiment_stations"][body["long"]["embodiment_digest"]]
+    assert long["reach"]["own_arm"]["rule"] == "closest_clear_stance_own_arm_reaches_every_phase"
+    assert "reach" not in record["embodiment_stations"][body["wheeled"]["embodiment_digest"]] or (
+        record["embodiment_stations"][body["wheeled"]["embodiment_digest"]]["reach"] is None)
 
 
 @pytest.mark.parametrize("owner", ["operator_row", "frozen_pair"])

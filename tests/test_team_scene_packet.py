@@ -501,6 +501,65 @@ def test_each_registered_body_gets_its_own_station_from_its_own_manifest(tmp_pat
     assert read_team_scene_inputs(compiled["path"])["construction_result"] == record["base_native_packet"]
 
 
+def test_a_fixed_body_given_its_model_stands_where_its_own_arm_reaches_the_task(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline import team_arm_reach
+    from blueprint_pipeline.team_scene_packet import OWN_ARM_RULE
+
+    calls = []
+
+    def long_reaches_nowhere_short_from_the_fourth(plan, stances, *, model_path, manifest, limit=24):
+        calls.append({"plan": plan, "stances": len(stances), "model": Path(model_path), "id": manifest["embodiment_id"]})
+        report = {"claim_ceiling": "cpu_bounded_estimate", "blockers": []}
+        if manifest["embodiment_id"] == "acme-arm-v2":
+            return {"index": None, "stances_solved": min(len(stances), limit),
+                    "report": {**report, "status": "flagged", "report_digest": "sha256:" + "1" * 64,
+                               "advisories": ["robot_arm_task_unreached:arm:grasp:no_solution:joint_limits"]}}
+        return {"index": 3, "stances_solved": 4, "report": {**report, "status": "passed", "reaching_arms": ["arm"],
+                                                            "advisories": [], "report_digest": "sha256:" + "2" * 64}}
+    monkeypatch.setattr(team_arm_reach, "first_reaching_stance", long_reaches_nowhere_short_from_the_fourth)
+    scene = _scene(tmp_path, strategy="pick_and_place")
+    inputs = {key: value for key, value in scene.items() if key not in ("profile", "store", "revision_reference")}
+    body = bodies(tmp_path)
+    declared = materialize_team_scene(**inputs, output_root=tmp_path / "declared",
+                                      embodiment_manifests=list(body.values()))
+    assert calls == []  # without a model, a station is the declared-reach one, as before
+    model = tmp_path / "robot.usda"
+    compiled = materialize_team_scene(**inputs, output_root=tmp_path / "own-arm",
+                                      embodiment_manifests=list(body.values()),
+                                      embodiment_models={row["embodiment_digest"]: model for row in body.values()})
+    record = json.loads(Path(compiled["path"]).read_text())
+    before, after = ({row["embodiment_id"]: row for row in json.loads(Path(path).read_text())[
+        "embodiment_stations"].values()} for path in (declared["path"], compiled["path"]))
+    # Only fixed bodies are solved: each over every clear stance, on this packet's plan, with its own model.
+    assert sorted(call["id"] for call in calls) == ["acme-arm-v2", "short-arm"]
+    for call in calls:
+        robot = call["plan"]["robot"]
+        assert call["plan"]["plan_digest"] == record["plan_digest"] and call["plan"]["task_kind"] == "rigid_pick_place"
+        assert (robot["robot_id"], robot["base_mode"], call["model"]) == ("team_embodiment", "fixed_at_station", model)
+        assert robot["usd_sha256"] == body["long"]["model"]["sha256"]
+        assert call["stances"] == before[call["id"]]["reach"]["clear_stances_measured"]
+    # The long arm reaches from no stance in its model: its declared-reach station stands, the verdict beside it.
+    long = after["acme-arm-v2"]
+    assert (long["status"], long["station"], long["blockers"]) == ("chosen", before["acme-arm-v2"]["station"], [])
+    assert long["reach"]["rule"] == "closest_clear_stance_within_declared_reach"
+    assert long["reach"]["own_arm"]["status"] == "flagged" and long["reach"]["own_arm"]["chosen_rank"] is None
+    # Its declared 20 cm missed every stance; its own arm reaches from the fourth, so it stands there, unrefused.
+    short = after["short-arm"]
+    assert before["short-arm"]["status"] == "out_of_reach"
+    assert (short["status"], short["blockers"], short["reach"]["rule"]) == ("chosen", [], OWN_ARM_RULE)
+    assert short["station"] != before["short-arm"]["station"]
+    assert short["reach"]["own_arm"] == {
+        "rule": OWN_ARM_RULE, "status": "passed", "chosen_rank": 3, "stances_solved": 4, "reaching_arms": ["arm"],
+        "advisories": [], "claim_ceiling": "cpu_bounded_estimate", "report_digest": "sha256:" + "2" * 64}
+    assert short["reach"]["declared_reach_covers"] is False
+    assert short["reach"]["farthest_task_point_m"] == pytest.approx(max(
+        math.dist(short["station"]["position_world_m"], point) for point in short["reach"]["task_points_world_m"]))
+    # A free base is untouched, and so is the Franka's station.
+    assert after["acme-rover"] == before["acme-rover"]
+    assert record["robot_station"] == json.loads(Path(declared["path"]).read_text())["robot_station"]
+    assert read_team_scene_inputs(compiled["path"])["construction_result"] == record["base_native_packet"]
+
+
 def test_a_bodys_station_keeps_off_a_moving_part_and_leaves_its_unmodelled_body_unassessed(tmp_path) -> None:
     scene = _articulated_scene(tmp_path)
     inputs = {key: value for key, value in scene.items() if key != "profile"}

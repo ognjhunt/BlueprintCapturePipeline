@@ -26,7 +26,10 @@ compiled here straight into the scene half a team run reads:
   manifests: each chosen from that body's own manifest (base, footprint,
   declared reach) on the same floor, task and moving part, never with the
   Franka's model or numbers; what a body declares no model for stays
-  unassessed (``_embodiment_stations``, recorded as ``embodiment_stations``);
+  unassessed (``_embodiment_stations``, recorded as ``embodiment_stations``).
+  A fixed body given its robot model takes the closest such stance from which
+  its own arm reaches every phase of the task in that model, else keeps the
+  declared-reach one (``_own_arm_stations``);
 - the right exterior camera, for DROID policies that read both exteriors,
   where a pose beside the station sees the task clear of the captured scene
   (``droid_exterior_cameras``); the packet is then compiled once more with it,
@@ -62,6 +65,7 @@ SCHEMA = "blueprint.team_scene_inputs.v1"
 CLAIM_CEILING = "diagnostic_policy_execution"
 RECORD_FILENAME = "team_scene_inputs.v1.json"
 PACKET_DIRECTORY = "native-task-packet"
+OWN_ARM_RULE = "closest_clear_stance_own_arm_reaches_every_phase"
 # The same scene compiled with the right exterior camera, when one is placed.
 THREE_VIEW_PACKET_DIRECTORY = "native-task-packet-three-view"
 # A pedestal for an arm's base: its half extent on the floor, metres.
@@ -157,8 +161,8 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
 
 
 def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mapping[str, Any],
-                         points: Sequence[Sequence[float]],
-                         grasp: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+                         points: Sequence[Sequence[float]], grasp: Mapping[str, Any] | None,
+                         ranked: dict[str, list[dict[str, Any]]] | None = None) -> dict[str, dict[str, Any]]:
     """Each registered body's own station on this scene, from its own manifest, keyed by its digest.
 
     ``place`` is the Franka station's search (``ground_stance``): the same floor, task and moving part. A fixed
@@ -167,7 +171,8 @@ def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mappi
     A free base stands on its own footprint at its own root height and declares no reach. No Franka model or
     number enters: a moving part is kept off the mount or footprint, and the body itself, its reach without
     one, and a grip force no manifest declares stay unassessed. Each declared tool is screened against the
-    ``grasp`` (``website_task_preparation.screen_physics``, or the handle screen for a jointed part).
+    ``grasp`` (``website_task_preparation.screen_physics``, or the handle screen for a jointed part). A fixed
+    base's clear stances, closest first, are kept in ``ranked`` for ``_own_arm_stations``.
     """
     from .team_embodiment import ROBOT_ID, TeamEmbodimentError, validate_embodiment_manifest
     from .team_embodiment_stance import GRID_STEP_M, SEARCH_RADIUS_M, ground_stance
@@ -186,6 +191,8 @@ def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mappi
         try:
             if base["mode"] == "fixed":
                 stances = ground_stance(**search, ranked=every)
+                if ranked is not None:
+                    ranked[manifest["embodiment_digest"]] = stances
                 reach = float(manifest["reach_m"])
                 farthest = [max(math.dist(stance["position_world_m"], point) for point in points)
                             for stance in stances]
@@ -216,6 +223,51 @@ def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mappi
             unassessed += [] if tools else ["embodiment_gripper_not_declared"]
         rows[manifest["embodiment_digest"]] = {**row, "unassessed": unassessed}
     return rows
+
+
+def _own_arm_stations(stations: dict[str, dict[str, Any]], ranked: Mapping[str, Sequence[Mapping[str, Any]]], *,
+                      plan: Mapping[str, Any], manifests: Mapping[str, Mapping[str, Any]],
+                      models: Mapping[str, str | Path]) -> None:
+    """Choose each fixed body's station with its own arm, where its robot model is given.
+
+    The closest clear stance from which one of the body's own arms reaches every authored phase of the
+    task in its own model (``team_arm_reach.first_reaching_stance``) replaces the declared-reach choice;
+    a stance its declared ``reach_m`` missed is then chosen too, since the model measured it. When no
+    stance reaches, or the body or task cannot be modelled, the declared-reach choice stands. The arm's
+    verdict is recorded either way (``reach.own_arm``) and refuses nothing: reach is not a privacy, rights
+    or money control (``AGENTS.md``).
+    """
+    from .team_arm_reach import first_reaching_stance
+    from .team_embodiment import ROBOT_ID
+
+    for digest, row in stations.items():
+        stances, model, manifest = ranked.get(digest), models.get(digest), manifests.get(digest)
+        if row.get("base_mode") != "fixed" or not row.get("reach") or not stances or model is None or not manifest:
+            continue
+        robot = {"robot_id": ROBOT_ID, "embodiment_id": row["embodiment_id"], "embodiment_digest": digest,
+                 "base_mode": "fixed_at_station", "usd_sha256": manifest["model"]["sha256"],
+                 "base_pose_world": {"position_world_m": list(row["station"]["position_world_m"]),
+                                     "orientation_xyzw": list(row["station"]["orientation_xyzw"])}}
+        try:
+            found = first_reaching_stance({**plan, "robot": robot}, stances, model_path=model, manifest=manifest)
+        except (ArithmeticError, KeyError, TypeError, ValueError) as exc:
+            row["reach"]["own_arm"] = {"rule": OWN_ARM_RULE, "status": "unassessed",
+                                       "reason": "own_arm_reach_inputs_invalid", "detail": type(exc).__name__}
+            continue
+        report = found["report"]
+        row["reach"]["own_arm"] = {
+            "rule": OWN_ARM_RULE, "status": report["status"], "chosen_rank": found["index"],
+            "stances_solved": found["stances_solved"], "reaching_arms": list(report.get("reaching_arms") or []),
+            "advisories": list(report["advisories"]), "claim_ceiling": report["claim_ceiling"],
+            "report_digest": report["report_digest"], **({"reason": report["reason"]} if "reason" in report else {})}
+        if found["index"] is None:
+            continue
+        station = stances[found["index"]]
+        points = row["reach"]["task_points_world_m"]
+        farthest = max(math.dist(station["position_world_m"], point) for point in points)
+        row.update(status="chosen", station=station, blockers=[])
+        row["reach"].update(rule=OWN_ARM_RULE, farthest_task_point_m=farthest,
+                            declared_reach_covers=farthest <= row["reach"]["reach_m"])
 
 
 def _cameras(profile: Mapping[str, Any], *, base: list[float], start: list[float],
@@ -339,11 +391,14 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            output_root: str | Path,
                            destination_placement_qualification_path: str | Path | None = None,
                            native_appearance_materializer: Callable[..., Mapping[str, Any]] | None = None,
-                           embodiment_manifests: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+                           embodiment_manifests: Sequence[Mapping[str, Any]] = (),
+                           embodiment_models: Mapping[str, str | Path] | None = None) -> dict[str, Any]:
     """Compile the revision's scene half under ``output_root`` and seal its team scene inputs.
 
     Each of ``embodiment_manifests`` (registered team bodies) also gets its own station on the same scene
-    (``_embodiment_stations``); without any, the record is exactly the Franka-only one.
+    (``_embodiment_stations``); without any, the record is exactly the Franka-only one. A fixed body whose
+    robot model is in ``embodiment_models`` (by embodiment digest) has that station chosen with its own
+    arm (``_own_arm_stations``).
     """
 
     from . import task_evaluation_configured_controls_deferred_inputs as deferred
@@ -483,6 +538,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     station, station_search = (_carrying_station(station, task_spec=task_spec, collision=assets["collision"],
                                                  profile=profile) if carry else (station, None))
     stations: dict[str, dict[str, Any]] = {}
+    ranked: dict[str, list[dict[str, Any]]] = {}
     if embodiment_manifests:
         # The object a tool holds: a rigid carry's own extent, or an articulated part's handle (its joint's kind).
         joints = (task_spec.get("articulation_graph") or {}).get("joints") or []
@@ -490,7 +546,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             "dimensions_m": [float(b) - float(a) for a, b in zip(*object_bounds, strict=True)],
             "joint_type": next((str(row.get("joint_type")) for row in joints if row.get("role") == "target"),
                                "unknown") if articulated else None}
-        stations = _embodiment_stations(embodiment_manifests, place=place, points=[start, target], grasp=grasp)
+        stations = _embodiment_stations(embodiment_manifests, place=place, points=[start, target], grasp=grasp,
+                                        ranked=ranked)
     base = {"position_world_m": station["position_world_m"], "orientation_xyzw": station["orientation_xyzw"]}
     request: dict[str, Any] = {
         "schema_version": "native_task_arena_packet_request.v1", "scene_id": scene_id, "task_id": task_id,
@@ -522,6 +579,12 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     plan = _read(packet / "native_task_arena_scene_plan.v1.json", "team_scene_packet_invalid")
     receipt = packet / "native_task_arena_packet_receipt.v1.json"
     task_kind = "articulated_open_close" if articulated else "rigid_pick_place"
+    if stations and embodiment_models:
+        from .team_embodiment import validate_embodiment_manifest
+
+        bodies = {row["embodiment_digest"]: row for row in map(validate_embodiment_manifest, embodiment_manifests)}
+        _own_arm_stations(stations, ranked, plan={**plan, "task_kind": task_kind}, manifests=bodies,
+                          models=embodiment_models)
     if articulated and (plan["task_spec"].get("configured_success_criteria") or {}).get(
             "owner_success_contract_required") is True:
         # The owner's frozen criteria, translated without changing scoring (as the operator canary seals them).
