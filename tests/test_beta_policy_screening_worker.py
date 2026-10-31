@@ -374,3 +374,27 @@ def test_fresh_deploy_provisions_screening_sandbox_before_timer_can_start(tmp_pa
     repeated = deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
         units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
     assert repeated["created"] == []
+
+
+def test_the_timer_pass_returns_a_transient_scene_half_block_to_its_queue_and_names_a_refusal(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline.team_scene_packet_worker import request_key
+
+    world = prepared_source_queue(tmp_path, monkeypatch, revisions=2)
+    transient, refused = sorted(world["requests"], key=request_key)
+    packets = world["packet_queue"]
+    (packets / "status" / f"{request_key(transient)}.json").write_text(json.dumps(
+        {"status": "blocked", "blockers": ["team_scene_offer_publication_failed"]}))
+    (packets / "status" / f"{request_key(refused)}.json").write_text(json.dumps(
+        {"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}))
+    adopted = worker.enqueue_prepared_scenes(queue_root=world["screening_queue"], packet_queue_root=packets)
+    # Recorded before automatic retries existed, the WebApp outage is due at once; the path unit runs it again.
+    assert adopted["team_scene_packet_requeue"]["requeued"] == [
+        {"request_key": request_key(transient), "attempt": 1, "reason": "team_scene_offer_publication_failed"}]
+    assert (packets / "pending" / f"{request_key(transient)}.json").is_file()
+    # A deterministic refusal stays blocked, and the screening outcome says which.
+    [outcome] = adopted["sources"]
+    assert outcome["request_key"] == request_key(refused)
+    assert outcome["blockers"] == ["beta_screening_scene_packet_not_ready"]
+    assert outcome["scene_packet"] == {"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}
+    assert not world["planning_calls"]

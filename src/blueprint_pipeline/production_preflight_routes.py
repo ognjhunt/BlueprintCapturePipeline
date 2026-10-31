@@ -48,7 +48,8 @@ _PATHS = {
     ),
     "blueprint-beta-policy-screening.service": (
         ("BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT", f"{ROOT}/beta-policy-screening", "write"),
-        ("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", f"{ROOT}/team-scene-packets", "read"),
+        # Its pass returns transient team-half blocks to pending (team_scene_packet_worker).
+        ("BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT", f"{ROOT}/team-scene-packets", "write"),
     ),
 }
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -338,3 +339,128 @@ def test_the_worker_command_needs_a_queue_and_reports_an_idle_queue(tmp_path, mo
     assert json.loads(capsys.readouterr().out)["status"] == "idle"
     with pytest.raises(worker.TeamScenePacketRequestRefused, match="queue_root_unsafe"):
         worker.process_team_scene_queue(queue_root="relative/queue")
+
+
+T0 = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
+
+
+def _at(monkeypatch: pytest.MonkeyPatch, seconds: float) -> datetime:
+    moment = T0 + timedelta(seconds=seconds)
+    monkeypatch.setattr(worker, "_utc_now", lambda: moment)
+    return moment
+
+
+def _status(world: dict[str, Any]) -> dict[str, Any]:
+    return json.loads((world["queue"] / "status" / f"{world['key']}.json").read_text())
+
+
+def test_a_failed_offer_post_is_retried_automatically_after_each_wait_and_then_stays_blocked(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline import agent_execution_offer
+
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    posts: list[Path] = []
+    # One WebApp outage after another: the half is recorded once, only the offer post keeps failing.
+    monkeypatch.setattr(agent_execution_offer, "publish_agent_execution_offer",
+                        lambda capture, **_: posts.append(capture) or {"status": "failed", "reason": "http_503"})
+    _at(monkeypatch, 0)
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["blockers"]) == ("blocked", ["team_scene_offer_publication_failed"])
+    assert status["automatic_retry"] == {"attempts": 0, "limit": 3, "reason": "team_scene_offer_publication_failed",
+                                         "not_before": "2026-10-31T12:05:00+00:00"}
+    monkeypatch.setattr(team_scene_packet, "prepare_team_scene", lambda **_: pytest.fail("compiled twice"))
+    elapsed = 0
+    for attempt, wait in enumerate(worker.AUTOMATIC_RETRY_BACKOFF_SECONDS, start=1):
+        # Not before its wait: the timer's pass leaves it where it is.
+        _at(monkeypatch, elapsed + wait - 1)
+        assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+        assert (queue / "processed" / f"{key}.json").is_file()
+        moment = _at(monkeypatch, elapsed + wait)
+        assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
+            {"request_key": key, "attempt": attempt, "reason": "team_scene_offer_publication_failed"}]
+        assert (queue / "pending" / f"{key}.json").is_file()
+        assert _status(world)["automatic_retry"]["requeued_at"] == moment.isoformat(timespec="seconds")
+        [status] = world["process"]()["results"]
+        assert (status["outcome"], status["blockers"]) == ("already_compiled", ["team_scene_offer_publication_failed"])
+        assert status["automatic_retry"]["attempts"] == attempt
+        elapsed += wait
+    # Every automatic retry is spent: it stays blocked, by name, until someone fixes the cause.
+    assert status["automatic_retry"] == {"attempts": 3, "limit": 3, "reason": "team_scene_offer_publication_failed",
+                                         "requeued_at": moment.isoformat(timespec="seconds"), "exhausted": True}
+    _at(monkeypatch, 10 ** 7)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    assert world["process"]()["automatic_requeue"] == []
+    assert len(posts) == 4 and _status(world) == status
+    assert worker.requeue_unfinished(queue_root=queue)["requeued"] == [key]
+
+
+def test_a_run_killed_by_its_timeout_is_recovered_by_the_timer_pass_and_compiled_on_its_retry(
+        tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    # The unit's timeout killed a compile: the request is still claimed and its attempt half-written.
+    os.replace(queue / "pending" / f"{key}.json", queue / "processing" / f"{key}.json")
+    attempt = world["halves"] / ("0" * 16 + "-" + "0" * 8)
+    (attempt / "documents").mkdir(parents=True)
+    (queue / "status" / f"{key}.json").write_text(json.dumps(
+        {"status": "processing", "attempt_root": str(attempt), "capture_root": str(world["capture"])}))
+    _at(monkeypatch, 0)
+    # Nothing is pending, so the path unit never starts the worker; a run holding the queue is left alone.
+    with worker._locked(queue):
+        assert worker.requeue_transient_blocked(queue_root=queue)["status"] == "busy"
+    assert (queue / "processing" / f"{key}.json").is_file()
+    swept = worker.requeue_transient_blocked(queue_root=queue)
+    assert (swept["recovered"], swept["requeued"]) == ([key], [])
+    assert not attempt.exists() and (queue / "processed" / f"{key}.json").is_file()
+    assert _status(world)["blockers"] == ["team_scene_packet_interrupted"]
+    assert _status(world)["automatic_retry"]["not_before"] == "2026-10-31T12:05:00+00:00"
+    _at(monkeypatch, 300)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
+        {"request_key": key, "attempt": 1, "reason": "team_scene_packet_interrupted"}]
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    # The completed status keeps how it got there.
+    assert status["automatic_retry"] == {"attempts": 1, "limit": 3, "reason": "team_scene_packet_interrupted",
+                                         "requeued_at": "2026-10-31T12:05:00+00:00"}
+    assert profile_for_capture(world["capture"])["team_scene_inputs_path"] == status["team_scene_inputs_path"]
+
+
+def test_the_worker_pass_requeues_a_due_block_recorded_before_automatic_retries(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    os.replace(queue / "pending" / f"{key}.json", queue / "processed" / f"{key}.json")
+    (queue / "status" / f"{key}.json").write_text(json.dumps(
+        {"status": "blocked", "blockers": ["team_scene_packet_failed:OSError"]}))
+    _at(monkeypatch, 0)
+    run = world["process"]()
+    assert run["automatic_requeue"] == [{"request_key": key, "attempt": 1, "reason": "team_scene_packet_failed:OSError"}]
+    [status] = run["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+
+
+def test_a_deterministic_refusal_is_never_retried_automatically(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    _registry(world["operator"], packet_inputs={**world["inputs"], "droid_profile_digest": "sha256:" + "0" * 64})
+    _at(monkeypatch, 0)
+    [status] = world["process"]()["results"]
+    assert status["blockers"] == ["team_scene_droid_profile_binding_invalid"] and "automatic_retry" not in status
+    _at(monkeypatch, 10 ** 7)
+    assert worker.requeue_transient_blocked(queue_root=world["queue"])["requeued"] == []
+    assert (world["queue"] / "processed" / f"{world['key']}.json").is_file()
+
+
+@pytest.mark.parametrize(("status", "cause"), [
+    ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"]}, "team_scene_packet_interrupted"),
+    ({"status": "blocked", "blockers": ["configured_controls_deferred_fetch_failed"]},
+     "configured_controls_deferred_fetch_failed"),
+    ({"status": "blocked", "blockers": ["team_scene_packet_failed:TimeoutError"]},
+     "team_scene_packet_failed:TimeoutError"),
+    ({"status": "blocked", "blockers": ["team_scene_packet_failed:KeyError"]}, None),
+    ({"status": "blocked", "blockers": ["team_scene_packet_failed:__class__"]}, None),
+    ({"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}, None),
+    ({"status": "blocked", "blockers": ["team_scene_packet_interrupted", "team_scene_capture_withdrawn"]}, None),
+    ({"status": "skipped", "blockers": ["team_scene_packet_interrupted"]}, None),
+])
+def test_only_a_cause_a_later_run_can_clear_is_transient(status, cause):
+    assert worker.transient_cause(status) == cause

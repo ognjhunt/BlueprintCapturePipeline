@@ -190,17 +190,13 @@ def test_completion_enqueues_one_team_scene_request_and_launches_nothing(tmp_pat
     assert not list((queue / 'processing').iterdir()) and not list((queue / 'processed').iterdir())
 
 
-@pytest.mark.parametrize('case', ['not_a_website_scene', 'receipt_not_retained', 'probe_failed',
-                                  'queue_not_configured'])
+@pytest.mark.parametrize('case', ['not_a_website_scene', 'probe_failed', 'queue_not_configured'])
 def test_completion_queues_no_team_scene_request_without_a_website_scene_and_its_retained_receipt(
         tmp_path, monkeypatch, case):
     from blueprint_pipeline import team_scene_packet_worker as worker
 
     args, _run, _ = _prepare(tmp_path, monkeypatch,
                              preparation_request() if case == 'not_a_website_scene' else _website_request())
-    if case == 'receipt_not_retained':
-        monkeypatch.setattr(retention, 'retain_robot_free_readiness',
-                            lambda **_kwargs: {'status': 'refused', 'reason': 'x', 'retained': False})
     if case == 'probe_failed':
         monkeypatch.setattr(retention, 'retain_robot_free_readiness',
                             lambda **_kwargs: {'status': 'failed', 'retained': True, 'write': 'written'})
@@ -213,7 +209,29 @@ def test_completion_queues_no_team_scene_request_without_a_website_scene_and_its
     assert result['status'] == 'completed'
     assert result['state']['scene_preparation_completion']['team_scene_request'] == {
         'not_a_website_scene': {'status': 'not_a_website_scene'},
-        'receipt_not_retained': {'status': 'not_enqueued', 'reason': 'robot_free_readiness_not_retained'},
         'probe_failed': {'status': 'not_enqueued', 'reason': 'robot_free_probe_failed'},
         'queue_not_configured': {'status': 'not_configured'}}[case]
     assert not list(queue.glob('pending/*.json'))
+
+
+def test_a_refused_readiness_score_is_recorded_and_still_queues_the_team_half(tmp_path, monkeypatch):
+    """The compile never reads the receipt, and only the compiled half queues the probe that can decide it."""
+    from blueprint_pipeline import team_scene_packet_worker as worker
+
+    args, run, _ = _prepare(tmp_path, monkeypatch, _website_request())
+    refused = {'status': 'refused', 'reason': 'rigid_construction_probe_binding_mismatch', 'retained': False}
+    monkeypatch.setattr(retention, 'retain_robot_free_readiness', lambda **_kwargs: dict(refused))
+    queue = tmp_path / 'team-scene-packets'
+    monkeypatch.setenv(worker.QUEUE_ROOT_ENV, str(queue))
+    result = reconcile_preparation_completion(**args)
+    assert (result['status'], result['phase']) == ('completed', 'scene_prepared')
+    completion = result['state']['scene_preparation_completion']
+    # The refusal stays on record by name, and nothing claims a receipt was retained.
+    assert completion['robot_free_readiness'] == refused
+    assert not (run / 'robot_free_readiness.v1.json').exists()
+    queued = completion['team_scene_request']
+    assert queued['status'] == 'enqueued'
+    [pending] = (queue / 'pending').glob('*.json')
+    request = worker.validated_request(json.loads(pending.read_text()))
+    assert request['robot_free_readiness_status'] == 'refused'
+    assert request['request_digest'] == queued['request_digest']

@@ -75,7 +75,13 @@ registry digest after adding them (the paths are illustrations):
 
 Both files must be operator-owned and not group- or world-writable. Each
 request ends in `team-scene-packets/status/<key>.json`: `completed`, `skipped`
-with a reason, or `blocked` with typed blockers. After fixing the cause, run
+with a reason, or `blocked` with typed blockers. A block a later run can clear
+by itself (an interrupted or timed-out compile, a failed offer post, a failed
+fetch, an operating-system error) returns to `pending/` automatically, at most
+three times, after waits of 5 minutes, 30 minutes and 2 hours; the screening
+timer's pass and the worker's own pass both do it, and the status records the
+count and cause under `automatic_retry` (`exhausted` once spent). A
+deterministic refusal stays blocked. After fixing the cause, run
 `python -m blueprint_pipeline.team_scene_packet_worker --queue-root
 /var/lib/blueprint/pipeline-control-plane/team-scene-packets --requeue-unfinished`
 as the service account; the path unit then runs those requests again. A

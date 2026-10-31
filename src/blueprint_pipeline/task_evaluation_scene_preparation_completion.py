@@ -55,9 +55,14 @@ def reconcile_preparation_completion(*, intent, config):
             readiness = retention.retain_robot_free_readiness(
                 run_root=run, revision_reference=result['configured_scene_revision_reference'],
                 revision_digest=result['configured_scene_revision_digest'])
-            # Beta L5: with the receipt retained, a website scene's team half is
-            # compiled by its own no-spend worker. This join only enqueues one
-            # sealed request for it; an I/O failure raises and it is retried.
+            # Beta L5: a website scene's team half is compiled by its own
+            # no-spend worker. This join only enqueues one sealed request for
+            # it; an I/O failure raises and it is retried. A refused readiness
+            # score is recorded above and still enqueues: the compile never
+            # reads the receipt, and the probe lane that can decide it is
+            # queued only from the compiled half. Not enqueuing left the job
+            # completed with no team half and nothing that could ever decide
+            # its probe; the team gate still refuses every team until it passes.
             from .team_scene_packet_worker import enqueue_team_scene_request
             team_scene = enqueue_team_scene_request(intent=intent, run_root=run, receipt=receipt,
                                                     result=result, readiness=readiness)

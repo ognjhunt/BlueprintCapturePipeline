@@ -54,7 +54,13 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .beta_policy_screening_team import catalog_for_profile
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
-    from .team_scene_packet_worker import _read_json, request_key, resolve_capture_root, validated_request
+    from .team_scene_packet_worker import (
+        _read_json,
+        request_key,
+        requeue_transient_blocked,
+        resolve_capture_root,
+        validated_request,
+    )
     from .website_candidate_ranking import retained_priority
     from .website_candidate_selection import retain_campaign_catalog
 
@@ -63,6 +69,14 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     if (not packet_root.is_absolute() or any(p.is_symlink() for p in (packet_root, *packet_root.parents))
             or not 1 <= max_sources <= 100):
         raise ValueError("beta_screening_source_queue_invalid")
+    try:
+        # The packet worker runs only when something is pending: this timer's pass returns a timed-out
+        # compile or a failed offer post to it, bounded and after a wait. Deterministic refusals stay blocked.
+        packet_requeue = requeue_transient_blocked(queue_root=packet_root)
+    except (OSError, ValueError) as exc:
+        from .bounded_error import error_description
+
+        packet_requeue = {"status": "failed", "error": error_description(exc)}
     base_catalog = load_default_catalog()
     outcomes = []
     with _lock(root, ".source.lock"):
@@ -80,6 +94,9 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     raise ValueError("beta_screening_source_request_key_invalid")
                 packet_status = _read_json(packet_root / "status" / path.name) or {}
                 if packet_status.get("status") not in {"completed", "skipped"}:
+                    # Say why the scene half is not ready, and whether it is still being retried.
+                    outcome["scene_packet"] = {key: packet_status[key] for key in
+                                               ("status", "blockers", "automatic_retry") if key in packet_status}
                     raise ValueError("beta_screening_scene_packet_not_ready")
                 capture = resolve_capture_root(request)
                 retained = _read_json(capture / "pipeline" / "website_task_context.json") or {}
@@ -137,7 +154,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
             outcomes.append(outcome)
     from .beta_policy_screening_family_sources import enqueue_registered_family_scenes
     family = enqueue_registered_family_scenes(queue_root=root, max_sources=max_sources)
-    return {"sources": outcomes + family["sources"]}
+    return {"sources": outcomes + family["sources"], "team_scene_packet_requeue": packet_requeue}
 
 
 def publish_screening(publication: Mapping[str, Any]) -> dict[str, Any]:
