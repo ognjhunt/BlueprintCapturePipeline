@@ -2,15 +2,18 @@
 """Select and run the smallest deterministic PR test set.
 
 The selector is intentionally conservative. Directly related tests and a small
-always-on sentinel set run for ordinary changes. Dependency-wide, unknown, or
-overly broad changes request the separately governed full lane instead of
-silently pretending that a narrow selection is sufficient.
+always-on sentinel set run for ordinary changes. A selection above the bounded
+lane's budget runs every selected file in the wide lane, which has the full
+lane's environment. Dependency-wide, unknown, or overly broad changes request the
+separately governed full lane instead of silently pretending that a narrow
+selection is sufficient.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -25,6 +28,16 @@ DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_WORKER_COUNT = 4
 MAX_CHANGED_FILES = 50
 MAX_IMPACTED_TEST_FILES = 40
+# Only an impact set this broad still needs the full suite. The 26 budget-only
+# full suites of 2026-10-31 selected a median of 66 files (maximum 99), a median
+# 8 of the suite's 161 test-minutes.
+MAX_WIDE_TEST_FILES = 600
+MAX_WIDE_SHARE_OF_TEST_FILES = 0.25
+MAX_WIDE_SHARDS = 4
+WIDE_SHARD_TARGET_SECONDS = 600
+WIDE_LANE_WORKFLOW = ".github/workflows/impacted-wide-lane.yml"
+DURATION_BASELINE = ".github/full-test-lane-duration-baseline.json"
+FALLBACK_SECONDS_PER_TEST = 0.25
 
 SENTINEL_TESTS = (
     "tests/test_success_claim_contracts.py::test_freshness_fails_closed_without_any_signal",
@@ -167,6 +180,45 @@ def _matching_tests(
     return candidates
 
 
+def _estimated_seconds(
+    root: Path, *, files: Sequence[str], test_sources: dict[str, str]
+) -> dict[str, float]:
+    """Seconds per test file from the committed baseline; a planning hint only."""
+    try:
+        baseline = json.loads((root / DURATION_BASELINE).read_text(encoding="utf-8"))
+        measured = {row["path"]: float(row["duration_seconds"]) for row in baseline["files"]}
+        seconds_per_test = float(baseline["default_seconds_per_test"])
+    except (OSError, ValueError, KeyError, TypeError):
+        measured, seconds_per_test = {}, FALLBACK_SECONDS_PER_TEST
+    return {
+        path: measured.get(
+            path, seconds_per_test * max(1, test_sources.get(path, "").count("def test_"))
+        )
+        for path in files
+    }
+
+
+def _wide_shards(
+    root: Path, *, files: Sequence[str], test_sources: dict[str, str]
+) -> list[dict[str, object]]:
+    """Longest-first balanced shards, deterministic for one baseline and one selection."""
+    if not files:
+        return []
+    estimates = _estimated_seconds(root, files=files, test_sources=test_sources)
+    wanted = math.ceil(sum(estimates.values()) / WIDE_SHARD_TARGET_SECONDS)
+    count = min(MAX_WIDE_SHARDS, max(1, wanted), len(files))
+    loads = [0.0] * count
+    assigned: list[list[str]] = [[] for _ in range(count)]
+    for path, seconds in sorted(estimates.items(), key=lambda row: (-row[1], row[0])):
+        index = loads.index(min(loads))
+        assigned[index].append(path)
+        loads[index] += seconds
+    return [
+        {"index": index, "estimated_seconds": round(loads[index], 3), "files": sorted(assigned[index])}
+        for index in range(count)
+    ]
+
+
 def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
     changed = _normalize_paths(paths)
     test_sources = _test_sources(root)
@@ -213,11 +265,31 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
         else:
             reasons.append(f"non_executable_surface:{changed_path}")
 
+    requires_wide_impacted = False
     if len(impacted) > MAX_IMPACTED_TEST_FILES:
-        requires_full_suite = True
-        reasons.append(
-            f"impacted_test_count_exceeds_budget:{len(impacted)}>{MAX_IMPACTED_TEST_FILES}"
+        ceiling = min(
+            MAX_WIDE_TEST_FILES, int(MAX_WIDE_SHARE_OF_TEST_FILES * len(test_sources))
         )
+        if requires_full_suite or len(impacted) > ceiling:
+            requires_full_suite = True
+            reasons.append(
+                f"impacted_test_count_exceeds_budget:{len(impacted)}>{MAX_IMPACTED_TEST_FILES}"
+            )
+            if len(impacted) > ceiling:
+                reasons.append(f"impacted_test_count_exceeds_wide_ceiling:{len(impacted)}>{ceiling}")
+            impacted.clear()
+        else:
+            requires_wide_impacted = True
+    if WIDE_LANE_WORKFLOW in changed and not requires_full_suite:
+        # A change to the lane runs the lane, as a change to the full lane runs that.
+        requires_wide_impacted = True
+        reasons.append(f"wide_lane_changed:{WIDE_LANE_WORKFLOW}")
+
+    wide_tests: list[str] = []
+    if requires_wide_impacted:
+        wide_tests = sorted(impacted)
+        reasons.append(f"impacted_test_count_wide:{len(wide_tests)}")
+        # The bounded lane stays bounded: it runs the sentinels, the wide lane the rest.
         impacted.clear()
 
     selected_set = set(impacted)
@@ -232,6 +304,9 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
         "changed_files": changed,
         "selected_tests": selected,
         "requires_full_suite": requires_full_suite,
+        "requires_wide_impacted": requires_wide_impacted,
+        "wide_impacted_tests": wide_tests,
+        "wide_shards": _wide_shards(root, files=wide_tests, test_sources=test_sources),
         "reasons": sorted(set(reasons)),
         "protected_risks": [
             "changed_contract_behavior",
@@ -256,6 +331,13 @@ def write_github_output(plan: dict[str, object], path: Path) -> None:
             + "\n"
         )
         stream.write(f"selected_test_count={len(plan['selected_tests'])}\n")
+        stream.write(
+            "requires_wide_impacted="
+            + ("true" if plan["requires_wide_impacted"] else "false")
+            + "\n"
+        )
+        matrix = [shard["index"] for shard in plan["wide_shards"]]
+        stream.write(f"wide_shard_matrix={json.dumps(matrix, separators=(',', ':'))}\n")
 
 
 def run_pytest(

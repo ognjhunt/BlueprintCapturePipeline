@@ -6,7 +6,7 @@ Branch protection for `main` requires one stable aggregate merge check:
 
 | Check | Workflow | Why it is required |
 | --- | --- | --- |
-| `Impacted test and sentinel gate` | `.github/workflows/ci.yml` | Runs dependency-mapped tests plus always-on success-claim, runtime-security, paid-resource-admission, and release-policy sentinels. The ordinary lane is capped at ten minutes. If deterministic impact analysis classifies the change as cross-cutting, this aggregate waits for the reusable full lane and fails unless it passes. |
+| `Impacted test and sentinel gate` | `.github/workflows/ci.yml` | Runs dependency-mapped tests plus always-on success-claim, runtime-security, paid-resource-admission, and release-policy sentinels. The ordinary lane is capped at ten minutes. A selection above its 40-file budget runs in the wide lane instead. If deterministic impact analysis classifies the change as cross-cutting, this aggregate waits for the reusable full lane and fails unless it passes. |
 
 A pull request keeps only its newest CI run. A newer push cancels every job of
 the older run, including this gate. A cancelled gate concludes `cancelled`, which
@@ -30,8 +30,18 @@ CI runs the same plan
 with a 480-second test-process limit inside a ten-minute job limit, leaving time
 for frozen dependency setup and artifact upload. Every plan records changed
 files, selected tests, escalation reasons, and the protected risks. Unknown
-executable surfaces, dependency changes, or an impact set exceeding the bounded
-file/test budgets request the full lane rather than silently reducing coverage.
+executable surfaces, dependency changes, or more than 50 changed files request
+the full lane rather than silently reducing coverage.
+
+More than 40 impacted test files, with no other reason for the full lane, runs
+`.github/workflows/impacted-wide-lane.yml`. It has the full lane's environment,
+fail-closed posture and marker expression, so every selected file runs with its
+slow, root and systemd tests, and a skip or a selected file with no tests fails
+it. It takes its file list only from that run's impact plan, in at most four
+shards balanced on the committed duration baseline. A selection above 600 files
+or a quarter of all test files still requests the full lane. The full lane also
+runs nightly and on every cross-cutting change. A change to the wide lane's own
+workflow runs that lane.
 
 Canonical Pipeline launch evidence uses Python `3.12`. The source of truth is
 `docs/CI_PYTHON_INTERPRETER_MATRIX.json`, documented in
