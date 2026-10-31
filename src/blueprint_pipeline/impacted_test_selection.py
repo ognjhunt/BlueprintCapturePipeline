@@ -38,6 +38,18 @@ WIDE_SHARD_TARGET_SECONDS = 600
 WIDE_LANE_WORKFLOW = ".github/workflows/impacted-wide-lane.yml"
 DURATION_BASELINE = ".github/full-test-lane-duration-baseline.json"
 FALLBACK_SECONDS_PER_TEST = 0.25
+REVERSE_IMPORT_DEPTH = 2
+# Source roots whose files are importable, as (path prefix, what to strip for the dotted name).
+IMPORT_ROOTS = (("src/blueprint_pipeline/", "src/"), ("deploy/operator-door/operator_door/", "deploy/operator-door/"))
+CONFIG_ROOT = "src/blueprint_pipeline/config/"
+# Text, not a parse: 0.85 s against about 11 s for the 2,511 modules, and an import
+# inside a function still counts. One inside a string only widens the selection.
+IMPORT_STATEMENT = re.compile(
+    r"^[ \t]*(?:from[ \t]+(?P<source>[.\w]+)[ \t]+import[ \t]+(?P<names>\([^)]*\)|[^\n#]*)"
+    r"|import[ \t]+(?P<modules>[^\n#]+))",
+    re.MULTILINE,
+)
+WORD = re.compile(r"\w+")
 
 SENTINEL_TESTS = (
     "tests/test_success_claim_contracts.py::test_freshness_fails_closed_without_any_signal",
@@ -126,6 +138,16 @@ def _test_sources(root: Path) -> dict[str, str]:
     return sources
 
 
+def _dotted_module(path: str) -> str:
+    """The name a file is imported by, or "" for a file nothing can import."""
+    if not path.endswith(".py"):
+        return ""
+    for prefix, strip in IMPORT_ROOTS:
+        if path.startswith(prefix):
+            return path.removeprefix(strip).removesuffix(".py").removesuffix("/__init__").replace("/", ".")
+    return ""
+
+
 def _matching_tests(
     *,
     changed_path: str,
@@ -149,10 +171,8 @@ def _matching_tests(
         tokens = {changed_path}
     module_patterns: list[str] = []
     module_name = ""
-    if changed_path.startswith("src/blueprint_pipeline/") and path.suffix == ".py":
-        module = changed_path.removeprefix("src/").removesuffix(".py").replace("/", ".")
-        if path.name == "__init__.py":
-            module = module.removesuffix(".__init__")
+    module = _dotted_module(changed_path)
+    if module:
         parent, _, module_name = module.rpartition(".")
         module_patterns = [
             rf"(?<![A-Za-z0-9_]){re.escape(module)}(?![A-Za-z0-9_])",
@@ -219,12 +239,94 @@ def _wide_shards(
     ]
 
 
+def _imported_names(module: str, *, is_package: bool, source: str) -> set[str]:
+    """Every dotted name this module's import statements could resolve to."""
+    package = module.split(".") if is_package else module.split(".")[:-1]
+    names: set[str] = set()
+    for statement in IMPORT_STATEMENT.finditer(source):
+        if statement["modules"]:
+            names.update(part.split(" as ")[0].strip() for part in statement["modules"].split(","))
+            continue
+        origin = statement["source"]
+        level = len(origin) - len(origin.lstrip("."))
+        if level:
+            prefix = package[: len(package) - (level - 1)]
+            origin = ".".join([*prefix, origin.lstrip(".")] if origin.lstrip(".") else prefix)
+        names.add(origin)
+        listed = re.sub(r"#[^\n]*", "", statement["names"]).strip("() \t\n")
+        names.update(f"{origin}.{part.split(' as ')[0].strip()}" for part in listed.split(","))
+    return names
+
+
+def _importable_sources(root: Path) -> dict[str, str]:
+    """Every importable file's source by repository path, and every script's."""
+    sources: dict[str, str] = {}
+    files = [*(root / "scripts").glob("*.py")]
+    for prefix, _strip in IMPORT_ROOTS:
+        files.extend((root / prefix).rglob("*.py"))
+    for path in files:
+        sources[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8", errors="replace")
+    return sources
+
+
+def _importers_by_file(sources: dict[str, str]) -> dict[str, set[str]]:
+    by_module = {_dotted_module(path): path for path in sources if _dotted_module(path)}
+    importers: dict[str, set[str]] = {}
+    for path, source in sources.items():
+        module = _dotted_module(path) or path.removesuffix(".py").replace("/", ".")
+        for name in _imported_names(module, is_package=path.endswith("/__init__.py"), source=source):
+            if name in by_module:
+                importers.setdefault(by_module[name], set()).add(path)
+    return importers
+
+
+def _files_through_importers(root: Path, changed: Sequence[str]) -> dict[str, set[str]]:
+    """For each file no test names: what imports it, within two steps, or what loads it."""
+    sources = _importable_sources(root)
+    importers = _importers_by_file(sources)
+    through: dict[str, set[str]] = {}
+    for changed_path in changed:
+        if changed_path.startswith(CONFIG_ROOT) and not _dotted_module(changed_path):
+            # A file or the directory directly under config/ holding it, named by its loader.
+            name = changed_path.removeprefix(CONFIG_ROOT).split("/", 1)[0]
+            through[changed_path] = {path for path, source in sources.items() if name in source}
+            continue
+        closure: set[str] = set()
+        frontier = {changed_path}
+        for _depth in range(REVERSE_IMPORT_DEPTH):
+            frontier = {row for path in frontier for row in importers.get(path, ())} - closure - {changed_path}
+            closure |= frontier
+        through[changed_path] = closure
+    return through
+
+
+def _tests_of_files(paths: set[str], *, test_sources: dict[str, str]) -> dict[str, set[str]]:
+    """_matching_tests for many files, reading each test's words only once."""
+    by_word: dict[str, set[str]] = {}
+    for path in paths:
+        by_word.setdefault(_dotted_module(path).rpartition(".")[2] or Path(path).stem, set()).add(path)
+    mentioning: dict[str, dict[str, str]] = {}
+    for test_path, source in test_sources.items():
+        for word in by_word.keys() & set(WORD.findall(source)):
+            mentioning.setdefault(word, {})[test_path] = source
+    matches: dict[str, set[str]] = {}
+    for word, files in by_word.items():
+        for path in files:
+            direct = f"tests/test_{Path(path).stem}.py"
+            candidates = mentioning.get(word, {})
+            if direct in test_sources:
+                candidates = {**candidates, direct: test_sources[direct]}
+            matches[path] = _matching_tests(changed_path=path, test_sources=candidates)
+    return matches
+
+
 def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
     changed = _normalize_paths(paths)
     test_sources = _test_sources(root)
     impacted: set[str] = set()
     reasons: list[str] = []
     requires_full_suite = False
+    needs_importers: list[str] = []
 
     if not changed:
         reasons.append("no_changed_files:sentinels_only")
@@ -259,11 +361,26 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
             reasons.append(f"mapped:{changed_path}:{len(matches)}")
             continue
 
-        if changed_path.startswith(("src/", "scripts/", "deploy/", "terraform/")):
+        if _dotted_module(changed_path) or changed_path.startswith(CONFIG_ROOT):
+            needs_importers.append(changed_path)
+        elif changed_path.startswith(("src/", "scripts/", "deploy/", "terraform/")):
             requires_full_suite = True
             reasons.append(f"unmapped_executable_surface:{changed_path}")
         else:
             reasons.append(f"non_executable_surface:{changed_path}")
+
+    if needs_importers:
+        through = _files_through_importers(root, needs_importers)
+        tests_by_file = _tests_of_files(set().union(*through.values()), test_sources=test_sources)
+        for changed_path in needs_importers:
+            matches = set().union(*(tests_by_file[path] for path in through[changed_path]))
+            if matches:
+                impacted.update(matches)
+                reasons.append(f"mapped_through_importers:{changed_path}:{len(matches)}")
+            else:
+                # A brand-new file nothing references, so nothing can say what it breaks.
+                requires_full_suite = True
+                reasons.append(f"unmapped_executable_surface:{changed_path}")
 
     requires_wide_impacted = False
     if len(impacted) > MAX_IMPACTED_TEST_FILES:

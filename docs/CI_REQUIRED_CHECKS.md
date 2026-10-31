@@ -33,6 +33,13 @@ files, selected tests, escalation reasons, and the protected risks. Unknown
 executable surfaces, dependency changes, or more than 50 changed files request
 the full lane rather than silently reducing coverage.
 
+A file counts as covered when a test names it, imports it, or loads it by name.
+An importable module no test names (under `src/blueprint_pipeline/` or the operator
+door's package) is covered through what imports it, within two steps, scripts
+included. A file under `src/blueprint_pipeline/config/` is covered through the
+modules that name it or the directory directly under `config/` holding it. A file
+nothing references stays unknown and requests the full lane.
+
 More than 40 impacted test files, with no other reason for the full lane, runs
 `.github/workflows/impacted-wide-lane.yml`. It has the full lane's environment,
 fail-closed posture and marker expression, so every selected file runs with its
