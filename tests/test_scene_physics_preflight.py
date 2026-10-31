@@ -431,3 +431,30 @@ def test_a_long_sliver_is_sampled_by_area_and_covered_and_a_budget_refuses_by_na
     assert len(spp.sample_surface(square, 0.01)[0]) == pytest.approx(1.0 / 0.01 ** 2, rel=0.1)  # area plus edges
     with pytest.raises(spp.ScenePhysicsPreflightError, match="scene_physics_surface_samples_over_budget"):
         spp.sample_surface(square, 0.01, maximum_samples=1_000)
+
+
+def test_a_team_robot_at_the_station_is_not_measured_as_the_franka_it_replaces(tmp_path):
+    # The station where a Franka blocks the door: a team's robot there is a different body.
+    root, plan = _packet(tmp_path, _background(tmp_path), _asset(tmp_path, counterbalanced=True))
+    _with_task(root, plan, success_start_deg=54, robot_x=0.75)
+    team = {**plan, "robot": {**plan["robot"], "robot_id": spp.TEAM_ROBOT_ID, "embodiment_id": "acme-arm",
+                              "embodiment_digest": "sha256:" + "e" * 64, "base_mode": "fixed_at_station"}}
+    report = spp.require_scene_physics_admission(root, scene_plan=team, **FAST)
+    assert report["status"] == "passed" and report["blockers"] == []
+    assert report["robot_clearance"] == {
+        "status": "unassessed", "reason": "robot_fixed_volumes_unmeasured", "robot_id": "team_embodiment",
+        "embodiment_id": "acme-arm", "embodiment_digest": "sha256:" + "e" * 64, "base_mode": "fixed_at_station",
+        "blockers": [], "advisories": [], "notices": []}
+    assert "task_object:scene_physics_robot_clearance_unassessed:acme-arm" in report["advisories"]
+    # The scene's own checks still run on the team plan: a door that strikes the floor still blocks.
+    (tmp_path / "bump").mkdir()
+    bump, bump_plan = _packet(tmp_path / "bump", _background(tmp_path / "bump", floor_bump=True),
+                              _asset(tmp_path / "bump", counterbalanced=True))
+    _with_task(bump, bump_plan, success_start_deg=90)
+    with pytest.raises(spp.ScenePhysicsAdmissionBlocked) as blocked:
+        spp.require_scene_physics_admission(bump, scene_plan={**bump_plan, "robot": team["robot"]}, **FAST)
+    assert blocked.value.blockers == ["task_object:scene_physics_motion_contact:door_hinge@90deg"]
+    # A team that brings a body this module measured is measured as that body.
+    franka = {**team, "robot": {**team["robot"], "embodiment_id": "franka_panda"}}
+    with pytest.raises(spp.ScenePhysicsAdmissionBlocked, match="robot_in_motion_path"):
+        spp.require_scene_physics_admission(root, scene_plan=franka, **FAST)

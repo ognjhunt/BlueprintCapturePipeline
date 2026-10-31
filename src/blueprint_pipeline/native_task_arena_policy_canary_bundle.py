@@ -588,9 +588,15 @@ def build_policy_canary_session_bundle(
         code="policy_canary_bundle_import_closure_incomplete",
     )
     job = Path(job_dir).expanduser().resolve()
+    team_bindings = [spec["team_embodiment"] for spec in specs.values() if spec.get("team_embodiment") is not None]
+    if (bool(team_bindings) != (team_robot_model_path is not None)
+            or (team_bindings and len(specs) != 1)):
+        raise ValueError("beta_screening_team_robot_model_binding_mismatch")
     base = build_native_task_arena_bundle(
         job_dir=job / "base",
         packet_dir=packet_dir,
+        # The pre-GPU checks measure the robot that runs, not the packet's.
+        team_embodiment=team_bindings[0] if team_bindings else None,
         worker_source=package / "native_task_arena_policy_canary_worker.py",
         runtime_module_sources=sorted(set(runtime_modules)),
         implementation_commit=implementation_commit,
@@ -616,10 +622,6 @@ def build_policy_canary_session_bundle(
         with zipfile.ZipFile(base["bundle_path"]) as archive:
             archive.extractall(root)
         runtime = root / "provider_runtime"
-        team_bindings = [spec["team_embodiment"] for spec in specs.values() if spec.get("team_embodiment") is not None]
-        if (bool(team_bindings) != (team_robot_model_path is not None)
-                or (team_bindings and len(specs) != 1)):
-            raise ValueError("beta_screening_team_robot_model_binding_mismatch")
         if team_bindings:
             from .team_embodiment import verify_model_file
             from .team_robot_model_delivery import copy_prepared_closure
