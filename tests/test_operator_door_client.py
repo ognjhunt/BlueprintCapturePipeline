@@ -430,6 +430,281 @@ def test_wait_returns_when_the_outcome_lands(door: dict[str, Any]) -> None:
     assert code == 0 and json.loads(out)["outcome"]["status"] == "deployed"
 
 
+def _settle(door: dict[str, Any], request_id: str, *, result: dict | None = None, outcome: dict | None = None) -> None:
+    results = door["state"] / "requests" / "results"
+    if result is not None:
+        (results / f"{request_id}.json").write_text(json.dumps(result))
+    if outcome is not None:
+        (results / f"{request_id}.outcome.json").write_text(json.dumps(outcome))
+
+
+def test_wait_keeps_waiting_while_a_deploy_is_parked(door: dict[str, Any]) -> None:
+    _, out = _run("deploy", SHA)
+    request_id = json.loads(out)["id"]
+    _settle(door, request_id, result={"status": "parked", "parked_behind": "blueprint-x-deploy.service"})
+    code, _ = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "0.2")
+    assert code == 1  # gave up waiting: parked is not a verdict
+
+    _settle(door, request_id, outcome={"status": "deployed"})
+    code, _ = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+    assert code == 0
+
+
+def test_wait_ends_well_when_the_active_release_already_contains_the_commit(door: dict[str, Any]) -> None:
+    _, out = _run("deploy", SHA)
+    request_id = json.loads(out)["id"]
+    _settle(door, request_id, outcome={"status": "superseded", "superseded_by_commit": "f" * 40})
+
+    code, _ = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+
+    assert code == 0
+
+
+@pytest.mark.parametrize("code_name", [
+    "parked_commit_not_contained", "parked_rollback_refused", "parked_active_release_not_proven",
+])
+def test_wait_fails_when_a_parked_request_could_not_be_honoured(door: dict[str, Any], code_name: str) -> None:
+    _, out = _run("deploy", SHA)
+    request_id = json.loads(out)["id"]
+    _settle(door, request_id, outcome={"status": "failed", "code": code_name})
+
+    code, _ = _run("request", request_id, "--wait", "--poll", "0.05", "--timeout", "5")
+
+    assert code == 1
+
+
+def test_waiting_on_a_deploy_allows_two_deploys_at_their_limit_and_the_lock() -> None:
+    parser = client.build_parser()
+    assert parser.parse_args(["deploy", SHA]).timeout >= 6.5 * 3600
+    assert parser.parse_args(["request", "some-id"]).timeout >= 6.5 * 3600
+
+
+class _GitHub:
+    """The read-only GitHub answers --latest-attested may ask for, and a record of every question."""
+
+    def __init__(self, monkeypatch, runs, jobs, compare="ahead"):
+        self.routes: list[str] = []
+        self.runs, self.jobs, self.compare = runs, jobs, compare
+        monkeypatch.setattr(client, "_github_json", self.read)
+
+    def read(self, route: str) -> dict[str, Any]:
+        self.routes.append(route)
+        if route.startswith("/actions/workflows/ci.yml/runs?"):
+            return {"workflow_runs": self.runs}
+        if route.startswith("/compare/"):
+            return {"status": self.compare}
+        run_id = int(route.split("/")[3])
+        return {"jobs": self.jobs.get(run_id, [])}
+
+
+ATTESTED = [{"name": "SBOM, license, and provenance contract", "conclusion": "success"}]
+UNATTESTED = [{"name": "SBOM, license, and provenance contract", "conclusion": "skipped"},
+              {"name": "Ruff and claim lint", "conclusion": "failure"}]
+NEW, MIDDLE, OLD = "a" * 40, "b" * 40, "c" * 40
+RUNNING = "d" * 40
+
+
+def _ci_run(run_id: int, sha: str, status: str = "completed", conclusion: str | None = "success") -> dict[str, Any]:
+    return {"id": run_id, "head_sha": sha, "status": status, "conclusion": conclusion}
+
+
+def _status_with_active(monkeypatch, active: str | None, *, proven: bool = False) -> None:
+    real = client._json
+
+    def fake(method, route, **kwargs):
+        if route == "/status":
+            return {"active_release": {"commit": active} if active else {"error": "unreadable"}}
+        return real(method, route, **kwargs)
+
+    monkeypatch.setattr(client, "_json", fake)
+    monkeypatch.setattr(client, "_receipt_proves_deployed", lambda commit: proven and commit == active)
+
+
+def _pending(door: dict[str, Any]) -> list:
+    return list((door["state"] / "requests" / "pending").glob("*.json"))
+
+
+def test_latest_attested_deploys_the_newest_commit_whose_job_succeeded(door, monkeypatch) -> None:
+    github = _GitHub(monkeypatch, [_ci_run(5, NEW, "queued", None), _ci_run(4, NEW, "in_progress", None),
+                                   _ci_run(3, MIDDLE, "completed", "failure"), _ci_run(2, MIDDLE), _ci_run(1, OLD)],
+                     {2: UNATTESTED, 1: ATTESTED})
+    _status_with_active(monkeypatch, RUNNING)
+
+    code, out = _run("deploy", "--latest-attested")
+
+    assert code == 0
+    request_id = json.loads(out)["id"]
+    spooled = json.loads((door["state"] / "requests" / "pending" / f"{request_id}.json").read_text())
+    assert spooled["request"]["commit"] == OLD and spooled["request"]["kind"] == "deploy"
+    # A run not finished or not green cannot be chosen, so it costs no request against the hourly limit.
+    assert [route for route in github.routes if "/jobs" in route] == [
+        "/actions/runs/2/jobs?per_page=100&filter=latest", "/actions/runs/1/jobs?per_page=100&filter=latest"]
+    assert github.routes[0] == "/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=30"
+    assert f"/compare/{RUNNING}...{OLD}?per_page=1" in github.routes
+
+
+def test_latest_attested_spends_a_small_part_of_the_hourly_limit_however_long_it_searches(door, monkeypatch, capsys) -> None:
+    runs = [_ci_run(index, f"{index:040x}") for index in range(30, 0, -1)]
+    github = _GitHub(monkeypatch, runs, {index: UNATTESTED for index in range(1, 31)})
+
+    code, _ = _run("deploy", "--latest-attested")
+
+    assert code == 2 and "no attested commit" in capsys.readouterr().err
+    assert len(github.routes) == 1 + client.ATTESTED_JOB_READS and len(github.routes) <= 10
+
+
+def test_latest_attested_counts_only_the_attesting_job(door, monkeypatch, capsys) -> None:
+    other_green = [{"name": "Ruff and claim lint", "conclusion": "success"},
+                   {"name": "SBOM and license contract before merge", "conclusion": "success"}]
+    _GitHub(monkeypatch, [_ci_run(1, NEW)], {1: other_green})
+
+    code, _ = _run("deploy", "--latest-attested")
+
+    assert code == 2 and "no attested commit" in capsys.readouterr().err
+    assert _pending(door) == []
+
+
+def test_latest_attested_refuses_what_a_receipt_proves_is_deployed(door, monkeypatch, capsys) -> None:
+    _GitHub(monkeypatch, [_ci_run(1, NEW)], {1: ATTESTED})
+    _status_with_active(monkeypatch, NEW, proven=True)
+
+    code, _ = _run("deploy", "--latest-attested")
+
+    assert code == 2 and "already deployed" in capsys.readouterr().err
+    assert _pending(door) == []
+
+
+def test_latest_attested_retries_a_commit_no_receipt_proves(door, monkeypatch) -> None:
+    """A deploy moves the release link before its last checks, and a failure leaves it there."""
+    _GitHub(monkeypatch, [_ci_run(1, NEW)], {1: ATTESTED})
+    _status_with_active(monkeypatch, NEW, proven=False)
+
+    code, _ = _run("deploy", "--latest-attested")
+
+    assert code == 0 and len(_pending(door)) == 1
+
+
+class _Receipts:
+    """The door's /fs/read for the two receipt names, and which paths were asked for."""
+
+    def __init__(self, monkeypatch, answers: dict[str, Any]) -> None:
+        self.asked: list[str] = []
+        self.answers = answers
+        monkeypatch.setattr(client, "_request", self.read)
+
+    def read(self, method: str, route: str, query: dict[str, Any]) -> io.BytesIO:
+        assert (method, route) == ("GET", "/fs/read")
+        name = query["path"].rsplit("/", 1)[1]
+        self.asked.append(name)
+        answer = self.answers.get(name, client.DoorError(2, "refused: not_found"))
+        if isinstance(answer, Exception):
+            raise answer
+        return io.BytesIO(answer if isinstance(answer, bytes) else json.dumps(answer).encode())
+
+
+@pytest.mark.parametrize(("name", "receipt", "proven"), [
+    (f"iteration_{NEW[:12]}_door.json", {"status": "deployed", "source_commit": NEW}, True),
+    (f"production_{NEW[:12]}_door.json", {"status": "deployed", "source_commit": NEW}, True),
+    (f"iteration_{NEW[:12]}_door.json", {"status": "blocked", "source_commit": NEW}, False),
+    (f"iteration_{NEW[:12]}_door.json", {"status": "deployed", "source_commit": OLD}, False),
+    (f"iteration_{NEW[:12]}_door.json", b"not json", False),
+    (f"iteration_{NEW[:12]}_door.json", [1, 2], False),
+])
+def test_only_a_deploys_own_receipt_proves_it(monkeypatch, name: str, receipt: Any, proven: bool) -> None:
+    _Receipts(monkeypatch, {name: receipt})
+
+    assert client._receipt_proves_deployed(NEW) is proven
+
+
+@pytest.mark.parametrize("error", [client.DoorError(2, "refused: secret_content_refused"),
+                                   client.DoorError(2, "refused: open_failed"),
+                                   client.DoorError(4, "cannot reach the door"),
+                                   client.DoorError(5, "door error 502: ")])
+def test_a_receipt_that_cannot_be_read_stops_the_deploy_rather_than_guessing(monkeypatch, error) -> None:
+    _Receipts(monkeypatch, {f"iteration_{NEW[:12]}_door.json": error})
+
+    with pytest.raises(client.DoorError):
+        client._receipt_proves_deployed(NEW)
+
+
+@pytest.mark.parametrize("relation", ["behind", "diverged", "identical", None])
+def test_latest_attested_deploys_forward_only(door, monkeypatch, capsys, relation) -> None:
+    _GitHub(monkeypatch, [_ci_run(1, OLD)], {1: ATTESTED}, compare=relation)
+    _status_with_active(monkeypatch, NEW)
+
+    code, _ = _run("deploy", "--latest-attested")
+
+    assert code == 2 and "not ahead" in capsys.readouterr().err
+    assert _pending(door) == []
+
+
+def test_latest_attested_refuses_when_it_cannot_tell_what_runs(door, monkeypatch, capsys) -> None:
+    _GitHub(monkeypatch, [_ci_run(1, NEW)], {1: ATTESTED})
+    _status_with_active(monkeypatch, None)
+
+    code, _ = _run("deploy", "--latest-attested")
+
+    assert code == 2 and "cannot tell" in capsys.readouterr().err
+    assert _pending(door) == []
+
+
+def test_latest_attested_refuses_when_nothing_is_attested(door, monkeypatch, capsys) -> None:
+    _GitHub(monkeypatch, [_ci_run(2, NEW), _ci_run(1, OLD)], {2: UNATTESTED, 1: []})
+
+    code, _ = _run("deploy", "--latest-attested")
+
+    assert code == 2 and "no attested commit" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [
+    ("deploy", SHA, "--latest-attested"),
+    ("deploy", "--latest-attested", "--release-provenance", "receipt.json"),
+    ("deploy", "--latest-attested", "--release-provenance-sha256", "a" * 64),
+    ("deploy",),
+])
+def test_deploy_needs_exactly_one_way_to_name_its_commit(door, monkeypatch, argv) -> None:
+    monkeypatch.setattr(client, "_github_json", lambda _route: pytest.fail("no GitHub read expected"))
+
+    code, _ = _run(*argv)
+
+    assert code == 2
+    assert _pending(door) == []
+
+
+def test_a_github_read_never_carries_the_door_token(monkeypatch) -> None:
+    seen: list[Any] = []
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def opened(request, timeout):
+        seen.append(request)
+        return Response(b'{"workflow_runs": []}')
+
+    monkeypatch.setenv("BLUEPRINT_OPERATOR_DOOR_TOKEN", "secret-door-token")
+    monkeypatch.setattr(client.urllib.request, "urlopen", opened)
+
+    assert client._github_json("/actions/workflows/ci.yml/runs") == {"workflow_runs": []}
+    assert seen[0].full_url.startswith("https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline/")
+    assert seen[0].get_method() == "GET"
+    assert seen[0].get_header("Authorization") is None
+
+
+def test_github_failure_is_a_network_error_not_a_crash(monkeypatch) -> None:
+    def down(_request, timeout):
+        raise OSError("down")
+
+    monkeypatch.setattr(client.urllib.request, "urlopen", down)
+
+    with pytest.raises(client.DoorError) as failure:
+        client._github_json("/x")
+    assert failure.value.exit_code == 4
+
+
 def test_wait_fails_on_a_refusal(door: dict[str, Any]) -> None:
     code, out = _run("deploy", SHA)
     request_id = json.loads(out)["id"]

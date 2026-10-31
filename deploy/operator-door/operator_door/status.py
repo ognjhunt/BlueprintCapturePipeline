@@ -338,7 +338,7 @@ def _unit_health(controller_units: Any, failed_units: Any) -> dict[str, Any]:
 
 def _door_requests(config: DoorConfig) -> dict[str, int]:
     spool = Path(config.spool_root)
-    return {state: len(list((spool / state).glob("*.json"))) for state in ("pending", "processing")}
+    return {state: len(list((spool / state).glob("*.json"))) for state in ("pending", "processing", "parked")}
 
 
 def _holds(config: DoorConfig) -> list[dict[str, Any]]:

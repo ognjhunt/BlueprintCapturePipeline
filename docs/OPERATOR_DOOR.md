@@ -232,7 +232,7 @@ journey and the ADP-009D development rehearsal without raising evidence claims.
 
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
-| `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | refuses while any `blueprint-*deploy*` unit is active; otherwise `door-deploy.sh` |
+| `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |
 | `unit` | operate | `unit` (`blueprint-*`), `action` `start`\|`reset-failed`\|`stop`\|`restart` | `systemctl --no-block <action> -- <unit>`; bare `stop` of a `.timer`/`.path` refuses with `unit_stop_requires_hold`, and `restart` remains limited to safe triggers. The door's own and safety-critical triggers cannot be paused or restarted. |
 | `hold` | operate | `.timer`/`.path` `unit`, `owner`, printable `reason`, `expires_in_seconds` (60–86400) | stops and disables the unit, writes a root-owned hold record with its prior boot policy, and schedules an expiry timer; a different owner cannot replace an active hold |
 | `release-hold` | operate | `.timer`/`.path` `unit` | restores the prior boot policy, starts the held unit, and records who released it; refuses if no active hold exists |
@@ -309,6 +309,53 @@ main's CI for that commit finishes without an attestation, the deploy fails with
 receipt's `runtime_diagnostic` then has phase `await_attestation` and reason
 `deadline` or `ci_finished_without_attestation`. A successful receipt records
 `attestation_wait_seconds`.
+
+**Deploys requested during a deploy wait their turn.** An iteration deploy
+requested while another deploy runs gets the result `parked`, not a refusal. Up to
+16 wait. Within about a minute of the running deploy ending, the newest request
+starts: the hold sweep's timer wakes the runner, so this also survives a reboot.
+That deploy fetches main, then `parked_settle.py` decides what it can from what is
+true now:
+
+| Situation | Result |
+|---|---|
+| The active release, proven by that deploy's own `deployed` receipt newer than the release link, contains the commit | `superseded`, with `superseded_by_commit` |
+| It was already inside what was running when it was requested | `failed`, `parked_rollback_refused`. To roll back, request it when no deploy runs |
+| What runs now is older than what ran when it was requested: someone rolled back while it waited | `failed`, `parked_release_rolled_back` |
+| It is ahead of the active release | It can deploy. The commit that goes out contains the starting request's own and the most others |
+| It is the active commit, and no receipt proves that deploy finished | It can deploy again |
+| It is neither ahead of nor inside the active release, or inside an unproven one | It stays parked while another request can deploy. A later commit may contain it. If none does, `failed`, `parked_commit_not_contained` or `parked_active_release_not_proven` |
+
+**Nothing is reported as satisfied before a receipt proves it.** A request a deploy
+covers stays parked until that deploy finishes, then ends `superseded` on the next
+wake-up.
+
+**A deploy runs for the request that named its commit.** Its log and outcome are that
+request's, whichever request happened to start. If the commit fails, only that request
+fails, so a commit whose CI went red cannot take older good ones with it: each of the
+others gets its own try.
+
+A failed fetch, a failed launch, an unreadable release link, a refused staging guard
+or a held deploy lock says nothing about a request, so all of them stay parked and try
+again on the next wake-up. A file in `parked/` nothing can use is dropped, and the rest
+go on. A deploy killed outright ends `refused`, code `parked_deploy_interrupted`, even
+if it had finished and only its outcome was lost: read the receipt.
+
+A request 8 hours old ends `refused`, code `deploy_parked_expired`. That is as long as
+a client waits, and longer than two deploys at their limit, so nobody is waiting for
+it and it may no longer be wanted. A new request deploys normally.
+
+A deploy requested directly when nothing is running starts at once, even with others
+parked, and keeps the power to roll back. So a queue that cannot start never stands in
+the way of the deploy that repairs it. To replace a parked commit, merge the fix and
+request that: the newer commit wins. `status` counts them under `door_requests.parked`,
+including the one running. The runner parks and starts them with no network or git, as
+sandboxed as before.
+
+`deploy --latest-attested --wait` resolves the newest `origin/main` commit whose
+"SBOM, license, and provenance contract" job succeeded, from GitHub's public API.
+It refuses unless that commit is ahead of the active release, or is the active
+release with no `deployed` receipt. Naming a commit deploys it regardless.
 
 `--preserve-configured-controls-state` keeps the owner's configured-controls
 pause across the deploy; `deploy_control_plane_iteration.sh` and
