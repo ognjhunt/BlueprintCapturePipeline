@@ -89,10 +89,13 @@ if DISPATCHER_HOLD_ONLY:
     # The API and privileged spool reader share this exact request allowlist.
     # Production provenance uses the existing deploy operation. The owner also
     # approved receipt-bound single-handoff dispatch and bounded existing Atlas
-    # job status/requeue; the legacy inspect mode stays refused.
+    # job status/requeue; the legacy inspect mode stays refused. The owner also
+    # approved (2026-10-31) the time-only scene intent window extension: it
+    # writes one sealed record, starts no compute and moves no money.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
-                           "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies"}}
+                           "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
+                           "extend-scene-execution-window"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
