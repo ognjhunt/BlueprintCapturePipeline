@@ -41,12 +41,13 @@ def _sealed(value: dict[str, Any], field: str) -> dict[str, Any]:
     return value
 
 
-def _registry(operator: Path, *, packet_inputs: dict[str, Any] | None, profiles: list[dict] | None = None) -> None:
+def _registry(operator: Path, *, packet_inputs: dict[str, Any] | None, profiles: list[dict] | None = None,
+              defaults: dict[str, Any] | None = None) -> None:
     # The operator decides who may fund a run, at what rate, the salt and the fixed compile inputs; never the scene.
     derived: dict[str, Any] = {
         "root": str(operator / "derived"), "scored_matrix_salt_key_path": str(operator / "salt.key"),
         "defaults": {"allowed_founder_approvers": ["founder@blueprint"], "max_hourly_rate_usd": 0.8,
-                     "open_loop_horizon": 8}}
+                     "open_loop_horizon": 8, **(defaults or {})}}
     if packet_inputs is not None:
         derived["packet_inputs"] = packet_inputs
     path = operator / "registry.json"
@@ -145,6 +146,9 @@ def test_a_completed_website_scene_is_compiled_recorded_and_offered_without_a_pe
     assert Path(status["attempt_root"]).parent == world["halves"]
     assert read_team_scene_inputs(profile["team_scene_inputs_path"])["scene_revision_digest"] == (
         profile["scene_revision_digest"])
+    # No team body is registered: the half is the Franka-only one, with no body stations and nothing named.
+    assert "embodiment_stations" not in json.loads(Path(profile["team_scene_inputs_path"]).read_text())
+    assert "embodiment_manifests_unreadable" not in status
     # The offer was republished; a rigid scene stays unlisted, by name, until its probe passes.
     assert status["offer"]["team_evaluation_listed"] is False
     assert status["offer"]["team_candidate_offer_refused"] == "team_evaluation_robot_free_probe_receipt_missing"
@@ -168,6 +172,32 @@ def test_a_completed_website_scene_is_compiled_recorded_and_offered_without_a_pe
     assert offer["team_evaluation"]["contract"]["task_kind"] == "rigid_pick_place"
     assert profile_for_capture(world["capture"]) == profile
     assert [path.name for path in world["halves"].iterdir()] == [Path(status["attempt_root"]).name]
+
+
+def test_every_registered_team_body_is_compiled_with_the_scene_at_its_own_station(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from tests.test_team_scene_packet import bodies
+
+    world = _world(tmp_path, monkeypatch)
+    body = bodies(tmp_path)
+    records = {name: launch._record(launch._write(tmp_path / f"{name}.manifest.json", value))
+               for name, value in body.items()}
+    changed = {**records["short"], "sha256": "sha256:" + "0" * 64}
+    _registry(world["operator"], packet_inputs=world["inputs"], defaults={"screening_candidates": {
+        "team_long": {"robot_policy": {"manifest": records["long"]}},
+        "team_long_again": {"robot_policy": {"manifest": records["long"]}},
+        "team_rover": {"robot_policy": {"manifest": records["wheeled"]}},
+        "team_changed": {"robot_policy": {"manifest": changed}},
+        "team_g1": {"native_g1": {"registered": "with its own scene packet"}}}})
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    # A manifest whose bytes changed is named and left out; nothing is guessed for it.
+    assert status["embodiment_manifests_unreadable"] == ["team_changed"]
+    record = json.loads(Path(status["team_scene_inputs_path"]).read_text())
+    assert set(record["embodiment_stations"]) == {body["long"]["embodiment_digest"],
+                                                  body["wheeled"]["embodiment_digest"]}
+    assert read_team_scene_inputs(status["team_scene_inputs_path"])["scene_revision_digest"] == (
+        world["scene"]["revision"]["revision_digest"])
 
 
 @pytest.mark.parametrize("owner", ["operator_row", "frozen_pair"])

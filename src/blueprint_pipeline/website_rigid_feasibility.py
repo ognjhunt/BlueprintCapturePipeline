@@ -27,8 +27,6 @@ import numpy as np
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA = "website_rigid_task_capability_verdict.v1"
-#: The arm model each enabled candidate's robot profile runs on; a profile not named here is unassessed.
-ROBOT_PROFILE_ARMS = {"droid_franka_panda_robotiq_2f85_v1": "franka_panda"}
 DEFAULT_PREGRASP_CLEARANCE_M = 0.10
 #: After top-down, the hand tilts this far from vertical, approaching from each of these world directions.
 GRASP_TILTS_DEG = (45.0, 90.0)
@@ -70,7 +68,13 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
     """
     import hashlib
 
-    from .robot_arm_path_clearance import CARRY_STATIONS, NOMINAL_SEED_RAD, REST_SEED_RAD, first_carrying_stance
+    from .robot_arm_path_clearance import (
+        CARRY_STATIONS,
+        NOMINAL_SEED_RAD,
+        REST_SEED_RAD,
+        ROBOT_PROFILE_ARMS,
+        first_carrying_stance,
+    )
     from .team_embodiment import TeamEmbodimentError
     from .team_embodiment_stance import ground_stance
     from .team_scene_packet import STATION_FOOTPRINT_HALF_EXTENT_M

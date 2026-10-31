@@ -401,6 +401,17 @@ def test_the_paid_launch_refuses_what_it_cannot_measure_and_skips_rigid_tasks(tm
     assert (report["status"], report["reason"]) == ("not_applicable", "task_moves_no_part")
 
 
+def test_a_robot_with_no_arm_model_is_unassessed_where_the_franka_would_be_struck(tmp_path):
+    # The door strikes the Franka's elbow from this base; a team's own robot there has no arm model here,
+    # so it is neither measured with the Franka's kinematics nor refused for lacking its own.
+    struck = _packet(tmp_path, 0.60, 0.0)
+    plan = json.loads((struck / "native_task_arena_scene_plan.v1.json").read_text())
+    plan["robot"] = {**plan["robot"], "robot_id": "team_embodiment", "joint_reset_positions_rad": {"shoulder": 0.0}}
+    (struck / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    report = require_robot_arm_path_admission(struck)
+    assert (report["status"], report["reason"], report["blockers"]) == ("unassessed", "robot_arm_unmodeled", [])
+
+
 def _box_triangles(low, high):
     """Twelve triangles of an axis-aligned box."""
     import itertools
@@ -498,7 +509,7 @@ def _rigid_packet(root, *, target, strategy="pick_and_place", robot_id="franka_p
 
 @pytest.mark.parametrize("case, status, reason", [
     ("floor", "clear", None), ("desk", "blocked", None),
-    ("push", "not_applicable", "no_articulated_object"), ("own_robot", "not_applicable", "robot_arm_unmodeled")])
+    ("push", "not_applicable", "no_articulated_object"), ("own_robot", "unassessed", "robot_arm_unmodeled")])
 def test_a_rigid_pick_and_place_packet_is_admitted_only_when_its_carry_exists(tmp_path, case, status, reason):
     from blueprint_pipeline.robot_arm_path_clearance import (
         RobotArmPathAdmissionBlocked,

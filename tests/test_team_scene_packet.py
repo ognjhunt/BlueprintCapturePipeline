@@ -165,6 +165,26 @@ def test_a_prepared_scene_compiles_its_own_half_with_no_robot_placement_or_prior
         read_team_scene_inputs(compiled["path"])
 
 
+def test_a_station_refusal_keeps_its_own_name(tmp_path, monkeypatch) -> None:
+    # TeamEmbodimentError is a ValueError: the stance's own reason must not become the generic one.
+    from blueprint_pipeline import team_embodiment_stance as stance
+    from blueprint_pipeline.team_embodiment import TeamEmbodimentError
+
+    def no_clear_stance(**_):
+        raise TeamEmbodimentError(["team_embodiment_task_motion_no_clear_stance"])
+    monkeypatch.setattr(stance, "ground_stance", no_clear_stance)
+    (named := tmp_path / "named").mkdir()
+    with pytest.raises(TeamScenePacketError, match=r"\Ateam_embodiment_task_motion_no_clear_stance\Z"):
+        _compile(named, _scene(named))
+
+    def malformed(**_):
+        raise ValueError("not a stance")
+    monkeypatch.setattr(stance, "ground_stance", malformed)
+    (plain := tmp_path / "plain").mkdir()
+    with pytest.raises(TeamScenePacketError, match=r"\Ateam_scene_station_inputs_invalid\Z"):
+        _compile(plain, _scene(plain))
+
+
 def test_a_scene_is_refused_by_name_before_any_packet(tmp_path) -> None:
     scene = _scene(tmp_path)
     (tmp_path / "other.zip").write_bytes(b"not the published bundle")
@@ -413,4 +433,86 @@ def test_a_pick_and_place_packet_stands_where_the_bundle_gate_finds_a_carry(tmp_
     gate = packet_arm_path_clearance(Path(compiled["path"]).parent / "native-task-packet")
     assert gate["status"] == ("clear" if search["cleared"] else "blocked")
     assert request["robot_base_pose_world"]["position_world_m"] == record["robot_station"]["position_world_m"]
+
+
+def bodies(tmp_path: Path) -> dict[str, dict[str, Any]]:
+    """Three registered team bodies: a long and a short fixed arm, and a wheeled humanoid free on the floor."""
+
+    from blueprint_pipeline.team_embodiment import validate_embodiment_manifest
+    from tests.test_team_embodiment import manifest, wheeled_manifest, write_robot_usd
+
+    arm = write_robot_usd(tmp_path / "robot.usda")
+    wheeled = write_robot_usd(tmp_path / "wheeled.usda", anchored=False, wheels=True)
+    return {"long": validate_embodiment_manifest(manifest(arm, control_hz=60)),
+            "short": validate_embodiment_manifest(manifest(arm, control_hz=60, embodiment_id="short-arm", reach_m=0.2)),
+            "wheeled": validate_embodiment_manifest({**wheeled_manifest(wheeled), "embodiment_id": "acme-rover"})}
+
+
+def test_each_registered_body_gets_its_own_station_from_its_own_manifest(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline import robot_arm_path_clearance as clearance
+
+    # Say the Franka carries only from the third closest stance; no other body inherits that choice.
+    def franka_carries_from_third(stances, **_):
+        attempts = [(row, {"status": "clear" if index == 2 else "blocked", "blockers": []})
+                    for index, row in enumerate(stances[:3])]
+        return stances[2], attempts[2][1], attempts
+    monkeypatch.setattr(clearance, "first_carrying_stance", franka_carries_from_third)
+    scene = _scene(tmp_path, strategy="pick_and_place")
+    inputs = {key: value for key, value in scene.items() if key not in ("profile", "store", "revision_reference")}
+    franka_only = materialize_team_scene(**inputs, output_root=tmp_path / "franka-only")
+    body = bodies(tmp_path)
+    compiled = materialize_team_scene(**inputs, output_root=tmp_path / "with-bodies",
+                                      embodiment_manifests=list(body.values()))
+    alone, record = (json.loads(Path(row["path"]).read_text()) for row in (franka_only, compiled))
+    # The Franka's station and search are what a Franka-only compile makes; only the bodies' stations are added.
+    assert "embodiment_stations" not in alone and set(record) - set(alone) == {"embodiment_stations"}
+    assert record["robot_station"] == alone["robot_station"] == franka_only["robot_station"]
+    assert record["robot_station_search"] == alone["robot_station_search"]
+    assert alone["robot_station_search"]["chosen_rank"] == 2
+    assert set(record["embodiment_stations"]) == {row["embodiment_digest"] for row in body.values()}
+    stations = {row["embodiment_id"]: row for row in record["embodiment_stations"].values()}
+    task = json.loads((Path(compiled["path"]).parent / "native-task-packet"
+                       / "native_task_arena_packet_request.v1.json").read_text())["task_spec"]
+    points = [task["start_pose_world"][:3], task["target_position_world_m"]]
+    # A long fixed arm takes the closest clear stance its own reach covers: not the Franka's third.
+    long = stations["acme-arm-v2"]
+    assert long["status"] == "chosen" and long["blockers"] == [] and long["base_mode"] == "fixed"
+    assert long["station"]["position_world_m"] != record["robot_station"]["position_world_m"]
+    assert long["station"]["position_world_m"][2] == pytest.approx(SUPPORT_TOP_Z)
+    assert long["reach"]["reach_m"] == 3.0 and long["reach"]["task_points_world_m"] == points
+    assert long["reach"]["farthest_task_point_m"] == pytest.approx(
+        max(math.dist(long["station"]["position_world_m"], point) for point in points))
+    # A 20 cm arm reaches the task from no clear stance on this floor: measured, and named.
+    short = stations["short-arm"]
+    assert short["status"] == "out_of_reach" and short["blockers"] == ["team_embodiment_station_out_of_reach"]
+    assert short["reach"]["clear_stances_measured"] > 1 and short["reach"]["farthest_task_point_m"] > 0.2
+    # A free base stands on its own footprint at its own root height, on the floor; its reach is undeclared.
+    rover = stations["acme-rover"]
+    assert rover["status"] == "chosen" and rover["base_mode"] == "free"
+    assert rover["station"]["floor_z_m"] == pytest.approx(0.0, abs=1e-6)
+    assert rover["station"]["position_world_m"][2] == pytest.approx(0.9)
+    assert rover["station"]["footprint_half_extent_m"] == [0.3, 0.3]
+    assert rover["reach"] is None and rover["unassessed"] == ["embodiment_free_base_reach_not_modeled"]
+    # Each declared tool is screened on its own opening; no grip force is declared, so none is assumed.
+    for row in stations.values():
+        [grip] = row["grippers"]
+        assert grip["gripper"]["full_stroke_m"] == 0.08 and grip["gripper"]["grip_force_n"] is None
+        assert grip["sensitivity"] in {"blocked_by_estimate", "hold_unassessed_grip_force_not_declared"}
+    assert read_team_scene_inputs(compiled["path"])["construction_result"] == record["base_native_packet"]
+
+
+def test_a_bodys_station_keeps_off_a_moving_part_and_leaves_its_unmodelled_body_unassessed(tmp_path) -> None:
+    scene = _articulated_scene(tmp_path)
+    inputs = {key: value for key, value in scene.items() if key != "profile"}
+    compiled = materialize_team_scene(**inputs, output_root=tmp_path / "team-scene",
+                                      embodiment_manifests=[bodies(tmp_path)["long"]])
+    [row] = json.loads(Path(compiled["path"]).read_text())["embodiment_stations"].values()
+    # The drawer's travel is kept off the mount; the arm on it has no volume model here, so it is not measured.
+    assert row["status"] == "chosen" and row["station"]["position_world_m"][2] == pytest.approx(
+        row["station"]["floor_z_m"], abs=1e-6)
+    assert row["station"]["task_motion_clearance"]["robot_id"] == "team_embodiment"
+    assert row["station"]["task_motion_clearance"]["reached_beyond_task_range"] is False
+    assert row["unassessed"] == ["embodiment_body_task_motion_clearance_unmodeled"]
+    [grip] = row["grippers"]
+    assert grip["joint_type"] == "prismatic" and grip["gripper"]["full_stroke_m"] == 0.08
 
