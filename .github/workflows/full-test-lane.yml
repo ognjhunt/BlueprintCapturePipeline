@@ -100,6 +100,17 @@ jobs:
           printf '%s\n' "BLUEPRINT_NATIVE_CONTRACTS_ROOT=${GITHUB_WORKSPACE}/BlueprintContracts" >> "${GITHUB_ENV}"
 
       - name: Install uv
+        id: install-uv
+        # A failed tool download is a runner flake, not a verdict on the code, and it
+        # turned main red twice in 41 runs on 2026-10-31. No test runs in this step.
+        continue-on-error: true
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.10.7"
+          python-version: "3.12"
+
+      - name: Install uv after a failed download
+        if: steps.install-uv.outcome == 'failure'
         uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           version: "0.10.7"
@@ -221,6 +232,7 @@ jobs:
           exit 1
 
       - name: Install and protect system-Python dependencies for full Linux proof
+        timeout-minutes: 16
         run: |
           set -euo pipefail
           sudo --non-interactive true
@@ -231,9 +243,18 @@ jobs:
           sudo install -d -m 0755 -o "$(id -u)" -g "$(id -g)" /var/lib/blueprint-native-test-venv
           uv venv --python /usr/bin/python3 /var/lib/blueprint-native-test-venv
           uv lock --check
-          uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
-            --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3 --link-mode copy
-          uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts
+          for attempt in 1 2; do
+            if timeout --kill-after=10s 360s uv sync --frozen --no-editable --extra dev --extra cloud --extra groot-libero-cpu --extra evaluation \
+                --extra sapien-development --extra exact-geometry-development --python /usr/bin/python3 --link-mode copy \
+              && timeout --kill-after=10s 90s uv pip install --python /var/lib/blueprint-native-test-venv/bin/python --link-mode copy ./BlueprintContracts; then
+              break
+            fi
+            if test "${attempt}" = 2; then
+              echo "locked dependency install failed after two bounded attempts"
+              exit 1
+            fi
+            echo "locked dependency install attempt ${attempt} did not complete"
+          done
           # Noneditable policy CLIs resolve retained documents beside their
           # installed package. Preserve those exact committed bytes outside
           # runner home, where the different-UID child can read them safely.
@@ -363,7 +384,7 @@ jobs:
   full-pytest:
     name: Full pytest lane on CPU runner
     needs: full-pytest-shard
-    if: always()
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:

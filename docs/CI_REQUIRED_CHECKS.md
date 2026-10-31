@@ -19,6 +19,13 @@ hosted diagnostics or claim-specific release evidence. They remain visible and
 must be green when their claim or promotion scope requires them, but they are
 not blanket merge gates for every ordinary PR.
 
+A pull request that changes `uv.lock`, `pyproject.toml`, a `requirements*.txt`,
+`Dockerfile`, `docker-compose.yml`, `deploy/systemd/` or `ci.yml` also runs
+`dependency-security`, `container-contract` and the build, SBOM and license steps
+of `supply-chain`, and this gate fails unless they pass. On main they stay
+`supply-chain`'s prerequisites, where a first failure leaves the commit unattested
+and undeployable. The pull request's copy of those steps has no permission to sign.
+
 The sentinels include the whole-repository paid-resource allocator
 verification and the module line-budget governance policy. `ci.yml` runs those
 scripts only on push to `main`, where a failure blocks the signed deploy

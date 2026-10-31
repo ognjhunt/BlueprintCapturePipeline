@@ -76,6 +76,16 @@ CROSS_CUTTING_FILES = {
     "docker-compose.yml",
 }
 
+# What dependency-security, container-contract and the SBOM and license build read.
+# They otherwise run only on push to main, where a failure leaves the commit unattested.
+SUPPLY_CHAIN_INPUT_FILES = {
+    ".github/workflows/ci.yml",
+    "Dockerfile",
+    "docker-compose.yml",
+    "pyproject.toml",
+    "uv.lock",
+}
+
 POLICY_ONLY_PREFIXES = (
     ".github/",
     "docs/",
@@ -198,6 +208,15 @@ def _matching_tests(
                     and any(re.search(pattern, source) for pattern in module_patterns))):
             candidates.add(test_path)
     return candidates
+
+
+def _changes_supply_chain_inputs(changed: Sequence[str]) -> bool:
+    return any(
+        path in SUPPLY_CHAIN_INPUT_FILES
+        or path.startswith("deploy/systemd/")
+        or re.fullmatch(r"requirements[^/]*\.txt", path) is not None
+        for path in changed
+    )
 
 
 def _estimated_seconds(
@@ -424,6 +443,7 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
         "requires_wide_impacted": requires_wide_impacted,
         "wide_impacted_tests": wide_tests,
         "wide_shards": _wide_shards(root, files=wide_tests, test_sources=test_sources),
+        "supply_chain_inputs_changed": _changes_supply_chain_inputs(changed),
         "reasons": sorted(set(reasons)),
         "protected_risks": [
             "changed_contract_behavior",
@@ -451,6 +471,11 @@ def write_github_output(plan: dict[str, object], path: Path) -> None:
         stream.write(
             "requires_wide_impacted="
             + ("true" if plan["requires_wide_impacted"] else "false")
+            + "\n"
+        )
+        stream.write(
+            "supply_chain_inputs_changed="
+            + ("true" if plan["supply_chain_inputs_changed"] else "false")
             + "\n"
         )
         matrix = [shard["index"] for shard in plan["wide_shards"]]
