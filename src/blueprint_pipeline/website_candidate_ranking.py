@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -36,6 +37,7 @@ MODEL = "gemini-3.8-flash"
 MAX_OUTPUT_TOKENS = 32_768  # About 120 short entries plus the model's thinking.
 MAX_RATIONALE_CHARACTERS = 200
 BUSINESS_CONTEXT_FILE = "PLATFORM_CONTEXT.md"
+BUSINESS_CONTEXT_PATH_ENV = "BLUEPRINT_PLATFORM_CONTEXT_PATH"
 BUSINESS_CONTEXT_START = "<!-- SHARED_PLATFORM_CONTEXT_START -->"
 BUSINESS_CONTEXT_END = "<!-- SHARED_PLATFORM_CONTEXT_END -->"
 PREPARATION_HOOK_MISSING = "site_ledger_candidate_preparation_hook_missing"
@@ -64,7 +66,10 @@ finding or a safety judgement.
 
 def business_context(path: Path | None = None) -> dict[str, Any]:
     """The shared service brief, verbatim, with its source for the receipt."""
-    source = path or Path(__file__).resolve().parents[2] / BUSINESS_CONTEXT_FILE
+    # A source release has the file at its root; the production image ships it
+    # beside the installed package and names it (BUSINESS_CONTEXT_PATH_ENV).
+    source = path or Path(os.environ.get(BUSINESS_CONTEXT_PATH_ENV)
+                          or Path(__file__).resolve().parents[2] / BUSINESS_CONTEXT_FILE)
     try:
         text = source.read_text(encoding="utf-8")
     except OSError as exc:
