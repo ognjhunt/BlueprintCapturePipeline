@@ -329,24 +329,37 @@ def release_terminal_workspaces(root: Path, *, commit: str) -> list[dict]:
     released = []
     for job in sorted(path for path in (root / "jobs").glob("*") if path.is_dir()):
         archive = workspace_for(job) / "bundle" / BUNDLE_ARCHIVE
-        if archive.is_symlink() or not archive.is_file() or not _terminal(job):
-            continue
-        receipt = read(archive.parent / RECEIPT, limit=32 * 1024**2)
-        size = archive.stat().st_size
-        record = {"schema_version": "embodiment_preparation_workspace_release.v1", "authorization_id": job.name,
-                  "bundle_path": str(archive), "bundle_sha256": receipt.get("bundle_sha256"), "released_bytes": size,
-                  "model_store_changed": False}
-        if not (job / WORKSPACE_RELEASE).exists():
-            write_once(job / WORKSPACE_RELEASE, record)
-        archive.unlink()
-        released.append(record)
+        try:
+            if archive.is_symlink() or not archive.is_file() or not _terminal(job):
+                continue
+            receipt = read(archive.parent / RECEIPT, limit=32 * 1024**2)
+            record = {"schema_version": "embodiment_preparation_workspace_release.v1", "authorization_id": job.name,
+                      "bundle_path": str(archive), "bundle_sha256": receipt.get("bundle_sha256"),
+                      "released_bytes": archive.stat().st_size, "model_store_changed": False}
+            if not (job / WORKSPACE_RELEASE).exists():
+                write_once(job / WORKSPACE_RELEASE, record)
+            # The bundle was published read-only (0555); open it to its owner only to unlink.
+            mode = archive.parent.stat().st_mode & 0o777
+            archive.parent.chmod(mode | 0o700)
+            try:
+                archive.unlink()
+            finally:
+                archive.parent.chmod(mode)
+            released.append(record)
+        except (OSError, ValueError) as exc:
+            # Freeing space never stops the queue; the reason is reported and retried next pass.
+            released.append({"authorization_id": job.name, "release_blocked": type(exc).__name__})
     sources = (WORK_ROOT if root == STATE_ROOT else root / "work") / "sources"
     for cache in sorted(path for path in sources.glob("*") if path.is_dir() and not path.is_symlink()):
-        if cache.name != commit:
+        if cache.name == commit:
+            continue
+        try:
             for directory in (cache, *(p for p in cache.rglob("*") if p.is_dir() and not p.is_symlink())):
                 directory.chmod(0o700)
             shutil.rmtree(cache)
             released.append({"source_cache_release": cache.name})
+        except OSError as exc:
+            released.append({"source_cache_release": cache.name, "release_blocked": type(exc).__name__})
     return released
 
 

@@ -534,6 +534,7 @@ def _uploaded(job, digest="sha256:" + "b" * 64):
     archive = controller.workspace_for(job) / "bundle" / controller.BUNDLE_ARCHIVE
     contract.write_once(archive.parent / controller.RECEIPT, {"bundle_sha256": digest})
     archive.write_bytes(b"development-only upload bytes")
+    archive.parent.chmod(0o555)  # as publish_staged_immutable_directory leaves it
     return archive
 
 
@@ -553,6 +554,7 @@ def test_a_terminal_batch_releases_its_upload_archive_and_keeps_its_evidence(tmp
     # Promotion and reconciliation still read the archive; a published or ended batch never does.
     assert archive.exists() is not released
     assert (archive.parent / controller.RECEIPT).is_file()
+    assert archive.parent.stat().st_mode & 0o777 == 0o555
     if released:
         record = contract.read(job / controller.WORKSPACE_RELEASE)
         assert rows == [record] and record["bundle_sha256"] == "sha256:" + "b" * 64
@@ -583,3 +585,16 @@ def test_the_queue_pass_releases_terminal_workspaces_and_reports_them(tmp_path, 
     monkeypatch.setattr(controller, "process_reserved_entry", lambda item, **k: contract.read(job / "publication.json"))
     value = controller.run_queue(root=tmp_path, store=tmp_path / "models")
     assert not archive.exists() and [row["authorization_id"] for row in value["workspace_releases"]] == [job.name]
+
+
+def test_a_release_that_cannot_unlink_is_reported_and_the_queue_still_runs(tmp_path, monkeypatch):
+    _, job, _ = _queued(tmp_path)
+    _uploaded(job)
+    contract.write_once(job / "publication.json", {"status": "completed"})
+
+    def refused(self, *args, **kwargs):
+        raise PermissionError(13, "read-only")
+
+    monkeypatch.setattr(controller.Path, "unlink", refused)
+    assert controller.release_terminal_workspaces(tmp_path, commit=COMMIT) == [
+        {"authorization_id": job.name, "release_blocked": "PermissionError"}]
