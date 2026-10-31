@@ -444,6 +444,7 @@ def _zip_tree(source: Path, destination: Path) -> None:
                 path.relative_to(source).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
             )
             info.compress_type = _member_compress_type(path)
+            info.file_size = size  # members over 2 GiB need ZIP64 headers before they are written
             if info.compress_type == zipfile.ZIP_DEFLATED:
                 info._compresslevel = _DEFLATE_LEVEL
             info.create_system = 3

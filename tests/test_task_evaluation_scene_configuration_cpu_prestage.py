@@ -563,3 +563,21 @@ def test_invalid_staged_key_refuses_before_unpack_or_any_stage(tmp_path, kind):
         _prepare(tmp_path, lambda *a, **k: pytest.fail("stage entered"),
                  secret_file_paths={"OPENAI_CONTENT_AGENTS_API_KEY_FILE": str(key)})
     assert list((tmp_path / "workspace").iterdir()) == []
+
+
+def test_source_bundle_is_bounded_by_its_builder_not_the_checkpoint_capsule(tmp_path):
+    """2026-10-31: the CUDA Torch runtime put real source bundles past the 8 GiB capsule bound."""
+    import zipfile as _zipfile
+    from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle_module
+    from blueprint_pipeline import task_evaluation_scene_configuration_cpu_prestage as prestage
+
+    assert prestage._source_bundle_budget() == bundle_module._MAX_TOTAL_BYTES > prestage.MAX_CAPSULE_BYTES
+    archive = tmp_path / "bundle.zip"
+    with _zipfile.ZipFile(archive, "w") as zipped:
+        zipped.writestr("provider_runtime/a.bin", b"a" * 64)
+    with _zipfile.ZipFile(archive) as zipped:
+        assert [i.filename for i in prestage._safe_infos(zipped, budget=64)] == ["provider_runtime/a.bin"]
+        with pytest.raises(Exception, match="archive_budget_exceeded"):
+            prestage._safe_infos(zipped, budget=63)
+    assert prestage._extract(archive, tmp_path / "out", budget=prestage._source_bundle_budget()) == [
+        "provider_runtime/a.bin"]
