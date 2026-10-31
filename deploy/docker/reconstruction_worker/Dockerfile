@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04@sha256:5645fec64549cc35930eee9d85aafd2b0006c0c3f22632be5a1d85e2604e9749
+FROM nvidia/cuda:13.4.3-devel-ubuntu22.04@sha256:3b82c17a0456e741524dc42f2b2432ea84446dcf24b5ff0d4a24f6f77a9e4369
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG BLUEPRINT_SOURCE_COMMIT
