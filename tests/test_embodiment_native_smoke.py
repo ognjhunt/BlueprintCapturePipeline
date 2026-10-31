@@ -212,6 +212,7 @@ def test_batch_recovers_only_verified_import_when_process_dies_after_checkpoint(
         shutil.copytree(inputs.model.parent, body / "prepared")
         (body / "binding-inputs.json").write_text(json.dumps(binding))
         (body / "import-checkpoint.json").write_text(json.dumps(checkpoint))
+        worker.seal_verified_import(body, identity)  # the Kit child seals before its fast shutdown
         if failure == "corrupt_checkpoint":
             (body / "prepared" / "robot.usda").write_text("#usda 1.0\nchanged import")
         if failure == "nonzero":

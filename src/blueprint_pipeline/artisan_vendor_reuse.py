@@ -8,7 +8,8 @@ import shutil
 import stat
 
 from .decision_evidence_contracts import canonical_digest
-from .immutable_file_digest import sha256_file
+from .immutable_file_digest import immutable_file_digest_cache, sha256_file
+from .readback_ledger import admit_ledger
 
 SITE_IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pth", "__editable__*", "artisan_assets-*.dist-info")
 PACKAGE_PREFIX = "components/content_agents_rigid_replacement/package/"
@@ -42,15 +43,23 @@ def _identity(path):
             value.st_uid, value.st_gid, value.st_mtime_ns, value.st_ctime_ns)
 
 
+@immutable_file_digest_cache()
 def prepare_vendor_reuse(*, toolchain_root, site_packages_root, blender_root, staging_device):
-    """Return a full-byte plan, or None and retain the ordinary full-copy budget."""
+    """Return a full-byte plan, or None and retain the ordinary full-copy budget.
+
+    Published inodes the toolchain's own readback ledger proved are not
+    digested again; every vendor source file still is.
+    """
     root = Path(toolchain_root)
     if root.is_symlink() or not root.is_dir():
         return None
     try:
-        manifest = json.loads((root / "task_evaluation_scene_configuration_toolchain.v1.json").read_text())
+        manifest_name = "task_evaluation_scene_configuration_toolchain.v1.json"
+        manifest = json.loads((root / manifest_name).read_text())
         if manifest.get("toolchain_digest") != canonical_digest(manifest, digest_field="toolchain_digest"):
             return None
+        admit_ledger(root, manifest_name=manifest_name, digest_field="toolchain_digest",
+                     readback_actor=manifest.get("readback_actor"))
         declared = {row["relative_path"]: row for row in manifest["files"]}
         sources = {"site_packages": str(Path(site_packages_root).resolve()),
                    "blender": str(Path(blender_root).resolve())}

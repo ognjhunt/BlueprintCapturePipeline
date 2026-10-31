@@ -614,3 +614,13 @@ def test_a_purged_upload_restarts_the_uploads_under_a_new_key_without_a_second_p
                                    (404, b"asset_b", {"operation_id": "op"})):
         unchanged = {**state(), **extra}
         assert not refresh_purged_uploads(unchanged, status, payload) and unchanged["status"] == "submitting"
+
+
+def test_a_rate_limit_refusal_keeps_the_providers_explanation():
+    body = json.dumps({"error": {"code": "RATE_LIMIT_EXCEEDED", "message": "Too many requests in the current window.",
+                                 "details": [{"reason": "TASK_SUBMISSIONS_PER_HOUR"}]}}).encode()
+    result = tasks._capacity_refusal(body, "90", now=1000, attempt=1,
+                                     rate_limit_headers={"ratelimit-remaining": "0", "ratelimit-reset": "1800"})
+    assert result["code"] == "RATE_LIMIT_EXCEEDED" and result["message"].startswith("Too many requests")
+    assert "TASK_SUBMISSIONS_PER_HOUR" in result["details"]
+    assert result["rate_limit_headers"] == {"ratelimit-remaining": "0", "ratelimit-reset": "1800"}

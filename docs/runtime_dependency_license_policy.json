@@ -984,13 +984,13 @@
       "expires_on": "2027-07-09",
       "source": "installed distribution license file"
     },
-    "pyasn1==0.6.4": {
+    "pyasn1==0.6.5": {
       "license_expression": "BSD-2-Clause",
       "approved": true,
       "owner": "@ognjhunt",
-      "reviewed_on": "2026-07-09",
-      "expires_on": "2027-07-09",
-      "source": "installed distribution license file"
+      "reviewed_on": "2026-10-31",
+      "expires_on": "2027-10-31",
+      "source": "PyPI JSON metadata License 'BSD-2-Clause' retrieved 2026-10-31; unchanged from reviewed 0.6.4"
     },
     "pycparser==3.0": {
       "license_expression": "BSD-3-Clause",

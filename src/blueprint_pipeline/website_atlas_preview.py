@@ -24,6 +24,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -35,6 +36,7 @@ from .atlas_preparation_job_control import (
 )
 from .common import write_json
 from .decision_evidence_contracts import cross_runtime_canonical_digest
+from .file_digest_cache import SIDECAR as DIGEST_CACHE_FILE, file_digest_cache
 from .website_atlas_preview_store import (
     ARTIFACT_KIND, JOB_FILE, LOCK_FILE, MAXIMUM_JOB_SECONDS, SCHEMA, TERMINAL,
     bundle_filename, capture_name_matches_request, capture_withdrawn as _withdrawn,
@@ -49,6 +51,19 @@ PREVIEW_SCHEMA = "website_atlas_preview.v1"
 MAXIMUM_TRANSIENT_FAILURES = 8
 MAXIMUM_CLEANUP_ATTEMPTS = 12
 AUTHORITY_RECHECK_SECONDS = 1800
+#: While a pass advances jobs, the tick command steps those jobs again at once,
+#: for at most this long, instead of idling until the timer's next tick.
+CONTINUE_SECONDS_ENV = "BLUEPRINT_WEBSITE_ATLAS_PREVIEW_CONTINUE_SECONDS"
+DEFAULT_CONTINUE_SECONDS = 480
+MAXIMUM_CONTINUE_SECONDS = 3600
+TRIGGER_UNIT = "blueprint-website-atlas-preview.timer"
+#: The operator door's hold on the timer (its ConditionPathExists guard).
+HOLD_RECORD = Path("/var/lib/blueprint-operator-door/requests/holds") / f"{TRIGGER_UNIT}.json"
+RELEASE_ENV = "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO"
+# A job waiting on an admission, a budget or a provider gains nothing from an
+# immediate pass; the timer polls it.
+_WAITING_STAGES = frozenset({"paid_admission_wait", "capacity_wait"})
+_WAITING_SUBMISSIONS = frozenset({"submitting", "submitted", "capacity_wait"})
 
 # Refusals an owner or operator can lift: re-checked, not final, until the job expires.
 _AWAITING_AUTHORITY = frozenset({
@@ -278,9 +293,10 @@ def advance_preparation_step(job: dict[str, Any], *, job_dir: Path, source_video
         checkpoint("archive_complete")
     except Exception as error:  # noqa: BLE001 - retract a copy overtaken by loss of source authority
         return _failed_step({**job, "archive": archive, "archive_retraction": "pending"}, error, current)
+    # The adopted refined-splat form; a minimal one that left gap views out may be upgraded once.
     return _transition(job, current, "ready", None, stage="archived", archive=archive, transient_failures=0,
                        result_digest=result["digest"], splat_available=bool(result.get("splat_available")),
-                       mesh_available=bool(result.get("mesh_available")))
+                       mesh_available=bool(result.get("mesh_available")), refined_splat=result.get("refined_splat"))
 
 
 def atlas_asset_ids(job_dir: Path) -> list[str]:
@@ -477,7 +493,8 @@ def advance_preparation_job(path: Path, *, reader: Callable[[Path], dict[str, An
     """One shared lock, terminal cleanup and delivery cycle for an admitted source adapter."""
     job_dir = path.parent
     try:
-        with preparation_job_lock(job_dir):
+        # Retained files are re-verified every tick; their unchanged ones are not re-hashed.
+        with preparation_job_lock(job_dir), file_digest_cache(job_dir / DIGEST_CACHE_FILE):
             job = reader(path)
             before = json.dumps(job, sort_keys=True)
             if refresh is not None:
@@ -505,7 +522,9 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
     An operator action, never automatic. The next tick resumes at the first
     unfinished stage, so the survey, plans and other receipts already bought are
     reused, not bought again. A job stopped for input (a background that needs
-    review) resumes the same way. A withdrawn capture, a job that only a new
+    review) resumes the same way. A ready job reopens only when its minimal
+    refined splat left generated views out and the reviewed whole-view form was
+    never tried; that form is then tried once. A withdrawn capture, a job that only a new
     capture can help, or one that cannot recover, is refused.
     """
     def source_check(_job):
@@ -514,24 +533,126 @@ def retry_failed_job(path: Path, *, now: Callable[[], float] = time.time,
     return retry_preparation_job(path, reader=_read, source_check=source_check, now=now, preflight=preflight)
 
 
-def tick(storage_root: Path, *, now: Callable[[], float] = time.time) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for path in sorted(Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}")):
-        if not capture_name_matches_request(path.parents[4].name.removeprefix("site-"), path.parents[2].name):
-            continue
+def _submissions(job_dir: Path) -> tuple[tuple[str, Any, Any], ...]:
+    """Each provider attempt's status and operation, as its retained submission names them."""
+    rows = []
+    for path in sorted(job_dir.rglob("atlas_pose/submission.json")):
         try:
-            outcome = advance_job(path, now=now)
-        except Exception as error:  # noqa: BLE001 - one unreadable job never stops the others
-            logger.warning("website_atlas_preview_job_unreadable type=%s", type(error).__name__)
-            outcome = "unreadable"
+            state = {} if path.is_symlink() else json.loads(path.read_text())
+        except (OSError, ValueError):
+            state = {}
+        state = state if isinstance(state, dict) else {}
+        rows.append((path.relative_to(job_dir).as_posix(), state.get("status"), state.get("operation_id")))
+    return tuple(rows)
+
+
+def _progress(path: Path) -> tuple[tuple[Any, ...], dict[str, Any]] | None:
+    try:
+        job = _read(path)
+    except Exception:  # noqa: BLE001 - an unreadable job is never stepped again at once
+        return None
+    return (job.get("state"), job.get("stage"), job.get("revision"), _submissions(path.parent)), job
+
+
+def _advanced(before: Any, after: Any, current: float) -> bool:
+    """The pass moved this job, and its next step can start now rather than wait for a provider."""
+    if before is None or after is None or before[0] == after[0]:
+        return False
+    (state, stage, _revision, submissions), job = after
+    return (state == "processing" and stage not in _WAITING_STAGES
+            and max(job.get("next_attempt_at_epoch") or 0, job.get("retry_at_epoch") or 0) <= current
+            and not any(status in _WAITING_SUBMISSIONS for _path, status, _operation in submissions))
+
+
+def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_seconds: float = 0,
+         stop_reason: Callable[[], str | None] = lambda: None,
+         clock: Callable[[], float] = time.monotonic) -> dict[str, int]:
+    """Step every job once; while a pass advances jobs, step those again within ``continue_seconds``.
+
+    Each step takes the job's own lock, as one tick always did. ``stop_reason``
+    is asked before every further pass; any reason (an operator hold, a deploy's
+    quiesce) ends the tick. Counts are each job's last outcome.
+    """
+    paths = [path for path in sorted(Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}"))
+             if capture_name_matches_request(path.parents[4].name.removeprefix("site-"), path.parents[2].name)]
+    outcomes: dict[Path, str] = {}
+    started, passes = clock(), 1
+    while True:
+        advanced = []
+        for path in paths:
+            before = _progress(path) if continue_seconds > 0 else None
+            try:
+                outcome = advance_job(path, now=now)
+            except Exception as error:  # noqa: BLE001 - one unreadable job never stops the others
+                logger.warning("website_atlas_preview_job_unreadable type=%s", type(error).__name__)
+                outcome = "unreadable"
+            outcomes[path] = outcome
+            if before is not None and outcome == "processing" and _advanced(before, _progress(path), now()):
+                advanced.append(path)
+        if not advanced:
+            break
+        elapsed = clock() - started
+        reason = "budget_spent" if elapsed >= continue_seconds else stop_reason()
+        if reason is not None:
+            logger.info("website_atlas_preview_continuation_stopped reason=%s passes=%d", reason, passes)
+            break
+        passes += 1
+        logger.info("website_atlas_preview_continuing jobs=%d pass=%d elapsed_seconds=%d",
+                    len(advanced), passes, elapsed)
+        paths = advanced
+    counts: dict[str, int] = {}
+    for outcome in outcomes.values():
         counts[outcome] = counts.get(outcome, 0) + 1
     return counts
+
+
+def continue_seconds_from_environment() -> float:
+    """The continuation budget; an unreadable setting keeps the default, 0 turns it off."""
+    text = os.getenv(CONTINUE_SECONDS_ENV, "").strip()
+    try:
+        value = float(text) if text else float(DEFAULT_CONTINUE_SECONDS)
+    except ValueError:
+        value = -1.0
+    if not 0 <= value < float("inf"):
+        logger.warning("website_atlas_preview_continue_seconds_invalid; using %ss", DEFAULT_CONTINUE_SECONDS)
+        return float(DEFAULT_CONTINUE_SECONDS)
+    return min(value, float(MAXIMUM_CONTINUE_SECONDS))
+
+
+def trigger_stop_reason(*, unit: str = TRIGGER_UNIT, hold_record: Path = HOLD_RECORD,
+                        release_env: str = RELEASE_ENV) -> Callable[[], str | None]:
+    """Why the tick must not start another pass: a hold, a stopped timer or a new release.
+
+    A hold and a deploy's quiesce both stop the timer, so a tick continues only
+    while its timer is active, no hold record exists and the release it started
+    from is still the active one (a finished deploy re-arms the timer). A check
+    that cannot be made stops it.
+    """
+    def release() -> str | None:
+        link = os.getenv(release_env, "").strip()
+        return os.path.realpath(link) if link else None
+    started = release()
+
+    def reason() -> str | None:
+        if os.path.lexists(hold_record):
+            return "operator_hold"
+        if release() != started:
+            return "release_changed"
+        try:
+            code = subprocess.run(["systemctl", "is-active", "--quiet", unit], capture_output=True,
+                                  timeout=10, check=False).returncode
+        except (OSError, subprocess.SubprocessError):
+            code = None
+        # is-active exits 3 for a unit that is not active; anything else is an unanswered question.
+        return None if code == 0 else "trigger_inactive" if code == 3 else "trigger_state_unknown"
+    return reason
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    advance = commands.add_parser("tick", help="advance every preview job one bounded step")
+    advance = commands.add_parser("tick", help="advance every preview job one bounded step, and jobs that "
+                                  "advanced again at once for up to " + CONTINUE_SECONDS_ENV + " seconds")
     advance.add_argument("--storage-root", type=Path, required=True)
     retry = commands.add_parser("retry", help="resume one failed job after its cause is fixed (run as the service user)")
     retry.add_argument("--job", type=Path, required=True)
@@ -542,7 +663,8 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({key: job[key] for key in ("capture_id", "state", "revision", "retries")},
                          sort_keys=True), flush=True)
         return 0
-    counts = tick(args.storage_root)
+    counts = tick(args.storage_root, continue_seconds=continue_seconds_from_environment(),
+                  stop_reason=trigger_stop_reason())
     from .owned_capture_atlas_worker import tick_from_environment
     counts.update({"owned_" + key: value for key, value in tick_from_environment().items()})
     print(json.dumps(counts, sort_keys=True), flush=True)

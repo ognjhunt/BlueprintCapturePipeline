@@ -208,9 +208,14 @@ def test_completed_scene_is_planned_and_durably_queued_once_across_timer_ticks(t
     assert plan["site_id"] == "site-job1" and plan["campaign_id"] == adopted["campaign_id"]
     selected = [row for row in plan["candidates"] if row["status"] == "selected"]
     selected_ids = {row["candidate_id"] for row in selected}
+    # Candidates are admitted in sorted order until the $15 site allowance runs
+    # out, so the third pinned OpenPI PolaRiS variant is deferred for budget.
     assert selected_ids == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid",
-                            "cosmos3_nano_policy_droid", "molmoact2_droid"}
-    assert plan["maximum_planned_cost_usd"] == "10.00" and plan["budget_usd"] == "15.00"
+                            "cosmos3_nano_policy_droid", "molmoact2_droid",
+                            "pi0_droid_jointpos_100k_polaris", "pi0_droid_jointpos_polaris"}
+    assert plan["maximum_planned_cost_usd"] == "14.00" and plan["budget_usd"] == "15.00"
+    deferred = next(row for row in plan["candidates"] if row["candidate_id"] == "pi0_fast_droid_jointpos_polaris")
+    assert deferred["status"] == "deferred" and deferred["blockers"] == ["site_screening_budget_insufficient"]
     assert all(row["max_cost_usd"] == row["cost_quote"]["maximum_cost_usd"] == "2.00" for row in selected)
     assert all(row["blockers"] for row in plan["candidates"] if row["status"] != "selected")
     [publication] = coordinator.pending_publications(queue_root=world["screening_queue"])

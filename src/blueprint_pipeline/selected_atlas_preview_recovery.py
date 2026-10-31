@@ -268,6 +268,20 @@ def _snapshot(selection, observation, membership, capture_root, storage_root, jo
         value["job"]["reason"] = job["reason"]
     if type(job.get("stage")) is str and _CODE.fullmatch(job["stage"]):
         value["job"]["stage"] = job["stage"]
+    marker = job.get("refined_splat")
+    if job["state"] == "ready" and type(marker) is not dict:
+        # Ready before jobs recorded the marker; atlas-retry derives it the same way.
+        from .atlas_refined_splat_forms import retained_minimal_marker
+        try:
+            marker = retained_minimal_marker(capture_root / "pipeline/atlas", job.get("result_digest"))
+        except (OSError, ValueError, AttributeError):
+            marker = None  # Status reports eligibility; atlas-retry refuses with its own code.
+    if type(marker) is dict and marker.get("gap_preserving_form_untried") is True:
+        # The only ready job atlas-retry reopens: its minimal refined splat left
+        # generated views out, and the reviewed whole-view form was never tried.
+        left = marker.get("left_out_admitted_view_ids")
+        value["job"]["gap_preserving_upgrade"] = {
+            "left_out_admitted_view_count": len(left) if type(left) is list else None}
     if time.time() - job["enqueued_at_epoch"] > MAXIMUM_JOB_SECONDS:
         value["preflight_blockers"].append("atlas_preview_expired")
     try:
