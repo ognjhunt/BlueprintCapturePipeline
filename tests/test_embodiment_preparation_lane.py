@@ -528,3 +528,44 @@ def test_diagnostic_retention_failure_still_publishes_verified_model(tmp_path, m
     assert row["native_controller_smoke"]["status"] == "failed"
     assert row["native_controller_smoke"]["reasons"][0].startswith("diagnostic_retention_failed:")
     assert "diagnostic_path" not in row["native_controller_smoke"]
+
+
+def test_a_batch_waits_unbuilt_and_unconsumed_for_the_spend_guards_current_lock(tmp_path, monkeypatch):
+    # public-robot-imports-20261031-08: launched before the guard's first post-deploy pass,
+    # the batch consumed its single-use grant and the provider preflight then refused it.
+    from blueprint_pipeline import paid_lane_guard, spend_admission_lock
+    grant, job, item = _queued(tmp_path)
+    monkeypatch.setenv(paid_lane_guard.SPEND_ADMISSION_LOCK_PATH_ENV, str(tmp_path / "lock.json"))
+    monkeypatch.setattr(paid_lane_guard, "_load_spend_admission_lock", lambda path: {"generated_at": "stale"})
+    passes = iter([["spend_admission_lock_stale"]] * 17)
+    monkeypatch.setattr(spend_admission_lock, "validate_spend_admission_lock", lambda *a, **k: next(passes))
+    slept = []
+    original = controller.spend_admission_wait
+    monkeypatch.setattr(controller, "spend_admission_wait", lambda: original(sleep=slept.append))
+    value = controller.process_entry(item, root=tmp_path, store=tmp_path / "models", commit=COMMIT,
+        build=lambda **k: pytest.fail("built before spend admission"), runner=lambda *a, **k: pytest.fail("launched"))
+    assert value["status"] == "waiting_for_spend_admission" and value["authorization_consumed"] is False
+    assert value["blockers"] == ["spend_admission_lock_stale"] and slept == [15] * 16
+    assert [row["embodiment_id"] for row in value["results"]] == grant["embodiment_ids"]
+    assert not (job / "allocator_launch_intent.json").exists() and not (job / "allocator_result.json").exists()
+    assert item.exists()  # still queued for the next pass
+    # Once the guard writes a current lock, the same queued batch goes on to its build.
+    passes = iter([["spend_admission_lock_stale"], []])
+
+    class Built(Exception):
+        pass
+
+    def build(**_kwargs):
+        raise Built
+
+    with pytest.raises(Built):
+        controller.process_entry(item, root=tmp_path, store=tmp_path / "models", commit=COMMIT,
+                                 build=build, runner=lambda *a, **k: pytest.fail("launched"),
+                                 resolve_runtime=lambda: tmp_path / "runtime-receipt.json")
+    assert slept == [15] * 17
+
+
+def test_no_configured_lock_leaves_the_decision_to_the_provider_preflight(monkeypatch):
+    from blueprint_pipeline import paid_lane_guard
+    monkeypatch.delenv(paid_lane_guard.SPEND_ADMISSION_LOCK_PATH_ENV, raising=False)
+    assert controller.spend_admission_wait(sleep=lambda s: pytest.fail("waited")) == []
