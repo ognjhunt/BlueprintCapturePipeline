@@ -21,6 +21,7 @@ from typing import Any
 from .core.common import redacted_failure_text
 from .decision_evidence_contracts import canonical_digest, canonical_json
 from .immutable_file_digest import sha256_file
+from .immutable_tree_walk import walk_tree
 from .task_evaluation_scene_configuration_component_package import (
     TaskEvaluationSceneConfigurationComponentPackageError,
     validate_scene_configuration_component_package,
@@ -206,29 +207,29 @@ def _validate_toolchain(
             )
         inventory[relative] = (digest, size, executable)
     observed: set[str] = set()
-    for path in root.rglob("*"):
-        if path == manifest_path:
+    for relative, entry in walk_tree(root):
+        if relative == manifest_path.name:
             continue
-        if path.is_symlink():
+        if entry.is_symlink():
             raise TaskEvaluationSceneConfigurationStageProducerError(
                 "scene_configuration_toolchain_symlink_forbidden"
             )
-        if path.is_dir():
-            if path.stat().st_mode & 0o222:
+        info = entry.stat(follow_symlinks=False)
+        if entry.is_dir(follow_symlinks=False):
+            if info.st_mode & 0o222:
                 raise TaskEvaluationSceneConfigurationStageProducerError(
                     "scene_configuration_toolchain_not_read_only"
                 )
             continue
-        if not path.is_file():
+        if not entry.is_file(follow_symlinks=False):
             continue
-        relative = path.relative_to(root).as_posix()
         expected = inventory.get(relative)
         if (
             expected is None
-            or path.stat().st_size != expected[1]
-            or _sha256(path) != expected[0]
-            or bool(path.stat().st_mode & 0o111) != expected[2]
-            or path.stat().st_mode & 0o222
+            or info.st_size != expected[1]
+            or _sha256(Path(entry.path)) != expected[0]
+            or bool(info.st_mode & 0o111) != expected[2]
+            or info.st_mode & 0o222
         ):
             raise TaskEvaluationSceneConfigurationStageProducerError(
                 f"scene_configuration_toolchain_file_invalid:{relative}"

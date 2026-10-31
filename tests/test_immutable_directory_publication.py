@@ -109,10 +109,10 @@ def test_dangling_destination_symlink_is_not_followed(tmp_path: Path) -> None:
 def test_a_stopped_publication_leaves_no_partial_destination(tmp_path: Path, monkeypatch) -> None:
     from blueprint_pipeline import immutable_directory_publication as publication
 
-    def stopped(_source: str, _destination: str) -> str:
+    def stopped(_source, _destination) -> None:
         raise SystemExit(143)  # systemctl stop, through the provision step's SIGTERM handler
 
-    monkeypatch.setattr(publication, "_link_immutable_file", stopped)
+    monkeypatch.setattr(publication.os, "rename", stopped)
     destination = tmp_path / "published"
     with pytest.raises(SystemExit):
         publish_staged_immutable_directory(
@@ -122,3 +122,43 @@ def test_a_stopped_publication_leaves_no_partial_destination(tmp_path: Path, mon
             output_exists_code="immutable_output_exists",
         )
     assert not destination.exists()
+
+
+def test_publishing_moves_no_files_link_count_or_change_time(tmp_path: Path) -> None:
+    """Both are in the identity the digest cache keys on; a hard link and unlink moved them."""
+    staging = _staging(tmp_path, "held")
+    (staging / "nested").mkdir()
+    (staging / "nested" / "payload.bin").write_bytes(b"held")
+    (staging / "nested").chmod(0o555)
+    before = {name: (staging / name).stat() for name in ("payload.bin", "nested/payload.bin")}
+
+    publish_staged_immutable_directory(staging=staging, destination=tmp_path / "published",
+                                       manifest_name="manifest.json", output_exists_code="immutable_output_exists")
+
+    for name, stat_before in before.items():
+        after = (tmp_path / "published" / name).stat()
+        assert (after.st_ino, after.st_nlink, after.st_ctime_ns) == (
+            stat_before.st_ino, stat_before.st_nlink, stat_before.st_ctime_ns)
+    assert not staging.exists()
+    assert not (tmp_path / "published").stat().st_mode & 0o222
+
+
+def test_a_destination_something_filled_after_the_reservation_is_not_overwritten(tmp_path: Path, monkeypatch) -> None:
+    """The rename replaces an empty directory only."""
+    from blueprint_pipeline import immutable_directory_publication as publication
+
+    destination = tmp_path / "published"
+    rename = publication.os.rename
+
+    def filled_first(source, target) -> None:
+        (Path(target) / "theirs").write_text("theirs", encoding="utf-8")
+        rename(source, target)
+
+    monkeypatch.setattr(publication.os, "rename", filled_first)
+    staging = _staging(tmp_path, "late")
+
+    with pytest.raises(OSError):
+        publish_staged_immutable_directory(staging=staging, destination=destination, manifest_name="manifest.json",
+                                           output_exists_code="immutable_output_exists")
+
+    assert (staging / "payload.bin").read_text(encoding="utf-8") == "late"

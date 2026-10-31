@@ -37,8 +37,8 @@ def _files(root, *, ignore=None):
                 continue
             if path.is_dir():
                 yield from walk(path, ancestors | {resolved})
-            elif path.is_file() and path.resolve().is_relative_to(root):
-                yield path
+            elif path.is_file() and (not path.is_symlink() or path.resolve().is_relative_to(root)):
+                yield path  # its directory is already known to resolve inside the root
             else:
                 raise ValueError("artisan_vendor_reuse_source_file_invalid")
 
@@ -49,6 +49,14 @@ def _identity(path):
     value = path.stat()
     return (value.st_dev, value.st_ino, value.st_mode, value.st_size,
             value.st_uid, value.st_gid, value.st_mtime_ns, value.st_ctime_ns)
+
+
+def _links_above(path, known):
+    """Whether a directory above ``path`` is a link, asking the filesystem once per directory."""
+    parent = os.path.dirname(os.path.abspath(path))
+    if parent not in known:
+        known[parent] = os.path.realpath(parent) != parent
+    return known[parent]
 
 
 def _recorded_identity(identity):
@@ -98,11 +106,12 @@ def prepare_vendor_reuse(*, toolchain_root, site_packages_root, blender_root, st
         sources = {"site_packages": str(Path(site_packages_root).resolve()),
                    "blender": str(Path(blender_root).resolve())}
         remembered = _remembered_sources(previous_plans, sources)
+        directories = {}
         rows = []
         hashed = {"file_count": 0, "bytes": 0}
         for kind, source in sources.items():
             for path in _files(source, ignore=SITE_IGNORE if kind == "site_packages" else None):
-                relative = path.relative_to(source).as_posix()
+                relative = os.fspath(path)[len(source) + 1:]
                 published = PACKAGE_PREFIX + f"runtime/{kind}/" + relative
                 prior = root / published
                 row = declared[published]
@@ -112,7 +121,7 @@ def prepare_vendor_reuse(*, toolchain_root, site_packages_root, blender_root, st
                                    and earlier.get("sha256") == row["sha256"])
                 mode = stat.S_IMODE(prior.lstat().st_mode)
                 if (not stat.S_ISREG(prior.lstat().st_mode) or mode & 0o222
-                        or prior.resolve() != prior.absolute()
+                        or _links_above(prior, directories)
                         or before[0] != staging_device or row["size_bytes"] != source_before[3]
                         or before[3] != source_before[3]
                         or mode != (0o555 if source_before[2] & 0o111 else 0o444)
@@ -148,14 +157,15 @@ def vendor_copy_function(plan, *, kind, source_root):
     rows = {row["relative_path"]: row for row in plan["files"] if row["kind"] == kind}
     root = Path(plan["toolchain_root"])
     copied = set()
+    directories = {}
 
     def copy(source, destination):
         original, target = Path(source), Path(destination)
         try:
-            row = rows[original.relative_to(source_root).as_posix()]
+            row = rows[os.path.relpath(original, source_root)]
             prior = root / row["published_path"]
             before, source_before = _identity(prior), _identity(original)
-            if (prior.is_symlink() or prior.resolve() != prior.absolute()
+            if (prior.is_symlink() or _links_above(prior, directories)
                     or before[2] & 0o222 or before[3] != row["size_bytes"]
                     or stat.S_IMODE(before[2]) != (0o555 if source_before[2] & 0o111 else 0o444)
                     or before[0] != target.parent.stat().st_dev

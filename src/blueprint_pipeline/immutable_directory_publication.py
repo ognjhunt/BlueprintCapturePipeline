@@ -21,11 +21,6 @@ def _remove_owned_tree(root: Path) -> None:
     shutil.rmtree(root)
 
 
-def _link_immutable_file(source: str, destination: str) -> str:
-    os.link(source, destination, follow_symlinks=False)
-    return destination
-
-
 def _fsync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY)
     try:
@@ -41,12 +36,13 @@ def publish_staged_immutable_directory(
     manifest_name: str,
     output_exists_code: str,
 ) -> None:
-    """Install complete staged bytes manifest-last under an exclusive directory.
+    """Install complete staged bytes under an exclusive directory, all at once.
 
-    ``Path.mkdir(exist_ok=False)`` is the no-overwrite reservation.  Installing the
-    manifest last keeps concurrent readers fail-closed until every inventoried
-    byte is present.  Both directories must be siblings so staging cleanup and
-    publication remain governed by the same parent.
+    ``Path.mkdir(exist_ok=False)`` is the no-overwrite reservation, and the rename
+    replaces only that empty directory, so a reader sees nothing or everything. Both
+    directories must be siblings so the rename stays on one filesystem. No file's link
+    count or change time moves, where linking each one and unlinking its staged alias
+    took 77,000 link calls to publish one 38,505 file package (2026-10-31).
     """
 
     staged = Path(staging).resolve()
@@ -70,22 +66,8 @@ def publish_staged_immutable_directory(
     except FileExistsError as exc:
         raise ImmutableDirectoryPublicationError(output_exists_code) from exc
     try:
-        children = sorted(
-            staged.iterdir(),
-            key=lambda path: (path.name == manifest_name, path.name),
-        )
-        for source in children:
-            installed = target / source.name
-            if source.is_dir():
-                shutil.copytree(
-                    source,
-                    installed,
-                    symlinks=False,
-                    copy_function=_link_immutable_file,
-                )
-            else:
-                _link_immutable_file(str(source), str(installed))
-        _remove_owned_tree(staged)
+        staged.chmod(0o700)  # some systems refuse to rename a directory the owner cannot write
+        os.rename(staged, target)
         target.chmod(0o555)
         _fsync_directory(target)
         _fsync_directory(target.parent)

@@ -29,6 +29,7 @@ from blueprint_pipeline.immutable_directory_publication import (
 )
 from blueprint_pipeline import readback_ledger
 from blueprint_pipeline.immutable_file_digest import proven_digest, sealed_identity, sha256_file
+from blueprint_pipeline.immutable_tree_walk import path_order, walk_tree
 from blueprint_pipeline.provision_phase_clock import mark_phase
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
@@ -236,18 +237,18 @@ def build_published_scene_configuration_toolchain(
                     shared=shared,
                 ),
             )
-            for component_file in sorted(
-                path for path in package_destination.rglob("*") if path.is_file()
+            for relative_component_file, entry in sorted(
+                walk_tree(package_destination), key=lambda item: path_order(item[0])
             ):
-                relative_component_file = component_file.relative_to(staging)
-                files.append(
-                    {
-                        "relative_path": relative_component_file.as_posix(),
-                        "sha256": _sha256(component_file),
-                        "size_bytes": component_file.stat().st_size,
-                        "executable": bool(component_file.stat().st_mode & 0o111),
-                    }
-                )
+                if entry.is_file():
+                    files.append(
+                        {
+                            "relative_path": (package_relative / relative_component_file).as_posix(),
+                            "sha256": _sha256(Path(entry.path)),
+                            "size_bytes": entry.stat().st_size,
+                            "executable": bool(entry.stat().st_mode & 0o111),
+                        }
+                    )
             component_relative = package_relative / package_manifest["driver_entrypoint"]
             stages[identity.adapter_id] = {
                 "entrypoint": relative.as_posix(),
