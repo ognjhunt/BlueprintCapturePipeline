@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import holds
+from . import activation_hold, holds
 from .config import DoorConfig
 from .hostinfo import CommandRunner, SubprocessRunner
 from .requests import (
@@ -94,6 +94,12 @@ def _deploy_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str
         "DOOR_WAIT_FOR_IDLE": "1" if request["wait_for_idle"] else "0",
         "DOOR_IDLE_UNITS": ",".join(config.idle_wait_units),
         "DOOR_IDLE_WAIT_SECONDS": str(config.idle_wait_seconds),
+        # activation_hold.py reads the running release and, to park a direct deploy, the queue.
+        # Its own name: DOOR_PARKED_DIR comes only with DOOR_PARKED, the parked-deploy mark.
+        "DOOR_ACTIVATION_HOLD_PARKED_DIR": str(Path(config.spool_root) / "parked"),
+        "DOOR_ACTIVE_RELEASE_LINK": config.active_release_link,
+        **({"DOOR_ACTIVATION_HOLD_OVERRIDE": request["activation_hold_override"]}
+           if request.get("activation_hold_override") else {}),
     }
 
 
@@ -607,7 +613,9 @@ def _park_deploy(config: DoorConfig, request_id: str, request: dict[str, Any], b
         return {"status": "refused", "code": f"deploy_in_progress:{busy}"}
     record = {"schema": _PARKED_SCHEMA, "id": request_id, "commit": request["commit"],
               "wait_for_idle": request["wait_for_idle"], "parked_at_epoch": time.time(),
-              "active_release_at_park": _active_release_commit(config)}
+              "active_release_at_park": _active_release_commit(config),
+              **({"activation_hold_override": request["activation_hold_override"]}
+                 if request.get("activation_hold_override") else {})}
     handle, temporary = tempfile.mkstemp(dir=parked, prefix=f".{request_id}.", suffix=".tmp")
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
@@ -631,7 +639,9 @@ def _parked_request(path: Path) -> tuple[str, dict[str, Any], dict[str, Any]]:
             or not isinstance(parked_at, (int, float)) or not math.isfinite(parked_at)):
         raise RequestRefused("deploy_parked_record_invalid")
     request = validate_request({"kind": "deploy", "commit": record.get("commit"),
-                                "wait_for_idle": record.get("wait_for_idle")})
+                                "wait_for_idle": record.get("wait_for_idle"),
+                                **({"activation_hold_override": record["activation_hold_override"]}
+                                   if "activation_hold_override" in record else {})})
     return request_id, request, record
 
 
@@ -665,6 +675,21 @@ def _parked_still_waiting(results: Path, path: Path, now: float) -> tuple[str, d
     return None
 
 
+def _activation_hold_recheck_pending(parked: Path, now: float) -> bool:
+    """True while door-deploy.sh's last activation-hold check says not to look again yet.
+
+    It saves a fetch every minute for hours. The file is root's, in root's directory;
+    a time too far ahead is not trusted, so a bad file delays a deploy by one recheck at most.
+    """
+
+    hold = _json_or_none(parked / activation_hold.HOLD_FILE)
+    recheck = (hold or {}).get("recheck_after_epoch")
+    if (not hold or hold.get("schema") != activation_hold.HOLD_SCHEMA or isinstance(recheck, bool)
+            or not isinstance(recheck, (int, float)) or not math.isfinite(recheck)):
+        return False
+    return now < recheck <= now + activation_hold.RECHECK_SECONDS
+
+
 def _release_parked(config: DoorConfig, runner: CommandRunner) -> None:
     """When no deploy runs, start the newest parked deploy.
 
@@ -693,10 +718,17 @@ def _release_parked(config: DoorConfig, runner: CommandRunner) -> None:
                 print(f"parked_record_kept:{path.name}:{type(drop_error).__name__}", file=sys.stderr)
     if not live:
         return
+    override = next((row["activation_hold_override"] for _, row in live if row.get("activation_hold_override")), "")
+    if not override and _activation_hold_recheck_pending(spool / "parked", now):
+        return  # a live scene-configuration activation holds them; door-deploy.sh rechecks later
     request_id, request = live[-1]
+    request = {**request, "wait_for_idle": any(row["wait_for_idle"] for _, row in live)}
+    if override:
+        # Any of them may be the urgent fix, and the deploy that goes out covers it.
+        request["activation_hold_override"] = override
     outcome = _launch(config, runner, request_id,
                       # The deploy that goes out may be any of theirs, so any of them can ask it to drain.
-                      {**request, "wait_for_idle": any(row["wait_for_idle"] for _, row in live)},
+                      request,
                       extra_environment={
         "DOOR_PARKED": "1",
         "DOOR_PARKED_DIR": str(spool / "parked"),

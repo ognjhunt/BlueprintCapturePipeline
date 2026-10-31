@@ -377,8 +377,8 @@ def test_deploy_log_times_every_step_before_the_tool_starts(env: dict[str, str])
     log = (Path(env["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
     phases = re.findall(r"^\[\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\] phase=(\w+)$", log, re.MULTILINE)
     assert phases == [
-        "staging_guard_start", "staging_guard_done", "fetch_main_start", "fetch_main_done",
-        "prepare_source_done", "require_on_main_done", "tool_worktree_done", "tool_start",
+        "staging_guard_start", "staging_guard_done", "activation_hold_start", "activation_hold_done",
+        "fetch_main_start", "fetch_main_done", "prepare_source_done", "require_on_main_done", "tool_worktree_done", "tool_start",
     ]
 
 
@@ -1350,3 +1350,100 @@ def test_scene_window_rechecks_its_inputs(window_env, overrides, code):
 def test_scene_window_script_is_installed_with_the_door():
     installer = (DOOR / "install.sh").read_text(encoding="utf-8")
     assert '"$source_dir"/door-extend-scene-execution-window.sh' in installer
+
+
+# ------------------------------------------------- scene-configuration activation hold
+
+LIVE_RELEASE = "c" * 40
+
+
+def _live_activation(values: dict[str, str], commit: str = LIVE_RELEASE) -> None:
+    """A pending scene-configuration activation bound to ``commit``, and that release running."""
+    root = Path(values["STUB_DIR"])
+    pending = Path(values["DOOR_STATE_ROOT"]) / "task-evaluation-launch-activations" / "pending"
+    pending.mkdir(parents=True, exist_ok=True)
+    (pending / "act-1-abc.json").write_text(json.dumps({"request": {
+        "activation_id": "act-1", "lane": "task_evaluation_scene_configuration",
+        "expected_production_commit": commit}}), encoding="utf-8")
+    link = Path(values.get("DOOR_ACTIVE_RELEASE_LINK") or root / "active")
+    if not link.is_symlink():
+        link.symlink_to(root / "releases" / commit)
+
+
+def _hold_env(env: dict[str, str]) -> dict[str, str]:
+    root = Path(env["STUB_DIR"])
+    (root / "parked").mkdir(exist_ok=True)
+    return {**env, "DOOR_ACTIVATION_HOLD_PARKED_DIR": str(root / "parked"),
+            "DOOR_ACTIVE_RELEASE_LINK": str(root / "active")}
+
+
+def test_a_direct_deploy_during_a_live_activation_parks_itself_before_fetching(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+
+    rc, outcome, calls = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="1")
+
+    assert rc == 0 and outcome == {}  # the deploy that settles it writes its outcome
+    assert not any(call.startswith(("venv-python", "git")) for call in calls)
+    record = json.loads((Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]) / f"{DEPLOY_ID}.json").read_text(encoding="utf-8"))
+    assert record["commit"] == SHA and record["wait_for_idle"] is True
+    assert record["active_release_at_park"] == LIVE_RELEASE and "deploying_commit" not in record
+    log = (Path(values["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
+    assert "staying parked: scene_configuration_activation_live:pending:act-1" in log
+    hold_file = json.loads((Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]) / ".activation-hold").read_text(encoding="utf-8"))
+    assert hold_file["live"] == [{"activation_id": "act-1", "state": "pending"}]
+
+
+def test_an_override_deploys_during_a_live_activation(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+
+    rc, outcome, calls = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0",
+                              DOOR_ACTIVATION_HOLD_OVERRIDE="money")
+
+    assert rc == 0 and outcome["status"] == "deployed"
+    assert any(call.startswith("venv-python") for call in calls)
+    assert not list(Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]).glob("*.json"))
+
+
+def test_an_activation_bound_to_another_release_does_not_hold_the_deploy(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values, commit="d" * 40)
+    (Path(values["STUB_DIR"]) / "active").unlink()
+    (Path(values["STUB_DIR"]) / "active").symlink_to(Path(values["STUB_DIR"]) / "releases" / LIVE_RELEASE)
+
+    rc, outcome, _ = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0")
+
+    assert rc == 0 and outcome["status"] == "deployed"
+
+
+def test_a_canonical_deploy_during_a_live_activation_is_refused_not_parked(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+    provenance = Path(values["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.release-provenance.json"
+    provenance.write_bytes(b'{"schema": "fixture"}')
+    provenance.chmod(0o600)
+
+    rc, outcome, calls = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0",
+                              DOOR_RELEASE_PROVENANCE_FILE=str(provenance),
+                              DOOR_RELEASE_PROVENANCE_SHA256=hashlib.sha256(provenance.read_bytes()).hexdigest())
+
+    assert rc == 2 and outcome["code"] == "scene_configuration_activation_live"
+    assert not any(call.startswith("venv-python") for call in calls)
+    assert not list(Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]).glob("*.json"))
+
+
+def test_a_parked_deploy_stays_parked_unmarked_while_an_activation_is_live(parked_env, door_clone) -> None:
+    newest = str(door_clone["merged"])
+    first = _first_commit(door_clone)
+    _activate_for_script(parked_env, first, proven=True)
+    _park_for_script(parked_env, DEPLOY_ID, newest, active_at_park=first)
+    _live_activation(parked_env, commit=first)
+
+    rc, outcome, calls = _run_parked(parked_env, newest)
+
+    assert rc == 0 and outcome == {}
+    assert not any(call.startswith("venv-python") for call in calls)
+    assert _parked_names(parked_env) == [DEPLOY_ID]
+    record = json.loads((Path(parked_env["DOOR_PARKED_DIR"]) / f"{DEPLOY_ID}.json").read_text(encoding="utf-8"))
+    assert "deploying_commit" not in record  # so the next wake-up does not call it interrupted

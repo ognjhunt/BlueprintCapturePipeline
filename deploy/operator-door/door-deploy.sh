@@ -61,6 +61,34 @@ fi
 export TMPDIR="$deploy_tmp"
 door_phase staging_guard_done
 
+# A deploy retires an in-flight scene-configuration activation and every stage after
+# it refuses the old release, so its pre-paid work would be rebuilt from scratch.
+# Hold the deploy (never the job) while one is live on the running release, up to
+# the activation's own time limit; an override for a money, privacy or rights fix
+# goes now. Checked before the fetch, and before parked_settle.py marks a record as
+# deploying, so staying parked here leaves every record as it was.
+door_phase activation_hold_start
+hold_rc=0
+hold_reason="$(DOOR_ACTIVE_RELEASE_LINK="${DOOR_ACTIVE_RELEASE_LINK:-/opt/blueprint/task-evaluation-control-plane}" \
+  python3 -I -S "$DOOR_INSTALLED_DIR/operator_door/activation_hold.py")" || hold_rc=$?
+echo "activation hold: ${hold_reason:-none} (rc=$hold_rc)"
+if [ "$hold_rc" -eq 5 ]; then
+  if [ -n "${DOOR_PARKED:-}" ]; then
+    door_stay_parked "$hold_reason"
+  elif [ "$mode" = production ]; then
+    # A canonical deploy carries one commit's provenance and never parks.
+    door_fail scene_configuration_activation_live
+  elif DOOR_ACTIVE_RELEASE_LINK="${DOOR_ACTIVE_RELEASE_LINK:-/opt/blueprint/task-evaluation-control-plane}" \
+      python3 -I -S "$DOOR_INSTALLED_DIR/operator_door/activation_hold.py" park; then
+    # Now a parked request: the runner's minute timer retries it, and its outcome
+    # is written by the deploy that settles it.
+    door_stay_parked "$hold_reason"
+  else
+    door_fail scene_configuration_activation_live
+  fi
+fi
+door_phase activation_hold_done
+
 door_prepare_source
 door_phase prepare_source_done
 door_settle_parked
