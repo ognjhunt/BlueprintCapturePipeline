@@ -102,6 +102,26 @@ The production Atlas controller runs the following for a new scene plan:
    boundaries; it is a planning hypothesis, not evidence of a wall. The agent
    selects supported continuations and leaves ambiguous voids unknown. Nothing
    outside the projected outline or capture-derived 3D bounds is added.
+   Each pixel the projected depth leaves uncovered is walked through one voxel
+   grid carved from the frames' confident depth (`atlas_observed_space`): free in
+   front of a ranged pixel, a ranged surface at its depth. A pixel whose ray first
+   meets a ranged surface is a raster crack at a magnified viewpoint, not a gap
+   (the export-feedback survey keeps it, since an export can lose a ranged
+   surface). A pixel whose ray first meets space a photograph saw only without
+   confident depth stays fillable, because a recorded surface may only lack
+   depth, but it forms its own regions flagged `photographed_without_depth`,
+   cyan in previews and tagged in the compact survey. In capture-447ae4f4 the
+   dining chairs' wooden frames had no depth in any of the 16 frames; an
+   unflagged mask over them was read as floor and generation drew bare floor
+   there. Each view row counts uncovered pixels by what their rays reach, and no
+   gap camera is aimed at a flagged region. Each gap camera is placed at the
+   screened location from which the capture observes most of the re-aimed view
+   at native resolution (cross-view-supported depth, as the keep mask needs),
+   among locations that still expose the gap's minimum dedicated-camera area.
+   Capture-447ae4f4's largest-angle choice put both gap cameras 0.52 units over
+   the dining table, keeping 42% and 32% of each frame. A survey saved before
+   this (schema v1) keeps its gaps and its largest-angle cameras, so retained
+   plans are unchanged.
    Model input uses a compact table of every camera and region; full precision
    masks and survey receipts remain unchanged for selection and admission.
    `atlasGenerate` receives all approved cleaned photographs with aligned depth

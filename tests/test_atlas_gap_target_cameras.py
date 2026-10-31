@@ -85,3 +85,64 @@ def test_changed_gap_mask_refuses_camera_planning(tmp_path):
     Image.fromarray(np.zeros((80, 100), np.uint16)).save(survey['views'][0]['label_path'])
     with pytest.raises(ValueError, match='gap_survey_changed'):
         gap_target_candidates(frames, pool, survey)
+
+
+def _with_hover_hypothesis(pool):
+    """A screened free-space hypothesis 0.4 units from the plane: the largest view-angle change."""
+    hover = deepcopy(pool[0])
+    hover.update(camera_id='hover', purpose='disocclusion', camera_location_observed_free=True)
+    hover['camera']['extrinsics']['position'] = [.9, .3, -1.6]
+    return [*pool, hover]
+
+
+def test_ranked_survey_places_the_camera_where_the_capture_observes_the_view(tmp_path):
+    from blueprint_pipeline.atlas_scene_gaps import GAP_CAMERA_ORIGIN_RANKING
+
+    frames, pool, survey = scene(tmp_path)
+    pool = _with_hover_hypothesis(pool)
+    # A survey saved without the ranking keeps the largest-angle choice: the
+    # close-up over the plane (capture-447ae4f4's camera over the dining table).
+    legacy = gap_target_candidates(frames, pool, survey)[0]
+    assert legacy['camera']['extrinsics']['position'] == [.9, .3, -1.6]
+    assert 'origin_ranking' not in legacy
+    ranked = gap_target_candidates(frames, pool, {**survey, 'gap_camera_origin_ranking': GAP_CAMERA_ORIGIN_RANKING})[0]
+    assert ranked['camera']['extrinsics']['position'] in ([0., 0., 0.], [-.25, 0., 0.])
+    assert ranked['origin_ranking'] == GAP_CAMERA_ORIGIN_RANKING
+    assert 0 < ranked['observed_context_fraction_estimate'] <= 1
+    assert ranked['exposed_gap_pixel_estimate'] >= 16  # the gap's minimum dedicated-camera area here
+    forward = -Rotation.from_quat(ranked['camera']['extrinsics']['quaternion']).as_matrix()[:, 2]
+    direction = np.array(ranked['target_world_estimate']) - ranked['camera']['extrinsics']['position']
+    assert np.allclose(forward, direction / np.linalg.norm(direction))
+    # The source-centred fallback is unchanged by the ranking.
+    fallback = gap_target_candidates(frames, pool, {**survey, 'gap_camera_origin_ranking': GAP_CAMERA_ORIGIN_RANKING},
+                                     source_centred=True)[0]
+    assert fallback == gap_target_candidates(frames, pool, survey, source_centred=True)[0]
+
+
+def test_close_up_context_scores_low_and_a_gap_behind_a_known_surface_is_not_exposed():
+    from blueprint_pipeline.atlas_completion_cameras import CONTEXT_SAMPLE_STRIDE, observed_context
+
+    def camera(z):
+        return {'intrinsics': {'width': 64, 'height': 48, 'fx': 48., 'fy': 48., 'cx': 32., 'cy': 24.},
+                'extrinsics': {'position': [0., 0., z], 'quaternion': [0., 0., 0., 1.]}}
+
+    # One sample per stride of a photograph one unit from the plane z = -1 (f = 48).
+    spacing = CONTEXT_SAMPLE_STRIDE / 48
+    x, y = np.meshgrid(np.arange(-1.5, 1.5 + 1e-9, spacing), np.arange(-1.2, 1.2 + 1e-9, spacing))
+    plane = np.column_stack((x.ravel(), y.ravel(), -np.ones(x.size)))
+    supported = np.ones(len(plane), bool)
+    behind, front, weight = np.array([[0., 0., -2.]]), np.array([[0., 0., -.5]]), np.ones(1)
+    far, hidden = observed_context(plane, supported, [], camera(1.), behind, weight)
+    assert far == 1. and hidden == 0.
+    _, seen = observed_context(plane, supported, [], camera(1.), front, weight)
+    assert seen == pytest.approx(1 / 1.5 ** 2)
+    # Twice as close as the photograph: one sample per four target pixels cannot be kept.
+    assert observed_context(plane, supported, [], camera(-.5), behind, weight)[0] == 0.
+    # Context no other view supports is not context the keep mask holds.
+    assert observed_context(plane, ~supported, [], camera(1.), behind, weight)[0] == 0.
+
+
+def test_no_camera_is_aimed_at_space_the_photographs_saw_without_depth(tmp_path):
+    frames, pool, survey = scene(tmp_path)
+    survey['views'][0]['gaps'][0]['photographed_without_depth'] = True
+    assert gap_target_candidates(frames, pool, survey) == []

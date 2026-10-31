@@ -18,6 +18,17 @@ from .local_reconstruction_adapters import _sha256_file
 from .atlas_depth_splat import restrict_frame
 
 
+SURVEY_SCHEMA_VERSION = 'atlas_geometry_gap_survey.v2'
+# How ``gap_target_candidates`` places cameras for this survey's gaps. A survey
+# saved without it (v1) keeps the camera choice it was made with.
+GAP_CAMERA_ORIGIN_RANKING = 'observed_context_v1'
+SURVEY_LEGEND = ('Magenta identifies candidate missing geometry that no frame saw. Cyan identifies a region '
+                 'whose view first meets space a photograph saw without measured depth, such as thin furniture '
+                 'frames or a recorded surface with missing depth: generation there must keep what the '
+                 'photographs show, not continue a bare surface through it. In the compact survey such a gap '
+                 'has a fourth entry, "photographed_without_depth". Black exterior is not a fill target.')
+
+
 def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None,
                expected_depth=None):
     """Connected missing surfaces inside photographed or enclosed coverage.
@@ -25,6 +36,13 @@ def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None,
     A mask never turns the exterior black canvas into a whole-room request.
     Resolution-relative opening removes raster pinholes, not large scene gaps.
     """
+    return label_missing(missing_candidates(depth, photographed, scene_outline=scene_outline,
+                                            candidate_mask=candidate_mask, expected_depth=expected_depth))
+
+
+def missing_candidates(depth, photographed, *, scene_outline=False, candidate_mask=None,
+                       expected_depth=None):
+    """Uncovered pixels inside photographed or enclosed coverage, before ``label_missing``."""
     import cv2
     from scipy.ndimage import binary_fill_holes
 
@@ -56,19 +74,25 @@ def gap_labels(depth, photographed, *, scene_outline=False, candidate_mask=None,
             inside |= outline.astype(bool)
     if candidate_mask is not None:
         inside &= candidate_mask
-    missing = (~covered & inside).astype(np.uint8)
-    missing = cv2.morphologyEx(missing, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(missing, connectivity=8)
-    minimum = max(9, round(depth.size / 4096))
+    return ~covered & inside
+
+
+def label_missing(missing):
+    """Connected, resolution-relative regions of ``missing``; raster pinholes are opened away."""
+    import cv2
+
+    height, width = missing.shape
+    opened = cv2.morphologyEx(missing.astype(np.uint8), cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(opened, connectivity=8)
+    minimum = max(9, round(missing.size / 4096))
     selected = [i for i in range(1, count) if stats[i, cv2.CC_STAT_AREA] >= minimum]
-    result = np.zeros(depth.shape, np.uint16)
+    result = np.zeros(missing.shape, np.uint16)
     regions = []
     for index, old in enumerate(selected, 1):
         result[labels == old] = index
         x, y, w, h, area = stats[old].tolist()
         regions.append({'label': index, 'pixel_count': area,
-                        'box_xywh_normalized': [x / depth.shape[1], y / depth.shape[0],
-                                                w / depth.shape[1], h / depth.shape[0]]})
+                        'box_xywh_normalized': [x / width, y / height, w / width, h / height]})
     return result, regions
 
 
@@ -134,7 +158,22 @@ def load_exported_splat(root):
 
 def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=(),
                 splat_root=None):
-    """Survey all known directions; the existing production agent chooses gaps."""
+    """Survey all known directions; the existing production agent chooses gaps.
+
+    Each uncovered pixel's ray is walked through the observed space
+    (``atlas_observed_space``). One that first meets a surface a frame ranged
+    is a raster crack, not a gap; the export feedback pass keeps it, since an
+    export can lose a ranged surface. One that first meets space a photograph
+    saw without depth (thin furniture frames, a recorded surface with missing
+    depth) stays fillable but forms its own regions, flagged
+    ``photographed_without_depth`` and cyan in previews, so a plan knows that
+    generation there must keep what the photographs show. In capture-447ae4f4
+    an unflagged mask over dining chairs was read as floor and filled as floor.
+
+    A survey saved before this (v1) is adopted unchanged with its binding.
+    """
+    from .atlas_observed_space import (RANGED, REACHED_NAMES, UNRANGED, first_reached, observed_space,
+                                       space_summary)
     from .atlas_scene_chisel import project_source_depths, DEPTH_PROJECTION_BATCH_CAMERAS
     from .atlas_scene_preservation import prepare_completion_views, _save_image
     from PIL import Image
@@ -171,6 +210,7 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
     # Raw projected points can look like context while the usable patches are
     # actually empty, especially when looking at the back of a surface.
     prepared = prepare_completion_views(frames=frames, selected=candidates, root=root / 'context')
+    space = observed_space(photographs=frames, geometry_frames=geometry_frames)
     rows, previews, depth_batch = [], [], []
     for index, (candidate, source) in enumerate(zip(candidates, prepared, strict=True)):
         rgb = np.asarray(Image.open(source['image_path']).convert('RGB'))
@@ -190,9 +230,18 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
             import cv2
             domain = np.zeros(depth.shape, np.uint8)
             cv2.fillConvexPoly(domain, np.rint(candidate['gap_target_polygon_pixels']).astype(np.int32), 1)
-        labels, regions = gap_labels(depth, photographed, scene_outline=outline,
+        missing = missing_candidates(depth, photographed, scene_outline=outline,
                                      candidate_mask=None if domain is None else domain.astype(bool),
                                      expected_depth=expected)
+        reached = first_reached(space, candidate['camera'], missing)
+        if splat is None:
+            missing &= reached != RANGED
+        unranged = missing & (reached == UNRANGED)
+        labels, regions = label_missing(missing & ~unranged)
+        flagged, flagged_regions = label_missing(unranged)
+        labels[flagged > 0] = flagged[flagged > 0] + len(regions)
+        regions += [{**row, 'label': row['label'] + len(regions), 'photographed_without_depth': True}
+                    for row in flagged_regions]
         path = root / f'{index:04d}-gaps.png'
         _save_image(path, labels)
         rows.append({'camera_id': candidate['camera_id'], 'source_frame_id': candidate['source_frame_id'],
@@ -201,22 +250,30 @@ def survey_gaps(*, frames, geometry_frames, candidates, root, expected_frames=()
                      'gap_domain': ('projected_scene_outline_hypothesis' if outline else 'photographed_or_enclosed'),
                      'gap_pixel_count': int(np.count_nonzero(labels)),
                      'known_context_pixel_count': int(photographed.sum()),
-                     'total_pixel_count': int(labels.size)})
+                     'total_pixel_count': int(labels.size),
+                     'photographed_without_depth_gap_pixel_count': int(np.count_nonzero(flagged)),
+                     'uncovered_pixels_first_reaching': {name: int(np.count_nonzero(reached == code))
+                                                         for code, name in REACHED_NAMES.items()}})
         if candidate['purpose'] in {'wide', 'translated', 'disocclusion', 'gap_target'}:
             preview = np.zeros_like(rgb)
             covered = depth > 0
             preview[covered] = rgb[covered]
             preview[labels > 0] = (255, 0, 200)
+            preview[flagged > 0] = (0, 200, 255)
             image = root / f'{index:04d}-survey.png'
             _save_image(image, preview)
             previews.append({'path': str(image), 'sha256': _sha256_file(image),
                              'source_frame_id': candidate['source_frame_id'],
                              'camera_id': candidate['camera_id'], 'kind': 'geometry_gap_survey'})
-    report = {'schema_version': 'atlas_geometry_gap_survey.v1', 'views': rows, 'previews': previews,
+    report = {'schema_version': SURVEY_SCHEMA_VERSION, 'views': rows, 'previews': previews,
               'binding_digest': binding_digest,
               'basis': ('exported_splat_centers_and_reviewed_depth_hypotheses' if splat is not None
                         else 'retained_rgbd_geometry_coverage_not_splat_alpha'),
-              'legend': 'Magenta identifies candidate missing geometry; black exterior is not a fill target.',
+              'gap_basis': ('export_holes_photographed_without_depth_flagged' if splat is not None
+                            else 'uncovered_pixels_except_ranged_surfaces_photographed_without_depth_flagged'),
+              'observed_space': space_summary(space),
+              'gap_camera_origin_ranking': GAP_CAMERA_ORIGIN_RANKING,
+              'legend': SURVEY_LEGEND,
               'renderer': ('atlas_exported_center_projection.v1' if splat is not None
                            else 'atlas_planar_depth_projection.v1'),
               'claim_ceiling': 'development_only'}
