@@ -18,6 +18,9 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py release-hold blueprint-scene-progression.timer
     python3 scripts/operator_door.py retire-scene-workspace <scene_id> [--bucket B] [--apply] --wait
     python3 scripts/operator_door.py legacy-owner-census --wait
+    python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
+        --expires-at 2026-11-07T10:30:00Z --authorization-reference "<owner approval>" --wait   # plan only
+    python3 scripts/operator_door.py extend-scene-execution-window ... --apply --ack extend-scene-execution-window --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
 nothing is configured in the VM and no header is sent. Elsewhere the token
@@ -62,7 +65,9 @@ MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
-                "legacy_owner_census_observed", "repaired"}
+                "legacy_owner_census_observed", "repaired", "extended", "already_covered"}
+SCENE_WINDOW_ACK = "extend-scene-execution-window"
+MAX_SCENE_WINDOW_SECONDS = 7 * 86400
 
 
 class DoorError(Exception):
@@ -599,6 +604,34 @@ def _embodiment_preparation_request(path: str, *, public_policy: str | None = No
         raise DoorError(2, code + "_request_file_invalid") from None
 
 
+def _scene_window_body(args: argparse.Namespace, *, now: float | None = None) -> dict[str, Any]:
+    """A plan unless --apply; the host re-checks every bound against the sealed intent."""
+    if re.fullmatch(r"scene-[0-9a-f]{64}", args.intent_id) is None:
+        raise DoorError(2, "scene_window_intent_id_invalid")
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", args.intent_digest) is None:
+        raise DoorError(2, "scene_window_intent_digest_invalid")
+    try:
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", args.expires_at) is None:
+            raise ValueError
+        expires = dt.datetime.strptime(args.expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        raise DoorError(2, "scene_window_expires_at_invalid: use YYYY-MM-DDTHH:MM:SSZ (UTC)") from None
+    moment = time.time() if now is None else now
+    if not moment < expires.timestamp() <= moment + MAX_SCENE_WINDOW_SECONDS:
+        raise DoorError(2, "scene_window_expires_at_out_of_bounds: must be after now and at most 7 days ahead")
+    reference = args.authorization_reference
+    if reference != reference.strip() or not 1 <= len(reference) <= 500 or not reference.isprintable():
+        raise DoorError(2, "scene_window_authorization_reference_invalid")
+    if args.apply and args.ack != SCENE_WINDOW_ACK:
+        raise DoorError(2, f"scene_window_apply_requires --ack {SCENE_WINDOW_ACK}")
+    if not args.apply and args.ack not in (None, SCENE_WINDOW_ACK):
+        raise DoorError(2, "scene_window_ack_invalid")
+    # A plan writes nothing, so it carries the fixed acknowledgement the door's schema requires.
+    return {"kind": "extend-scene-execution-window", "intent_id": args.intent_id,
+            "intent_digest": args.intent_digest, "expires_at": args.expires_at,
+            "authorization_reference": reference, "ack": SCENE_WINDOW_ACK, "apply": bool(args.apply)}
+
+
 def _hold_duration(value: str) -> int:
     match = re.fullmatch(r"([0-9]+)([hms])", value)
     if match is None:
@@ -700,6 +733,17 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
         if action == "retire-scene":
             lifecycle.add_argument("--apply", action="store_true")
         _add_wait(lifecycle, 2 * 3600 + 600)
+    window = commands.add_parser(
+        "extend-scene-execution-window",
+        help="plan an owner-approved, time-only extension of one scene intent; --apply records it and tells the WebApp",
+    )
+    window.add_argument("intent_id", help="scene-<64 hex>, the sealed intent")
+    window.add_argument("--intent-digest", required=True, help="the intent's exact sha256: digest")
+    window.add_argument("--expires-at", required=True, help="new expiry, UTC YYYY-MM-DDTHH:MM:SSZ, at most 7 days ahead")
+    window.add_argument("--authorization-reference", required=True, help="names the owner's approval (<= 500 chars)")
+    window.add_argument("--apply", action="store_true", help="record it; without this only a plan is made")
+    window.add_argument("--ack", help=f"required with --apply: {SCENE_WINDOW_ACK}")
+    _add_wait(window, 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
     resume = commands.add_parser(
@@ -832,6 +876,8 @@ def run(args: argparse.Namespace) -> int:
         return _submit(body, args)
     elif command == "legacy-owner-census":
         return _submit({"kind": "legacy-owner-census"}, args)
+    elif command == "extend-scene-execution-window":
+        return _submit(_scene_window_body(args), args)
     elif command == "public-embodiment-preparation":
         request = _embodiment_preparation_request(args.request_file)
         if not args.operation_key:

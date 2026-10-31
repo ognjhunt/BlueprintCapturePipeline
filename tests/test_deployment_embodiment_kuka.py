@@ -19,6 +19,7 @@ from blueprint_pipeline import deployment_embodiment_kuka_bridge as bridge
 from blueprint_pipeline import deployment_embodiment_kuka_model as model
 from tests.test_deployment_embodiment_gofa import _stl, _sdk
 from tests.test_deployment_embodiment_industrial import _poses
+from tests.scripted_controller_supersession import current as with_reviewed_revisions
 
 FIXTURE = Path(__file__).parent / "fixtures/kuka_robotiq"
 
@@ -320,7 +321,7 @@ def test_original30_profiles_36_recipes_111_rows_20_policy_identities_unchanged(
     from blueprint_pipeline import deployment_embodiment_runtime_compatibility as compatibility
     import importlib.util
 
-    previous = json.loads((FIXTURE / "predecessor_identities.json").read_text())
+    previous = with_reviewed_revisions(json.loads((FIXTURE / "predecessor_identities.json").read_text()))
     package = Path(assets.__file__).parent
     root = package.parents[1]
     recipes = {row["embodiment_id"]: row for row in assets.asset_recipes()["recipes"]}

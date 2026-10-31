@@ -58,8 +58,9 @@ def test_full_lane_waits_for_requested_native_acceptance():
     job = jobs['cross-cutting-full-suite']
     assert set(job['needs']) == {'impact', 'native-feature-linux', 'native-scene-linux'}
     condition = job['if'].replace('${{', '').replace('}}', '').strip()
-    for full, registered, scene, impact, first, second in itertools.product(
-            (False, True), (False, True), (False, True), ('success', 'failure'),
+    assert 'always()' not in condition
+    for cancelled, full, registered, scene, impact, first, second in itertools.product(
+            (False, True), (False, True), (False, True), (False, True), ('success', 'failure'),
             ('success', 'failure', 'skipped', 'cancelled'),
             ('success', 'failure', 'skipped', 'cancelled')):
         observed = condition
@@ -73,12 +74,32 @@ def test_full_lane_waits_for_requested_native_acceptance():
         }
         for key, value in values.items():
             observed = observed.replace(key, repr(value))
-        observed = observed.replace('always()', 'True').replace('&&', ' and ').replace('||', ' or ')
+        observed = observed.replace('!cancelled()', repr(not cancelled))
+        observed = observed.replace('&&', ' and ').replace('||', ' or ')
         assert 'needs.' not in observed
-        expected = (full and impact == 'success'
+        expected = (not cancelled and full and impact == 'success'
                     and first == ('success' if registered else 'skipped')
                     and second == ('success' if scene else 'skipped'))
         assert eval('(' + observed + ')', {'__builtins__': {}}, {}) is expected
+
+
+def test_cancellation_stops_every_job_of_a_superseded_run():
+    """GitHub keeps any job whose `if` is still true when a run is cancelled.
+
+    With always() on these jobs a superseded pull request run kept starting
+    shards (1,318 runner-minutes on 2026-10-31) and its pull request's newest
+    run stayed pending behind it for 30-105 minutes.
+    """
+    import yaml
+
+    ci = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+    assert ci['impacted-gate']['if'] == '${{ !cancelled() }}'
+    for name, job in ci.items():
+        assert 'always()' not in str(job.get('if', '')), name
+    full_lane = yaml.safe_load((ROOT / '.github/workflows/full-test-lane.yml').read_text())['jobs']
+    # Still true when a shard failed, so a red shard still reaches the canonical verdict.
+    assert full_lane['full-pytest']['if'] == '${{ !cancelled() }}'
+    assert full_lane['full-pytest']['needs'] == 'full-pytest-shard'
 
 
 def test_final_gate_refuses_missing_requested_full_evidence():
@@ -93,12 +114,120 @@ def test_final_gate_refuses_missing_requested_full_evidence():
                 'NATIVE_REQUIRED': 'false', 'NATIVE_RESULT': 'skipped',
                 'NATIVE_SCENE_REQUIRED': 'false', 'NATIVE_SCENE_RESULT': 'skipped',
                 'FULL_REQUIRED': str(required).lower(), 'FULL_RESULT': result,
+                'WIDE_REQUIRED': 'false', 'WIDE_RESULT': 'skipped',
             }
             outcome = subprocess.run(['bash', '-e', '-c', step['run']],
                                      env=environment, capture_output=True, check=False)
             expected = result == ('success' if required else 'skipped')
             assert (outcome.returncode == 0) is expected, (required, result)
     assert step['env']['FULL_REQUIRED'] == '${{ needs.impact.outputs.requires_full_suite }}'
+
+
+def test_final_gate_refuses_missing_requested_wide_evidence():
+    import yaml
+
+    jobs = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+    assert 'impacted-wide' in jobs['impacted-gate']['needs']
+    step = jobs['impacted-gate']['steps'][0]
+    for required in (False, True):
+        for result in ('success', 'skipped', 'failure', 'cancelled'):
+            environment = os.environ | {
+                'IMPACT_RESULT': 'success', 'IMPACTED_RESULT': 'success',
+                'NATIVE_REQUIRED': 'false', 'NATIVE_RESULT': 'skipped',
+                'NATIVE_SCENE_REQUIRED': 'false', 'NATIVE_SCENE_RESULT': 'skipped',
+                'FULL_REQUIRED': 'false', 'FULL_RESULT': 'skipped',
+                'WIDE_REQUIRED': str(required).lower(), 'WIDE_RESULT': result,
+            }
+            outcome = subprocess.run(['bash', '-e', '-c', step['run']],
+                                     env=environment, capture_output=True, check=False)
+            expected = result == ('success' if required else 'skipped')
+            assert (outcome.returncode == 0) is expected, (required, result)
+    assert step['env']['WIDE_REQUIRED'] == '${{ needs.impact.outputs.requires_wide_impacted }}'
+    assert step['env']['WIDE_RESULT'] == '${{ needs.impacted-wide.result }}'
+
+
+def test_wide_lane_waits_for_requested_native_acceptance():
+    import itertools
+    import yaml
+
+    jobs = yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+    job = jobs['impacted-wide']
+    assert set(job['needs']) == {'impact', 'native-feature-linux', 'native-scene-linux'}
+    assert job['uses'] == './.github/workflows/impacted-wide-lane.yml'
+    assert job['with'] == {'shard_matrix': '${{ needs.impact.outputs.wide_shard_matrix }}'}
+    condition = job['if'].replace('${{', '').replace('}}', '').strip()
+    assert 'always()' not in condition
+    for cancelled, wide, registered, scene, impact, first, second in itertools.product(
+            (False, True), (False, True), (False, True), (False, True), ('success', 'failure'),
+            ('success', 'failure', 'skipped', 'cancelled'),
+            ('success', 'failure', 'skipped', 'cancelled')):
+        observed = condition
+        values = {
+            'needs.impact.outputs.requires_wide_impacted': str(wide).lower(),
+            'needs.impact.outputs.native_feature_required': str(registered).lower(),
+            'needs.impact.outputs.native_scene_required': str(scene).lower(),
+            'needs.impact.result': impact,
+            'needs.native-feature-linux.result': first,
+            'needs.native-scene-linux.result': second,
+        }
+        for key, value in values.items():
+            observed = observed.replace(key, repr(value))
+        observed = observed.replace('!cancelled()', repr(not cancelled))
+        observed = observed.replace('&&', ' and ').replace('||', ' or ')
+        assert 'needs.' not in observed
+        expected = (not cancelled and wide and impact == 'success'
+                    and first == ('success' if registered else 'skipped')
+                    and second == ('success' if scene else 'skipped'))
+        assert eval('(' + observed + ')', {'__builtins__': {}}, {}) is expected
+
+
+def test_wide_lane_has_the_full_lanes_environment_and_takes_no_test_selection():
+    import yaml
+
+    full = yaml.load((ROOT / '.github/workflows/full-test-lane.yml').read_text(),
+                     Loader=yaml.BaseLoader)['jobs']['full-pytest-shard']
+    source = (ROOT / '.github/workflows/impacted-wide-lane.yml').read_text()
+    workflow = yaml.load(source, Loader=yaml.BaseLoader)
+    shard = workflow['jobs']['wide-shard']
+
+    # Everything before collection is shared, the privacy fail-closed posture included,
+    # so slow, root and systemd tests run here exactly as they do in the full lane.
+    boundary = [step['name'] for step in full['steps']].index('Collect full lane')
+    shared = [step['name'] for step in full['steps'][:boundary]]
+    assert 'Verify production fail-closed posture' in shared
+    assert 'Install and protect system-Python dependencies for full Linux proof' in shared
+    assert shard['steps'][:boundary] == full['steps'][:boundary]
+    assert shard['runs-on'] == full['runs-on']
+    assert shard['timeout-minutes'] == full['timeout-minutes']
+    assert shard['strategy']['fail-fast'] == 'false'
+    assert shard['env'] == {name: value for name, value in full['env'].items()
+                            if name != 'FULL_TEST_LANE_TRIGGER_REASON'}
+
+    # The only input picks shard legs. The files come from this run's own impact plan.
+    assert workflow['on'].keys() == {'workflow_call'}
+    assert workflow['on']['workflow_call']['inputs'].keys() == {'shard_matrix'}
+    assert 'pull_request' not in workflow['on']
+    download = next(step for step in shard['steps'] if 'download-artifact' in step.get('uses', ''))
+    assert download['with']['name'] == 'impacted-test-plan-${{ github.sha }}'
+    assert 'run-id' not in download['with']
+
+    # A selected file runs the way the full lane runs it: same entry point, same
+    # marker expression, serial.
+    run = next(step for step in shard['steps'] if step['name'] == 'Run wide impacted shard')['run']
+    full_run = next(step for step in full['steps'] if step['name'] == 'Run full lane shard')['run']
+    assert '.wide_shards[]' in run
+    for shared_text in ('uv run --no-sync scripts/pytest_full.sh',
+                        '-p blueprint_pipeline.pytest_full_lane_evidence',
+                        '-m "not external_runtime and not external_data"'):
+        assert shared_text in run
+        assert shared_text in full_run
+    assert '-n ' not in run
+    assert '--dist' not in run
+    for step in shard['steps']:
+        if 'pytest' in step.get('run', ''):
+            assert 'continue-on-error' not in step, step['name']
+    verify = next(step for step in shard['steps'] if step['name'] == 'Verify exact wide impacted shard')
+    assert 'scripts/full_lane_sharding.py verify-wide-shard' in verify['run']
 
 
 def test_release_signing_accepts_validated_optional_skips_but_requires_every_gate():
@@ -128,6 +257,105 @@ def test_release_signing_accepts_validated_optional_skips_but_requires_every_gat
                     assert 'needs.' not in observed
                     expected = event == 'push' and not cancelled and result == 'success'
                     assert eval('(' + observed + ')', {'__builtins__': {}}, {}) is expected
+
+
+def _ci_jobs():
+    import yaml
+
+    return yaml.safe_load((ROOT / '.github/workflows/ci.yml').read_text())['jobs']
+
+
+def _evaluate(condition, *, event, inputs_changed):
+    observed = condition.replace('github.event_name', repr(event))
+    observed = observed.replace('needs.impact.outputs.supply_chain_inputs_changed', repr(inputs_changed))
+    observed = observed.replace('&&', ' and ').replace('||', ' or ')
+    assert 'needs.' not in observed and 'github.' not in observed
+    return eval('(' + observed + ')', {'__builtins__': {}}, {})
+
+
+def test_supply_chain_checks_run_on_main_and_on_pull_requests_changing_their_inputs():
+    jobs = _ci_jobs()
+    for name in ('dependency-security', 'container-contract'):
+        assert jobs[name]['needs'] == 'impact'
+        for event in ('push', 'pull_request'):
+            for changed in ('true', 'false'):
+                expected = event == 'push' or changed == 'true'
+                assert _evaluate(jobs[name]['if'], event=event, inputs_changed=changed) is expected, (name, event)
+
+
+def test_the_preview_is_the_attesting_jobs_build_and_nothing_that_attests():
+    jobs = _ci_jobs()
+    preview = jobs['supply-chain-preview']
+    attesting = jobs['supply-chain']
+    for event in ('push', 'pull_request'):
+        for changed in ('true', 'false'):
+            expected = event == 'pull_request' and changed == 'true'
+            assert _evaluate(preview['if'], event=event, inputs_changed=changed) is expected
+    # Byte-equal steps, so the check a pull request passes is the check main runs.
+    names = ['Checkout', 'Install uv', 'Verify lock and build distributions',
+             'Generate CycloneDX, SPDX, license, and unsigned provenance evidence']
+    assert [step['name'] for step in preview['steps'][:4]] == names
+    assert preview['steps'][:4] == attesting['steps'][:4]
+    # A pull request's code never runs with the power to sign.
+    assert 'permissions' not in preview
+    assert not any('attest' in step.get('uses', '') for step in preview['steps'])
+    # The kit and --latest-attested find the attesting job by its exact name.
+    assert preview['name'] != attesting['name'] == 'SBOM, license, and provenance contract'
+    # Attestation itself keeps its prerequisites and stays on push.
+    assert 'supply-chain-preview' not in attesting['needs']
+
+
+def test_final_gate_refuses_a_failed_supply_chain_check_on_a_pull_request():
+    import itertools
+
+    jobs = _ci_jobs()
+    gate = jobs['impacted-gate']
+    assert {'dependency-security', 'container-contract', 'supply-chain-preview'} <= set(gate['needs'])
+    # No cycle: supply-chain needs the gate, so the gate must never need supply-chain.
+    assert 'supply-chain' not in gate['needs']
+    results = ('success', 'failure', 'skipped', 'cancelled')
+    for event, changed, dependency, container, preview in itertools.product(
+            ('push', 'pull_request'), ('true', 'false'), results, results, results):
+        environment = os.environ | {
+            'IMPACT_RESULT': 'success', 'IMPACTED_RESULT': 'success',
+            'NATIVE_REQUIRED': 'false', 'NATIVE_RESULT': 'skipped',
+            'NATIVE_SCENE_REQUIRED': 'false', 'NATIVE_SCENE_RESULT': 'skipped',
+            'FULL_REQUIRED': 'false', 'FULL_RESULT': 'skipped',
+            'WIDE_REQUIRED': 'false', 'WIDE_RESULT': 'skipped',
+            'EVENT_NAME': event, 'SUPPLY_INPUTS_CHANGED': changed,
+            'DEPENDENCY_RESULT': dependency, 'CONTAINER_RESULT': container, 'SUPPLY_PREVIEW_RESULT': preview,
+        }
+        outcome = subprocess.run(['bash', '-e', '-c', gate['steps'][0]['run']],
+                                 env=environment, capture_output=True, check=False)
+        # On main they stay supply-chain's prerequisites and never turn the gate red.
+        expected = not (event == 'pull_request' and changed == 'true') or (
+            dependency == container == preview == 'success')
+        assert (outcome.returncode == 0) is expected, (event, changed, dependency, container, preview)
+
+
+def test_network_installs_get_one_more_attempt_and_tests_never_do():
+    import yaml
+
+    for workflow in ('full-test-lane.yml', 'impacted-wide-lane.yml'):
+        document = yaml.load((ROOT / '.github/workflows' / workflow).read_text(), Loader=yaml.BaseLoader)
+        steps = document['jobs']['full-pytest-shard' if workflow == 'full-test-lane.yml' else 'wide-shard']['steps']
+        first = next(step for step in steps if step['name'] == 'Install uv')
+        second = next(step for step in steps if step['name'] == 'Install uv after a failed download')
+        assert first['continue-on-error'] == 'true' and first['id'] == 'install-uv'
+        assert second['if'] == "steps.install-uv.outcome == 'failure'"
+        assert 'continue-on-error' not in second, 'a second failure must fail the job'
+        assert (first['uses'], first['with']) == (second['uses'], second['with'])
+
+        install = next(step for step in steps if 'uv sync --frozen' in step.get('run', ''))
+        assert 'for attempt in 1 2; do' in install['run']
+        assert 'timeout --kill-after=10s 360s uv sync --frozen' in install['run']
+        assert 'timeout --kill-after=10s 90s uv pip install' in install['run']
+        assert int(install['timeout-minutes']) < int(document['jobs'][next(iter(document['jobs']))]['timeout-minutes'])
+
+        for step in steps:
+            if 'pytest' in step.get('run', ''):
+                assert 'continue-on-error' not in step, step['name']
+                assert 'for attempt' not in step['run'], step['name']
 
 
 def _run_script(name: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -269,6 +497,9 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
     assert "needs.cross-cutting-full-suite.result" in workflow
     assert "uses: ./.github/workflows/full-test-lane.yml" in workflow
     assert "needs.impact.outputs.requires_full_suite == 'true'" in workflow
+    assert "needs.impacted-wide.result" in workflow
+    assert "uses: ./.github/workflows/impacted-wide-lane.yml" in workflow
+    assert "needs.impact.outputs.requires_wide_impacted == 'true'" in workflow
     assert "uv run pytest -q" not in workflow
     assert "--cov-fail-under" not in workflow
 
@@ -319,7 +550,9 @@ def test_risk_based_verification_workflows_are_bounded() -> None:
 
 
 def test_core_workflows_bind_runner_temp_only_after_job_start() -> None:
-    for workflow_name in ("ci.yml", "sim-only-local-gate.yml", "full-test-lane.yml"):
+    for workflow_name in (
+        "ci.yml", "sim-only-local-gate.yml", "full-test-lane.yml", "impacted-wide-lane.yml",
+    ):
         workflow = (ROOT / ".github" / "workflows" / workflow_name).read_text(
             encoding="utf-8"
         )
@@ -376,6 +609,7 @@ def test_only_bounded_ci_workflow_runs_for_ordinary_pull_requests() -> None:
     for workflow_name in (
         "codeql.yml",
         "full-test-lane.yml",
+        "impacted-wide-lane.yml",
         "python-compatibility.yml",
         "sim-only-local-gate.yml",
     ):
@@ -384,6 +618,26 @@ def test_only_bounded_ci_workflow_runs_for_ordinary_pull_requests() -> None:
         )
         event_block = workflow.split("jobs:", 1)[0]
         assert "pull_request:" not in event_block, workflow_name
+
+
+def test_codeql_analyzes_only_the_newest_commit_and_gates_nothing() -> None:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/codeql.yml").read_text(encoding="utf-8"))
+
+    assert workflow["concurrency"] == {
+        "group": "codeql-${{ github.ref }}",
+        "cancel-in-progress": True,
+    }
+    # YAML reads the bare `on:` key as true. The weekly analysis stays.
+    assert workflow[True]["schedule"] == [{"cron": "31 7 * * 2"}]
+    assert workflow[True]["push"] == {"branches": ["main"]}
+    # Exact-commit release evidence stays reachable for a superseded commit.
+    assert "workflow_dispatch" in workflow[True]
+    queries = workflow["jobs"]["analyze"]["steps"][1]["with"]["queries"]
+    assert queries == "security-extended,security-and-quality"
+    # Cancelling a superseded analysis is safe only while nothing depends on it.
+    ci = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    assert "analyze" not in ci["jobs"]
+    assert "analyze" not in ci["jobs"]["supply-chain"]["needs"]
 
 
 def test_groot_oscar_disk_admission_measures_every_write_filesystem() -> None:
@@ -1059,6 +1313,17 @@ def test_dependabot_covers_every_dockerfile_directory() -> None:
             config,
             re.MULTILINE,
         ), directory
+
+
+def test_dependabot_docker_updates_never_rebase_into_a_full_suite() -> None:
+    """A docker update changes the cross-cutting Dockerfile, so each rebase ran the full suite."""
+    config = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))
+    docker = [row for row in config["updates"] if row["package-ecosystem"] == "docker"]
+    assert len(docker) == 2
+    for row in docker:
+        assert row["rebase-strategy"] == "disabled"
+        assert row["open-pull-requests-limit"] <= 2
+        assert [group["patterns"] for group in row["groups"].values()] == [["*"]]
 
 
 def test_package_import_is_lazy_and_module_entrypoints_are_not_preloaded() -> None:

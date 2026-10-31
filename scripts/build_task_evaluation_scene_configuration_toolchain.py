@@ -29,6 +29,7 @@ from blueprint_pipeline.immutable_directory_publication import (
 )
 from blueprint_pipeline import readback_ledger
 from blueprint_pipeline.immutable_file_digest import proven_digest, sealed_identity, sha256_file
+from blueprint_pipeline.provision_phase_clock import mark_phase
 from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
@@ -189,6 +190,7 @@ def build_published_scene_configuration_toolchain(
         )
         for adapter_id, root in component_packages.items()
     }
+    mark_phase("toolchain_packages_validated")
     destination = Path(output_root).expanduser().absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
     previous_roots = _previous_roots(destination)
@@ -271,6 +273,7 @@ def build_published_scene_configuration_toolchain(
         # ``mkdtemp`` creates 0700; make only this non-secret staged tree
         # traversable before claiming service-account readback.
         staging.chmod(0o755)
+        mark_phase("toolchain_linked_and_inventoried")
         open_proven = getattr(readback, "identity", None)
         read_back: dict[str, tuple[int, ...]] = {}
         proven = {"file_count": 0, "bytes": 0}
@@ -288,6 +291,7 @@ def build_published_scene_configuration_toolchain(
                     raise ValueError("scene_configuration_toolchain_service_readback_failed")
             if sealed_identity(path.lstat()) == sealed_identity(before):
                 read_back[row["relative_path"]] = sealed_identity(before)
+        mark_phase("toolchain_read_back")
         manifest: dict[str, Any] = {
             "schema_version": TOOLCHAIN_SCHEMA_VERSION,
             "status": "published_full_byte_readback_passed",
@@ -320,6 +324,7 @@ def build_published_scene_configuration_toolchain(
             root=destination,
             expected_source_commit=source_commit,
         )
+        mark_phase("toolchain_published_and_validated")
         ledger = readback_ledger.write_ledger(
             destination, tree_digest=manifest["toolchain_digest"],
             readback_actor=readback_actor, inodes=read_back,

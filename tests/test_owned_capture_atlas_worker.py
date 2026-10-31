@@ -260,6 +260,32 @@ def test_existing_timer_discovers_explicit_owned_job_from_same_server_roots(owne
     assert calls[0]["task_context"]["capture_id"] == owned.session
 
 
+def test_the_provider_poll_reads_an_owned_job_until_its_source_is_revoked(owned, configuration, monkeypatch, tmp_path,
+                                                                          capsys):
+    from blueprint_pipeline.capture_upload_intake import CAPTURE_UPLOAD_STORE_ROOT_ENV
+    from blueprint_pipeline.live_pipeline_control_plane import CONTROL_PLANE_OUTPUT_PATH_ENV
+    from blueprint_pipeline.live_pipeline_intake_runtime_controls import INTAKE_WORK_DIR_ENV
+    _enqueue(owned, configuration, monkeypatch)
+    manifest = tmp_path / "live-manifest.json"
+    manifest.write_text('{}')
+    monkeypatch.setenv(CAPTURE_UPLOAD_STORE_ROOT_ENV, str(owned.store))
+    monkeypatch.setenv(CONTROL_PLANE_OUTPUT_PATH_ENV, str(manifest))
+    monkeypatch.setenv(INTAKE_WORK_DIR_ENV, str(owned.state.parent))
+    stage = owned.path.parent / "pose" / "atlas_pose"
+    stage.mkdir(parents=True)
+    (stage / "submission.json").write_text(json.dumps({"status": "submitted", "operation_id": "op_pose"}))
+    polled = []
+    monkeypatch.setattr(lifecycle, "_read_only_client", lambda transport=None: "read-only client")
+    monkeypatch.setattr(lifecycle, "_poll_submission", lambda root, **_: polled.append(root) or "processing")
+    monkeypatch.setattr(controller, "run_atlas_pipeline", lambda **_: pytest.fail("the poll advanced a job"))
+    before = owned.path.read_bytes()
+    assert lifecycle.main(["poll", "--storage-root", str(tmp_path / "empty-website-storage")]) == 0
+    assert json.loads(capsys.readouterr().out) == {"owned_processing": 1} and polled == [stage.parent]
+    _revoke(owned)
+    assert worker.poll_from_environment() == {"idle": 1} and len(polled) == 1
+    assert owned.path.read_bytes() == before  # revocation is recorded by the next tick, not here
+
+
 def test_image_network_boundary_keeps_original_source_fence_across_threads(owned):
     from concurrent.futures import ThreadPoolExecutor
     from urllib.request import Request

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import contextlib
 import errno
+import hashlib
 import importlib.util
 import io
 import json
@@ -697,6 +698,11 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
     preview_service.write_text("[Service]\nExecStart=/usr/bin/blueprint-website-atlas-preview\n", encoding="utf-8")
     preview_timer = unit_dir / "blueprint-website-atlas-preview.timer"
     preview_timer.write_text("[Timer]\nOnUnitInactiveSec=60s\n", encoding="utf-8")
+    provider_poll_units = []
+    for suffix in ("service", "timer", "path"):
+        source = unit_dir / f"blueprint-website-atlas-provider-poll.{suffix}"
+        source.write_text("[Unit]\nDescription=Exact provider poll fixture\n", encoding="utf-8")
+        provider_poll_units.append(source)
     additional_sources = []
     for name in (
         "blueprint-pubsub-handoff-listener.service", "blueprint-pubsub-handoff-listener.timer",
@@ -778,6 +784,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         intake_service,
         preview_service,
         preview_timer,
+        *provider_poll_units,
     ):
         destination = systemd / source.name
         assert destination.read_bytes() == source.read_bytes()
@@ -876,6 +883,13 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-pipeline-intake.service",
         "blueprint-website-atlas-preview.service",
         "blueprint-website-atlas-preview.timer",
+        "blueprint-website-atlas-provider-poll.service",
+        "blueprint-website-atlas-provider-poll.timer",
+        "blueprint-website-atlas-provider-poll.path",
+    )
+    assert deploy.DEPLOY_EXEMPT_TRIGGER_UNITS == (
+        "blueprint-website-atlas-provider-poll.timer",
+        "blueprint-website-atlas-provider-poll.path",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS == (
         "blueprint-task-evaluation-launch-preparation.path",
@@ -5076,6 +5090,57 @@ def test_drain_refuses_a_trigger_the_deploy_does_not_restore(tmp_path, monkeypat
     assert order == []
 
 
+def test_the_atlas_provider_poll_keeps_running_through_a_deploy(tmp_path, monkeypatch) -> None:
+    """Polling an operation already bought cannot spend, so no deploy stops it (2026-10-30)."""
+    kwargs, _order = _drain_harness(monkeypatch, tmp_path)
+    snapshot = deploy._installed_path_unit_states
+    quiesce_candidates: list[str] = []
+    rearmed: list[tuple[str, ...]] = []
+
+    def observed(installed):
+        quiesce_candidates.extend(entry["unit"] for entry in installed)
+        return snapshot(installed)
+
+    def restore(installed, *, before, always_arm_units=(), **_kwargs):
+        rearmed.append(tuple(always_arm_units))
+        return []
+
+    monkeypatch.setattr(deploy, "_installed_path_unit_states", observed)
+    monkeypatch.setattr(deploy, "_restore_installed_path_units", restore)
+
+    deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+
+    exempt = set(deploy.DEPLOY_EXEMPT_TRIGGER_UNITS)
+    assert exempt == {"blueprint-website-atlas-provider-poll.timer", "blueprint-website-atlas-provider-poll.path"}
+    # Every watcher the drain and the full quiesce may stop is snapshotted first; the poll never is.
+    assert PROGRESSION_TIMER in quiesce_candidates and not exempt & set(quiesce_candidates)
+    assert "blueprint-website-atlas-preview.timer" in quiesce_candidates
+    # The deploy still installs the units and re-arms the triggers as no-spend watchers.
+    assert exempt <= set(deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS) and rearmed and exempt <= set(rearmed[-1])
+
+
+def test_a_deploy_arms_a_newly_installed_provider_poll_trigger_as_no_spend(monkeypatch) -> None:
+    unit, calls, state = "blueprint-website-atlas-provider-poll.path", [], {"enabled": "disabled", "active": "inactive"}
+
+    def completed(argv, **kwargs):
+        calls.append(tuple(argv))
+        if argv[1:2] == ["enable"]:
+            state["enabled"] = "enabled"
+        elif argv[1:2] == ["restart"]:
+            state["active"] = "active"
+        stdout = {"is-enabled": state["enabled"], "is-active": state["active"]}.get(argv[1], "")
+        return subprocess.CompletedProcess(argv, 0, stdout=stdout + "\n", stderr="")
+
+    monkeypatch.setattr(deploy.subprocess, "run", completed)
+    restored = deploy._restore_installed_path_units(
+        [{"unit": unit}], before={}, arm_path_units=False,
+        always_arm_units=(*deploy.DEFAULT_ALWAYS_ARM_PATH_UNITS, *deploy.DEPLOY_EXEMPT_TRIGGER_UNITS))
+
+    assert ("systemctl", "enable", unit) in calls and ("systemctl", "restart", unit) in calls
+    assert restored[0]["requested_intent"] == "arm_no_spend"
+    assert restored[0]["after"] == {"enabled": "enabled", "state": "active"}
+
+
 def test_deploy_without_drain_units_never_waits(tmp_path, monkeypatch) -> None:
     kwargs = _stub_host_deploy(monkeypatch, tmp_path, "e" * 40)
     monkeypatch.setattr(deploy, "_drain_service_units", lambda *_a, **_k: pytest.fail("drained"))
@@ -5104,6 +5169,374 @@ def test_cli_passes_drain_units_and_budget(monkeypatch, tmp_path) -> None:
     ]) == 0
     assert captured["drain_units"] == ("blueprint-a.service", "blueprint-b.service")
     assert captured["drain_seconds"] == 1800.0
+
+
+def test_cli_waits_an_hour_for_the_attestation_unless_told_otherwise(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(deploy, "_require_trusted_deploy_source", lambda *_args: None)
+    monkeypatch.setattr(
+        deploy, "deploy_control_plane_commit",
+        lambda **kwargs: captured.update(kwargs) or {"status": "deployed", "blockers": []},
+    )
+    monkeypatch.setattr(deploy, "_finalize_deploy_receipt", lambda receipt, **_kwargs: receipt)
+    monkeypatch.setattr(deploy, "_run_deploy_with_signal_cleanup", lambda run: run())
+    arguments = [
+        "--source-repo", str(tmp_path), "--source-commit", "f" * 40,
+        "--release-root", str(tmp_path / "r"), "--state-root", str(tmp_path / "s"),
+        "--active-link", str(tmp_path / "a"), "--iteration",
+    ]
+
+    assert deploy.main(arguments) == 0
+    assert captured["attestation_wait_seconds"] == 3600.0
+
+    assert deploy.main([*arguments, "--attestation-wait-seconds", "120"]) == 0
+    assert captured["attestation_wait_seconds"] == 120.0
+
+
+def test_the_attestation_wait_follows_the_build_and_precedes_every_pause(tmp_path, monkeypatch) -> None:
+    kwargs, order = _recording_deploy(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        deploy, "_await_scene_source_attestation",
+        lambda commit, *, max_seconds: order.append(("await", commit, max_seconds))
+        or {"status": "listed", "polls": 3, "wait_seconds": 61.5},
+    )
+
+    receipt = deploy.deploy_control_plane_commit(
+        **kwargs, drain_units=(PROGRESSION,), drain_seconds=1800, attestation_wait_seconds=900,
+    )
+
+    labels = [step if isinstance(step, str) else step[0] for step in order]
+    assert labels[:4] == ["capture", "stage", "provision", "await"]
+    assert ("await", "d" * 40, 900) in order
+    # The trusted verification stays where it was, after every pause.
+    assert labels.index("await") < labels.index("quiesce") < labels.index("gate") < labels.index("scene_runtime")
+    assert receipt["attestation_wait_seconds"] == 61.5
+    assert receipt["attestation_wait"]["status"] == "listed"
+    assert "scene_source_attestation_listed" in receipt["stage_timings_seconds"]
+
+
+def test_the_receipt_reports_whether_this_deploy_created_the_release_checkout(tmp_path, monkeypatch) -> None:
+    """It read the activating call, which always finds the checkout, so it always said False."""
+    commit = "d" * 40
+    kwargs = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    calls: list[bool] = []
+
+    def staged(**stage_kwargs):
+        calls.append(stage_kwargs["activate"])
+        return {"source_commit": commit, "release_path": str(tmp_path / "release"),
+                "created_release_checkout": not stage_kwargs["activate"]}
+
+    monkeypatch.setattr(deploy, "stage_task_evaluation_control_plane_release", staged)
+
+    receipt = deploy.deploy_control_plane_commit(**kwargs)
+
+    assert calls == [False, True]
+    assert receipt["created_release_checkout"] is True
+
+
+def test_a_commit_without_an_attestation_fails_with_nothing_paused(tmp_path, monkeypatch) -> None:
+    """Before the wait, this failed at the same check with every trigger already stopped."""
+    kwargs, order = _recording_deploy(monkeypatch, tmp_path)
+
+    def expired(_commit, *, max_seconds):
+        order.append("await")
+        raise deploy._scene_source_attestation_wait_failure("deadline")
+
+    monkeypatch.setattr(deploy, "_await_scene_source_attestation", expired)
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_scene_retirement_runtime_unproven") as failure:
+        deploy.deploy_control_plane_commit(
+            **kwargs, drain_units=(PROGRESSION,), drain_seconds=1800, attestation_wait_seconds=900,
+        )
+
+    assert order == ["capture", "stage", "provision", "await"]
+    assert failure.value.runtime_diagnostic == {"phase": "await_attestation", "reason": "deadline"}
+
+
+def test_a_listed_attestation_never_replaces_the_trusted_verification(tmp_path, monkeypatch) -> None:
+    kwargs, order = _recording_deploy(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        deploy, "_await_scene_source_attestation",
+        lambda _commit, *, max_seconds: {"status": "listed", "polls": 1, "wait_seconds": 0.0},
+    )
+
+    def refuses(**_kwargs):
+        order.append("scene_runtime")
+        raise deploy.ControlPlaneDeployError("deploy_scene_retirement_runtime_unproven")
+
+    monkeypatch.setattr(deploy, "_prepare_scene_retirement_runtime", refuses)
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_scene_retirement_runtime_unproven"):
+        deploy.deploy_control_plane_commit(
+            **kwargs, drain_units=(PROGRESSION,), drain_seconds=1800, attestation_wait_seconds=900,
+        )
+
+    labels = [step if isinstance(step, str) else step[0] for step in order]
+    assert "scene_runtime" in labels
+    assert "source" not in labels and "activate" not in labels and "restart" not in labels
+
+
+def test_an_unmerged_canary_never_waits_for_main_ci(tmp_path, monkeypatch) -> None:
+    commit = "d" * 40
+    kwargs = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    waited: list[float] = []
+    monkeypatch.setattr(
+        deploy, "_await_scene_source_attestation",
+        lambda _commit, *, max_seconds: waited.append(max_seconds)
+        or {"status": "not_requested", "polls": 0, "wait_seconds": 0.0},
+    )
+    kwargs["release_provenance"] = None
+    monkeypatch.setattr(deploy, "_git", lambda *_args, **_kwargs: (0, "origin/feature"))
+
+    deploy.deploy_control_plane_commit(**kwargs, iteration=True, canary=True, attestation_wait_seconds=3600)
+
+    assert waited == [0]
+
+
+class _AttestationPollWorld:
+    """A fake clock and a scripted GitHub. Sleeping is the only thing that moves time."""
+
+    def __init__(self, monkeypatch, tmp_path, *, listing=(), runs=None, remaining=None):
+        self.now = 1000.0
+        self.epoch = 1_793_000_000.0
+        self.reset = self.epoch + 3600
+        self.reads: list[str] = []
+        self.sleeps: list[float] = []
+        self.listing = list(listing)
+        self.runs = runs
+        self.remaining = remaining
+        monkeypatch.setattr(deploy.time, "monotonic", lambda: self.now)
+        monkeypatch.setattr(deploy.time, "time", lambda: self.epoch + (self.now - 1000.0))
+        monkeypatch.setattr(deploy.time, "sleep", self.sleep)
+        monkeypatch.setattr(deploy, "_scene_source_public_read", self.read)
+        monkeypatch.setattr(deploy, "_SCENE_SOURCE_ATTESTATIONS", tmp_path / "held")
+        for name in ("_scene_source_delivery", "_scene_source_attestation"):
+            monkeypatch.setattr(deploy, name, lambda *_a, **_k: pytest.fail("the wait must not acquire or verify proof"))
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+    def headers(self):
+        if self.remaining is None:
+            return {}
+        if self.epoch + (self.now - 1000.0) >= self.reset:
+            self.remaining, self.reset = 60, self.reset + 3600
+        self.remaining -= 1
+        assert self.remaining >= 0, "the wait spent every request GitHub allows this host"
+        return {"x-ratelimit-remaining": str(self.remaining), "x-ratelimit-reset": str(self.reset)}
+
+    def read(self, url, *, deadline, cap):
+        self.reads.append(url)
+        headers = self.headers()
+        if "/actions/runs?" in url:
+            return 200, self.runs if self.runs is not None else {"workflow_runs": []}, headers
+        status, body = self.listing.pop(0) if self.listing else (404, None)
+        return status, body, headers
+
+
+LISTED = (200, {"attestations": [{"bundle": {}}]})
+COMMIT = "d" * 40
+
+
+def test_the_wait_polls_the_digest_addressed_endpoint_until_listed(monkeypatch, tmp_path) -> None:
+    world = _AttestationPollWorld(monkeypatch, tmp_path, listing=[(404, None), (404, None), LISTED])
+
+    outcome = deploy._await_scene_source_attestation(COMMIT, max_seconds=3600)
+
+    selector = hashlib.sha256(deploy._scene_source_selector_bytes(COMMIT)).hexdigest()
+    listings = [url for url in world.reads if "/attestations/" in url]
+    assert listings == [
+        f"https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline/attestations/sha256:{selector}?per_page=1"
+    ] * 3
+    assert outcome == {"status": "listed", "polls": 3, "wait_seconds": 60.0}
+    assert world.sleeps == [30.0, 30.0]
+
+
+@pytest.mark.parametrize("not_yet", [
+    (0, None), (403, None), (429, None), (500, None), (502, None),
+    (200, None), (200, {}), (200, {"attestations": []}), (200, []),
+])
+def test_every_read_that_lists_nothing_only_means_not_yet(monkeypatch, tmp_path, not_yet) -> None:
+    _AttestationPollWorld(monkeypatch, tmp_path, listing=[not_yet, LISTED])
+
+    assert deploy._await_scene_source_attestation(COMMIT, max_seconds=3600)["status"] == "listed"
+
+
+def test_the_wait_fails_at_its_bound_with_the_existing_error(monkeypatch, tmp_path) -> None:
+    world = _AttestationPollWorld(monkeypatch, tmp_path)
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="^deploy_scene_retirement_runtime_unproven$") as failure:
+        deploy._await_scene_source_attestation(COMMIT, max_seconds=100)
+
+    assert failure.value.runtime_diagnostic == {"phase": "await_attestation", "reason": "deadline"}
+    assert world.now == 1100.0
+
+
+def _run(status="completed", conclusion="failure", path=".github/workflows/ci.yml", sha=COMMIT):
+    return {"path": path, "head_sha": sha, "status": status, "conclusion": conclusion}
+
+
+@pytest.mark.parametrize("conclusion", ["failure", "cancelled", "timed_out"])
+def test_the_wait_stops_once_main_ci_finished_without_an_attestation(monkeypatch, tmp_path, conclusion) -> None:
+    """7 of 41 main runs ended red on 2026-10-31: none of them would ever have attested."""
+    world = _AttestationPollWorld(
+        monkeypatch, tmp_path, runs={"workflow_runs": [_run(conclusion=conclusion)]},
+    )
+
+    with pytest.raises(deploy.ControlPlaneDeployError, match="deploy_scene_retirement_runtime_unproven") as failure:
+        deploy._await_scene_source_attestation(COMMIT, max_seconds=3600)
+
+    assert failure.value.runtime_diagnostic == {
+        "phase": "await_attestation", "reason": "ci_finished_without_attestation"}
+    assert world.sleeps == []
+
+
+@pytest.mark.parametrize("runs", [
+    {"workflow_runs": []},
+    {"workflow_runs": [_run(status="queued", conclusion=None)]},
+    {"workflow_runs": [_run(status="in_progress", conclusion=None)]},
+    {"workflow_runs": [_run(conclusion="success")]},
+    {"workflow_runs": [_run(path=".github/workflows/codeql.yml")]},
+    {"workflow_runs": [_run(sha="e" * 40)]},
+    {"workflow_runs": [_run(), _run(status="in_progress", conclusion=None)]},
+    {"message": "API rate limit exceeded"},
+    None,
+])
+def test_the_wait_keeps_waiting_while_ci_could_still_attest(monkeypatch, tmp_path, runs) -> None:
+    _AttestationPollWorld(
+        monkeypatch, tmp_path, listing=[(404, None), (404, None), LISTED], runs=runs or {"message": "x"},
+    )
+
+    assert deploy._await_scene_source_attestation(COMMIT, max_seconds=3600)["status"] == "listed"
+
+
+def test_a_listing_is_read_before_a_finished_run_can_stop_the_wait(monkeypatch, tmp_path) -> None:
+    """A run can attest the source and then fail a later step: that proof is still usable."""
+    _AttestationPollWorld(monkeypatch, tmp_path, listing=[LISTED], runs={"workflow_runs": [_run()]})
+
+    assert deploy._await_scene_source_attestation(COMMIT, max_seconds=3600)["status"] == "listed"
+
+
+def test_a_long_wait_never_spends_the_requests_the_proof_itself_needs(monkeypatch, tmp_path) -> None:
+    """This host has 60 unauthenticated requests an hour, measured from the API's own headers."""
+    world = _AttestationPollWorld(monkeypatch, tmp_path, remaining=60)
+    hour_one: list[int] = []
+    sleep = world.sleep
+
+    def observe(seconds):
+        sleep(seconds)
+        if world.epoch + (world.now - 1000.0) < world.reset and world.reset == world.epoch + 3600:
+            hour_one.append(world.remaining)
+
+    monkeypatch.setattr(deploy.time, "sleep", observe)
+
+    with pytest.raises(deploy.ControlPlaneDeployError):
+        deploy._await_scene_source_attestation(COMMIT, max_seconds=3600)
+
+    assert min(hour_one) >= deploy._SCENE_SOURCE_ATTESTATION_RATE_RESERVE - 1
+    # Spreading the budget still finds the attestation within about a minute and a half.
+    assert max(world.sleeps[:10]) < 120
+
+
+@pytest.mark.parametrize(("headers", "pause"), [
+    ({}, 30.0),
+    ({"x-ratelimit-remaining": "bad", "x-ratelimit-reset": "1793000100"}, 30.0),
+    ({"x-ratelimit-remaining": "60"}, 30.0),
+    # 45 spendable requests over the hour: one every 80 seconds, not 30.
+    ({"x-ratelimit-remaining": "60", "x-ratelimit-reset": "1793003600"}, 80.0),
+    # A nearly spent hour waits for the reset instead of touching the reserve.
+    ({"x-ratelimit-remaining": "15", "x-ratelimit-reset": "1793000600"}, 601.0),
+    ({"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1793000600"}, 601.0),
+    # A reset already past never polls faster than the base interval.
+    ({"x-ratelimit-remaining": "0", "x-ratelimit-reset": "1792999000"}, 30.0),
+])
+def test_polls_spread_the_hours_requests_and_keep_a_reserve(monkeypatch, headers, pause) -> None:
+    monkeypatch.setattr(deploy.time, "time", lambda: 1_793_000_000.0)
+
+    assert deploy._scene_source_poll_pause(headers) == pause
+
+
+def test_proof_already_on_the_host_needs_no_wait(monkeypatch, tmp_path) -> None:
+    world = _AttestationPollWorld(monkeypatch, tmp_path)
+    held = tmp_path / "held" / COMMIT
+    held.mkdir(parents=True)
+    for name in ("source-sha256-manifest.json", "source-provenance.sigstore.json"):
+        (held / name).write_text("{}")
+
+    outcome = deploy._await_scene_source_attestation(COMMIT, max_seconds=3600)
+
+    assert outcome["status"] == "proof_already_held"
+    assert world.reads == []
+
+
+@pytest.mark.parametrize("missing", ["source-sha256-manifest.json", "source-provenance.sigstore.json"])
+def test_half_a_held_proof_still_waits(monkeypatch, tmp_path, missing) -> None:
+    world = _AttestationPollWorld(monkeypatch, tmp_path, listing=[LISTED])
+    held = tmp_path / "held" / COMMIT
+    held.mkdir(parents=True)
+    for name in ("source-sha256-manifest.json", "source-provenance.sigstore.json"):
+        if name != missing:
+            (held / name).write_text("{}")
+
+    assert deploy._await_scene_source_attestation(COMMIT, max_seconds=3600)["status"] == "listed"
+    assert world.reads
+
+
+def test_zero_seconds_keeps_the_old_immediate_behaviour(monkeypatch, tmp_path) -> None:
+    world = _AttestationPollWorld(monkeypatch, tmp_path)
+
+    assert deploy._await_scene_source_attestation(COMMIT, max_seconds=0) == {
+        "status": "not_requested", "polls": 0, "wait_seconds": 0.0}
+    assert world.reads == []
+
+
+def test_public_read_reports_failure_as_data_and_never_raises(monkeypatch) -> None:
+    import io
+    import urllib.error
+
+    class Opener:
+        def __init__(self, outcome):
+            self.outcome = outcome
+
+        def open(self, request, timeout):
+            assert request.get_header("Authorization") is None
+            if isinstance(self.outcome, Exception):
+                raise self.outcome
+            return self.outcome
+
+    class Response(io.BytesIO):
+        status = 200
+        headers = {"x-ratelimit-remaining": "9"}
+
+    def read_with(outcome, cap=64):
+        monkeypatch.setattr(deploy, "_source_response_opener", lambda *_a, **_k: Opener(outcome))
+        return deploy._scene_source_public_read("https://api.github.com/x", deadline=1e12, cap=cap)
+
+    not_found = urllib.error.HTTPError("https://api.github.com/x", 404, "Not Found", {"x-ratelimit-remaining": "8"}, None)
+    assert read_with(not_found) == (404, None, {"x-ratelimit-remaining": "8"})
+    assert read_with(urllib.error.URLError("down")) == (0, None, {})
+    assert read_with(TimeoutError("slow")) == (0, None, {})
+    assert read_with(ValueError("past deadline")) == (0, None, {})
+    assert read_with(deploy.http.client.IncompleteRead(b"")) == (0, None, {})
+    assert read_with(Response(b"not json")) == (0, None, {})
+    assert read_with(Response(b'{"attestations": [1]}')) == (200, {"attestations": [1]}, Response.headers)
+    assert read_with(Response(b'{"too": "large"}'), cap=4) == (200, None, Response.headers)
+
+
+def test_blocked_receipt_names_the_wait_as_the_failed_phase(tmp_path, monkeypatch, capsys) -> None:
+    _stub_main_break_glass_notes(monkeypatch, tmp_path)
+
+    def expired(**_kwargs):
+        raise deploy._scene_source_attestation_wait_failure("ci_finished_without_attestation")
+
+    monkeypatch.setattr(deploy, "deploy_control_plane_commit", expired)
+
+    assert deploy.main(_cli_args(tmp_path, tmp_path)) == 2
+    blocked = json.loads(capsys.readouterr().out)
+    assert blocked["blockers"] == ["deploy_scene_retirement_runtime_unproven"]
+    assert blocked["runtime_diagnostic"] == {
+        "phase": "await_attestation", "reason": "ci_finished_without_attestation"}
 
 
 def _try_lock(path: Path) -> bool:
@@ -5286,7 +5719,8 @@ def test_a_failure_inside_the_pause_restores_the_exact_watcher_state(tmp_path, m
         "installed": [
             {"unit": unit}
             for unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS
-            if unit.endswith((".path", ".timer"))
+            # The provider poll was never quiesced, so a failure has nothing of it to restore.
+            if unit.endswith((".path", ".timer")) and unit not in deploy.DEPLOY_EXEMPT_TRIGGER_UNITS
         ],
         "before": {watcher: {"enabled": "enabled", "state": "active"}},
         "arm_path_units": False,
@@ -5321,20 +5755,26 @@ def test_the_receipt_measures_how_long_jobs_stood_still(tmp_path, monkeypatch) -
     costs("_provision_scene_configuration_from_release", 1255, {"environment": {}})
     costs("_prepare_scene_retirement_runtime", 227, {"status": "test_host_step_stub"})
     costs("_verify_intake_runtime", 60, {"commit_proven": True})
+    costs("_await_scene_source_attestation", 600, {"status": "listed", "polls": 8, "wait_seconds": 600.0})
     monkeypatch.setattr(deploy, "time", clock)
 
-    receipt = deploy.deploy_control_plane_commit(**kwargs, drain_units=(PROGRESSION,), drain_seconds=1800)
+    receipt = deploy.deploy_control_plane_commit(
+        **kwargs, drain_units=(PROGRESSION,), drain_seconds=1800, attestation_wait_seconds=3600,
+    )
 
     stages = receipt["stage_timings_seconds"]
     assert list(stages) == [
         "admission_and_deploy_lock", "capture_transfer_prerequisites", "release_checkout_staged",
-        "runtime_trees_provisioned", "triggers_paused", "scene_retirement_runtime_and_shared_dependencies",
+        "runtime_trees_provisioned", "scene_source_attestation_listed", "triggers_paused",
+        "scene_retirement_runtime_and_shared_dependencies",
         "unit_sandbox_paths", "scene_configuration_environment_installed", "release_activated",
         "controls_autoprovision_installed", "units_and_directories_installed",
         "intake_restarted_and_proven", "agent_activated_and_triggers_rearmed",
     ]
     assert stages["runtime_trees_provisioned"] == 1255
-    # The build is not part of the pause; the switch-side steps are.
+    assert stages["scene_source_attestation_listed"] == 600
+    assert receipt["attestation_wait_seconds"] == 600.0
+    # Neither the build nor the attestation wait is part of the pause; the switch-side steps are.
     assert receipt["trigger_pause_seconds"] == {
         "drained_triggers": 287, "all_triggers": 287, "paid_launch_gate": 287,
     }

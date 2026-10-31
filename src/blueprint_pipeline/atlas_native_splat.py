@@ -5,9 +5,11 @@ gap review. When the reviewed policy prices a refined splat, the views that
 draft fused are posted once to posedImages2Splats in World Labs' documented
 frame shape (image, linear depth, camera): real frames whole, and a generated
 view whole only where an independent whole-view agreement review admitted it.
-Its SPZ replaces the draft for meshing, export and scene handoff. Refinement is
-generated appearance: it never proves metric scale, source-geometry
-preservation or physics.
+That review judges, and the request posts, each generated view corrected where
+it contradicts a well-observed capture (``atlas_gap_composite``). Its SPZ replaces the
+draft for meshing, export and scene handoff. Refinement is generated
+appearance: it never proves metric scale, source-geometry preservation or
+physics.
 """
 from __future__ import annotations
 
@@ -24,7 +26,7 @@ from .local_reconstruction_adapters import _sha256_file
 
 # Forms, roots and manifests live in a module job control can import; re-exported here.
 from .atlas_refined_splat_forms import (  # noqa: F401
-    FORMS, LEGACY_FORMS, LEGACY_MANIFEST, MANIFEST, MINIMAL, UPGRADE, WHOLE, bought as _bought,
+    FORMS, LEGACY_FORMS, LEGACY_MANIFEST, MANIFEST, MINIMAL, REVIEW_RECORD, UPGRADE, WHOLE, bought as _bought,
     form_roots as _form_roots, load_splat_manifest, request_gap_preserving_upgrade, splat_manifest_path,
     untried_gap_roots as _untried_gap_roots)
 
@@ -92,14 +94,65 @@ def merge_duplicate_views(frames):
     return merged
 
 
-def prepare_splat_request(*, frames, root: Path, admitted_whole=None):
+def composited_views(frames):
+    """``merge_duplicate_views`` with each partly admitted view rebuilt around what was observed.
+
+    Real (whole) views are the references. A generated or recovered view starts
+    from the provider's own pixels and takes the real frames' pixels and depth
+    only where it contradicts a well-observed capture (``atlas_gap_composite``),
+    so the whole-view review judges, and the request posts, that frame.
+    """
+    from .atlas_gap_composite import composite_view, observation_references
+
+    views = merge_duplicate_views(frames)
+    partial = {base for base, view, _ in views if _admission(view)[0] and _admission(view)[1] is not None}
+    references = [view for _, view, _ in views if _admission(view)[1] is None]
+    if not partial or not references:
+        return views
+    references = observation_references(references)
+    result = []
+    for base, view, rest in views:
+        if base in partial:
+            view, receipt = composite_view(view, references)
+            view["gap_composite"] = receipt
+        result.append((base, view, rest))
+    return result
+
+
+CANDIDATE_RECORD = "whole_view_candidates.json"
+
+
+def _review_views(root: Path, frames):
+    """The candidates a root's whole-view review judges, decided once and recorded before any call.
+
+    The review's receipts are found by a binding that includes the candidates'
+    pixels. A root an earlier release reviewed, or began to review (a receipt,
+    an intent or its lock with or without ``whole_view_review.json``), keeps the
+    provider's frames, so that call is found again and never bought twice.
+    """
+    from .atlas_gap_composite import CANDIDATE_BASIS
+
+    chosen = root / CANDIDATE_RECORD
+    if chosen.is_file() and not chosen.is_symlink():
+        basis = json.loads(chosen.read_text()).get("candidate_basis")
+    elif (root / REVIEW_RECORD).exists() or any((root / "whole_view_review" / "receipts").glob("*")):
+        basis = None
+    else:
+        basis = CANDIDATE_BASIS
+        root.mkdir(parents=True, exist_ok=True)
+        write_json(chosen, {"candidate_basis": basis})
+    return composited_views(frames) if basis == CANDIDATE_BASIS else merge_duplicate_views(frames)
+
+
+def prepare_splat_request(*, frames, root: Path, admitted_whole=None, views=None):
     """Post each fused view once, in the documented frame shape: image, linear depth and camera.
 
-    Duplicate views merge first. Real frames go in whole. A partly admitted
-    (generated or recovered) view goes in whole only when ``admitted_whole`` holds
-    its position's whole-view verdict, and is left out otherwise. One grid is
-    posted unchanged; mixed grids (portrait source beside landscape generated
-    views) use the ray-preserving photograph tiler.
+    Duplicate views merge first (``views``, when given, are those merged views,
+    as the whole-view review judged them). Real frames go in whole. A partly
+    admitted (generated or recovered) view goes in whole only when
+    ``admitted_whole`` holds its position's whole-view verdict, and is left out
+    otherwise. One grid is posted unchanged; mixed grids (portrait source beside
+    landscape generated views) use the ray-preserving photograph tiler.
     """
     from PIL import Image
     from .atlas_depth_splat import write_exr_depth
@@ -109,7 +162,7 @@ def prepare_splat_request(*, frames, root: Path, admitted_whole=None):
     admitted_whole = admitted_whole or {}
     # Recovered views can repeat a generated view's ID; the position is the identity here.
     posted = {}
-    for base, view, rest in merge_duplicate_views(frames):
+    for base, view, rest in (merge_duplicate_views(frames) if views is None else views):
         admitted, keep = _admission(view)
         if admitted and (keep is None or base in admitted_whole):
             posted[f"{base:04d}"] = ({**view, "frame_id": f"{base:04d}"}, rest,
@@ -150,6 +203,8 @@ def prepare_splat_request(*, frames, root: Path, admitted_whole=None):
             row["merged_duplicates"] = [{"position": j, "frame_id": frames[j]["frame_id"]} for j in rest]
         if verdict is not None:
             row["whole_view_review"] = verdict
+            if posted[key[:4]][0].get("gap_composite"):
+                row["gap_composite"] = posted[key[:4]][0]["gap_composite"]
         for role, path in (("rgb", rgb), ("depth", depth)):
             uploads[f"frame-{i}-{role}"] = {"path": str(Path(path).resolve()), "sha256": _sha256_file(Path(path))}
             row[f"{role}_sha256"] = uploads[f"frame-{i}-{role}"]["sha256"]
@@ -214,7 +269,7 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
 
     roots = _form_roots(output_root)
     upgrade = _upgrade_roots(roots[-1][1])
-    review = None
+    review = views = None
     for index, (form, root) in enumerate(roots):
         if not (root / "native/result.json").is_file():
             if _provider_failed_and_exhausted(root / "native"):
@@ -225,8 +280,9 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
             if not _started(root) and root.name not in upgrade and later:
                 continue
             if form == WHOLE and not _bought(root):
+                views = _review_views(root, frames)
                 review = atlas_whole_view_review.review_whole_views(
-                    views=merge_duplicate_views(frames), root=root, task_context=task_context, policy=policy,
+                    views=views, root=root, task_context=task_context, policy=policy,
                     source_video_digest=result["binding"]["source_video_digest"], checkpoint=checkpoint,
                     retained_only=retained_only)
                 if not any(verdict["admit_whole"] for verdict in review["verdicts"]):
@@ -234,7 +290,7 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
         try:
             value = _run_form(form=form, root=root, frames=frames, result=result, draft=draft, policy=policy,
                               task_context=task_context, task_runner=task_runner, max_polls=max_polls,
-                              checkpoint=checkpoint, review=review)
+                              checkpoint=checkpoint, review=review, views=views if form == WHOLE else None)
         except ValueError:
             # The provider failed this form's last attempt; the next form follows.
             if not _provider_failed_and_exhausted(root / "native"):
@@ -247,10 +303,11 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
 
 
 def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, task_runner, max_polls,
-              checkpoint, review=None):
+              checkpoint, review=None, views=None):
     """One form's root. A bought root is evaluated by what it sent, never re-derived.
 
-    Its request may be an earlier release's form, and its retained uploads stay intact.
+    Its request may be an earlier release's form, and its retained uploads stay
+    intact. ``views`` are the merged views the review judged, posted as judged.
     """
     from .atlas_depth_splat import decode_spz, splats2mesh_task_spec
     from .atlas_pricing import splat_cost
@@ -280,7 +337,7 @@ def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, 
         admitted = {row["position"]: {"admit_whole": True, "reason": row["reason"]}
                     for row in (review or {}).get("verdicts", []) if form == WHOLE and row["admit_whole"]}
         request, uploads, provenance = prepare_splat_request(frames=frames, root=root / "inputs",
-                                                             admitted_whole=admitted)
+                                                             admitted_whole=admitted, views=views)
         binding = {**identity, "request_digest": canonical_digest(request), "request_form": form,
                    "uploads": uploads, "frames": provenance,
                    **({"whole_view_review": review} if (review or {}).get("verdicts") else {})}

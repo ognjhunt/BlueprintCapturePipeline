@@ -2,15 +2,18 @@
 """Select and run the smallest deterministic PR test set.
 
 The selector is intentionally conservative. Directly related tests and a small
-always-on sentinel set run for ordinary changes. Dependency-wide, unknown, or
-overly broad changes request the separately governed full lane instead of
-silently pretending that a narrow selection is sufficient.
+always-on sentinel set run for ordinary changes. A selection above the bounded
+lane's budget runs every selected file in the wide lane, which has the full
+lane's environment. Dependency-wide, unknown, or overly broad changes request the
+separately governed full lane instead of silently pretending that a narrow
+selection is sufficient.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -25,6 +28,28 @@ DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_WORKER_COUNT = 4
 MAX_CHANGED_FILES = 50
 MAX_IMPACTED_TEST_FILES = 40
+# Only an impact set this broad still needs the full suite. The 26 budget-only
+# full suites of 2026-10-31 selected a median of 66 files (maximum 99), a median
+# 8 of the suite's 161 test-minutes.
+MAX_WIDE_TEST_FILES = 600
+MAX_WIDE_SHARE_OF_TEST_FILES = 0.25
+MAX_WIDE_SHARDS = 4
+WIDE_SHARD_TARGET_SECONDS = 600
+WIDE_LANE_WORKFLOW = ".github/workflows/impacted-wide-lane.yml"
+DURATION_BASELINE = ".github/full-test-lane-duration-baseline.json"
+FALLBACK_SECONDS_PER_TEST = 0.25
+REVERSE_IMPORT_DEPTH = 2
+# Source roots whose files are importable, as (path prefix, what to strip for the dotted name).
+IMPORT_ROOTS = (("src/blueprint_pipeline/", "src/"), ("deploy/operator-door/operator_door/", "deploy/operator-door/"))
+CONFIG_ROOT = "src/blueprint_pipeline/config/"
+# Text, not a parse: 0.85 s against about 11 s for the 2,511 modules, and an import
+# inside a function still counts. One inside a string only widens the selection.
+IMPORT_STATEMENT = re.compile(
+    r"^[ \t]*(?:from[ \t]+(?P<source>[.\w]+)[ \t]+import[ \t]+(?P<names>\([^)]*\)|[^\n#]*)"
+    r"|import[ \t]+(?P<modules>[^\n#]+))",
+    re.MULTILINE,
+)
+WORD = re.compile(r"\w+")
 
 SENTINEL_TESTS = (
     "tests/test_success_claim_contracts.py::test_freshness_fails_closed_without_any_signal",
@@ -49,6 +74,16 @@ CROSS_CUTTING_FILES = {
     "src/blueprint_pipeline/__init__.py",
     "Dockerfile",
     "docker-compose.yml",
+}
+
+# What dependency-security, container-contract and the SBOM and license build read.
+# They otherwise run only on push to main, where a failure leaves the commit unattested.
+SUPPLY_CHAIN_INPUT_FILES = {
+    ".github/workflows/ci.yml",
+    "Dockerfile",
+    "docker-compose.yml",
+    "pyproject.toml",
+    "uv.lock",
 }
 
 POLICY_ONLY_PREFIXES = (
@@ -113,6 +148,16 @@ def _test_sources(root: Path) -> dict[str, str]:
     return sources
 
 
+def _dotted_module(path: str) -> str:
+    """The name a file is imported by, or "" for a file nothing can import."""
+    if not path.endswith(".py"):
+        return ""
+    for prefix, strip in IMPORT_ROOTS:
+        if path.startswith(prefix):
+            return path.removeprefix(strip).removesuffix(".py").removesuffix("/__init__").replace("/", ".")
+    return ""
+
+
 def _matching_tests(
     *,
     changed_path: str,
@@ -136,10 +181,8 @@ def _matching_tests(
         tokens = {changed_path}
     module_patterns: list[str] = []
     module_name = ""
-    if changed_path.startswith("src/blueprint_pipeline/") and path.suffix == ".py":
-        module = changed_path.removeprefix("src/").removesuffix(".py").replace("/", ".")
-        if path.name == "__init__.py":
-            module = module.removesuffix(".__init__")
+    module = _dotted_module(changed_path)
+    if module:
         parent, _, module_name = module.rpartition(".")
         module_patterns = [
             rf"(?<![A-Za-z0-9_]){re.escape(module)}(?![A-Za-z0-9_])",
@@ -167,12 +210,142 @@ def _matching_tests(
     return candidates
 
 
+def _changes_supply_chain_inputs(changed: Sequence[str]) -> bool:
+    return any(
+        path in SUPPLY_CHAIN_INPUT_FILES
+        or path.startswith("deploy/systemd/")
+        or re.fullmatch(r"requirements[^/]*\.txt", path) is not None
+        for path in changed
+    )
+
+
+def _estimated_seconds(
+    root: Path, *, files: Sequence[str], test_sources: dict[str, str]
+) -> dict[str, float]:
+    """Seconds per test file from the committed baseline; a planning hint only."""
+    try:
+        baseline = json.loads((root / DURATION_BASELINE).read_text(encoding="utf-8"))
+        measured = {row["path"]: float(row["duration_seconds"]) for row in baseline["files"]}
+        seconds_per_test = float(baseline["default_seconds_per_test"])
+    except (OSError, ValueError, KeyError, TypeError):
+        measured, seconds_per_test = {}, FALLBACK_SECONDS_PER_TEST
+    return {
+        path: measured.get(
+            path, seconds_per_test * max(1, test_sources.get(path, "").count("def test_"))
+        )
+        for path in files
+    }
+
+
+def _wide_shards(
+    root: Path, *, files: Sequence[str], test_sources: dict[str, str]
+) -> list[dict[str, object]]:
+    """Longest-first balanced shards, deterministic for one baseline and one selection."""
+    if not files:
+        return []
+    estimates = _estimated_seconds(root, files=files, test_sources=test_sources)
+    wanted = math.ceil(sum(estimates.values()) / WIDE_SHARD_TARGET_SECONDS)
+    count = min(MAX_WIDE_SHARDS, max(1, wanted), len(files))
+    loads = [0.0] * count
+    assigned: list[list[str]] = [[] for _ in range(count)]
+    for path, seconds in sorted(estimates.items(), key=lambda row: (-row[1], row[0])):
+        index = loads.index(min(loads))
+        assigned[index].append(path)
+        loads[index] += seconds
+    return [
+        {"index": index, "estimated_seconds": round(loads[index], 3), "files": sorted(assigned[index])}
+        for index in range(count)
+    ]
+
+
+def _imported_names(module: str, *, is_package: bool, source: str) -> set[str]:
+    """Every dotted name this module's import statements could resolve to."""
+    package = module.split(".") if is_package else module.split(".")[:-1]
+    names: set[str] = set()
+    for statement in IMPORT_STATEMENT.finditer(source):
+        if statement["modules"]:
+            names.update(part.split(" as ")[0].strip() for part in statement["modules"].split(","))
+            continue
+        origin = statement["source"]
+        level = len(origin) - len(origin.lstrip("."))
+        if level:
+            prefix = package[: len(package) - (level - 1)]
+            origin = ".".join([*prefix, origin.lstrip(".")] if origin.lstrip(".") else prefix)
+        names.add(origin)
+        listed = re.sub(r"#[^\n]*", "", statement["names"]).strip("() \t\n")
+        names.update(f"{origin}.{part.split(' as ')[0].strip()}" for part in listed.split(","))
+    return names
+
+
+def _importable_sources(root: Path) -> dict[str, str]:
+    """Every importable file's source by repository path, and every script's."""
+    sources: dict[str, str] = {}
+    files = [*(root / "scripts").glob("*.py")]
+    for prefix, _strip in IMPORT_ROOTS:
+        files.extend((root / prefix).rglob("*.py"))
+    for path in files:
+        sources[path.relative_to(root).as_posix()] = path.read_text(encoding="utf-8", errors="replace")
+    return sources
+
+
+def _importers_by_file(sources: dict[str, str]) -> dict[str, set[str]]:
+    by_module = {_dotted_module(path): path for path in sources if _dotted_module(path)}
+    importers: dict[str, set[str]] = {}
+    for path, source in sources.items():
+        module = _dotted_module(path) or path.removesuffix(".py").replace("/", ".")
+        for name in _imported_names(module, is_package=path.endswith("/__init__.py"), source=source):
+            if name in by_module:
+                importers.setdefault(by_module[name], set()).add(path)
+    return importers
+
+
+def _files_through_importers(root: Path, changed: Sequence[str]) -> dict[str, set[str]]:
+    """For each file no test names: what imports it, within two steps, or what loads it."""
+    sources = _importable_sources(root)
+    importers = _importers_by_file(sources)
+    through: dict[str, set[str]] = {}
+    for changed_path in changed:
+        if changed_path.startswith(CONFIG_ROOT) and not _dotted_module(changed_path):
+            # A file or the directory directly under config/ holding it, named by its loader.
+            name = changed_path.removeprefix(CONFIG_ROOT).split("/", 1)[0]
+            through[changed_path] = {path for path, source in sources.items() if name in source}
+            continue
+        closure: set[str] = set()
+        frontier = {changed_path}
+        for _depth in range(REVERSE_IMPORT_DEPTH):
+            frontier = {row for path in frontier for row in importers.get(path, ())} - closure - {changed_path}
+            closure |= frontier
+        through[changed_path] = closure
+    return through
+
+
+def _tests_of_files(paths: set[str], *, test_sources: dict[str, str]) -> dict[str, set[str]]:
+    """_matching_tests for many files, reading each test's words only once."""
+    by_word: dict[str, set[str]] = {}
+    for path in paths:
+        by_word.setdefault(_dotted_module(path).rpartition(".")[2] or Path(path).stem, set()).add(path)
+    mentioning: dict[str, dict[str, str]] = {}
+    for test_path, source in test_sources.items():
+        for word in by_word.keys() & set(WORD.findall(source)):
+            mentioning.setdefault(word, {})[test_path] = source
+    matches: dict[str, set[str]] = {}
+    for word, files in by_word.items():
+        for path in files:
+            direct = f"tests/test_{Path(path).stem}.py"
+            candidates = mentioning.get(word, {})
+            if direct in test_sources:
+                candidates = {**candidates, direct: test_sources[direct]}
+            matches[path] = _matching_tests(changed_path=path, test_sources=candidates)
+    return matches
+
+
 def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
     changed = _normalize_paths(paths)
     test_sources = _test_sources(root)
     impacted: set[str] = set()
     reasons: list[str] = []
     requires_full_suite = False
+    needs_importers: list[str] = []
 
     if not changed:
         reasons.append("no_changed_files:sentinels_only")
@@ -207,17 +380,52 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
             reasons.append(f"mapped:{changed_path}:{len(matches)}")
             continue
 
-        if changed_path.startswith(("src/", "scripts/", "deploy/", "terraform/")):
+        if _dotted_module(changed_path) or changed_path.startswith(CONFIG_ROOT):
+            needs_importers.append(changed_path)
+        elif changed_path.startswith(("src/", "scripts/", "deploy/", "terraform/")):
             requires_full_suite = True
             reasons.append(f"unmapped_executable_surface:{changed_path}")
         else:
             reasons.append(f"non_executable_surface:{changed_path}")
 
+    if needs_importers:
+        through = _files_through_importers(root, needs_importers)
+        tests_by_file = _tests_of_files(set().union(*through.values()), test_sources=test_sources)
+        for changed_path in needs_importers:
+            matches = set().union(*(tests_by_file[path] for path in through[changed_path]))
+            if matches:
+                impacted.update(matches)
+                reasons.append(f"mapped_through_importers:{changed_path}:{len(matches)}")
+            else:
+                # A brand-new file nothing references, so nothing can say what it breaks.
+                requires_full_suite = True
+                reasons.append(f"unmapped_executable_surface:{changed_path}")
+
+    requires_wide_impacted = False
     if len(impacted) > MAX_IMPACTED_TEST_FILES:
-        requires_full_suite = True
-        reasons.append(
-            f"impacted_test_count_exceeds_budget:{len(impacted)}>{MAX_IMPACTED_TEST_FILES}"
+        ceiling = min(
+            MAX_WIDE_TEST_FILES, int(MAX_WIDE_SHARE_OF_TEST_FILES * len(test_sources))
         )
+        if requires_full_suite or len(impacted) > ceiling:
+            requires_full_suite = True
+            reasons.append(
+                f"impacted_test_count_exceeds_budget:{len(impacted)}>{MAX_IMPACTED_TEST_FILES}"
+            )
+            if len(impacted) > ceiling:
+                reasons.append(f"impacted_test_count_exceeds_wide_ceiling:{len(impacted)}>{ceiling}")
+            impacted.clear()
+        else:
+            requires_wide_impacted = True
+    if WIDE_LANE_WORKFLOW in changed and not requires_full_suite:
+        # A change to the lane runs the lane, as a change to the full lane runs that.
+        requires_wide_impacted = True
+        reasons.append(f"wide_lane_changed:{WIDE_LANE_WORKFLOW}")
+
+    wide_tests: list[str] = []
+    if requires_wide_impacted:
+        wide_tests = sorted(impacted)
+        reasons.append(f"impacted_test_count_wide:{len(wide_tests)}")
+        # The bounded lane stays bounded: it runs the sentinels, the wide lane the rest.
         impacted.clear()
 
     selected_set = set(impacted)
@@ -232,6 +440,10 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
         "changed_files": changed,
         "selected_tests": selected,
         "requires_full_suite": requires_full_suite,
+        "requires_wide_impacted": requires_wide_impacted,
+        "wide_impacted_tests": wide_tests,
+        "wide_shards": _wide_shards(root, files=wide_tests, test_sources=test_sources),
+        "supply_chain_inputs_changed": _changes_supply_chain_inputs(changed),
         "reasons": sorted(set(reasons)),
         "protected_risks": [
             "changed_contract_behavior",
@@ -256,6 +468,18 @@ def write_github_output(plan: dict[str, object], path: Path) -> None:
             + "\n"
         )
         stream.write(f"selected_test_count={len(plan['selected_tests'])}\n")
+        stream.write(
+            "requires_wide_impacted="
+            + ("true" if plan["requires_wide_impacted"] else "false")
+            + "\n"
+        )
+        stream.write(
+            "supply_chain_inputs_changed="
+            + ("true" if plan["supply_chain_inputs_changed"] else "false")
+            + "\n"
+        )
+        matrix = [shard["index"] for shard in plan["wide_shards"]]
+        stream.write(f"wide_shard_matrix={json.dumps(matrix, separators=(',', ':'))}\n")
 
 
 def run_pytest(

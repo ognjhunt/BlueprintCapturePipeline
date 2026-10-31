@@ -13,6 +13,7 @@ category; nothing is promoted to a physical measurement.
 from __future__ import annotations
 
 import base64
+import copy
 import io
 import json
 import math
@@ -32,9 +33,12 @@ from .external_scene_frame_registration import _axis_rotations, _sample, _trimme
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
-from .website_support_geometry import (DESTINATION_MARGIN_M, destination_clear_of_start, farthest_supported_destination,
-                                       ground_on_observed_floor, same_support_surface, support_under)
-from .website_surface_target_admission import admit_surface_target
+from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start,
+                                       farthest_supported_destination, ground_on_observed_floor,
+                                       nearest_supported_destination, same_support_surface, support_outline,
+                                       support_under)
+from .website_surface_target_admission import (admit_surface_target, preparation_size_tolerance,
+                                               replacement_size_tolerance, website_target_radius)
 
 
 class RegistrationRefusal(ValueError):
@@ -506,12 +510,100 @@ def _runtime_bounds(bounds: Mapping[str, Any], matrix: np.ndarray) -> tuple[list
     return moved.min(axis=0).tolist(), moved.max(axis=0).tolist()
 
 
+def _grounded_destination(row: Mapping[str, Any], matrix: np.ndarray, *, up: int,
+                          up_sign: int) -> tuple[list[float], list[float], list[float]]:
+    """A destination mask's runtime bounds, and the centre of its top where the subject is set down."""
+    low, high = _runtime_bounds(row["estimated_visible_bounds"], matrix)
+    position = [(low[i] + high[i]) / 2 for i in range(3)]
+    position[up] = (high if up_sign == 1 else low)[up]
+    return low, high, position
+
+
+def _set_down(subject_min: Sequence[float], subject_max: Sequence[float], position: Sequence[float], *,
+              up: int, up_sign: int) -> tuple[np.ndarray, np.ndarray]:
+    """The subject's footprint set down at ``position``: tested against real triangles, not the mask's box."""
+    destination_min, destination_max = np.asarray(subject_min, dtype=float).copy(), np.asarray(subject_max, dtype=float).copy()
+    for axis in range(3):
+        if axis != up:
+            half_width = (subject_max[axis] - subject_min[axis]) / 2
+            destination_min[axis], destination_max[axis] = position[axis] - half_width, position[axis] + half_width
+    height = subject_max[up] - subject_min[up]
+    destination_min[up] = position[up] - (height if up_sign == -1 else 0)
+    destination_max[up] = position[up] + (height if up_sign == 1 else 0)
+    return destination_min, destination_max
+
+
+class _SupportLookups:
+    """``support_under`` on one collider, each footprint looked up once.
+
+    The collider conditioning looks up the start and destination supports first;
+    when it leaves the collider as it was, placement reuses those lookups.
+    """
+
+    def __init__(self, collider: Any):
+        self.collider, self.found = collider, {}
+
+    def __call__(self, mesh: Any, lower: Sequence[float], upper: Sequence[float], **options: Any):
+        if mesh is not self.collider:
+            return support_under(mesh, lower, upper, **options)
+        # Rounded: a footprint rebuilt from snapped bounds differs only in its last bits.
+        key = (np.round(np.asarray(lower, dtype=float), 9).tobytes(),
+               np.round(np.asarray(upper, dtype=float), 9).tobytes(), tuple(sorted(options.items())))
+        if key not in self.found:
+            self.found[key] = support_under(mesh, lower, upper, **options)
+        return copy.deepcopy(self.found[key])
+
+
+def _seal_placement_collider(*, collider: Any, base_scene: Mapping[str, Any], placed: Any,
+                             destination_rows: Sequence[Mapping[str, Any]], matrix: np.ndarray, up: int,
+                             up_sign: int, meters_per_unit: float, placement_residual_m: float | None,
+                             articulated: bool, output_root: Path) -> tuple[Any, Mapping[str, Any], Any, Any]:
+    """Flatten the surfaces the subject starts and ends on, and seal that collider in the base scene.
+
+    The supports are looked up on the base scene's collider exactly as placement
+    looks them up (website_collider_conditioning). A conditioned collider is
+    written and bound in ``base_scene.json`` before ``collision_mesh_digest`` is,
+    and every later lookup, admission, native bind and relocation reads it.
+    Returns the collider, base scene and lookups to place on, and the record
+    (None when nothing applied). Geometry never blocks: a surface that cannot
+    be flattened safely leaves the raw collider, and the record says why.
+    """
+    from . import website_collider_conditioning as conditioning
+
+    lookup = _SupportLookups(collider)
+    subject_min, subject_max, support, _ = placed(collider, lookup)
+    placements = []
+    if support is not None:
+        placements.append({"role": "start_support", "support": support, "footprint": (subject_min, subject_max)})
+        row = destination_rows[0] if len(destination_rows) == 1 else {}
+        if not articulated and row.get("placement_relation") == "on":
+            position = _grounded_destination(row, matrix, up=up, up_sign=up_sign)[2]
+            footprint = _set_down(subject_min, subject_max, position, up=up, up_sign=up_sign)
+            found = lookup(collider, *footprint, up=up, meters_per_unit=meters_per_unit, up_sign=up_sign,
+                           placement_residual_m=placement_residual_m)
+            if found is not None:
+                placements.append({"role": "destination_support", "support": found, "footprint": footprint})
+    result = conditioning.condition_placement_collider(base_scene=base_scene, collider=collider,
+        placements=placements, up=up, up_sign=up_sign, meters_per_unit=meters_per_unit,
+        placement_uncertainty_m=placement_residual_m, output_root=output_root,
+        smoothing=conditioning.DEFAULT_SMOOTHING)
+    if result["status"] != "conditioned":
+        return collider, base_scene, result.get("record"), lookup
+    import trimesh
+    sealed = result["base_scene"]
+    write_json(output_root / "base_scene.json", sealed)
+    collider = trimesh.load(sealed["collision_mesh_path"], force="mesh", process=False)
+    return collider, sealed, result["record"], _SupportLookups(collider)
+
+
 def relocated_destination(preparation: Mapping[str, Any], preparation_path: Path) -> dict[str, Any] | None:
     """The same-surface relocation applied to a preparation recorded before it existed.
 
     Rereads only the preparation's own digest-bound collider and task masks
     (no provider call, no write) and moves the destination exactly as a new
-    preparation would. None when no supported footprint clears the start.
+    preparation would: where its whole region lies on the start's surface,
+    else where the footprint alone does, recorded as such. None when no
+    supported footprint clears the start.
     """
     import trimesh
 
@@ -535,19 +627,24 @@ def relocated_destination(preparation: Mapping[str, Any], preparation_path: Path
                                                np.linalg.inv(runtime_to_sim))
     low, high = _runtime_bounds(rows[0]["estimated_visible_bounds"],
                                 np.asarray(preparation["registration"]["source_to_runtime"], dtype=np.float64))
-    clearance = math.hypot(*[(subject_max[axis] - subject_min[axis]) / 2
-                             for axis in range(3) if axis != up]) + DESTINATION_MARGIN_M / mpu
+    tolerance = preparation_size_tolerance(preparation)
+    clearance = website_target_radius(subject_min, subject_max, relative_error=tolerance, up=up, meters_per_unit=mpu)
     collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, preparation["support"],
         up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
         placement_residual_m=frame.get("placement_uncertainty_m"))
     if moved is None:
         return None
-    return {"position_world_m": (runtime_to_sim @ [*moved[0], 1.0])[:3].tolist(),
+    # Moved at preparation with a smaller clearance: the grounded centre is the one it recorded.
+    grounded = (preparation.get("destination_relocation") or {}).get("grounded_centre_world_m",
+                                                                     preparation["destination"]["position_world_m"])
+    return {"position_world_m": (runtime_to_sim @ [*moved.centre, 1.0])[:3].tolist(),
             "relocation": {"reason": "grounded_destination_centre_overlapped_start",
                            "rule": "farthest_supported_footprint_on_start_surface",
-                           "grounded_centre_world_m": list(preparation["destination"]["position_world_m"]),
-                           "harness_choice": True, "applied_at": "native_submission"}}
+                           "grounded_centre_world_m": list(grounded),
+                           "harness_choice": True, "applied_at": "native_submission",
+                           **({} if moved.region_on_surface else {"region_on_support_surface": False}),
+                           **({"replacement_size_tolerance": tolerance} if tolerance else {})}}
 
 
 def embodiment_grippers(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -902,29 +999,44 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             body = published_body_bounds(body, published, source_to_simulator_scale=scale)
     import trimesh
     collider = None if independent_object else trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
+    residual = (registration.get("task_region") or {}).get("trimmed_rmse_m")
+    destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
     start = None
     if body is not None:
         subject_min, subject_max = levelled_body_bounds(body, matrix, up=up)
     elif synthetic is not None:
-        from .website_synthetic_subject import choose_start
         region = _runtime_bounds(subject_target["estimated_visible_bounds"], matrix)
-        destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
         attractor = (np.mean(_runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix), axis=0)
                      if len(destination_rows) == 1 else np.mean(region, axis=0))
-        subject_min, subject_max, support, start = choose_start(collider=collider, region=region, attractor=attractor,
-            design=synthetic, up=up, up_sign=up_sign, meters_per_unit=mpu, support_under=support_under)
-        if support is None:
-            blockers.append("website_synthetic_subject_start_unplaceable")
-            centre, half = np.mean(region, axis=0), np.asarray(synthetic["dimensions_m"]) / (2 * mpu)
-            subject_min, subject_max = (centre - half).tolist(), (centre + half).tolist()
     else:
         subject_bounds = estimate_target_bounds(subject_target["track"], source_geometry["frames"],
                                                 source_to_target=matrix)
         subject_min, subject_max = subject_bounds["minimum"], subject_bounds["maximum"]
-    if synthetic is None:
-        support = (None if independent_object else
-                   support_under(collider, subject_min, subject_max, up=up, meters_per_unit=mpu, up_sign=up_sign,
-                                 placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m")))
+
+    def placed(mesh: Any, lookup: Any) -> tuple[Any, Any, dict[str, Any] | None, dict[str, Any] | None]:
+        """The subject's bounds on ``mesh`` and the support under them, as preparation places it."""
+        if synthetic is None:
+            return subject_min, subject_max, lookup(mesh, subject_min, subject_max, up=up, meters_per_unit=mpu,
+                                                    up_sign=up_sign, placement_residual_m=residual), None
+        from .website_synthetic_subject import choose_start
+        return choose_start(collider=mesh, region=region, attractor=attractor, design=synthetic, up=up,
+                            up_sign=up_sign, meters_per_unit=mpu, support_under=lookup)
+
+    support = collider_conditioning = None
+    if not independent_object:
+        # The surfaces the subject starts and ends on are flattened before anything rests
+        # on them: every lookup below reads the collider that is sealed and digest-bound.
+        collider, base_scene, collider_conditioning, lookup = _seal_placement_collider(
+            collider=collider, base_scene=base_scene, placed=placed, destination_rows=destination_rows,
+            matrix=matrix, up=up, up_sign=up_sign, meters_per_unit=mpu, placement_residual_m=residual,
+            articulated=articulated, output_root=output_root)
+        placed_min, placed_max, support, start = placed(collider, lookup)
+        if synthetic is not None and support is not None:
+            subject_min, subject_max = placed_min, placed_max
+    if synthetic is not None and support is None:
+        blockers.append("website_synthetic_subject_start_unplaceable")
+        centre, half = np.mean(region, axis=0), np.asarray(synthetic["dimensions_m"]) / (2 * mpu)
+        subject_min, subject_max = (centre - half).tolist(), (centre + half).tolist()
     # A rebuilt, floor-standing assembly rarely shows its
     # lowest band, and a generated world often leaves the empty bay without a
     # floor: its body reaches down to the floor the footage observed.
@@ -959,8 +1071,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     dimensions_m = [sim_max[i] - sim_min[i] for i in range(3)]
     sim_support = (_runtime_bounds({"minimum": support["aabb_min"], "maximum": support["aabb_max"]}, runtime_to_sim)
                    if support else (None, None))
-    destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
-    destination = distinct_support = relocation = surface_target_admission = None
+    subject_dimension_authority = (published["dimension_authority"] if published
+                                   else "synthetic_design" if synthetic is not None else "estimated")
+    # The replacement is qualified within this of each estimated dimension; the region holds it.
+    size_tolerance = replacement_size_tolerance(dimension_authority=subject_dimension_authority,
+                                                relative_error=DIMENSION_RELATIVE_ERROR, development=False)
+    destination = distinct_support = relocation = surface_target_admission = region_outline = None
     interior = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
@@ -985,9 +1101,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 blockers.extend(coverage_blockers(coverage, target_id=subject_entry["target_id"], several=False))
     elif len(destination_rows) == 1 and not independent_object:
         blockers_before = len(blockers)
-        low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
-        position = [(low[i] + high[i]) / 2 for i in range(3)]
-        position[up] = (high if up_sign == 1 else low)[up]
+        low, high, position = _grounded_destination(destination_rows[0], matrix, up=up, up_sign=up_sign)
         relation = destination_rows[0].get("placement_relation")
         contact_bound = False
         if relation not in {"on", "inside"}:
@@ -1008,43 +1122,60 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         elif support is not None:
             # Test the subject's footprint at the destination against real
             # triangles, not the destination mask's enclosing box.
-            destination_min, destination_max = np.asarray(subject_min).copy(), np.asarray(subject_max).copy()
-            for axis in range(3):
-                if axis != up:
-                    half_width = (subject_max[axis] - subject_min[axis]) / 2
-                    destination_min[axis], destination_max[axis] = position[axis] - half_width, position[axis] + half_width
-            height = subject_max[up] - subject_min[up]
-            destination_min[up] = position[up] - (height if up_sign == -1 else 0)
-            destination_max[up] = position[up] + (height if up_sign == 1 else 0)
             # The destination is placed by the same registration as the subject.
-            destination_support = support_under(collider, destination_min, destination_max, up=up,
-                meters_per_unit=mpu, up_sign=up_sign,
-                placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"))
+            destination_min, destination_max = _set_down(subject_min, subject_max, position, up=up, up_sign=up_sign)
+            destination_support = lookup(collider, destination_min, destination_max,
+                                         up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
                 position[up] = destination_support["top_runtime_units"]
                 contact_bound = True
-                if not same_support_surface(destination_support, support):
+                same_surface = same_support_surface(destination_support, support)
+                if not same_surface:
                     # The object ends on another surface (floor to desk): bind that one by name.
                     distinct_support = destination_support
-                else:
+                region_support = support if same_surface else destination_support
+                # The region lies on that surface itself, not merely in its bounding box: the
+                # scorer accepts the subject anywhere in the region (capture-447ae4f4: an oval table).
+                outline = support_outline(collider, region_support, up=up, meters_per_unit=mpu,
+                                          placement_residual_m=residual)
+                clearance = website_target_radius(subject_min, subject_max, relative_error=size_tolerance,
+                                                  up=up, meters_per_unit=mpu)
+                stated = (runtime_to_sim @ [*position, 1.0])[:3].tolist()
+                recorded_tolerance = {"replacement_size_tolerance": size_tolerance} if size_tolerance else {}
+                plan_axes = [axis for axis in range(3) if axis != up]
+                if same_surface and not destination_clear_of_start(subject_min, subject_max, position, up=up,
+                                                                   clearance=clearance):
                     # Grounded as the surface it already rests on, the region's centre
                     # can lie under the subject: the task would start complete.
-                    clearance = math.hypot(*[(subject_max[axis] - subject_min[axis]) / 2
-                                             for axis in range(3) if axis != up]) + DESTINATION_MARGIN_M / mpu
-                    if not destination_clear_of_start(subject_min, subject_max, position, up=up, clearance=clearance):
-                        stated = (runtime_to_sim @ [*position, 1.0])[:3].tolist()
-                        moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, support,
-                            up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
-                            placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"))
-                        if moved is None:
-                            blockers.append("task_destination_overlaps_start")
-                        else:
-                            position = moved[0]
-                            relocation = {"reason": "grounded_destination_centre_overlapped_start",
-                                          "rule": "farthest_supported_footprint_on_start_surface",
-                                          "grounded_centre_world_m": stated, "harness_choice": True}
+                    moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, support,
+                        up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
+                        placement_residual_m=residual, outline=outline)
+                    if moved is None:
+                        blockers.append("task_destination_overlaps_start")
+                    else:
+                        position = moved.centre
+                        relocation = {"reason": "grounded_destination_centre_overlapped_start",
+                                      "rule": "farthest_supported_footprint_on_start_surface",
+                                      "grounded_centre_world_m": stated, "harness_choice": True,
+                                      **({} if moved.region_on_surface else {"region_on_support_surface": False}),
+                                      **recorded_tolerance}
+                elif outline is not None and not outline.holds(np.asarray(position)[plan_axes], clearance,
+                                                               tolerance=REGION_EDGE_ROUNDING_M / mpu):
+                    # Grounded where its region reaches past the surface's edge: the nearest
+                    # spot where it does not. None leaves it, and the admission flags it.
+                    moved = nearest_supported_destination(collider, destination_min, destination_max, low, high,
+                        region_support, up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
+                        placement_residual_m=residual, outline=outline,
+                        start_min=subject_min if same_surface else None, start_max=subject_max if same_surface else None)
+                    if moved is not None:
+                        position = moved.centre
+                        relocation = {"reason": "grounded_region_reached_past_its_surface",
+                                      "rule": "nearest_region_on_destination_surface",
+                                      "grounded_centre_world_m": stated, "harness_choice": True, **recorded_tolerance}
+                if outline is not None:
+                    region_outline = outline.in_frame(runtime_to_sim)
         label = destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"]
         destination = {"relation": relation, "visible_label": label,
                        **({"mode": "existing_support_surface"} if relation == "on" or interior is not None else {}),
@@ -1075,7 +1206,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), sim_support)),
                     subject_min=sim_min, subject_max=sim_max,
                     placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
-                    development_support=False)
+                    development_support=False, relative_error=size_tolerance, support_outline=region_outline)
             except ValueError as exc:
                 surface_target_admission = {"status": "refused", "code": str(exc),
                                             "basis": "evaluation_admission_rule"}
@@ -1429,6 +1560,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         **({"destination_relocation": relocation} if relocation is not None else {}),
         **({"surface_target_admission": surface_target_admission} if surface_target_admission is not None else {}),
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
+        **({"collider_conditioning": collider_conditioning} if collider_conditioning is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
                              else "provided_mesh_rigid_authoring" if synthetic is not None
                              else "content_agents_rigid_replacement",
@@ -1438,8 +1570,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "metric_envelope": {"minimum_xyz_m": sim_min,
                                                  "maximum_xyz_m": sim_max,
                                                  "maximum_dimension_relative_error": DIMENSION_RELATIVE_ERROR},
-                             "dimension_authority": (published["dimension_authority"] if published
-                                                     else "synthetic_design" if synthetic is not None else "estimated")},
+                             "dimension_authority": subject_dimension_authority},
         "physics": physics, "thumbnail": {key: value for key, value in thumbnail.items() if key != "png_base64"},
         "intake_request": request, "compose_back": compose_back,
         "recipe_plan": {"observed_appearance_object_removal": "satisfied_by_website_clean_plate_before_reconstruction",

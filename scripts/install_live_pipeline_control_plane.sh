@@ -1448,6 +1448,15 @@ run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-website-atlas-preview.timer" \
   "${SYSTEMD_DIR}/blueprint-website-atlas-preview.timer"
 run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-website-atlas-provider-poll.service" \
+  "${SYSTEMD_DIR}/blueprint-website-atlas-provider-poll.service"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-website-atlas-provider-poll.timer" \
+  "${SYSTEMD_DIR}/blueprint-website-atlas-provider-poll.timer"
+run install -m 0644 \
+  "${REPO_ROOT}/deploy/systemd/blueprint-website-atlas-provider-poll.path" \
+  "${SYSTEMD_DIR}/blueprint-website-atlas-provider-poll.path"
+run install -m 0644 \
   "${REPO_ROOT}/deploy/systemd/blueprint-team-evaluation-runner.service" \
   "${SYSTEMD_DIR}/blueprint-team-evaluation-runner.service"
 run install -m 0644 \
@@ -1776,6 +1785,8 @@ if [[ "${ENABLE_NOW}" == "true" ]]; then
   systemctl enable --now blueprint-control-plane-capacity.timer
   systemctl enable --now blueprint-control-plane-preflight.timer
   systemctl enable --now blueprint-website-atlas-preview.timer
+  systemctl enable --now blueprint-website-atlas-provider-poll.timer
+  systemctl enable --now blueprint-website-atlas-provider-poll.path
   systemctl enable --now blueprint-task-evaluation-launch-dispatcher.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.path
   systemctl enable --now blueprint-task-evaluation-launch-preparation.timer

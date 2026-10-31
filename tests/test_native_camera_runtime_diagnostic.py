@@ -104,6 +104,7 @@ def test_real_shell_child_is_terminated_by_the_bound(tmp_path):
     import os
     from pathlib import Path
     import sys
+    import time
     from blueprint_pipeline.scene_component_process import run_component_process
     marker = tmp_path / "child.pid"
     child = "import os,time,pathlib; pathlib.Path(" + repr(str(marker)) + ").write_text(str(os.getpid())); time.sleep(30)"
@@ -111,10 +112,19 @@ def test_real_shell_child_is_terminated_by_the_bound(tmp_path):
         run_component_process(["bash", "-c", '"$1" -c "$2" & wait', "development-only", sys.executable, child], timeout=1.)
     pid = int(marker.read_text())
     stat = Path(f"/proc/{pid}/stat")
-    try:
-        state = stat.read_text().split()[2]
-    except FileNotFoundError:
-        state = None  # Reaped between parent exit and this read.
+    # communicate() waits only for bash; the SIGKILLed grandchild may still be
+    # tearing down (state R) and is then reaped by init (ENOENT, or ESRCH when
+    # the reap lands between open() and read()). A child the bound missed keeps
+    # sleeping for 30 s, so a 10 s grace still fails it.
+    deadline = time.monotonic() + 10.0
+    while True:
+        try:
+            state = stat.read_text().split()[2]
+        except (FileNotFoundError, ProcessLookupError):
+            state = None
+        if state in (None, "Z") or time.monotonic() >= deadline:
+            break
+        time.sleep(0.05)
     assert state in (None, "Z")
     assert pid != os.getpid()
 

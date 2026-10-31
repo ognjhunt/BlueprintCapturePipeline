@@ -16,6 +16,13 @@ import sys
 import tempfile
 import uuid
 
+# One scan loads the whole signature database: 25-50 s on the 4-core production host,
+# and past a 60 s limit with its load average at 8 (2026-10-31), which blocked a deploy.
+# This bounds a hung scanner; it is not a speed requirement.
+SCANNER_CONTROL_TIMEOUT_SECONDS = 240
+# What a caller of this module allows: both controls at their limit, and its own start.
+SCANNER_CONTROLS_TIMEOUT_SECONDS = 2 * SCANNER_CONTROL_TIMEOUT_SECONDS + 30
+
 
 class CaptureUploadRuntimeError(ValueError):
     """A secret-free, fail-closed runtime refusal."""
@@ -60,7 +67,7 @@ def verify_capture_upload_runtime(*, store_root: str, scanner_argv: list[str]) -
                 path = Path(temporary) / (name + ".txt")
                 path.write_bytes(content)
                 result = subprocess.run([*scanner_argv, str(path)], shell=False, check=False,
-                                        capture_output=True, timeout=60)
+                                        capture_output=True, timeout=SCANNER_CONTROL_TIMEOUT_SECONDS)
                 record = {"schema_version": "capture_scanner_control.v1", "control": name,
                           "input_sha256": hashlib.sha256(content).hexdigest(),
                           "source_module_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
@@ -81,6 +88,8 @@ def verify_capture_upload_runtime(*, store_root: str, scanner_argv: list[str]) -
                     raise CaptureUploadRuntimeError("capture_transfer_scanner_control_failed:" + name, diagnostic)
                 outcomes[name] = {"exit_code": result.returncode,
                                   "input_sha256": hashlib.sha256(content).hexdigest(), **diagnostic}
+    except subprocess.TimeoutExpired as exc:
+        raise CaptureUploadRuntimeError("capture_transfer_scanner_timed_out") from exc
     except (OSError, subprocess.SubprocessError) as exc:
         raise CaptureUploadRuntimeError("capture_transfer_scanner_execution_failed") from exc
     return {"status": "ready", "store_root": str(root), "service_uid": os.geteuid(),

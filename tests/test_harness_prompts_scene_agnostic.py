@@ -17,6 +17,8 @@
 #   src/blueprint_pipeline/atlas_removal_visibility.py
 #   src/blueprint_pipeline/atlas_whole_view_review.py
 #   src/blueprint_pipeline/website_candidate_ranking.py
+#   src/blueprint_pipeline/website_task_masks.py
+#   src/blueprint_pipeline/website_task_grounding.py
 """Owner rule 2026-10-29: one general harness for every site, task and object.
 
 The model prompts on the website capture, Atlas and scene preparation path name
@@ -40,6 +42,13 @@ HARNESS_PROMPT_MODULES = (
     "atlas_recorded_source_recovery", "task_evaluation_robot_placement_agent", "atlas_scene_chisel",
     "atlas_scene_generate", "atlas_scene_preservation", "atlas_removal_visibility", "atlas_whole_view_review",
     "website_candidate_ranking",
+    # Writes no prompt of its own: every SAM concept it sends comes from the
+    # plan or the grounding model. Scanned so a fixed concept cannot return; it
+    # held one ("under-desk cabinet", chosen from task words) until 2026-10-31.
+    "website_task_masks",
+    # Its segmentation-concept instruction gave "blue case" and "white book" as
+    # examples until 2026-10-31; it now names the role and the kind of attribute.
+    "website_task_grounding",
 )
 # Not scanned yet, because their strings include lookup data or classifier
 # vocabulary rather than only instructions: atlas_scene_measurements (standard
@@ -50,7 +59,10 @@ PARTICULAR = re.compile(
     r"\b(?:dishwashers?|ovens?|stoves?|refrigerators?|fridges?|freezers?|microwaves?|sinks?|faucets?|"
     r"kitchens?|bathrooms?|bedrooms?|cupboards?|cabinets?|cabinetry|countertops?|worktops?|drawers?|desks?|"
     r"backpacks?|chairs?|sofas?|couch(?:es)?|beds?|totes?|trays?|vases?|mugs?|cups?|bottles?|dish(?:es)?|"
-    r"balls?|cartons?|cardboard|tables?|counters?|lids?|doors?|shelf|shelves|appliances?)\b", re.IGNORECASE)
+    r"balls?|cartons?|cardboard|tables?|counters?|lids?|doors?|shelf|shelves|appliances?|"
+    r"books?|(?:brief|suit)?cases?)\b", re.IGNORECASE)
+# "box" is left out on purpose: every grounding prompt asks for a bounding box.
+
 # The one deliberate list: standardized dimensions that any kind of site may
 # show, so a scale estimate never has to lean on the task object itself.
 SCALE_CATALOGUE = ("doorway or door leaf, a stair riser, a ceiling tile, a work surface height,\n"

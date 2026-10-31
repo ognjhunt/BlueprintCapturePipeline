@@ -40,13 +40,16 @@ def test_capture_mounting_and_shared_instance_pose_reach_the_frozen_template():
 
 def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthropic=False, agents_api=False,
           max_total_spend_usd=None, success_criteria=None, include_null_success_criteria=False,
-          authoring_backend=None, synthetic=False, inside=False, synthetic_cad=False):
+          authoring_backend=None, synthetic=False, inside=False, synthetic_cad=False, destination_bounds=None):
     capture = tmp_path / "capture"
     capture.mkdir()
     args, _, _ = inputs(capture)
     if inside:
         from tests.test_website_task_preparation import container_arguments
         args = container_arguments(args)
+    if destination_bounds is not None:
+        from tests.test_website_task_preparation import _destination_bounds
+        args = _destination_bounds(args, *destination_bounds)
     if synthetic:
         from tests.test_website_task_preparation import synthetic_arguments
         args = synthetic_arguments(args)
@@ -89,6 +92,10 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
             task_context_digest=args["task_context"]["context_digest"])
         args["spend"]["authority_digest"] = canonical_digest(args["spend"], digest_field="authority_digest")
     preparation = compile_website_scene_preparation(**args)
+    if destination_bounds is not None:
+        # Retained beside the preparation, as on the host: native submission rereads them to relocate.
+        write_json(Path(args["output_root"]) / "base_scene.json", args["base_scene"])
+        write_json(Path(args["output_root"]) / "task_masks.geometry.json", args["task_masks"])
     if success_criteria is not None:
         assert preparation["status"] == "intake_ready", preparation["blockers"]
     if development:
@@ -121,12 +128,14 @@ def setup(tmp_path, monkeypatch, *, development=False, articulated=False, anthro
     return kwargs, accepted
 
 
-def legacy_native_surface_target(preparation, *, subject=None, development=None):
+def legacy_native_surface_target(preparation, *, subject=None, development=None, relative_error=0.0):
     """Native submission's region derivation verbatim from main at b7fe1cdfe, before the shared admission.
 
     The oracle the shared admission (website_surface_target_admission) must
     match bit for bit, so a retained target's digest stays valid. Preparations
-    here need no same-surface relocation; that step did not change.
+    here need no same-surface relocation; that step did not change. A nonzero
+    ``relative_error`` applies the one rule added since: an estimated
+    subject's region also holds its largest admitted replacement.
     """
     import math
     from blueprint_pipeline import task_evaluation_scene_configuration_submission_records as records
@@ -155,6 +164,8 @@ def legacy_native_surface_target(preparation, *, subject=None, development=None)
             sage_prim_path="/Root", bounds_min=surface["aabb_min_xyz"], bounds_max=surface["aabb_max_xyz"])
         start_support = support_record
     radius = math.hypot(*[(upper[i] - lower[i]) / 2 for i in (0, 1)]) + DESTINATION_MARGIN_M
+    if relative_error:
+        radius = math.hypot(*[(upper[i] - lower[i]) / 2 * (1 + relative_error) for i in (0, 1)]) + DESTINATION_MARGIN_M
     uncertainty = preparation["coordinate_frame"].get("placement_uncertainty_m")
     estimated = (not development and type(uncertainty) in (int, float) and math.isfinite(uncertainty))
     return derive_surface_target(destination={**destination, "kind": "green_region", "radius_m": radius},
@@ -164,7 +175,12 @@ def legacy_native_surface_target(preparation, *, subject=None, development=None)
 
 
 def assert_target_sealed_as_before(kwargs):
-    """The materialized region equals the pre-refactor derivation from the same retained inputs."""
+    """The materialized region equals the pre-refactor derivation from the same retained inputs.
+
+    Built to size (development, designed), bit for bit. An estimated subject's
+    region differs only in its radius, widened by the replacement's recorded
+    size tolerance, and so its seal.
+    """
     from blueprint_pipeline.task_evaluation_surface_target import surface_target_for_web
     from blueprint_pipeline.website_development_test import environment
     root, task = kwargs["staging_root"], kwargs["task"]
@@ -172,8 +188,15 @@ def assert_target_sealed_as_before(kwargs):
     intent = json.loads(Path(task["scene_intent_authority"]["path"]).read_text())
     assert intent["request"] == preparation["intake_request"]
     runtime = json.loads(Path(task["runtime_inputs"]["path"]).read_text())
+    authoring = preparation["authoring_inputs"]
+    estimated = authoring["dimension_authority"] == "estimated" and environment(preparation) is None
+    tolerance = authoring["metric_envelope"]["maximum_dimension_relative_error"] if estimated else 0.0
     legacy = legacy_native_surface_target(preparation, subject=runtime["subject"],
-                                          development=environment(preparation))
+                                          development=environment(preparation), relative_error=tolerance)
+    if estimated:
+        before = legacy_native_surface_target(preparation, subject=runtime["subject"], development=None)
+        assert tolerance == 0.25 and legacy["radius_m"] > before["radius_m"]
+        assert {key for key in before if before[key] != legacy[key]} == {"radius_m", "target_digest"}
     template = json.loads((root / "configuration/task.json").read_text())
     assert "destination_relocation" not in template
     assert template["surface_target"] == legacy
@@ -664,7 +687,8 @@ def test_a_destination_on_another_surface_reaches_the_frozen_template_by_name(tm
         calls.append(found)
         # Each preparation looks up the subject's support, then the destination's.
         if len(calls) % 2 == 0 and found is not None:
-            found = {**found, "face_indices": [index + 10 ** 6 for index in found["face_indices"]]}
+            # Real faces of the collider, a different set: the region is checked against them.
+            found = {**found, "face_indices": found["face_indices"][1:]}
         return found
     monkeypatch.setattr(preparation_module, "support_under", another_surface)
     monkeypatch.delenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", raising=False)
@@ -698,3 +722,39 @@ def test_a_designed_subject_reaches_construction_as_supplied_geometry_with_no_pr
     assert "replacement_authoring_backend" not in request
     assert request["scene"]["website_native_inputs"]["frames"] == []
 
+
+@pytest.mark.parametrize("recorded_before_this_rule", [False, True])
+def test_a_destination_moved_by_a_smaller_clearance_than_its_region_is_moved_again(
+        tmp_path, monkeypatch, recorded_before_this_rule):
+    """capture-447ae4f4: the region holds the largest replacement qualification admits; so must the move."""
+    from blueprint_pipeline import website_task_preparation as preparation_module
+    from blueprint_pipeline.website_surface_target_admission import website_target_radius
+    from tests.test_website_task_preparation import UNDER_THE_SUBJECT
+    with monkeypatch.context() as before:
+        if recorded_before_this_rule:
+            # The preparation moved its destination by the subject's own half-diagonal, as before this rule.
+            before.setattr(preparation_module, "replacement_size_tolerance", lambda **_: 0.0)
+        kwargs, _ = setup(tmp_path, monkeypatch, destination_bounds=UNDER_THE_SUBJECT)
+    prepared = json.loads(Path(kwargs["task"]["preparation"]["path"]).read_text())
+    assert ("replacement_size_tolerance" in prepared["destination_relocation"]) is not recorded_before_this_rule
+    real, clearances = preparation_module.farthest_supported_destination, []
+
+    def recording(*args, **kwargs):
+        clearances.append(kwargs["clearance"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preparation_module, "farthest_supported_destination", recording)
+    materialize_website_submission(**kwargs)
+    template = json.loads((kwargs["staging_root"] / "configuration/task.json").read_text())
+    subject = json.loads(Path(kwargs["task"]["runtime_inputs"]["path"]).read_text())["subject"]
+    radius = website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
+    assert template["surface_target"]["radius_m"] == radius
+    if not recorded_before_this_rule:
+        # Moved at preparation by this radius already: sealed where it was prepared.
+        assert clearances == [] and "destination_relocation" not in template
+        assert template["surface_target"]["surface_position_world_m"] == prepared["destination"]["position_world_m"]
+        return
+    mpu = prepared["coordinate_frame"]["declared_meters_per_unit"]
+    assert clearances == [pytest.approx(radius / mpu, rel=1e-9)]
+    assert template["destination_relocation"] == {**prepared["destination_relocation"],
+                                                  "applied_at": "native_submission", "replacement_size_tolerance": 0.25}

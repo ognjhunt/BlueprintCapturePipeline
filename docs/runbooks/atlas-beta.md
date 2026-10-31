@@ -65,7 +65,8 @@ per-upload cap the WebApp grant enforces. It is development-only and unscaled.
 - **Secrets.** Only the worker reads `/etc/blueprint/website-atlas-preview.env`:
   `WORLDLABS_ATLAS_API_KEY` (or `_FILE`), `WORLDLABS_ATLAS_API_BASE_URL` and
   `BLUEPRINT_ATLAS_PROVIDER_RETENTION`. The key needs `assets.delete` besides the
-  scopes in `docs/website-atlas-pose-operation.md`.
+  scopes in `docs/website-atlas-pose-operation.md`. The intake reads one line of
+  it, `BLUEPRINT_ATLAS_WEBHOOK_PROJECT_ID` (see Receiver), and never loads the rest.
 - **Privacy.** Every frame Atlas receives is face-screened first
   (`atlas_privacy_screen`, YuNet, refusing when the model or OpenCV detector is
   missing) and recorded in `atlas_view_selection.json`; the planner still excludes
@@ -82,6 +83,53 @@ per-upload cap the WebApp grant enforces. It is development-only and unscaled.
   operation. The owner download is streamed from
   `GET /api/live-pipeline/website-atlas-previews/<capture>/bundle?request_id=&digest=`
   (WebApp client only), which serves a ready, unwithdrawn bundle of that exact digest.
+
+### Provider poll and completion webhooks
+
+On 2026-10-30 a refined splat finished at World Labs around 18:10Z and was not
+noticed until a control-plane deploy, which stops the preview timer for 30-40
+minutes, had ended. Polling an operation already bought cannot spend, so it no
+longer waits on deploys.
+
+- **Poll unit.** `blueprint-website-atlas-provider-poll.timer` (every 60 s, same
+  user and env files as the preview worker) runs
+  `python -m blueprint_pipeline.website_atlas_preview poll`. For each `processing`
+  job, website or owned, it reads every live submission (`atlas_pose/submission.json`
+  with `status: submitted` and an operation id) once through that adapter's own
+  poll and records what a tick would: a finished operation's outputs and result,
+  or a failure's `terminal_operation`. It never uploads, reserves, submits,
+  settles, retries or writes the job; the next tick moves the job on. Its
+  client refuses every World Labs mutation except output read URLs.
+- **Deploys.** `scripts/deploy_control_plane_commit.py` never quiesces this
+  timer or its path unit (`DEPLOY_EXEMPT_TRIGGER_UNITS`); each deploy installs
+  them and restarts the triggers as no-spend watchers. A door hold still stops
+  them, like any other trigger.
+- **Webhook.** With `BLUEPRINT_ATLAS_WEBHOOK_URL` set in the preview worker's
+  environment (`https://paperclip.tryblueprint.io/api/live-pipeline/atlas-webhook`),
+  every new task request, pose included, carries it as `webhookUrl`. It is not
+  part of the request record, digest or idempotency key, and a request already
+  sent is resent byte for byte without it. An unusable value (not https on 443
+  to a DNS name, or with credentials or a fragment) is logged and left out.
+- **Receiver.** The intake serves `POST /api/live-pipeline/atlas-webhook`, which
+  Caddy already forwards to it; it keeps answering through a deploy apart from
+  its own restart, and World Labs retries for 24 hours. It accepts only a
+  Standard Webhooks `v1a` Ed25519 signature from the published JWKS (cached a
+  day, fetched again at most once a minute when no key verifies), a timestamp
+  within 5 minutes, a body of at most 16 KiB (Caddy's `request_body` cap for the
+  route matches it) and 120 requests a minute. One World Labs key signs every
+  account's callbacks, so a signed event wakes the poll only when its
+  `data.projectId` is `BLUEPRINT_ATLAS_WEBHOOK_PROJECT_ID`, set next to the URL in
+  `/etc/blueprint/website-atlas-preview.env` (the intake's own environment wins).
+  Another project's event is answered 410, which stops World Labs retrying it
+  (`atlas_webhook_project_mismatch`); with the setting missing, unreadable by the
+  `blueprint` user or unusable, every event is answered 503 and retried for 24
+  hours (`atlas_webhook_project_unconfigured`). Neither requests a poll. A
+  first-seen `webhook-id` touches
+  `/var/lib/blueprint/pipeline-control-plane/atlas-provider-poll/requested`;
+  `blueprint-website-atlas-provider-poll.path` then starts the poll at once, and
+  the poll removes the file. That is its only effect; it holds no secret and logs
+  only the delivery and operation ids. The 60 s timer covers a missed or late
+  delivery.
 
 ## One video, even while people work
 

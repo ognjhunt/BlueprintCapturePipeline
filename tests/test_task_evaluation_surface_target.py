@@ -349,3 +349,22 @@ def test_retained_native_target_seal_survives_javascript_number_roundtrip():
         changed[key] += 0.01
         with pytest.raises(ValueError, match="surface_target_digest_invalid"):
             validate_surface_target(changed)
+
+
+def test_native_bind_uses_the_estimated_supports_admission_tolerance():
+    """capture-447ae4f4: the relocated region sat 1.5 cm under the estimated table's highest face."""
+    spec = {"interaction_affordance": {"asset_root_from_scoring_frame": {
+        "position_m": [0, 0, .07], "orientation_xyzw": [0, 0, 0, 1]}},
+        "destination_position_tolerance_m": .02, "control_frequency_hz": 15}
+    static = {"observed_structure": {"collision_bounds_body_frame_m": {
+        "minimum": [-.04, -.03, 0], "maximum": [.04, .03, .14]}}}
+    support = {"sage_prim_path": "/Room/Table", "top_z_m": .765}
+    with pytest.raises(ValueError, match="surface_target_native_support_mismatch"):
+        bind_native_surface_target(task_spec=spec, target=target_fixture(), static=static, support=support)
+    bound = bind_native_surface_target(task_spec=spec, target=target_fixture(), static=static, support=support,
+                                       height_tolerance_m=.072)
+    assert bound["surface_target"]["surface_position_world_m"][2] == .75
+    for tolerance in (.001, float("nan"), True):
+        with pytest.raises(ValueError, match="height_tolerance_invalid"):
+            bind_native_surface_target(task_spec=spec, target=target_fixture(), static=static, support=support,
+                                       height_tolerance_m=tolerance)

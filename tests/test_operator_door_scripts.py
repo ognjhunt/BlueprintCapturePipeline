@@ -8,6 +8,7 @@
 #   deploy/operator-door/door-restore-scene-workspace.sh
 #   deploy/operator-door/door-provider-output-resume.sh
 #   deploy/operator-door/door-selected-handoff.sh
+#   deploy/operator-door/door-extend-scene-execution-window.sh
 #   deploy/operator-door/door-repair-notifier-binding.sh
 #   deploy/operator-door/install.sh
 
@@ -303,7 +304,8 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
 
 @pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh", "door-hold-expire.sh",
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
-                                    "door-lane-scratch.sh", "door-provider-output-resume.sh", "install.sh"])
+                                    "door-lane-scratch.sh", "door-provider-output-resume.sh",
+                                    "door-extend-scene-execution-window.sh", "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
 
@@ -366,6 +368,92 @@ def test_github_upstream_fetches_with_the_door_deploy_key(env: dict[str, str]) -
     rewritten = calls.index(f"git -C {source} config url.git@github.com:.insteadOf https://github.com/")
     fetch = next(index for index, call in enumerate(calls) if call.startswith(f"git -C {source} fetch"))
     assert configured < fetch and rewritten < fetch
+
+
+def test_deploy_log_times_every_step_before_the_tool_starts(env: dict[str, str]) -> None:
+    """About 8 of a deploy's 40 minutes passed before the tool's first stage, unrecorded."""
+    rc, outcome, _calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0")
+    assert rc == 0 and outcome["status"] == "deployed"
+    log = (Path(env["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
+    phases = re.findall(r"^\[\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\] phase=(\w+)$", log, re.MULTILINE)
+    assert phases == [
+        "staging_guard_start", "staging_guard_done", "fetch_main_start", "fetch_main_done",
+        "prepare_source_done", "require_on_main_done", "tool_worktree_done", "tool_start",
+    ]
+
+
+def _real_git(*args: str, cwd: Path) -> str:
+    done = subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+                          cwd=cwd, capture_output=True, text=True, check=True)
+    return done.stdout.strip()
+
+
+@pytest.fixture()
+def door_clone(tmp_path: Path) -> dict[str, object]:
+    """A clone that an older door filled with every branch, and an upstream that moved on."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    _real_git("init", "--quiet", "--initial-branch=main", cwd=upstream)
+    _real_git("commit", "--quiet", "--allow-empty", "-m", "first", cwd=upstream)
+    _real_git("branch", "old-feature", cwd=upstream)
+    clone = tmp_path / "tools" / "operator-door-source"
+    clone.parent.mkdir()
+    _real_git("clone", "--quiet", "--no-checkout", str(upstream), str(clone), cwd=tmp_path)
+    assert "refs/remotes/origin/old-feature" in _real_git("for-each-ref", cwd=clone)
+    assert "refs/remotes/origin/HEAD" in _real_git("for-each-ref", cwd=clone)
+    _real_git("commit", "--quiet", "--allow-empty", "-m", "second", cwd=upstream)
+    merged = _real_git("rev-parse", "HEAD", cwd=upstream)
+    _real_git("branch", "new-feature", cwd=upstream)
+    _real_git("switch", "--quiet", "new-feature", cwd=upstream)
+    _real_git("commit", "--quiet", "--allow-empty", "-m", "unmerged", cwd=upstream)
+    unmerged = _real_git("rev-parse", "HEAD", cwd=upstream)
+    _real_git("switch", "--quiet", "main", cwd=upstream)
+    results = tmp_path / "results"
+    results.mkdir()
+    return {"upstream": upstream, "clone": clone, "merged": merged, "unmerged": unmerged, "results": results}
+
+
+def _prepare_source(door_clone: dict[str, object], commit: str) -> dict:
+    """Run the door's own helpers with real git against a real upstream."""
+    script = (f'set -euo pipefail\n. "{DOOR}/door-common.sh"\n'
+              'door_init_request deploy\ndoor_init_git\ndoor_prepare_source\ndoor_require_on_main\n'
+              'door_outcome deployed "" 0\n')
+    done = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, check=False, env={
+        **os.environ, "DOOR_REQUEST_ID": DEPLOY_ID, "DOOR_RESULTS_DIR": str(door_clone["results"]),
+        "DOOR_COMMIT": commit, "DOOR_SOURCE_CLONE": str(door_clone["clone"]),
+        "DOOR_UPSTREAM_URL": str(door_clone["upstream"]), "DOOR_VENV_PYTHON": "/nonexistent",
+    })
+    outcome = json.loads((Path(door_clone["results"]) / f"{DEPLOY_ID}.outcome.json").read_text(encoding="utf-8"))
+    return {"rc": done.returncode, **outcome}
+
+
+def test_door_fetches_only_main_and_forgets_branches_an_older_door_fetched(door_clone: dict[str, object]) -> None:
+    clone = door_clone["clone"]
+
+    outcome = _prepare_source(door_clone, str(door_clone["merged"]))
+
+    assert outcome["rc"] == 0 and outcome["status"] == "deployed"
+    assert _real_git("rev-parse", "refs/remotes/origin/main", cwd=clone) == door_clone["merged"]
+    refs = _real_git("for-each-ref", "--format=%(refname)", "refs/remotes/origin", cwd=clone).splitlines()
+    # origin/HEAD is a symbolic ref to main: deleting it through update-ref would
+    # follow it and delete origin/main, which is the door's whole deploy check.
+    assert sorted(refs) == ["refs/remotes/origin/HEAD", "refs/remotes/origin/main"]
+    assert _real_git("rev-parse", "origin/HEAD", cwd=clone) == door_clone["merged"]
+
+    # The second deploy has nothing left to forget and still succeeds.
+    assert _prepare_source(door_clone, str(door_clone["merged"]))["status"] == "deployed"
+
+
+def test_door_still_refuses_a_pushed_commit_main_does_not_contain(door_clone: dict[str, object]) -> None:
+    outcome = _prepare_source(door_clone, str(door_clone["unmerged"]))
+
+    assert outcome["rc"] == 2 and outcome["code"] == "commit_not_on_main"
+
+
+def test_door_still_refuses_a_commit_nobody_pushed(door_clone: dict[str, object]) -> None:
+    outcome = _prepare_source(door_clone, "f" * 40)
+
+    assert outcome["rc"] == 2 and outcome["code"] == "commit_not_found"
 
 
 def test_github_upstream_without_a_deploy_key_is_refused(env: dict[str, str]) -> None:
@@ -834,3 +922,61 @@ def test_provider_output_resume_never_follows_a_link_out_of_the_canary_root(
     rc, outcome, calls = _run("door-provider-output-resume.sh", {**resume_env, "DOOR_RUN": "activation-2"},
                               DOOR_REQUEST_ID=RESUME_ID)
     assert rc == 2 and outcome["code"] == "provider_output_resume_attempt_outside_root" and not calls
+
+
+# --- extend-scene-execution-window ---------------------------------------------------------------
+
+WINDOW_ID = "20261031T120000Z-extend-scene-execution-window-0000abcd"
+
+
+@pytest.fixture()
+def window_env(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "window-python", '''#!/bin/bash
+{ printf 'window %s\\n' "$*"; echo "intake-root ${BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT:-unset}"; } >> "$STUB_LOG"
+printf '%s\\n' "${FAKE_WINDOW:-}"
+exit "${FAKE_TOOL_RC:-0}"
+''')
+    return {**env, "DOOR_VENV_PYTHON": str(tmp_path / "window-python"), "DOOR_CONTROL_PLANE_REPO": str(repository),
+            "DOOR_SERVICE_USER": "blueprint", "DOOR_REQUESTED_BY": "cloud-scene-runs",
+            "DOOR_SCENE_WINDOW_REQUEST": json.dumps({"kind": "extend-scene-execution-window",
+                                                     "authorization_reference": "approval $(touch pwned)"})}
+
+
+@pytest.mark.parametrize(("report", "rc", "status", "code"), [
+    ({"door_outcome": "planned"}, 0, "planned", None),
+    ({"door_outcome": "extended"}, 0, "extended", None),
+    ({"door_outcome": "already_covered"}, 0, "already_covered", None),
+    ({"door_outcome": "webapp_notice_failed"}, 1, "failed", "webapp_notice_failed"),
+    ({"door_outcome": "refused", "code": "scene_execution_window_intent_revoked"}, 2, "refused",
+     "scene_execution_window_intent_revoked"),
+])
+def test_scene_window_runs_the_release_module_as_the_service_user(window_env, tmp_path, report, rc, status, code):
+    done, outcome, calls = _run("door-extend-scene-execution-window.sh", window_env, DOOR_REQUEST_ID=WINDOW_ID,
+                                FAKE_WINDOW=json.dumps(report), FAKE_TOOL_RC=str(rc))
+    assert (done, outcome["status"], outcome["code"], outcome["exit_code"]) == (rc, status, code, rc)
+    assert calls[0] == "setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --"
+    assert calls[1] == "umask 0077"
+    assert calls[2].startswith("window -m blueprint_pipeline.task_evaluation_scene_execution_window_door --request-json ")
+    assert calls[2].endswith(f"--door-caller cloud-scene-runs --door-request-id {WINDOW_ID}")
+    assert not (tmp_path / "pwned").exists()
+    result = Path(window_env["DOOR_RESULTS_DIR"]) / f"{WINDOW_ID}.scene-window.json"
+    assert json.loads(result.read_text()) == report and outcome["result"] == str(result)
+
+
+@pytest.mark.parametrize(("overrides", "code"), [
+    ({"DOOR_SERVICE_USER": "root"}, "scene_window_user_invalid"),
+    ({"DOOR_REQUESTED_BY": "../root"}, "scene_window_caller_invalid"),
+    ({"DOOR_REQUESTED_BY": "a b"}, "scene_window_caller_invalid"),
+])
+def test_scene_window_rechecks_its_inputs(window_env, overrides, code):
+    rc, outcome, calls = _run("door-extend-scene-execution-window.sh", window_env, DOOR_REQUEST_ID=WINDOW_ID,
+                              **overrides)
+    assert rc == 2 and outcome["code"] == code and not calls
+
+
+def test_scene_window_script_is_installed_with_the_door():
+    installer = (DOOR / "install.sh").read_text(encoding="utf-8")
+    assert '"$source_dir"/door-extend-scene-execution-window.sh' in installer

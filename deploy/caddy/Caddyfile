@@ -29,6 +29,11 @@
 
 	handle /api/live-pipeline/* {
 		reverse_proxy 127.0.0.1:8765
+		# World Labs completion webhooks: the receiver's own body cap
+		# (blueprint_pipeline.atlas_webhook.MAX_BODY_BYTES), enforced at the edge too.
+		request_body /api/live-pipeline/atlas-webhook {
+			max_size 16KiB
+		}
 	}
 
 	handle {

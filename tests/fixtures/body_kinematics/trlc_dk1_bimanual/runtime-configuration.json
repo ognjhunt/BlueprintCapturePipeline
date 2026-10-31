@@ -1,0 +1,406 @@
+{
+  "schema_version": "embodiment_runtime_configuration.v1",
+  "claim_ceiling": "configuration_only",
+  "embodiment_id": "trlc_dk1_bimanual",
+  "source_bundle_digest": "sha256:302060a06a2ccbdcfa301a7fb003e095633ed31fd58787d25dcfb9e702ab98a1",
+  "station_parameters": {
+    "schema_version": "embodiment_station_parameters.v1",
+    "embodiment_id": "trlc_dk1_bimanual",
+    "composition_mode": "two_instances",
+    "station_root_link": "blueprint_station",
+    "arms": [
+      {
+        "name": "left",
+        "prefix": "left_",
+        "source_base_link": "base_link",
+        "source_mount_joint": null,
+        "station_from_base": {
+          "translation_m": [
+            0.0,
+            0.35,
+            0.0
+          ],
+          "quaternion_wxyz": [
+            1,
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "name": "right",
+        "prefix": "right_",
+        "source_base_link": "base_link",
+        "source_mount_joint": null,
+        "station_from_base": {
+          "translation_m": [
+            0.0,
+            -0.35,
+            0.0
+          ],
+          "quaternion_wxyz": [
+            1,
+            0,
+            0,
+            0
+          ]
+        }
+      }
+    ]
+  },
+  "manifest_fields": {
+    "schema_version": "blueprint.robot_embodiment.v2",
+    "embodiment_id": "trlc_dk1_bimanual",
+    "form": "bimanual_arm",
+    "base": {
+      "mode": "fixed"
+    },
+    "joints": [
+      {
+        "name": "left_joint1",
+        "control": "position",
+        "lower": -2.0943951023931953,
+        "upper": 2.0943951023931953,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint2",
+        "control": "position",
+        "lower": -0.08726646259971647,
+        "upper": 3.141592653589793,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint3",
+        "control": "position",
+        "lower": -0.08726646259971647,
+        "upper": 4.71238898038469,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint4",
+        "control": "position",
+        "lower": -1.95,
+        "upper": 1.5707963267948966,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint5",
+        "control": "position",
+        "lower": -1.5707963267948966,
+        "upper": 1.5707963267948966,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint6",
+        "control": "position",
+        "lower": -2.0943951023931953,
+        "upper": 2.0943951023931953,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint1",
+        "control": "position",
+        "lower": -2.0943951023931953,
+        "upper": 2.0943951023931953,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint2",
+        "control": "position",
+        "lower": -0.08726646259971647,
+        "upper": 3.141592653589793,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint3",
+        "control": "position",
+        "lower": -0.08726646259971647,
+        "upper": 4.71238898038469,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint4",
+        "control": "position",
+        "lower": -1.95,
+        "upper": 1.5707963267948966,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint5",
+        "control": "position",
+        "lower": -1.5707963267948966,
+        "upper": 1.5707963267948966,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint6",
+        "control": "position",
+        "lower": -2.0943951023931953,
+        "upper": 2.0943951023931953,
+        "max_velocity": 1.0
+      }
+    ],
+    "grippers": [
+      {
+        "name": "left_gripper",
+        "tool_link": "left_link6_7",
+        "joints": [
+          {
+            "name": "left_gripper_left",
+            "open": 0.0,
+            "closed": -0.045
+          },
+          {
+            "name": "left_gripper_right",
+            "open": 0.0,
+            "closed": -0.045
+          }
+        ],
+        "max_width_m": 0.09,
+        "contact_links": [
+          "left_finger_left",
+          "left_finger_right"
+        ]
+      },
+      {
+        "name": "right_gripper",
+        "tool_link": "right_link6_7",
+        "joints": [
+          {
+            "name": "right_gripper_left",
+            "open": 0.0,
+            "closed": -0.045
+          },
+          {
+            "name": "right_gripper_right",
+            "open": 0.0,
+            "closed": -0.045
+          }
+        ],
+        "max_width_m": 0.09,
+        "contact_links": [
+          "right_finger_left",
+          "right_finger_right"
+        ]
+      }
+    ],
+    "tool_link": "left_link6_7",
+    "reset_joint_positions": {
+      "left_joint1": 0.0,
+      "left_joint2": 0.23561944901923448,
+      "left_joint3": 0.39269908169872414,
+      "left_joint4": 0.0,
+      "left_joint5": 0.0,
+      "left_joint6": 0.0,
+      "left_gripper_left": 0.0,
+      "left_gripper_right": 0.0,
+      "right_joint1": 0.0,
+      "right_joint2": 0.23561944901923448,
+      "right_joint3": 0.39269908169872414,
+      "right_joint4": 0.0,
+      "right_joint5": 0.0,
+      "right_joint6": 0.0,
+      "right_gripper_left": 0.0,
+      "right_gripper_right": 0.0
+    },
+    "actuator": {
+      "stiffness": 100.0,
+      "damping": 20.0
+    },
+    "cameras": [
+      {
+        "name": "overhead",
+        "mount_link": null,
+        "position_m": [
+          0.5,
+          0.0,
+          1.5
+        ],
+        "orientation_xyzw": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "left_wrist",
+        "mount_link": "left_link6_7",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "right_wrist",
+        "mount_link": "right_link6_7",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      }
+    ],
+    "control_hz": 60,
+    "action_chunk_rows": 48,
+    "reach_m": 1.2564100467500916,
+    "arms": [
+      {
+        "name": "left",
+        "joint_names": [
+          "left_joint1",
+          "left_joint2",
+          "left_joint3",
+          "left_joint4",
+          "left_joint5",
+          "left_joint6"
+        ],
+        "base_link": "left_base_link",
+        "tool_link": "left_link6_7",
+        "gripper_name": "left_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            0.158,
+            0.0,
+            0.0
+          ],
+          "orientation_xyzw": [
+            -0.5,
+            0.5,
+            -0.5,
+            0.5
+          ]
+        }
+      },
+      {
+        "name": "right",
+        "joint_names": [
+          "right_joint1",
+          "right_joint2",
+          "right_joint3",
+          "right_joint4",
+          "right_joint5",
+          "right_joint6"
+        ],
+        "base_link": "right_base_link",
+        "tool_link": "right_link6_7",
+        "gripper_name": "right_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            0.158,
+            0.0,
+            0.0
+          ],
+          "orientation_xyzw": [
+            -0.5,
+            0.5,
+            -0.5,
+            0.5
+          ]
+        }
+      }
+    ]
+  },
+  "source_name_mapping": {
+    "blueprint_station": "blueprint_station",
+    "left_base_link": "left_base_link",
+    "left_camera": "left_camera",
+    "left_camera_joint": "left_camera_joint",
+    "left_finger_left": "left_finger_left",
+    "left_finger_right": "left_finger_right",
+    "left_gripper_left": "left_gripper_left",
+    "left_gripper_right": "left_gripper_right",
+    "left_gripper_tool0": "left_gripper_tool0",
+    "left_joint1": "left_joint1",
+    "left_joint2": "left_joint2",
+    "left_joint3": "left_joint3",
+    "left_joint4": "left_joint4",
+    "left_joint5": "left_joint5",
+    "left_joint6": "left_joint6",
+    "left_link1-2": "left_link1_2",
+    "left_link2-3": "left_link2_3",
+    "left_link3-4": "left_link3_4",
+    "left_link4-5": "left_link4_5",
+    "left_link5-6": "left_link5_6",
+    "left_link6-7": "left_link6_7",
+    "left_station_mount": "left_station_mount",
+    "left_tool0": "left_tool0",
+    "right_base_link": "right_base_link",
+    "right_camera": "right_camera",
+    "right_camera_joint": "right_camera_joint",
+    "right_finger_left": "right_finger_left",
+    "right_finger_right": "right_finger_right",
+    "right_gripper_left": "right_gripper_left",
+    "right_gripper_right": "right_gripper_right",
+    "right_gripper_tool0": "right_gripper_tool0",
+    "right_joint1": "right_joint1",
+    "right_joint2": "right_joint2",
+    "right_joint3": "right_joint3",
+    "right_joint4": "right_joint4",
+    "right_joint5": "right_joint5",
+    "right_joint6": "right_joint6",
+    "right_link1-2": "right_link1_2",
+    "right_link2-3": "right_link2_3",
+    "right_link3-4": "right_link3_4",
+    "right_link4-5": "right_link4_5",
+    "right_link5-6": "right_link5_6",
+    "right_link6-7": "right_link6_7",
+    "right_station_mount": "right_station_mount",
+    "right_tool0": "right_tool0"
+  },
+  "simulation_assumptions": [
+    "interior_zero_reset_pose",
+    "default_PD_gains_unless_source_drive_present",
+    "arm_velocity_capped_at_1_SI_unit_per_second",
+    "90_degree_simulated_camera_rig_not_site_calibration",
+    "parallel_gripper_width_is_nominal",
+    "reach_is_source_chain_upper_bound",
+    "duplicate_arms_separated_by_0.7_m_simulation_mounts"
+  ],
+  "source_dynamics": {
+    "moving_link_count": 16,
+    "moving_links_without_positive_authored_mass_and_inertia": [],
+    "estimated_inertias_added": false,
+    "simulator_dynamics_validated": false
+  },
+  "source_limitations": [
+    "retained_per_asset_notices",
+    "controller_reset_and_runtime_receipt"
+  ],
+  "execution_authorized": false,
+  "policy_compatibility_established": false,
+  "source_urdf_sha256": "sha256:5067b182dc407d2a3e603b3412ed0022d48e81d8f554bef658656acc6ca52ccc",
+  "generator_module_sha256": "sha256:df0b6c4e7277d4e79b087115852afca8f8ad426e616e0e277cbb4f82e0300469",
+  "generated_files": [
+    {
+      "path": "robot.urdf",
+      "sha256": "sha256:5067b182dc407d2a3e603b3412ed0022d48e81d8f554bef658656acc6ca52ccc",
+      "size_bytes": 17009
+    }
+  ],
+  "configuration_digest": "sha256:99601c8fce883612b204dac4a01c1454520253f97ccac8b553725d35a0dc47a2"
+}
