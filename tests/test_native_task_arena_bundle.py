@@ -4440,3 +4440,43 @@ def test_a_team_robot_run_is_checked_as_that_robot_and_never_as_the_franka_it_re
     assert error.value.errors == (
         "native_task_arena_bundle_team_embodiment_invalid:team_embodiment_binding_invalid",)
     assert not (tmp_path / "job-invalid").exists()
+
+
+def test_a_team_robots_own_arms_decide_the_arm_path_gate_when_its_model_is_bound(tmp_path, monkeypatch):
+    from blueprint_pipeline import robot_arm_path_clearance as arm
+    from blueprint_pipeline import scene_camera_visibility as camera
+    from blueprint_pipeline import scene_physics_preflight as physics
+    from blueprint_pipeline import team_arm_reach as reach
+    from blueprint_pipeline import team_embodiment
+
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+    module = tmp_path / "runtime_helper.py"
+    module.write_text("HELPER = 1\n", encoding="utf-8")
+    model = tmp_path / "robot.usda"
+    model.write_text("#usda 1.0\n")
+    binding = {"binding_digest": "sha256:" + "b" * 64, "manifest": {"embodiment_id": "acme-arm"}}
+    kwargs = {"packet_dir": _packet(tmp_path, scene_id="840313"), "worker_source": worker,
+              "runtime_module_sources": [module], "implementation_commit": "a" * 40, "generated_at": "fixed",
+              "team_embodiment": binding, "team_robot_model": model}
+    monkeypatch.setattr(team_embodiment, "apply_team_embodiment", lambda plan, given: {
+        **plan, "robot": {"robot_id": "team_embodiment", "embodiment_id": "acme-arm", "base_mode": "fixed_at_station"}})
+    monkeypatch.setattr(physics, "require_scene_physics_admission", lambda packet_dir, **options: {"status": "passed"})
+    monkeypatch.setattr(camera, "require_scene_camera_admission", lambda packet_dir, **options: {"status": "passed"})
+    monkeypatch.setattr(arm, "require_robot_arm_path_admission", lambda packet_dir: pytest.fail("Franka gate ran"))
+    calls = []
+
+    def measured(status, blockers=()):
+        def gate(plan, *, model_path, manifest):
+            calls.append((plan["robot"]["embodiment_id"], Path(model_path), manifest))
+            return {"status": status, "blockers": list(blockers), "advisories": []}
+        return gate
+
+    monkeypatch.setattr(reach, "team_arm_reach", measured("blocked", ["robot_arm_task_beyond_reach:carry"]))
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        build_native_task_arena_bundle(job_dir=tmp_path / "job-far", **kwargs)
+    assert error.value.errors == ("native_task_arena_bundle_robot_arm_path_blocked:robot_arm_task_beyond_reach:carry",)
+    assert calls == [("acme-arm", model, binding["manifest"])]
+    monkeypatch.setattr(reach, "team_arm_reach", measured("flagged"))
+    build_native_task_arena_bundle(job_dir=tmp_path / "job", **kwargs)
+    assert json.loads((tmp_path / "job" / arm.PACKET_REPORT_FILENAME).read_text())["status"] == "flagged"
