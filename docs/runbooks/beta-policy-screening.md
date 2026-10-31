@@ -117,6 +117,21 @@ on an operator launching the probe or copying its trace separately.
 
 The stable site key is `site-<website_request_id>` across recaptures and scene
 revisions. A catalog change, restart or new campaign never resets its budget.
+
+Each new plan also fits the website job's one dollar ceiling (owner decision
+2026-10-30, $40 by default, WebApp #1168), which counts Atlas, upstream, native
+construction and screening together. Before planning, the worker reads the
+job's `job_ceiling` from the non-creating `atlas-configuration` read and
+subtracts this queue's own screening the WebApp has not seen yet (reservations
+since its last accepted publication and other campaigns' unreserved
+selections). The plan's `budget_usd` is the smaller of $15 and what is left; the
+plan records `budget_basis: "website_job_ceiling"` and the read. Candidates that
+no longer fit are deferred with `website_job_ceiling_insufficient`; with less
+left than any quote, every candidate is deferred and the plan still publishes.
+If the ceiling cannot be read (no retained Atlas configuration, a WebApp
+without the summary, a refusal, the network), planning holds with
+`website_job_ceiling_unavailable` and retries on the next pass; an earlier
+read is never reused. Plans already built are never resized.
 Reservations with uncertain outcomes remain reserved and are reconciled;
 they are never blindly launched again. A proven pre-allocation refusal can
 release its reservation. An allocated, closed attempt consumes its full cost

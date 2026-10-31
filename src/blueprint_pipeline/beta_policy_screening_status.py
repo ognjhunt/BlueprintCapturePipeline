@@ -131,7 +131,7 @@ def build_worker_status(root: str | Path, *, publication_before: Any = None,
                     if not isinstance(code, str):
                         continue
                     category = ("intentional_hold" if "hold" in code else "authority" if any(part in code for part in ("consent", "grant", "revoked", "expired"))
-                                else "budget" if any(part in code for part in ("budget", "cost", "funding"))
+                                else "budget" if any(part in code for part in ("budget", "cost", "funding", "ceiling"))
                                 else "capacity" if "capacity" in code else "capability_preparation" if state == "unavailable"
                                 else "reconciliation" if state == "reconciliation_required" else "preparation")
                     categories[category] = categories.get(category, 0) + 1

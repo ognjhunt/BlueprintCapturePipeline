@@ -42,7 +42,7 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
     from .beta_policy_candidate_catalog import load_default_catalog
     from .beta_policy_screening_capabilities import build_planning_inputs
     from .beta_policy_screening_coordinator import _lock, _read, _root, _write, enqueue_screening_campaign
-    from .beta_policy_screening_plan import build_screening_plan
+    from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
     from .beta_policy_screening_team import catalog_for_profile
     from .beta_policy_screening_worker import require_current_source
     from .task_evaluation_scene_owner_authority import reopen_scene_intent
@@ -93,7 +93,8 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                     planning = build_planning_inputs(catalog=catalog, profile=profile,
                         capture_root=Path(profile['capture_root']), source=source,
                         inputs_dir=root / 'inputs' / campaign_id)
-                    plan = build_screening_plan(catalog, planning['scene'], campaign_id=campaign_id,
+                    plan = plan_within_job_ceiling(catalog, planning['scene'], campaign_id=campaign_id,
+                        queue_root=root, context=context, capture_root=Path(profile['capture_root']),
                         capabilities=planning['capabilities'], cost_quotes=planning['cost_quotes'],
                         candidate_ids=planning.get('candidate_ids'))
                 outcome.update(enqueue_screening_campaign(plan, queue_root=root))

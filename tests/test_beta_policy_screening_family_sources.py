@@ -118,6 +118,9 @@ def source_world(tmp_path, monkeypatch, count):
     monkeypatch.setattr(scene_inputs, 'read_family_scene_inputs', read_scientific)
     monkeypatch.setattr(worker, 'require_current_source', current)
     monkeypatch.setattr(capabilities, 'build_planning_inputs', planning)
+    from blueprint_pipeline import beta_policy_screening_job_ceiling as job_ceiling
+    from tests.test_beta_policy_screening_job_ceiling import ceiling_summary
+    monkeypatch.setattr(job_ceiling, 'read_job_ceiling_summary', lambda **_: ceiling_summary(40))
     return world
 
 

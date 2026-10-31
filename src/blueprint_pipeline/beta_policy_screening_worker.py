@@ -50,7 +50,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .beta_policy_candidate_catalog import load_default_catalog
     from .beta_policy_screening_capabilities import build_planning_inputs
     from .beta_policy_screening_coordinator import _lock, _read, _root, _write, enqueue_screening_campaign
-    from .beta_policy_screening_plan import build_screening_plan
+    from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
     from .beta_policy_screening_team import catalog_for_profile
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
@@ -111,7 +111,9 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     outcome["robot_free_probe_status"] = probe["status"]
                     inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
                         source=source, inputs_dir=root / "inputs" / campaign_id)
-                    plan = build_screening_plan(catalog, inputs["scene"], campaign_id=campaign_id,
+                    # The job's one dollar ceiling sizes the plan; unreadable, it holds and retries.
+                    plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id,
+                        queue_root=root, context=context, capture_root=capture,
                         capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"])
                     outcome.update(enqueue_screening_campaign(plan, queue_root=root))
             except (OSError, ValueError, RuntimeError, KeyError) as exc:
