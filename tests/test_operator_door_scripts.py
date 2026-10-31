@@ -456,6 +456,129 @@ def test_door_still_refuses_a_commit_nobody_pushed(door_clone: dict[str, object]
     assert outcome["rc"] == 2 and outcome["code"] == "commit_not_found"
 
 
+def _prepare_parked(door_clone: dict[str, object], commit: str, *, older: str = "", active: str | None = None,
+                    parked: bool = True) -> dict:
+    """Run the deploy's own parked steps with real git, stopping where the tool would start."""
+    link = Path(door_clone["results"]).parent / "active-link"
+    if active is not None:
+        target = Path(door_clone["results"]).parent / "releases" / active
+        target.mkdir(parents=True, exist_ok=True)
+        link.unlink(missing_ok=True)
+        link.symlink_to(target)
+    script = (f'set -euo pipefail\n. "{DOOR}/door-common.sh"\n'
+              'door_init_request deploy\ndoor_init_git\ndoor_prepare_source\ndoor_require_on_main\n'
+              'door_settle_parked\ndoor_outcome deployed "" 0\n')
+    values = {**os.environ, "DOOR_REQUEST_ID": DEPLOY_ID, "DOOR_RESULTS_DIR": str(door_clone["results"]),
+              "DOOR_COMMIT": commit, "DOOR_SOURCE_CLONE": str(door_clone["clone"]),
+              "DOOR_UPSTREAM_URL": str(door_clone["upstream"]), "DOOR_VENV_PYTHON": "/nonexistent",
+              "DOOR_ACTIVE_RELEASE_LINK": str(link), "DOOR_PARKED_OLDER": older}
+    if parked:
+        values["DOOR_PARKED"] = "1"
+    done = subprocess.run(["/bin/bash", "-c", script], capture_output=True, text=True, check=False, env=values)
+    outcome = json.loads((Path(door_clone["results"]) / f"{DEPLOY_ID}.outcome.json").read_text(encoding="utf-8"))
+    return {"rc": done.returncode, **outcome}
+
+
+OLDER_ID = "20260923T115900Z-deploy-0000aaaa"
+
+
+def _older_outcome(door_clone: dict[str, object]) -> dict:
+    return json.loads((Path(door_clone["results"]) / f"{OLDER_ID}.outcome.json").read_text(encoding="utf-8"))
+
+
+def test_an_older_parked_request_the_newest_contains_is_superseded(door_clone: dict[str, object]) -> None:
+    first = _real_git("rev-parse", "HEAD~1", cwd=door_clone["upstream"])
+
+    outcome = _prepare_parked(door_clone, str(door_clone["merged"]), older=f"{OLDER_ID}={first}")
+
+    assert outcome["status"] == "deployed"
+    older = _older_outcome(door_clone)
+    assert older["status"] == "superseded" and older["exit_code"] == 0
+    assert older["superseded_by"] == DEPLOY_ID and older["superseded_by_commit"] == door_clone["merged"]
+
+
+def test_an_older_parked_request_the_newest_lacks_fails_instead_of_undoing_the_newest(
+    door_clone: dict[str, object],
+) -> None:
+    """Main can contain two commits neither of which contains the other."""
+    outcome = _prepare_parked(door_clone, str(door_clone["merged"]), older=f"{OLDER_ID}={door_clone['unmerged']}")
+
+    assert outcome["status"] == "deployed"
+    older = _older_outcome(door_clone)
+    assert older["status"] == "failed" and older["code"] == "parked_commit_not_contained"
+    assert older["newest_commit"] == door_clone["merged"]
+    assert "superseded_by" not in older
+
+
+def test_a_parked_commit_the_active_release_contains_never_rolls_production_back(
+    door_clone: dict[str, object],
+) -> None:
+    first = _real_git("rev-parse", "HEAD~1", cwd=door_clone["upstream"])
+
+    outcome = _prepare_parked(door_clone, first, active=str(door_clone["merged"]))
+
+    assert outcome["rc"] == 0 and outcome["status"] == "superseded"
+    assert outcome["superseded_by_commit"] == door_clone["merged"]
+    assert "superseded_by" not in outcome
+
+
+def test_a_parked_commit_already_running_does_not_deploy_again(door_clone: dict[str, object]) -> None:
+    outcome = _prepare_parked(door_clone, str(door_clone["merged"]), active=str(door_clone["merged"]))
+
+    assert outcome["status"] == "superseded"
+
+
+def test_older_requests_are_settled_against_the_active_release_when_nothing_deploys(
+    door_clone: dict[str, object],
+) -> None:
+    first = _real_git("rev-parse", "HEAD~1", cwd=door_clone["upstream"])
+
+    outcome = _prepare_parked(door_clone, first, older=f"{OLDER_ID}={first}", active=str(door_clone["merged"]))
+
+    assert outcome["status"] == "superseded"
+    older = _older_outcome(door_clone)
+    assert older["status"] == "superseded" and older["superseded_by_commit"] == door_clone["merged"]
+    assert "superseded_by" not in older
+
+
+def test_a_newer_commit_than_the_active_release_deploys(door_clone: dict[str, object]) -> None:
+    first = _real_git("rev-parse", "HEAD~1", cwd=door_clone["upstream"])
+
+    assert _prepare_parked(door_clone, str(door_clone["merged"]), active=first)["status"] == "deployed"
+
+
+def test_a_deploy_requested_directly_keeps_the_power_to_roll_back(door_clone: dict[str, object]) -> None:
+    first = _real_git("rev-parse", "HEAD~1", cwd=door_clone["upstream"])
+
+    outcome = _prepare_parked(door_clone, first, active=str(door_clone["merged"]), parked=False)
+
+    assert outcome["status"] == "deployed"
+
+
+def test_older_requests_fail_if_the_newest_stops_before_it_could_compare(door_clone: dict[str, object]) -> None:
+    first = _real_git("rev-parse", "HEAD~1", cwd=door_clone["upstream"])
+
+    outcome = _prepare_parked(door_clone, str(door_clone["unmerged"]), older=f"{OLDER_ID}={first}")
+
+    assert outcome["rc"] == 2 and outcome["code"] == "commit_not_on_main"
+    older = _older_outcome(door_clone)
+    assert older["status"] == "failed" and older["code"] == "parked_successor_failed"
+    assert older["newest_request"] == DEPLOY_ID and older["exit_code"] == 2
+
+
+def test_a_malformed_older_entry_is_ignored_and_never_reaches_a_path(door_clone: dict[str, object]) -> None:
+    outcome = _prepare_parked(door_clone, str(door_clone["merged"]), older="../../evil=abc,not-an-id=" + "a" * 40)
+
+    assert outcome["status"] == "deployed"
+    assert sorted(path.name for path in Path(door_clone["results"]).iterdir()) == [
+        f"{DEPLOY_ID}.log", f"{DEPLOY_ID}.outcome.json"]
+
+
+def test_door_deploy_settles_parked_requests_before_the_tool_can_start() -> None:
+    text = (DOOR / "door-deploy.sh").read_text(encoding="utf-8")
+    assert text.index("door_require_on_main") < text.index("door_settle_parked") < text.index("door_add_tool")
+
+
 def test_github_upstream_without_a_deploy_key_is_refused(env: dict[str, str]) -> None:
     Path(env["DOOR_GITHUB_KEY"]).unlink()
     rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0")

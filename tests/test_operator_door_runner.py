@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Sequence
 
@@ -21,7 +23,10 @@ from operator_door.config import DoorConfig  # noqa: E402
 from operator_door.hostinfo import CommandResult  # noqa: E402
 from operator_door import holds  # noqa: E402
 from operator_door.requests import SCHEMA, enqueue, validate_request  # noqa: E402
+from operator_door import spool_runner  # noqa: E402
 from operator_door.spool_runner import process_spool  # noqa: E402
+from tests.test_operator_door_requests import SHA as REQUESTS_SHA  # noqa: E402
+from tests.test_operator_door_requests import _canonical_provenance  # noqa: E402
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -111,13 +116,261 @@ def test_deploy_launches_the_door_deploy_script_with_validated_parameters(config
     assert not list((Path(config.spool_root) / "pending").glob("*.json"))
 
 
-def test_deploy_is_refused_while_another_deploy_runs(config: DoorConfig) -> None:
-    request_id = _spooled(config, {"kind": "deploy", "commit": SHA})
-    runner = FakeRunner(active_deploy="blueprint-fable-deploy-2c212fe5.service loaded active running x\n")
+ACTIVE_DEPLOY = "blueprint-fable-deploy-2c212fe5.service loaded active running x\n"
+OLDER = "1111111111111111111111111111111111111111"
+NEWER = "2222222222222222222222222222222222222222"
+
+
+def _deploy_launches(runner: FakeRunner) -> list[list[str]]:
+    return [call for call in runner.calls if call[0] == "systemd-run" and "/bin/bash" in call]
+
+
+def _launch_env(launch: list[str]) -> dict[str, str]:
+    return dict(part.removeprefix("--setenv=").split("=", 1) for part in launch if part.startswith("--setenv="))
+
+
+def _parked(config: DoorConfig) -> list[str]:
+    return sorted(path.stem for path in (Path(config.spool_root) / "parked").glob("*.json"))
+
+
+def test_a_canonical_deploy_is_still_refused_while_another_deploy_runs(config: DoorConfig) -> None:
+    """A deploy with release provenance names one exact commit, so nothing may replace it."""
+    assert SHA == REQUESTS_SHA
+    payload = _canonical_provenance()
+    request_id = _spooled(config, {"kind": "deploy", "commit": SHA, "release_provenance_json": payload,
+                                   "release_provenance_sha256": hashlib.sha256(payload.encode()).hexdigest()})
+    runner = FakeRunner(active_deploy=ACTIVE_DEPLOY)
     process_spool(config, runner=runner)
     assert not any(call[0] == "systemd-run" for call in runner.calls)
     result = _result(config, request_id)
     assert result == {**result, "status": "refused", "code": "deploy_in_progress:blueprint-fable-deploy-2c212fe5.service"}
+    assert _parked(config) == []
+
+
+def test_a_deploy_requested_during_a_deploy_is_parked_not_refused(config: DoorConfig) -> None:
+    request_id = _spooled(config, {"kind": "deploy", "commit": SHA})
+    runner = FakeRunner(active_deploy=ACTIVE_DEPLOY)
+
+    process_spool(config, runner=runner)
+
+    assert _deploy_launches(runner) == []
+    result = _result(config, request_id)
+    assert result == {**result, "status": "parked", "commit": SHA,
+                      "parked_behind": "blueprint-fable-deploy-2c212fe5.service"}
+    assert _parked(config) == [request_id]
+    # The request stays revalidatable, and pending/ is empty so the path unit cannot spin.
+    assert (Path(config.spool_root) / "completed" / f"{request_id}.json").exists()
+    assert not list((Path(config.spool_root) / "pending").glob("*.json"))
+
+
+def test_a_parked_deploy_keeps_a_retry_armed_that_cannot_look_like_a_deploy(config: DoorConfig) -> None:
+    _spooled(config, {"kind": "deploy", "commit": SHA})
+    runner = FakeRunner(active_deploy=ACTIVE_DEPLOY)
+    process_spool(config, runner=runner)
+
+    retries = [call for call in runner.calls if call[0] == "systemd-run" and "--on-active=30s" in call]
+    assert len(retries) == 1
+    assert retries[0][-4:] == ["/usr/bin/systemctl", "start", "--no-block", "blueprint-operator-door-runner.service"]
+    # `blueprint-*deploy*` is what a deploy waits on: the retry must never match it.
+    assert not fnmatch.fnmatch(spool_runner._PARKED_RETRY_UNIT + ".service", "blueprint-*deploy*")
+    assert not fnmatch.fnmatch(spool_runner._PARKED_RETRY_UNIT + ".timer", "blueprint-*deploy*")
+
+    # A wake-up while the deploy still runs launches nothing and re-arms.
+    runner.calls.clear()
+    process_spool(config, runner=runner)
+    assert _deploy_launches(runner) == []
+    assert any(call[0] == "systemd-run" and "--on-active=30s" in call for call in runner.calls)
+
+
+def test_the_parked_deploy_starts_once_the_running_one_ends(config: DoorConfig) -> None:
+    request_id = _spooled(config, {"kind": "deploy", "commit": SHA, "wait_for_idle": False})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    launch = _deploy_launches(runner)[0]
+    assert launch[-1] == "/opt/blueprint/operator-door/door-deploy.sh"
+    env = _launch_env(launch)
+    assert env["DOOR_REQUEST_ID"] == request_id and env["DOOR_COMMIT"] == SHA
+    assert env["DOOR_WAIT_FOR_IDLE"] == "0"
+    assert env["DOOR_PARKED"] == "1"
+    assert env["DOOR_PARKED_OLDER"] == ""
+    assert env["DOOR_ACTIVE_RELEASE_LINK"] == config.active_release_link
+    assert _result(config, request_id)["status"] == "launched"
+    assert _parked(config) == []
+
+    # Released once: a later wake-up starts nothing.
+    runner.calls.clear()
+    process_spool(config, runner=runner)
+    assert _deploy_launches(runner) == []
+
+
+def test_a_deploy_requested_directly_is_never_marked_parked(config: DoorConfig) -> None:
+    """The rollback guard reads this mark. An explicit rollback must stay possible."""
+    _spooled(config, {"kind": "deploy", "commit": SHA})
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    env = _launch_env(_deploy_launches(runner)[0])
+    assert "DOOR_PARKED" not in env and "DOOR_PARKED_OLDER" not in env
+
+
+def test_the_newest_parked_deploy_starts_and_takes_over_the_older_ones(config: DoorConfig) -> None:
+    active = FakeRunner(active_deploy=ACTIVE_DEPLOY)
+    first = _spooled(config, {"kind": "deploy", "commit": OLDER})
+    process_spool(config, runner=active)
+    time.sleep(1.1)  # request ids sort by their one-second timestamp
+    second = _spooled(config, {"kind": "deploy", "commit": NEWER})
+    process_spool(config, runner=active)
+    assert _parked(config) == [first, second]
+
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    launches = _deploy_launches(runner)
+    assert len(launches) == 1
+    env = _launch_env(launches[0])
+    assert env["DOOR_REQUEST_ID"] == second and env["DOOR_COMMIT"] == NEWER
+    assert env["DOOR_PARKED_OLDER"] == f"{first}={OLDER}"
+    assert _result(config, second)["status"] == "launched"
+    # Not superseded yet: only door-deploy.sh, after it fetches, can prove containment.
+    older = _result(config, first)
+    assert older["status"] == "parked" and older["parked_behind"] == _result(config, second)["unit"]
+    assert _parked(config) == []
+
+
+def test_a_request_arriving_as_the_deploy_ends_parks_behind_the_newly_released_one(config: DoorConfig) -> None:
+    first = _spooled(config, {"kind": "deploy", "commit": OLDER})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+    time.sleep(1.1)
+    second = _spooled(config, {"kind": "deploy", "commit": NEWER})
+
+    class Released(FakeRunner):
+        """systemd sees the parked deploy as active as soon as it is launched."""
+
+        def run(self, argv, timeout):
+            if argv[:2] == ["systemctl", "list-units"] and _deploy_launches(self):
+                self.calls.append(list(argv))
+                return CommandResult(0, "blueprint-operator-door-deploy-x.service loaded active running x\n", "")
+            return super().run(argv, timeout)
+
+    runner = Released()
+    process_spool(config, runner=runner)
+
+    assert len(_deploy_launches(runner)) == 1
+    assert _launch_env(_deploy_launches(runner)[0])["DOOR_COMMIT"] == OLDER
+    assert _result(config, first)["status"] == "launched"
+    assert _result(config, second)["status"] == "parked"
+    assert _parked(config) == [second]
+
+
+def test_the_runner_never_needs_git_or_a_network_to_park(config: DoorConfig) -> None:
+    """Its unit has PrivateNetwork=true and no capabilities; parking must not change that."""
+    _spooled(config, {"kind": "deploy", "commit": OLDER})
+    busy = FakeRunner(active_deploy=ACTIVE_DEPLOY)
+    process_spool(config, runner=busy)
+    idle = FakeRunner()
+    process_spool(config, runner=idle)
+    for call in (*busy.calls, *idle.calls):
+        assert call[0] in {"systemctl", "systemd-run"}, call
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-operator-door-runner.service").read_text()
+    assert "PrivateNetwork=true" in unit
+    assert "CapabilityBoundingSet=\n" in unit
+    assert "ReadWritePaths=/var/lib/blueprint-operator-door/requests\n" in unit
+
+
+def test_parking_is_bounded_and_refuses_past_the_bound(config: DoorConfig, monkeypatch) -> None:
+    monkeypatch.setattr(spool_runner, "_PARKED_MAX", 1)
+    first = _spooled(config, {"kind": "deploy", "commit": OLDER})
+    runner = FakeRunner(active_deploy=ACTIVE_DEPLOY)
+    process_spool(config, runner=runner)
+    time.sleep(1.1)
+    second = _spooled(config, {"kind": "deploy", "commit": NEWER})
+    process_spool(config, runner=runner)
+
+    assert _parked(config) == [first]
+    assert _result(config, second)["code"] == "deploy_in_progress:blueprint-fable-deploy-2c212fe5.service"
+
+
+def test_a_parked_request_too_old_to_mean_anything_is_refused(config: DoorConfig, monkeypatch) -> None:
+    request_id = _spooled(config, {"kind": "deploy", "commit": SHA})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+    monkeypatch.setattr(spool_runner, "_PARKED_MAX_AGE_SECONDS", -1)
+
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    assert _deploy_launches(runner) == []
+    assert _result(config, request_id) == {**_result(config, request_id), "status": "refused",
+                                           "code": "deploy_parked_expired"}
+    assert _parked(config) == []
+
+
+@pytest.mark.parametrize("tamper", ["request_missing", "request_invalid", "record_junk", "record_other_id"])
+def test_a_parked_request_is_revalidated_at_release(config: DoorConfig, tamper: str) -> None:
+    request_id = _spooled(config, {"kind": "deploy", "commit": SHA})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+    spool = Path(config.spool_root)
+    if tamper == "request_missing":
+        (spool / "completed" / f"{request_id}.json").unlink()
+    elif tamper == "request_invalid":
+        document = json.loads((spool / "completed" / f"{request_id}.json").read_text())
+        document["request"]["commit"] = "not-a-commit"
+        (spool / "completed" / f"{request_id}.json").write_text(json.dumps(document))
+    elif tamper == "record_junk":
+        (spool / "parked" / f"{request_id}.json").write_text("not json")
+    else:
+        (spool / "parked" / f"{request_id}.json").write_text(json.dumps({"id": "x", "parked_at_epoch": 1}))
+
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+
+    assert _deploy_launches(runner) == []
+    assert _result(config, request_id)["status"] == "refused"
+    assert _parked(config) == []
+
+
+def test_a_junk_name_in_the_parked_directory_cannot_stop_the_spool(config: DoorConfig) -> None:
+    (Path(config.spool_root) / "parked").mkdir(exist_ok=True)
+    (Path(config.spool_root) / "parked" / "junk.json").write_text("{}")
+    request_id = _spooled(config, {"kind": "door-upgrade", "commit": SHA})
+
+    process_spool(config, runner=FakeRunner())
+
+    assert _parked(config) == []
+    assert _result(config, request_id)["status"] == "launched"
+
+
+def test_a_failed_parked_launch_fails_every_request_it_was_carrying(config: DoorConfig) -> None:
+    first = _spooled(config, {"kind": "deploy", "commit": OLDER})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+    time.sleep(1.1)
+    second = _spooled(config, {"kind": "deploy", "commit": NEWER})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+
+    process_spool(config, runner=FakeRunner(systemd_run_rc=1))
+
+    assert _result(config, second)["status"] == "failed"
+    assert _result(config, first) == {**_result(config, first), "status": "failed",
+                                      "code": "deploy_parked_launch_failed"}
+    assert _parked(config) == []
+
+
+def test_an_exception_while_launching_a_parked_deploy_is_recorded_and_the_spool_continues(config: DoorConfig) -> None:
+    parked_id = _spooled(config, {"kind": "deploy", "commit": SHA})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+
+    class Raises(FakeRunner):
+        def run(self, argv, timeout):
+            if argv[0] == "systemd-run" and any("door-deploy.sh" in part for part in argv):
+                raise OSError("no bus")
+            return super().run(argv, timeout)
+
+    upgrade = _spooled(config, {"kind": "door-upgrade", "commit": SHA})
+    process_spool(config, runner=Raises())
+
+    assert _result(config, parked_id) == {**_result(config, parked_id), "status": "unknown", "code": "runner_error:OSError"}
+    assert _result(config, upgrade)["status"] == "launched"
 
 
 def test_failed_launch_is_recorded(config: DoorConfig) -> None:
