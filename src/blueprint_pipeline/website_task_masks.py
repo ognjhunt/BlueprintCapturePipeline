@@ -232,8 +232,10 @@ def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: lis
     """Return a grounded target whose concept the segmenter actually resolves.
 
     The video-analysis noun already bought a full clip and found nothing. Each
-    task-grounded noun or model proposal is spent on one frame before it is
-    spent on the whole clip.
+    further noun comes from the model looking at the crop of the target it
+    localized, and is spent on one frame before it is spent on the whole clip.
+    The task text never picks a noun here: one harness serves every site, task
+    and object (owner rule 2026-10-29).
     """
     from .website_task_grounding import ground_task_target as _ground
 
@@ -242,31 +244,13 @@ def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: lis
         return any(concept == row.casefold() for row in rejected)
 
     grounded, rejected, outcome = target, [failed_concept.strip()], CONCEPT_NO_INSTANCE
-    # The task itself can supply a more specific, visually testable noun than
-    # the grounding model. A cabinet explicitly described as under the desk is
-    # probed as one assembly before asking for more free-form synonyms. The
-    # one-frame coverage gate below still decides whether it is actually this
-    # object; the task phrase alone never authorizes a full-video call.
-    task_words = str(target.get("task_basis_quote", "")).casefold()
-    task_noun = ("under-desk cabinet" if "cabinet" in task_words
-                 and ("under the desk" in task_words or "under-desk" in task_words)
-                 else None)
     if not 0 <= maximum_probes <= MAXIMUM_CONCEPT_PROBES:
         raise ValueError("website_concept_probe_budget_invalid")
-    remaining_probes = maximum_probes
-    if remaining_probes and task_noun and task_noun.casefold() not in (row.casefold() for row in rejected):
-        grounded = {**grounded, "segmentation_prompt": task_noun}
-        outcome = probe_segmentation_concept(target=grounded, concept=task_noun,
-                                             task_context=task_context, output_root=probe_root)
-        if outcome == CONCEPT_RESOLVED:
-            return grounded
-        rejected.append(task_noun)
-        remaining_probes -= 1
     # The budget counts probes, not turns. A grounding that hands back a noun
     # already tried costs nothing and must not use one up, or the two nouns
     # already known to fail would spend the whole search before the model is
     # ever told what went wrong with them.
-    for _ in range(remaining_probes):
+    for _ in range(maximum_probes):
         if tried(grounded):
             grounded = _ground(target=grounded, tracks=tracks, registry=registry, video=video,
                 task_context=task_context, output_root=grounding_root,
@@ -541,10 +525,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             from .website_task_grounding import ground_task_target
             grounded = ground_task_target(target=target, tracks=[], registry=registry,
                 video=video_artifact, task_context=task_context, output_root=root / "grounding")
-            task_words = str(target.get("task_basis_quote", "")).casefold()
-            concept = ("under-desk cabinet" if "cabinet" in task_words
-                       and ("under the desk" in task_words or "under-desk" in task_words)
-                       else grounded["segmentation_prompt"])
+            concept = grounded["segmentation_prompt"]
             initial = probe_segmentation_concept(target=grounded, concept=concept,
                 task_context=task_context, output_root=root / "concept_probes")
             if initial != CONCEPT_RESOLVED:
@@ -552,8 +533,6 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                     video=video_artifact, task_context=task_context, grounding_root=root / "grounding",
                     probe_root=root / "concept_probes", failed_concept=concept,
                     maximum_probes=MAXIMUM_CONCEPT_PROBES - 1)
-            else:
-                grounded = {**grounded, "segmentation_prompt": concept}
             grounded_targets[target["target_id"]] = grounded
             text = grounded["segmentation_prompt"]
         shared = next((p for p in prompts if p["text"].strip().casefold() == text.strip().casefold()), None) if provider == "meta" else None
