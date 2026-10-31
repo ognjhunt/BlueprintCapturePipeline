@@ -16,12 +16,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import shutil
 import stat
 import zipfile
 import zlib
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -243,8 +245,22 @@ def _team_scene_plan(packet_root: Path, binding: Mapping[str, Any] | None) -> di
     try:
         return apply_team_embodiment(plan, binding)
     except TeamEmbodimentError as exc:
-        raise NativeTaskArenaBundleError(
-            ["native_task_arena_bundle_team_embodiment_invalid:" + item for item in exc.blockers]) from exc
+        if exc.blockers != ["team_embodiment_control_hz_incompatible_with_scene"]:
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_bundle_team_embodiment_invalid:" + item for item in exc.blockers]) from exc
+    # The session sets each cell's cadence before the worker applies the team's robot
+    # (policy_canary_scene_resolution), and the worker checks the rate there. These gates
+    # measure the robot's station, model and cameras, so they read the robot at its own rate.
+    try:
+        hz = float(binding["manifest"]["control_hz"])
+        paced = deepcopy(plan)
+        paced["task_spec"]["control_frequency_hz"] = hz
+        cadence = paced["cadence"]
+        cadence["physics_frequency_hz"] = hz * math.ceil(float(cadence["physics_frequency_hz"]) / hz)
+        return apply_team_embodiment(paced, binding)
+    except (TeamEmbodimentError, KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        raise NativeTaskArenaBundleError(["native_task_arena_bundle_team_embodiment_invalid:" + item for item in (
+            exc.blockers if isinstance(exc, TeamEmbodimentError) else ["team_embodiment_binding_invalid"])]) from exc
 
 
 def _team_arm_path_unassessed(plan: Mapping[str, Any]) -> dict[str, Any]:
