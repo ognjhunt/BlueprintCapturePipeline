@@ -4472,10 +4472,10 @@ def test_a_team_robots_own_arms_decide_the_arm_path_gate_when_its_model_is_bound
             return {"status": status, "blockers": list(blockers), "advisories": []}
         return gate
 
-    monkeypatch.setattr(reach, "team_arm_reach", measured("blocked", ["robot_arm_task_beyond_reach:carry"]))
-    with pytest.raises(NativeTaskArenaBundleError) as error:
-        build_native_task_arena_bundle(job_dir=tmp_path / "job-far", **kwargs)
-    assert error.value.errors == ("native_task_arena_bundle_robot_arm_path_blocked:robot_arm_task_beyond_reach:carry",)
+    # Reach is not a privacy, rights or money control: even a proven miss is written beside the run.
+    monkeypatch.setattr(reach, "team_arm_reach", measured("out_of_reach"))
+    build_native_task_arena_bundle(job_dir=tmp_path / "job-far", **kwargs)
+    assert json.loads((tmp_path / "job-far" / arm.PACKET_REPORT_FILENAME).read_text())["status"] == "out_of_reach"
     assert calls == [("acme-arm", model, binding["manifest"])]
     monkeypatch.setattr(reach, "team_arm_reach", measured("flagged"))
     build_native_task_arena_bundle(job_dir=tmp_path / "job", **kwargs)

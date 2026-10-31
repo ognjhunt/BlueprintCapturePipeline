@@ -79,13 +79,14 @@ def test_the_teams_own_arm_reaching_every_authored_phase_from_its_station_passes
     assert report["report_digest"].startswith("sha256:")
 
 
-def test_a_phase_beyond_every_arms_reach_is_the_one_proven_refusal(ur5e, monkeypatch):
+def test_a_phase_beyond_every_arms_reach_is_reported_as_proven_never_as_a_refusal(ur5e, monkeypatch):
     usd, manifest, chains = ur5e
     (name, chain), = chains.items()
     _phases(monkeypatch, chain, _joint_sets(chain, 3), far=2)
     _identity_grasp(monkeypatch, chains)
     report = team_arm_reach(_plan(usd, manifest), model_path=usd, manifest=manifest)
-    assert report["status"] == "blocked" and report["blockers"] == ["robot_arm_task_beyond_reach:carry"]
+    assert report["status"] == "out_of_reach" and report["blockers"] == []
+    assert "robot_arm_task_beyond_reach:carry" in report["advisories"]
     assert [row["reached"] for row in report["arms"][name]["phases"]] == [True, True, False]
 
 

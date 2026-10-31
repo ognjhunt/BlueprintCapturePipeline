@@ -704,10 +704,9 @@ def build_native_task_arena_bundle(
         else:
             from .team_arm_reach import team_arm_reach
 
+            # A reach verdict is evidence written beside the run, never a refusal (AGENTS.md).
             arm_path_report = team_arm_reach(team_plan, model_path=team_robot_model,
                                              manifest=team_embodiment["manifest"])
-            if arm_path_report["status"] == "blocked":
-                raise RobotArmPathAdmissionBlocked(arm_path_report["blockers"])
     except RobotArmPathAdmissionBlocked as exc:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_robot_arm_path_blocked:" + item for item in exc.blockers]

@@ -13,11 +13,13 @@ model the run loads (``team_body_kinematics``):
 * each arm is solved through the phases in order, each from the previous solution, from the base it has
   at the station (``world_from_root @ chain.root_from_base``).
 
-``passed`` means some arm reaches every phase in the model. ``blocked`` is reserved for a proof: every
-arm has a phase beyond its chain's reach bound, so no motion of this body from this station can do the
-task. A phase that no start reached, or that was reached only outside the joint limits, is a search
-result, not a proof, and is reported as ``flagged`` with an advisory: the run goes on. A body or task
-this cannot model is ``unassessed`` with a typed reason. Scene clearance is not measured here.
+``passed`` means some arm reaches every phase in the model. ``out_of_reach`` is reserved for a proof:
+every arm has a phase beyond its chain's reach bound, so no motion of this body from this station can do
+the task in the model. A phase that no start reached, or that was reached only outside the joint limits,
+is a search result, not a proof, and is reported as ``flagged``. Neither refuses anything: reach is not a
+privacy, rights or money control (``AGENTS.md``), so the verdict is reported with the run's evidence and
+the run goes on. A body or task this cannot model is ``unassessed`` with a typed reason. Scene clearance
+is not measured here.
 
 Nothing here runs a simulator, queries a policy or claims that a policy or the physical robot does it.
 """
@@ -126,7 +128,7 @@ def team_arm_reach(plan: Mapping[str, Any], *, model_path: str | Path, manifest:
     if all(miss["detail"] == "beyond_reach_bound" for miss in misses.values()) and not found["unassessed"]:
         # Furthest phase first: the one the best arm got to.
         name, miss = max(misses.items(), key=lambda item: len(arms[item[0]]["phases"]))
-        return finish("blocked", blockers=["robot_arm_task_beyond_reach:" + miss["phase_id"]], advisories=advisories,
+        return finish("out_of_reach", advisories=[*advisories, "robot_arm_task_beyond_reach:" + miss["phase_id"]],
                       arms=arms, phase_ids=[phase_id for phase_id, _ in phases])
     advisories += [f"robot_arm_task_unreached:{name}:{miss['phase_id']}:{miss['failure']}:{miss['detail']}"
                    for name, miss in sorted(misses.items())]
