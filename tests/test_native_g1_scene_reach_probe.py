@@ -114,3 +114,18 @@ def test_the_closest_stance_whose_nominal_arm_span_covers_pick_and_place_is_chos
     for stances, bad_target in (([], target), ([near], [0.0, 0.25]), ([near], [0.0, float("nan"), 0.9])):
         with pytest.raises(ValueError, match="g1_stance_reach_inputs_invalid"):
             probe.g1_stance_static_reach(stances, start=start, target=bad_target)
+
+
+def test_the_stance_is_chosen_for_the_task_hand_not_whichever_shoulder_is_nearer() -> None:
+    # The review's case: the place is on the robot's left of a stance facing the pick, so only the left arm
+    # reaches it from there; the right hand carries, so a stance beside both points is chosen instead.
+    start, target = [0.0, 0.0, 0.9], [0.0, -0.4, 0.9]
+    left_only = _facing(0.3, 0.0, 0.79, (0.0, 0.0))
+    beside = _facing(0.0, -0.35, 0.79, (0.0, 0.0))
+    index, nearer = probe.g1_stance_static_reach([left_only, beside], start=start, target=target)
+    assert (index, nearer["shoulder"]) == (0, "nearer")
+    index, right = probe.g1_stance_static_reach([left_only, beside], start=start, target=target, task_hand="right")
+    assert (index, right["shoulder"], right["within_nominal_arm_span"]) == (1, "right", True)
+    assert max(right["pick_nominal_shoulder_distance_m"], right["place_nominal_shoulder_distance_m"]) <= 0.45
+    with pytest.raises(ValueError, match="g1_stance_reach_inputs_invalid"):
+        probe.g1_stance_static_reach([beside], start=start, target=target, task_hand="both")

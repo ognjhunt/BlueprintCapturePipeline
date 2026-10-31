@@ -26,6 +26,8 @@ from .native_g1_beta_authority import SOURCE_FIELDS
 SCHEMA = "native_g1_beta_scene_preparation.v1"
 FILENAME = SCHEMA + ".json"
 RECIPE = "native_g1_beta_retained_scene.v1"
+# The hand the episode carries the object with (a simulation assumption); its stance is chosen for it.
+TASK_HAND = "right"
 HEAD_CAMERA = {
     "role": "head", "policy_input": True, "review_only": False, "scoring_input": False,
     "pose_frame": "robot_body", "parent_prim_path": "{ENV_REGEX_NS}/Robot/head_link",
@@ -160,14 +162,14 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
         retain_large_collision_bounds=True, ranked=(2 * math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9) + 1) ** 2)
     try:
         chosen, stance_reach = g1_stance_static_reach(stances, start=task["start_pose_world"][:3],
-                                                      target=task["target_position_world_m"])
+                                                      target=task["target_position_world_m"], task_hand=TASK_HAND)
     except (KeyError, TypeError, ValueError):
         chosen, stance_reach = 0, {"rule": STANCE_RULE, "status": "unassessed",
                                    "reason": "g1_stance_reach_inputs_invalid"}
     stance = stances[chosen]
     pose = {"position_world_m": stance["position_world_m"], "orientation_xyzw": stance["orientation_xyzw"]}
     robot = build_pinned_g1_arena_robot_configuration(asset=robot_asset, evidence_root=evidence_root,
-        base_pose_world=pose, task_hand="right")
+        base_pose_world=pose, task_hand=TASK_HAND)
     if HEAD_CAMERA["parent_prim_path"] not in _asset_rigid_body_paths(robot_asset):
         raise ValueError("g1_beta_preparation_head_body_missing")
     overview = [row for row in original.get("cameras", []) if row.get("role") == "overview"]
@@ -202,7 +204,7 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
         "head_camera": deepcopy(HEAD_CAMERA), "head_camera_calibration_measured": False,
         "head_camera_basis": "existing_g1_development_mount_simulation_assumption",
         "overview_basis": "unchanged_current_task_review_camera",
-        "task_hand": "right", "task_hand_is_simulation_assumption": True,
+        "task_hand": TASK_HAND, "task_hand_is_simulation_assumption": True,
         "control_frequency_hz": 50.0, "physics_frequency_hz": 200.0,
         "source_control_frequency_hz": original["task_spec"]["control_frequency_hz"],
         "source_maximum_action_steps": original["task_spec"]["maximum_action_steps"],
