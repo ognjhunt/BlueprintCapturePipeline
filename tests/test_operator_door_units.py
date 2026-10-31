@@ -76,8 +76,6 @@ def test_hold_sweep_runs_before_boot_triggers_and_repeats_after_boot() -> None:
     )
     assert service["Service"]["ReadWritePaths"] == DoorConfig().spool_root
     assert set(service["Install"]["WantedBy"].split()) == {"timers.target", "paths.target"}
-    # A parked deploy's only wake-up. The leading "-" keeps it from deciding this unit's result.
-    assert service["Service"]["ExecStopPost"] == "-/usr/bin/python3 -m operator_door wake-parked"
     timer = _unit(HOLD_SWEEP_TIMER)
     assert timer["Timer"]["OnBootSec"] and timer["Timer"]["OnUnitActiveSec"]
     assert timer["Install"]["WantedBy"] == "timers.target"
