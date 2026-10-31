@@ -319,3 +319,23 @@ def test_a_relocated_destination_never_lands_on_another_surface():
     moved = farthest_supported_destination(mesh, start_min, start_max, [-.6, -.4, .6], [1.0, .4, .8], support,
                                            up=2, meters_per_unit=1, clearance=clearance)
     assert moved is None or moved[0][0] <= .1
+
+
+def test_a_round_table_is_searched_past_its_unsupported_bounding_box_corners():
+    """Codex review of #3136: on a round top the farthest grid points are its bounding box's empty corners."""
+    from blueprint_pipeline.website_support_geometry import (destination_clear_of_start,
+                                                             farthest_supported_destination)
+
+    plate = bumpy_plate(-.8, .8, -.8, .8, noise=.002)
+    keep = np.linalg.norm(plate.triangles_center[:, :2], axis=1) <= .8
+    table = trimesh.Trimesh(vertices=plate.vertices, faces=plate.faces[keep], process=False)
+    start_min, start_max = [-.1, -.1, .7], [.1, .1, .75]
+    support = support_under(table, start_min, start_max, up=2, meters_per_unit=1)
+    clearance = np.hypot(.1, .1) + .01
+    moved = farthest_supported_destination(table, start_min, start_max, [-.8, -.8, .6], [.8, .8, .8], support,
+                                           up=2, meters_per_unit=1, clearance=clearance)
+    assert moved is not None
+    centre, found = moved
+    assert destination_clear_of_start(start_min, start_max, centre, up=2, clearance=clearance)
+    # Every corner of the moved footprint is on the round top.
+    assert all(np.hypot(centre[0] + a * .1, centre[1] + b * .1) <= .8 for a in (-1, 1) for b in (-1, 1))

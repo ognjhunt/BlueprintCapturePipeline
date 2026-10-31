@@ -287,7 +287,9 @@ def destination_clear_of_start(start_min: Sequence[float], start_max: Sequence[f
 DESTINATION_MARGIN_M = 0.01
 #: Plan positions tried along each axis when a destination must move off the start.
 DESTINATION_GRID_STEPS = 9
-#: Footprints checked against the collider, farthest first, before none is placed.
+#: Footprints checked against the collider, farthest first, before none is placed. Only
+#: footprints whose probe points all lie over the surface's own faces count against it:
+#: a round table's bounding-box corners would otherwise use it up.
 DESTINATION_MAX_PROBES = 24
 
 
@@ -321,6 +323,21 @@ def farthest_supported_destination(mesh: Any, start_min: Sequence[float], start_
         centre[plan[0]], centre[plan[1]] = first, second
         if destination_clear_of_start(start_min, start_max, centre, up=up, clearance=clearance):
             candidates.append(centre)
+    faces = np.asarray(start_support.get("face_indices") or [], dtype=np.int64)
+    if len(faces):
+        # The same nine probe points support_under tests, each within its search
+        # window of one of this surface's faces; the exact test follows below.
+        from scipy.spatial import cKDTree
+
+        surface = cKDTree(np.asarray(mesh.triangles, dtype=float)[faces].mean(axis=1)[:, plan])
+        window_m = 0.03
+        if (not isinstance(placement_residual_m, bool) and isinstance(placement_residual_m, (int, float))
+                and math.isfinite(placement_residual_m)):
+            window_m = max(window_m, float(placement_residual_m))
+        signs = [(a, b) for a in (-1, 0, 1) for b in (-1, 0, 1)]
+        candidates = [centre for centre in candidates if np.all(surface.query(
+            [[centre[plan[0]] + a * half[plan[0]], centre[plan[1]] + b * half[plan[1]]] for a, b in signs]
+        )[0] <= window_m / meters_per_unit)]
     candidates.sort(key=lambda centre: -math.dist(centre[plan], origin[plan]))
     for centre in candidates[:DESTINATION_MAX_PROBES]:
         offset = centre - origin
