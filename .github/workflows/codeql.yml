@@ -5,6 +5,16 @@ on:
     branches: ["main"]
   schedule:
     - cron: "31 7 * * 2"
+  # Release evidence needs a successful run for its exact commit. A superseded
+  # main commit can still get one: tag it and dispatch this workflow on the tag.
+  workflow_dispatch:
+
+# Only the newest main commit needs an automatic analysis, and no merge or deploy
+# waits for it: at about 44 runner-minutes a run it held slots that main's
+# attestation waited for.
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
