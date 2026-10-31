@@ -332,6 +332,211 @@ def test_longer_module_and_package_names_do_not_count_as_coverage(tmp_path: Path
     assert plan["requires_full_suite"] is True
 
 
+def _source_tree(root: Path, files: dict[str, str]) -> None:
+    for name, text in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    (root / "tests").mkdir(exist_ok=True)
+
+
+CHANGED = "src/blueprint_pipeline/changed.py"
+
+
+def test_a_module_no_test_names_maps_through_what_imports_it(tmp_path: Path) -> None:
+    """atlas_preparation_job_control.py alone ran six full suites in one day."""
+    _source_tree(tmp_path, {
+        CHANGED: "value = 1\n",
+        "src/blueprint_pipeline/first.py": "from blueprint_pipeline import changed\n",
+        "src/blueprint_pipeline/second.py": "import blueprint_pipeline.first as first\n",
+        "src/blueprint_pipeline/third.py": "from blueprint_pipeline.second import helper\n",
+        "tests/test_of_first.py": "import blueprint_pipeline.first\n",
+        "tests/test_of_second.py": "from blueprint_pipeline import second\n",
+        "tests/test_of_third.py": "import blueprint_pipeline.third\n",
+        "tests/test_unrelated.py": "import blueprint_pipeline.unrelated\n",
+    })
+
+    plan = MODULE.build_plan(tmp_path, [CHANGED])
+
+    assert plan["requires_full_suite"] is False
+    assert {"tests/test_of_first.py", "tests/test_of_second.py"} <= set(plan["selected_tests"])
+    # Two steps only: three would select most of the repository for a leaf module.
+    assert "tests/test_of_third.py" not in plan["selected_tests"]
+    assert "tests/test_unrelated.py" not in plan["selected_tests"]
+    assert f"mapped_through_importers:{CHANGED}:2" in plan["reasons"]
+
+
+@pytest.mark.parametrize("importer", [
+    "from blueprint_pipeline.changed import value\n",
+    "from blueprint_pipeline import (\n    other,  # a comment\n    changed as renamed,\n)\n",
+    "def later():\n    from blueprint_pipeline import changed\n    return changed\n",
+    "import os, blueprint_pipeline.changed as renamed\n",
+    "from .changed import value\n",
+    "from . import changed\n",
+])
+def test_every_way_of_importing_counts(tmp_path: Path, importer: str) -> None:
+    _source_tree(tmp_path, {
+        CHANGED: "value = 1\n",
+        "src/blueprint_pipeline/first.py": importer,
+        "tests/test_of_first.py": "import blueprint_pipeline.first\n",
+    })
+
+    assert "tests/test_of_first.py" in MODULE.build_plan(tmp_path, [CHANGED])["selected_tests"]
+
+
+def test_a_relative_import_resolves_from_its_own_package(tmp_path: Path) -> None:
+    _source_tree(tmp_path, {
+        "src/blueprint_pipeline/pkg/__init__.py": "from .inner import helper\n",
+        "src/blueprint_pipeline/pkg/inner.py": "from ..changed import value\nhelper = value\n",
+        "src/blueprint_pipeline/pkg/deep/leaf.py": "from ...changed import value\n",
+        CHANGED: "value = 1\n",
+        "tests/test_of_inner.py": "import blueprint_pipeline.pkg.inner\n",
+        "tests/test_of_leaf.py": "import blueprint_pipeline.pkg.deep.leaf\n",
+        "tests/test_of_pkg.py": "import blueprint_pipeline.pkg\n",
+    })
+
+    plan = MODULE.build_plan(tmp_path, [CHANGED])
+
+    assert {"tests/test_of_inner.py", "tests/test_of_leaf.py", "tests/test_of_pkg.py"} <= set(plan["selected_tests"])
+
+
+@pytest.mark.parametrize("importer", [
+    "import blueprint_pipeline.changed_more\n",
+    "from blueprint_pipeline import changed_more\n",
+    "changed = 1\n",
+    "# from blueprint_pipeline import changed\n",
+])
+def test_a_longer_name_or_a_comment_is_not_an_importer(tmp_path: Path, importer: str) -> None:
+    _source_tree(tmp_path, {
+        CHANGED: "value = 1\n",
+        "src/blueprint_pipeline/first.py": importer,
+        "tests/test_of_first.py": "import blueprint_pipeline.first\n",
+    })
+
+    plan = MODULE.build_plan(tmp_path, [CHANGED])
+
+    assert plan["requires_full_suite"] is True
+    assert f"unmapped_executable_surface:{CHANGED}" in plan["reasons"]
+
+
+def test_a_script_counts_as_an_importer(tmp_path: Path) -> None:
+    _source_tree(tmp_path, {
+        CHANGED: "value = 1\n",
+        "scripts/run_changed.py": "from blueprint_pipeline import changed\n",
+        "tests/test_run_changed_cli.py": 'tool = _load("run_changed")\n',
+    })
+
+    assert "tests/test_run_changed_cli.py" in MODULE.build_plan(tmp_path, [CHANGED])["selected_tests"]
+
+
+@pytest.mark.parametrize("reference", [
+    "from operator_door.contract import value\n",
+    "from operator_door import contract\n",
+    "import operator_door.contract\n",
+])
+def test_a_door_module_maps_to_tests_importing_it(tmp_path: Path, reference: str) -> None:
+    """scripted_policy_registration_contract.py alone ran eight full suites in one day."""
+    door = "deploy/operator-door/operator_door/contract.py"
+    _source_tree(tmp_path, {door: "value = 1\n", "tests/test_door_contract.py": reference})
+
+    plan = MODULE.build_plan(tmp_path, [door])
+
+    assert plan["requires_full_suite"] is False
+    assert "tests/test_door_contract.py" in plan["selected_tests"]
+    assert f"mapped:{door}:1" in plan["reasons"]
+
+
+def test_a_door_module_maps_through_its_relative_importers(tmp_path: Path) -> None:
+    door = "deploy/operator-door/operator_door/contract.py"
+    _source_tree(tmp_path, {
+        door: "value = 1\n",
+        "deploy/operator-door/operator_door/registration.py": "from .contract import value\n",
+        "tests/test_door_registration.py": "from operator_door import registration\n",
+    })
+
+    plan = MODULE.build_plan(tmp_path, [door])
+
+    assert plan["requires_full_suite"] is False
+    assert "tests/test_door_registration.py" in plan["selected_tests"]
+
+
+@pytest.mark.parametrize("config", [
+    "src/blueprint_pipeline/config/runtime_pin.json",
+    "src/blueprint_pipeline/config/runtime_pin/inner/lock.txt",
+])
+def test_a_config_file_maps_to_the_tests_of_its_loader(tmp_path: Path, config: str) -> None:
+    _source_tree(tmp_path, {
+        config: "{}\n",
+        "src/blueprint_pipeline/loader.py": 'PIN = Path(__file__).parent / "config" / "runtime_pin"\n'
+        if "inner" in config else 'PIN = Path(__file__).parent / "config" / "runtime_pin.json"\n',
+        "tests/test_of_loader.py": "import blueprint_pipeline.loader\n",
+        "tests/test_unrelated.py": "import blueprint_pipeline.unrelated\n",
+    })
+
+    plan = MODULE.build_plan(tmp_path, [config])
+
+    assert plan["requires_full_suite"] is False
+    assert "tests/test_of_loader.py" in plan["selected_tests"]
+    assert "tests/test_unrelated.py" not in plan["selected_tests"]
+
+
+def test_a_config_file_nothing_loads_still_requests_the_full_suite(tmp_path: Path) -> None:
+    config = "src/blueprint_pipeline/config/orphan.json"
+    _source_tree(tmp_path, {config: "{}\n", "tests/test_unrelated.py": "x = 1\n"})
+
+    plan = MODULE.build_plan(tmp_path, [config])
+
+    assert plan["requires_full_suite"] is True
+    assert f"unmapped_executable_surface:{config}" in plan["reasons"]
+
+
+def test_a_new_module_nothing_references_still_requests_the_full_suite(tmp_path: Path) -> None:
+    _source_tree(tmp_path, {CHANGED: "value = 1\n", "tests/test_unrelated.py": "x = 1\n"})
+
+    plan = MODULE.build_plan(tmp_path, [CHANGED])
+
+    assert plan["requires_full_suite"] is True
+    assert f"unmapped_executable_surface:{CHANGED}" in plan["reasons"]
+
+
+def test_an_importer_with_no_tests_of_its_own_still_requests_the_full_suite(tmp_path: Path) -> None:
+    _source_tree(tmp_path, {
+        CHANGED: "value = 1\n",
+        "src/blueprint_pipeline/first.py": "from blueprint_pipeline import changed\n",
+        "tests/test_unrelated.py": "x = 1\n",
+    })
+
+    assert MODULE.build_plan(tmp_path, [CHANGED])["requires_full_suite"] is True
+
+
+def test_a_module_a_test_names_directly_is_not_widened_through_its_importers(tmp_path: Path) -> None:
+    """The closure only replaces a full suite: it never grows a selection that already works."""
+    _source_tree(tmp_path, {
+        CHANGED: "value = 1\n",
+        "src/blueprint_pipeline/first.py": "from blueprint_pipeline import changed\n",
+        "tests/test_changed.py": "from blueprint_pipeline import changed\n",
+        "tests/test_of_first.py": "import blueprint_pipeline.first\n",
+    })
+
+    plan = MODULE.build_plan(tmp_path, [CHANGED])
+
+    assert "tests/test_changed.py" in plan["selected_tests"]
+    assert "tests/test_of_first.py" not in plan["selected_tests"]
+
+
+def test_the_recurring_unmapped_surfaces_of_2026_10_31_now_map() -> None:
+    for path in (
+        "deploy/operator-door/operator_door/scripted_policy_registration_contract.py",
+        "deploy/operator-door/operator_door/embodiment_preparation.py",
+        "deploy/operator-door/operator_door/public_policy_registration_contract.py",
+        "src/blueprint_pipeline/atlas_preparation_job_control.py",
+        "src/blueprint_pipeline/deployment_embodiment_simulation_models.py",
+        "src/blueprint_pipeline/config/isaacsim_pink_601.json",
+    ):
+        plan = MODULE.build_plan(ROOT, [path])
+        assert not any(reason.startswith("unmapped_executable_surface") for reason in plan["reasons"]), path
+
+
 def test_changed_test_is_selected_directly() -> None:
     plan = MODULE.build_plan(ROOT, ["tests/test_capture_qa.py"])
 
