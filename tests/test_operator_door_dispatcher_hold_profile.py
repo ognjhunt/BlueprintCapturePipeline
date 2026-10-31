@@ -35,7 +35,14 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window"}
+# The owner-approved, time-only scene window extension passes the fence.
+assert r.required_scope("extend-scene-execution-window") == "operate"
+assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")
+window = {"kind":"extend-scene-execution-window", "intent_id":"scene-"+"a"*64, "intent_digest":"sha256:"+"b"*64,
+          "expires_at":"2026-11-07T10:30:00Z", "authorization_reference":"owner approval fixture",
+          "ack":"extend-scene-execution-window", "apply":False}
+assert r.validate_request(window) == window
 assert r.required_scope("public-embodiment-preparation") == "operate"
 assert r.validate_request_id("20261029T000000Z-public-embodiment-preparation-0123abcd")
 commit = "a" * 40
