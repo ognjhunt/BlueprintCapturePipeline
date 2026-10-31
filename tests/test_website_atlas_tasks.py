@@ -788,7 +788,7 @@ def test_a_retained_submission_is_resent_exactly_without_a_webhook_it_never_aske
 @pytest.mark.parametrize("url", ["http://hooks.example.com/h", "https://203.0.113.5/h", "https://[2001:db8::1]/h",
                                  "https://user:pw@hooks.example.com/h", "https://hooks.example.com:8443/h",
                                  "https://hooks.example.com/h#part", "https://localhost/h",
-                                 "https://hooks.example.com/a b"])
+                                 "https://hooks.example.com/a b", "https://[broken/hook"])
 def test_an_unusable_webhook_url_is_left_out_rather_than_sent(monkeypatch, url):
     monkeypatch.setenv(pose.ATLAS_WEBHOOK_URL_ENV, url)
     assert pose.atlas_webhook_url() is None

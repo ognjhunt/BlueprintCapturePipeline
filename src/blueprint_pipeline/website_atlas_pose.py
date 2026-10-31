@@ -237,8 +237,14 @@ def atlas_webhook_url() -> str | None:
     raw = os.environ.get(ATLAS_WEBHOOK_URL_ENV, "").strip()
     if not raw:
         return None
-    parts = urlsplit(raw)
-    host = (parts.hostname or "").lower()
+    try:
+        parts = urlsplit(raw)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        # Malformed (e.g. an unclosed IPv6 bracket): the optional callback is
+        # left out; the Atlas work itself still goes ahead.
+        logger.warning("atlas_webhook_url_unusable; tasks are submitted without a callback")
+        return None
     try:
         port = parts.port
     except ValueError:
