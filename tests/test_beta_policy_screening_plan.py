@@ -120,6 +120,8 @@ def test_aggregate_budget_defers_candidates_instead_of_multiplying_allowance():
     assert sum(row["status"] == "selected" for row in value["candidates"]) == 7
     assert value["maximum_planned_cost_usd"] == "14.00"
     assert all(row["blockers"] == ["site_screening_budget_insufficient"] for row in value["candidates"][7:])
+    # Unfunded runnable rows wait, frozen, for money a selected row releases before spend.
+    assert all(row["status"] == "waitlisted" and row["max_cost_usd"] == "2.00" for row in value["candidates"][7:])
     with pytest.raises(BetaPolicyScreeningPlanError, match="site_budget_exceeded"):
         plan(budget_usd="15.01")
 

@@ -123,6 +123,26 @@ release its reservation. An allocated, closed attempt consumes its full cost
 ceiling conservatively. Different sites are visited fairly even when an older
 campaign needs reconciliation.
 
+Runnable candidates the budget cannot fund yet are `waitlisted`, frozen in the
+plan like selected ones. When a funded candidate is refused before spend (no
+offer, preparation or static preflight, credit guard, disk admission), each
+worker pass funds the next waitlisted candidate in plan order whose whole cap
+fits under the site allowance and the plan's budget, after every reservation,
+commitment and pending row. A funded row is `pending` and still needs the
+website's acknowledgment before it is reserved. Once the site holds no
+reservation and no pending row, rows that still do not fit close as `deferred`
+(`beta_screening_site_budget_exhausted`). Plans from before the waitlist keep
+their `deferred` rows and are never funded.
+
+A plan freezes the commit it was prepared against, and preparation refuses
+another (`beta_screening_implementation_commit_changed`). When a deploy lands
+while a campaign has a queued candidate at the old commit, or one refused for
+it, and the campaign holds no reservation, source adoption plans every
+candidate that never ran or allocated again at the new commit, as a new
+campaign for the same source. One ledger write enqueues it and closes the old
+campaign's queued rows as `beta_screening_replanned_for_new_implementation`.
+The site budget is shared, so the new campaign sees what the old one spent.
+
 Closing a beta attempt checks its exact allocated instance and authority's
 resource name against a fresh, complete account inventory, plus its own
 teardown and staged-object absence receipts. Unrelated running sites remain

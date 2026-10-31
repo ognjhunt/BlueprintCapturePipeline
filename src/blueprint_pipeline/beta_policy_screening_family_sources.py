@@ -41,10 +41,12 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
     """Freeze queue work from exact registered facts; never allocate a resource."""
     from .beta_policy_candidate_catalog import load_default_catalog
     from .beta_policy_screening_capabilities import build_planning_inputs
-    from .beta_policy_screening_coordinator import _lock, _read, _root, _write, enqueue_screening_campaign
+    from .beta_policy_screening_coordinator import (
+        _lock, _read, _root, _write, enqueue_screening_campaign, latest_campaign, replan_scope, supersede_campaign,
+    )
     from .beta_policy_screening_plan import build_screening_plan
     from .beta_policy_screening_team import catalog_for_profile
-    from .beta_policy_screening_worker import require_current_source
+    from .beta_policy_screening_worker import implementation_commit, require_current_source
     from .task_evaluation_scene_owner_authority import reopen_scene_intent
     from .task_evaluation_scene_configuration_submission_inputs import read
     from .website_task_family_scene_inputs import read_family_scene_inputs
@@ -89,19 +91,34 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                 campaign_id = 'screening-' + canonical_digest({'source': source,
                     'catalog_digest': catalog['catalog_digest'], 'protocol': 'beta_policy_screening.v1'})[7:39]
                 existing = root / 'plans' / (campaign_id + '.json')
+                replan = superseded = None
                 if existing.exists():
-                    plan = _read(existing)
+                    # Unprepared candidates bound to a commit replaced by a deploy are planned again.
+                    current = latest_campaign(campaign_id, queue_root=root)
+                    commit = implementation_commit()
+                    replan = replan_scope(current, implementation_commit=commit, queue_root=root)
+                    if replan is not None:
+                        superseded = current
+                        campaign_id = 'screening-' + canonical_digest({'source': source,
+                            'catalog_digest': catalog['catalog_digest'], 'protocol': 'beta_policy_screening.v1',
+                            'supersedes': current, 'implementation_commit': commit})[7:39]
+                if existing.exists() and replan is None:
+                    plan = _read(root / 'plans' / (current + '.json'))
                 else:
                     priority = retained_priority(Path(profile['capture_root']) / 'pipeline',
                                                  task_context_digest=source['task_context_digest'])
                     planning = build_planning_inputs(catalog=catalog, profile=profile,
                         capture_root=Path(profile['capture_root']), source=source,
                         inputs_dir=root / 'inputs' / campaign_id, priority=priority)
+                    candidate_ids = planning.get('candidate_ids')
+                    if replan is not None:
+                        candidate_ids = [key for key in (candidate_ids or replan) if key in set(replan)]
                     plan = build_screening_plan(catalog, planning['scene'], campaign_id=campaign_id,
                         capabilities=planning['capabilities'], cost_quotes=planning['cost_quotes'],
-                        candidate_ids=planning.get('candidate_ids'), priority=planning.get('candidate_priority'))
+                        candidate_ids=candidate_ids, priority=planning.get('candidate_priority'))
                     retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
-                outcome.update(enqueue_screening_campaign(plan, queue_root=root))
+                outcome.update(enqueue_screening_campaign(plan, queue_root=root) if superseded is None else
+                               supersede_campaign(superseded, plan, implementation_commit=commit, queue_root=root))
             except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
                 code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else ''
                 outcome['blockers'] = [code if re.fullmatch(r'[a-z][a-z0-9_:,-]{0,199}', code)

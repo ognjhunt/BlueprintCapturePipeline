@@ -82,9 +82,10 @@ def test_installed_articulated_scene_plans_and_passes_real_sealed_bundle_preflig
     assert all(row["max_cost_usd"] == row["cost_quote"]["maximum_cost_usd"] == "4.00" for row in selected)
     # The fourth compatible $4 candidate exceeds the remaining $3. Preserve
     # that individual reason and preflight a candidate the planner selected.
-    assert by_id["pi05_droid"]["status"] == "deferred"
+    # It is waitlisted, frozen with its quote, for money a selected candidate releases.
+    assert by_id["pi05_droid"]["status"] == "waitlisted"
     assert by_id["pi05_droid"]["blockers"] == ["site_screening_budget_insufficient"]
-    assert "cost_quote" not in by_id["pi05_droid"]
+    assert by_id["pi05_droid"]["cost_quote"]["maximum_cost_usd"] == "4.00"
     assert by_id["molmoact2_droid"]["status"] == "unavailable"
     assert by_id["molmoact2_droid"]["blockers"] == ["task_kind_not_supported_by_candidate"]
     assert all(row["blockers"] for row in plan["candidates"] if row["status"] != "selected")

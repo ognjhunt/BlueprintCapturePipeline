@@ -44,12 +44,22 @@ def require_current_source(source: Mapping[str, Any], *, site_id: str) -> dict[s
     return current
 
 
+def implementation_commit() -> str:
+    """The deployed commit, as planning binds it (``build_planning_inputs``)."""
+    import subprocess
+
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2],
+                          capture_output=True, text=True, check=True).stdout.strip()
+
+
 def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | Path,
                            max_sources: int = 32) -> dict[str, Any]:
     """Adopt completed packet requests; blocked sources remain visible and retryable."""
     from .beta_policy_candidate_catalog import load_default_catalog
     from .beta_policy_screening_capabilities import build_planning_inputs
-    from .beta_policy_screening_coordinator import _lock, _read, _root, _write, enqueue_screening_campaign
+    from .beta_policy_screening_coordinator import (
+        _lock, _read, _root, _write, enqueue_screening_campaign, latest_campaign, replan_scope, supersede_campaign,
+    )
     from .beta_policy_screening_plan import build_screening_plan
     from .beta_policy_screening_team import catalog_for_profile
     from .task_evaluation_configured_controls_progression_worker import _validate_source
@@ -111,9 +121,23 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                 campaign_id = "screening-" + canonical_digest({"source": source,
                     "catalog_digest": catalog["catalog_digest"], "protocol": "beta_policy_screening.v1"})[7:39]
                 existing = root / "plans" / f"{campaign_id}.json"
+                replan: list[str] | None = None
+                superseded = None
                 if existing.exists():
-                    outcome.update(enqueue_screening_campaign(_read(existing), queue_root=root))
-                else:
+                    # A deploy since planning leaves unprepared candidates bound to
+                    # a commit preparation refuses: plan them again at this one.
+                    current = latest_campaign(campaign_id, queue_root=root)
+                    commit = implementation_commit()
+                    replan = replan_scope(current, implementation_commit=commit, queue_root=root)
+                    if replan is None:
+                        outcome.update(enqueue_screening_campaign(_read(root / "plans" / f"{current}.json"),
+                                                                  queue_root=root))
+                    else:
+                        superseded = current
+                        campaign_id = "screening-" + canonical_digest({"source": source,
+                            "catalog_digest": catalog["catalog_digest"], "protocol": "beta_policy_screening.v1",
+                            "supersedes": current, "implementation_commit": commit})[7:39]
+                if not existing.exists() or replan is not None:
                     context = require_current_source(source, site_id=retained["scene_id"])
                     result, receipt, _zero = _validate_source(Path(request["source_launch_root"]))
                     if (result.get("configured_scene_revision_digest") != source["scene_revision_digest"]
@@ -135,9 +159,13 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                         source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
                     plan = build_screening_plan(catalog, inputs["scene"], campaign_id=campaign_id,
                         capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
-                        priority=inputs.get("candidate_priority"))
+                        priority=inputs.get("candidate_priority"), candidate_ids=replan)
                     retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
-                    outcome.update(enqueue_screening_campaign(plan, queue_root=root))
+                    if superseded is None:
+                        outcome.update(enqueue_screening_campaign(plan, queue_root=root))
+                    else:
+                        outcome.update(supersede_campaign(superseded, plan, implementation_commit=commit,
+                                                          queue_root=root))
             except (OSError, ValueError, RuntimeError, KeyError) as exc:
                 # No raw remote response, URL, credentials or customer content in operational logs.
                 code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else ""

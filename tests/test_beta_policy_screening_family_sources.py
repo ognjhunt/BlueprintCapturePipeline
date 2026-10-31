@@ -118,6 +118,8 @@ def source_world(tmp_path, monkeypatch, count):
     monkeypatch.setattr(scene_inputs, 'read_family_scene_inputs', read_scientific)
     monkeypatch.setattr(worker, 'require_current_source', current)
     monkeypatch.setattr(capabilities, 'build_planning_inputs', planning)
+    # The deployed commit is the one the planner fixture binds: a replay never re-plans.
+    monkeypatch.setattr(worker, 'implementation_commit', lambda: 'a' * 40)
     return world
 
 
