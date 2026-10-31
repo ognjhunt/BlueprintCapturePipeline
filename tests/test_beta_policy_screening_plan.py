@@ -338,3 +338,26 @@ def test_failed_robot_free_probe_blocks_planning_and_keeps_site_budget_identity(
     value = plan()
     assert value["site_id"] == "site-request1"
     assert value["source"]["capture_id"] == "capture1"
+
+
+def test_the_policies_under_evaluation_are_funded_before_blueprints_scripted_baselines():
+    # 2026-10-31: 23 registered ``blueprint_scripted_*`` rows sort before every learned
+    # policy by id, so id order alone spent the whole site budget on baselines.
+    catalog = load_default_catalog()
+    learned = [catalog_candidate(catalog, key) for key in ("pi05_droid", "groot_n17_droid")]
+    # Only the policy kind matters to the order; the rest is an admitted fixture runtime.
+    baselines = [{**deepcopy(learned[0]), "candidate_id": f"blueprint_scripted_fixture_{n}",
+                  "policy": {**learned[0]["policy"], "kind": "scripted"}} for n in range(3)]
+    catalog = seal_catalog({**catalog, "candidates": [*learned, *baselines]})
+    bindings, quotes = {}, {}
+    for row in catalog["candidates"]:
+        bindings[row["candidate_id"]], quotes[row["candidate_id"]] = admitted(row, maximum="4.00")
+    value = build_screening_plan(catalog, scene(), campaign_id="campaign1", capabilities={"candidate_bindings": bindings},
+                                 cost_quotes=quotes, now=NOW)
+    status = {row["candidate_id"]: (row["status"], row["blockers"]) for row in value["candidates"]}
+    assert status["pi05_droid"][0] == status["groot_n17_droid"][0] == "selected"
+    # $15 holds three $4 runs: the two learned policies, then one baseline by id.
+    assert status["blueprint_scripted_fixture_0"][0] == "selected"
+    assert status["blueprint_scripted_fixture_1"] == status["blueprint_scripted_fixture_2"] == (
+        "deferred", ["site_screening_budget_insufficient"])
+    assert validate_screening_plan(value) == value

@@ -413,7 +413,10 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     cells = screening_cells(scene, episodes_per_candidate)
     remaining = budget
     candidates = []
-    for candidate_id in sorted(requested):
+    # The site budget is spent on the policies being evaluated first; Blueprint's own
+    # scripted baselines are a reference floor and take only what remains. Each
+    # candidate still gets its own result or reason.
+    for candidate_id in sorted(requested, key=lambda key: (by_id[key]["policy"]["kind"] == "scripted", key)):
         candidate = by_id[candidate_id]
         row: dict[str, Any] = {"candidate_id": candidate_id,
                                "display_name": candidate["display_name"],
