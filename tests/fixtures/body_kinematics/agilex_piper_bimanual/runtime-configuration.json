@@ -1,0 +1,607 @@
+{
+  "schema_version": "embodiment_runtime_configuration.v1",
+  "claim_ceiling": "configuration_only",
+  "embodiment_id": "agilex_piper_bimanual",
+  "source_bundle_digest": "sha256:94ee6b4a25fe76959bd0de92375c783c4562391a85a4e1af2460297ca71241f6",
+  "station_parameters": {
+    "schema_version": "embodiment_station_parameters.v1",
+    "embodiment_id": "agilex_piper_bimanual",
+    "composition_mode": "two_instances",
+    "station_root_link": "blueprint_station",
+    "arms": [
+      {
+        "name": "left",
+        "prefix": "left_",
+        "source_base_link": "world",
+        "source_mount_joint": null,
+        "station_from_base": {
+          "translation_m": [
+            0.0,
+            0.35,
+            0.0
+          ],
+          "quaternion_wxyz": [
+            1,
+            0,
+            0,
+            0
+          ]
+        }
+      },
+      {
+        "name": "right",
+        "prefix": "right_",
+        "source_base_link": "world",
+        "source_mount_joint": null,
+        "station_from_base": {
+          "translation_m": [
+            0.0,
+            -0.35,
+            0.0
+          ],
+          "quaternion_wxyz": [
+            1,
+            0,
+            0,
+            0
+          ]
+        }
+      }
+    ]
+  },
+  "manifest_fields": {
+    "schema_version": "blueprint.robot_embodiment.v2",
+    "embodiment_id": "agilex_piper_bimanual",
+    "form": "bimanual_arm",
+    "base": {
+      "mode": "fixed"
+    },
+    "joints": [
+      {
+        "name": "left_joint1",
+        "control": "position",
+        "lower": -2.6179938,
+        "upper": 2.6179938,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint2",
+        "control": "position",
+        "lower": 0.0,
+        "upper": 3.1415926,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint3",
+        "control": "position",
+        "lower": -2.9670597,
+        "upper": 0.0,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint4",
+        "control": "position",
+        "lower": -1.7453292,
+        "upper": 1.7453292,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint5",
+        "control": "position",
+        "lower": -1.2217304,
+        "upper": 1.2217304,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "left_joint6",
+        "control": "position",
+        "lower": -2.0943951,
+        "upper": 2.0943951,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint1",
+        "control": "position",
+        "lower": -2.6179938,
+        "upper": 2.6179938,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint2",
+        "control": "position",
+        "lower": 0.0,
+        "upper": 3.1415926,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint3",
+        "control": "position",
+        "lower": -2.9670597,
+        "upper": 0.0,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint4",
+        "control": "position",
+        "lower": -1.7453292,
+        "upper": 1.7453292,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint5",
+        "control": "position",
+        "lower": -1.2217304,
+        "upper": 1.2217304,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "right_joint6",
+        "control": "position",
+        "lower": -2.0943951,
+        "upper": 2.0943951,
+        "max_velocity": 1.0
+      }
+    ],
+    "grippers": [
+      {
+        "name": "left_gripper",
+        "tool_link": "left_gripper_base",
+        "joints": [
+          {
+            "name": "left_gripper_joint1",
+            "open": 0.05,
+            "closed": 0.0
+          },
+          {
+            "name": "left_gripper_joint2",
+            "open": -0.05,
+            "closed": 0.0
+          }
+        ],
+        "max_width_m": 0.1,
+        "contact_links": [
+          "left_gripper_link1",
+          "left_gripper_link2"
+        ]
+      },
+      {
+        "name": "right_gripper",
+        "tool_link": "right_gripper_base",
+        "joints": [
+          {
+            "name": "right_gripper_joint1",
+            "open": 0.05,
+            "closed": 0.0
+          },
+          {
+            "name": "right_gripper_joint2",
+            "open": -0.05,
+            "closed": 0.0
+          }
+        ],
+        "max_width_m": 0.1,
+        "contact_links": [
+          "right_gripper_link1",
+          "right_gripper_link2"
+        ]
+      }
+    ],
+    "tool_link": "left_gripper_base",
+    "reset_joint_positions": {
+      "left_joint1": 0.0,
+      "left_joint2": 0.31415926000000005,
+      "left_joint3": -0.29670597000000004,
+      "left_joint4": 0.0,
+      "left_joint5": 0.0,
+      "left_joint6": 0.0,
+      "left_gripper_joint1": 0.05,
+      "left_gripper_joint2": -0.05,
+      "right_joint1": 0.0,
+      "right_joint2": 0.31415926000000005,
+      "right_joint3": -0.29670597000000004,
+      "right_joint4": 0.0,
+      "right_joint5": 0.0,
+      "right_joint6": 0.0,
+      "right_gripper_joint1": 0.05,
+      "right_gripper_joint2": -0.05
+    },
+    "actuator": {
+      "stiffness": 100.0,
+      "damping": 20.0
+    },
+    "cameras": [
+      {
+        "name": "overhead",
+        "mount_link": null,
+        "position_m": [
+          0.5,
+          0.0,
+          1.5
+        ],
+        "orientation_xyzw": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "left_wrist",
+        "mount_link": "left_gripper_base",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "right_wrist",
+        "mount_link": "right_gripper_base",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      }
+    ],
+    "control_hz": 60,
+    "action_chunk_rows": 48,
+    "reach_m": 1.100741550085893,
+    "arms": [
+      {
+        "name": "left",
+        "joint_names": [
+          "left_joint1",
+          "left_joint2",
+          "left_joint3",
+          "left_joint4",
+          "left_joint5",
+          "left_joint6"
+        ],
+        "base_link": "left_base_link",
+        "tool_link": "left_gripper_base",
+        "gripper_name": "left_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            -5.1762216493934796e-18,
+            -2.4234176758123294e-17,
+            -1.0074398116405835e-18
+          ],
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "right",
+        "joint_names": [
+          "right_joint1",
+          "right_joint2",
+          "right_joint3",
+          "right_joint4",
+          "right_joint5",
+          "right_joint6"
+        ],
+        "base_link": "right_base_link",
+        "tool_link": "right_gripper_base",
+        "gripper_name": "right_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            -1.1163861157587176e-17,
+            -2.4234176758123294e-17,
+            -4.683198843254724e-19
+          ],
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      }
+    ]
+  },
+  "source_name_mapping": {
+    "blueprint_station": "blueprint_station",
+    "left_base_link": "left_base_link",
+    "left_gripper_base": "left_gripper_base",
+    "left_gripper_base_joint": "left_gripper_base_joint",
+    "left_gripper_joint1": "left_gripper_joint1",
+    "left_gripper_joint2": "left_gripper_joint2",
+    "left_gripper_link1": "left_gripper_link1",
+    "left_gripper_link2": "left_gripper_link2",
+    "left_joint1": "left_joint1",
+    "left_joint2": "left_joint2",
+    "left_joint3": "left_joint3",
+    "left_joint4": "left_joint4",
+    "left_joint5": "left_joint5",
+    "left_joint6": "left_joint6",
+    "left_link1": "left_link1",
+    "left_link2": "left_link2",
+    "left_link3": "left_link3",
+    "left_link4": "left_link4",
+    "left_link5": "left_link5",
+    "left_link6": "left_link6",
+    "left_station_mount": "left_station_mount",
+    "left_world": "left_world",
+    "left_world_to_base_link": "left_world_to_base_link",
+    "right_base_link": "right_base_link",
+    "right_gripper_base": "right_gripper_base",
+    "right_gripper_base_joint": "right_gripper_base_joint",
+    "right_gripper_joint1": "right_gripper_joint1",
+    "right_gripper_joint2": "right_gripper_joint2",
+    "right_gripper_link1": "right_gripper_link1",
+    "right_gripper_link2": "right_gripper_link2",
+    "right_joint1": "right_joint1",
+    "right_joint2": "right_joint2",
+    "right_joint3": "right_joint3",
+    "right_joint4": "right_joint4",
+    "right_joint5": "right_joint5",
+    "right_joint6": "right_joint6",
+    "right_link1": "right_link1",
+    "right_link2": "right_link2",
+    "right_link3": "right_link3",
+    "right_link4": "right_link4",
+    "right_link5": "right_link5",
+    "right_link6": "right_link6",
+    "right_station_mount": "right_station_mount",
+    "right_world": "right_world",
+    "right_world_to_base_link": "right_world_to_base_link"
+  },
+  "simulation_assumptions": [
+    "interior_zero_reset_pose",
+    "default_PD_gains_unless_source_drive_present",
+    "arm_velocity_capped_at_1_SI_unit_per_second",
+    "90_degree_simulated_camera_rig_not_site_calibration",
+    "parallel_gripper_width_is_nominal",
+    "reach_is_source_chain_upper_bound",
+    "duplicate_arms_separated_by_0.7_m_simulation_mounts"
+  ],
+  "source_dynamics": {
+    "moving_link_count": 16,
+    "moving_links_without_positive_authored_mass_and_inertia": [],
+    "estimated_inertias_added": false,
+    "simulator_dynamics_validated": false
+  },
+  "source_limitations": [
+    "agx_arm_description_package_resolution",
+    "independent_tool_action_mapping",
+    "controller_reset_and_runtime_receipt"
+  ],
+  "execution_authorized": false,
+  "policy_compatibility_established": false,
+  "source_urdf_sha256": "sha256:10674093c02edbafd674f5cf111eaabe25d26a82b79f39ac4084d41a4dbe1e15",
+  "generator_module_sha256": "sha256:df0b6c4e7277d4e79b087115852afca8f8ad426e616e0e277cbb4f82e0300469",
+  "generated_files": [
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/LICENSE",
+      "sha256": "sha256:247944c63de1573653722ba784f96123da267105b7b48577e0c8826a24b809f6",
+      "size_bytes": 1065
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/base_link.stl",
+      "sha256": "sha256:fd4a3d6d0266205fe3f725f048645be66592c23564db22e08b0807d5569b2c64",
+      "size_bytes": 607384
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/base_link.dae",
+      "sha256": "sha256:99cd5083e485e3eb739d967c57451f11e32e80b9f4f293815ba3b546d99bdc3c",
+      "size_bytes": 1006256
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/flange.dae",
+      "sha256": "sha256:46240c32a1f78d599079789585b3dd1d8daf3987097ad45921f0fdf81c9ea0d6",
+      "size_bytes": 143471
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/gripper_base.dae",
+      "sha256": "sha256:bf0f29ce73b44d9517d7869089a6e784afeb98097915a2d7ebc49baadcde4d58",
+      "size_bytes": 2861821
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/gripper_base_100_v1.dae",
+      "sha256": "sha256:aaea10ec06709d6a3343dd3378553eee3df40b43ee276df10c5b68ac7f61bae2",
+      "size_bytes": 2721338
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/gripper_base_100_v2.dae",
+      "sha256": "sha256:a3cf0317374110c95fc6fd1db7ab6fc35c8410c5429df8ebe43753621bb0d3d5",
+      "size_bytes": 2861821
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/gripper_base_v1.dae",
+      "sha256": "sha256:9b5c13024ba1bbf6e782f56601f5da6b4396c1d8b27f15ec578a43ac7581c5b5",
+      "size_bytes": 1021732
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/gripper_base_v2.dae",
+      "sha256": "sha256:5d476cf6bec1e152bfed49045b2399c88f8bac486ea4e93250b0bb5462162a3a",
+      "size_bytes": 1169732
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/gripper_link1.dae",
+      "sha256": "sha256:b4aaf0e024d09eb0454e70e0c5092638edcf7da7c253d1effdeeaec46f76427b",
+      "size_bytes": 176476
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/gripper_link2.dae",
+      "sha256": "sha256:0da1350898b2787b76b84698253aeb1efd2ddb6360b2fa2ae03ecff389883af8",
+      "size_bytes": 176476
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/link1.dae",
+      "sha256": "sha256:ea11f3382f6b32ec6d2283db4320ba2065ee1d24358f9b236ce71cfd4cd352cd",
+      "size_bytes": 734613
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/link2.dae",
+      "sha256": "sha256:f6a723ff09c605a4bab19c1581b8879461967afe5626a3b7ca0a884e5f11a869",
+      "size_bytes": 6923319
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/link3.dae",
+      "sha256": "sha256:17cee6f92b741f21e29e4a3a3f600ba8093af3e1f61ae717747e03251a76982c",
+      "size_bytes": 3142573
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/link4.dae",
+      "sha256": "sha256:2a4d28b04341c22fdc38e9fc576c2386bf6f1e8ef0526d5b2cf179ea9ea650b3",
+      "size_bytes": 1402164
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/link5.dae",
+      "sha256": "sha256:fc7253ad4128731fded02700d5f35b94a30f3c219cd2b75b62b0abbd81bf7bff",
+      "size_bytes": 1362521
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/dae/link6.dae",
+      "sha256": "sha256:92f67e27b573969b4a1806ff3bc427bf9219c8ff78fec80d91ce3f32d69b1b9d",
+      "size_bytes": 88161
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/flange.stl",
+      "sha256": "sha256:e732800f35d26994719b0f60a62cef3f860c7b6389d65846dfaef40c04723234",
+      "size_bytes": 83384
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/gripper_base.stl",
+      "sha256": "sha256:f2581d9493437f37ef55681a7de7b02b1a398acb9c29d1037567dccd764e80be",
+      "size_bytes": 1921184
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/gripper_link1.stl",
+      "sha256": "sha256:475a7d8db056524d7659fadf5a2c307d62791047b6214d733dfc7846ed1c613d",
+      "size_bytes": 104384
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/gripper_link2.stl",
+      "sha256": "sha256:3f88d534a85e28a33ef7d2061adacbd1d25214aa9325f9e464aad0f9e4b74606",
+      "size_bytes": 104384
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/link1.stl",
+      "sha256": "sha256:9ee6e1d67c0241f42a0dbaf5c676d19230375ed078ee1943bb8c4c37ab303d14",
+      "size_bytes": 447784
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/link2.stl",
+      "sha256": "sha256:0d37675b699b643f2e15348de99aed535fac10dc5f09a79b8e4b0acfaf4e0378",
+      "size_bytes": 3658384
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/link3.stl",
+      "sha256": "sha256:e8ae51f17c0c7f6d67b753922e2cc269f5e8372a65734f859231639a64fe8fad",
+      "size_bytes": 1845784
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/link4.stl",
+      "sha256": "sha256:efa33022976218f246f736a6133494b5d0e5486e8b50b52900c42f285ae85558",
+      "size_bytes": 877984
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/link5.stl",
+      "sha256": "sha256:a1c69d1c7f6f8c60e2c82331c0f444725200ed4053d3e5ec23aa82cb5db5b29f",
+      "size_bytes": 833684
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/meshes/link6.stl",
+      "sha256": "sha256:88374973bc3bd9e7389b5853cd6e555af9731c30b658b1ee6f85be34a126cb92",
+      "size_bytes": 58884
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/urdf/piper_description.urdf",
+      "sha256": "sha256:fb29238703220dae225917f70c91e28065b40a21485654da0a3c294c0ba296a1",
+      "size_bytes": 7361
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/urdf/piper_gripper.urdf",
+      "sha256": "sha256:b6cf194d6433478e56fee5caa425492a21f5131720718678414b1bcdd27bdfef",
+      "size_bytes": 9687
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/urdf/piper_with_gripper_description.urdf",
+      "sha256": "sha256:5a7f39078854decac3446ee3fbe23994d1882cf6494543f5a8bbc4275100baf3",
+      "size_bytes": 8522
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/urdf/piper_with_gripper_description.xacro",
+      "sha256": "sha256:015ef22f4d8f521a415ee766daf7c700ef3ec28f4e9ebee85ea4deac33c1a384",
+      "size_bytes": 3603
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/urdf/piper_with_left_revo2_description.xacro",
+      "sha256": "sha256:08124d81af1320ab0c1092056f38ce6d44bfa86a5e95a9d0da6b4b638d9a63cc",
+      "size_bytes": 1902
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/urdf/piper_with_right_revo2_description.xacro",
+      "sha256": "sha256:e1fdb6d7bdfef841b801d3f42d7e5cad885dd23088c095696a52348eeb12fe07",
+      "size_bytes": 1904
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/usd/.asset_hash",
+      "sha256": "sha256:19b84044c2bfec78aac72562571ead12633eb1cfe18f629dc6b04a584df02747",
+      "size_bytes": 32
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/usd/config.yaml",
+      "sha256": "sha256:24df68b2507ed8872ce5e810ffc166afebd27a31b27cbd3eb4fa791ba5b3cd8c",
+      "size_bytes": 714
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/usd/configuration/piper_base.usd",
+      "sha256": "sha256:d5c2e463f490ae1f2c661da31855ad5f5a6519a5bb2c77b38cfc1bbcd7482618",
+      "size_bytes": 30637961
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/usd/configuration/piper_physics.usd",
+      "sha256": "sha256:93ccfb4a14c663d78717a140b6cc03e1c363877a1e2a5e8baaf3d432dd09d52a",
+      "size_bytes": 5639
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/usd/configuration/piper_robot.usd",
+      "sha256": "sha256:17fae2ae0e3034fef85c3588c98b5cc015d45cff74d98adef91bdc6b29b97e2c",
+      "size_bytes": 1847
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/usd/configuration/piper_sensor.usd",
+      "sha256": "sha256:c747ff27a6695ee3dd35fe61fab7490a17f12ecaadedaecc640bed54f906cf80",
+      "size_bytes": 645
+    },
+    {
+      "path": "expanded_source/isaac_sim/agx_arm_IsaacLab/IsaacLab_Data_Collection/source/agx_teleop/agx_description/agx_arm_urdf/piper/usd/piper.usd",
+      "sha256": "sha256:e25ffb00ec997e4affed34e3bbef88d3a60342f60e277bbdc6a894259b4d70dc",
+      "size_bytes": 1454
+    },
+    {
+      "path": "robot.urdf",
+      "sha256": "sha256:10674093c02edbafd674f5cf111eaabe25d26a82b79f39ac4084d41a4dbe1e15",
+      "size_bytes": 19701
+    }
+  ],
+  "configuration_digest": "sha256:a8637d7f1a26ad73aed5dd5aebc5bafb65e633db67263868c07dfec2ca9c330b"
+}
