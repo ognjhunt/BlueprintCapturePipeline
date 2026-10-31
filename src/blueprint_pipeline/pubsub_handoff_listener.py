@@ -1651,13 +1651,23 @@ def process_handoff_payload(payload: bytes | str | Mapping[str, Any], *, storage
             from .task_evaluation_scene_retirement_generations import _capture_admission
             try:
                 lifetime.enter_context(_capture_admission(root, birth=True))
-            except (OSError, ValueError):
+            except (OSError, ValueError) as error:
+                from .bounded_error import disk_capacity_refusal, error_description
+
                 # Preclaim refusal, with the same recovery/accounting boundary.
+                # The code covers a busy fence, unsafe stores and a full volume;
+                # keep which one it was.
+                reason = ('pubsub_handoff_staging_capacity_insufficient' if disk_capacity_refusal(error)
+                          else 'capture_original_birth_refused')
+                described = error_description(error)
+                logger.warning('pubsub_handoff.capture_admission_refused',
+                               extra={'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
+                                      'staging_reason': reason, 'staging_error': described})
                 return {'schema_version': 'v1',
                         'status': 'capture_source_membership_unavailable_retryable',
                         'queue_disposition': 'retryable', 'bucket': handoff.bucket,
                         'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id,
-                        'capture_root': str(root), 'staging_reason': 'capture_original_birth_refused',
+                        'capture_root': str(root), 'staging_reason': reason, 'staging_error': described,
                         'blockers': ['capture_source_membership_unavailable']}
         try:
             return _process_handoff_payload_body(sys.modules[__name__], payload, storage_root=storage_root, provider=provider, run_e2e=run_e2e, storage_client=storage_client, run_evaluation_prep=run_evaluation_prep, run_e2e_enabled=run_e2e_enabled, stage_control_plane=stage_control_plane, control_plane_manifest_path=control_plane_manifest_path, control_plane_work_dir=control_plane_work_dir, control_plane_staged_inputs_path=control_plane_staged_inputs_path, overwrite_control_plane_input=overwrite_control_plane_input, lease_owner=lease_owner, lease_seconds=lease_seconds, payload_digest=payload_digest, expected_assessment_resume=expected_assessment_resume, **({"require_unattempted_delivery": True} if require_unattempted_delivery else {}), **({"expected_preparation_purpose": expected_preparation_purpose} if expected_preparation_purpose else {}), **({"expected_reconstruction_resume": expected_reconstruction_resume} if expected_reconstruction_resume is not None else {}), **({"expected_target_choice_correction": expected_target_choice_correction} if expected_target_choice_correction is not None else {}))

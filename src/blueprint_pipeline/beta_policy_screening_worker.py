@@ -55,6 +55,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_candidate_quick10_registry import profile_for_capture
     from .team_scene_packet_worker import _read_json, request_key, resolve_capture_root, validated_request
+    from .website_candidate_ranking import retained_priority
+    from .website_candidate_selection import retain_campaign_catalog
 
     root = _root(queue_root)
     packet_root = Path(packet_queue_root)
@@ -109,16 +111,27 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
 
                     probe = enqueue_rigid_robot_free_probe(capture)
                     outcome["robot_free_probe_status"] = probe["status"]
+                    # The intake ranking orders the plan; the site budget decides how far it runs.
+                    priority = retained_priority(capture / "pipeline", task_context_digest=source["task_context_digest"])
+                    outcome["candidate_order"] = "intake_ranking" if priority else "identifier"
                     inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
-                        source=source, inputs_dir=root / "inputs" / campaign_id)
+                        source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
                     plan = build_screening_plan(catalog, inputs["scene"], campaign_id=campaign_id,
-                        capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"])
+                        capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
+                        priority=inputs.get("candidate_priority"))
+                    retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
                     outcome.update(enqueue_screening_campaign(plan, queue_root=root))
             except (OSError, ValueError, RuntimeError, KeyError) as exc:
                 # No raw remote response, URL, credentials or customer content in operational logs.
                 code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else ""
-                outcome["blockers"] = [code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)
-                                       else "beta_screening_source_unavailable"]
+                typed = re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code) is not None
+                outcome["blockers"] = [code if typed else "beta_screening_source_unavailable"]
+                if not typed:
+                    from .bounded_error import error_description
+
+                    # The generic code covers a full disk, a missing retained
+                    # file and an unreadable record alike; keep which it was.
+                    outcome["error"] = error_description(exc)
             _write(states / path.name, outcome)
             _write(cursor_path, {"last": path.name})
             outcomes.append(outcome)
@@ -160,15 +173,27 @@ def deliver_publications(*, queue_root: str | Path, transport=None,
                          refresh_startable: bool = False) -> dict[str, Any]:
     from .beta_policy_screening_coordinator import acknowledge_publication, pending_publications
     sent = failed = 0
+    failure: dict[str, Any] = {}
     for publication in pending_publications(queue_root=queue_root, refresh_startable=refresh_startable):
         try:
             (transport or publish_screening)(publication)
             acknowledged = acknowledge_publication(publication["campaign_id"], publication["publication_digest"],
                 queue_root=queue_root)
             sent += int(acknowledged)
-        except (OSError, ValueError, RuntimeError):
+        except (OSError, ValueError, RuntimeError) as exc:
             failed += 1
-    return {"acknowledged": sent, "pending": failed}
+            from .bounded_error import error_description, rate_limited
+
+            # Name the refusal for the worker status (a 429 or an outage is
+            # "unavailable") and keep the failure's type and redacted message.
+            http = re.fullmatch(r"beta_screening_publication_http_([0-9]{3})", str(exc))
+            status = int(http.group(1)) if http else 0
+            failure = {"last_failure_category": (
+                "auth" if status in (401, 403) else "source" if status == 409
+                else "ack" if str(exc) == "beta_screening_publication_ack_invalid"
+                else "unavailable" if rate_limited(exc) or status >= 500 or isinstance(exc, OSError)
+                else "unknown"), "last_error": error_description(exc)}
+    return {"acknowledged": sent, "pending": failed, **failure}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -191,9 +216,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
         max_launches=args.max_launches)
     after = deliver_publications(queue_root=root)
+    from .website_candidate_selection import deliver_selections, retain_selections
+    try:
+        # After a terminal result is published, choose from it; local and unpaid.
+        selections = retain_selections(queue_root=root)
+        selections["delivery"] = deliver_selections(queue_root=root)
+    except (OSError, ValueError, KeyError) as exc:
+        code = str(exc) if isinstance(exc, ValueError) else ""
+        selections = {"status": "failed", "blocker": code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)
+                      else "website_candidate_selection_failed"}
     status = write_worker_status(root, publication_before=before, publication_after=after, execution=execution)
     print(json.dumps({"sources": sources, "execution": execution, "publication_before": before,
-                      "publication_after": after, "worker_status": status}, sort_keys=True))
+                      "publication_after": after, "selections": selections, "worker_status": status},
+                     sort_keys=True))
     return 0
 
 

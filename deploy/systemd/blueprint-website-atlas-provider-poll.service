@@ -1,0 +1,42 @@
+[Unit]
+Description=Read live World Labs Atlas operations once; never spends or advances a job
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# One read per live operation, plus the output downloads a finished one needs (a refined
+# splat or mesh can be large). It uploads, reserves and submits nothing, so it keeps running
+# through control-plane deploys (DEPLOY_EXEMPT_TRIGGER_UNITS in scripts/deploy_control_plane_commit.py).
+TimeoutStartSec=1h
+User=blueprint
+Group=blueprint
+UMask=0077
+# The preview worker's settings and Atlas key, as blueprint-website-atlas-preview.service reads them.
+EnvironmentFile=/etc/blueprint/pipeline-control-plane.env
+EnvironmentFile=-/etc/blueprint/website-atlas-preview.env
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
+Environment=BLUEPRINT_WEBSITE_ATLAS_PREVIEW_STORAGE_ROOT=/var/lib/blueprint/pubsub-handoffs
+# A webhook's poll request (blueprint_pipeline.atlas_webhook.POLL_REQUEST_PATH) is consumed as
+# the run starts, so one that arrives during the run starts the next.
+ExecStart=/bin/bash -lc 'rm -f /var/lib/blueprint/pipeline-control-plane/atlas-provider-poll/requested; cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.website_atlas_preview poll --storage-root "$${BLUEPRINT_WEBSITE_ATLAS_PREVIEW_STORAGE_ROOT}"'
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/blueprint
+TasksMax=512
+MemoryMax=8G
+CPUQuota=200%
+Nice=10

@@ -122,6 +122,22 @@ class TaskEvaluationRigidRelocationNativeAdapterError(ValueError):
     """Configured task truth cannot be translated without changing meaning."""
 
 
+def _estimated_support_height_tolerance(template: Mapping[str, Any]) -> float:
+    """The support-height tolerance the website region was admitted with.
+
+    A website task whose dimensions are estimated carries the scene's placement
+    uncertainty (``website_native_submission``); its region was derived within
+    that tolerance and is bound within the same one. Measured or authored
+    (development) supports keep the 5 mm default.
+    """
+    from .task_evaluation_surface_target import SUPPORT_HEIGHT_TOLERANCE_M
+    uncertainty = template.get("placement_uncertainty_m")
+    if (template.get("dimension_authority") == "estimated" and not template.get("test_environment")
+            and type(uncertainty) in (int, float) and math.isfinite(uncertainty)):
+        return max(SUPPORT_HEIGHT_TOLERANCE_M, float(uncertainty))
+    return SUPPORT_HEIGHT_TOLERANCE_M
+
+
 def _sha256_and_size(path: Path) -> tuple[str, int]:
     digest = hashlib.sha256()
     size = 0
@@ -1091,7 +1107,8 @@ def _adapt_rigid_relocation_documents(
                 or type(support.get("top_z_m")) not in (int, float) or not math.isfinite(support["top_z_m"])):
             raise TaskEvaluationRigidRelocationNativeAdapterError("rigid_relocation_destination_support_invalid")
         native_task_spec = bind_native_surface_target(task_spec=native_task_spec, target=surface,
-            static=documents[STATIC_QUALIFICATION_CONTRACT_PATH], support=support)
+            static=documents[STATIC_QUALIFICATION_CONTRACT_PATH], support=support,
+            height_tolerance_m=_estimated_support_height_tolerance(template))
     native_definition = {
         "schema_version": "task_evaluation_native_task_definition.v1",
         "identity": dict(task["identity"]),

@@ -162,15 +162,17 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         website["cad_evidence"] = refs[PREFIX + ".cad_evidence"]
     subject = runtime["subject"]
     lower, upper = subject["aabb_min_xyz"], subject["aabb_max_xyz"]
+    from .task_evaluation_surface_target import surface_execution_limits, surface_target_for_web
+    from .website_support_geometry import destination_clear_of_start
+    from .website_surface_target_admission import (DESTINATION_SUPPORT_INSTANCE_ID, SUPPORT_INSTANCE_ID,
+                                                   SUPPORT_PRIM_PATH, admit_surface_target,
+                                                   preparation_size_tolerance, website_target_radius)
     support = owner_task["support"]
-    support_record = records.support_plane_input(scene_id=scene_id, instance_id="website-support",
-        semantic_label=support["description"], sage_prim_path="/Root",
+    support_record = records.support_plane_input(scene_id=scene_id, instance_id=SUPPORT_INSTANCE_ID,
+        semantic_label=support["description"], sage_prim_path=SUPPORT_PRIM_PATH,
         bounds_min=support["aabb_min_xyz"], bounds_max=support["aabb_max_xyz"])
     support_record.update(authority="authored_development_surface" if development else "registered_estimated_capture_and_reconstruction",
                           physical_scale_measured=False, source_face_indices=preparation["support"]["face_indices"])
-    from .task_evaluation_surface_target import (SUPPORT_HEIGHT_TOLERANCE_M, derive_surface_target,
-                                                 surface_execution_limits, surface_target_for_web)
-    from .website_support_geometry import DESTINATION_MARGIN_M, destination_clear_of_start
     strategy = owner_task["strategy"]
     articulated = strategy == "articulated_open_close"
     target_support, start_support, relocation = support_record, None, None
@@ -210,30 +212,29 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
             surface, bound = destination["support"], preparation.get("destination_support")
             require(isinstance(bound, dict) and bool(bound.get("face_indices")), "website_destination_support_unbound")
             target_support = records.support_plane_input(scene_id=scene_id,
-                instance_id="website-destination-support", semantic_label=surface["description"],
-                sage_prim_path="/Root", bounds_min=surface["aabb_min_xyz"], bounds_max=surface["aabb_max_xyz"])
+                instance_id=DESTINATION_SUPPORT_INSTANCE_ID, semantic_label=surface["description"],
+                sage_prim_path=SUPPORT_PRIM_PATH, bounds_min=surface["aabb_min_xyz"], bounds_max=surface["aabb_max_xyz"])
             target_support.update(authority=support_record["authority"], physical_scale_measured=False,
                                   source_face_indices=bound["face_indices"])
             start_support = support_record
-        radius = math.hypot(*[(upper[i] - lower[i]) / 2 for i in (0, 1)]) + DESTINATION_MARGIN_M
+        # An estimated subject's region also holds the largest replacement qualification admits.
+        size_tolerance = preparation_size_tolerance(preparation)
+        recorded = preparation.get("destination_relocation")
         if (start_support is None and destination.get("relation") == "on"
-                and not destination_clear_of_start(lower, upper, destination["position_world_m"], up=2,
-                                                   clearance=radius)):
-            # A preparation from before the same-surface rule: move its destination
-            # off the start by that rule, from its own collider, and say so.
+                and (recorded is not None and recorded.get("replacement_size_tolerance", 0.0) < size_tolerance
+                     or not destination_clear_of_start(lower, upper, destination["position_world_m"], up=2,
+                         clearance=website_target_radius(lower, upper, relative_error=size_tolerance)))):
+            # A preparation from before the same-surface rule, or one that moved its
+            # destination by a smaller clearance than this region's: move it off the
+            # start by that rule, from its own collider, and say so.
             from .website_task_preparation import relocated_destination
             moved = relocated_destination(preparation, paths["preparation"])
             require(moved is not None, "task_destination_overlaps_start")
             destination, relocation = {**destination, "position_world_m": moved["position_world_m"]}, moved["relocation"]
-        # An estimated support's top is known only to the placement uncertainty
-        # its destination was found within (capture-447ae4f4: 7.2 cm; the region
-        # sat 1.2 cm under the support's highest face, the 5 mm check refused it).
-        uncertainty = preparation["coordinate_frame"].get("placement_uncertainty_m")
-        estimated = (not development and type(uncertainty) in (int, float) and math.isfinite(uncertainty))
-        target = derive_surface_target(destination={**destination, "kind": "green_region", "radius_m": radius},
-            support=target_support, source_min=lower, source_max=upper,
-            support_instance_id=target_support["publisher_instance_id"], start_support=start_support,
-            height_tolerance_m=max(SUPPORT_HEIGHT_TOLERANCE_M, uncertainty) if estimated else SUPPORT_HEIGHT_TOLERANCE_M)
+        # Preparation applied this same admission before the owner was asked to pay.
+        target = admit_surface_target(destination=destination, support=support, subject_min=lower, subject_max=upper,
+            placement_uncertainty_m=preparation["coordinate_frame"].get("placement_uncertainty_m"),
+            development_support=bool(development), relative_error=size_tolerance)
         position = destination["position_world_m"]
         template, success, execution = records.pick_and_place_task_records(
             task_identity=task_identity, object_identity=construction["subject_identity"],

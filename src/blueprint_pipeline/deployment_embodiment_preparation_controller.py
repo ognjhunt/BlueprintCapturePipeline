@@ -206,6 +206,34 @@ def promote(*, request: dict, bundle: dict, allocator_result: dict, job: Path, s
     return summary
 
 
+def spend_admission_wait(*, attempts: int = 17, sleep=None) -> list[str]:
+    """Wait, bounded, for the spend guard's current billing-backed lock; never waive it.
+
+    The grant is consumed just before the GPU is created, and the provider preflight then
+    refuses a stale lock. Right after a deploy the guard has not yet written one, and a
+    batch launched then consumed its single-use grant for nothing (public-robot-imports-
+    20261031-08). Checking first leaves the batch queued, unbuilt and unconsumed, for the
+    next pass. Returns the lock's blockers, empty when it admits spend or none is configured.
+    """
+    import time
+    from datetime import datetime, timezone
+    from .paid_lane_guard import SPEND_ADMISSION_LOCK_PATH_ENV, _load_spend_admission_lock
+    from .spend_admission_lock import validate_spend_admission_lock
+    configured = str(os.getenv(SPEND_ADMISSION_LOCK_PATH_ENV) or "").strip()
+    if not configured:
+        return []  # The provider preflight still decides; nothing to wait for here.
+    blockers: list[str] = []
+    for attempt in range(attempts):
+        evidence = _load_spend_admission_lock(Path(configured).expanduser())
+        loaded = str(evidence.get("_load_blocker") or "")
+        blockers = [loaded] if loaded else validate_spend_admission_lock(
+            evidence, now=datetime.now(timezone.utc), required_provider="vast")
+        if not blockers or attempt == attempts - 1:
+            return blockers
+        (sleep or time.sleep)(15)
+    return blockers
+
+
 def unavailable_rows(request: dict, reason: str, details=None) -> list[dict]:
     return [{"embodiment_id": identity, "status": "not_imported", "reason": reason,
              **({"details": details} if details else {})} for identity in request["embodiment_ids"]]
@@ -284,6 +312,12 @@ def process_entry(item: Path, *, root: Path, store: Path, commit: str, build=bui
     if not result_path.exists():
         validate_request(request)
         require(request["release_commit"] == commit, "installed_release_mismatch")
+        waiting = spend_admission_wait()
+        if waiting:
+            # Queued, unbuilt and unconsumed: the next pass tries again.
+            return {"status": "waiting_for_spend_admission", "authorization_id": request["authorization_id"],
+                    "blockers": waiting, "provider_relaunch_performed": False, "authorization_consumed": False,
+                    "results": unavailable_rows(request, "spend_admission_not_current", waiting)}
         bundle = build(request=request, runtime_source_receipt=resolve_runtime(),
                        source_root=workspace_for(job).parent / "sources" / commit, output=workspace_for(job) / "bundle")
         write_once(job / "allocator_launch_intent.json", {"request_digest": request["request_digest"],
@@ -304,6 +338,65 @@ def process_entry(item: Path, *, root: Path, store: Path, commit: str, build=bui
     return promote(request=request, bundle=bundle, allocator_result=result, job=job, store=store)
 
 
+BUNDLE_ARCHIVE = "embodiment_asset_preparation.zip"
+WORKSPACE_RELEASE = "workspace-release.json"
+
+
+def _terminal(job: Path) -> bool:
+    """Nothing reads this job's upload again: it is published, or its one GPU attempt ended unpromotable."""
+    if (job / "publication.json").exists():
+        return True
+    result = job / "allocator_result.json"
+    return result.is_file() and read(result, limit=32 * 1024**2).get("status") != "completed"
+
+
+def release_terminal_workspaces(root: Path, *, commit: str) -> list[dict]:
+    """Free each terminal batch's uploaded bundle archive and other releases' source caches.
+
+    The archive (the 4.5 GB runtime packet plus sources) is only the GPU upload: a
+    published or unpromotable batch never reads it again, and a batch is never
+    relaunched. Its receipt, the job state and the model store are kept; the archive's
+    digest is recorded in the job's ``workspace-release.json``. Source caches of
+    other releases are verified public downloads a later build re-materialises.
+    Twelve batches had kept 53 GB on the shared work disk (2026-10-31).
+    """
+    released = []
+    for job in sorted(path for path in (root / "jobs").glob("*") if path.is_dir()):
+        archive = workspace_for(job) / "bundle" / BUNDLE_ARCHIVE
+        try:
+            if archive.is_symlink() or not archive.is_file() or not _terminal(job):
+                continue
+            receipt = read(archive.parent / RECEIPT, limit=32 * 1024**2)
+            record = {"schema_version": "embodiment_preparation_workspace_release.v1", "authorization_id": job.name,
+                      "bundle_path": str(archive), "bundle_sha256": receipt.get("bundle_sha256"),
+                      "released_bytes": archive.stat().st_size, "model_store_changed": False}
+            if not (job / WORKSPACE_RELEASE).exists():
+                write_once(job / WORKSPACE_RELEASE, record)
+            # The bundle was published read-only (0555); open it to its owner only to unlink.
+            mode = archive.parent.stat().st_mode & 0o777
+            archive.parent.chmod(mode | 0o700)
+            try:
+                archive.unlink()
+            finally:
+                archive.parent.chmod(mode)
+            released.append(record)
+        except (OSError, ValueError) as exc:
+            # Freeing space never stops the queue; the reason is reported and retried next pass.
+            released.append({"authorization_id": job.name, "release_blocked": type(exc).__name__})
+    sources = (WORK_ROOT if root == STATE_ROOT else root / "work") / "sources"
+    for cache in sorted(path for path in sources.glob("*") if path.is_dir() and not path.is_symlink()):
+        if cache.name == commit:
+            continue
+        try:
+            for directory in (cache, *(p for p in cache.rglob("*") if p.is_dir() and not p.is_symlink())):
+                directory.chmod(0o700)
+            shutil.rmtree(cache)
+            released.append({"source_cache_release": cache.name})
+        except OSError as exc:
+            released.append({"source_cache_release": cache.name, "release_blocked": type(exc).__name__})
+    return released
+
+
 def run_queue(*, root: Path = STATE_ROOT, store: Path = MODEL_ROOT) -> dict:
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (root / ".controller.lock").open("a+") as lock:
@@ -311,6 +404,7 @@ def run_queue(*, root: Path = STATE_ROOT, store: Path = MODEL_ROOT) -> dict:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"status": "already_running"}
+        released = release_terminal_workspaces(root, commit=source_commit())
         outcomes = []
         for item in sorted((root / "pending").glob("*.json")):
             try:
@@ -329,7 +423,8 @@ def run_queue(*, root: Path = STATE_ROOT, store: Path = MODEL_ROOT) -> dict:
             # One operator grant per service pass; each already bound to <=one GPU.
             if outcome["status"] not in {"completed", "not_completed", "blocked"}:
                 break
-        summary = {"status": "checked", "results": outcomes}
+        released += release_terminal_workspaces(root, commit=source_commit())
+        summary = {"status": "checked", "results": outcomes, "workspace_releases": released}
         path = root / "latest.json"
         temporary = root / ".latest.json"
         temporary.write_text(json.dumps(summary, indent=2) + "\n")

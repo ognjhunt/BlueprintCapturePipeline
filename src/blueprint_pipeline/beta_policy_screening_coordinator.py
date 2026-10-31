@@ -40,6 +40,7 @@ LEDGER_FILENAME = "screening_ledger.v1.json"
 SITE_LIMIT = Decimal("15")
 CAPACITY_RETRY_SECONDS = 60
 CAPACITY_WAIT_BLOCKER = "beta_screening_waiting_for_capacity"
+INFEASIBLE_BLOCKER = "candidate_infeasible_measured_geometry"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _MONEY = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?")
 _BLOCKER = re.compile(r"[a-z][a-z0-9_:.=-]{0,199}")
@@ -212,14 +213,21 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
             "plan_digest": value["plan_digest"], "site_id": value["site_id"],
             "revision": 1, "created_at": timestamp, "updated_at": timestamp,
             "published_revision": 0, "published_digest": None,
-            "candidates": {candidate["candidate_id"]: {
-                "status": "pending" if candidate["status"] == "selected" else candidate["status"],
-                "blockers": (_safe_blockers(candidate["blockers"], "beta_screening_candidate_unavailable")
-                             if candidate["blockers"] else []),
-            } for candidate in value["candidates"]},
+            "candidates": {candidate["candidate_id"]: _initial_state(candidate) for candidate in value["candidates"]},
         }
         _save(root, ledger)
     return {"campaign_id": campaign_id, "status": "enqueued", "plan_digest": value["plan_digest"]}
+
+
+def _initial_state(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    status = candidate["status"]
+    blockers = candidate["blockers"]
+    if status == "infeasible":
+        # The frozen plan keeps ``infeasible``; the published vocabulary has no
+        # such state yet, so the site sees it unavailable with its measured reason.
+        status, blockers = "unavailable", [INFEASIBLE_BLOCKER, *blockers]
+    return {"status": "pending" if status == "selected" else status,
+            "blockers": _safe_blockers(blockers, "beta_screening_candidate_unavailable") if blockers else []}
 
 
 def _safe_blockers(value: Any, fallback: str) -> list[str]:
@@ -440,10 +448,17 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
         if not isinstance(prepared, Mapping):
             raise ValueError("beta_screening_prepared_record_invalid")
     except Exception as exc:  # noqa: BLE001 - a pre-spend refusal does not prevent unrelated candidates
+        from .bounded_error import error_description
+
         blockers = _safe_blockers([str(exc)], "beta_screening_preparation_failed")
+        # Only the blocker codes are published. The attempt keeps the type and
+        # a redacted, trimmed message of a failure the generic code stands for.
+        described = error_description(exc) if blockers == ["beta_screening_preparation_failed"] else None
 
         def blocked(item):
             item["attempt"]["reservation_status"] = "released"
+            if described is not None:
+                item["attempt"]["error"] = described
             item.update(status="blocked", blockers=blockers)
         _update(root, plan["campaign_id"], candidate["candidate_id"], blocked)
         return False
@@ -470,9 +485,14 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
                     item.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER])
                 _update(root, plan["campaign_id"], candidate["candidate_id"], waiting)
                 return False
-        except Exception:  # noqa: BLE001 - this boundary is read-only and strictly pre-intent
+        except Exception as exc:  # noqa: BLE001 - this boundary is read-only and strictly pre-intent
+            from .bounded_error import error_description
+
+            described = error_description(exc)
+
             def refused(item):
                 item["attempt"]["reservation_status"] = "released"
+                item["attempt"]["error"] = described
                 item.update(status="blocked", blockers=["beta_screening_capacity_preflight_failed"])
             _update(root, plan["campaign_id"], candidate["candidate_id"], refused)
             return False
@@ -521,10 +541,12 @@ def process_screening_queue(
             for campaign_id in active[:max_campaigns]:
                 state = ledger["campaigns"][campaign_id]
                 plan = _plan(root, campaign_id, state["plan_digest"])
-                # Reconcile allocated/uncertain work before reserving another candidate.
+                # Reconcile allocated/uncertain work before reserving another
+                # candidate; new work follows the plan's (ranked) priority order.
+                position = {row["candidate_id"]: index for index, row in enumerate(plan["candidates"])}
                 ordered = sorted(plan["candidates"], key=lambda value: (
                     state["candidates"][value["candidate_id"]]["status"] not in ACTIVE_STATUSES,
-                    value["candidate_id"],
+                    position[value["candidate_id"]],
                 ))
                 for candidate in ordered:
                     current = state["candidates"][candidate["candidate_id"]]["status"]

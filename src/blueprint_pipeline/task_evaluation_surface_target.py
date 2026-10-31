@@ -227,12 +227,21 @@ def surface_execution_limits(*, success, support, start_support=None):
     return limits
 
 
-def bind_native_surface_target(*, task_spec, target, static, support):
-    """Bind qualified collider bounds and the retained support before sealing."""
+def bind_native_surface_target(*, task_spec, target, static, support,
+                               height_tolerance_m=SUPPORT_HEIGHT_TOLERANCE_M):
+    """Bind qualified collider bounds and the retained support before sealing.
+
+    ``height_tolerance_m`` is the same tolerance the region was admitted with
+    (``derive_surface_target``): an estimated support's top is known only to its
+    placement uncertainty, so the bind must not re-check it at 5 mm after paid
+    construction (capture-447ae4f4: the region sat 1.5 cm under the highest face).
+    """
     from .adp_rigid_retreat_scoring import _rotate, _vector
     target = validate_surface_target(target)
+    require(type(height_tolerance_m) in (int, float) and math.isfinite(height_tolerance_m)
+            and height_tolerance_m >= SUPPORT_HEIGHT_TOLERANCE_M, "surface_target_height_tolerance_invalid")
     require(target["support_prim_path"] == support["sage_prim_path"]
-            and abs(target["surface_position_world_m"][2] - support["top_z_m"]) <= 0.005,
+            and abs(target["surface_position_world_m"][2] - support["top_z_m"]) <= height_tolerance_m,
             "surface_target_native_support_mismatch")
     value = dict(task_spec)
     affordance = dict(value["interaction_affordance"])

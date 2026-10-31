@@ -1242,3 +1242,115 @@ def test_a_region_with_no_supported_spot_keeps_the_whole_surface_result(tmp_path
     assert region["destination_region_status"] == "unplaceable"
     assert region["destination_region_reason"] == "no_supported_footprint_near_region"
     assert region["destination_region_basis"] == "registered_region_boxes_on_destination_mask"
+
+
+def _destination_bounds(args, minimum, maximum):
+    args["task_masks"]["targets"][1]["estimated_visible_bounds"] = _bounds(minimum, maximum)
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    return args
+
+
+def _on_another_level_surface(monkeypatch):
+    # The destination's surface is fitted apart from the subject's, at the same height.
+    real, calls = preparation.support_under, []
+
+    def another_surface(*args, **kwargs):
+        found = real(*args, **kwargs)
+        calls.append(found)
+        # Each preparation looks up the subject's support, then the destination's.
+        if len(calls) % 2 == 0 and found is not None:
+            found = {**found, "face_indices": [index + 10 ** 6 for index in found["face_indices"]]}
+        return found
+    monkeypatch.setattr(preparation, "support_under", another_surface)
+
+
+@pytest.mark.parametrize("case, code", [
+    # The footprint rests on the surface near its edge; the region holding it at any yaw does not.
+    ("region_off_its_support", "surface_target_outside_support"),
+    # The region's centre lies under the subject, on a second surface level with its own.
+    ("centre_under_the_subject", "surface_target_initial_overlap"),
+])
+def test_a_region_evaluation_would_refuse_is_recorded_at_preparation_and_the_job_continues(
+        tmp_path, monkeypatch, case, code):
+    # capture-447ae4f4: preparation reported intake_ready, evaluation refused the same geometry 82 minutes later.
+    # Geometry is not a hard stop (privacy, rights, money): the refusal is advisory evidence, not a blocker.
+    from tests.test_website_native_submission import legacy_native_surface_target
+    args = _arguments(tmp_path)
+    if case == "region_off_its_support":
+        _destination_bounds(args, [0.4, 0.48, 1.12], [0.6, 0.5, 1.14])
+    else:
+        _on_another_level_surface(monkeypatch)
+        _destination_bounds(args, [0.10, 0.48, 1.56], [0.165, 0.5, 1.61])
+    with monkeypatch.context() as unchecked_preparation:
+        # Without the shared admission, as before: ready, and native submission refuses it.
+        unchecked_preparation.setattr(preparation, "admit_surface_target", lambda **_: None)
+        unchecked = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "unchecked"})
+    assert unchecked["status"] == "intake_ready", unchecked["blockers"]
+    with pytest.raises(ValueError, match=code):
+        legacy_native_surface_target(unchecked)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready" and value["blockers"] == []
+    assert value["surface_target_admission"] == {"status": "refused", "code": code,
+                                                 "basis": "evaluation_admission_rule"}
+    # One Pipeline-internal key; the WebApp-facing destination and intake request are unchanged.
+    assert set(value) == set(unchecked) | {"surface_target_admission"}
+    assert value["destination"] == unchecked["destination"]
+    assert value["intake_request"] == unchecked["intake_request"]
+
+
+@pytest.mark.parametrize("case", ["same_surface", "container", "another_surface"])
+def test_a_region_evaluation_admits_leaves_the_preparation_unchanged(tmp_path, monkeypatch, case):
+    args = _arguments(tmp_path)
+    if case == "container":
+        args = container_arguments(args)
+    elif case == "another_surface":
+        _on_another_level_surface(monkeypatch)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready", value["blockers"]
+    assert ("support" in value["destination"]) is (case != "same_surface")
+    assert "surface_target_admission" not in value
+    monkeypatch.setattr(preparation, "admit_surface_target", lambda **_: None)
+    assert preparation.compile_website_scene_preparation(**args)["digest"] == value["digest"]
+
+
+#: Destinations grounded as the whole surface the cup rests on. The first's centre lies
+#: under the cup; the second's 10.5 cm from its centre, clear of the 9.2 cm disc that
+#: holds the estimate, inside the 11.3 cm one that holds a 25% larger replacement.
+UNDER_THE_SUBJECT = ([-0.19, 0.48, 1.34], [0.46, 0.5, 1.84])
+INSIDE_ONLY_THE_LARGER_DISC = ([-0.25, 0.48, 1.25], [0.4, 0.5, 1.75])
+
+
+def test_a_relocated_destination_clears_the_region_that_holds_the_largest_admitted_replacement(tmp_path, monkeypatch):
+    """capture-447ae4f4: relocation, admission, the scorer and native bind read one radius."""
+    from blueprint_pipeline.website_surface_target_admission import website_target_radius
+    args = _destination_bounds(_arguments(tmp_path), *INSIDE_ONLY_THE_LARGER_DISC)
+    with monkeypatch.context() as before_this_rule:
+        before_this_rule.setattr(preparation, "replacement_size_tolerance", lambda **_: 0.0)
+        before = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "before"})
+    assert before["status"] == "intake_ready" and "destination_relocation" not in before
+    real, clearances = preparation.farthest_supported_destination, []
+
+    def recording(*args, **kwargs):
+        clearances.append(kwargs["clearance"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preparation, "farthest_supported_destination", recording)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready" and value["blockers"] == []
+    assert value["authoring_inputs"]["metric_envelope"]["maximum_dimension_relative_error"] == 0.25
+    assert value["destination_relocation"]["replacement_size_tolerance"] == 0.25
+    assert "surface_target_admission" not in value  # admitted with the larger region
+    subject, mpu = value["subject"], value["coordinate_frame"]["declared_meters_per_unit"]
+    radius = website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
+    assert radius > website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0)
+    # The clearance is that radius in runtime units, and the moved centre lies outside it.
+    assert clearances == [pytest.approx(radius / mpu, rel=1e-9)]
+    start = [(subject["aabb_min_xyz"][i] + subject["aabb_max_xyz"][i]) / 2 for i in (0, 1)]
+    assert math.dist(start, value["destination"]["position_world_m"][:2]) > radius
+    # An older preparation is moved at native submission by the same rule and the same clearance.
+    for name, record in (("base_scene.json", args["base_scene"]), ("task_masks.geometry.json", args["task_masks"])):
+        (args["output_root"] / name).write_text(json.dumps(record))
+    moved = preparation.relocated_destination(value, args["output_root"] / "preparation.json")
+    assert clearances[1] == pytest.approx(clearances[0], rel=1e-9)
+    assert moved["position_world_m"] == pytest.approx(value["destination"]["position_world_m"], abs=1e-9)
+    assert moved["relocation"] == {**value["destination_relocation"], "applied_at": "native_submission"}

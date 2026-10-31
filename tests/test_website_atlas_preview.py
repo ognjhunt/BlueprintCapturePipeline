@@ -327,6 +327,9 @@ def test_transport_failures_back_off_and_end_failed_once_retries_are_exhausted(m
     job = _job(site)
     assert job["state"] == "processing" and job["transient_failures"] == 1 and job["next_attempt_at_epoch"] > world.clock
     assert job["last_transient_reason"] == "atlas_preview_oserror"
+    # The retained job keeps what the type-derived code cannot say; the WebApp's preview never does.
+    assert job["last_error"] == {"type": "builtins.OSError", "message": "connection reset"}
+    assert all("last_error" not in pushed and "connection reset" not in json.dumps(pushed) for pushed in world.pushed)
     world.clock += 30
     world.advance()
     assert len(world.runs) == 1  # not before the backoff ends
@@ -335,7 +338,33 @@ def test_transport_failures_back_off_and_end_failed_once_retries_are_exhausted(m
         world.advance()
     job = _job(site)
     assert (job["state"], job["reason"]) == ("failed", "atlas_preview_retries_exhausted")
+    assert job["last_error"] == {"type": "builtins.OSError", "message": "connection reset"}
     assert len(world.runs) == preview.MAXIMUM_TRANSIENT_FAILURES
+
+
+def test_a_non_code_value_error_fails_with_its_bounded_cause_retained(monkeypatch, site):
+    _enqueue(site)
+    world = World(monkeypatch, site, [ValueError("Expecting value: line 1 column 1 (char 0) key=sk-live-abcdefgh123")])
+    assert world.advance() == "failed"
+    job = _job(site)
+    assert job["reason"] == "atlas_preview_valueerror"
+    assert job["last_error"] == {"type": "builtins.ValueError",
+                                 "message": "Expecting value: line 1 column 1 (char 0) key=<redacted>"}
+    assert world.pushed[-1]["reason"] == "atlas_preview_valueerror" and "last_error" not in world.pushed[-1]
+
+
+def test_provider_cleanup_that_cannot_start_keeps_why(monkeypatch, site):
+    from blueprint_pipeline import website_atlas_pose as pose
+    _enqueue(site)
+    world = World(monkeypatch, site, [_completed])
+
+    def missing():
+        raise ValueError("website_atlas_api_key_missing")
+    monkeypatch.setattr(pose, "atlas_api_config", missing)
+    assert world.advance() == "ready"
+    cleanup = _job(site)["provider_cleanup"]
+    assert cleanup["state"] == "pending" and cleanup["remaining"]
+    assert cleanup["last_error"] == {"type": "builtins.ValueError", "message": "website_atlas_api_key_missing"}
 
 
 def test_a_webapp_withdrawal_answer_ends_the_job(monkeypatch, site):
@@ -822,6 +851,30 @@ def test_the_preview_checkpoint_accepts_the_details_a_stage_reports(monkeypatch,
            "enqueued_at_epoch": 1000, "next_attempt_at_epoch": 0, "state": "processing"}
     result = preview._step(job, job_dir=tmp_path, capture_root=tmp_path, now=lambda: 1001)
     assert reached == [True] and result["state"] == "processing" and "last_transient_reason" not in result
+
+
+def test_the_provider_poll_reads_website_jobs_until_withdrawal_and_never_writes_the_job(monkeypatch, site, capsys):
+    # 2026-10-30: a refined splat finished at World Labs around 18:10Z and waited out a deploy.
+    from blueprint_pipeline import owned_capture_atlas_worker as owned
+    _enqueue(site)
+    stage = site.pipeline / "atlas" / "native" / "atlas_pose"
+    stage.mkdir(parents=True)
+    (stage / "submission.json").write_text(json.dumps({"status": "submitted", "operation_id": "op_splat"}))
+    (site.pipeline / "atlas" / "pose" / "atlas_pose").mkdir(parents=True)
+    (site.pipeline / "atlas" / "pose" / "atlas_pose" / "submission.json").write_text(
+        json.dumps({"status": "completed", "operation_id": "op_pose"}))
+    polled = []
+    monkeypatch.setattr(preview, "_read_only_client", lambda transport=None: "read-only client")
+    monkeypatch.setattr(preview, "_poll_submission", lambda root, *, client, now: polled.append((root, client)) or "completed")
+    monkeypatch.setattr(preview, "_step", lambda *_a, **_k: pytest.fail("the poll advanced a job"))
+    monkeypatch.setattr(owned, "poll_from_environment", lambda: {})
+    before = site.job.read_bytes()
+    assert preview.main(["poll", "--storage-root", str(site.storage)]) == 0
+    assert json.loads(capsys.readouterr().out) == {"completed": 1}
+    assert polled == [(stage.parent, "read-only client")] and site.job.read_bytes() == before
+    _withdraw(site)
+    assert preview.poll(site.storage) == {"idle": 1} and len(polled) == 1
+    assert site.job.read_bytes() == before  # the withdrawal itself is the next tick's to record
 
 
 # capture-447ae4f4 (2026-10-30): every tick re-adopted the retained work, so a

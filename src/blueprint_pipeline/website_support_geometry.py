@@ -285,6 +285,10 @@ def destination_clear_of_start(start_min: Sequence[float], start_max: Sequence[f
 
 #: The target disc's radius beyond the subject's half-diagonal (the website task's green region).
 DESTINATION_MARGIN_M = 0.01
+#: A relocated disc left tangent to its surface's bounds is moved this far inside them, so the
+#: runtime-to-simulator conversion cannot round it past the edge the admission checks
+#: (capture-447ae4f4 at the replacement's 0.25 size tolerance: 5.6e-17 m past, refused).
+DESTINATION_EDGE_GUARD_M = 1e-9
 #: Plan positions tried along each axis when a destination must move off the start.
 DESTINATION_GRID_STEPS = 9
 #: Footprints checked against the collider, farthest first, before none is placed. Only
@@ -371,6 +375,11 @@ def farthest_supported_destination(mesh: Any, start_min: Sequence[float], start_
         if found is not None and same_support_surface(found, start_support):
             centre = centre.copy()
             centre[up] = found["top_runtime_units"]
+            # Only a centre within the guard of a bound moves; every other one is returned exactly.
+            guard = DESTINATION_EDGE_GUARD_M / meters_per_unit
+            for axis in plan:
+                centre[axis] = min(max(centre[axis], float(start_support["aabb_min"][axis]) + clearance + guard),
+                                   float(start_support["aabb_max"][axis]) - clearance - guard)
             return centre.tolist(), found
     return None
 
