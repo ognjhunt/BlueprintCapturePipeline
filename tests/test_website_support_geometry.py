@@ -166,6 +166,19 @@ def test_two_fits_on_one_bumpy_counter_name_the_same_surface():
     assert same_support_surface(exact, exact) and not same_support_surface(exact, start)
 
 
+def test_a_level_patch_within_a_fitted_surface_is_that_surface():
+    """A conditioned collider (website_collider_conditioning) reads level under a footprint
+    wholly on its flattened patch and fitted under one over a gap in it: one surface."""
+    from blueprint_pipeline.website_support_geometry import same_support_surface
+
+    fitted = {"basis": "fitted_surface_under_footprint", "face_indices": list(range(100))}
+    level = {"basis": "reconstructed_triangle_footprint_contacts", "face_indices": list(range(5, 95))}
+    assert same_support_surface(level, fitted) and same_support_surface(fitted, level)
+    assert not same_support_surface({**level, "face_indices": list(range(50, 140))}, fitted)
+    assert not same_support_surface({**level, "face_indices": []}, fitted)
+    assert not same_support_surface({**fitted, "basis": "collider_floor_beside_footprint"}, fitted)
+
+
 def test_a_y_up_bumpy_counter_in_estimated_units_is_fitted():
     mesh = bumpy_plate()
     mesh.vertices = np.asarray(mesh.vertices)[:, [0, 2, 1]] * 10

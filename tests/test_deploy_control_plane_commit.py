@@ -5215,6 +5215,25 @@ def test_the_attestation_wait_follows_the_build_and_precedes_every_pause(tmp_pat
     assert "scene_source_attestation_listed" in receipt["stage_timings_seconds"]
 
 
+def test_the_receipt_reports_whether_this_deploy_created_the_release_checkout(tmp_path, monkeypatch) -> None:
+    """It read the activating call, which always finds the checkout, so it always said False."""
+    commit = "d" * 40
+    kwargs = _stub_host_deploy(monkeypatch, tmp_path, commit)
+    calls: list[bool] = []
+
+    def staged(**stage_kwargs):
+        calls.append(stage_kwargs["activate"])
+        return {"source_commit": commit, "release_path": str(tmp_path / "release"),
+                "created_release_checkout": not stage_kwargs["activate"]}
+
+    monkeypatch.setattr(deploy, "stage_task_evaluation_control_plane_release", staged)
+
+    receipt = deploy.deploy_control_plane_commit(**kwargs)
+
+    assert calls == [False, True]
+    assert receipt["created_release_checkout"] is True
+
+
 def test_a_commit_without_an_attestation_fails_with_nothing_paused(tmp_path, monkeypatch) -> None:
     """Before the wait, this failed at the same check with every trigger already stopped."""
     kwargs, order = _recording_deploy(monkeypatch, tmp_path)
