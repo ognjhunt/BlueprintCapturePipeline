@@ -384,7 +384,9 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     """Every requested candidate gets a status and reason; the budget decides how many run.
 
     ``priority`` (the job's intake ranking) sets the order the budget is spent
-    in; unranked candidates follow by identifier. Capabilities may name measured
+    in; unranked candidates follow by identifier, learned policies before
+    scripted baselines, which are reference only and never chosen (a site's few
+    funded slots must not all go to them). Capabilities may name measured
     ``candidate_infeasible`` refusals, which stay listed as ``infeasible``.
     """
     catalog = validate_catalog(catalog)
@@ -425,7 +427,9 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     cells = screening_cells(scene, episodes_per_candidate)
     remaining = budget
     candidates = []
-    for candidate_id in ranked + sorted(set(requested) - set(ranked)):
+    unranked = sorted(set(requested) - set(ranked),
+                      key=lambda row: (by_id[row]["policy"]["kind"] == "scripted", row))
+    for candidate_id in ranked + unranked:
         candidate = by_id[candidate_id]
         row: dict[str, Any] = {"candidate_id": candidate_id,
                                "display_name": candidate["display_name"],

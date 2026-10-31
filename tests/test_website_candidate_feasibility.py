@@ -208,6 +208,26 @@ def test_budget_is_spent_in_priority_order_and_every_candidate_keeps_a_status():
     assert [row["candidate_id"] for row in default["candidates"]] == sorted(ids)
 
 
+def test_unranked_learned_policies_are_funded_before_reference_only_scripted_baselines():
+    """2026-10-31: 23 scripted baselines sort first by identifier and would take every funded slot."""
+    catalog, capabilities, quotes = inputs(8, "4.00")
+    rows = deepcopy(catalog["candidates"])
+    for row in rows[:4]:
+        row["policy"]["kind"] = "scripted"
+    catalog = seal_catalog({**catalog, "candidates": rows})
+    value = build_screening_plan(catalog, scene(), campaign_id="campaign1", capabilities=capabilities,
+                                 cost_quotes=quotes, now=NOW)
+    order = [row["candidate_id"] for row in value["candidates"]]
+    scripted = {row["candidate_id"] for row in rows[:4]}
+    assert order == sorted(set(order) - scripted) + sorted(scripted)
+    funded = [row["candidate_id"] for row in value["candidates"] if row["status"] == "selected"]
+    assert funded and not scripted & set(funded)
+    # An intake ranking still decides first, scripted or not.
+    ranked = build_screening_plan(catalog, scene(), campaign_id="campaign1", capabilities=capabilities,
+                                  cost_quotes=quotes, now=NOW, priority=[rows[0]["candidate_id"]])
+    assert ranked["candidates"][0]["candidate_id"] == rows[0]["candidate_id"]
+
+
 def test_infeasible_and_unavailable_candidates_are_published_with_their_reasons(tmp_path):
     catalog, capabilities, quotes = inputs()
     capabilities["candidate_infeasible"] = {"groot_n17_droid": ["team_embodiment_station_out_of_reach"]}
