@@ -141,3 +141,20 @@ def test_digest_of_an_unreadable_path_fails_and_the_reader_keeps_serving(tmp_pat
         with pytest.raises(subprocess.CalledProcessError):
             read.digest(tmp_path / "missing.bin")
         assert read.digest(present)[0] == len(b"served after a refused digest")
+
+
+def test_identity_opens_as_the_account_without_reading_and_names_the_inode(tmp_path: Path) -> None:
+    """An inode an earlier readback read in full is opened at its new path, not read again."""
+    import os
+
+    from blueprint_pipeline.immutable_file_digest import sealed_identity
+
+    path = tmp_path / "libtorch_like.so"
+    path.write_bytes(b"\0" * (reader_module.CHUNK_BYTES + 1))
+    os.link(path, tmp_path / "next-release.so")
+    with _reader() as read:
+        assert read.identity(tmp_path / "next-release.so") == sealed_identity(os.stat(path))
+        with pytest.raises(subprocess.CalledProcessError):
+            read.identity(tmp_path / "missing.so")
+        assert read.digest(path)[0] == reader_module.CHUNK_BYTES + 1
+        assert read.identity(path) == sealed_identity(os.stat(path))

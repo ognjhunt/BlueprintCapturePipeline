@@ -33,7 +33,9 @@ from .immutable_directory_publication import publish_staged_immutable_directory
 from .deployment_embodiment_industrial_composition import VARIANTS as _INDUSTRIAL_VARIANTS
 from .deployment_embodiment_yaskawa_composition import VARIANTS as _YASKAWA_VARIANTS
 from .deployment_embodiment_public_arm_composition import VARIANTS as _PUBLIC_ARM_VARIANTS
-from .team_embodiment import model_structure_blockers, read_model_structure, validate_embodiment_manifest
+from .team_embodiment import (
+    bind_importer_names, model_structure_blockers, read_model_structure, validate_embodiment_manifest,
+)
 
 SCHEMA = "embodiment_runtime_configuration.v1"
 RECEIPT = "runtime-configuration.json"
@@ -462,10 +464,14 @@ def bind_prepared_configuration(configuration_dir: str | Path, prepared_dir: str
     settings = runtime_settings or {}
     _require(isinstance(settings, dict) and not set(settings) - {"control_hz", "action_chunk_rows"},
              "runtime_settings_invalid")
-    manifest = validate_embodiment_manifest({**config["manifest_fields"], **settings,
-        "model": {"format": "usd", "url": model_url, "sha256": model["sha256"]}})
     structure = read_model_structure(Path(prepared_dir) / model["path"])
-    blockers = model_structure_blockers(manifest, structure)
+    # Configured names are source names made identifier-safe; the runtime looks
+    # bodies and joints up by the prim names the importer actually authored.
+    fields, renamed, unbound = bind_importer_names(config["manifest_fields"], structure,
+                                                   config.get("source_name_mapping", {}))
+    manifest = validate_embodiment_manifest({**fields, **settings,
+        "model": {"format": "usd", "url": model_url, "sha256": model["sha256"]}})
+    blockers = list(dict.fromkeys([*unbound, *model_structure_blockers(manifest, structure)]))
     _require(not blockers, "import_structure_mismatch:" + ";".join(blockers))
     return {"schema_version": "embodiment_runtime_binding_inputs.v1", "claim_ceiling": "configured_not_executed",
             "robot_embodiment": manifest, "model_record": {"sha256": model["sha256"], "size_bytes": model["size_bytes"],
@@ -474,6 +480,7 @@ def bind_prepared_configuration(configuration_dir: str | Path, prepared_dir: str
             "simulation_assumptions": config["simulation_assumptions"],
             "source_dynamics": config["source_dynamics"], "source_limitations": config["source_limitations"],
             "runtime_settings": {key: manifest[key] for key in ("control_hz", "action_chunk_rows")},
+            **({"importer_name_bindings": renamed} if renamed else {}),
             "execution_authorized": False}
 
 

@@ -13,8 +13,10 @@ from blueprint_pipeline import deployment_embodiment_asset_import as importer
 from blueprint_pipeline import deployment_embodiment_runtime_configuration as runtime
 from blueprint_pipeline import deployment_embodiment_station as station
 from blueprint_pipeline.team_embodiment import apply_team_embodiment, team_embodiment_binding
-from tests.test_deployment_embodiment_asset_import import _source
+from tests.test_deployment_embodiment_asset_import import _isaac6_sdk, _source
 from tests.test_team_embodiment import station_plan
+
+TRLC = Path(__file__).parent / "fixtures/gripper_closure_sources/trlc_dk1_bimanual/urdf/follower/TRLC-DK1-Follower.urdf"
 
 
 SOURCE = b'''<robot name="development_only">
@@ -161,6 +163,97 @@ def test_actual_import_digest_and_structure_bind_into_generic_plan_without_polic
     (imported / "robot.usda").write_text("changed actual model")
     with pytest.raises(assets.AssetPreparationError, match="output_changed"):
         runtime.bind_prepared_configuration(case.output, imported, "https://assets.example/fixture.usda")
+
+
+def _trlc_case(tmp_path, monkeypatch):
+    """The exact public TRLC follower URDF; meshes are synthesized development bytes."""
+    import json
+    import struct
+
+    model = json.dumps({"asset": {"version": "2.0"}}).encode()
+    model += b" " * (-len(model) % 4)
+    glb = struct.pack("<4sIII4s", b"glTF", 2, 20 + len(model), len(model), b"JSON") + model
+    names = {node.get("filename") for node in XML.parse(TRLC).getroot().iter("mesh")}
+    meshes = {name: glb if name.endswith(".glb") else b"development-only mesh bytes" for name in names}
+    source = _source(tmp_path, monkeypatch, content=TRLC.read_bytes(), extra=meshes)
+    recipe = assets.recipe_for("fixture_dual_option")
+    monkeypatch.setattr(runtime, "recipe_for", lambda identity: recipe)
+    monkeypatch.setattr(station, "recipe_for", lambda identity: recipe)
+    monkeypatch.setattr(runtime, "_PROFILES", {"fixture_dual_option": runtime._PROFILES["trlc_dk1_bimanual"]})
+    configuration = tmp_path / "configuration"
+    record = runtime.prepare_runtime_configuration(source, configuration)
+    _isaac6_sdk(monkeypatch, tmp_path / "isaac-scratch")
+    prepared = tmp_path / "prepared"
+    importer.import_source_asset(configuration, prepared, fix_base=True,
+                                 station_parameters=record["station_parameters"])
+    return configuration, prepared
+
+
+def test_isaac6_trlc_station_binds_transcoded_links_and_default_prim_world_anchors(tmp_path, monkeypatch):
+    """batch06: TRLC imported, then bind stopped at link6_7 missing and base not anchored."""
+    configuration, prepared = _trlc_case(tmp_path, monkeypatch)
+    inputs = runtime.bind_prepared_configuration(configuration, prepared, "https://assets.example/trlc.usda")
+    structure, manifest = inputs["structure"], inputs["robot_embodiment"]
+    # The exact rigid bodies batch06 logged for trlc_dk1_bimanual (imported_structure).
+    expected = []
+    for side, code in (("left", "sG"), ("right", "cI")):
+        path = "{ENV_REGEX_NS}/Robot/Geometry/blueprint_station/" + side + "_base_link"
+        expected.append(path)
+        for link in ("12", "23", "34", "45", "56", "67"):
+            path += f"/tn__{side}_link{link}_{code}"
+            expected.append(path)
+        expected += [path + f"/{side}_finger_left", path + f"/{side}_finger_right"]
+    assert structure["body_paths"] == sorted(expected) and len(expected) == 18
+    assert structure["joint_names"] == sorted(f"{side}_{name}" for side in ("left", "right") for name in
+                                              ("gripper_left", "gripper_right", *(f"joint{i}" for i in range(1, 7))))
+    # Isaac's station anchor: FixedJoint body0 = the default prim, body1 = each arm base.
+    assert structure["world_anchor_links"] == ["left_base_link", "right_base_link"]
+    assert structure["body_source_names"][expected[6]] == "left_link6-7"
+    assert inputs["importer_name_bindings"] == {
+        "links": {"left_link6_7": "tn__left_link67_sG", "right_link6_7": "tn__right_link67_cI"}}
+    assert [arm["tool_link"] for arm in manifest["arms"]] == ["tn__left_link67_sG", "tn__right_link67_cI"]
+    assert [g["tool_link"] for g in manifest["grippers"]] == ["tn__left_link67_sG", "tn__right_link67_cI"]
+    assert [c["mount_link"] for c in manifest["cameras"]] == [None, "tn__left_link67_sG", "tn__right_link67_cI"]
+    assert [arm["base_link"] for arm in manifest["arms"]] == ["left_base_link", "right_base_link"]
+    # Reproducible: the controller's re-bind of the retained body gives the same record.
+    assert runtime.bind_prepared_configuration(configuration, prepared, "https://assets.example/trlc.usda") == inputs
+    plan = station_plan()
+    plan["robot"]["base_pose_world"]["position_world_m"] = [0, 0, 0]
+    plan["task_spec"]["start_pose_world"] = [0.2, 0, 0.1, 0, 0, 0, 1]
+    plan["task_spec"]["destination_position_bounds_world_m"] = {"minimum": [.2, 0, .1], "maximum": [.25, .05, .15]}
+    binding = team_embodiment_binding(manifest, model_record=inputs["model_record"], structure=structure,
+                                      scene_plan=plan)
+    bound = apply_team_embodiment(plan, binding)
+    wrist = [row for row in bound["cameras"] if row.get("team_camera_name") == "left_wrist"]
+    assert wrist[0]["parent_prim_path"] == expected[6]
+
+
+@pytest.mark.parametrize("defect,blocker", [
+    ("twin_source", "team_embodiment_model_link_missing_or_ambiguous:left_link6_7"),
+    ("other_source", "team_embodiment_model_link_missing_or_ambiguous:left_base_link"),
+    ("unrecorded", "team_embodiment_model_link_missing_or_ambiguous:right_link6_7"),
+    ("joint_twin", "team_embodiment_model_joint_ambiguous:left_joint1"),
+])
+def test_isaac6_name_binding_never_guesses_a_missing_or_ambiguous_prim(tmp_path, monkeypatch, defect, blocker):
+    from blueprint_pipeline.team_embodiment import bind_importer_names, read_model_structure
+
+    configuration, prepared = _trlc_case(tmp_path, monkeypatch)
+    config = runtime.verify_runtime_configuration(configuration)
+    structure = read_model_structure(prepared / "robot.usda")
+    fields, renamed, blockers = bind_importer_names(config["manifest_fields"], structure, config["source_name_mapping"])
+    assert blockers == [] and renamed["links"]["left_link6_7"] == "tn__left_link67_sG"
+    bodies = structure["body_paths"]
+    if defect == "twin_source":  # a second body claiming the same source name
+        structure["body_source_names"][next(p for p in bodies if p.endswith("left_finger_left"))] = "left_link6-7"
+    elif defect == "other_source":  # the matching prim name was recorded from a different source link
+        structure["body_source_names"][next(p for p in bodies if p.endswith("/left_base_link"))] = "left_base-link"
+    elif defect == "unrecorded":  # a transcoded prim without the importer's source record
+        del structure["body_source_names"][next(p for p in bodies if p.endswith("tn__right_link67_cI"))]
+    else:
+        structure["joint_names"].append("tn__left_joint1_copy")
+        structure["joint_source_names"] = {"tn__left_joint1_copy": "left_joint1"}
+    fields, renamed, blockers = bind_importer_names(config["manifest_fields"], structure, config["source_name_mapping"])
+    assert blocker in blockers
 
 
 def test_batch_preserves_each_individual_success_failure_unavailable_and_existing_result(configured, monkeypatch, tmp_path):

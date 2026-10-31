@@ -8,5 +8,7 @@ fixture, so meshes too large for a partial clone carry a null SHA-256. Keep publ
 whitespace and CRLF line endings unchanged. runtime_configuration_867c.py is the exact
 867cee8 generator, used only to test retained 31-profile receipt reuse, and
 predecessor_identities.json pins the 37 recipes, 112 catalog rows, scripted profile and
-20 module hashes that existed before this batch. Nothing here is native, GPU or physical
-validation.
+20 module hashes that existed before this batch. runtime_configuration_d06a.py is the
+exact d06a00c generator (42 profiles), used only to test retained receipt reuse after the
+Isaac Sim 6 name binding changed bind_prepared_configuration. Nothing here is native, GPU
+or physical validation.

@@ -172,15 +172,17 @@ def _safe_transport(base_url: str) -> Transport:
             response = boundary.request(url, method=method, data=data, headers=headers,
                                         timeout_seconds=120 if api else 600, policy=policy)
         except urllib.error.HTTPError as exc:
-            # Preserve only the scheduling hint, never signed URLs or arbitrary headers.
+            # Preserve only scheduling and rate-limit hints, never signed URLs or arbitrary headers.
             retry_after = exc.headers.get("Retry-After", "") if exc.headers else ""
+            limits = {key.lower(): str(value)[:200] for key, value in (exc.headers.items() if exc.headers else ())
+                      if key.lower().startswith(("ratelimit", "x-ratelimit"))}
             try:
                 body = exc.read(4096)
             except (OSError, http.client.HTTPException, ValueError):
                 body = b""  # The status is the answer; a lost error body changes nothing.
             finally:
                 exc.close()
-            return exc.code, body, {"retry-after": retry_after}
+            return exc.code, body, {"retry-after": retry_after, **limits}
         except boundary.SafeOutboundHttpError:
             raise
         except (urllib.error.URLError, OSError, http.client.HTTPException, ValueError) as exc:
@@ -240,6 +242,7 @@ class AtlasClient:
         self._source_checkpoint = source_checkpoint
         self._project_checkpoint = project_checkpoint
         self.retry_after: str | None = None
+        self.rate_limit_headers: dict[str, str] = {}
 
     def _send_transport(self, method: str, url: str, headers: Mapping[str, str],
                         data: bytes | None) -> tuple[int, bytes]:
@@ -259,11 +262,13 @@ class AtlasClient:
             # close to the actual upload or task mutation as possible.
             if self._source_checkpoint is not None:
                 self._source_checkpoint("atlas_provider_disclosure")
-        self.retry_after = None
+        self.retry_after, self.rate_limit_headers = None, {}
         response = self._transport(method, url, headers, data)
         if len(response) == 3:
             self.retry_after = next((str(value) for key, value in response[2].items()
                                      if key.lower() == "retry-after"), None)
+            self.rate_limit_headers = {key.lower(): str(value)[:200] for key, value in response[2].items()
+                                       if key.lower().startswith(("ratelimit", "x-ratelimit"))}
         return response[0], response[1]
 
     @property

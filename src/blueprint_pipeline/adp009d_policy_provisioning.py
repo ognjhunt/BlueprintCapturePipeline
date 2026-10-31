@@ -55,8 +55,24 @@ from .adp009d_policy_server_worker import (
 )
 from .decision_evidence_contracts import canonical_digest
 from .native_task_isaaclab_launch import NATIVE_TASK_ARENA_DEVICE
+from .openpi_droid_policy_runtime import BETA_POLARIS_VARIANT_CANDIDATE_IDS
 
 PROVISIONING_SCHEMA_VERSION = "adp009d_policy_provisioning.v1"
+
+# Beta-only PolaRiS joint-position variants are not ADP-009D candidates and
+# never enter EXPECTED_CANDIDATES. Each runs in pi05_droid's exact environment
+# (pinned OpenPI source, upstream uv.lock, thin client and identity-bound
+# server) and differs only in the frozen checkpoint it fetches.
+OPENPI_ENVIRONMENT_CANDIDATE = "pi05_droid"
+
+
+def _environment_candidate(candidate_id: str) -> str:
+    """The candidate whose pinned source and environment this one installs."""
+
+    if candidate_id in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
+        return OPENPI_ENVIRONMENT_CANDIDATE
+    return candidate_id
+
 
 # Isaac's own interpreter, which must not be mutated to host a policy.
 ISAAC_INTERPRETER = "/isaac-sim/python.sh"
@@ -158,9 +174,20 @@ class PolicyProvisioningError(ValueError):
 def _fetch_commands(candidate_id: str) -> list[str]:
     """Credential-free fetch, chosen by where the frozen artifact actually lives."""
 
+    target = f"{CHECKPOINT_ROOT}/{candidate_id}"
+    if candidate_id in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
+        # The variant's own entry of the frozen PolaRiS inventory; the
+        # identity-bound server verifies every fetched object against it.
+        from .native_task_arena_policy_bundle import _candidate_runtime_binding
+
+        return [
+            f'mkdir -p "{target}"',
+            f'/isaac-sim/python.sh "$RUNTIME_DIR/adp009d_checkpoint_fetch_worker.py" '
+            f'"{_candidate_runtime_binding(candidate_id)[0].checkpoint_uri}" "{target}" '
+            f'"$OUT_DIR/adp009d_checkpoint_fetch_receipt.json"',
+        ]
     plan = plan_checkpoint_materialization(candidate_id)
     expected = EXPECTED_CANDIDATES[candidate_id]
-    target = f"{CHECKPOINT_ROOT}/{candidate_id}"
     if CANDIDATE_SOURCES[candidate_id] == SOURCE_PUBLIC_GCS:
         # The bucket lists and reads anonymously; -u disables credential lookup
         # so a stray token on the host cannot silently change what is fetched.
@@ -231,7 +258,7 @@ def _isaac_client_commands(candidate_id: str) -> list[str]:
             f'"{ISAAC_INTERPRETER}" '
             '"$RUNTIME_DIR/groot_n17_wire_client.py"',
         ]
-    subpackage = CANDIDATE_ISAAC_CLIENT_SUBPACKAGE.get(candidate_id)
+    subpackage = CANDIDATE_ISAAC_CLIENT_SUBPACKAGE.get(_environment_candidate(candidate_id))
     if subpackage is None:
         # Historical GR00T N1.6 remains a compatibility candidate. Its source
         # is not protocol-bound to the N1.7 server_client digest, so preserve
@@ -263,11 +290,12 @@ def _install_commands(candidate_id: str) -> list[str]:
     detached and verified, so a moved branch cannot silently change what runs.
     """
 
-    expected = EXPECTED_CANDIDATES[candidate_id]
+    environment = _environment_candidate(candidate_id)
+    expected = EXPECTED_CANDIDATES[environment]
     repository = str(expected["source_repository"])
     revision = str(expected["source_revision"])
     source = f"{POLICY_SOURCE_ROOT}/{candidate_id}"
-    dependency_lock = ACTIVE_CANDIDATE_DEPENDENCY_LOCKS.get(candidate_id)
+    dependency_lock = ACTIVE_CANDIDATE_DEPENDENCY_LOCKS.get(environment)
     if dependency_lock is None:
         policy_install = (
             f'VIRTUAL_ENV="{policy_venv_root(candidate_id)}" "$UV" pip install '
@@ -311,7 +339,8 @@ def build_provisioning_script(
 ) -> str:
     """Emit the worker-side provisioning script for one candidate."""
 
-    if candidate_id not in EXPECTED_CANDIDATES:
+    if (candidate_id not in EXPECTED_CANDIDATES
+            and candidate_id not in BETA_POLARIS_VARIANT_CANDIDATE_IDS):
         raise PolicyProvisioningError([f"{BLOCKER_UNKNOWN_CANDIDATE}:{candidate_id}"])
 
     uv_root = UV_ROOT

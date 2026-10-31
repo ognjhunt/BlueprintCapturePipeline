@@ -2,13 +2,16 @@
 
 ADP-040 / day 28. The local depth-fused draft still drives gap detection and
 gap review. When the reviewed policy prices a refined splat, the views that
-draft fused are posted once to posedImages2Splats (real frames whole; partly
-admitted generated views only where their review admitted them), and its SPZ
-replaces the draft for meshing, export and scene handoff. Refinement is generated appearance: it never proves metric
-scale, source-geometry preservation or physics.
+draft fused are posted once to posedImages2Splats in World Labs' documented
+frame shape (image, linear depth, camera): real frames whole, and a generated
+view whole only where an independent whole-view agreement review admitted it.
+Its SPZ replaces the draft for meshing, export and scene handoff. Refinement is
+generated appearance: it never proves metric scale, source-geometry
+preservation or physics.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -19,38 +22,20 @@ from .common import write_json
 from .decision_evidence_contracts import canonical_digest
 from .local_reconstruction_adapters import _sha256_file
 
-MANIFEST = "atlas_refined_splat_manifest.json"
-LEGACY_MANIFEST = "atlas_depth_splat_manifest.json"
-
-
-def splat_manifest_path(root: Path) -> Path:
-    native = root / MANIFEST
-    return native if native.exists() else root / LEGACY_MANIFEST
-
-
-def load_splat_manifest(root: Path) -> dict:
-    path = splat_manifest_path(root)
-    if path.is_symlink():
-        raise ValueError("atlas_splat_manifest_symlink")
-    value = json.loads(path.read_text())
-    if value.get("digest") != canonical_digest(value, digest_field="digest"):
-        raise ValueError("atlas_splat_manifest_changed")
-    return value
-
-
-def _png(values, path: Path) -> Path:
-    from PIL import Image
-
-    Image.fromarray(values.astype(np.uint8)).save(path)
-    return path
+# Forms, roots and manifests live in a module job control can import; re-exported here.
+from .atlas_refined_splat_forms import (  # noqa: F401
+    FORMS, LEGACY_FORMS, LEGACY_MANIFEST, MANIFEST, MINIMAL, UPGRADE, WHOLE, bought as _bought,
+    form_roots as _form_roots, load_splat_manifest, request_gap_preserving_upgrade, splat_manifest_path,
+    untried_gap_roots as _untried_gap_roots)
 
 
 def _admission(frame) -> tuple[bool, object]:
     """Whether a view enters the splat, and its alpha mask (None: every pixel).
 
     Real frames go in whole: low Atlas depth confidence does not make their RGB
-    wrong. A review that admitted only part of a view (generated gap views,
-    recovered geometry) recorded that in ``keep_mask``; only those pixels enter.
+    wrong. A view an earlier review admitted only in part (generated gap views,
+    recovered geometry) records that in ``keep_mask``; it enters whole only if
+    the whole-view agreement review admits it.
     """
     keep = frame.get("keep_mask")
     if keep is None or keep.all():
@@ -58,75 +43,116 @@ def _admission(frame) -> tuple[bool, object]:
     return bool(keep.any()), keep
 
 
-def prepare_splat_request(*, frames, root: Path, minimal=False):
-    """Post every fused view with its camera, linear depth, Atlas depth confidence and review mask.
+def _same_camera(a, b, tolerance=1e-6) -> bool:
+    """The same grid and axes, with intrinsics, position and rotation within a tiny tolerance."""
+    from .atlas_depth_splat import _rotation_matrix
 
-    One grid is posted unchanged; mixed grids (portrait source beside landscape
-    generated views) use the ray-preserving photograph tiler. ``minimal`` sends
-    the provider guide's documented form: whole views only, image + depth + camera.
+    def vector(camera):
+        k, e = camera["intrinsics"], camera["extrinsics"]
+        return np.concatenate([[float(k[key]) for key in ("fx", "fy", "cx", "cy")],
+                               np.asarray(e["position"], float), _rotation_matrix(e["quaternion"]).ravel()])
+    grids = [(c["intrinsics"]["width"], c["intrinsics"]["height"], c["extrinsics"].get("coordinateSystem", "rub"))
+             for c in (a, b)]
+    return grids[0] == grids[1] and bool(np.allclose(vector(a), vector(b), rtol=0, atol=tolerance))
+
+
+def merge_duplicate_views(frames):
+    """One posed view per camera and image: (base position, merged view, duplicate positions).
+
+    capture-447ae4f4 (2026-10-30) posted 4 of 22 views twice: recovered views
+    repeating the generation anchors and the generated gap views, with their own
+    depth and masks. A whole duplicate makes the view whole, otherwise the
+    admissions unite; depth and confidence start from the whole (or first) view
+    and take each partial duplicate's values where its review admitted them.
+    """
+    groups = []
+    for index, frame in enumerate(frames):
+        rgb = np.ascontiguousarray(frame["rgb"])
+        key = (rgb.shape, hashlib.sha256(rgb.tobytes()).digest())
+        group = next((g for g in groups if g[0] == key and _same_camera(frames[g[1][0]], frame)), None)
+        if group is None:
+            groups.append((key, [index]))
+        else:
+            group[1].append(index)
+    merged = []
+    for _, members in groups:
+        keeps = {i: _admission(frames[i])[1] for i in members}
+        base = next((i for i in members if keeps[i] is None), members[0])
+        view = frames[base]
+        if len(members) > 1:
+            depth, confidence = np.array(view["depth"], copy=True), np.array(view["confidence"], copy=True)
+            for i in members:
+                if i != base and keeps[i] is not None:
+                    depth[keeps[i]] = frames[i]["depth"][keeps[i]]
+                    confidence[keeps[i]] = frames[i]["confidence"][keeps[i]]
+            whole = any(keep is None for keep in keeps.values())
+            view = {**view, "depth": depth, "confidence": confidence,
+                    "keep_mask": None if whole else np.logical_or.reduce(list(keeps.values()))}
+        merged.append((base, view, [i for i in members if i != base]))
+    return merged
+
+
+def prepare_splat_request(*, frames, root: Path, admitted_whole=None):
+    """Post each fused view once, in the documented frame shape: image, linear depth and camera.
+
+    Duplicate views merge first. Real frames go in whole. A partly admitted
+    (generated or recovered) view goes in whole only when ``admitted_whole`` holds
+    its position's whole-view verdict, and is left out otherwise. One grid is
+    posted unchanged; mixed grids (portrait source beside landscape generated
+    views) use the ray-preserving photograph tiler.
     """
     from PIL import Image
     from .atlas_depth_splat import write_exr_depth
     from .website_atlas_tasks import validate_task_request
 
     root.mkdir(parents=True, exist_ok=True)
+    admitted_whole = admitted_whole or {}
     # Recovered views can repeat a generated view's ID; the position is the identity here.
-    keyed = [{**frame, "frame_id": f"{index:04d}"} for index, frame in enumerate(frames)]
+    posted = {}
+    for base, view, rest in merge_duplicate_views(frames):
+        admitted, keep = _admission(view)
+        if admitted and (keep is None or base in admitted_whole):
+            posted[f"{base:04d}"] = ({**view, "frame_id": f"{base:04d}"}, rest,
+                                     None if keep is None else admitted_whole[base])
     views = []
     if len({(f["intrinsics"]["width"], f["intrinsics"]["height"]) for f in frames}) == 1:
-        for frame in keyed:
+        for frame in frames:
             k = frame["intrinsics"]
             if (frame["rgb"].shape != (k["height"], k["width"], 3)
                     or frame["depth"].shape != (k["height"], k["width"])):
                 raise ValueError("atlas_splat_frame_grid_changed")
-            admitted, keep = _admission(frame)
-            if not admitted or (minimal and keep is not None):
-                continue  # The review admitted none (or, in the minimal form, not all) of this view.
-            key = frame["frame_id"]
+        for key, (view, _, _) in posted.items():
             rgb = root / f"{key}.png"
-            Image.fromarray(frame["rgb"]).save(rgb)
-            confidence = np.clip(np.round(np.nan_to_num(frame["confidence"]) * 255), 0, 255)
-            views.append((key, rgb, write_exr_depth(root / f"{key}.exr", frame["depth"]),
-                          None if keep is None else _png(np.where(keep, 255, 0), root / f"{key}-mask.png"),
-                          None if minimal else _png(confidence, root / f"{key}-confidence.png"),
-                          {"intrinsics": frame["intrinsics"], "extrinsics": frame["extrinsics"]}))
+            Image.fromarray(view["rgb"]).save(rgb)
+            views.append((key, rgb, write_exr_depth(root / f"{key}.exr", view["depth"]),
+                          {"intrinsics": view["intrinsics"], "extrinsics": view["extrinsics"]}))
     else:
         from .atlas_scene_chisel import prepare_source_photographs, project_source_depth
 
-        by_id = {}
-        for frame in keyed:
-            admitted, keep = _admission(frame)
-            if admitted and not (minimal and keep is not None):
-                # Project depth over the admitted pixels only (all of a real frame).
-                support = np.ones(frame["depth"].shape, np.float32) if keep is None else keep.astype(np.float32)
-                by_id[frame["frame_id"]] = ({**frame, "confidence": support}, keep is not None)
-        for photo in prepare_source_photographs(frames=[f for f, _ in by_id.values()], root=root / "photographs"):
+        sources = {key: {**view, "confidence": np.ones(view["depth"].shape, np.float32)}
+                   for key, (view, _, _) in posted.items()}
+        for photo in prepare_source_photographs(frames=list(sources.values()), root=root / "photographs"):
             key = photo["frame_id"]
-            source, masked = by_id[photo["source_frame_id"]]
-            depth = project_source_depth([source], photo["camera"])
-            valid = np.isfinite(depth) & (depth > 0)
-            if masked and not valid.any():
+            depth = project_source_depth([sources[photo["source_frame_id"]]], photo["camera"])
+            if posted[key[:4]][2] is not None and not (np.isfinite(depth) & (depth > 0)).any():
                 continue
             views.append((key, Path(photo["image_path"]), write_exr_depth(root / f"{key}.exr", depth),
-                          _png(np.where(valid, 255, 0), root / f"{key}-mask.png") if masked and not valid.all() else None,
-                          None, photo["camera"]))
+                          photo["camera"]))
     if len(views) < 2:
         raise ValueError("atlas_splat_frames_required")
     contexts, uploads, provenance = [], {}, []
-    for i, (key, rgb, depth, mask, confidence, camera) in enumerate(views):
-        context = {"imageAsset": {"assetId": f"upload:frame-{i}-rgb"}, "camera": camera,
-                   "depth": {"depthAsset": {"assetId": f"upload:frame-{i}-depth"}}}
+    for i, (key, rgb, depth, camera) in enumerate(views):
+        contexts.append({"imageAsset": {"assetId": f"upload:frame-{i}-rgb"}, "camera": camera,
+                         "depth": {"depthAsset": {"assetId": f"upload:frame-{i}-depth"}}})
+        _, rest, verdict = posted[key[:4]]
         row = {"frame_id": frames[int(key[:4])]["frame_id"], "camera": camera}
-        for role, path in (("rgb", rgb), ("depth", depth), ("mask", mask), ("confidence", confidence)):
-            if path is None:
-                continue
+        if rest:
+            row["merged_duplicates"] = [{"position": j, "frame_id": frames[j]["frame_id"]} for j in rest]
+        if verdict is not None:
+            row["whole_view_review"] = verdict
+        for role, path in (("rgb", rgb), ("depth", depth)):
             uploads[f"frame-{i}-{role}"] = {"path": str(Path(path).resolve()), "sha256": _sha256_file(Path(path))}
             row[f"{role}_sha256"] = uploads[f"frame-{i}-{role}"]["sha256"]
-        if mask is not None:
-            context["maskAsset"] = {"assetId": f"upload:frame-{i}-mask"}
-        if confidence is not None:
-            context["depth"]["confidenceAsset"] = {"assetId": f"upload:frame-{i}-confidence"}
-        contexts.append(context)
         provenance.append(row)
     request = {"posedFrames": contexts}
     validate_task_request("posedImages2Splats", request)
@@ -145,40 +171,125 @@ def _provider_failed_and_exhausted(root: Path) -> bool:
             and any(state.get("status") == "failed" and state.get("terminal_operation") for state in states))
 
 
+def _started(root: Path) -> bool:
+    return (root / "input_binding.json").is_file() or _bought(root)
+
+
+def _upgrade_roots(minimal: Path) -> set:
+    """Roots an operator's explicit upgrade of this exact minimal splat may start."""
+    path = minimal / UPGRADE
+    if path.is_symlink() or not path.is_file() or not (minimal / MANIFEST).is_file():
+        return set()
+    value = json.loads(path.read_text())
+    return (set(value.get("roots") or [])
+            if value.get("splat_manifest_digest") == load_splat_manifest(minimal)["digest"] else set())
+
+
+def _refined_marker(form, root: Path, manifest, frames, roots) -> dict:
+    """The adopted form; a minimal splat also names the admitted partial views it left out."""
+    marker = {"request_form": form, "splat_root": str(root), "splat_manifest_digest": manifest["digest"]}
+    left = sorted({frames[base]["frame_id"] for base, view, _ in merge_duplicate_views(frames)
+                   if _admission(view)[0] and _admission(view)[1] is not None}) if form == MINIMAL else []
+    if left:
+        marker.update(left_out_admitted_view_ids=left, gap_preserving_form_untried=bool(_untried_gap_roots(roots)))
+    return marker
+
+
 def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_context,
-                     task_runner, max_polls=2, checkpoint=None):
+                     task_runner, max_polls=2, checkpoint=None, retained_only=False):
     """Resume one refined-splat operation; publish its original SPZ and lossless decoded PLY.
 
-    If World Labs failed the full request and no attempt is left, the next attempt
-    sends the documented minimal form from its own root (capture-4b60431e,
-    2026-10-30: EXECUTION_FAILED with masks on 8 of 11 views and confidence on all).
-    Partly admitted generated views are then left out; the draft keeps them.
+    World Labs documents a posed frame as image, depth and camera only. It
+    accepted our masks and depth confidence, then failed both requests that sent
+    them with EXECUTION_FAILED (capture-4b60431e and capture-447ae4f4,
+    2026-10-30). New purchases send the documented shape: real frames plus the
+    generated views a whole-view agreement review admitted (``-whole``), then
+    real frames only (``-minimal``) once the provider failed every attempt of
+    that, or straight away when no generated view was admitted. Earlier forms
+    are adopted or polled, never bought again; a completed splat in any root is
+    adopted; no earlier form is newly bought behind a later live or completed
+    one unless an operator requested that upgrade (``request_gap_preserving_upgrade``).
     """
-    minimal = _provider_failed_and_exhausted(output_root / "native")
-    if minimal:
-        output_root = output_root.with_name(output_root.name + "-minimal")
+    from . import atlas_whole_view_review
+
+    roots = _form_roots(output_root)
+    upgrade = _upgrade_roots(roots[-1][1])
+    review = None
+    for index, (form, root) in enumerate(roots):
+        if not (root / "native/result.json").is_file():
+            if _provider_failed_and_exhausted(root / "native"):
+                continue
+            if form in LEGACY_FORMS and not _bought(root):
+                continue
+            later = any(_started(r) and not _provider_failed_and_exhausted(r / "native") for _, r in roots[index + 1:])
+            if not _started(root) and root.name not in upgrade and later:
+                continue
+            if form == WHOLE and not _bought(root):
+                review = atlas_whole_view_review.review_whole_views(
+                    views=merge_duplicate_views(frames), root=root, task_context=task_context, policy=policy,
+                    source_video_digest=result["binding"]["source_video_digest"], checkpoint=checkpoint,
+                    retained_only=retained_only)
+                if not any(verdict["admit_whole"] for verdict in review["verdicts"]):
+                    continue  # Real frames only: the minimal form is that same request.
+        try:
+            value = _run_form(form=form, root=root, frames=frames, result=result, draft=draft, policy=policy,
+                              task_context=task_context, task_runner=task_runner, max_polls=max_polls,
+                              checkpoint=checkpoint, review=review)
+        except ValueError:
+            # The provider failed this form's last attempt; the next form follows.
+            if not _provider_failed_and_exhausted(root / "native"):
+                raise
+            continue
+        if value["status"] == "completed":
+            value["refined_splat"] = _refined_marker(form, root, value["splat_manifest"], frames, roots)
+        return value
+    raise ValueError("atlas_task_operation_failed")
+
+
+def _run_form(*, form, root: Path, frames, result, draft, policy, task_context, task_runner, max_polls,
+              checkpoint, review=None):
+    """One form's root. A bought root is evaluated by what it sent, never re-derived.
+
+    Its request may be an earlier release's form, and its retained uploads stay intact.
+    """
     from .atlas_depth_splat import decode_spz, splats2mesh_task_spec
     from .atlas_pricing import splat_cost
     from .gaussian_splat_decode import write_standard_3dgs_ply
     from .atlas_result_bundle import _completed_task
 
-    request, uploads, provenance = prepare_splat_request(frames=frames, root=output_root / "inputs",
-                                                         minimal=minimal)
     source = result["binding"]["source_video_digest"]
-    stage = output_root / "native"
-    binding = {"pose_result_digest": result["digest"], "source_video_digest": source,
-               "draft_splat_manifest_digest": draft["digest"], "request_digest": canonical_digest(request),
-               "request_form": "documented_minimal" if minimal else "reviewed_masks_and_confidence",
-               "uploads": uploads, "frames": provenance,
-               "generated_result_digests": list(draft.get("generated_result_digests") or []),
-               "visual_review_digest": draft.get("visual_review_digest")}
-    record = output_root / "input_binding.json"
-    if record.exists() and json.loads(record.read_text()) != binding:
-        raise ValueError("atlas_native_splat_inputs_changed")
-    write_json(record, binding)
-    if (stage / "result.json").is_file():
-        state = _completed_task(stage, source, "splat")
-        if (state.get("binding", {}).get("request_template") != request
+    stage, record = root / "native", root / "input_binding.json"
+    identity = {"pose_result_digest": result["digest"], "source_video_digest": source,
+                "draft_splat_manifest_digest": draft["digest"],
+                "generated_result_digests": list(draft.get("generated_result_digests") or []),
+                "visual_review_digest": draft.get("visual_review_digest")}
+    state = _completed_task(stage, source, "splat") if (stage / "result.json").is_file() else None
+    submission = stage / "atlas_pose/submission.json"
+    sent = state["binding"] if state else (json.loads(submission.read_text()).get("binding")
+                                           if submission.is_file() else None)
+    if sent and record.is_file():
+        binding = json.loads(record.read_text())
+        request, uploads = sent["request_template"], sent["uploads"]
+        if any(binding.get(key) != value for key, value in identity.items()):
+            raise ValueError("atlas_native_splat_inputs_changed")
+        if canonical_digest(request) != binding.get("request_digest") or uploads != binding.get("uploads"):
+            raise ValueError("atlas_native_splat_receipt_binding_changed")
+    else:
+        if form in LEGACY_FORMS:
+            raise ValueError("atlas_native_splat_inputs_changed")  # Never derived again.
+        admitted = {row["position"]: {"admit_whole": True, "reason": row["reason"]}
+                    for row in (review or {}).get("verdicts", []) if form == WHOLE and row["admit_whole"]}
+        request, uploads, provenance = prepare_splat_request(frames=frames, root=root / "inputs",
+                                                             admitted_whole=admitted)
+        binding = {**identity, "request_digest": canonical_digest(request), "request_form": form,
+                   "uploads": uploads, "frames": provenance,
+                   **({"whole_view_review": review} if (review or {}).get("verdicts") else {})}
+        # A root that sent nothing follows the current request (one written before merging, say).
+        if record.exists() and json.loads(record.read_text()) != binding and _bought(root):
+            raise ValueError("atlas_native_splat_inputs_changed")
+        write_json(record, binding)
+    if state is not None:
+        if (state["binding"].get("request_template") != request
                 or state["binding"].get("uploads") != uploads
                 or state["binding"].get("task_context_digest") != task_context["context_digest"]):
             raise ValueError("atlas_native_splat_receipt_binding_changed")
@@ -187,21 +298,21 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
                  "request_digest": canonical_digest(request), "maximum_cost_usd": splat_cost(policy),
                  **{key: policy[key] for key in ("rate_card_reference", "reviewed_by", "reviewed_on")}}
         if checkpoint:
-            checkpoint("refined_splat", frame_count=len(provenance))
+            checkpoint("refined_splat", frame_count=len(binding["frames"]))
         state = task_runner(task="posedImages2Splats", request=request, uploads=uploads,
             source_video_digest=source, output_root=stage, task_context=task_context,
             price_review=quote, max_polls=max_polls)
     if state["status"] != "completed":
         return {"status": state["status"], "stage": "refined_splat", "operation_id": state.get("operation_id")}
-    if (output_root / MANIFEST).is_file():
-        manifest = load_splat_manifest(output_root)
+    if (root / MANIFEST).is_file():
+        manifest = load_splat_manifest(root)
         if manifest["native_result_digest"] != state["digest"] or manifest["input_binding_digest"] != canonical_digest(binding):
             raise ValueError("atlas_native_splat_result_changed")
         for row in manifest["outputs"]:
-            path = output_root / row["path"]
-            if path.is_symlink() or not path.resolve().is_relative_to(output_root.resolve()) or _sha256_file(path) != row["sha256"]:
+            path = root / row["path"]
+            if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or _sha256_file(path) != row["sha256"]:
                 raise ValueError("atlas_native_splat_output_changed")
-        return {"status": "completed", "splat_manifest": manifest, "splat_root": str(output_root)}
+        return {"status": "completed", "splat_manifest": manifest, "splat_root": str(root)}
     # Atlas may publish several counts; the largest is the full refinement.
     selected = max((r for r in state["outputs"] if r["role"].startswith("refinedSplats-")),
                    key=lambda r: int(r["role"].split("-")[-1]))
@@ -209,7 +320,7 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
     if (original.is_symlink() or not original.resolve().is_relative_to(stage.resolve())
             or _sha256_file(original) != selected["sha256"]):
         raise ValueError("atlas_native_splat_output_changed")
-    spz, ply = output_root / "atlas_refined_splat.spz", output_root / "atlas_refined_splat.ply"
+    spz, ply = root / "atlas_refined_splat.spz", root / "atlas_refined_splat.ply"
     shutil.copyfile(original, spz)
     # Atlas publishes SPZ v2 with degree-0 colour, which decodes exactly in
     # Python (bit-identical to splat-transform on a 2M-Gaussian Atlas splat).
@@ -235,7 +346,7 @@ def run_native_splat(*, frames, result, draft, output_root: Path, policy, task_c
         "outputs": [{"role": role, "path": path.name, "sha256": _sha256_file(path), "bytes": path.stat().st_size}
                     for role, path in (("splat_spz", spz), ("splat_ply", ply))]}
     manifest["digest"] = canonical_digest(manifest, digest_field="digest")
-    write_json(output_root / "splats2mesh_task_spec.json",
+    write_json(root / "splats2mesh_task_spec.json",
                splats2mesh_task_spec(frames=frames, spz=spz, source_video_digest=source))
-    write_json(output_root / MANIFEST, manifest)
-    return {"status": "completed", "splat_manifest": manifest, "splat_root": str(output_root)}
+    write_json(root / MANIFEST, manifest)
+    return {"status": "completed", "splat_manifest": manifest, "splat_root": str(root)}

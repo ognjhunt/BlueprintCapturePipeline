@@ -386,10 +386,66 @@ def validate_source_import_provenance(value: Any, *, model_record: Mapping[str, 
     return receipt
 
 
+def _world_anchor(stage: Any, joint_prim: Any) -> Any:
+    """The rigid body a fixed joint pins to the world, else ``None``.
+
+    UsdPhysics attaches a joint end to the static world when it names no body, or
+    names a prim that is neither a rigid body nor inside one. Isaac's importers
+    author both: an empty body0, and (Isaac Sim 6 / urdf-usd-converter) a body0 on
+    the asset's default prim or on a massless URDF root link. Exactly one end must
+    be a rigid body; a disabled joint, a dangling target, or a frame that moves with
+    a rigid body pins nothing.
+    """
+
+    from pxr import UsdPhysics
+
+    joint = UsdPhysics.FixedJoint(joint_prim)
+    if joint.GetJointEnabledAttr().Get() is False:
+        return None
+    rigid, static = [], 0
+    for rel in (joint.GetBody0Rel(), joint.GetBody1Rel()):
+        targets = list(rel.GetTargets()) if rel else []
+        if len(targets) > 1:
+            return None
+        if not targets:
+            static += 1
+            continue
+        target = stage.GetPrimAtPath(targets[0])
+        if not target or not target.IsValid():
+            return None
+        if target.HasAPI(UsdPhysics.RigidBodyAPI):
+            rigid.append(target)
+            continue
+        ancestor = target.GetParent()
+        while ancestor and not ancestor.IsPseudoRoot():
+            if ancestor.HasAPI(UsdPhysics.RigidBodyAPI):
+                return None
+            ancestor = ancestor.GetParent()
+        static += 1
+    return rigid[0] if len(rigid) == 1 and static == 1 else None
+
+
+def _source_name(prim: Any) -> str | None:
+    """The source name an importer recorded for a prim it had to rename.
+
+    urdf-usd-converter (Isaac Sim 6) transcodes names that are not USD
+    identifiers (``link6-7`` becomes ``tn__link67_sG``) and stores the
+    original as the prim's ``displayName``.
+    """
+
+    name = prim.GetMetadata("displayName") if prim.HasAuthoredMetadata("displayName") else None
+    return name if isinstance(name, str) and name and name != prim.GetName() else None
+
+
 def read_model_structure(path: str | Path) -> dict[str, Any]:
-    """The robot USD's rigid-body paths (as spawned under the robot prim) and joint names (OpenUSD)."""
+    """The robot USD's rigid-body paths (as spawned under the robot prim) and joint names (OpenUSD).
+
+    ``body_source_names``/``joint_source_names`` appear only when the importer
+    recorded a different source name for a prim (see ``_source_name``).
+    """
 
     from .native_task_robot_contact_topology import (
+        ENV_ROOT,
         NativeTaskRobotContactTopologyError,
         _asset_rigid_body_paths,
     )
@@ -399,23 +455,31 @@ def read_model_structure(path: str | Path) -> dict[str, Any]:
         from pxr import Usd, UsdPhysics
 
         stage = Usd.Stage.Open(str(path))
-        joints = sorted({prim.GetName() for prim in stage.Traverse()
-                         if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)})
-        # A fixed joint with one empty body pins that link to the world. Isaac Lab's
+        root = str(stage.GetDefaultPrim().GetPath())
+        joint_prims = [prim for prim in stage.Traverse()
+                       if prim.IsA(UsdPhysics.RevoluteJoint) or prim.IsA(UsdPhysics.PrismaticJoint)]
+        joints = sorted({prim.GetName() for prim in joint_prims})
+        joint_sources = {prim.GetName(): _source_name(prim) for prim in joint_prims if _source_name(prim)}
+        body_sources = {}
+        for prim in stage.Traverse():
+            spawned = ENV_ROOT + "/Robot" + str(prim.GetPath())[len(root):]
+            if (prim.HasAPI(UsdPhysics.RigidBodyAPI) and spawned in bodies and _source_name(prim)):
+                body_sources[spawned] = _source_name(prim)
+        # A fixed joint with one end on the static world pins that link. Isaac Lab's
         # fix_root_link cannot do it for this topology (root Xform, links beneath),
         # so the model must author its own anchor, as Isaac's URDF importer does.
         anchors = []
         for prim in stage.Traverse():
-            if not prim.IsA(UsdPhysics.FixedJoint):
-                continue
-            joint = UsdPhysics.FixedJoint(prim)
-            ends = [list(joint.GetBody0Rel().GetTargets()), list(joint.GetBody1Rel().GetTargets())]
-            linked = [stage.GetPrimAtPath(targets[0]) for targets in ends if targets]
-            if len(linked) == 1 and linked[0] and linked[0].HasAPI(UsdPhysics.RigidBodyAPI):
-                anchors.append(linked[0].GetName())
+            if prim.IsA(UsdPhysics.FixedJoint) and (anchor := _world_anchor(stage, prim)) is not None:
+                anchors.append(anchor.GetName())
     except (NativeTaskRobotContactTopologyError, Exception) as exc:  # pxr raises Tf errors on bad bytes
         raise TeamEmbodimentError(["team_embodiment_model_unreadable"]) from exc
-    return {"body_paths": bodies, "joint_names": joints, "world_anchor_links": sorted(anchors)}
+    structure = {"body_paths": bodies, "joint_names": joints, "world_anchor_links": sorted(anchors)}
+    if body_sources:
+        structure["body_source_names"] = dict(sorted(body_sources.items()))
+    if joint_sources:
+        structure["joint_source_names"] = dict(sorted(joint_sources.items()))
+    return structure
 
 
 def _body_path(structure: Mapping[str, Any], link: str) -> str | None:
@@ -423,8 +487,8 @@ def _body_path(structure: Mapping[str, Any], link: str) -> str | None:
     return matches[0] if len(matches) == 1 else None
 
 
-def model_structure_blockers(manifest: Mapping[str, Any], structure: Mapping[str, Any]) -> list[str]:
-    """Every declared joint and link exists, once, in the model; a fixed base is anchored, a free one is not."""
+def _declared_names(manifest: Mapping[str, Any]) -> tuple[list[str], list[str]]:
+    """Every joint and link name a manifest relies on, in declaration order."""
 
     channels = gripper_channels(manifest)
     joints = [j["name"] for j in manifest["joints"]] + [j["name"] for g in channels for j in g["joints"]]
@@ -433,6 +497,75 @@ def model_structure_blockers(manifest: Mapping[str, Any], structure: Mapping[str
              *(link for arm in manifest.get("arms", []) for link in (arm["base_link"], arm["tool_link"])),
              *(c["mount_link"] for c in manifest["cameras"] if c["mount_link"] is not None),
              *manifest["base"].get("ground_contact_links", [])]
+    return joints, links
+
+
+def bind_importer_names(manifest_fields: Mapping[str, Any], structure: Mapping[str, Any],
+                        source_names: Mapping[str, str]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Point configured link/joint names at the prims the importer actually authored.
+
+    ``source_names`` maps each source (URDF/MJCF) name to the configured name.
+    A configured name binds to the one prim whose importer-recorded source name
+    (``body_source_names``/``joint_source_names``) is one of its source names or,
+    for a prim the importer did not rename, whose own name is. Nothing is
+    guessed: a name with no such prim, or several, keeps its configured value
+    and is returned as a blocker. Returns ``(fields, renamed, blockers)``.
+    """
+
+    fields = deepcopy(dict(manifest_fields))
+    sources: dict[str, set[str]] = {}
+    for source, name in source_names.items():
+        sources.setdefault(name, set()).add(source)
+
+    def match(name: str, entries: Sequence[str], recorded: Mapping[str, str]) -> list[str]:
+        wanted = sources.get(name) or {name}
+        return [entry for entry in entries if (recorded[entry] in wanted if entry in recorded
+                                               else entry.rsplit("/", 1)[-1] in wanted | {name})]
+
+    joints, links = (list(dict.fromkeys(names)) for names in _declared_names(fields))
+    renamed: dict[str, dict[str, str]] = {"links": {}, "joints": {}}
+    blockers, bound = [], {}
+    for kind, names, entries, recorded in (
+            ("links", links, structure["body_paths"], structure.get("body_source_names", {})),
+            ("joints", joints, structure["joint_names"], structure.get("joint_source_names", {}))):
+        for name in names:
+            found = match(name, entries, recorded)
+            if len(found) == 1 and (kind, found[0]) not in bound:
+                bound[(kind, found[0])] = name
+                target = found[0].rsplit("/", 1)[-1]
+                if target != name:
+                    renamed[kind][name] = target
+            elif kind == "links":
+                blockers.append(f"team_embodiment_model_link_missing_or_ambiguous:{name}")
+            else:
+                blockers.append(f"team_embodiment_model_joint_{'missing' if not found else 'ambiguous'}:{name}")
+    link, joint = (lambda value: renamed["links"].get(value, value)), (lambda value: renamed["joints"].get(value, value))
+    fields["tool_link"] = link(fields["tool_link"])
+    for row in fields["joints"]:
+        row["name"] = joint(row["name"])
+    for channel in [*fields.get("grippers", []), *([fields["gripper"]] if fields.get("gripper") else [])]:
+        if "tool_link" in channel:
+            channel["tool_link"] = link(channel["tool_link"])
+        channel["contact_links"] = [link(value) for value in channel["contact_links"]]
+        for row in channel["joints"]:
+            row["name"] = joint(row["name"])
+    for arm in fields.get("arms", []):
+        arm["base_link"], arm["tool_link"] = link(arm["base_link"]), link(arm["tool_link"])
+        arm["joint_names"] = [joint(value) for value in arm["joint_names"]]
+    for camera in fields.get("cameras", []):
+        if camera.get("mount_link") is not None:
+            camera["mount_link"] = link(camera["mount_link"])
+    if "ground_contact_links" in fields.get("base", {}):
+        fields["base"]["ground_contact_links"] = [link(value) for value in fields["base"]["ground_contact_links"]]
+    if "reset_joint_positions" in fields:
+        fields["reset_joint_positions"] = {joint(key): value for key, value in fields["reset_joint_positions"].items()}
+    return fields, {kind: names for kind, names in renamed.items() if names}, blockers
+
+
+def model_structure_blockers(manifest: Mapping[str, Any], structure: Mapping[str, Any]) -> list[str]:
+    """Every declared joint and link exists, once, in the model; a fixed base is anchored, a free one is not."""
+
+    joints, links = _declared_names(manifest)
     blockers = [f"team_embodiment_model_joint_missing:{name}" for name in joints
                 if name not in structure["joint_names"]]
     blockers += [f"team_embodiment_model_link_missing_or_ambiguous:{link}" for link in dict.fromkeys(links)
@@ -756,6 +889,7 @@ __all__ = [
     "TeamEmbodimentError",
     "action_dimension",
     "apply_team_embodiment",
+    "bind_importer_names",
     "camera_names",
     "camera_slots",
     "is_team_plan",

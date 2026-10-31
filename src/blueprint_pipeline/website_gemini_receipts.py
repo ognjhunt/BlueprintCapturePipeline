@@ -5,7 +5,6 @@ import fcntl
 import json
 import math
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -20,7 +19,9 @@ def gemini_quote(*, model: str, input_tokens: int, max_output_tokens: int = 65_5
     # ceiling includes thinking and final output; default covers the full window.
     # https://ai.google.dev/gemini-api/docs/thinking#token-limits-and-max_output_tokens
     # https://ai.google.dev/gemini-api/docs/pricing
-    if model != "gemini-3.8-flash" or datetime.now(timezone.utc).year != 2026:
+    # The rate is pinned to the model, not to a calendar year: a new model
+    # needs a reviewed rate, and the job's admitted allowance bounds spend.
+    if model != "gemini-3.8-flash":
         raise ValueError("website_gemini_pricing_refresh_required")
     if not 0 < input_tokens <= 1_048_576:
         raise ValueError("website_gemini_input_budget_invalid")

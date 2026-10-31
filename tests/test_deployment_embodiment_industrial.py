@@ -180,7 +180,7 @@ def test_original23_profiles_29_recipes_104_rows_and13_policy_sources_are_unchan
     root = package.parents[1]
     recipes = {r['embodiment_id']: r for r in assets.asset_recipes()['recipes']}
     catalog = {r['candidate_id']: r for r in json.loads((root/'config/beta_policy_candidates.v1.json').read_text())['candidates']}
-    assert len(recipes) == 49 and len(catalog) == 120 and len(runtime._PROFILES) == 42
+    assert len(recipes) == 49 and len(catalog) == 136 and len(runtime._PROFILES) == 42
     assert len(previous['recipes']) == 29 and len(previous['catalog']) == 104
     for name, expected in previous['recipes'].items():
         assert canonical_digest(recipes[name]) == expected

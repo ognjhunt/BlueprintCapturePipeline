@@ -45,6 +45,11 @@ def validate_robolab_policy_execution_spec(spec: Mapping[str, Any], *,
     if interface == "molmoact2_droid_joint8.v1":
         from .molmoact2_droid_runtime import validate_execution_spec
         validate_execution_spec(value)
+    from .openpi_droid_policy_runtime import (
+        BETA_POLARIS_VARIANT_CANDIDATE_IDS, validate_beta_polaris_variant_execution_spec,
+    )
+    if value.get("candidate_id") in BETA_POLARIS_VARIANT_CANDIDATE_IDS:
+        validate_beta_polaris_variant_execution_spec(value)
     if interface in {"openwam_piper_eef20.v1", "openwam_franka_eef10.v1", "pi05_trlc_joint14.v1"}:
         from .team_local_policy import runtime_for_interface
         runtime_for_interface(interface).validate_execution_spec(value)

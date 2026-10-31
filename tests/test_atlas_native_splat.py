@@ -162,57 +162,58 @@ def test_native_manifest_retains_provider_bytes_and_decoded_ply(tmp_path):
         return state
 
     draft = {"digest": "sha256:" + "c" * 64, "voxel_size": .01, "generated_result_digests": ["generated"]}
-    result = native.run_native_splat(frames=frames, result=pose, draft=draft, output_root=tmp_path, policy=policy,
+    # Real frames only: nothing to review, so the documented minimal form from its own root.
+    root, out = tmp_path / "draft-refined", tmp_path / "draft-refined-minimal"
+    result = native.run_native_splat(frames=frames, result=pose, draft=draft, output_root=root, policy=policy,
                                     task_context={"context_digest": "sha256:" + "d" * 64}, task_runner=runner)
     manifest = result["splat_manifest"]
-    assert (tmp_path / "atlas_refined_splat.spz").read_bytes() == blob
-    decoded = read_standard_3dgs_ply(tmp_path / "atlas_refined_splat.ply")
+    assert (out / "atlas_refined_splat.spz").read_bytes() == blob
+    decoded = read_standard_3dgs_ply(out / "atlas_refined_splat.ply")
     assert decoded.count == splat.count
     assert manifest["splat_kind"] == "atlas_refined" and manifest["photometric_optimization"] is True
     assert manifest["metric_measurement_proven"] is manifest["simulation_qualified"] is False
     assert calls[0]["task"] == "posedImages2Splats"
-    assert (tmp_path / "splats2mesh_task_spec.json").is_file()
+    assert (out / "splats2mesh_task_spec.json").is_file()
     # Registration keeps the draft's grid; the draft and its generated inputs stay bound.
     assert manifest["voxel_size"] == .01 and manifest["draft_splat_manifest_digest"] == draft["digest"]
     assert manifest["generated_result_digests"] == ["generated"]
-    resumed = native.run_native_splat(frames=frames, result=pose, draft=draft, output_root=tmp_path, policy=policy,
+    resumed = native.run_native_splat(frames=frames, result=pose, draft=draft, output_root=root, policy=policy,
         task_context={"context_digest": "sha256:" + "d" * 64}, task_runner=runner)
     assert resumed == result and len(calls) == 1
     assert np.array_equal(decoded.xyz, depth.decode_spz(blob).xyz)
-    (tmp_path / "atlas_refined_splat.spz").write_bytes(b"changed")
+    (out / "atlas_refined_splat.spz").write_bytes(b"changed")
     with pytest.raises(ValueError, match="output_changed"):
-        native.run_native_splat(frames=frames, result=pose, draft=draft, output_root=tmp_path, policy=policy,
+        native.run_native_splat(frames=frames, result=pose, draft=draft, output_root=root, policy=policy,
             task_context={"context_digest": "sha256:" + "d" * 64}, task_runner=runner)
 
 
-def test_real_views_go_in_whole_and_reviewed_views_only_where_admitted(tmp_path):
-    from PIL import Image
+def test_new_requests_post_the_documented_frame_shape_with_generated_views_whole_or_not_at_all(tmp_path):
     frames = source_frames()
-    # Atlas's own low depth confidence: the RGB there is still real footage.
+    # Atlas's own low depth confidence neither leaves a real frame out nor travels with it.
     frames[0]["confidence"][:, :10] = 0
-    keep = np.zeros(frames[1]["depth"].shape, bool)
-    keep[:, 20:] = True
-    reviewed = depth.restrict_frame(frames[1], keep)
-    # Fusion sees exactly confidence * mask, as before.
-    assert np.array_equal(reviewed["confidence"], frames[1]["confidence"] * keep)
-    # A recovered view can repeat a generated view's ID; each is posted on its own.
-    frames[1] = {**reviewed, "frame_id": frames[0]["frame_id"]}
-    request, uploads, provenance = native.prepare_splat_request(frames=frames, root=tmp_path)
-    real, partial = request["posedFrames"]
-    assert "maskAsset" not in real
-    assert real["depth"]["confidenceAsset"] == {"assetId": "upload:frame-0-confidence"}
-    confidence = np.asarray(Image.open(uploads["frame-0-confidence"]["path"]))
-    assert (confidence[:, :10] == 0).all() and (confidence[:, 10:] == 255).all()
-    assert partial["maskAsset"] == {"assetId": "upload:frame-1-mask"}
-    assert np.array_equal(np.asarray(Image.open(uploads["frame-1-mask"]["path"])) == 255, keep)
-    assert provenance[1]["mask_sha256"] == uploads["frame-1-mask"]["sha256"]
-    # A view whose review admitted nothing is not posted; masks compose.
-    empty = depth.restrict_frame({**source_frames()[0], "frame_id": "generated"}, np.zeros_like(keep))
-    request, _, provenance = native.prepare_splat_request(frames=[*frames, empty], root=tmp_path / "with-empty")
-    assert len(request["posedFrames"]) == 2 and "generated" not in {row["frame_id"] for row in provenance}
+    generated = gap_view(keep(slice(20, None)))
+    left, _, provenance = native.prepare_splat_request(frames=[*frames, generated], root=tmp_path / "out")
+    assert len(left["posedFrames"]) == 2 and "gap" not in {row["frame_id"] for row in provenance}
+    verdict = {"admit_whole": True, "reason": "agrees"}
+    request, uploads, provenance = native.prepare_splat_request(
+        frames=[*frames, generated], root=tmp_path / "in", admitted_whole={2: verdict})
+    assert len(request["posedFrames"]) == 3
+    for posted in (left, request):
+        assert all(set(view) == {"imageAsset", "camera", "depth"} and set(view["depth"]) == {"depthAsset"}
+                   for view in posted["posedFrames"])
+    assert set(uploads) == {f"frame-{i}-{role}" for i in range(3) for role in ("rgb", "depth")}
+    # Admitted whole: every pixel and its depth, not only the reviewed gap region.
+    assert np.array_equal(depth.read_exr_depth(Path(uploads["frame-2-depth"]["path"])), generated["depth"])
+    assert provenance[2]["whole_view_review"] == verdict and "whole_view_review" not in provenance[0]
+    # A view whose review admitted none of it stays out even with a verdict.
+    nothing = gap_view(np.zeros((64, 48), bool), "nothing", position=(0, -.2, 0))
+    request, _, _ = native.prepare_splat_request(frames=[*frames, nothing], root=tmp_path / "nothing",
+                                                 admitted_whole={2: verdict})
+    assert len(request["posedFrames"]) == 2
     with pytest.raises(ValueError, match="frames_required"):
-        native.prepare_splat_request(frames=[frames[0], empty], root=tmp_path / "too-few")
-    assert np.array_equal(depth.restrict_frame(reviewed, ~keep)["keep_mask"], np.zeros_like(keep))
+        native.prepare_splat_request(frames=[frames[0], generated], root=tmp_path / "too-few")
+
+
 
 
 def test_mixed_grids_are_posted_on_one_grid_with_their_rays(tmp_path):
@@ -247,7 +248,9 @@ def test_refined_splat_replaces_the_draft_as_the_final_appearance(tmp_path, monk
         if state == "processing":
             return {"status": "processing", "stage": "refined_splat", "operation_id": "op"}
         return {"status": "completed", "splat_root": str(tmp_path / "refined"),
-                "splat_manifest": {"digest": "refined", "splat_kind": "atlas_refined"}}
+                "splat_manifest": {"digest": "refined", "splat_kind": "atlas_refined"}, "refined_splat": marker}
+    marker = {"request_form": "documented_minimal", "left_out_admitted_view_ids": ["gap"],
+              "gap_preserving_form_untried": True}
     monkeypatch.setattr(native, "run_native_splat", refined)
     monkeypatch.setattr(atlas_result_bundle, "export_pose_bundle",
                         lambda **kw: exported.append(kw) or {"zip_path": "refined.zip"})
@@ -263,6 +266,13 @@ def test_refined_splat_replaces_the_draft_as_the_final_appearance(tmp_path, monk
     assert result["status"] == "completed" and exported[0]["splat_root"] == tmp_path / "refined"
     assert result["background"]["splat_kind"] == "atlas_refined"
     assert result["background"]["splat_manifest_digest"] == "refined"
+    # The adopted form is on the result, not in the bundle: a failed upgrade leaves the bundle unchanged.
+    assert result["background"]["refined_splat"] == marker
+    assert "refined_splat" not in json.loads((tmp_path / "out/background_review.json").read_text())
+    from blueprint_pipeline.website_atlas_pipeline import finalize_background_result
+    handoff = finalize_background_result(output_root=tmp_path / "out", source_digest="source",
+        task_context={"context_digest": "ctx"}, automation=result, source_pose=None, model="model")
+    assert handoff["refined_splat"] == marker
 
 
 @pytest.mark.parametrize("refined", [False, True])
@@ -308,39 +318,332 @@ def test_refined_splat_follows_gap_completion_without_the_draft_coverage_pass(tm
     assert result["status"] == "completed" and result["background"]["splat_kind"] == "atlas_refined"
 
 
-def test_after_a_provider_failure_the_next_attempt_sends_the_documented_minimal_form(tmp_path):
-    frames = source_frames()
-    keep = np.zeros(frames[1]["depth"].shape, bool)
-    keep[:, 20:] = True
-    frames.append({**depth.restrict_frame(frames[1], keep), "frame_id": "generated"})
-    request, uploads, provenance = native.prepare_splat_request(frames=frames, root=tmp_path / "m", minimal=True)
-    # Whole views only, image + depth + camera, exactly the guide's example.
-    assert [row["frame_id"] for row in provenance] == ["0", "1"]
-    assert all(set(frame) == {"imageAsset", "camera", "depth"} and set(frame["depth"]) == {"depthAsset"}
-               for frame in request["posedFrames"])
-    root = tmp_path / "draft-refined"
-    for path, value in ((root / "native", {"status": "failed", "terminal_operation": {"error": {"code": 13}}}),
-                        (root / "native/retry", {"status": "rejected"})):
-        (path / "atlas_pose").mkdir(parents=True)
-        (path / "atlas_pose/submission.json").write_text(json.dumps(value))
-    seen = []
+
+POSE = {"digest": "pose", "operation": {"id": "op_pose"}, "binding": {"source_video_digest": "video"}}
+DRAFT = {"digest": "draft", "voxel_size": .01}
+
+
+def task_context():
+    value = {"schema_version": "website_site_task_context.v1", "request_id": "req", "scene_id": "site-req",
+             "capture_id": "walkthrough-req", "confirmed": True, "confirmed_at": "2026-10-30T00:00:00Z",
+             "description": "Move the item to its destination"}
+    value["context_digest"] = canonical_digest(value, digest_field="context_digest")
+    return value
+
+
+CONTEXT = task_context()
+
+
+def keep(columns):
+    value = np.zeros((64, 48), bool)
+    value[:, columns] = True
+    return value
+
+
+def gap_view(admitted, frame_id="gap", shift=0.0, position=(0, .2, 0)):
+    """A generated gap view (or geometry recovered for it: same camera and RGB) admitted in part."""
+    cam = camera(position)
+    return depth.restrict_frame(frame(cam, plane_depth(cam) + shift, frame_id), admitted)
+
+
+def recovered(view, admitted, frame_id="recovered"):
+    """Recovered geometry repeating another view's camera and RGB with its own depth and mask."""
+    whole = {key: value for key, value in view.items() if key != "keep_mask"}
+    return {**depth.restrict_frame({**whole, "depth": view["depth"] + .5}, admitted), "frame_id": frame_id}
+
+
+@pytest.fixture
+def reviewer(monkeypatch):
+    """The whole-view review as its model answers, behind the real retained, admitted receipt."""
+    import sys
+    import types
+    from blueprint_pipeline import atlas_whole_view_review as review
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as gemini
+    from blueprint_pipeline import website_gemini_receipts as receipts
+    from blueprint_pipeline.paid_resource_admission import (
+        PAID_LANE_ADMISSION_SCHEMA_VERSION, require_paid_resource_admission)
+    state = types.SimpleNamespace(admit=set(), asked=[], reserved=[])
+
+    def reserve(**kw):
+        state.reserved.append(kw)
+        admission = {"schema_version": PAID_LANE_ADMISSION_SCHEMA_VERSION, "resource_class": kw["resource_class"],
+                     "status": "admitted", "allocation_binding_digest": kw["binding_digest"], "blockers": []}
+        return admission, require_paid_resource_admission(admission, resource_class=kw["resource_class"],
+                                                          expected_schema_version=PAID_LANE_ADMISSION_SCHEMA_VERSION)
+
+    def ask(*, prompt, pairs, output_root, binding_digest):
+        state.asked.append([label for label, _ in pairs])
+        ids = [label.split()[1].rstrip(";") for label, _ in pairs if label.startswith("CANDIDATE")]
+        return {"complete": True, "answer": {"views": [
+            {"view_id": view_id, "admit_whole": view_id in state.admit, "reason": "compared"} for view_id in ids]}}
+    monkeypatch.setattr(receipts, "reserve_website_preparation_spend", reserve)
+    monkeypatch.setattr(review, "_ask", ask)
+    monkeypatch.setattr(gemini, "_api_key", lambda: ("key", "test"))
+    monkeypatch.setitem(sys.modules, "google.genai", types.ModuleType("google.genai"))
+    return state
+
+
+def scripted_runner(outcomes, calls):
+    """The admitted runner as World Labs answers each call: completed, failed, or still processing."""
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+    splat, _ = depth.fuse_posed_frames(source_frames())
+    blob = depth.encode_spz(splat)
 
     def runner(**kw):
-        seen.append(kw)
-        return {"status": "processing", "operation_id": "op"}
-    pose = {"digest": "pose", "operation": {"id": "op_pose"}, "binding": {"source_video_digest": "video"}}
-    policy = {"refined_splat_cost_usd": 5, "rate_card_reference": "https://example.test/card",
-              "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}
-    state = native.run_native_splat(frames=frames, result=pose, draft={"digest": "draft"}, output_root=root,
-                                    policy=policy, task_context={"context_digest": "ctx"}, task_runner=runner)
-    assert state["status"] == "processing"
-    assert seen[0]["output_root"] == tmp_path / "draft-refined-minimal/native"
-    assert len(seen[0]["request"]["posedFrames"]) == 2
-    binding = json.loads((tmp_path / "draft-refined-minimal/input_binding.json").read_text())
-    assert binding["request_form"] == "documented_minimal"
-    # A live attempt keeps the full request.
-    (root / "native/retry/atlas_pose/submission.json").write_text(json.dumps({"status": "capacity_wait"}))
-    seen.clear()
-    native.run_native_splat(frames=frames, result=pose, draft={"digest": "draft"}, output_root=root,
-                            policy=policy, task_context={"context_digest": "ctx"}, task_runner=runner)
-    assert seen[0]["output_root"] == root / "native" and len(seen[0]["request"]["posedFrames"]) == 3
+        calls.append(kw)
+        stage, outcome = kw["output_root"], outcomes.pop(0)
+        if outcome == "refused":
+            raise ValueError("website_scene_preparation_budget_exhausted")  # Refused before any send.
+        (stage / "atlas_pose").mkdir(parents=True, exist_ok=True)
+        binding = {"source_video_digest": kw["source_video_digest"], "request_template": kw["request"],
+                   "uploads": kw["uploads"], "task_context_digest": kw["task_context"]["context_digest"]}
+        state = {"status": "submitted", "binding": binding}
+        if outcome == "completed":
+            (stage / "original.spz").write_bytes(blob)
+            result = {"status": "completed", "operation": {"id": "op_native"}, "binding": binding,
+                      "outputs": [{"role": f"refinedSplats-{splat.count}", "path": "original.spz",
+                                   "sha256": _sha256_file(stage / "original.spz")}],
+                      "billing": {"status": "unreported", "reserved_usd": 5}}
+            result["digest"] = canonical_digest(result, digest_field="digest")
+            (stage / "result.json").write_text(json.dumps(result))
+            state.update(status="completed", result_digest=result["digest"])
+        elif outcome == "failed":
+            state.update(status="failed", terminal_operation={"error": {"code": 13}})
+        (stage / "atlas_pose/submission.json").write_text(json.dumps(state))
+        if outcome == "failed":
+            raise ValueError("atlas_task_operation_failed")
+        return result if outcome == "completed" else {"status": "processing", "operation_id": "op"}
+    return runner
+
+
+def splat_policy():
+    return {"refined_splat_cost_usd": 5, "maximum_review_cost_usd": 1, "rate_card_reference": "https://example.test/card",
+            "reviewed_by": "test", "reviewed_on": datetime.now(timezone.utc).date().isoformat()}
+
+
+def refined(frames, root, outcomes, calls):
+    return native.run_native_splat(frames=frames, result=POSE, draft=DRAFT, output_root=root, policy=splat_policy(),
+                                   task_context=CONTEXT, task_runner=scripted_runner(outcomes, calls))
+
+
+def earlier_release(root, form, status):
+    """A request an earlier release bought, with the masks and depth confidence World Labs does not document."""
+    request = {"posedFrames": [{"imageAsset": {"assetId": "upload:frame-0-rgb"}, "camera": camera(),
+                                "maskAsset": {"assetId": "upload:frame-0-mask"},
+                                "depth": {"depthAsset": {"assetId": "upload:frame-0-depth"},
+                                          "confidenceAsset": {"assetId": "upload:frame-0-confidence"}}}]}
+    uploads = {f"frame-0-{role}": {"path": f"/retained/{role}.png", "sha256": "sha256:" + "1" * 64}
+               for role in ("rgb", "mask", "depth", "confidence")}
+    root.mkdir(parents=True)
+    (root / "input_binding.json").write_text(json.dumps({
+        "pose_result_digest": POSE["digest"], "source_video_digest": "video", "draft_splat_manifest_digest": "draft",
+        "generated_result_digests": [], "visual_review_digest": None, "request_digest": canonical_digest(request),
+        "request_form": form, "uploads": uploads, "frames": []}))
+    if status is not None:
+        (root / "native/atlas_pose").mkdir(parents=True)
+        (root / "native/atlas_pose/submission.json").write_text(json.dumps({
+            "status": status, "binding": {"request_template": request, "uploads": uploads,
+                                          "source_video_digest": "video", "task_context_digest": CONTEXT["context_digest"]},
+            **({"terminal_operation": {"error": {"code": 13}}} if status == "failed" else {})}))
+    return request
+
+
+def tree(root):
+    return {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
+def test_a_whole_duplicate_absorbs_a_recovered_view_and_takes_its_depth_where_admitted(tmp_path):
+    frames = source_frames()
+    duplicate = recovered(frames[1], keep(slice(0, 10)))
+    duplicate["confidence"] = duplicate["confidence"] * .5
+    (_, _, rest), (base, merged, dups) = native.merge_duplicate_views([*frames, duplicate])
+    assert not rest and (base, dups) == (1, [2]) and merged.get("keep_mask") is None
+    assert np.array_equal(merged["confidence"][:, :10], duplicate["confidence"][:, :10])
+    request, uploads, provenance = native.prepare_splat_request(frames=[*frames, duplicate], root=tmp_path)
+    assert len(request["posedFrames"]) == 2
+    posted = depth.read_exr_depth(Path(uploads["frame-1-depth"]["path"]))
+    assert np.array_equal(posted[:, :10], duplicate["depth"][:, :10])
+    assert np.array_equal(posted[:, 10:], frames[1]["depth"][:, 10:])
+    assert provenance[1]["frame_id"] == "1"
+    assert provenance[1]["merged_duplicates"] == [{"position": 2, "frame_id": "recovered"}]
+    assert "merged_duplicates" not in provenance[0]
+
+
+def test_partial_duplicates_merge_into_one_view_with_the_union_of_their_admissions(tmp_path):
+    generated = gap_view(keep(slice(20, None)))
+    # Recovered views can repeat the generated view's ID.
+    duplicate = recovered(gap_view(keep(slice(None))), keep(slice(0, 10)), frame_id="gap")
+    frames = [*source_frames(), generated, duplicate]
+    (_, merged, dups), = [row for row in native.merge_duplicate_views(frames) if row[0] == 2]
+    assert dups == [3] and np.array_equal(merged["keep_mask"], keep(slice(20, None)) | keep(slice(0, 10)))
+    verdict = {"admit_whole": True, "reason": "agrees"}
+    request, uploads, provenance = native.prepare_splat_request(frames=frames, root=tmp_path, admitted_whole={2: verdict})
+    assert len(request["posedFrames"]) == 3 and "maskAsset" not in request["posedFrames"][2]
+    posted = depth.read_exr_depth(Path(uploads["frame-2-depth"]["path"]))
+    assert np.array_equal(posted[:, :10], duplicate["depth"][:, :10])
+    assert np.array_equal(posted[:, 10:], generated["depth"][:, 10:])
+    assert provenance[2]["merged_duplicates"] == [{"position": 3, "frame_id": "gap"}]
+    # Not admitted whole, the merged view is left out.
+    assert len(native.prepare_splat_request(frames=frames, root=tmp_path / "minimal")[0]["posedFrames"]) == 2
+
+
+def test_mixed_grids_merge_duplicates_before_tiling(tmp_path):
+    portrait, landscape = camera(), camera((.2, 0, 0), width=64, height=36)
+    frames = [frame(portrait, plane_depth(portrait), "portrait"), frame(landscape, plane_depth(landscape), "landscape")]
+    alone, _, _ = native.prepare_splat_request(frames=frames, root=tmp_path / "alone")
+    twin = {**depth.restrict_frame(frames[1], np.ones((36, 64), bool) & (np.arange(64) < 20)), "frame_id": "twin"}
+    request, _, provenance = native.prepare_splat_request(frames=[*frames, twin], root=tmp_path / "merged")
+    assert len(request["posedFrames"]) == len(alone["posedFrames"])
+    assert {row["frame_id"] for row in provenance} == {"portrait", "landscape"}
+    assert all(row["merged_duplicates"] == [{"position": 2, "frame_id": "twin"}]
+               for row in provenance if row["frame_id"] == "landscape")
+
+
+def test_reviewed_whole_views_go_first_and_real_frames_only_follow_a_provider_failure(tmp_path, reviewer):
+    frames, calls = [*source_frames(), gap_view(keep(slice(20, None)))], []
+    reviewer.admit = {"candidate-0002"}
+    root = tmp_path / "draft-refined"
+    assert refined(frames, root, ["failed", "processing"], calls)["status"] == "processing"
+    assert [call["output_root"] for call in calls] == [
+        tmp_path / f"draft-refined{suffix}/native" for suffix in ("-whole", "-minimal")]
+    whole, minimal = (call["request"]["posedFrames"] for call in calls)
+    assert len(whole) == 3 and len(minimal) == 2
+    assert all(set(view) == {"imageAsset", "camera", "depth"} and set(view["depth"]) == {"depthAsset"}
+               for view in [*whole, *minimal])
+    binding = json.loads((tmp_path / "draft-refined-whole/input_binding.json").read_text())
+    assert binding["request_form"] == "documented_reviewed_whole"
+    assert binding["whole_view_review"]["verdicts"] == [
+        {"position": 2, "frame_id": "gap", "admit_whole": True, "reason": "compared"}]
+    assert binding["frames"][2]["whole_view_review"] == {"admit_whole": True, "reason": "compared"}
+    assert json.loads((tmp_path / "draft-refined-minimal/input_binding.json").read_text())[
+        "request_form"] == "documented_minimal"
+    # One review, overlapping real frames as its references; legacy roots were never bought.
+    assert len(reviewer.asked) == 1 and reviewer.asked[0][0].startswith("CANDIDATE candidate-0002")
+    assert {label.split()[1] for label in reviewer.asked[0][1:]} == {"reference-0000", "reference-0001"}
+    assert not (tmp_path / "draft-refined").exists() and not (tmp_path / "draft-refined-masks").exists()
+    done = refined(frames, root, ["completed"], calls)
+    assert calls[2]["request"] == calls[1]["request"] and done["splat_root"] == str(tmp_path / "draft-refined-minimal")
+    assert done["refined_splat"] == {
+        "request_form": "documented_minimal", "splat_root": done["splat_root"],
+        "splat_manifest_digest": done["splat_manifest"]["digest"], "left_out_admitted_view_ids": ["gap"],
+        "gap_preserving_form_untried": False}
+    assert refined(frames, root, [], calls)["splat_manifest"] == done["splat_manifest"] and len(reviewer.asked) == 1
+
+
+@pytest.mark.parametrize("generated", [True, False])
+def test_with_no_admitted_generated_view_the_minimal_form_is_bought_once(tmp_path, reviewer, generated):
+    frames, calls = [*source_frames(), *([gap_view(keep(slice(20, None)))] if generated else [])], []
+    done = refined(frames, tmp_path / "draft-refined", ["completed"], calls)
+    assert [call["output_root"] for call in calls] == [tmp_path / "draft-refined-minimal/native"]
+    assert not (tmp_path / "draft-refined-whole/input_binding.json").exists()
+    record = json.loads((tmp_path / "draft-refined-whole/whole_view_review.json").read_text())
+    assert record["status"] == ("reviewed" if generated else "not_required") and len(reviewer.asked) == generated
+    assert done["refined_splat"].get("gap_preserving_form_untried") is (False if generated else None)
+
+
+def test_the_whole_view_review_is_one_retained_receipt_never_bought_again(tmp_path, reviewer):
+    from blueprint_pipeline import atlas_whole_view_review as review
+    frames, calls = [*source_frames(), gap_view(keep(slice(20, None)))], []
+    reviewer.admit = {"candidate-0002"}
+    # The splat purchase is refused after the review, before any send.
+    with pytest.raises(ValueError, match="budget_exhausted"):
+        refined(frames, tmp_path / "draft-refined", ["refused"], calls)
+    first = json.loads((tmp_path / "draft-refined-whole/input_binding.json").read_text())
+    (tmp_path / "draft-refined-whole/whole_view_review.json").unlink()
+    assert refined(frames, tmp_path / "draft-refined", ["processing"], calls)["status"] == "processing"
+    assert len(reviewer.asked) == len(reviewer.reserved) == 1
+    assert reviewer.reserved[0]["provider"] == "google" and reviewer.reserved[0]["maximum_cost_usd"] <= 1
+    assert json.loads((tmp_path / "draft-refined-whole/input_binding.json").read_text()) == first
+    # Over the reviewed review cap nothing is bought and nothing is admitted.
+    verdicts = review.review_whole_views(views=native.merge_duplicate_views(frames), root=tmp_path / "capped",
+        task_context=CONTEXT, policy={**splat_policy(), "maximum_review_cost_usd": .001},
+        source_video_digest="video")
+    assert verdicts["status"] == "over_review_cap" and not verdicts["verdicts"][0]["admit_whole"]
+    assert len(reviewer.reserved) == 1
+
+
+def test_retained_finalization_adopts_a_completed_review_and_never_buys_one(tmp_path, reviewer):
+    from blueprint_pipeline import atlas_whole_view_review as review
+    views = native.merge_duplicate_views([*source_frames(), gap_view(keep(slice(20, None)))])
+    reviewer.admit = {"candidate-0002"}
+    kwargs = dict(views=views, root=tmp_path, task_context=CONTEXT, policy=splat_policy(),
+                  source_video_digest="video")
+    # Export replay and retained finalization refuse before any reservation.
+    with pytest.raises(ValueError, match="atlas_export_replay_cached_stage_missing"):
+        review.review_whole_views(**kwargs, retained_only=True)
+    assert not reviewer.asked and not reviewer.reserved
+    bought = review.review_whole_views(**kwargs)
+    assert review.review_whole_views(**kwargs, retained_only=True)["verdicts"] == bought["verdicts"]
+    assert len(reviewer.asked) == len(reviewer.reserved) == 1
+
+
+def test_a_view_without_an_overlapping_real_frame_is_never_admitted_or_reviewed(tmp_path, reviewer):
+    from blueprint_pipeline import atlas_whole_view_review as review
+    away = gap_view(keep(slice(20, None)), position=(0, 0, -50))
+    verdicts = review.review_whole_views(views=native.merge_duplicate_views([*source_frames(), away]),
+        root=tmp_path, task_context=CONTEXT, policy=splat_policy(), source_video_digest="video")
+    assert verdicts["status"] == "no_overlapping_real_frame" and not reviewer.asked
+    assert verdicts["verdicts"] == [{"position": 2, "frame_id": "gap", "admit_whole": False,
+                                     "reason": "no_overlapping_real_frame"}]
+
+
+@pytest.mark.parametrize("status", ["failed", "submitted"])
+def test_earlier_release_roots_are_adopted_or_polled_never_bought_again(tmp_path, reviewer, status):
+    frames, calls = [*source_frames(), gap_view(keep(slice(20, None)))], []
+    reviewer.admit = {"candidate-0002"}
+    root, masks = tmp_path / "draft-refined", tmp_path / "draft-refined-masks"
+    sent = earlier_release(root, "reviewed_masks_and_confidence", status)
+    earlier_release(masks, "reviewed_masks", None)  # Recorded, never sent.
+    retained = tree(root), tree(masks)
+    done = refined(frames, root, ["completed"], calls)
+    if status == "submitted":
+        # The live purchase is polled with exactly what it sent, and adopted.
+        assert [call["output_root"] for call in calls] == [root / "native"] and calls[0]["request"] == sent
+        assert done["splat_root"] == str(root) and not reviewer.asked
+        assert done["refined_splat"]["request_form"] == "reviewed_masks_and_confidence"
+        assert refined(frames, root, [], calls)["splat_root"] == str(root) and len(calls) == 1
+        return
+    # Both earlier roots stay exactly as retained; the reviewed whole form is bought instead.
+    assert [call["output_root"] for call in calls] == [tmp_path / "draft-refined-whole/native"]
+    assert (tree(root), tree(masks)) == retained and done["splat_root"] == str(tmp_path / "draft-refined-whole")
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed", "not_admitted"])
+def test_an_operator_upgrade_tries_the_reviewed_whole_form_once(tmp_path, reviewer, outcome):
+    frames = [*source_frames(), gap_view(keep(slice(20, None)))]
+    root, minimal = tmp_path / "draft-refined", tmp_path / "draft-refined-minimal"
+    # An earlier release failed its full form, then bought the minimal one.
+    earlier_release(root, "reviewed_masks_and_confidence", "failed")
+    native._run_form(form="documented_minimal", root=minimal, frames=frames, result=POSE, draft=DRAFT,
+                     policy=splat_policy(), task_context=CONTEXT, task_runner=scripted_runner(["completed"], []),
+                     max_polls=1, checkpoint=None)
+    calls = []
+    adopted = refined(frames, root, [], calls)
+    # Adopted as it is: nothing reviews or buys on its own.
+    assert not calls and not reviewer.asked and adopted["splat_root"] == str(minimal)
+    marker = adopted["refined_splat"]
+    assert marker["left_out_admitted_view_ids"] == ["gap"] and marker["gap_preserving_form_untried"] is True
+    with pytest.raises(ValueError, match="upgrade_invalid"):
+        native.request_gap_preserving_upgrade(minimal, splat_manifest_digest="sha256:" + "0" * 64, at_epoch=1)
+    request = native.request_gap_preserving_upgrade(minimal, splat_manifest_digest=marker["splat_manifest_digest"],
+                                                    at_epoch=1)
+    assert request["roots"] == ["draft-refined-whole"]
+    reviewer.admit = set() if outcome == "not_admitted" else {"candidate-0002"}
+    upgraded = refined(frames, root, [] if outcome == "not_admitted" else [outcome], calls)
+    assert len(reviewer.asked) == 1
+    if outcome == "completed":
+        assert [call["output_root"] for call in calls] == [tmp_path / "draft-refined-whole/native"]
+        assert len(calls[0]["request"]["posedFrames"]) == 3
+        assert upgraded["splat_root"] == str(tmp_path / "draft-refined-whole")
+        assert upgraded["refined_splat"]["request_form"] == "documented_reviewed_whole"
+    else:
+        assert len(calls) == (outcome == "failed")
+        # The minimal splat stands unchanged, and the upgrade is spent.
+        assert upgraded["splat_manifest"] == adopted["splat_manifest"] and upgraded["splat_root"] == str(minimal)
+        assert upgraded["refined_splat"]["gap_preserving_form_untried"] is False
+        with pytest.raises(ValueError, match="upgrade_unavailable"):
+            native.request_gap_preserving_upgrade(minimal, splat_manifest_digest=marker["splat_manifest_digest"],
+                                                  at_epoch=2)
+    calls.clear()
+    assert refined(frames, root, [], calls)["splat_root"] == upgraded["splat_root"] and not calls
+    assert len(reviewer.asked) == 1
