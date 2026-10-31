@@ -24,6 +24,7 @@ from blueprint_pipeline.immutable_directory_publication import (
     publish_staged_immutable_directory,
 )
 from blueprint_pipeline.immutable_file_digest import sha256_file
+from blueprint_pipeline.immutable_tree_walk import path_order, walk_tree
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
     SCHEMA_VERSION,
     validate_scene_configuration_component_package,
@@ -41,27 +42,26 @@ def _sha256(path: Path) -> str:
 
 
 def _copy_source_tree(source: Path, destination: Path) -> None:
-    for path in sorted(source.rglob("*")):
-        if path.is_symlink():
+    for relative, entry in walk_tree(source):
+        if entry.is_symlink():
             raise ValueError("scene_configuration_component_source_symlink_forbidden")
-        relative = path.relative_to(source)
-        target = destination / relative
-        if path.is_dir():
-            target.mkdir(exist_ok=True)
-        elif path.is_file():
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target_mode = 0o555 if path.stat().st_mode & 0o111 else 0o444
+        target = os.path.join(destination, relative)
+        if entry.is_dir(follow_symlinks=False):
+            os.mkdir(target)
+        elif entry.is_file(follow_symlinks=False):
+            mode = entry.stat(follow_symlinks=False).st_mode
+            target_mode = 0o555 if mode & 0o111 else 0o444
             linked = False
-            if stat.S_IMODE(path.stat().st_mode) == target_mode:
+            if stat.S_IMODE(mode) == target_mode:
                 try:
-                    os.link(path, target, follow_symlinks=False)
+                    os.link(entry.path, target, follow_symlinks=False)
                     linked = True
                 except OSError as exc:
                     if exc.errno != errno.EXDEV:
                         raise
             if not linked:
-                shutil.copyfile(path, target)
-                target.chmod(target_mode)
+                shutil.copyfile(entry.path, target)
+                os.chmod(target, target_mode)
 
 
 def build_scene_configuration_component_package(
@@ -111,13 +111,13 @@ def build_scene_configuration_component_package(
         _copy_source_tree(source, staging)
         files = [
             {
-                "relative_path": path.relative_to(staging).as_posix(),
-                "sha256": _sha256(path),
-                "size_bytes": path.stat().st_size,
-                "executable": bool(path.stat().st_mode & 0o111),
+                "relative_path": relative,
+                "sha256": _sha256(Path(entry.path)),
+                "size_bytes": entry.stat().st_size,
+                "executable": bool(entry.stat().st_mode & 0o111),
             }
-            for path in sorted(staging.rglob("*"))
-            if path.is_file()
+            for relative, entry in sorted(walk_tree(staging), key=lambda item: path_order(item[0]))
+            if entry.is_file()
         ]
         value: dict[str, Any] = {
             "schema_version": SCHEMA_VERSION,

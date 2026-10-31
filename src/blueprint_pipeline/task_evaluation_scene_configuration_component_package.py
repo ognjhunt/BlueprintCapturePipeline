@@ -11,13 +11,16 @@ construction envelope and are never embedded in this platform package.
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .immutable_file_digest import sha256_file
+from .immutable_tree_walk import walk_tree
 from .task_evaluation_scene_configuration_stage_producers import (
     ADMITTED_PRODUCER_IDENTITIES,
 )
@@ -35,6 +38,37 @@ _NETWORK_POLICY_BY_ADAPTER = {
 
 class TaskEvaluationSceneConfigurationComponentPackageError(ValueError):
     """A component package was incomplete, mutable, or identity-mismatched."""
+
+
+def _inventoried_file(root: Path, value: str, directories: dict[str, str]) -> tuple[Path, os.stat_result]:
+    """``_relative_file`` and the file's stat, resolving each directory only once.
+
+    Resolving every parent of every file was much of this validation, which a deploy
+    runs three times over the same 38,505 files. A symlink goes the long way.
+    """
+
+    relative = Path(value)
+    if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+        raise TaskEvaluationSceneConfigurationComponentPackageError(
+            "scene_configuration_component_package_path_invalid"
+        )
+    directory, name = os.path.split(os.path.join(root, relative))
+    resolved = directories.get(directory)
+    if resolved is None:
+        resolved = directories[directory] = os.path.realpath(directory)
+    leaf = os.path.join(resolved, name)
+    try:
+        info = os.lstat(leaf)
+    except OSError:
+        info = None
+    if info is None or stat.S_ISLNK(info.st_mode):
+        path = _relative_file(root, value)
+        return path, path.stat()
+    if not stat.S_ISREG(info.st_mode) or not leaf.startswith(f"{root}{os.sep}"):
+        raise TaskEvaluationSceneConfigurationComponentPackageError(
+            "scene_configuration_component_package_path_invalid"
+        )
+    return Path(leaf), info
 
 
 def _sha256(path: Path) -> str:
@@ -111,30 +145,28 @@ def validate_scene_configuration_component_package(
             "scene_configuration_component_package_manifest_invalid"
         )
     observed: set[str] = set()
+    directories: dict[str, str] = {}
     for row in files:
         if not isinstance(row, Mapping):
             raise TaskEvaluationSceneConfigurationComponentPackageError(
                 "scene_configuration_component_package_inventory_invalid"
             )
         relative = str(row.get("relative_path") or "")
-        path = _relative_file(package_root, relative)
+        path, info = _inventoried_file(package_root, relative, directories)
         if (
             relative in observed
             or not _DIGEST.fullmatch(str(row.get("sha256") or ""))
-            or path.stat().st_size != row.get("size_bytes")
+            or info.st_size != row.get("size_bytes")
             or _sha256(path) != row.get("sha256")
-            or bool(path.stat().st_mode & 0o111) is not bool(row.get("executable"))
-            or (require_read_only and path.stat().st_mode & 0o222)
+            or bool(info.st_mode & 0o111) is not bool(row.get("executable"))
+            or (require_read_only and info.st_mode & 0o222)
         ):
             raise TaskEvaluationSceneConfigurationComponentPackageError(
                 "scene_configuration_component_package_inventory_invalid"
             )
         observed.add(relative)
-    actual = {
-        path.relative_to(package_root).as_posix()
-        for path in package_root.rglob("*")
-        if path.is_file() and path != manifest_path
-    }
+    actual = {relative for relative, entry in walk_tree(package_root) if entry.is_file()}
+    actual.discard(manifest_path.name)
     if actual != observed:
         raise TaskEvaluationSceneConfigurationComponentPackageError(
             "scene_configuration_component_package_inventory_incomplete"

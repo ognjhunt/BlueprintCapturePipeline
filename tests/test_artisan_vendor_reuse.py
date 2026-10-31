@@ -287,3 +287,38 @@ def test_planning_reads_every_source_but_not_inodes_the_toolchain_readback_prove
                         inodes={name: sealed_identity((prior / name).stat()) for name in published})["status"] == "written"
     assert prepare_vendor_reuse(**args) is not None
     assert sorted(reads) == sorted(str(path) for path in source.rglob("*") if path.is_file())
+
+
+def test_a_source_link_leaving_the_vendor_root_is_refused_and_one_inside_it_is_walked(tmp_path):
+    from blueprint_pipeline.artisan_vendor_reuse import _files
+
+    root = tmp_path / "vendor"
+    (root / "pkg").mkdir(parents=True)
+    (root / "pkg" / "module.py").write_text("x")
+    (root / "inside-link").symlink_to(root / "pkg" / "module.py")
+    assert sorted(path.name for path in _files(root)) == ["inside-link", "module.py"]
+
+    (tmp_path / "secret").write_text("x")
+    (root / "outside-link").symlink_to(tmp_path / "secret")
+    with pytest.raises(ValueError, match="source_file_invalid"):
+        list(_files(root))
+
+
+def test_a_directory_link_above_a_published_file_is_seen_and_each_directory_asked_once(tmp_path, monkeypatch):
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a").write_text("x")
+    (real / "b").write_text("x")
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    tmp = str(tmp_path.resolve())
+    asked = []
+    realpath = vendor_reuse.os.path.realpath
+    monkeypatch.setattr(vendor_reuse.os.path, "realpath",
+                        lambda path, **kwargs: asked.append(path) or realpath(path, **kwargs))
+    known = {}
+
+    assert vendor_reuse._links_above(f"{tmp}/real/a", known) is False
+    assert vendor_reuse._links_above(f"{tmp}/real/b", known) is False
+    assert vendor_reuse._links_above(f"{tmp}/link/a", known) is True
+    assert asked == [f"{tmp}/real", f"{tmp}/link"]

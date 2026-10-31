@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline import task_evaluation_scene_configuration_component_package as package_module
 from blueprint_pipeline.task_evaluation_scene_configuration_component_package import (
     SCHEMA_VERSION,
     TaskEvaluationSceneConfigurationComponentPackageError,
@@ -100,3 +101,59 @@ def test_component_package_rejects_adapter_network_policy_mismatch(
             root=root,
             expected_adapter_id="content_agents_rigid_replacement",
         )
+
+
+def _lookup(call):
+    try:
+        return call()
+    except TaskEvaluationSceneConfigurationComponentPackageError as refusal:
+        return str(refusal)
+
+
+@pytest.mark.parametrize("value", [
+    "plain.txt", "nested/deep/plain.txt", "./nested/deep/plain.txt", "nested//deep/plain.txt",
+    "leaf-link-inside", "leaf-link-outside", "leaf-link-dangling", "dir-link-inside/plain.txt",
+    "dir-link-outside/secret.txt", "missing.txt", "nested", "../secret.txt", "nested/../plain.txt", "/etc/hosts", "",
+])
+def test_the_inventory_lookup_agrees_with_resolving_the_whole_path(tmp_path: Path, value: str) -> None:
+    """It asks about each directory once, and must not change a single answer."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+    root = tmp_path / "package"
+    (root / "nested" / "deep").mkdir(parents=True)
+    (root / "plain.txt").write_text("plain", encoding="utf-8")
+    (root / "nested" / "deep" / "plain.txt").write_text("deep", encoding="utf-8")
+    (root / "leaf-link-inside").symlink_to(root / "plain.txt")
+    (root / "leaf-link-outside").symlink_to(outside / "secret.txt")
+    (root / "leaf-link-dangling").symlink_to(root / "absent")
+    (root / "dir-link-inside").symlink_to(root / "nested" / "deep", target_is_directory=True)
+    (root / "dir-link-outside").symlink_to(outside, target_is_directory=True)
+    package_root = root.resolve()
+
+    slow = _lookup(lambda: package_module._relative_file(package_root, value))
+    fast = _lookup(lambda: package_module._inventoried_file(package_root, value, {}))
+
+    if isinstance(slow, str):
+        assert fast == slow
+    else:
+        assert fast[0] == slow
+        assert fast[1].st_ino == slow.stat().st_ino
+
+
+def test_the_inventory_lookup_resolves_each_directory_once(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "package"
+    root.mkdir()
+    for name in ("a", "b", "c"):
+        (root / name).write_text(name, encoding="utf-8")
+    package_root = root.resolve()
+    asked = []
+    realpath = package_module.os.path.realpath
+    monkeypatch.setattr(package_module.os.path, "realpath",
+                        lambda path, **kwargs: asked.append(path) or realpath(path, **kwargs))
+    directories: dict[str, str] = {}
+
+    for name in ("a", "b", "c"):
+        package_module._inventoried_file(package_root, name, directories)
+
+    assert asked == [str(package_root)]
