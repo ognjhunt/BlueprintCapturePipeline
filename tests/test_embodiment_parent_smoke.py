@@ -87,6 +87,7 @@ def checkpoint_body(batch, body):
     write_once(body / "import-checkpoint.json", sealed({
         "schema_version": "embodiment_import_checkpoint.v1", "body_result": row,
         "binding_digest": canonical_digest(binding)}, "checkpoint_digest"))
+    worker.seal_verified_import(body, batch.identity)
 
 
 def no_native_diagnostic(body, *, wall_seconds):
@@ -237,3 +238,19 @@ raise AssertionError("SDK close must terminate")
     assert measured["smoke_digest"] == result["smoke_digest"]
     assert measured["candidate_policy_queried"] is False
     assert measured["task_executed"] is False
+
+
+def test_parent_without_usd_accepts_the_import_its_kit_child_verified(batch, monkeypatch):
+    """Batch07: Isaac Sim 6's python.sh gives the batch parent no pxr; only the Kit child has it."""
+    def importer_process(command, **options):
+        body = Path(command[command.index("--output") + 1])
+        result = subprocess.run([sys.executable, "-c", IMPORT_CHILD, str(batch.inputs.configuration),
+            str(batch.inputs.model.parent), str(body), batch.identity, batch.recipe], **options)
+        assert (body / "verified-import.json").is_file()
+        return result
+
+    monkeypatch.setitem(sys.modules, "pxr", None)  # import pxr raises ImportError in this parent
+    monkeypatch.setattr(smoke, "run_bounded_smoke_process", no_native_diagnostic)
+    row = execute(batch, importer_process)["results"][0]
+    assert row["status"] == "imported"
+    assert (batch.output / "bodies" / batch.identity / "verified-import.json").is_file()
