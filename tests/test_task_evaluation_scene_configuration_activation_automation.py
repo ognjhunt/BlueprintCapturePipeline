@@ -1168,3 +1168,74 @@ def test_controller_registers_each_release_without_replacing_active_registry(tmp
     with pytest.raises(automation.SceneConfigurationActivationAutomationError):
         _provision(tmp_path, commit=COMMIT_NEXT, reference="changed authority", release_scoped=True)
     assert load(COMMIT_NEXT) == current
+
+
+def test_default_global_collector_turns_a_live_account_into_a_row_blocker(monkeypatch) -> None:
+    """A live account used to raise a ValueError that aborted the whole tick."""
+
+    from blueprint_pipeline import adp_task_evaluation_abstention as abstention
+
+    def live_account():
+        raise abstention.TaskEvaluationAbstentionError("provider_zero_not_observed")
+
+    monkeypatch.delenv("BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE", raising=False)
+    monkeypatch.setattr(abstention, "collect_vast_provider_zero_receipt", live_account)
+    with pytest.raises(
+        automation.SceneConfigurationActivationAutomationError,
+        match="scene_configuration_activation_provider_not_zero:provider_zero_not_observed",
+    ):
+        automation.default_provider_zero_collector(job_key=PREPARATION_ID)
+
+
+def _job_zero(observed_at: datetime) -> dict:
+    """A sealed job-scoped receipt: one other job's owned instance is live."""
+
+    from blueprint_pipeline import paid_provider_job_scope as scope
+
+    other = "blueprint-task-evaluation-scene-config-20260905t025500z-a"
+    guard = {
+        "schema_version": "gpu_spend_guard.v1",
+        "generated_at": (observed_at - timedelta(seconds=30)).isoformat(),
+        "status": "passed", "blockers": [], "reap_mode": True,
+        "inventory_results": [{"provider": "vast", "status": "succeeded"}],
+        "live_instance_count": 1, "total_burn_per_hour_usd": 0.6,
+        "fleet_budget": {"status": "passed", "max_live_instances": 10,
+                         "max_burn_usd_per_hour": 10.0, "daily_spend_usd": 5.0,
+                         "max_daily_spend_usd": 100.0},
+        "instances": [{"id": "101", "name": other, "live": True, "protected": True}],
+        "reap_candidate_ids": [], "reap_results": [],
+    }
+    return scope.build_job_provider_zero_receipt(
+        job_key=PREPARATION_ID, live_inventory=[{"instance_id": "101", "name": other}],
+        guard=guard, guard_record={"path": "/guard.json", "sha256": "sha256:" + "b" * 64},
+        observed_at=observed_at,
+    )
+
+
+def test_activation_stages_beside_another_jobs_owned_instance_with_a_job_zero(tmp_path: Path) -> None:
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    observed, lineage_publisher, _w = _advance(
+        tmp_path, result_path, intent_root, zero=_job_zero(NOW - timedelta(seconds=20))
+    )
+    assert observed["status"] == "scene_configuration_activation_queued"
+    assert observed["provider_zero_digest"].startswith("sha256:")
+    published = [json.loads(body) for body in lineage_publisher.published.values()]
+    zero = next(item for item in published if "provider_zero_digest" in item)
+    assert zero["schema_version"] == "adp_paid_provider_job_zero.v1"
+    assert zero["provider_zero"] is False and zero["job_provider_zero"] is True
+    assert zero["provider_zero_digest"] == observed["provider_zero_digest"]
+
+
+def test_activation_refuses_a_resealed_job_zero_that_owns_a_live_resource(tmp_path: Path) -> None:
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    zero = _job_zero(NOW - timedelta(seconds=20))
+    zero["job_live_resource_count"] = 1
+    zero = _sealed(zero, "provider_zero_digest")
+    with pytest.raises(
+        automation.SceneConfigurationActivationAutomationError,
+        match="scene_configuration_activation_provider_not_zero",
+    ):
+        _advance(tmp_path, result_path, intent_root, zero=zero)
+    assert not (tmp_path / "activations" / "pending").exists()

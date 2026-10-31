@@ -60,6 +60,11 @@ from .task_evaluation_standing_launch_authorization import (
     load_standing_authorization,
     validate_standing_authorization,
 )
+from .paid_provider_job_scope import (
+    JOB_PROVIDER_ZERO_SCHEMA_VERSION,
+    ProviderJobScopeError,
+    validate_job_provider_zero_receipt,
+)
 from .vast_evidence_contracts import valid_vast_provider_zero_api_call
 
 
@@ -569,6 +574,17 @@ def _hand_to_service_group(paths: Sequence[Path], *, service_group: str | None) 
 
 def _validated_provider_zero(value: Mapping[str, Any]) -> dict[str, Any]:
     zero = dict(value)
+    if zero.get("schema_version") == JOB_PROVIDER_ZERO_SCHEMA_VERSION:
+        # Job-scoped zero: nothing of this job is live, every live instance is
+        # another job's owned, labeled work, and the fleet budget has room
+        # (see paid_provider_job_scope). Only produced when the owner enables
+        # BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE=job; a retained one stays valid.
+        try:
+            return validate_job_provider_zero_receipt(zero)
+        except ProviderJobScopeError as exc:
+            raise SceneConfigurationActivationAutomationError(
+                "scene_configuration_activation_provider_not_zero"
+            ) from exc
     if (
         zero.get("schema_version") != PROVIDER_ZERO_SCHEMA_VERSION
         or zero.get("provider") != "vast"
@@ -592,12 +608,43 @@ def _validated_provider_zero(value: Mapping[str, Any]) -> dict[str, Any]:
     return zero
 
 
-def default_provider_zero_collector() -> dict[str, Any]:
-    """Observe live authenticated Vast inventory through the production seam."""
+def default_provider_zero_collector(*, job_key: str | None = None) -> dict[str, Any]:
+    """Observe live authenticated Vast inventory through the production seam.
 
-    from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
+    With ``BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE=job`` an account that is not empty
+    can still yield a job-scoped receipt for ``job_key`` (the preparation id),
+    so one website job no longer waits for every other job to finish.
+    """
 
-    return collect_vast_provider_zero_receipt()
+    from .paid_provider_job_scope import (
+        SCOPE_JOB,
+        collect_job_scoped_vast_provider_zero,
+        provider_zero_scope,
+    )
+
+    if job_key and provider_zero_scope() == SCOPE_JOB:
+        try:
+            return collect_job_scoped_vast_provider_zero(job_key=job_key)
+        except ProviderJobScopeError as exc:
+            raise SceneConfigurationActivationAutomationError(
+                "scene_configuration_activation_provider_not_zero:" + ";".join(exc.blockers[:8])
+            ) from exc
+
+    from .adp_task_evaluation_abstention import (
+        TaskEvaluationAbstentionError,
+        collect_vast_provider_zero_receipt,
+    )
+
+    try:
+        return collect_vast_provider_zero_receipt()
+    except TaskEvaluationAbstentionError as exc:
+        # The collector raises a ValueError when the account is not empty or
+        # the inventory query fails. Left alone it escaped the per-row handler
+        # in process_scene_configuration_activations and aborted the whole tick
+        # for every waiting preparation; it is one row's wait, not a crash.
+        raise SceneConfigurationActivationAutomationError(
+            "scene_configuration_activation_provider_not_zero:" + str(exc)
+        ) from exc
 
 
 # ---------------------------------------------------------------- publication
@@ -838,7 +885,13 @@ def advance_scene_configuration_activation(
             attempt.get("authorized_on"), blocker="scene_configuration_activation_attempt_invalid"
         )
     else:
-        zero = _validated_provider_zero(provider_zero_collector())
+        # Only the production seam knows how to scope to a job; injected
+        # collectors keep their zero-argument contract.
+        zero = _validated_provider_zero(
+            provider_zero_collector(job_key=preparation_id)
+            if provider_zero_collector is default_provider_zero_collector
+            else provider_zero_collector()
+        )
         # Preserve subsecond precision instead of moving authority into the future.
         observed_now = current_time if now is not None else datetime.now(timezone.utc)
     zero_time = _parse_time(

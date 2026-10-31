@@ -386,6 +386,45 @@ def _release_scene_cache_after_zero(*, run_root: Path, receipt: Mapping[str, Any
                 "evidence_removed": False}
 
 
+def _job_scoped_terminal_zero(
+    *,
+    guard: Mapping[str, Any],
+    teardown: Mapping[str, Any],
+    required_providers: Sequence[str],
+    max_guard_age_seconds: int,
+    observed_at: datetime,
+) -> dict[str, Any] | None:
+    """Close one run while other jobs are live (opt-in job scope only).
+
+    The run's own instances come from its digest-checked teardown manifest. A
+    manifest that allocated but names no instance cannot be attributed, so it
+    keeps the account-wide rule.
+    """
+
+    from .paid_provider_job_scope import SCOPE_JOB, evaluate_job_scope, provider_zero_scope
+
+    if provider_zero_scope() != SCOPE_JOB:
+        return None
+    try:
+        manifest = _read(Path(str(teardown["path"])))
+    except (KeyError, OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+        return None
+    if _file_digest(Path(str(teardown["path"]))) != teardown.get("digest"):
+        return None
+    own_ids = manifest.get("vast_instance_ids")
+    if not isinstance(own_ids, list) or (
+        teardown.get("provider_resource_allocated") is not False and not own_ids
+    ):
+        return None
+    generated_at = _timestamp(teardown.get("generated_at"))
+    return evaluate_job_scope(
+        guard=guard, now=observed_at, own_instance_ids=own_ids,
+        required_providers=required_providers, max_guard_age_seconds=max_guard_age_seconds,
+        not_before=generated_at, not_before_subject="teardown",
+        added_instances=0, added_burn_usd_per_hour=0.0,
+    )
+
+
 def _reconcile_terminal_provider_zero(
     *,
     run_root: Path,
@@ -479,6 +518,7 @@ def _reconcile_terminal_provider_zero(
         blockers.append("terminal_provider_zero_control_missing")
     teardown, teardown_blockers = _terminal_teardown_evidence(receipt=receipt)
     blockers.extend(teardown_blockers)
+    job_scope: dict[str, Any] | None = None
     if not blockers and teardown is not None:
         provider_zero, guard_blockers = (
             _guard_provider_zero(
@@ -492,6 +532,15 @@ def _reconcile_terminal_provider_zero(
             if guard_error is None
             else (False, [guard_error])
         )
+        if not provider_zero and guard_error is None:
+            job_scope = _job_scoped_terminal_zero(
+                guard=guard, teardown=teardown, required_providers=required_providers,
+                max_guard_age_seconds=max_guard_age_seconds, observed_at=observed_at,
+            )
+            if job_scope is not None and job_scope["verified"]:
+                provider_zero, guard_blockers = True, []
+            elif job_scope is not None:
+                guard_blockers = guard_blockers + list(job_scope["blockers"])
         blockers.extend(guard_blockers)
     else:
         provider_zero = False
@@ -543,6 +592,16 @@ def _reconcile_terminal_provider_zero(
         ),
         "blockers": [],
     }
+    if job_scope is not None and job_scope["verified"]:
+        # Other jobs were still live: this proves *this run* stopped spending
+        # (its instances are gone; everything live is another job's owned,
+        # labeled work; the guard post-dates teardown). It never claims the
+        # account was empty.
+        closure.update({
+            "provider_zero_scope": "job",
+            "global_provider_zero_claimed": False,
+            "job_scope": job_scope,
+        })
     closure["provider_zero_receipt_digest"] = canonical_digest(
         closure, digest_field="provider_zero_receipt_digest"
     )
