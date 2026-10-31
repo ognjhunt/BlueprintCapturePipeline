@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 
 from .team_arm_kinematics import pose_matrix, quaternion_xyzw
-from .team_embodiment import validate_embodiment_manifest
+from .team_embodiment import usd_prim_name, validate_embodiment_manifest
 
 SCHEMA = "blueprint.scripted_robot_grasp_binding.v1"
 CONVENTION = "+Z approach into feature; +Y jaw separation; +X right handed"
@@ -81,6 +81,11 @@ _FRAMES = {
         "assumptions": ["Symmetric distal-mesh envelope centre, not calibrated contact geometry.", "Full closed command overlaps distal envelopes by about10mm; native contact response and nominal width are unmeasured."]},
 }
 
+# Source (URDF) names where the profile's tool is an identifier-safe rewrite.
+# Isaac Sim 6 authors the prim from the source name (usd_prim_name), so a
+# manifest bound on Isaac 6 names ``tn__left_link67_sG`` for TRLC's left tool.
+_SOURCE_TOOLS = {"trlc": "link6-7"}
+
 _IDENTITIES = {
     "i2rt_yam_bimanual": "yam", "agilex_piper_bimanual": "piper", "franka_research_3_bimanual": "fr3",
     "universal_robots_ur5e_bimanual": "robotiq_ur", "kinova_gen3": "kinova", "kinova_gen3_bimanual": "kinova",
@@ -113,7 +118,9 @@ def grasp_bindings(manifest: Mapping[str, Any]) -> dict[str, Any]:
             prefix = {"left": "L_", "right": "R_"}[arm["name"]]
         channel = channel_map[arm["gripper_name"]]
         expected_jaws = {prefix + name: values for name, values in profile["jaws"].items()}
-        if (arm["tool_link"] != prefix + profile["tool"] or len(arm["joint_names"]) != profile["dof"]
+        tools = {prefix + profile["tool"],
+                 usd_prim_name(prefix + _SOURCE_TOOLS.get(_IDENTITIES[identity], profile["tool"]))}
+        if (arm["tool_link"] not in tools or len(arm["joint_names"]) != profile["dof"]
                 or set(channel["contact_links"]) != {prefix + name for name in profile["contacts"]}
                 or {joint["name"] for joint in channel["joints"]} != set(expected_jaws)):
             raise ValueError("scripted_grasp_source_tool_binding_mismatch:" + arm["name"])

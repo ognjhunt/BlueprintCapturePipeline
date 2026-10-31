@@ -354,3 +354,16 @@ def test_no_eligible_body_retains_ten_reasons_without_any_registry_change(batch)
     assert receipt["registered_count"] == 0 and len(receipt["results"]) == len(contract.SCRIPTED_BODIES)
     assert batch.options["registry_path"].read_bytes() == before
     assert receipt["before_registry_digest"] == receipt["after_registry_digest"]
+
+
+def test_door_registers_trlc_as_authored_by_isaac6_with_the_same_policy(batch):
+    """Batch11 refused TRLC (tool_profile_unavailable): its link6-7 tools are authored tn__* on Isaac 6."""
+    from blueprint_pipeline.team_embodiment import usd_prim_name
+    from tests.test_scripted_robot_grasp_frames import _isaac6_trlc_manifest
+    for name in ("left_link6-7", "right_link6-7", "joint1", "link6_7", "a-b-c", "_x", "1st", "é"):
+        assert scripts.usd_prim_name(name) == usd_prim_name(name)
+    manifest = _isaac6_trlc_manifest()
+    policy = build_policy_spec(manifest)
+    assert scripts.validated_policy(manifest, policy, batch.profile) == policy
+    with pytest.raises(ValueError, match="script_source_tool_changed"):
+        scripts.validated_policy(_isaac6_trlc_manifest("tn__{arm}_link67_XX"), policy, batch.profile)

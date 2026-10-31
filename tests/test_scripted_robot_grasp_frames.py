@@ -162,3 +162,28 @@ def test_mesh_approximation_lies_inside_retained_distal_pad_depth(identity):
         depth = sign * points[:, axis]
         assert depth.max() - .020 < sign * grasp[axis] < depth.max()
     assert json.dumps(frames.grasp_bindings(manifest))  # No NumPy-only payload values.
+
+
+def _isaac6_trlc_manifest(tool_name=None):
+    """TRLC as bound on Isaac Sim 6 (batch public-robot-imports-20261031-11): link6-7 is authored tn__*."""
+    from blueprint_pipeline.team_embodiment import usd_prim_name
+    manifest = development_manifest("trlc_dk1_bimanual")
+    manifest.pop("embodiment_digest")
+    for arm, channel in zip(manifest["arms"], manifest["grippers"], strict=True):
+        authored = tool_name.format(arm=arm["name"]) if tool_name else usd_prim_name(arm["name"] + "_link6-7")
+        arm["tool_link"] = channel["tool_link"] = authored
+    manifest["tool_link"] = manifest["arms"][0]["tool_link"]
+    return validate_embodiment_manifest(manifest)
+
+
+def test_isaac6_authored_trlc_tool_keeps_the_audited_source_grasp():
+    from blueprint_pipeline.team_embodiment import usd_prim_name
+    assert [usd_prim_name("left_link6-7"), usd_prim_name("right_link6-7")] == ["tn__left_link67_sG", "tn__right_link67_cI"]
+    manifest = _isaac6_trlc_manifest()
+    assert [arm["tool_link"] for arm in manifest["arms"]] == ["tn__left_link67_sG", "tn__right_link67_cI"]
+    assert frames.grasp_bindings(manifest) == frames.grasp_bindings(development_manifest("trlc_dk1_bimanual"))
+
+
+def test_a_different_encoded_tool_is_still_not_the_trlc_source_tool():
+    with pytest.raises(ValueError, match="scripted_grasp_source_tool_binding_mismatch"):
+        frames.grasp_bindings(_isaac6_trlc_manifest("tn__{arm}_link67_XX"))

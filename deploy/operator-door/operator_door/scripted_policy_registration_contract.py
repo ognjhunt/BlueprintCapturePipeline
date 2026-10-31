@@ -29,6 +29,33 @@ PUBLIC_ARM_CODE_FILES = ("scripted_robot_baseline.py", "scripted_robot_grasp_fra
                          "scripted_robot_public_arm_robotiq_runtime.py")
 PUBLIC_ARM_BODIES = frozenset({"fanuc_m10id_12_robotiq_2f85_sim", "yaskawa_hc20_robotiq_2f85_sim",
                                "agile_robots_diana_7_robotiq_2f85_sim"})
+# Source (URDF) names where the profile's tool is an identifier-safe rewrite;
+# Isaac Sim 6 authors the prim from the source name (see usd_prim_name).
+SOURCE_TOOLS = {"trlc": "link6-7"}
+_B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def usd_prim_name(name: str) -> str:
+    """Mirror of blueprint_pipeline.team_embodiment.usd_prim_name (a test keeps them equal).
+
+    usdex getValidPrimName, which Isaac Sim 6's URDF importer applies to every
+    link: ``left_link6-7`` is authored as ``tn__left_link67_sG``.
+    """
+    kept = [char.isascii() and (char.isalnum() or char == "_") for char in name]
+    output = "".join(char for char, keep in zip(name, kept) if keep)
+    output += "_" if output else ""
+    present, previous = {index for index, keep in enumerate(kept) if keep}, 0
+    for code, position in sorted((ord(char), index) for index, char in enumerate(name) if not kept[index]):
+        delta = sum(index < position for index in present) + (code - previous) * (len(present) + 1)
+        while delta >= 31:
+            output += _B62[31 + (delta - 31) % 31]
+            delta = (delta - 31) // 31
+        output += _B62[delta]
+        previous = code
+        present.add(position)
+    return name if output == name + "_" and (name[0].isalpha() or name[0] == "_") else "tn__" + output
+
+
 EVIDENCE_KIND = "scripted_simulator_state_baseline"
 ACTION_SOURCE = "scripted_simulator_state"
 UNAVAILABLE_REASONS = {"prepared_body_unavailable", "prepared_body_verification_failed", "source_or_import_verification_failed",
@@ -147,7 +174,8 @@ def validated_policy(manifest: dict, policy: dict, profile: dict) -> dict:
             prefix = {"left": "L_", "right": "R_"}[arm["name"]]
         channel = channels[arm["gripper_name"]]
         jaws = {prefix+name: values for name, values in frame["jaws"].items()}
-        require(arm["tool_link"] == prefix+frame["tool"] and len(arm["joint_names"]) == frame["dof"]
+        tools = {prefix+frame["tool"], usd_prim_name(prefix+SOURCE_TOOLS.get(profile["bodies"][body], frame["tool"]))}
+        require(arm["tool_link"] in tools and len(arm["joint_names"]) == frame["dof"]
                 and set(channel["contact_links"]) == {prefix+name for name in frame["contacts"]}
                 and {joint["name"] for joint in channel["joints"]} == set(jaws), "script_source_tool_changed")
         require(all(math.isclose(joint[field], jaws[joint["name"]][index], abs_tol=1e-8)
