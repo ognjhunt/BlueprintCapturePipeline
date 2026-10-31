@@ -1332,6 +1332,95 @@ def _awaiting_scene_configurations(preparation_queue_root: Path) -> list[tuple[P
     return selected
 
 
+def advance_scene_configuration(
+    *,
+    preparation_result_path: str | Path,
+    preparation_queue_root: str | Path,
+    activation_queue_root: str | Path,
+    progression_root: str | Path,
+    intent_root: str | Path,
+    profile_dir: str | Path,
+    standing_authorization_dir: str | Path,
+    submitter: Submitter | None,
+    configured_controls_intent_root: str | Path | None = None,
+    provider_zero_collector: ProviderZeroCollector = default_provider_zero_collector,
+    lineage_publisher_factory: PublisherFactory = lineage_publisher,
+    release_window_publisher_factory: PublisherFactory = release_window_publisher,
+    now: datetime | None = None,
+    running_commit: str | None = None,
+) -> dict[str, Any]:
+    """Move one prepared configuration one safe step: stage its activation, then
+    fire its launch once the activation worker has published the authority.
+
+    Both steps are write-once and keyed by the preparation, so a repeated call
+    returns the sealed state instead of staging or submitting again.
+    """
+
+    activation = advance_scene_configuration_activation(
+        preparation_result_path=preparation_result_path,
+        preparation_queue_root=preparation_queue_root,
+        activation_queue_root=activation_queue_root,
+        progression_root=progression_root,
+        intent_root=intent_root,
+        configured_controls_intent_root=configured_controls_intent_root,
+        provider_zero_collector=provider_zero_collector,
+        lineage_publisher_factory=lineage_publisher_factory,
+        release_window_publisher_factory=release_window_publisher_factory,
+        now=now,
+        running_commit=running_commit,
+    )
+    preparation_id = str(activation.get("preparation_id") or "")
+    if activation.get("status") != "scene_configuration_activation_queued":
+        return {"preparation_id": preparation_id, **activation}
+    if submitter is None:
+        raise SceneConfigurationActivationAutomationError(
+            "scene_configuration_launch_submitter_missing"
+        )
+    intent = load_scene_configuration_activation_intent(
+        intent_root=intent_root,
+        team_namespace=str(activation["team_namespace"]),
+        scene_id=str(activation["scene_id"]),
+        task_id=str(activation["task_id"]),
+        expected_production_commit=str(activation["expected_production_commit"]),
+    )
+    if intent is None:
+        raise SceneConfigurationActivationAutomationError(
+            "scene_configuration_activation_intent_withdrawn"
+        )
+    launch = advance_scene_configuration_launch(
+        progression=activation,
+        activation_queue_root=activation_queue_root,
+        profile_dir=profile_dir,
+        standing_authorization_dir=standing_authorization_dir,
+        progression_root=progression_root,
+        intent=intent,
+        submitter=submitter,
+        now=now,
+    )
+    return {
+        "preparation_id": preparation_id,
+        "status": launch["status"],
+        "activation_status": activation["status"],
+        "activation_id": activation["activation_id"],
+        "launch_id": launch.get("launch_id"),
+        "provider_mutation_performed": False,
+    }
+
+
+#: A Website job's scene progression stages its own activation and fires its own
+#: launch; the configured-controls worker reports these rows and writes nothing.
+SCENE_PROGRESSION_OWNED_STATUS = "scene_configuration_advanced_by_scene_progression"
+
+
+def _envelope_request(queue_root: Path, result_path: Path) -> Mapping[str, Any] | None:
+    try:
+        envelope = json.loads((queue_root / "materialized" / result_path.name).read_text())
+    except (OSError, UnicodeError, ValueError):
+        return None
+    request = envelope.get("request") if isinstance(envelope, Mapping) else None
+    return request if isinstance(request, Mapping) else None
+
+
 def process_scene_configuration_activations(
     *,
     preparation_queue_root: str | Path,
@@ -1348,32 +1437,50 @@ def process_scene_configuration_activations(
     now: datetime | None = None,
     running_commit: str | None = None,
     blocked_scene_keys: set[tuple[str, str, str]] | None = None,
+    scene_progression_intent_digests: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Advance every prepared configuration one safe step; one row per preparation."""
+    """Advance every prepared configuration one safe step; one row per preparation.
+
+    A preparation whose scene intent digest is in ``scene_progression_intent_digests``
+    belongs to a Website job, which advances itself from its scene progression
+    tick; it is reported and left untouched so the write-once state has one writer.
+    An envelope this pass cannot read is never skipped: the activation below reads
+    the same envelope before its first write and refuses it there.
+    """
 
     rows: list[dict[str, Any]] = []
     for queue_root, result_path in _awaiting_scene_configurations(Path(preparation_queue_root).expanduser()):
         preparation_id = result_path.name.split("-sha256", 1)[0]
         try:
+            request = (_envelope_request(queue_root, result_path)
+                       if blocked_scene_keys or scene_progression_intent_digests else None)
+            if (scene_progression_intent_digests and request is not None
+                    and request.get("scene_intent_digest") in scene_progression_intent_digests):
+                rows.append({"preparation_id": str(request.get("preparation_id") or preparation_id),
+                             "status": SCENE_PROGRESSION_OWNED_STATUS})
+                continue
             if blocked_scene_keys:
                 try:
-                    envelope = json.loads((queue_root / "materialized" / result_path.name).read_text())
-                    request = envelope["request"]
-                    key = (request["team_namespace"], request["scene"]["identity"]["id"],
-                           request["task"]["identity"]["id"])
-                    if key in blocked_scene_keys:
-                        rows.append({"preparation_id": preparation_id, "status": "blocked",
-                            "blockers": ["scene_configuration_owner_authority_refused"]})
-                        continue
-                except (OSError, ValueError, KeyError, TypeError) as exc:
+                    key = (None if request is None else (request["team_namespace"],
+                           request["scene"]["identity"]["id"], request["task"]["identity"]["id"]))
+                except (KeyError, TypeError):
+                    key = None
+                if key is None:
                     raise SceneConfigurationActivationAutomationError(
-                        "scene_configuration_owner_scope_unreadable") from exc
-            activation = advance_scene_configuration_activation(
+                        "scene_configuration_owner_scope_unreadable")
+                if key in blocked_scene_keys:
+                    rows.append({"preparation_id": preparation_id, "status": "blocked",
+                        "blockers": ["scene_configuration_owner_authority_refused"]})
+                    continue
+            row = advance_scene_configuration(
                 preparation_result_path=result_path,
                 preparation_queue_root=queue_root,
                 activation_queue_root=activation_queue_root,
                 progression_root=progression_root,
                 intent_root=intent_root,
+                profile_dir=profile_dir,
+                standing_authorization_dir=standing_authorization_dir,
+                submitter=submitter,
                 configured_controls_intent_root=configured_controls_intent_root,
                 provider_zero_collector=provider_zero_collector,
                 lineage_publisher_factory=lineage_publisher_factory,
@@ -1381,50 +1488,72 @@ def process_scene_configuration_activations(
                 now=now,
                 running_commit=running_commit,
             )
-            preparation_id = str(activation.get("preparation_id") or preparation_id)
-            if activation.get("status") != "scene_configuration_activation_queued":
-                rows.append({"preparation_id": preparation_id, **activation})
-                continue
-            if submitter is None:
-                raise SceneConfigurationActivationAutomationError(
-                    "scene_configuration_launch_submitter_missing"
-                )
-            intent = load_scene_configuration_activation_intent(
-                intent_root=intent_root,
-                team_namespace=str(activation["team_namespace"]),
-                scene_id=str(activation["scene_id"]),
-                task_id=str(activation["task_id"]),
-                expected_production_commit=str(activation["expected_production_commit"]),
-            )
-            if intent is None:
-                raise SceneConfigurationActivationAutomationError(
-                    "scene_configuration_activation_intent_withdrawn"
-                )
-            launch = advance_scene_configuration_launch(
-                progression=activation,
-                activation_queue_root=activation_queue_root,
-                profile_dir=profile_dir,
-                standing_authorization_dir=standing_authorization_dir,
-                progression_root=progression_root,
-                intent=intent,
-                submitter=submitter,
-                now=now,
-            )
-            rows.append(
-                {
-                    "preparation_id": preparation_id,
-                    "status": launch["status"],
-                    "activation_status": activation["status"],
-                    "activation_id": activation["activation_id"],
-                    "launch_id": launch.get("launch_id"),
-                    "provider_mutation_performed": False,
-                }
-            )
+            rows.append({**row, "preparation_id": row.get("preparation_id") or preparation_id})
         except SceneConfigurationActivationAutomationError as exc:
             rows.append(
                 {"preparation_id": preparation_id, "status": "blocked", "blockers": [str(exc)]}
             )
     return rows
+
+
+#: Where a scene progression tick finds the roots and WebApp channel of the
+#: activation automation: the same variables (and values) the configured-controls
+#: unit and this module's ``process`` command read.
+OWNED_LAUNCH_ENVIRONMENT = {
+    "progression_root": "BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT",
+    "activation_queue_root": "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT",
+    "profile_dir": "BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR",
+    "standing_authorization_dir": "BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR",
+    "repo_root": "BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO",
+    "webapp_secret_file": "BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE",
+}
+
+
+def advance_owned_scene_configuration(
+    *,
+    preparation_result_path: str | Path,
+    preparation_queue_root: str | Path,
+    intent_root: str | Path,
+    running_commit: str | None,
+    environ: Mapping[str, str] | None = None,
+    submitter: Submitter | None = None,
+    **seams: Any,
+) -> dict[str, Any]:
+    """Advance one Website job's own prepared configuration from its progression tick.
+
+    Uses the state root, activation queue, profile and standing-authorization
+    directories and WebApp submitter the configured-controls worker used, so a job
+    it already staged continues here without restaging. A missing root is reported
+    on the row, never guessed.
+    """
+
+    env = os.environ if environ is None else environ
+    roots = {name: str(env.get(variable) or "").strip() for name, variable in OWNED_LAUNCH_ENVIRONMENT.items()}
+    missing = sorted(OWNED_LAUNCH_ENVIRONMENT[name] for name, value in roots.items() if not value)
+    if missing:
+        return {"status": "blocked",
+                "blockers": ["scene_configuration_launch_unconfigured:" + ",".join(missing)]}
+    progression_root = Path(roots["progression_root"])
+    if submitter is None:
+        submitter = webapp_submitter(
+            repo_root=roots["repo_root"],
+            secret_file=roots["webapp_secret_file"],
+            endpoint=str(env.get("BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL") or "").strip()
+            or DEFAULT_WEBAPP_ENDPOINT,
+            state_root=progression_root / STATE_DIRECTORY / "webapp-submissions",
+        )
+    return advance_scene_configuration(
+        preparation_result_path=preparation_result_path,
+        preparation_queue_root=preparation_queue_root,
+        activation_queue_root=roots["activation_queue_root"],
+        progression_root=progression_root,
+        intent_root=intent_root,
+        profile_dir=roots["profile_dir"],
+        standing_authorization_dir=roots["standing_authorization_dir"],
+        submitter=submitter,
+        running_commit=running_commit,
+        **seams,
+    )
 
 
 def progression_rows(
@@ -1440,8 +1569,13 @@ def progression_rows(
     webapp_secret_file: str | Path | None,
     webapp_endpoint: str,
     blocked_scene_keys: set[tuple[str, str, str]] | None = None,
+    scene_progression_intent_digests: set[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Drive the Website-started configuration activation from the progression timer."""
+    """Drive configuration activation from the configured-controls timer.
+
+    Website jobs (``scene_progression_intent_digests``) are reported, not advanced:
+    their own scene progression tick stages and launches them.
+    """
 
     if not profile_dir or not standing_authorization_dir:
         return [
@@ -1474,6 +1608,8 @@ def progression_rows(
         submitter=submitter,
         running_commit=running_release_commit() or None,
         **({"blocked_scene_keys": blocked_scene_keys} if blocked_scene_keys else {}),
+        **({"scene_progression_intent_digests": scene_progression_intent_digests}
+           if scene_progression_intent_digests else {}),
     )
     return [{"lane": LANE, **row} for row in rows]
 
@@ -1616,7 +1752,10 @@ __all__ = [
     "LINEAGE_KEY_PREFIX",
     "PROGRESSION_SCHEMA_VERSION",
     "RELEASE_WINDOW_KEY_PREFIX",
+    "SCENE_PROGRESSION_OWNED_STATUS",
     "SceneConfigurationActivationAutomationError",
+    "advance_owned_scene_configuration",
+    "advance_scene_configuration",
     "advance_scene_configuration_activation",
     "advance_scene_configuration_launch",
     "default_provider_zero_collector",

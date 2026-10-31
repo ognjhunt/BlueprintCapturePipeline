@@ -303,7 +303,34 @@ def _activation(*, intent, link, config, output, now, provisioner):
 ATTEMPT_STATE_KEYS = ("attempt_id", "attempt_commit", "attempt", "factory", "publication", "submission",
                       "native_task_family_packet",
                       "preparation_state", "preparation_link", "preparation_result", "activation_link",
-                      "activation", "failure", "preparation_failure", "configuration_failure", "capacity_recovery_admission")
+                      "activation", "scene_configuration_launch", "failure", "preparation_failure",
+                      "configuration_failure", "capacity_recovery_admission")
+
+
+def _website_configuration_launch(*, observed, config, release, launcher):
+    """A Website job stages its own scene-configuration activation and fires its own
+    paid launch from this tick, scoped to this intent's one preparation result.
+
+    It runs the activation automation the configured-controls worker ran, on the
+    same state root, owned queue and WebApp submitter, so a job that worker already
+    staged continues here. Provider zero, lookahead replay, the release window, the
+    standing authorization and its spend cap all stay inside that automation; the
+    dispatcher still allocates. Every step is write-once, so a repeated tick
+    returns the sealed state. A failure is reported on the row, never raised.
+    """
+    from . import task_evaluation_scene_configuration_activation_automation as automation
+    try:
+        queue = safe_path(config["preparation_queue_root"])
+        row = (launcher or automation.advance_owned_scene_configuration)(
+            preparation_result_path=queue / "results" / observed["result_filename"],
+            preparation_queue_root=queue, intent_root=config["activation_intent_root"],
+            running_commit=release["source_commit"])
+    except (RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
+        code = str(exc)[:500]
+        if not code or not code[0].islower():
+            code = "scene_configuration_launch_step_failed:" + type(exc).__name__
+        row = {"status": "blocked", "blockers": [code]}
+    return json.loads(json.dumps(row, sort_keys=True, default=str))
 
 
 def _clear_attempt(state):
@@ -533,7 +560,7 @@ def _record_capacity_wait(state, admission, *, now):
 
 
 def _advance_intent(directory, intent, config, release, *, resolver, publisher, submitter, status_reader,
-                    activation_provisioner, now):
+                    activation_provisioner, now, configuration_launcher=None):
     progress = load_progression(directory, intent)
     state = deepcopy(progress.get("state", {})) if progress else {}
     def emit(status, phase, blockers=(), result_reference=None):
@@ -824,13 +851,21 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             machinery=machinery, output=output, now=now)
         if recovery is not None:
             return emit(recovery["status"], recovery["phase"], recovery["blockers"])
+        if is_preparation_only:
+            # Website jobs have no controls plan; the configured-controls worker
+            # skips them, so this tick is the one writer of their launch.
+            state["scene_configuration_launch"] = _website_configuration_launch(
+                observed=observed, config=config, release=release, launcher=configuration_launcher)
+            return emit("awaiting_execution", "scene_configuration",
+                        state["scene_configuration_launch"].get("blockers") or ())
         return emit("awaiting_execution", "scene_configuration")
     return emit("awaiting_execution", "preparation_complete")
 
 
 @scene_participant('config_path')
 def process_scene_intents(*, config_path, source_resolver=None, publisher=None, submitter=None,
-                          status_reader=None, activation_provisioner=None, now=None, only_intent_id=None):
+                          status_reader=None, activation_provisioner=None, now=None, only_intent_id=None,
+                          configuration_launcher=None):
     config_path = safe_path(config_path)
     require(config_path.stat().st_mode & 0o002 == 0, "config_world_writable")
     config = read(config_path, digest_field="config_digest")
@@ -898,7 +933,8 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                                        source_commit=release["source_commit"]):
                         progress = _advance_intent(directory, intent, config, release, resolver=source_resolver,
                             publisher=publisher, submitter=submitter, status_reader=status_reader,
-                            activation_provisioner=activation_provisioner, now=moment)
+                            activation_provisioner=activation_provisioner, now=moment,
+                            configuration_launcher=configuration_launcher)
                 except (OSError, ValueError, KeyError, TypeError, ImportError) as exc:
                     progress = load_progression(directory, intent)
                     failure_state = dict(progress.get("state", {}) if progress else {})
