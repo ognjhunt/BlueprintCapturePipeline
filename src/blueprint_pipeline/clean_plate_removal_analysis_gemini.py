@@ -44,7 +44,8 @@ from typing import Any, Mapping, Optional, Sequence
 from .capture_audio_minimization import AudioRemovalError, audio_free_upload_copy
 from .common import sha256_file, utc_now_iso
 from .core.handoff_lease import HandoffLeaseError, handoff_lease_checkpoint
-from .clean_plate_removal_response_schema import RESPONSE_SCHEMA, SYNTHETIC_SHAPES
+from .clean_plate_removal_response_schema import (PRIOR_RESPONSE_SCHEMA, RESPONSE_SCHEMA, SYNTHETIC_SHAPES,
+                                                  region_evidence, validate_destination_region)
 from .website_task_context_contracts import admits_scene_preparation
 
 GATE_ENV = "BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS"
@@ -95,6 +96,17 @@ _API_KEY_FILE_ENVS = (
 _SECRET_DIR = Path.home() / ".blueprint-secrets"
 _SECRET_FILES = ("gemini_api_key", "google_genai_api_key", "google_ai_api_key")
 
+#: A task can name a place on its destination surface; the whole surface's middle
+#: can lie under the task object (capture-447ae4f4). Optional, never invented.
+DESTINATION_REGION_INSTRUCTION = (
+    "When the task words name a particular place on a destination whose placement_relation is on "
+    "(for example one end, a side, a corner, the middle, or a spot next to another item), also return "
+    "the key 'destination_region' with destination_target_id (that destination's target_id), "
+    "region_basis_quote copied verbatim from the task words that name the place, and spatial_evidence: "
+    "one or two coarse boxes of only that place, each at the same timestamp_seconds as one of the "
+    "destination's own boxes and centred inside it. Omit destination_region when the task names no "
+    "particular place on the destination; never invent one. "
+)
 PROMPT_INSTRUCTION = (
     "You are analyzing a walkthrough video of a work environment to plan which "
     "content must be removed BEFORE 3D reconstruction of the task environment. "
@@ -112,6 +124,7 @@ PROMPT_INSTRUCTION = (
     "Identify the visible placement destination as destination with static_contact; keep it in the scene. "
     "For a destination provide placement_relation on or inside, only when the task text supports it, "
     "and quote those task words in task_basis_quote. Otherwise mark it uncertain and ask a question. "
+    + DESTINATION_REGION_INSTRUCTION +
     "Movability alone NEVER warrants removal. An object unrelated to this task "
     "stays even if physically movable; the same object becomes a task object only "
     "when the confirmed task requires moving it. Keep a support the task uses and "
@@ -176,6 +189,9 @@ PROMPT_INSTRUCTION = (
     "who is not visibly present."
 )
 PROMPT_TEMPLATE_SHA256 = hashlib.sha256(PROMPT_INSTRUCTION.encode("utf-8")).hexdigest()
+#: The instruction before the destination region (2026-10-31). An analysis bought
+#: under it stays the capture's answer, region-free, and is never bought again.
+PRIOR_PROMPT_INSTRUCTION = PROMPT_INSTRUCTION.replace(DESTINATION_REGION_INSTRUCTION, "", 1)
 
 
 def build_removal_plan_prompt() -> str:
@@ -474,6 +490,25 @@ def parse_synthetic_subject(text: str, *, targets: Sequence[Mapping[str, Any]],
     return {**value, "dimensions_m": [float(v) for v in value["dimensions_m"]], "mass_kg": float(value["mass_kg"])}
 
 
+def parse_destination_region(text: str, *, targets: Sequence[Mapping[str, Any]],
+                             task_description: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+    """The place on an ``on`` destination the task names, and why a region was refused.
+
+    ``(None, None)`` when the answer names no place. The region only refines a
+    destination, so a malformed one is refused and recorded, never repaired with
+    another paid turn and never a hold: the destination stays the whole surface.
+    """
+    data = _response_json(text)
+    raw = data.get("destination_region") if isinstance(data, Mapping) else None
+    if raw is None:
+        return None, None
+    errors = validate_destination_region(raw, targets=targets, task_description=task_description)
+    if errors:
+        return None, errors[0]
+    return {"destination_target_id": raw["destination_target_id"], "region_basis_quote": raw["region_basis_quote"].strip(),
+            "spatial_evidence": region_evidence(raw["spatial_evidence"])}, None
+
+
 def build_removal_plan(
     *,
     targets: Sequence[Mapping[str, Any]],
@@ -484,6 +519,8 @@ def build_removal_plan(
     video_digest: Optional[str] = None,
     blockers: Optional[Sequence[str]] = None,
     synthetic_subject: Optional[Mapping[str, Any]] = None,
+    destination_region: Optional[Mapping[str, Any]] = None,
+    destination_region_refusal: Optional[str] = None,
 ) -> dict[str, Any]:
     """Assemble a ``clean_plate_removal_plan.v1`` record."""
 
@@ -514,6 +551,9 @@ def build_removal_plan(
         "person_target_count": len(people),
         "targets": normalized_targets,
         **({"synthetic_subject": dict(synthetic_subject)} if synthetic_subject is not None else {}),
+        **({"destination_region": dict(destination_region)} if destination_region is not None else {}),
+        **({"destination_region_refusal": destination_region_refusal}
+           if destination_region_refusal is not None else {}),
         # People removal is never authorized here; the privacy pipeline owns it.
         "authority_boundary": {
             "authorizes_person_pixel_removal": False,
@@ -584,6 +624,9 @@ def validate_removal_plan(plan: Mapping[str, Any]) -> list[str]:
         errors.extend(validate_synthetic_subject(plan["synthetic_subject"]))
         if plan["synthetic_subject"].get("start_support_target_id") not in seen_ids:
             errors.append("synthetic_subject_start_support_missing")
+    if "destination_region" in plan:
+        errors.extend(validate_destination_region(plan["destination_region"], task_description=None,
+                                                  targets=[row for row in targets if isinstance(row, Mapping)]))
     return errors
 
 
@@ -632,8 +675,7 @@ def _video_processing(video_path: Path, requested: str) -> tuple[str, Optional[f
     return mode, duration
 
 
-def _video_prompt(processing: str, task_context: Mapping[str, Any]) -> str:
-    instruction = PROMPT_INSTRUCTION
+def _video_prompt(processing: str, task_context: Mapping[str, Any], instruction: str = PROMPT_INSTRUCTION) -> str:
     if processing == "static":
         start = instruction.index("Watch the clip once")
         end = instruction.index("Report at most six", start)
@@ -845,6 +887,7 @@ def _analyze_removal_targets(
 
     description = _string((task_context or {}).get("description"))
     repair: Optional[dict[str, Any]] = None
+    accepted_text = analysis["text"]
     try:
         targets = parse_removal_plan_response(analysis["text"], strict=True, task_description=description)
         synthetic = parse_synthetic_subject(analysis["text"], targets=targets, task_description=description)
@@ -857,6 +900,7 @@ def _analyze_removal_targets(
                 previous_text=analysis["text"], error=str(exc))
             targets = parse_removal_plan_response(repaired["text"], strict=True, task_description=description)
             synthetic = parse_synthetic_subject(repaired["text"], targets=targets, task_description=description)
+            accepted_text = repaired["text"]
         except ValueError as again:
             return empty_removal_plan(status="blocked", model=model_name, processing=processing_mode,
                                       blockers=[str(exc), f"validation_repair_failed:{again}"],
@@ -868,6 +912,7 @@ def _analyze_removal_targets(
                                       blockers=[str(exc), _provider_error_blocker(provider_exc)],
                                       video_path=resolved_video, video_digest=video_digest)
         repair["repaired"] = True
+    region, region_refusal = parse_destination_region(accepted_text, targets=targets, task_description=description)
     decision_blockers = [
         f"task_target_requires_clarification:{target['target_id']}"
         for target in targets if target.get("task_effect") == "uncertain"
@@ -877,6 +922,8 @@ def _analyze_removal_targets(
     plan = build_removal_plan(
         targets=targets,
         synthetic_subject=synthetic,
+        destination_region=region,
+        destination_region_refusal=region_refusal,
         status="blocked" if decision_blockers else "completed",
         blockers=decision_blockers,
         model=model_name,
@@ -903,7 +950,7 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
         return empty_removal_plan(status="blocked", model=model or _string_env(MODEL_ENV, DEFAULT_MODEL),
                                   processing=processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING),
                                   blockers=["confirmed_task_context_required"])
-    from .website_gemini_receipts import gemini_quote, retained_gemini_call
+    from .website_gemini_receipts import gemini_quote, retained_gemini_call, retained_gemini_result
     model_name = model or _string_env(MODEL_ENV, DEFAULT_MODEL)
     processing_mode = processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING)
     path = Path(video_path).expanduser() if video_path else None
@@ -911,12 +958,33 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
         raise ValueError("website_gemini_retained_source_required")
     processing_mode, duration = _video_processing(path, processing_mode)
     args["processing"] = processing_mode
-    prompt = _video_prompt(processing_mode, task_context or {})
-    binding = {"kind": "task_video_analysis", "model": model_name, "processing": processing_mode,
-               "duration_seconds": duration, "fps": STATIC_FPS if processing_mode == "static" else None,
-               "source_digest": sha256_file(path), "prompt": prompt,
-               "max_output_tokens": 8192, "thinking_level": "low", "response_schema": RESPONSE_SCHEMA,
-               "validation_repair_turns": VALIDATION_REPAIR_TURNS}
+    source_digest = sha256_file(path)
+
+    def request(instruction: str, schema: Mapping[str, Any]) -> tuple[dict[str, Any], float]:
+        prompt = _video_prompt(processing_mode, task_context or {}, instruction)
+        binding = {"kind": "task_video_analysis", "model": model_name, "processing": processing_mode,
+                   "duration_seconds": duration, "fps": STATIC_FPS if processing_mode == "static" else None,
+                   "source_digest": source_digest, "prompt": prompt,
+                   "max_output_tokens": 8192, "thinking_level": "low", "response_schema": schema,
+                   "validation_repair_turns": VALIDATION_REPAIR_TURNS}
+        # Static input has bounded frame/audio sampling. Include conservative per-second
+        # metadata and prompt-byte headroom; agentic keeps the full context reservation.
+        input_tokens = (math.ceil(duration) * (258 * STATIC_FPS + 32 + 64) + len(prompt.encode()) + len(json.dumps(schema)) + 4096
+                        if processing_mode == "static" else 1_048_576)
+        # The repair turn resends the instructions and the previous answer, never the video.
+        repair_tokens = len(prompt.encode()) + 4 * 8192 + 4096
+        return binding, (gemini_quote(model=model_name, input_tokens=input_tokens, max_output_tokens=8192)
+                         + VALIDATION_REPAIR_TURNS * gemini_quote(model=model_name, input_tokens=repair_tokens,
+                                                                  max_output_tokens=8192))
+
+    binding, maximum_cost_usd = request(PROMPT_INSTRUCTION, RESPONSE_SCHEMA)
+    # The same decision bought before the destination region was asked for is
+    # reused as it stands (no region): its exact request, never a second purchase.
+    prior_binding, prior_cost = request(PRIOR_PROMPT_INSTRUCTION, PRIOR_RESPONSE_SCHEMA)
+    prior = retained_gemini_result(output_root=output_root, binding=prior_binding, task_context=task_context,
+                                   maximum_cost_usd=prior_cost)
+    if prior is not None:
+        return prior
 
     def preflight():
         if not _truthy(os.getenv(GATE_ENV)) or not _api_key()[0]:
@@ -929,13 +997,5 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
             raise ValueError("website_gemini_source_changed")
         return result
 
-    # Static input has bounded frame/audio sampling. Include conservative per-second
-    # metadata and prompt-byte headroom; agentic keeps the full context reservation.
-    input_tokens = (math.ceil(duration) * (258 * STATIC_FPS + 32 + 64) + len(prompt.encode()) + len(json.dumps(RESPONSE_SCHEMA)) + 4096
-                    if processing_mode == "static" else 1_048_576)
-    # The repair turn resends the instructions and the previous answer, never the video.
-    repair_tokens = len(prompt.encode()) + 4 * 8192 + 4096
     return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
-        maximum_cost_usd=gemini_quote(model=model_name, input_tokens=input_tokens, max_output_tokens=8192)
-        + VALIDATION_REPAIR_TURNS * gemini_quote(model=model_name, input_tokens=repair_tokens, max_output_tokens=8192),
-        preflight=preflight, invoke=invoke)
+        maximum_cost_usd=maximum_cost_usd, preflight=preflight, invoke=invoke)

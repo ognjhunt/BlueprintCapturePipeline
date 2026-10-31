@@ -207,6 +207,36 @@ def test_video_entrypoint_reuses_analysis_before_credentials_or_sdk(tmp_path, mo
     assert len(calls) == 2
 
 
+#: The receipt origin/main wrote for this static fixture's analysis, before the
+#: destination region was asked for (2026-10-31).
+RETAINED_BEFORE_REGION = "d0d0be4de8fb4fc6181580b73485010315fd0cf56e022a72e658fc257d6810c3"
+
+
+@pytest.mark.parametrize("status", ["completed", "submitting"])
+def test_an_analysis_bought_before_the_region_prompt_is_never_bought_again(tmp_path, monkeypatch, status):
+    from blueprint_pipeline import clean_plate_removal_analysis_gemini as analysis
+    _args, calls = setup_call(tmp_path / "receipts", monkeypatch)
+    video = tmp_path / "video.mov"
+    video.write_bytes(b"original video")
+    monkeypatch.setattr(analysis, "_video_processing", lambda *a: ("static", 13.525))
+    monkeypatch.setattr(analysis, "_analyze_removal_targets", lambda **_k: pytest.fail("must not call the provider"))
+    result = {"status": "completed", "targets": ["box"]}
+    root = tmp_path / "receipts"
+    root.mkdir()
+    (root / f"{RETAINED_BEFORE_REGION}.json").write_text(json.dumps(
+        {"status": status, "request_digest": "sha256:" + RETAINED_BEFORE_REGION,
+         **({"result": result, "result_digest": canonical_digest(result)} if status == "completed" else {})}))
+    kwargs = dict(video_path=video, task_context=context(), output_root=root)
+    if status == "completed":
+        # Reused as it stands, with no gate, key, SDK, reservation or call; it names no region.
+        assert analysis.analyze_removal_targets(**kwargs) == result
+    else:
+        # A call that may have been charged never authorizes a new one under the new prompt.
+        with pytest.raises(ValueError, match="requires_reconciliation"):
+            analysis.analyze_removal_targets(**kwargs)
+    assert calls == [] and sorted(path.name for path in root.iterdir()) == [f"{RETAINED_BEFORE_REGION}.json"]
+
+
 def test_quote_uses_requested_combined_output_ceiling():
     assert module.gemini_quote(model="gemini-3.8-flash", input_tokens=24000, max_output_tokens=8192) == .05
     assert module.gemini_quote(model="gemini-3.8-flash", input_tokens=24000, max_output_tokens=2048) == .03

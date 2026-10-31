@@ -30,6 +30,41 @@ def gemini_quote(*, model: str, input_tokens: int, max_output_tokens: int = 65_5
     return math.ceil((input_tokens * 0.75 + max_output_tokens * 3.75) / 10_000) / 100
 
 
+def _request(*, binding: Mapping[str, Any], task_context: Mapping[str, Any], maximum_cost_usd: float,
+             source_video_digest: str | None) -> tuple[dict[str, Any], str]:
+    validate_website_task_context(task_context, request_id=task_context["request_id"],
+        scene_id=task_context["scene_id"], capture_id=task_context["capture_id"], purpose="scene_preparation")
+    request = {"binding": dict(binding), "task_context_digest": task_context["context_digest"],
+               "maximum_cost_usd": maximum_cost_usd}
+    if source_video_digest is not None:
+        request["source_video_digest"] = source_video_digest
+    return request, canonical_digest(request)
+
+
+def _completed_result(path: Path, digest: str) -> dict[str, Any]:
+    receipt = json.loads(path.read_text())
+    if receipt.get("status") != "completed":
+        raise ValueError("website_gemini_requires_reconciliation")
+    result = receipt.get("result")
+    if (receipt.get("request_digest") != digest or not isinstance(result, dict)
+            or receipt.get("result_digest") != canonical_digest(result)):
+        raise ValueError("website_gemini_receipt_invalid")
+    return result
+
+
+def retained_gemini_result(*, output_root: Path, binding: Mapping[str, Any], task_context: Mapping[str, Any],
+                           maximum_cost_usd: float, source_video_digest: str | None = None) -> dict[str, Any] | None:
+    """The completed result already bought for exactly this request, or None; reads only.
+
+    A receipt that may have been charged without a result is never a reason to
+    buy another answer: it raises as ``retained_gemini_call`` does.
+    """
+    _, digest = _request(binding=binding, task_context=task_context, maximum_cost_usd=maximum_cost_usd,
+                         source_video_digest=source_video_digest)
+    path = output_root / f"{digest[7:]}.json"
+    return _completed_result(path, digest) if path.exists() else None
+
+
 def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
                         task_context: Mapping[str, Any], maximum_cost_usd: float,
                         preflight: Callable[[], None], invoke: Callable[[], dict[str, Any]],
@@ -39,13 +74,8 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
     The existing WebApp transaction is the cross-worker spending authority.
     Local flock and exclusive durable intent cover restarts on this worker.
     """
-    validate_website_task_context(task_context, request_id=task_context["request_id"],
-        scene_id=task_context["scene_id"], capture_id=task_context["capture_id"], purpose="scene_preparation")
-    request = {"binding": dict(binding), "task_context_digest": task_context["context_digest"],
-               "maximum_cost_usd": maximum_cost_usd}
-    if source_video_digest is not None:
-        request["source_video_digest"] = source_video_digest
-    digest = canonical_digest(request)
+    request, digest = _request(binding=binding, task_context=task_context, maximum_cost_usd=maximum_cost_usd,
+                               source_video_digest=source_video_digest)
     output_root.mkdir(parents=True, exist_ok=True)
     path = output_root / f"{digest[7:]}.json"
     with (output_root / f"{digest[7:]}.lock").open("a") as lock:
@@ -54,14 +84,7 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
         except BlockingIOError as exc:
             raise ValueError("website_gemini_request_in_progress") from exc
         if path.exists():
-            receipt = json.loads(path.read_text())
-            if receipt.get("status") != "completed":
-                raise ValueError("website_gemini_requires_reconciliation")
-            result = receipt.get("result")
-            if (receipt.get("request_digest") != digest or not isinstance(result, dict)
-                    or receipt.get("result_digest") != canonical_digest(result)):
-                raise ValueError("website_gemini_receipt_invalid")
-            return result
+            return _completed_result(path, digest)
         preflight()
         admission, grant = reserve_website_preparation_spend(task_context=task_context,
             binding_digest=digest, maximum_cost_usd=maximum_cost_usd, request_count=1,

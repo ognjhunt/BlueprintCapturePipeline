@@ -26,12 +26,13 @@ from scipy.spatial import cKDTree
 
 from . import task_evaluation_scene_intake as intake
 from .adp009d_newton_gripper_drive import FULL_STROKE_M
+from .clean_plate_removal_response_schema import region_evidence
 from .core.handoff_lease import guarded_handoff_write_json as write_json
 from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
-from .website_task_masks import decode_track_mask, estimate_target_bounds
+from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
 from .website_support_geometry import (DESTINATION_MARGIN_M, destination_clear_of_start, farthest_supported_destination,
                                        ground_on_observed_floor, same_support_surface, support_under)
 
@@ -942,7 +943,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     sim_support = (_runtime_bounds({"minimum": support["aabb_min"], "maximum": support["aabb_max"]}, runtime_to_sim)
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
-    destination = distinct_support = relocation = None
+    destination = distinct_support = relocation = region_record = None
     interior = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
@@ -987,6 +988,29 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 distinct_support = interior["floor"]
                 contact_bound = True
         elif support is not None:
+            region = removal_manifest.get("destination_region")
+            if region is not None:
+                # The task named a place on this surface (capture-447ae4f4: "the other
+                # end"). Its boxes, lifted from the destination's own mask like the
+                # whole surface, centre the footprint instead of the surface's middle.
+                # Unregistered, it is recorded and the whole surface is used as before.
+                region = region if isinstance(region, Mapping) else {}
+                evidence = (region_evidence(region.get("spatial_evidence"))
+                            if region.get("destination_target_id") == destination_rows[0]["target_id"] else None)
+                track = destination_rows[0].get("track")
+                bounds = (estimate_region_bounds(track, source_geometry["frames"], evidence)
+                          if evidence is not None and isinstance(track, Mapping) else None)
+                region_record = {"destination_target_id": destination_rows[0]["target_id"],
+                                 "region_basis_quote": region.get("region_basis_quote"),
+                                 "destination_region_basis": ("registered_region_boxes_on_destination_mask" if bounds is not None
+                                                              else "region_unregistered_whole_destination_centre")}
+                if bounds is not None:
+                    region_low, region_high = _runtime_bounds(bounds, matrix)
+                    position = [(region_low[i] + region_high[i]) / 2 for i in range(3)]
+                    position[up] = (region_high if up_sign == 1 else region_low)[up]
+                    region_record.update(source_frame_ids=bounds["source_frame_ids"], bounds_basis=bounds["basis"],
+                                         estimated_bounds_world_m=dict(zip(("minimum", "maximum"), _runtime_bounds(
+                                             {"minimum": region_low, "maximum": region_high}, runtime_to_sim))))
             # Test the subject's footprint at the destination against real
             # triangles, not the destination mask's enclosing box.
             destination_min, destination_max = np.asarray(subject_min).copy(), np.asarray(subject_max).copy()
@@ -1390,6 +1414,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
+        **({"destination_region": region_record} if region_record is not None else {}),
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
                              else "provided_mesh_rigid_authoring" if synthetic is not None
