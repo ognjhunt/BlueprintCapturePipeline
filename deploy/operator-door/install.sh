@@ -95,7 +95,7 @@ if [ "$dispatcher_hold_only" -eq 1 ]; then
     >"$stage/operator_door/admitted_controls.py"
 fi
 cp "$source_dir"/door-common.sh "$source_dir"/door-deploy.sh "$source_dir"/door-upgrade.sh \
-  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-selected-handoff.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh "$source_dir"/door-repair-notifier-binding.sh \
+  "$source_dir"/door-retire-scene-workspace.sh "$source_dir"/door-restore-scene-workspace.sh "$source_dir"/door-lane-scratch.sh "$source_dir"/door-owner-census.sh "$source_dir"/door-legacy-owner-census.sh "$source_dir"/door-provider-output-resume.sh "$source_dir"/door-selected-handoff.sh "$source_dir"/door-extend-scene-execution-window.sh "$source_dir"/door-hold-expire.sh "$source_dir"/door-scene-lifecycle.sh "$source_dir"/door-repair-notifier-binding.sh \
   "$source_dir"/door-public-embodiment-preparation.sh "$source_dir"/door-install-public-piper-policy.sh "$source_dir"/install.sh "$stage/"
 install -m 0644 "$repo_root/config/policy_runtimes/native_g1_registration_profile.json" \
   "$stage/operator_door/native_g1_registration_profile.json"

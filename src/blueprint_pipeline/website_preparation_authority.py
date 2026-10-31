@@ -14,11 +14,36 @@ from .website_preparation_contracts import (
 )
 
 
+def _intent_valid_until(*, request, queue_root):
+    """The staged intent's verified extended expiry, or None when nothing extends it.
+
+    Only an intent sealing exactly this request counts; its window can carry an
+    owner-approved, time-only extension that the grant's raw expiry predates.
+    Without one, every check below is exactly the grant's own expiry.
+    """
+    from pathlib import Path
+    from .task_evaluation_scene_execution_window_evidence import effective_execution_expiry
+    from .task_evaluation_scene_intent_contracts import _read, canonical_digest
+
+    identity = canonical_digest({"owner": request["owner"], "submission_id": request["submission_id"]})
+    directory = Path(queue_root) / ("scene-" + identity.removeprefix("sha256:"))
+    path = directory / "intent.json"
+    if directory.is_symlink() or not path.is_file():
+        return None
+    intent = _read(path, "intent_digest")
+    if intent.get("request") != request:
+        return None
+    expiry = effective_execution_expiry(directory, intent)
+    return expiry if expiry > request["execution"]["expires_at_epoch"] else None
+
+
 def require_retained_preparation_authority(*, request, queue_root, now):
     """Reopen server-owned source references; context-only consent is insufficient.
 
     Signed Web intake and current source registration are both required. The
-    read-only current grant check cannot create or renew an allowance.
+    read-only current grant check cannot create or renew an allowance. A
+    verified time-only extension of the bound intent moves only the "still
+    valid now" checks; the grant itself is unchanged.
     """
     from .website_scene_source_registry_paths import binding_root, _index_path
     from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
@@ -55,11 +80,13 @@ def require_retained_preparation_authority(*, request, queue_root, now):
         or prepared.get("binding", {}).get("task_context_digest") != context["context_digest"]
     ):
         raise ValueError("website_preparation_source_request_changed")
+    valid_until = _intent_valid_until(request=request, queue_root=queue_root)
     authority = validate_preparation_request(
         request=request,
         task_context=context,
         authority=prepared.get("website_preparation_authority") or {},
         now=now,
+        valid_until=valid_until,
     )
     current = load_current_website_task_context(
         request_id=context["request_id"],
@@ -69,11 +96,13 @@ def require_retained_preparation_authority(*, request, queue_root, now):
     )
     if current != context:
         raise ValueError("website_preparation_source_context_changed")
-    fresh = load_website_scene_sponsorship(task_context=current, now=now, create=False)
+    fresh = load_website_scene_sponsorship(task_context=current, now=now, create=False,
+                                           **({} if valid_until is None else {"valid_until": valid_until}))
     if fresh != authority:
         raise ValueError("website_preparation_source_authority_changed")
     # Signed reads may cross the expiry boundary. Recheck the actual clock
     # and return it for the caller's effective-window/action checks.
     moment = current_time()
-    validate_preparation_request(request=request, task_context=current, authority=fresh, now=moment)
+    validate_preparation_request(request=request, task_context=current, authority=fresh, now=moment,
+                                 valid_until=valid_until)
     return moment

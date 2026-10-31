@@ -23,6 +23,10 @@ or with ``apply`` a retirement that deletes nothing it cannot restore.
 ``provider_output_promotion resume`` for one streamed policy-canary attempt,
 as the service user: promotion, the gated cleanup, the absence proof and, with
 ``ingest``, the needed members' ingestion. It runs no new code.
+``extend-scene-execution-window`` (``operate``) plans, or with ``apply`` records,
+one owner-approved time-only extension of a sealed scene intent (at most 7 days)
+through the active release, then tells the WebApp. Spend caps, attempts,
+providers, task and rights are not request fields and cannot change.
 """
 
 from __future__ import annotations
@@ -77,6 +81,8 @@ _SCOPES = {
     "install-public-trlc-policy": "operate",
     "install-scripted-robot-baselines": "operate",
     "install-native-g1-policies": "operate",
+    # One owner-approved, time-only extension of a sealed scene intent's window.
+    "extend-scene-execution-window": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -101,6 +107,10 @@ _LANE_PART = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}\Z")
 _LEASE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 # A policy-canary dispatch directory name (the activation id).
 _CANARY_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+# A scene intent id, and the whole-second UTC expiry an operator may ask for.
+_INTENT_ID = re.compile(r"scene-[0-9a-f]{64}\Z")
+_UTC_SECOND = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
+SCENE_WINDOW_ACK = "extend-scene-execution-window"
 # Timers that protect money or cleanup are never paused through the door.
 _SAFETY_CRITICAL = re.compile(
     r"spend-guard|watchdog|teardown|reaper|provider-zero|"
@@ -412,6 +422,25 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(ingest, bool):
             raise RequestRefused("provider_output_resume_ingest_invalid")
         return {"kind": kind, "run": run, "attempt": attempt, "ingest": ingest}
+    if kind == "extend-scene-execution-window":
+        fields = {"kind", "intent_id", "intent_digest", "expires_at", "authorization_reference", "ack", "apply"}
+        intent, digest, expires = body.get("intent_id"), body.get("intent_digest"), body.get("expires_at")
+        reference = body.get("authorization_reference")
+        if (set(body) != fields or not isinstance(intent, str) or not _INTENT_ID.fullmatch(intent)
+                or not isinstance(digest, str) or not _LEASE_DIGEST.fullmatch(digest)
+                or not isinstance(expires, str) or not _UTC_SECOND.fullmatch(expires)
+                or type(body["apply"]) is not bool):
+            raise RequestRefused("scene_window_fields_invalid")
+        try:
+            _dt.datetime.strptime(expires, "%Y-%m-%dT%H:%M:%SZ")
+        except ValueError as error:
+            raise RequestRefused("scene_window_expiry_invalid") from error
+        if (not isinstance(reference, str) or reference != reference.strip()
+                or not 1 <= len(reference) <= 500 or not reference.isprintable()):
+            raise RequestRefused("scene_window_authorization_reference_invalid")
+        if body["ack"] != SCENE_WINDOW_ACK:
+            raise RequestRefused("scene_window_unacknowledged")
+        return {key: body[key] for key in sorted(fields)}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))
         scene_id, bucket = body.get("scene_id"), body.get("bucket")
