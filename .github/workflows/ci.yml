@@ -479,7 +479,7 @@ jobs:
     name: Cross-cutting full suite
     needs: [impact, native-feature-linux, native-scene-linux]
     if: >-
-      always() && needs.impact.result == 'success' &&
+      !cancelled() && needs.impact.result == 'success' &&
       needs.impact.outputs.requires_full_suite == 'true' &&
       ((needs.impact.outputs.native_feature_required == 'true' && needs.native-feature-linux.result == 'success') ||
        (needs.impact.outputs.native_feature_required != 'true' && needs.native-feature-linux.result == 'skipped')) &&
@@ -493,7 +493,11 @@ jobs:
   impacted-gate:
     name: Impacted test and sentinel gate
     needs: [impact, impacted-tests, native-scene-linux, native-feature-linux, cross-cutting-full-suite]
-    if: always()
+    # Reports after failed or skipped needs, but not after cancellation: GitHub
+    # keeps any job whose `if` is still true, so always() held a superseded run
+    # open and left the pull request's newest run pending behind it. A cancelled
+    # gate concludes `cancelled`, which never satisfies the required check.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
