@@ -795,8 +795,9 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     deploy.add_argument("--latest-attested", action="store_true",
                         help="the newest origin/main commit whose CI attested it; refuses unless it is newer than what runs")
     deploy.add_argument("--no-wait-for-idle", action="store_true")
-    deploy.add_argument("--activation-hold-override", choices=("money", "privacy", "rights"),
-                        help="deploy now although a scene-configuration activation is live, for a fix to this hard stop")
+    deploy.add_argument("--activation-hold-override", metavar="REASON",
+                        help="deploy now although a scene-configuration activation is live; a short logged reason "
+                             "such as fixes_live_activation, money, privacy or rights ([a-z0-9][a-z0-9_:.-]{0,63})")
     deploy.add_argument("--release-provenance", help="official locally verified UTF-8 receipt; absent means iteration deploy")
     deploy.add_argument("--release-provenance-sha256", help="expected exact receipt SHA-256 (64 lowercase hex)")
     # A deploy's 3 h limit, plus waiting behind another deploy.

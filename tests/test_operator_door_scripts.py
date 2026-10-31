@@ -1447,3 +1447,28 @@ def test_a_parked_deploy_stays_parked_unmarked_while_an_activation_is_live(parke
     assert _parked_names(parked_env) == [DEPLOY_ID]
     record = json.loads((Path(parked_env["DOOR_PARKED_DIR"]) / f"{DEPLOY_ID}.json").read_text(encoding="utf-8"))
     assert "deploying_commit" not in record  # so the next wake-up does not call it interrupted
+
+
+def test_pending_work_behind_a_held_activation_path_unit_does_not_hold_the_deploy(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+    holds = Path(values["STUB_DIR"]) / "holds"  # beside parked/, as in the door's spool
+    holds.mkdir()
+    (holds / "blueprint-task-evaluation-launch-activation.path.json").write_text(
+        json.dumps({"status": "active"}), encoding="utf-8")
+
+    rc, outcome, _ = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0")
+
+    assert rc == 0 and outcome["status"] == "deployed"
+
+
+def test_a_free_form_override_reason_deploys_and_is_logged(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+
+    rc, outcome, _ = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0",
+                          DOOR_ACTIVATION_HOLD_OVERRIDE="fixes_live_activation")
+
+    assert rc == 0 and outcome["status"] == "deployed"
+    log = (Path(values["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
+    assert "activation_hold_overridden:fixes_live_activation" in log

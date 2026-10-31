@@ -9,7 +9,8 @@ soon as it ends, when the hold reaches its cap, or at once with an override.
 
 Live means bound to the running release and in the scene-configuration lane, and:
 
-- pending in the activation queue, or
+- pending in the activation queue, while the queue's path unit can claim it (a
+  door hold on that unit means nothing will, so it holds nothing), or
 - claimed in processing/ with the worker's flock still held (a claim whose
   worker died holds no lock and does not count), or
 - finished with its profile authority materialized, but its launch not yet
@@ -57,7 +58,10 @@ CAP_SECONDS = ACTIVATION_TIMEOUT_SECONDS + SUBMIT_WINDOW_SECONDS
 RECHECK_SECONDS = 5 * 60
 HOLD_FILE = ".activation-hold"
 HOLD_SCHEMA = "blueprint_operator_door_activation_hold.v1"
-OVERRIDES = ("money", "privacy", "rights")
+# Any short reason, written to the log; "fixes_live_activation" is the common one,
+# since holding the fix the live activation needs protects nothing.
+OVERRIDE_REASON = re.compile(r"[a-z0-9][a-z0-9_:.-]{0,63}")
+ACTIVATION_PATH_UNIT = "blueprint-task-evaluation-launch-activation.path"
 MAX_RECORD_BYTES = 4 * 1024 * 1024
 MAX_SCAN = 512
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -99,6 +103,19 @@ def locked_inodes(proc_locks: str = "/proc/locks") -> set[int]:
     return inodes
 
 
+def activation_path_held(holds_dir: Path | None) -> bool:
+    """True while a door hold keeps the activation queue's path unit from claiming work.
+
+    The unit's ConditionPathExists=! names this record, so an active record is what
+    stops it. Unknown counts as not held: pending work then holds the deploy.
+    """
+
+    if holds_dir is None:
+        return False
+    record = _read_json(holds_dir / f"{ACTIVATION_PATH_UNIT}.json")
+    return bool(record) and record.get("status") == "active"
+
+
 def _bound_request(envelope: dict[str, Any] | None, active: str) -> dict[str, Any] | None:
     request = (envelope or {}).get("request")
     if (isinstance(request, dict) and request.get("lane") == LANE
@@ -116,6 +133,7 @@ def _json_files(directory: Path) -> Iterable[Path]:
 
 def live_activations(
     *, queue_root: Path, progression_root: Path, active: str, now: float, held: set[int],
+    pending_claimable: bool = True,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """The live activations, and notes on the ones that do not count."""
 
@@ -123,8 +141,12 @@ def live_activations(
     notes: list[str] = []
     for path in _json_files(queue_root / "pending"):
         request = _bound_request(_read_json(path), active)
-        if request is not None:
+        if request is None:
+            continue
+        if pending_claimable:
             live.append({"activation_id": request.get("activation_id"), "state": "pending"})
+        else:
+            notes.append(f"pending_while_activation_path_held:{path.name}")
     for path in _json_files(queue_root / "processing"):
         request = _bound_request(_read_json(path), active)
         if request is None:
@@ -187,7 +209,7 @@ def _clear_hold(parked_dir: Path | None) -> None:
 
 def decide(
     *, queue_root: Path, progression_root: Path, active: str, parked_dir: Path | None,
-    override: str, now: float, held: set[int],
+    override: str, now: float, held: set[int], pending_claimable: bool = True,
 ) -> tuple[int, str]:
     """Whether to deploy now, and the reason. Writes or clears the hold file."""
 
@@ -199,7 +221,7 @@ def decide(
         _clear_hold(parked_dir)
         return EXIT_DEPLOY, "activation_hold_active_release_unknown"
     live, notes = live_activations(queue_root=queue_root, progression_root=progression_root,
-                                   active=active, now=now, held=held)
+                                   active=active, now=now, held=held, pending_claimable=pending_claimable)
     for note in notes:
         print(f"activation hold: not counted: {note}", file=sys.stderr)
     if not live:
@@ -251,15 +273,18 @@ def main(argv: list[str]) -> int:
                     active=active_release(os.environ["DOOR_ACTIVE_RELEASE_LINK"]), now=time.time())
     state = Path(os.environ["DOOR_STATE_ROOT"])
     override = os.environ.get("DOOR_ACTIVATION_HOLD_OVERRIDE", "")
-    if override and override not in OVERRIDES:
+    if override and OVERRIDE_REASON.fullmatch(override) is None:
         override = ""
     parked = os.environ.get("DOOR_ACTIVATION_HOLD_PARKED_DIR", "")
+    # The door's spool keeps parked/ and holds/ side by side.
+    holds_dir = Path(parked).parent / "holds" if parked else None
     code, reason = decide(
         queue_root=state / "task-evaluation-launch-activations",
         progression_root=state / "task-evaluation-configured-controls",
         active=active_release(os.environ["DOOR_ACTIVE_RELEASE_LINK"]),
         parked_dir=Path(parked) if parked else None,
         override=override, now=time.time(), held=locked_inodes(),
+        pending_claimable=not activation_path_held(holds_dir),
     )
     print(reason)
     return code

@@ -1586,8 +1586,14 @@ def test_an_override_reaches_the_script_and_survives_parking(config: DoorConfig)
     assert env["DOOR_ACTIVATION_HOLD_OVERRIDE"] == "rights" and env["DOOR_PARKED"] == "1"
 
 
-@pytest.mark.parametrize("value", ["urgent", "", True, 1])
-def test_only_a_hard_stop_names_an_override(value) -> None:
+@pytest.mark.parametrize("value", ["fixes_live_activation", "money", "privacy", "rights", "pr-3206:hotfix.v2"])
+def test_an_override_takes_any_short_logged_reason(value) -> None:
+    assert validate_request({"kind": "deploy", "commit": SHA,
+                             "activation_hold_override": value})["activation_hold_override"] == value
+
+
+@pytest.mark.parametrize("value", ["", "Urgent", "two words", "-lead", "x" * 65, "a;rm -rf /", True, 1, ["money"]])
+def test_an_override_reason_is_a_short_token(value) -> None:
     from operator_door.requests import RequestRefused
 
     with pytest.raises(RequestRefused, match="activation_hold_override_invalid"):

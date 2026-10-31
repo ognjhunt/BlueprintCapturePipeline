@@ -195,7 +195,48 @@ def test_park_refuses_past_the_parked_bound(roots, monkeypatch) -> None:
                      active="", now=1.0) == hold.EXIT_CANNOT_PARK
 
 
-def test_the_door_and_the_check_name_the_same_overrides() -> None:
-    from operator_door.requests import ACTIVATION_HOLD_OVERRIDES
+def test_the_door_and_the_check_accept_the_same_override_reasons() -> None:
+    from operator_door.requests import ACTIVATION_HOLD_OVERRIDE
 
-    assert tuple(hold.OVERRIDES) == ACTIVATION_HOLD_OVERRIDES
+    assert hold.OVERRIDE_REASON.pattern == ACTIVATION_HOLD_OVERRIDE.pattern
+    for reason in ("fixes_live_activation", "money", "privacy", "rights", "pr-3206:hotfix.v2"):
+        assert hold.OVERRIDE_REASON.fullmatch(reason)
+
+
+def test_a_fix_for_the_live_activation_overrides_the_hold(roots) -> None:
+    claim = _envelope(roots["queue"] / "processing" / "act-1-abc.json")
+    code, reason = _decide(roots, held={claim.stat().st_ino}, override="fixes_live_activation")
+    assert code == hold.EXIT_DEPLOY and reason == "activation_hold_overridden:fixes_live_activation"
+
+
+def _hold_activation_path(holds_dir: Path, status: str = "active") -> None:
+    holds_dir.mkdir(parents=True, exist_ok=True)
+    (holds_dir / f"{hold.ACTIVATION_PATH_UNIT}.json").write_text(
+        json.dumps({"unit": hold.ACTIVATION_PATH_UNIT, "status": status}), encoding="utf-8")
+
+
+def test_pending_work_nothing_can_claim_does_not_hold_the_deploy(roots, tmp_path: Path) -> None:
+    _envelope(roots["queue"] / "pending" / "act-1-abc.json")
+    holds_dir = tmp_path / "holds"
+    _hold_activation_path(holds_dir)
+    assert hold.activation_path_held(holds_dir) is True
+    code, reason = hold.decide(queue_root=roots["queue"], progression_root=roots["progression"], active=ACTIVE,
+                               parked_dir=roots["parked"], override="", now=time.time(), held=set(),
+                               pending_claimable=False)
+    assert code == hold.EXIT_DEPLOY and reason == "no_live_scene_configuration_activation"
+
+
+def test_a_held_path_unit_does_not_release_a_claim_already_running(roots) -> None:
+    claim = _envelope(roots["queue"] / "processing" / "act-1-abc.json")
+    code, _ = hold.decide(queue_root=roots["queue"], progression_root=roots["progression"], active=ACTIVE,
+                          parked_dir=roots["parked"], override="", now=time.time(), held={claim.stat().st_ino},
+                          pending_claimable=False)
+    assert code == hold.EXIT_HOLD
+
+
+@pytest.mark.parametrize("status", ["released", "releasing", "expired_released"])
+def test_only_an_active_hold_stops_the_path_unit(tmp_path: Path, status: str) -> None:
+    _hold_activation_path(tmp_path / "holds", status)
+    assert hold.activation_path_held(tmp_path / "holds") is False
+    assert hold.activation_path_held(tmp_path / "missing") is False
+    assert hold.activation_path_held(None) is False
