@@ -29,6 +29,7 @@ from .task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     canonical_digest,
 )
+from .task_evaluation_launch_dispatcher_ownership import unowned_processing_names
 from .task_evaluation_launch_evidence_contracts import (
     CONFIGURATION_COMPLETE_OFFERING_STATUSES as CONFIGURATION_COMPLETE_OFFERING_STATUSES,  # noqa: PLC0414 - compatibility reexport
 )
@@ -753,6 +754,36 @@ def _index_terminal_results(
     return rows
 
 
+#: How long a processing lease that no live dispatcher owns, and that the
+#: dispatcher never started a run for, waits before the provider-zero proof:
+#: one dispatcher pass, not the 4 h unknown-run fallback.
+PRE_RUN_STALE_SECONDS = 900
+
+#: What this reconciler itself writes into a run directory. Everything else
+#: there, the directory itself included, is the dispatcher's.
+_RECONCILER_RUN_ENTRIES = frozenset({"reconciliations", "orphan_recovery_receipt.json"})
+
+
+def _dispatcher_run_evidence(run_root: Path) -> bool:
+    """Whether the dispatcher made this run directory or wrote anything into it.
+
+    ``create_launch_output`` (with its scene enrolment) makes the directory, the
+    dispatcher's run records follow, and ``launch_started.json`` comes before
+    the allocator. A failed provider-zero pass leaves ``reconciliations/``,
+    which must not make a pre-run lease look like a run.
+    """
+    try:
+        with os.scandir(run_root) as iterator:
+            entries = {entry.name for entry in iterator}
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True  # Unreadable is not proof of absence: keep the existing wait.
+    # The reconciler never leaves an empty run directory; only the dispatcher's
+    # create_launch_output does.
+    return not entries or not entries <= _RECONCILER_RUN_ENTRIES
+
+
 def reconcile_launches(
     *,
     queue_root: str | Path,
@@ -790,6 +821,8 @@ def reconcile_launches(
     rows: list[dict[str, Any]] = []
     processing = queue / "processing"
     processing.mkdir(parents=True, exist_ok=True)
+    # Listed under the dispatchers' lock, then released before any other work.
+    unowned = unowned_processing_names(queue)
     for request_path in sorted(processing.glob("*.json")):
         try:
             request = _read(request_path)
@@ -818,6 +851,12 @@ def reconcile_launches(
                 if isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0
                 else fallback_stale_seconds
             )
+            if request_path.name in unowned and not _dispatcher_run_evidence(run_root):
+                # No live dispatcher owns this lease, and its dispatcher never
+                # made the run directory, let alone launch_started, so it never
+                # reached the allocator. It still waits out a dispatcher pass and
+                # still needs the same provider-zero proof below.
+                ttl_seconds = min(ttl_seconds, PRE_RUN_STALE_SECONDS)
             lease_age = (
                 (observed_at - started_at).total_seconds()
                 if started_at is not None
