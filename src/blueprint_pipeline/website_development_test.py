@@ -128,6 +128,8 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
     # The authored surface has its own region; the captured region's advisory
     # stays in the source preparation, which source_preparation_digest binds.
     value.pop("surface_target_admission", None)
+    # Likewise the captured collider's conditioning: the authored surface is never conditioned.
+    value.pop("collider_conditioning", None)
     value["binding"].update(appearance_digest=_record(appearance_path)["digest"],
         collision_mesh_digest=_record(mesh)["digest"], provider="blueprint_authored_test_surface", operation_id=None)
     value["binding"].pop("splat_digest", None)

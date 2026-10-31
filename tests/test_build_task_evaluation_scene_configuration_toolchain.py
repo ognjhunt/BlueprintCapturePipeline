@@ -38,7 +38,8 @@ def publication_digest_scope(monkeypatch):
         yield
 
 
-def _component_packages(tmp_path: Path, *, empty_file: bool = False) -> dict[str, Path]:
+def _component_packages(tmp_path: Path, *, empty_file: bool = False,
+                        bundled_bytecode: bool = False) -> dict[str, Path]:
     packages: dict[str, Path] = {}
     for identity in ADMITTED_PRODUCER_IDENTITIES:
         root = tmp_path / "component-packages" / identity.adapter_id
@@ -54,6 +55,16 @@ def _component_packages(tmp_path: Path, *, empty_file: bool = False) -> dict[str
                 "executable": True,
             }
         ]
+        if bundled_bytecode and identity.adapter_id == "content_agents_rigid_replacement":
+            # A component's own runtime may ship bytecode (Blender's bundled Python does).
+            cache = root / "runtime/python/lib/__pycache__"
+            cache.mkdir(parents=True)
+            compiled = cache / "copy.cpython-311.pyc"
+            compiled.write_bytes(b"\xa7\r\r\nfixture-bytecode")
+            compiled.chmod(0o444)
+            package_files.append({"relative_path": "runtime/python/lib/__pycache__/copy.cpython-311.pyc",
+                                  "sha256": _sha256(compiled), "size_bytes": compiled.stat().st_size,
+                                  "executable": False})
         if empty_file and identity.adapter_id == "content_agents_rigid_replacement":
             marker = root / "py.typed"
             marker.write_bytes(b"")

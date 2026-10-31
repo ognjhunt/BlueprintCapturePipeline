@@ -425,6 +425,32 @@ def _world_anchor(stage: Any, joint_prim: Any) -> Any:
     return rigid[0] if len(rigid) == 1 and static == 1 else None
 
 
+_B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+
+
+def usd_prim_name(name: str) -> str:
+    """The prim name Isaac Sim 6's importer authors for a source (URDF/MJCF) name.
+
+    usdex.core.getValidPrimName for ASCII names (usd-exchange Transcoding.cpp
+    encodeIdentifier), which urdf-usd-converter applies to every link and joint:
+    a valid identifier is unchanged, anything else is bootstring-encoded behind
+    ``tn__`` (``left_link6-7`` becomes ``tn__left_link67_sG``).
+    """
+    kept = [char.isascii() and (char.isalnum() or char == "_") for char in name]
+    output = "".join(char for char, keep in zip(name, kept) if keep)
+    output += "_" if output else ""
+    present, previous = {index for index, keep in enumerate(kept) if keep}, 0
+    for code, position in sorted((ord(char), index) for index, char in enumerate(name) if not kept[index]):
+        delta = sum(index < position for index in present) + (code - previous) * (len(present) + 1)
+        while delta >= 31:
+            output += _B62[31 + (delta - 31) % 31]
+            delta = (delta - 31) // 31
+        output += _B62[delta]
+        previous = code
+        present.add(position)
+    return name if output == name + "_" and (name[0].isalpha() or name[0] == "_") else "tn__" + output
+
+
 def _source_name(prim: Any) -> str | None:
     """The source name an importer recorded for a prim it had to rename.
 
@@ -900,18 +926,19 @@ __all__ = [
     "ROBOT_ID",
     "SCHEMA",
     "SCHEMA_V2",
-    "gripper_channels",
     "TeamEmbodimentError",
     "action_dimension",
     "apply_team_embodiment",
     "bind_importer_names",
     "camera_names",
     "camera_slots",
+    "gripper_channels",
     "is_team_plan",
     "model_structure_blockers",
     "read_model_structure",
     "station_reach_blockers",
     "team_embodiment_binding",
+    "usd_prim_name",
     "validate_embodiment_manifest",
     "validate_model_dependency_closure",
     "validate_source_import_provenance",

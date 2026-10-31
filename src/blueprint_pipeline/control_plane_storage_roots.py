@@ -184,6 +184,9 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
                 "scene workspace retirement receipts (replayable)"),
     StorageRoot(f"{_CONTROL_PLANE}/website-source-bindings", "work", "blueprint",
                 "website scene source registrations read by scene progression"),
+    StorageRoot(f"{_CONTROL_PLANE}/atlas-provider-poll", "work", "blueprint",
+                "the Atlas provider poll's empty wake request (a webhook touches it, the poll removes it as it "
+                "starts); carries nothing, so losing it only waits for the next timer poll"),
     # --- reproducible derived inputs
     StorageRoot(f"{_INPUTS}/prepared-references", "cache", "blueprint", "materialized references and content store"),
     StorageRoot(f"{_INPUTS}/sam31-preparations", "cache", "blueprint", "reproducible SAM preparation artifacts"),

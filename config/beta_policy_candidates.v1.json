@@ -3863,7 +3863,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_agilex_piper_bimanual",
-      "configuration_digest": "sha256:0cc8d437d4d0174c4e8784437bbf22710b714d5820087e25570ec35172979863",
+      "configuration_digest": "sha256:71ff0523f13f31d026a6d0fc8d08fff66b40194d8a2c688978851a4452d186ac",
       "deployment": {
         "companies": [],
         "configuration_id": "agilex_piper_bimanual",
@@ -3884,7 +3884,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -3897,7 +3897,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_almond_axol",
-      "configuration_digest": "sha256:5c9df3ff6fe3f213a5c4b42d2eabcec4d883ab4e709ab88c55719a72761adfda",
+      "configuration_digest": "sha256:387819e5be7697bc0b5ccd0d8e63b57d6ee120448bb18cbb82c93f3c29770188",
       "deployment": {
         "companies": [],
         "configuration_id": "almond_axol",
@@ -3918,7 +3918,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -3931,7 +3931,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_franka_research_3_bimanual",
-      "configuration_digest": "sha256:ed33cc31a57e83c097392689e42144748e740c59f7477097eb4a842a51d1d5e1",
+      "configuration_digest": "sha256:c93c44e67d117ea607c5fd585be363218a4a91169aff55ad1571094220fe83ca",
       "deployment": {
         "companies": [],
         "configuration_id": "franka_research_3_bimanual",
@@ -3952,7 +3952,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -3965,7 +3965,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_i2rt_yam_bimanual",
-      "configuration_digest": "sha256:775ded38bb07eff4b7ecbed2495f7bdf160beee8eb08e7607af985914c6e2390",
+      "configuration_digest": "sha256:805ef4ecdd8070369c76f1b10df8008354cfdbbebf85707311d445e7b2a1d336",
       "deployment": {
         "companies": [],
         "configuration_id": "i2rt_yam_bimanual",
@@ -3986,7 +3986,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -3999,7 +3999,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_kinova_gen3",
-      "configuration_digest": "sha256:3737bcf5e435dff3f682a3e6ecbe091fa777202e47d8517fc6aa40c00e412ca4",
+      "configuration_digest": "sha256:32caaeb050ed8fe25f2ec5a514b137ea063eb59e489567ebc00759a1da852673",
       "deployment": {
         "companies": [],
         "configuration_id": "kinova_gen3",
@@ -4020,7 +4020,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4033,7 +4033,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_kinova_gen3_bimanual",
-      "configuration_digest": "sha256:0f0e76f2c99c31d2c848cec1fbf19d42fd958d87c6b0b44724a0a111f667cba9",
+      "configuration_digest": "sha256:d6fed20ff7b3391066a1b7d514189452c000c211731e7bfad86f7852ba22b446",
       "deployment": {
         "companies": [],
         "configuration_id": "kinova_gen3_bimanual",
@@ -4054,7 +4054,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4067,7 +4067,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_trlc_dk1_bimanual",
-      "configuration_digest": "sha256:e7567408ae4bc9469faf4ffeea5a0bbdb7442f176541ecf6f7bbce98e38016d3",
+      "configuration_digest": "sha256:915eccbeaf7309ff6cb67094ea147e790e366e75aee65fe1a6862f8ef216d9c5",
       "deployment": {
         "companies": [],
         "configuration_id": "trlc_dk1_bimanual",
@@ -4088,7 +4088,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4101,7 +4101,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_ufactory_xarm7",
-      "configuration_digest": "sha256:ecb13d12540e7890ef600f86e21855183ea7e1228b859a9ddbc4823eabc1f571",
+      "configuration_digest": "sha256:c8c93a884dbcaf2dafdbe9d74a489adeb158177588c8bf7504ef67a411af4e9b",
       "deployment": {
         "companies": [],
         "configuration_id": "ufactory_xarm7",
@@ -4122,7 +4122,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4135,7 +4135,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_ufactory_xarm7_bimanual",
-      "configuration_digest": "sha256:845918366782788e429c6e8c290bef845e14deaec22c668c52eb468117ab4cd2",
+      "configuration_digest": "sha256:d4bad3bddd0a95007dc74c5c7f5e2566d875d808e68bb42c33f4b9de7723d389",
       "deployment": {
         "companies": [],
         "configuration_id": "ufactory_xarm7_bimanual",
@@ -4156,7 +4156,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4169,7 +4169,7 @@
     },
     {
       "candidate_id": "blueprint_scripted_universal_robots_ur5e_bimanual",
-      "configuration_digest": "sha256:50ea027f3a1c4d8e1892eae8090a589e3bb764b401d4ad720041ea2b29f9f0ed",
+      "configuration_digest": "sha256:556b372e43167529ec928aa3b795bb808f1b4a59e01790bd0ba0089abd986569",
       "deployment": {
         "companies": [],
         "configuration_id": "universal_robots_ur5e_bimanual",
@@ -4190,7 +4190,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:b4e6d2b019b2998349355b11b2e1b4ddbe604cdfda3533b2301a46ba226f2fe8",
+        "digest": "sha256:712cecacbcc60df33cf96a0fa250fb0b1d40fcc1702d97eb83e74ecf8c5884a6",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4258,7 +4258,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:0b5139ef35eb2a5cc28fc7af4ac0bfa77a97d145ab4b573255637bfc53764ecc",
+        "digest": "sha256:6ffea7419a1b89352ed58babab9de9649bfab99ba0431f01c10707e2673c5ba2",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4268,7 +4268,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:e07811f5fd5b9c7d0f3eeb687ef76652b664361df50e07b6d81b16295c12c4e6"
+      "configuration_digest": "sha256:01d5dcec64c58cfc761da8aaf855c5da7a01f2c8b5cb310bc69fb80c8c4e6085"
     },
     {
       "candidate_id": "blueprint_scripted_universal_robots_ur10e_robotiq_2f85_sim",
@@ -4292,7 +4292,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:0b5139ef35eb2a5cc28fc7af4ac0bfa77a97d145ab4b573255637bfc53764ecc",
+        "digest": "sha256:6ffea7419a1b89352ed58babab9de9649bfab99ba0431f01c10707e2673c5ba2",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4302,7 +4302,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:e073d6c7969e26386886de259318d25fd07f4ee0f5ae656f795c097f9afcf89e"
+      "configuration_digest": "sha256:594fa697ddc7626b6f7bc53355cad1027de5ec54a6823356b25f31784d7e9cfd"
     },
     {
       "candidate_id": "blueprint_scripted_universal_robots_ur5e_robotiq_2f85_sim",
@@ -4326,7 +4326,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:0b5139ef35eb2a5cc28fc7af4ac0bfa77a97d145ab4b573255637bfc53764ecc",
+        "digest": "sha256:6ffea7419a1b89352ed58babab9de9649bfab99ba0431f01c10707e2673c5ba2",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4336,7 +4336,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:d29454decde2eeef7d589b4cae64fe627ae6fbbcfa3633e0f2e309779b6ea945"
+      "configuration_digest": "sha256:bf8d9750423c187eadedda606bf5acb9859784f9ef0ee705e2a8551082f55e71"
     },
     {
       "candidate_id": "blueprint_scripted_fanuc_crx_10ia_robotiq_2f85_sim",
@@ -4360,7 +4360,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:2a08b010066aa31b2a3446d648c0d24d2fc33fef5005093bba6638563fe0c487",
+        "digest": "sha256:4635fe265bb67c16823541a5ec2102999a168e908c6920e277c7d4b55ca50ecd",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4370,7 +4370,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:a1e6cda063f4e3f70012f85f0c30aec89f91586fdb3d2947fc00e3cdd625c654"
+      "configuration_digest": "sha256:917ab3663fd2186045e39508954c30b569ea366a0f00fcd29f338f4b5ebace3e"
     },
     {
       "candidate_id": "blueprint_scripted_fanuc_crx_10ia_l_robotiq_2f85_sim",
@@ -4394,7 +4394,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:2a08b010066aa31b2a3446d648c0d24d2fc33fef5005093bba6638563fe0c487",
+        "digest": "sha256:4635fe265bb67c16823541a5ec2102999a168e908c6920e277c7d4b55ca50ecd",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4404,7 +4404,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:0c137acf4d40607f12582c581726b00a7df3876cb29dada4360ce5ff9393c0fa"
+      "configuration_digest": "sha256:7b54ca3613e98cc5bdbc87660e333e95338af240859be0decafb273e15af7f61"
     },
     {
       "candidate_id": "blueprint_scripted_fanuc_m710ic_45m_robotiq_2f85_sim",
@@ -4428,7 +4428,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:2a08b010066aa31b2a3446d648c0d24d2fc33fef5005093bba6638563fe0c487",
+        "digest": "sha256:4635fe265bb67c16823541a5ec2102999a168e908c6920e277c7d4b55ca50ecd",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4438,7 +4438,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:74e963bd941126420f17b99aa9c058b1f0b77950ccc4b944849f7cd36b79811b"
+      "configuration_digest": "sha256:f2074ed7d2480aa52676d874cd5b6e22df8be73ab539c89ce6030de251866810"
     },
     {
       "candidate_id": "blueprint_scripted_abb_gofa_crb15000_5_95_robotiq_2f85_sim",
@@ -4462,7 +4462,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:2a08b010066aa31b2a3446d648c0d24d2fc33fef5005093bba6638563fe0c487",
+        "digest": "sha256:4635fe265bb67c16823541a5ec2102999a168e908c6920e277c7d4b55ca50ecd",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4472,7 +4472,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:15af680fa7c1396354beaed2e5b86a011d09443a4df8a789292b762c9d86a3fa"
+      "configuration_digest": "sha256:35ff86fb70b837e99e08a8193a37149c49f64fe2c8b47c9f8ba801ebfde0e03f"
     },
     {
       "candidate_id": "blueprint_scripted_abb_gofa_crb15000_12_127_robotiq_2f85_sim",
@@ -4496,7 +4496,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:2a08b010066aa31b2a3446d648c0d24d2fc33fef5005093bba6638563fe0c487",
+        "digest": "sha256:4635fe265bb67c16823541a5ec2102999a168e908c6920e277c7d4b55ca50ecd",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4506,7 +4506,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:e5ffaf753dec7672ac6a45306b81a78fab9469f36b22da82fcbe63f52788c81f"
+      "configuration_digest": "sha256:80fed630a568d143dedd0709997f7559751e1802c53259819561cc031db1114f"
     },
     {
       "candidate_id": "blueprint_scripted_yaskawa_gp12_robotiq_2f85_sim",
@@ -4530,7 +4530,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:0268531374da9d5abbaacf4a31d11ef51ce6e0ac7ff71f62467d78d1f1817a3c",
+        "digest": "sha256:a6f28f6ab093089d4fee9f8b4f1202399d754390bdacfe6a884bfea421e44732",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4540,7 +4540,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:aa4488ae74762ef7662fa199513e1c4a8548671cd075f3cc86e6c1dd6d1cfe45"
+      "configuration_digest": "sha256:ec89e334e4fe22e1707502755a13cf249769553532b01ad0aaa5c89913d16159"
     },
     {
       "candidate_id": "blueprint_scripted_yaskawa_gp20_robotiq_2f85_sim",
@@ -4564,7 +4564,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:0268531374da9d5abbaacf4a31d11ef51ce6e0ac7ff71f62467d78d1f1817a3c",
+        "digest": "sha256:a6f28f6ab093089d4fee9f8b4f1202399d754390bdacfe6a884bfea421e44732",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4574,7 +4574,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:9009c660c943e198ed5d3c51855307c86cc8eb646da63915e2f3ac2f454a1f9b"
+      "configuration_digest": "sha256:8c8875e5e9964405b92387be0687c8463d7ca374c923c4a28dddc1c03825bab6"
     },
     {
       "candidate_id": "blueprint_scripted_kuka_lbr_iiwa_14_robotiq_2f85_sim",
@@ -4598,7 +4598,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:d278f8dec6dcfb46b2005f3d7dfea2a6fdfb17730c25d497a234a3c6fc50e774",
+        "digest": "sha256:98d23d109b52f1c5173d047a59ce715344dc45390a64e90a02566357fa89308e",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4608,7 +4608,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:dc085bf74204124b707cb69c1c1145e553eabdf906e45a3cbea35a1b9e7da68b"
+      "configuration_digest": "sha256:f57198654fc8be78b0a6e0fe4bf83af7d02715d3e5d099fb968fde02228f15c1"
     },
     {
       "candidate_id": "blueprint_scripted_fanuc_m10id_12_robotiq_2f85_sim",
@@ -4632,7 +4632,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:df281bd17bc6d47c02d8be8011e3f7f54cbffa6bddec98aabffebecfb6dbd8c3",
+        "digest": "sha256:1071c73487f1cb60d850f0e90b4d2b76bdac138dc36ca026894c17a1f37c14a8",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4642,7 +4642,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:8fff97e329a513f00e6a1e39d7cc2015d807b94177c524c9c3e5b7d8216b4d07"
+      "configuration_digest": "sha256:5d7f8467da11dbd0495f331a5ae49a6afb84b8181be2783e5e4fb309df05883c"
     },
     {
       "candidate_id": "blueprint_scripted_yaskawa_hc20_robotiq_2f85_sim",
@@ -4666,7 +4666,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:df281bd17bc6d47c02d8be8011e3f7f54cbffa6bddec98aabffebecfb6dbd8c3",
+        "digest": "sha256:1071c73487f1cb60d850f0e90b4d2b76bdac138dc36ca026894c17a1f37c14a8",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4676,7 +4676,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:24b854feebe95c5676950516d371cb61b4f463c636a62d28c5ee97d58a5c8a57"
+      "configuration_digest": "sha256:dd748125ddc8376dde7098c9704225759bfa18503a8f0f7a98122222fd19b6b9"
     },
     {
       "candidate_id": "blueprint_scripted_agile_robots_diana_7_robotiq_2f85_sim",
@@ -4700,7 +4700,7 @@
       },
       "interface": null,
       "policy": {
-        "digest": "sha256:df281bd17bc6d47c02d8be8011e3f7f54cbffa6bddec98aabffebecfb6dbd8c3",
+        "digest": "sha256:1071c73487f1cb60d850f0e90b4d2b76bdac138dc36ca026894c17a1f37c14a8",
         "digest_kind": "source_code_inventory",
         "kind": "scripted",
         "revision": "1",
@@ -4710,7 +4710,7 @@
       "supported_task_kinds": [
         "rigid_pick_place"
       ],
-      "configuration_digest": "sha256:e1fee1b81105d46efb329ffd8ee4f10a256634278da6961a8b1ac7b565c4e302"
+      "configuration_digest": "sha256:b8dcccb449f4cf202e1ec6a4d992de7e71539822990baf4d91004d331b6c2a89"
     },
     {
       "candidate_id": "sewts_fanuc_m10id_12_velum",
@@ -4897,5 +4897,5 @@
   "catalog_id": "blueprint-beta-policies",
   "revision": "2026-10-30.2-public-droid-expansion:openwam_franka_sim_v1:native-g1-internal:public-baseline-visibility:trlc-community-pi05:single-ur-robotiq-scripted:public-fixed-arms-batch1:openpi-polaris-droid-variants",
   "schema_version": "beta_policy_candidate_catalog.v1",
-  "catalog_digest": "sha256:62ae002345dc9c257ac16df9447c158d4318eb253e6d2b0ef455b31e939de1fd"
+  "catalog_digest": "sha256:3638ecbe1fc095be78d5468918fe6e2b35b735e12905d2e8920bc54308fad9cc"
 }

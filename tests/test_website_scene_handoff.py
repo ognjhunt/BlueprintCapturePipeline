@@ -234,6 +234,32 @@ def test_a_ready_atlas_scene_drives_preparation_but_never_invents_execution(tmp_
     assert json.loads((tmp_path / "pipeline/website_scene_preparation/handoff.json").read_text()) == result
 
 
+def test_runtime_inputs_read_the_collider_compile_sealed(tmp_path, monkeypatch, ready_atlas):
+    # Compile flattens placement surfaces into a new collider and rewrites the base scene
+    # (website_collider_conditioning); native inputs must bind that one, not the Atlas copy.
+    kwargs = inputs(tmp_path)
+    kwargs["descriptor"]["metadata"]["site_task_context"]["context_digest"] = "sha256:" + "c" * 64
+    sealed = {**ready_atlas["base_scene"], "collision_mesh_digest": "sha256:" + "d" * 64}
+
+    def compile(**value):
+        assert value["base_scene"] == ready_atlas["base_scene"]
+        write_json(value["output_root"] / "base_scene.json", sealed)
+        return {"status": "needs_input", "blockers": ["website_scene_execution_authority_required"],
+                "digest": "sha256:" + "a" * 64, "thumbnail": {}, "collider_conditioning": {"status": "conditioned"}}
+
+    bound = []
+
+    def runtime_inputs(**value):
+        bound.append(value["base_scene"])
+        raise ValueError("stopped_after_binding")
+
+    monkeypatch.setattr(handoff, "compile_website_scene_preparation", compile)
+    monkeypatch.setattr(handoff, "prepare_website_runtime_inputs", runtime_inputs)
+    result = handoff.prepare_website_scene_handoff(**kwargs)
+    assert bound == [sealed]
+    assert result["runtime_inputs"]["blockers"] == ["stopped_after_binding"]
+
+
 @pytest.mark.parametrize("deferred_masks", [False, True])
 @pytest.mark.parametrize("atlas,status", [
     ({"status": "needs_input", "reason": "website_atlas_job_required"}, "needs_input"),

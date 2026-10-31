@@ -44,6 +44,11 @@ CPUQuota=200%
 # the four-core controller. A real drawer search used 20 minutes before the
 # guarded reviewer started. Keep enough bounded time for review and handoff.
 TimeoutStartSec=45min
+# The worker exits 2 when any row is blocked or refused, which every run has
+# while stale intents remain. Those are the report's content, not a failure:
+# a failed run never re-arms this unit's OnUnitInactiveSec timer, which then
+# stayed dead from 2026-10-27 and left capture-447ae4f4's activation unlaunched.
+SuccessExitStatus=2
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_PLAN_ROOT=/etc/blueprint/task-evaluation-configured-controls-plans

@@ -905,3 +905,20 @@ def test_source_document_refuses_symlink_even_when_target_bytes_match(
             contract_path=DEFINITION_CONTRACT_PATH,
             expected_reference=expected,
         )
+
+
+def test_an_estimated_website_template_binds_within_its_placement_uncertainty():
+    from blueprint_pipeline.task_evaluation_rigid_relocation_native_adapter import (
+        _estimated_support_height_tolerance)
+
+    assert _estimated_support_height_tolerance(
+        {"dimension_authority": "estimated", "placement_uncertainty_m": .072}) == .072
+    assert _estimated_support_height_tolerance(
+        {"dimension_authority": "estimated", "placement_uncertainty_m": .001}) == .005
+    # Authored development surfaces, measured dimensions and missing values keep 5 mm.
+    assert _estimated_support_height_tolerance(
+        {"dimension_authority": "estimated", "placement_uncertainty_m": .072, "test_environment": {"id": "x"}}) == .005
+    assert _estimated_support_height_tolerance({"dimension_authority": "measured", "placement_uncertainty_m": .072}) == .005
+    assert _estimated_support_height_tolerance({"dimension_authority": "estimated"}) == .005
+    assert _estimated_support_height_tolerance(
+        {"dimension_authority": "estimated", "placement_uncertainty_m": float("nan")}) == .005

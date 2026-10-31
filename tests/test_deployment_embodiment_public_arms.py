@@ -22,6 +22,7 @@ from tests.test_deployment_embodiment_gofa import _sdk, _stl
 from tests.test_deployment_embodiment_industrial import _poses
 from tests.test_deployment_embodiment_kuka import public_sources as kuka_sources  # noqa: F401
 from tests.test_deployment_embodiment_yaskawa import yaskawa_sources  # noqa: F401
+from tests.scripted_controller_supersession import current as with_reviewed_revisions
 
 FIXTURE = Path(__file__).parent / "fixtures/public_fixed_arms"
 TOOL_MASS_KG = 0.92086427304
@@ -321,7 +322,7 @@ def previous_runtime():
 
 
 def test_original31_profiles_37_recipes_112_rows_21_policy_identities_unchanged():
-    previous = json.loads((FIXTURE / "predecessor_identities.json").read_text())
+    previous = with_reviewed_revisions(json.loads((FIXTURE / "predecessor_identities.json").read_text()))
     package = Path(assets.__file__).parent
     root = package.parents[1]
     recipes = {r["embodiment_id"]: r for r in assets.asset_recipes()["recipes"]}

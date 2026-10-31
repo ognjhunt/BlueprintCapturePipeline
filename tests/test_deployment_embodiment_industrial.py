@@ -18,6 +18,7 @@ from blueprint_pipeline import deployment_embodiment_runtime_compatibility as co
 from blueprint_pipeline.deployment_embodiment_station import _origin_matrix
 from tests.test_deployment_embodiment_gofa import _stl, _sdk
 from tests.test_deployment_embodiment_tool_composition import composed  # noqa: F401
+from tests.scripted_controller_supersession import current as with_reviewed_revisions
 
 FIXTURE = Path(__file__).parent / "fixtures/industrial_robotiq"
 
@@ -175,7 +176,7 @@ def test_original23_configuration_reuse_and_metadata_reconstruction(public_sourc
 
 def test_original23_profiles_29_recipes_104_rows_and13_policy_sources_are_unchanged():
     from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-    previous = json.loads((FIXTURE/'predecessor_identities.json').read_text())
+    previous = with_reviewed_revisions(json.loads((FIXTURE/'predecessor_identities.json').read_text()))
     package = Path(assets.__file__).parent
     root = package.parents[1]
     recipes = {r['embodiment_id']: r for r in assets.asset_recipes()['recipes']}

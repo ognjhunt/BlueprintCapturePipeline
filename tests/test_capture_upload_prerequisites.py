@@ -391,6 +391,7 @@ def test_host_entrypoint_requires_complete_service_user_controls(tmp_path, monke
     def run(argv, **kwargs):
         assert argv[:4] == ["/usr/sbin/runuser", "--user", "blueprint", "--"]
         assert json.loads(kwargs["input"]) == configuration
+        assert kwargs["timeout"] == prerequisites.SCANNER_CONTROLS_TIMEOUT_SECONDS
         assert not any("TOKEN" in key or "KEY" in key for key in kwargs["env"])
         value = {"status": "ready", "provider_mutation_performed": False,
                  "source_footage_processed": False, "robot_episode_executed": False}

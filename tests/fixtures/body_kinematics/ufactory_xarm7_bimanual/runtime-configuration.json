@@ -1,0 +1,1275 @@
+{
+  "schema_version": "embodiment_runtime_configuration.v1",
+  "claim_ceiling": "configuration_only",
+  "embodiment_id": "ufactory_xarm7_bimanual",
+  "source_bundle_digest": "sha256:e96ed369478126dab2503e997e60a3fb88c2a00ca003aff07a7fa9da78d78f10",
+  "station_parameters": null,
+  "manifest_fields": {
+    "schema_version": "blueprint.robot_embodiment.v2",
+    "embodiment_id": "ufactory_xarm7_bimanual",
+    "form": "bimanual_arm",
+    "base": {
+      "mode": "fixed"
+    },
+    "joints": [
+      {
+        "name": "L_joint1",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "L_joint2",
+        "control": "position",
+        "lower": -2.059,
+        "upper": 2.0944,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "L_joint3",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "L_joint4",
+        "control": "position",
+        "lower": -0.19198,
+        "upper": 3.927,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "L_joint5",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "L_joint6",
+        "control": "position",
+        "lower": -1.69297,
+        "upper": 3.141592653589793,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "L_joint7",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "R_joint1",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "R_joint2",
+        "control": "position",
+        "lower": -2.059,
+        "upper": 2.0944,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "R_joint3",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "R_joint4",
+        "control": "position",
+        "lower": -0.19198,
+        "upper": 3.927,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "R_joint5",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "R_joint6",
+        "control": "position",
+        "lower": -1.69297,
+        "upper": 3.141592653589793,
+        "max_velocity": 1.0
+      },
+      {
+        "name": "R_joint7",
+        "control": "position",
+        "lower": -6.283185307179586,
+        "upper": 6.283185307179586,
+        "max_velocity": 1.0
+      }
+    ],
+    "grippers": [
+      {
+        "name": "left_gripper",
+        "tool_link": "L_xarm_gripper_base_link",
+        "joints": [
+          {
+            "name": "L_drive_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "L_left_finger_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "L_left_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "L_right_outer_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "L_right_finger_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "L_right_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.85
+          }
+        ],
+        "max_width_m": 0.085,
+        "contact_links": [
+          "L_left_finger",
+          "L_right_finger"
+        ]
+      },
+      {
+        "name": "right_gripper",
+        "tool_link": "R_xarm_gripper_base_link",
+        "joints": [
+          {
+            "name": "R_drive_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "R_left_finger_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "R_left_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "R_right_outer_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "R_right_finger_joint",
+            "open": 0.0,
+            "closed": 0.85
+          },
+          {
+            "name": "R_right_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.85
+          }
+        ],
+        "max_width_m": 0.085,
+        "contact_links": [
+          "R_left_finger",
+          "R_right_finger"
+        ]
+      }
+    ],
+    "tool_link": "L_xarm_gripper_base_link",
+    "reset_joint_positions": {
+      "L_joint1": 0.0,
+      "L_joint2": 0.0,
+      "L_joint3": 0.0,
+      "L_joint4": 0.21991799999999997,
+      "L_joint5": 0.0,
+      "L_joint6": 0.0,
+      "L_joint7": 0.0,
+      "L_drive_joint": 0.0,
+      "L_left_finger_joint": 0.0,
+      "L_left_inner_knuckle_joint": 0.0,
+      "L_right_outer_knuckle_joint": 0.0,
+      "L_right_finger_joint": 0.0,
+      "L_right_inner_knuckle_joint": 0.0,
+      "R_joint1": 0.0,
+      "R_joint2": 0.0,
+      "R_joint3": 0.0,
+      "R_joint4": 0.21991799999999997,
+      "R_joint5": 0.0,
+      "R_joint6": 0.0,
+      "R_joint7": 0.0,
+      "R_drive_joint": 0.0,
+      "R_left_finger_joint": 0.0,
+      "R_left_inner_knuckle_joint": 0.0,
+      "R_right_outer_knuckle_joint": 0.0,
+      "R_right_finger_joint": 0.0,
+      "R_right_inner_knuckle_joint": 0.0
+    },
+    "actuator": {
+      "stiffness": 100.0,
+      "damping": 20.0
+    },
+    "cameras": [
+      {
+        "name": "overhead",
+        "mount_link": null,
+        "position_m": [
+          0.5,
+          0.0,
+          1.5
+        ],
+        "orientation_xyzw": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "left_wrist",
+        "mount_link": "L_xarm_gripper_base_link",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "right_wrist",
+        "mount_link": "R_xarm_gripper_base_link",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      }
+    ],
+    "control_hz": 60,
+    "action_chunk_rows": 48,
+    "reach_m": 2.2588862279992634,
+    "arms": [
+      {
+        "name": "left",
+        "joint_names": [
+          "L_joint1",
+          "L_joint2",
+          "L_joint3",
+          "L_joint4",
+          "L_joint5",
+          "L_joint6",
+          "L_joint7"
+        ],
+        "base_link": "L_link_base",
+        "tool_link": "L_xarm_gripper_base_link",
+        "gripper_name": "left_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            0.0,
+            -4.235164736271502e-22,
+            0.17199999999999988
+          ],
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      },
+      {
+        "name": "right",
+        "joint_names": [
+          "R_joint1",
+          "R_joint2",
+          "R_joint3",
+          "R_joint4",
+          "R_joint5",
+          "R_joint6",
+          "R_joint7"
+        ],
+        "base_link": "R_link_base",
+        "tool_link": "R_xarm_gripper_base_link",
+        "gripper_name": "right_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            0.0,
+            1.1142167849714606e-16,
+            0.17199999999999988
+          ],
+          "orientation_xyzw": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      }
+    ]
+  },
+  "source_name_mapping": {
+    "L_drive_joint": "L_drive_joint",
+    "L_gripper_fix": "L_gripper_fix",
+    "L_joint1": "L_joint1",
+    "L_joint2": "L_joint2",
+    "L_joint3": "L_joint3",
+    "L_joint4": "L_joint4",
+    "L_joint5": "L_joint5",
+    "L_joint6": "L_joint6",
+    "L_joint7": "L_joint7",
+    "L_joint_eef": "L_joint_eef",
+    "L_joint_tcp": "L_joint_tcp",
+    "L_left_finger": "L_left_finger",
+    "L_left_finger_joint": "L_left_finger_joint",
+    "L_left_inner_knuckle": "L_left_inner_knuckle",
+    "L_left_inner_knuckle_joint": "L_left_inner_knuckle_joint",
+    "L_left_outer_knuckle": "L_left_outer_knuckle",
+    "L_link1": "L_link1",
+    "L_link2": "L_link2",
+    "L_link3": "L_link3",
+    "L_link4": "L_link4",
+    "L_link5": "L_link5",
+    "L_link6": "L_link6",
+    "L_link7": "L_link7",
+    "L_link_base": "L_link_base",
+    "L_link_eef": "L_link_eef",
+    "L_link_tcp": "L_link_tcp",
+    "L_right_finger": "L_right_finger",
+    "L_right_finger_joint": "L_right_finger_joint",
+    "L_right_inner_knuckle": "L_right_inner_knuckle",
+    "L_right_inner_knuckle_joint": "L_right_inner_knuckle_joint",
+    "L_right_outer_knuckle": "L_right_outer_knuckle",
+    "L_right_outer_knuckle_joint": "L_right_outer_knuckle_joint",
+    "L_world_joint": "L_world_joint",
+    "L_xarm_gripper_base_link": "L_xarm_gripper_base_link",
+    "R_drive_joint": "R_drive_joint",
+    "R_gripper_fix": "R_gripper_fix",
+    "R_joint1": "R_joint1",
+    "R_joint2": "R_joint2",
+    "R_joint3": "R_joint3",
+    "R_joint4": "R_joint4",
+    "R_joint5": "R_joint5",
+    "R_joint6": "R_joint6",
+    "R_joint7": "R_joint7",
+    "R_joint_eef": "R_joint_eef",
+    "R_joint_tcp": "R_joint_tcp",
+    "R_left_finger": "R_left_finger",
+    "R_left_finger_joint": "R_left_finger_joint",
+    "R_left_inner_knuckle": "R_left_inner_knuckle",
+    "R_left_inner_knuckle_joint": "R_left_inner_knuckle_joint",
+    "R_left_outer_knuckle": "R_left_outer_knuckle",
+    "R_link1": "R_link1",
+    "R_link2": "R_link2",
+    "R_link3": "R_link3",
+    "R_link4": "R_link4",
+    "R_link5": "R_link5",
+    "R_link6": "R_link6",
+    "R_link7": "R_link7",
+    "R_link_base": "R_link_base",
+    "R_link_eef": "R_link_eef",
+    "R_link_tcp": "R_link_tcp",
+    "R_right_finger": "R_right_finger",
+    "R_right_finger_joint": "R_right_finger_joint",
+    "R_right_inner_knuckle": "R_right_inner_knuckle",
+    "R_right_inner_knuckle_joint": "R_right_inner_knuckle_joint",
+    "R_right_outer_knuckle": "R_right_outer_knuckle",
+    "R_right_outer_knuckle_joint": "R_right_outer_knuckle_joint",
+    "R_world_joint": "R_world_joint",
+    "R_xarm_gripper_base_link": "R_xarm_gripper_base_link",
+    "world": "world"
+  },
+  "simulation_assumptions": [
+    "interior_zero_reset_pose",
+    "default_PD_gains_unless_source_drive_present",
+    "arm_velocity_capped_at_1_SI_unit_per_second",
+    "90_degree_simulated_camera_rig_not_site_calibration",
+    "parallel_gripper_width_is_nominal",
+    "reach_is_source_chain_upper_bound"
+  ],
+  "source_dynamics": {
+    "moving_link_count": 26,
+    "moving_links_without_positive_authored_mass_and_inertia": [],
+    "estimated_inertias_added": false,
+    "simulator_dynamics_validated": false
+  },
+  "source_limitations": [
+    "independent_tool_action_mapping",
+    "controller_reset_and_runtime_receipt"
+  ],
+  "execution_authorized": false,
+  "policy_compatibility_established": false,
+  "source_urdf_sha256": "sha256:193c20d372fa2ee32e41feb4df00eb060207d1795df0cde41b8845945f7089f9",
+  "generator_module_sha256": "sha256:df0b6c4e7277d4e79b087115852afca8f8ad426e616e0e277cbb4f82e0300469",
+  "generated_files": [
+    {
+      "path": "expanded_source/LICENSE",
+      "sha256": "sha256:685e81e0cd30124e24e834ea2bf39bfead4efc9907d021bc9d1ae0f2dcea1431",
+      "size_bytes": 1538
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/bio_gripper_controllers.yaml",
+      "sha256": "sha256:faf483680b6e7d07bc67fba961894655d4f493fbf14c88ab1a2e89d1c5ee8a3a",
+      "size_bytes": 431
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/lite6_controllers.yaml",
+      "sha256": "sha256:e87ea245163629b0ca497ab0895e7322f8e0a334d6ec9907752bb1d70053f916",
+      "size_bytes": 963
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/uf850_controllers.yaml",
+      "sha256": "sha256:fae30e26eb5286f91bd4780705f6b541fcf0ae7053b0df08a4361f25cb39f485",
+      "size_bytes": 963
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/uf850_gripper_controllers.yaml",
+      "sha256": "sha256:f3d7b2cc3ea37b099e8fda87fba24298c04b07fcab875e3016c257a4e19b5991",
+      "size_bytes": 400
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/xarm5_controllers.yaml",
+      "sha256": "sha256:fbad2abe5765ec6869d9554745fb91250a31071ea4405458cb37a32635688b02",
+      "size_bytes": 904
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/xarm6_controllers.yaml",
+      "sha256": "sha256:6fc12b15b1a16b7e0459808754e10a141f6e5d11141d1570dfed698ecbad140c",
+      "size_bytes": 963
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/xarm7_controllers.yaml",
+      "sha256": "sha256:a4b73eaeff117512fdd1452217e535729999703160636e9deedd3f6efca67ebe",
+      "size_bytes": 978
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/xarm7_mirror_controllers.yaml",
+      "sha256": "sha256:6f19cb51fa1873a2780cec1fdd7e8f372e3e4620069bde525cd0e18335594637",
+      "size_bytes": 964
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/xarm7_mirror_gripper_controllers.yaml",
+      "sha256": "sha256:3288831c3676492e3052d577b14a4e4ffe493adf9b58042221d5a75e95b988c2",
+      "size_bytes": 414
+    },
+    {
+      "path": "expanded_source/xarm_controller/config/xarm_gripper_controllers.yaml",
+      "sha256": "sha256:bd03de2a244db436b3d176d5c490a16efce0ab9175f573f2c5ef58fcb1da79d2",
+      "size_bytes": 398
+    },
+    {
+      "path": "expanded_source/xarm_description/config/kinematics/default/lite6_default_kinematics.yaml",
+      "sha256": "sha256:fcc5fb95d48bc164ddda0eabd3a0d7c74c6c9dcd5d73f90bc5cf274494f8875f",
+      "size_bytes": 518
+    },
+    {
+      "path": "expanded_source/xarm_description/config/kinematics/default/uf850_default_kinematics.yaml",
+      "sha256": "sha256:e075f22e12404e87a9c54b72ca6b5b5db79b9bf53d9fc319c9557e68795b190b",
+      "size_bytes": 507
+    },
+    {
+      "path": "expanded_source/xarm_description/config/kinematics/default/xarm5_default_kinematics.yaml",
+      "sha256": "sha256:aca793af70f7edc5f50f0087cebedb926121a45630d56f3b63f2b069baf3a1d3",
+      "size_bytes": 421
+    },
+    {
+      "path": "expanded_source/xarm_description/config/kinematics/default/xarm6_default_kinematics.yaml",
+      "sha256": "sha256:9e02c7ec66a06574d27cddebacfb294b8259b4e8b43cfc05d3bf38e8f358eac1",
+      "size_bytes": 505
+    },
+    {
+      "path": "expanded_source/xarm_description/config/kinematics/default/xarm7_default_kinematics.yaml",
+      "sha256": "sha256:6338a365caa6ba5df47db7a9c0a5dc372944486a0b241dbf8dfe3d3f352949bd",
+      "size_bytes": 587
+    },
+    {
+      "path": "expanded_source/xarm_description/config/kinematics/default/xarm7_mirror_default_kinematics.yaml",
+      "sha256": "sha256:9e3b71c2d570385cad8dc47adf479c7fea6424a187a94fe57510addc154c771d",
+      "size_bytes": 612
+    },
+    {
+      "path": "expanded_source/xarm_description/config/kinematics/gen_kinematics_params.py",
+      "sha256": "sha256:a2ddebed08ba91cf49f372b9206d115c6ed3118be9f64207a0e9d4719809ed35",
+      "size_bytes": 3032
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/gen_link_inertial_params.py",
+      "sha256": "sha256:22678fa7c10bc24e66e34c00b1d92c15e31d9f01957764a97c859b3a4e7d8681",
+      "size_bytes": 20783
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm5_type5_HT_BR.yaml",
+      "sha256": "sha256:6db9babd6327086f8a676342d13d9845f6a57854f40558d1eaad5bccf93c4c1f",
+      "size_bytes": 988
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm5_type5_HT_BR2.yaml",
+      "sha256": "sha256:24ddaac579f364c5d92d0538d96bf798019a092ca20123b736546d25c0b968f5",
+      "size_bytes": 1010
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm5_type5_HT_LD.yaml",
+      "sha256": "sha256:d635d145e41acde7627457a359afd2b024dff4defe9e59ab9a5942fa4f14a0b6",
+      "size_bytes": 964
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm5_type5_UJ_BR_2403.yaml",
+      "sha256": "sha256:d9ec6ba03e0d5b6c5449dce5b2d8dc53a4bd989030da86278a11f518836aae80",
+      "size_bytes": 985
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm6_type11_HT_LD.yaml",
+      "sha256": "sha256:ff3a3c9f923f85f23b1ea0a900c317ce3ec42f9e241d1987a149d0e90b3e5679",
+      "size_bytes": 1184
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm6_type12_HT_LDBR2.yaml",
+      "sha256": "sha256:d5a7c7f92e1920f8535d78ee86a60a4fd03152506ff2b5db0e4b104a87b68a7e",
+      "size_bytes": 1402
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm6_type6_HT2_LD.yaml",
+      "sha256": "sha256:bdf540243a951373ee433e247f9bb0c0c1419ae767e4e69ab59149954c0d66d1",
+      "size_bytes": 1188
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm6_type6_HT_BR.yaml",
+      "sha256": "sha256:b4f06f0be1aef6ca89c57f2a4c62d1db8b6046f53e7a09341158eaf142295659",
+      "size_bytes": 1187
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm6_type6_HT_BR2.yaml",
+      "sha256": "sha256:ee278042008ad01e0fbc95a3ce0c270c898fe73bb46793c8a54daf34234c0f5c",
+      "size_bytes": 1214
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm6_type6_HT_LD.yaml",
+      "sha256": "sha256:9c30c34a78d1d59a090ca971836a79fde1842bb9629ef752e1babff14eb827ea",
+      "size_bytes": 1175
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm6_type6_UJ_BR_2403.yaml",
+      "sha256": "sha256:6adbaa2ea89e23088aca35eb3d1fc64d6494565bb48aebceeacf75fc575cf06a",
+      "size_bytes": 1152
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm6_type8_HT2_BR2.yaml",
+      "sha256": "sha256:b6c4c159f08821b0d3e24cee44b207eec90f4e750d2e0607a1f5ff57ffdecff2",
+      "size_bytes": 1222
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm6_type9_HT_BR2.yaml",
+      "sha256": "sha256:ada97e36bee8ca156541df692c74deabac26b90530ad1a12a0717df5ddb68d5f",
+      "size_bytes": 1323
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm7_type13_HT_BR2.yaml",
+      "sha256": "sha256:55db1850887760415ab0b60c5aae44c8ebb39144808f97008a93508a4f117056",
+      "size_bytes": 1619
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm7_type3_YT_SP.yaml",
+      "sha256": "sha256:0d75a02c1b3ea785f229ddf77adbaf6f5ffb8dc00197266c092baf656fb798ce",
+      "size_bytes": 1427
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm7_type7_HT_BR.yaml",
+      "sha256": "sha256:c7e8c82218ff437cb2b7c7c66644271a3fc1bcc7b092737d0940bdcbe6d9258f",
+      "size_bytes": 1387
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm7_type7_HT_BR2.yaml",
+      "sha256": "sha256:a9a9c58a34fcdfccca9fc703cfaf3ab45099ad4b95a00069e960cb0b6129749d",
+      "size_bytes": 1420
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm7_type7_HT_LD.yaml",
+      "sha256": "sha256:c7cdf86428ad17ed2c3ce494635f6fc07fe3004524a004d9f6de5bfedd390625",
+      "size_bytes": 1388
+    },
+    {
+      "path": "expanded_source/xarm_description/config/link_inertial/xarm7_type7_UJ_BR_2403.yaml",
+      "sha256": "sha256:05a9821f9a0224f183439117aee67535503d1444ce2e852f2a79d8ab4c1dee63",
+      "size_bytes": 1375
+    },
+    {
+      "path": "expanded_source/xarm_description/config/lite6/joint_limits.yaml",
+      "sha256": "sha256:fa61644d4578783f15e113dfa9c3b3604b4a71ddcf3c3c59eacd167df00c1faf",
+      "size_bytes": 915
+    },
+    {
+      "path": "expanded_source/xarm_description/config/uf850/joint_limits.yaml",
+      "sha256": "sha256:cdfe81d00037f8fd55e2f8f64d9df8605ffdb5a930284c271807b8b700824e6d",
+      "size_bytes": 896
+    },
+    {
+      "path": "expanded_source/xarm_description/config/xarm5/joint_limits.yaml",
+      "sha256": "sha256:f156f9504f8eb0cfc199c76964a099dda01e8817fa93993539bebc0345696f38",
+      "size_bytes": 745
+    },
+    {
+      "path": "expanded_source/xarm_description/config/xarm5/joint_limits_1305.yaml",
+      "sha256": "sha256:d97e445e1d67cdbf978ac3f3aca9333905acf984d849e549a217c3d0fde761b5",
+      "size_bytes": 760
+    },
+    {
+      "path": "expanded_source/xarm_description/config/xarm6/joint_limits.yaml",
+      "sha256": "sha256:968d6f03bca893712140fdeac8662daeb1613343fba6cfcb1cf8033dabc2462b",
+      "size_bytes": 891
+    },
+    {
+      "path": "expanded_source/xarm_description/config/xarm6/joint_limits_1305.yaml",
+      "sha256": "sha256:db51c8e0b4b80bc378a8b16ae7e185e394393efb6eda89feb8c9cc9f41c096eb",
+      "size_bytes": 911
+    },
+    {
+      "path": "expanded_source/xarm_description/config/xarm7/joint_limits.yaml",
+      "sha256": "sha256:b0f59f3c28faced0d541f06c7d0602a152369e6c9759b2828f2852cb7b1dde32",
+      "size_bytes": 1037
+    },
+    {
+      "path": "expanded_source/xarm_description/config/xarm7/joint_limits_1305.yaml",
+      "sha256": "sha256:c7cad2a7c47de6e08528109a50128ef35a7191b89acfffe77455a9509ac1f47a",
+      "size_bytes": 1054
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/end_tool/collision/end_tool.stl",
+      "sha256": "sha256:e06112781cdd615b7df536569f50addb445a6f4b4acced6d53b0742018b6c768",
+      "size_bytes": 13084
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/end_tool/collision/end_tool_1300.stl",
+      "sha256": "sha256:290685c9f61668ef149b04d41ee65f422eb8bb69ebf397465209d00ea9b4a4e1",
+      "size_bytes": 120684
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/end_tool/visual/end_tool_1300.stl",
+      "sha256": "sha256:60a9b32eebe901135fb9a286ad45c177df9410128291d82cee50591d16273842",
+      "size_bytes": 161084
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/base_link.dae",
+      "sha256": "sha256:36c2d92acdd47b6924583aa935e31487952cf3c32a4c6b03d720cd52b6f185de",
+      "size_bytes": 5167834
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/base_link.stl",
+      "sha256": "sha256:cdaa4cff22f7c9cff05c6a8ed32f94fd2b11a69d37dd97a159ccee2d8dd32f13",
+      "size_bytes": 1211434
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/base_link_g2.dae",
+      "sha256": "sha256:d46f7e336755a7fd58ebee4b3eab2c6eca7eec611358fc6bf5f683e63efd7575",
+      "size_bytes": 3866991
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/left_finger.dae",
+      "sha256": "sha256:ea4c0b059c996b9cb4f60441b89ed8d7212c6de543651f4659c69ef6d240eddf",
+      "size_bytes": 941460
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/left_finger.stl",
+      "sha256": "sha256:a44756eb72f9c214cb37e61dc209cd7073fdff3e4271a7423476ef6fd090d2d4",
+      "size_bytes": 242684
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/left_finger_g2.dae",
+      "sha256": "sha256:69c888529def394ddf00edfb11db061d300c586e6df681a33c894af5be14a59b",
+      "size_bytes": 317019
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/left_inner_knuckle.dae",
+      "sha256": "sha256:39daf641ee8ec141e504824b6760f4d07c01f4250c428112fc6a8b8984984cc6",
+      "size_bytes": 1432085
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/left_inner_knuckle.stl",
+      "sha256": "sha256:e8e48692ad26837bb3d6a97582c89784d09948fc09bfe4e5a59017859ff04dac",
+      "size_bytes": 366284
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/left_inner_knuckle_g2.dae",
+      "sha256": "sha256:f12e642f44ce4a5b0c9bb2ed5c2cf4f9ea0a22b5e87839c29490e8eee6171b86",
+      "size_bytes": 476444
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/left_outer_knuckle.dae",
+      "sha256": "sha256:81a716451a906056520f9bc2eb8c373af149ba690d392b368ff2c9fd8380baa9",
+      "size_bytes": 84395
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/left_outer_knuckle.stl",
+      "sha256": "sha256:501665812b08d67e764390db781e839adc6896a9540301d60adf606f57648921",
+      "size_bytes": 22284
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/left_outer_knuckle_g2.dae",
+      "sha256": "sha256:b791ec24aae545a5dd70aefd12ddac6bdbecf74388ca2f655b34b140ae7da80b",
+      "size_bytes": 36342
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/right_finger.dae",
+      "sha256": "sha256:78854f04d723e5a9e02515a07e9989eb3833c3aa318492c923b8d0aba960ed9f",
+      "size_bytes": 936180
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/right_finger.stl",
+      "sha256": "sha256:c5dee87c7f37baf554b8456ebfe0b3e8ed0b22b8938bd1add6505c2ad6d32c7d",
+      "size_bytes": 242684
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/right_finger_g2.dae",
+      "sha256": "sha256:c2914ea791f520253e5536b0078f4e7e3b7b16112eb3dab21db2f5029c150b36",
+      "size_bytes": 313281
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/right_inner_knuckle.dae",
+      "sha256": "sha256:fe0187047dd3059d75c61942dae0ceece07fa06308c010a6390f22a6f7638546",
+      "size_bytes": 1457872
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/right_inner_knuckle.stl",
+      "sha256": "sha256:b41dd2c2c550281bf78d7cc6fa117b14786700e5c453560a0cb5fd6dfa0ffb3e",
+      "size_bytes": 366284
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/right_inner_knuckle_g2.dae",
+      "sha256": "sha256:9e73e1fb4e65bc79dbaf2d8fe86fa835c67faa1e5ab08a8a55bec3b9023a1aa3",
+      "size_bytes": 482258
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/right_outer_knuckle.dae",
+      "sha256": "sha256:45a93890f1a1fe9aaa61a4a9941594f12aaee3aeb8622c3265e962b043fcb412",
+      "size_bytes": 82445
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/right_outer_knuckle.stl",
+      "sha256": "sha256:75ca1107d0a42a0f03802a9a49cab48419b31851ee8935f8f1ca06be1c1c91e8",
+      "size_bytes": 22284
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/gripper/xarm/right_outer_knuckle_g2.dae",
+      "sha256": "sha256:d9ed7ed551136ecd57fe733c5e9c7e7fa70e10345e26441452122b6bba061f55",
+      "size_bytes": 36346
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7/visual/link1.stl",
+      "sha256": "sha256:34b541122df84d2ef5fcb91b715eb19659dc15ad8d44a191dde481f780265636",
+      "size_bytes": 184184
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7/visual/link2.stl",
+      "sha256": "sha256:61e641cd47c169ecef779683332e00e4914db729bf02dfb61bfbe69351827455",
+      "size_bytes": 225584
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7/visual/link3.stl",
+      "sha256": "sha256:9e2798e7946dd70046c95455d5ba96392d0b54a6069caba91dc4ca66e1379b42",
+      "size_bytes": 237084
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7/visual/link4.stl",
+      "sha256": "sha256:c757fee95f873191a0633c355c07a360032960771cabbd7593a6cdb0f1ffb089",
+      "size_bytes": 243684
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7/visual/link5.stl",
+      "sha256": "sha256:715ad5787c5dab57589937fd47289882707b5e1eb997e340d567785b02f4ec90",
+      "size_bytes": 229084
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7/visual/link6.stl",
+      "sha256": "sha256:85b320aa420497827223d16d492bba8de091173374e361396fc7a5dad7bdb0cb",
+      "size_bytes": 399384
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7/visual/link7.stl",
+      "sha256": "sha256:97115d848fbf802cb770cd9be639ae2af993103b9d9bbb0c50c943c738a36f18",
+      "size_bytes": 231684
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7/visual/link_base.stl",
+      "sha256": "sha256:cf52275a913a0977595f5d12373f06583513e26fe18b8cf2827c74da94a4f0be",
+      "size_bytes": 304784
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/collision/link1.obj",
+      "sha256": "sha256:aa269f7379ea559fe744eb70112e784632268d6fcd0d39c7690846adb832a44b",
+      "size_bytes": 148213
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/collision/link2.obj",
+      "sha256": "sha256:50fab87b0c4c054da8c5c839c6d1033e6b74f128b7ae37c3589a8904f97c8c2c",
+      "size_bytes": 89590
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/collision/link3.obj",
+      "sha256": "sha256:31ad8e2cf2dac7276a7f3223505c3129c59f3da80065d1c11e155e9a6a180630",
+      "size_bytes": 87687
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/collision/link4.obj",
+      "sha256": "sha256:f68f76b787a1d36797d157c8cc92a65825b4b1f3b8fac9011cbbb35d000f6210",
+      "size_bytes": 108958
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/collision/link5.obj",
+      "sha256": "sha256:033f5b027de7d1eec614270b39a1b21c65ffc9be1229d367795efbc45fc91b41",
+      "size_bytes": 74058
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/collision/link6.obj",
+      "sha256": "sha256:b0c995fec942f63983444b7278144e9f32898d06f537cd5cb9e182bc73cbb393",
+      "size_bytes": 137606
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/collision/link7.obj",
+      "sha256": "sha256:6af85f65f81897ac003c2dda095d2242f8d84d61f5b37cff2e725996b9a56615",
+      "size_bytes": 66328
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/collision/link_base.obj",
+      "sha256": "sha256:a3c5a181d32b52915442dbf0940f226c58dcc85fca49ffd3047ca50cf2e6b011",
+      "size_bytes": 124061
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link1.dae",
+      "sha256": "sha256:ca208be640d89c02c1e5c9fa494e056e659196adfb93945f9501484a60356f4b",
+      "size_bytes": 1184276
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link1.stl",
+      "sha256": "sha256:8b6621cd3371670b77773db07dea9d7af3bc24c9c6b09ad2a7ae9242c1cb8b4f",
+      "size_bytes": 270984
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link2.dae",
+      "sha256": "sha256:f0b4376496e60efab480bcf92eecfe34e97a1c85b18891d7f1e46ffb64061af1",
+      "size_bytes": 888940
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link2.stl",
+      "sha256": "sha256:4eb7dd3c4444940af9e0b9ce54cb29720eb86ee19d4dd08a5ee7fbc28f9a063b",
+      "size_bytes": 210584
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link3.dae",
+      "sha256": "sha256:16347bc68015a3238364011c2e3b2ba1d8e030559d464cc5d93ddfd6e45ba289",
+      "size_bytes": 507177
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link3.stl",
+      "sha256": "sha256:890b340654579243f381694cffa149998e823adcee2a42d97907cf8c00d3e0ae",
+      "size_bytes": 118984
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link4.dae",
+      "sha256": "sha256:00b26897f643749480aa5f89edb4538bb5cc1243cc09653017f9854d76c42f96",
+      "size_bytes": 962579
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link4.stl",
+      "sha256": "sha256:d56738276a5d3484c733af4d7b69e63087e4e340756d67d17354b6c82dc0b4d8",
+      "size_bytes": 244184
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link5.dae",
+      "sha256": "sha256:f9f672cd7b3f3b622456dc989d700a69edc9d6ad4fa310f0e61f371c58a5da91",
+      "size_bytes": 1065701
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link5.stl",
+      "sha256": "sha256:8ca41d66bcf38d6f12af70a9d8a4c5aafccd0ce541b011853f44a97490f830e4",
+      "size_bytes": 239884
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link6.dae",
+      "sha256": "sha256:41d6188eac8c83a8718c4310dbdd7d27ec3e5c3a127c41ce0adb60aefb6eb2f4",
+      "size_bytes": 2552765
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link6.stl",
+      "sha256": "sha256:e0681550ce667f134988f297df6d6d3f026677ea9e57b38dae236be3e333d36b",
+      "size_bytes": 563584
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link7.dae",
+      "sha256": "sha256:86346a59a1887a01c643c90074e13994b45dbee474d26fbf3b978a84eb9db69a",
+      "size_bytes": 1148859
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link7.stl",
+      "sha256": "sha256:7604bde7881dc09ce16db57007bfc03e3885abe9d12da18e63b91cb1569d6d4f",
+      "size_bytes": 202384
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link_base.dae",
+      "sha256": "sha256:904a7994007d05880b3ad64152b3ce3ecff7692a5bb5be32237d7a25a5d1f9de",
+      "size_bytes": 184946
+    },
+    {
+      "path": "expanded_source/xarm_description/meshes/xarm7_1305/visual/link_base.stl",
+      "sha256": "sha256:80c82de2d3429765c97f9f8a17c107c3b830869fe1d8a8c681b2593f4fe21fc4",
+      "size_bytes": 150084
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/_private_macro.xacro",
+      "sha256": "sha256:e53db68fe27a94b1032810802b4f943dbcecd0f67aec4bf5b7eef12108af6d11",
+      "size_bytes": 471
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/camera/camera.gazebo.xacro",
+      "sha256": "sha256:a3152678e7ca497809a07937c9aa42066b57d7d5ed6da049c0794713b6e6c71a",
+      "size_bytes": 2857
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/camera/realsense.gazebo.xacro",
+      "sha256": "sha256:96017bd64dee9d4fecf7b57aa5c775e9635ea5e93cac79026bd2bb139f4a77b3",
+      "size_bytes": 12246
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/camera/realsense_d435i.urdf.xacro",
+      "sha256": "sha256:1ea847c98faa5efcdafd8a230e9917181759e140d8b8da122d675ab035ff9df7",
+      "size_bytes": 3468
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/common/common.gazebo.xacro",
+      "sha256": "sha256:9d57006fb763f992ab2247324fdd9d23f6ba24a0b283821ecca7763e37d78b8c",
+      "size_bytes": 1698
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/common/common.link.xacro",
+      "sha256": "sha256:c484f75a09533116a19b379155f75c8799af72a46554522d3c3968ee9ac13058",
+      "size_bytes": 11754
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/common/common.material.xacro",
+      "sha256": "sha256:2e0438da253454964e01b2008c8a6e59ddb3a4d19d271a6cb6d211929a6fbbc6",
+      "size_bytes": 522
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/dual_xarm_device.urdf.urdf",
+      "sha256": "sha256:56f2a8bbfc449dd6398f44acba3bf8235d207d552c2b4c541500d4152d557ccc",
+      "size_bytes": 44868
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/dual_xarm_device.urdf.xacro",
+      "sha256": "sha256:6c4bc94c58de4cb0c8310c9d034a628b50900bb8361b7510fd9bb6fc3e59c143",
+      "size_bytes": 7319
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/bio_gripper.gazebo.xacro",
+      "sha256": "sha256:23182dcb6750edce40002b9004f5e7d96ea15a9f1949d1702b08c081884402fe",
+      "size_bytes": 2560
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/bio_gripper.ros2_control.xacro",
+      "sha256": "sha256:68012400a56b4bfeac0852cfb5e138355b107103c163272955b4f75c95c73234",
+      "size_bytes": 793
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/bio_gripper.transmission.xacro",
+      "sha256": "sha256:05b2b3ed1d0f8ecba35be9edefbd2e3dc88aa627b080ef7412fd88a29d1bdc03",
+      "size_bytes": 729
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/bio_gripper.urdf.xacro",
+      "sha256": "sha256:dbb4b150fbf13ec8ed6cfa4f18dd7b0d66a37f2de183f1b6937fac027279df07",
+      "size_bytes": 4628
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/bio_gripper_macro.xacro",
+      "sha256": "sha256:cee1a2c433cbd9a58f97e3994a867312228738fb81c955747b4969312ca10abd",
+      "size_bytes": 2195
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/gripper.urdf.xacro",
+      "sha256": "sha256:8846afa74aa7b38d98e8b61a45c66cd16afbb710fe63ff2ce7e09e6c68950659",
+      "size_bytes": 574
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/gripper_macro.xacro",
+      "sha256": "sha256:2fec5b8523661c96093bbfd91b59fdb352d6e136ee4c9327e4924c42b5f0b70f",
+      "size_bytes": 2105
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/uflite_gripper.gazebo.xacro",
+      "sha256": "sha256:1f1fe5b118632414c33cdf85ac097e9cf0a2154938b89c9d93a9951793f5683a",
+      "size_bytes": 2527
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/uflite_gripper.ros2_control.xacro",
+      "sha256": "sha256:dd0a2d7533ea8e8af0e059596c20aab0e4b92036702dc4a0e5ab848af4a9323e",
+      "size_bytes": 794
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/uflite_gripper.transmission.xacro",
+      "sha256": "sha256:5fa8f4f0914f23bbedbb9ed0edf6c1e0753cc249b2e86e7dd15fea025cb8557a",
+      "size_bytes": 717
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/uflite_gripper.urdf.xacro",
+      "sha256": "sha256:10f4c1fca8823f2a676eea5c0fbd7daf86227d9f93a7d28d4a35dea552817216",
+      "size_bytes": 3711
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/uflite_gripper_macro.xacro",
+      "sha256": "sha256:9f6ac8a8fd025759572c6106496ab381197f555a567ac2e9be943d165be64412",
+      "size_bytes": 2195
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/xarm_gripper.gazebo.xacro",
+      "sha256": "sha256:083e171793ac4cb3adef7d06a2d1f7fb365da9474018c053e3a04e505731959c",
+      "size_bytes": 3517
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/xarm_gripper.ros2_control.xacro",
+      "sha256": "sha256:cd26263730af723f82cfba1bc92d608fb49e4290753578fbb2adb3f9719a44d7",
+      "size_bytes": 788
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/xarm_gripper.transmission.xacro",
+      "sha256": "sha256:83a1298210243871e0039cf58b2a09a9c24e0848432e02a4da960ec8efbdf771",
+      "size_bytes": 710
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/xarm_gripper.urdf.xacro",
+      "sha256": "sha256:e1987b755501636b7ba32518d98ecb5fc8c6d2c4b1c45a49d332d6672f22c8cb",
+      "size_bytes": 9868
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/gripper/xarm_gripper_macro.xacro",
+      "sha256": "sha256:0ea6faf3c8c6d43bd865c94bcad32fe52e156a717237088b0a328f35588c6724",
+      "size_bytes": 3377
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/lite6/lite6.gazebo.xacro",
+      "sha256": "sha256:e6acf242fa64e49fa8da430e345c4169c25df75321d4aed0feeeb5e82bd99456",
+      "size_bytes": 806
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/lite6/lite6.ros2_control.xacro",
+      "sha256": "sha256:35efb5e77c833c540870718fe9f614b61e17c690f546a083d9a28c63d2f048cf",
+      "size_bytes": 4597
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/lite6/lite6.transmission.xacro",
+      "sha256": "sha256:f1157e3d97777f521be047a8219e120b13adf984abf3105c624ac585a4fb3aa0",
+      "size_bytes": 3003
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/lite6/lite6.urdf.xacro",
+      "sha256": "sha256:b16cd18b9f06385fe4a645859043a856fd20139d65876cdadbb5c5db0e67e229",
+      "size_bytes": 9945
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/lite6/lite6_robot_macro.xacro",
+      "sha256": "sha256:ce4a65d3f95201258671c36266b1738fc98449f639b6032415c01d2734f69ee3",
+      "size_bytes": 3856
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/other/other_geometry.urdf.xacro",
+      "sha256": "sha256:27bda714ca08de56bb35a4b52c826f697b2bc3599153dfe19b96051d2a6f42a9",
+      "size_bytes": 4871
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/uf850/uf850.gazebo.xacro",
+      "sha256": "sha256:dd4a00433bd2b9e4cc97fa402b9abc3022543447c54dd74fd2fbacb6b80b3fdb",
+      "size_bytes": 806
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/uf850/uf850.ros2_control.xacro",
+      "sha256": "sha256:324578a1be9311c88bf65adec35ac1e0a997449118a47bbc8fd39052e36d1fda",
+      "size_bytes": 4751
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/uf850/uf850.transmission.xacro",
+      "sha256": "sha256:479b6abf0275e610d670667868fe3c2bb991ec773ac8a624120869c98c45bf59",
+      "size_bytes": 3003
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/uf850/uf850.urdf.xacro",
+      "sha256": "sha256:75d743096c2d5dd52c2fc28b2894700ca80bd8071254c6d6074aee421b19948f",
+      "size_bytes": 9967
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/uf850/uf850_robot_macro.xacro",
+      "sha256": "sha256:7d6fb0637bb18f56376a360febbf0773fe8bd3d259b4fda32718a7204a9a17fa",
+      "size_bytes": 3948
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/vacuum_gripper/lite_vacuum_gripper.urdf.xacro",
+      "sha256": "sha256:8d416a367022fb3bdeb5a556f6d813c002edb666ebbae538db6d022629fb7000",
+      "size_bytes": 1505
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/vacuum_gripper/vacuum_gripper.urdf.xacro",
+      "sha256": "sha256:ddbe1f2c507ceda67048505fd36ba3a078826b6cf3758f8fdd99bb1946cfa32e",
+      "size_bytes": 602
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/vacuum_gripper/vacuum_gripper_macro.xacro",
+      "sha256": "sha256:9e9556caecb3a191b8c6b97420c01a47504fe213ca0c6fd2a1990bccd093a8dc",
+      "size_bytes": 1789
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/vacuum_gripper/xarm_vacuum_gripper.urdf.xacro",
+      "sha256": "sha256:cec477ece63e2f2251c86ceb64d946f4f477d214a50e0043425ec8d4d230f79b",
+      "size_bytes": 1482
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm5/xarm5.gazebo.xacro",
+      "sha256": "sha256:0f85357ec31402c7bf14993becb55ee1bd50a82614cfdbb9a33f4530afe10041",
+      "size_bytes": 716
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm5/xarm5.ros2_control.xacro",
+      "sha256": "sha256:8993169186ee9dfb069e3e7b3d3473391e5e6b16e755eec6df1746fcd2beddd2",
+      "size_bytes": 4121
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm5/xarm5.transmission.xacro",
+      "sha256": "sha256:e54b4aaf25639a33b88d64101500c30017f965b6a9c69e3018938f88e67a4dd1",
+      "size_bytes": 2538
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm5/xarm5.urdf.xacro",
+      "sha256": "sha256:8e1ec4d5c1ef69a8c4255802a14f0f854e92c6a0ac9f8714c2b18c2b4095a6bb",
+      "size_bytes": 10356
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm5/xarm5_robot_macro.xacro",
+      "sha256": "sha256:e314d39e39b8913e7a8a0a2ac0455bcac68cc76c5ea9d0487f466f8ba3cb40ea",
+      "size_bytes": 3804
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm6/xarm6.gazebo.xacro",
+      "sha256": "sha256:45502e8d9dbfdc50a23fd7174e14ec71aa9cdc07e9981240551a1e3c8ac3d137",
+      "size_bytes": 806
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm6/xarm6.ros2_control.xacro",
+      "sha256": "sha256:a9d70bfa1312ea5904fc971aef221a433b05ed19c59860681be2f91cbe81e8b0",
+      "size_bytes": 4735
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm6/xarm6.transmission.xacro",
+      "sha256": "sha256:536f1bcdf87ac6f08c6511dd89235a322803007628caf6beed7ed652dcfd7d6d",
+      "size_bytes": 3003
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm6/xarm6.urdf.xacro",
+      "sha256": "sha256:a4b08e3b37a1ebba30f86c54bb893899f6becd71acf2d7269e4a87a30925130a",
+      "size_bytes": 11477
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm6/xarm6_robot_macro.xacro",
+      "sha256": "sha256:d3bf4f1fce8e99e0356d68b6cd9e012935bdb936b459f0569e603ffdd20a089a",
+      "size_bytes": 3954
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7/xarm7.gazebo.xacro",
+      "sha256": "sha256:a6e972fb5fa256a927021c747386d7406b6bfb6fec5c3779e708f3a20a9c2ecc",
+      "size_bytes": 899
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7/xarm7.ros2_control.xacro",
+      "sha256": "sha256:c79272d5a01d908582b85477dca87130b310740e7e7281b2d452196fcb7af2ee",
+      "size_bytes": 5237
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7/xarm7.transmission.xacro",
+      "sha256": "sha256:5ca4cff07212034ca1c1c06a674a17309f81f674ec3bc87ed0b26fa9efea6191",
+      "size_bytes": 3468
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7/xarm7.urdf.xacro",
+      "sha256": "sha256:df4b606a81c709e9125acb2d56140b611e97d243c0c5e80f05fa011a0e014b57",
+      "size_bytes": 12637
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7/xarm7_robot_macro.xacro",
+      "sha256": "sha256:9393232f8b53a4f1f4dc55d618fcc61911d80026b7fa967eea2c818799c64360",
+      "size_bytes": 4084
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7_mirror/xarm7_mirror.gazebo.xacro",
+      "sha256": "sha256:99beab3b613b9e2e6eeb4cb43f3fcb8adcf4fce39c9d7b9287b487131d58f36b",
+      "size_bytes": 906
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7_mirror/xarm7_mirror.ros2_control.xacro",
+      "sha256": "sha256:bc212cb50c61a382d2841a72d10ca34abb0c3ce2870f1f5c45206e479eb5e6ef",
+      "size_bytes": 5244
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7_mirror/xarm7_mirror.transmission.xacro",
+      "sha256": "sha256:284f2c19c52e1d6aaa67975d9af73b82c35bddded115027b0cf7c9e44b0eb0bd",
+      "size_bytes": 3475
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7_mirror/xarm7_mirror.urdf.xacro",
+      "sha256": "sha256:fa41c3eeaa04383e2bb4dcb563e5e99b130eb90453bdac919fe9cf6ea1bff80d",
+      "size_bytes": 9346
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm7_mirror/xarm7_mirror_robot_macro.xacro",
+      "sha256": "sha256:99a7bc87b71c9db2f3172fb7c282932ece056697db46d5e728675723be9cd982",
+      "size_bytes": 4188
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm_device.urdf.xacro",
+      "sha256": "sha256:85f754612fcd9d6d42ee997a7da2fc49705091ad7211c27ac87e7b39651667fe",
+      "size_bytes": 4047
+    },
+    {
+      "path": "expanded_source/xarm_description/urdf/xarm_device_macro.xacro",
+      "sha256": "sha256:2498f3b735b63a22b41e3d6d86cf49fe3c2c51ec4d040a429e64c58420269bcb",
+      "size_bytes": 18481
+    },
+    {
+      "path": "robot.urdf",
+      "sha256": "sha256:193c20d372fa2ee32e41feb4df00eb060207d1795df0cde41b8845945f7089f9",
+      "size_bytes": 45151
+    }
+  ],
+  "configuration_digest": "sha256:06992e9fc240df523bdb63e5b2771c80b4bd8c81c18de24b1cd691e76adfc8a9"
+}

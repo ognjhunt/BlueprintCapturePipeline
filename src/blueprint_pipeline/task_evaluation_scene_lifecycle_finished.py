@@ -50,6 +50,15 @@ def finished(history, decoded, roots, intent_id, now, budget, *, extensions_obse
             continue
         _seal(value, {}, 'extension_digest', work_budget=budget)
         issued, expires = value.get('issued_at_epoch'), value.get('expires_at_epoch')
+        if 'authorized_via' in value:
+            # The operator-door variant: the same pure validator the runtime reader uses.
+            from .task_evaluation_scene_execution_window_evidence import operator_extension_valid
+            require(finite(expiry) and isinstance(execution, dict)
+                    and str(PurePosixPath(row['path']).parent) == owner+'/execution-window-extensions'
+                    and operator_extension_valid(value, intent=intent, file_name=PurePosixPath(row['path']).name),
+                    'extension_invalid')
+            expiry = max(expiry, expires)
+            continue
         require(finite(expiry) and finite(issued) and finite(expires)
                 and str(PurePosixPath(row['path']).parent) == owner+'/execution-window-extensions'
                 and PurePosixPath(row['path']).name == value['extension_digest'][7:]+'.json'

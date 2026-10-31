@@ -11,11 +11,12 @@ import math
 import os
 import re
 import shutil
+import subprocess  # nosec B404 - runs pytest's own collection with fixed arguments
 import sys
 import tempfile
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from xml.etree import ElementTree as WritableElementTree
 
 from defusedxml import ElementTree as SafeElementTree
@@ -27,6 +28,9 @@ PLAN_SCHEMA = "blueprint.full_lane_shard_plan.v2"
 PLAN_STRATEGY = "lpt_heavy_file_split_serial_shards"
 SHARD_RECEIPT_SCHEMA = "blueprint.full_lane_shard_verification.v1"
 AGGREGATE_SCHEMA = "blueprint.full_lane_shard_aggregate.v1"
+WIDE_SHARD_RECEIPT_SCHEMA = "blueprint.impacted_wide_shard_verification.v1"
+# The complement of the marker expression both lanes run.
+EXTERNAL_MARKERS = "external_runtime or external_data"
 NODEID_PROPERTY = "blueprint_nodeid"
 # 2026-10-12: four shards planned against a two-month-old baseline ran
 # 68/51/35/28 minutes and gated every deploy on the slowest. Twelve shards
@@ -584,6 +588,103 @@ def verify_shard(
     }
 
 
+def _files_with_external_tests(files: Sequence[str]) -> set[str]:
+    """Files holding tests that the lanes' marker expression leaves to their evidence lanes."""
+    completed = subprocess.run(  # nosec B603 - fixed pytest arguments, planned repository paths
+        # The project's addopts carry -v, which turns -q's node IDs into a tree.
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-o", "addopts=",
+         "-p", "no:cacheprovider", "-m", EXTERNAL_MARKERS, *files],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return {line.split("::", 1)[0] for line in completed.stdout.splitlines() if "::" in line}
+
+
+def _wide_shard_files(plan: Mapping[str, Any], *, shard_index: int) -> list[str]:
+    """Return the shard's files after checking the plan assigns each selected file once."""
+    selected = plan.get("wide_impacted_tests")
+    shards = plan.get("wide_shards")
+    if (
+        plan.get("requires_wide_impacted") is not True
+        or not isinstance(selected, list)
+        or not selected
+        or not isinstance(shards, list)
+    ):
+        raise FullLaneShardError("wide_plan_not_requested")
+    assigned = [str(path) for shard in shards for path in shard.get("files", [])]
+    if sorted(assigned) != sorted(str(path) for path in selected) or len(assigned) != len(set(assigned)):
+        raise FullLaneShardError("wide_plan_shards_do_not_partition_selection")
+    if [shard.get("index") for shard in shards] != list(range(len(shards))):
+        raise FullLaneShardError("wide_plan_shard_indices_invalid")
+    if not 0 <= shard_index < len(shards):
+        raise FullLaneShardError("wide_plan_shard_index_invalid")
+    return [str(path) for path in shards[shard_index]["files"]]
+
+
+def verify_wide_shard(
+    *,
+    impact_plan_path: Path,
+    executed_path: Path,
+    junit_path: Path,
+    shard_index: int,
+    files_with_external_tests: Callable[[Sequence[str]], set[str]] = _files_with_external_tests,
+) -> dict[str, Any]:
+    """Hold one wide shard to the full lane's standard for the files planned to it."""
+    blockers: list[str] = []
+    files: list[str] = []
+    try:
+        files = _wide_shard_files(_read_json(impact_plan_path), shard_index=shard_index)
+    except (OSError, UnicodeError, json.JSONDecodeError, AttributeError, TypeError) as exc:
+        blockers.append(f"wide_plan_invalid:{exc}")
+    except FullLaneShardError as exc:
+        blockers.append(str(exc))
+
+    executed: list[str] = []
+    try:
+        executed = _collection(_read_json(executed_path), phase="executed")
+    except (OSError, UnicodeError, json.JSONDecodeError, FullLaneShardError) as exc:
+        blockers.append(f"wide_shard_executed_invalid:{exc}")
+    if any(nodeid.split("::", 1)[0] not in files for nodeid in executed):
+        blockers.append("wide_shard_executed_outside_plan")
+
+    outcomes: dict[str, Any] = {}
+    try:
+        outcomes = _junit(junit_path)
+    except FullLaneShardError as exc:
+        blockers.append(str(exc))
+    if outcomes:
+        if outcomes["duplicates"]:
+            blockers.append("wide_shard_junit_duplicate_nodeids")
+        if outcomes["nodeids"] != sorted(executed):
+            blockers.append("wide_shard_junit_nodeids_mismatch")
+        if outcomes["failures"]:
+            blockers.append(f"wide_shard_junit_failures:{outcomes['failures']}")
+        if outcomes["errors"]:
+            blockers.append(f"wide_shard_junit_errors:{outcomes['errors']}")
+        if outcomes["skipped"]:
+            blockers.append(f"wide_shard_junit_skipped:{outcomes['skipped']}")
+
+    collected = {nodeid.split("::", 1)[0] for nodeid in executed}
+    empty = sorted(set(files) - collected)
+    external = files_with_external_tests(empty) if empty else set()
+    blockers.extend(f"wide_shard_file_collected_no_tests:{path}" for path in empty if path not in external)
+
+    return {
+        "schema_version": WIDE_SHARD_RECEIPT_SCHEMA,
+        "status": "passed" if not blockers else "blocked",
+        "shard_index": shard_index,
+        "planned_file_count": len(files),
+        "external_only_files": sorted(external),
+        "executed_test_count": len(executed),
+        "junit_test_count": len(outcomes.get("rows", [])),
+        "failure_count": int(outcomes.get("failures", 0)),
+        "error_count": int(outcomes.get("errors", 0)),
+        "skipped_count": int(outcomes.get("skipped", 0)),
+        "blockers": sorted(set(blockers)),
+    }
+
+
 def _write_aggregate_junit(
     *, paths: Sequence[Path], nodeids: Sequence[str], output: Path
 ) -> None:
@@ -852,6 +953,23 @@ def _command_verify(args: argparse.Namespace) -> int:
     return 0 if payload["status"] == "passed" else 1
 
 
+def _command_verify_wide(args: argparse.Namespace) -> int:
+    payload = verify_wide_shard(
+        impact_plan_path=args.impact_plan.resolve(),
+        executed_path=args.executed.resolve(),
+        junit_path=args.junit.resolve(),
+        shard_index=args.shard_index,
+    )
+    _write_json_atomic(args.output.resolve(), payload)
+    print(
+        f"[full-lane-shards] wide shard={args.shard_index} status={payload['status']} "
+        f"tests={payload['executed_test_count']}"
+    )
+    for blocker in payload["blockers"]:
+        print(f"[full-lane-shards] blocker={blocker}", file=sys.stderr)
+    return 0 if payload["status"] == "passed" else 1
+
+
 def _command_aggregate(args: argparse.Namespace) -> int:
     shard_root = args.shard_root.resolve()
     output_dir = args.output_dir.resolve()
@@ -924,6 +1042,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     verify.add_argument("--shard-index", type=int, required=True)
     verify.add_argument("--output", type=Path, required=True)
     verify.set_defaults(handler=_command_verify)
+
+    verify_wide = subparsers.add_parser("verify-wide-shard")
+    verify_wide.add_argument("--impact-plan", type=Path, required=True)
+    verify_wide.add_argument("--executed", type=Path, required=True)
+    verify_wide.add_argument("--junit", type=Path, required=True)
+    verify_wide.add_argument("--shard-index", type=int, required=True)
+    verify_wide.add_argument("--output", type=Path, required=True)
+    verify_wide.set_defaults(handler=_command_verify_wide)
 
     aggregate = subparsers.add_parser("aggregate")
     aggregate.add_argument("--shard-root", type=Path, required=True)

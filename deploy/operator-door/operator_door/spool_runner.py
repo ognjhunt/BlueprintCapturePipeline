@@ -16,6 +16,7 @@ import datetime as _dt
 import hashlib
 import json
 import os
+import re
 import secrets
 import stat
 import tempfile
@@ -37,6 +38,8 @@ from .requests import (
 )
 
 RESULT_SCHEMA = "blueprint_operator_door_result.v1"
+# The door token names auth.py admits; only these reach a script as the caller.
+_CALLER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _ACTIVE_STATES = "active,activating,deactivating,reloading"
 _UNIT_OBSERVATION_PROPERTIES = "ActiveState,SubState,Result,InvocationID,ExecMainStatus,Type"
 
@@ -265,6 +268,24 @@ def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) ->
             "UMask=0077", f"ReadWritePaths={writable}")
 
 
+def _scene_window_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_SERVICE_USER": "blueprint",
+            "DOOR_SCENE_WINDOW_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
+
+
+def _scene_window_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """Writes one record under the scene intents and its result. The signed WebApp
+    notice needs the network and the Pipeline sync token in provider-secrets;
+    every other hidden secret stays hidden."""
+    hidden = [path for path in config.hidden_paths if path != "/etc/blueprint/provider-secrets"]
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in hidden),
+            "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane " + str(Path(config.spool_root) / "results"))
+
+
 def _output_resume_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
               "DOOR_CANARY_ROOT": _canary_root(config), "DOOR_RUN": request["run"],
@@ -375,6 +396,11 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
                                           "2h", lambda request: hashlib.sha256(
                                               f"{request['run']}/{request['attempt']}".encode("utf-8"))
                                           .hexdigest()[:12], _output_resume_environment, _output_resume_properties),
+    # Named by a hash of the intent id; the caller text never reaches a unit name.
+    "extend-scene-execution-window": _LaunchSpec(
+        "blueprint-operator-door-scene-window", "door-extend-scene-execution-window.sh", "5min",
+        lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
+        _scene_window_environment, _scene_window_properties),
     "lane-scratch": _LaunchSpec("blueprint-operator-door-scratch", "door-lane-scratch.sh", "2min",
                                 lambda request: hashlib.sha256((request["lane"] + "/" + request.get("name", ""))
                                                                 .encode("utf-8")).hexdigest()[:12],
@@ -486,7 +512,8 @@ def _stage_selected_recovery(config: DoorConfig, request_id: str, request: dict[
         os.close(directory_fd)
 
 
-def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) -> list[str]:
+def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
+                requested_by: str = "") -> list[str]:
     """Only the values the request's own kind defines, each already validated."""
 
     _stage_selected_recovery(config, request_id, request)
@@ -496,10 +523,16 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any]) ->
         **_LAUNCHES[request["kind"]].environment(config, request),
         **_stage_release_provenance(config, request_id, request),
     }
+    if request["kind"] == "extend-scene-execution-window":
+        # The authenticated token name, recorded in the extension as who asked.
+        if not isinstance(requested_by, str) or _CALLER.fullmatch(requested_by) is None:
+            raise RequestRefused("scene_window_caller_invalid")
+        values["DOOR_REQUESTED_BY"] = requested_by
     return [f"--setenv={key}={value}" for key, value in values.items()]
 
 
-def _launch(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any]) -> dict[str, Any]:
+def _launch(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any],
+            requested_by: str = "") -> dict[str, Any]:
     spec = _LAUNCHES[request["kind"]]
     # A .service name is what `unit_properties` accepts, so the request's live state can be shown.
     unit = f"{spec.unit_prefix}-{spec.label(request)}-{request_id[-8:]}.service"
@@ -508,7 +541,7 @@ def _launch(config: DoorConfig, runner: CommandRunner, request_id: str, request:
         f"--property=TimeoutStartSec={spec.runtime_max}", "--setenv=PYTHONDONTWRITEBYTECODE=1",
         f"--property=RuntimeMaxSec={spec.runtime_max}",
         *(f"--property={value}" for value in spec.properties(config, request)),
-        *_script_env(config, request_id, request),
+        *_script_env(config, request_id, request, requested_by),
         "--", "/bin/bash", f"{config.install_root}/{spec.script}",
     ]
     result = runner.run(argv, timeout=60)
@@ -751,7 +784,7 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
             return {"status": "refused", "code": f"deploy_in_progress:{busy}"}
     if request["kind"] not in _LAUNCHES:
         return {"status": "refused", "code": "kind_unknown"}
-    return _launch(config, runner, request_id, request)
+    return _launch(config, runner, request_id, request, requested_by)
 
 
 def _process_one(config: DoorConfig, runner: CommandRunner, claimed: Path, request_id: str) -> None:
