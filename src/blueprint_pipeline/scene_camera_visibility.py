@@ -26,6 +26,7 @@ import numpy as np
 
 from .native_task_camera_start_configuration import task_geometry_key
 from .scene_physics_preflight import (
+    TEAM_ROBOT_ID,
     ScenePhysicsPreflightError,
     _file_sha256,
     _placed,
@@ -345,18 +346,23 @@ def packet_view_evaluator(packet_dir: str | Path) -> Callable[..., list[str]]:
 
 def scene_camera_visibility(packet_dir: str | Path,
                             rendered_external_views: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]] | None = None,
-                            ) -> dict[str, Any]:
+                            *, scene_plan: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Measure contact-patch visibility for every world-fixed camera of a packet's plan.
 
     ``rendered_external_views`` pair each external camera a policy runtime renders in place of the plan's
     world ``external`` row (``native_task_camera_start_configuration.runtime_external_camera_row``) with
     the resolved plan it renders, which places the task. They are required; the plan's row is then
     measured and reported without blocking.
+
+    ``scene_plan`` is the plan the run executes when it differs from the packet's file: a team's
+    robot applied at the station, whose cameras replace Blueprint's. Only world-fixed cameras are
+    measured here; a team whose every camera rides on its robot is ``unassessed``, not blocked.
     """
     from .decision_evidence_contracts import canonical_digest
 
     root = Path(packet_dir)
-    plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
+    plan = (dict(scene_plan) if scene_plan is not None
+            else json.loads((root / "native_task_arena_scene_plan.v1.json").read_text()))
     subjects, appearance, alignment = _plan_parts(plan)
     reason = None
     if plan.get("task_kind") != "articulated_open_close" or len(subjects) != 1 \
@@ -407,6 +413,18 @@ def scene_camera_visibility(packet_dir: str | Path,
         if in_view and row["asset_share_occluded"] > 0:
             advisories.append(f"scene_camera_asset_partly_behind_scene:{role}:{100 * row['asset_share_occluded']:.0f}%")
         (blockers if required else advisories).extend(problems)
+    team_mounted = ((plan.get("robot") or {}).get("robot_id") == TEAM_ROBOT_ID and not rendered
+                    and not any(row["required"] for row in cameras)
+                    and any(c.get("policy_input") is True and c.get("pose_frame") != "world" for c in plan.get("cameras") or []))
+    if team_mounted:
+        # Every team camera rides on the team's robot: its view moves with the arm, so a CPU
+        # check from the station cannot say what it sees. Not checked, and the run goes on.
+        result = {**base, "status": "unassessed", "reason": "team_policy_cameras_robot_mounted", "blockers": blockers,
+                  "advisories": [*advisories, "scene_camera_team_mounted_cameras_unassessed"], "notices": notices,
+                  "contact_region": region, "cameras": cameras, "splat_gaussians_considered": int(len(centres)),
+                  "summary": "Not checked on CPU: every team policy camera is mounted on the robot."}
+        result["report_digest"] = canonical_digest(result, digest_field="report_digest")
+        return result
     if not any(row["required"] for row in cameras):
         blockers.append("scene_camera_policy_camera_missing")
     scope = "the handle contact patch" if region is not None else "the task asset"
@@ -424,10 +442,11 @@ def scene_camera_visibility(packet_dir: str | Path,
 def require_scene_camera_admission(
         packet_dir: str | Path,
         rendered_external_views: Sequence[tuple[Mapping[str, Any], Mapping[str, Any]]] | None = None,
+        *, scene_plan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Refuse a paid native run whose policy camera cannot see the contact, or that this cannot measure."""
     try:
-        report = scene_camera_visibility(packet_dir, rendered_external_views)
+        report = scene_camera_visibility(packet_dir, rendered_external_views, scene_plan=scene_plan)
     except (SceneCameraVisibilityError, ScenePhysicsPreflightError, OSError, KeyError, TypeError, ValueError) as exc:
         if isinstance(exc, SceneCameraVisibilityBlocked):
             raise

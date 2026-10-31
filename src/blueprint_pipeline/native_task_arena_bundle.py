@@ -232,6 +232,36 @@ def _stale_servo_limit_restatements(root: Path) -> list[str]:
     return sorted(set(stale))
 
 
+def _team_scene_plan(packet_root: Path, binding: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The packet's plan with the team's robot at the station, as the worker applies it."""
+    if binding is None:
+        return None
+    from .team_embodiment import TeamEmbodimentError, apply_team_embodiment
+
+    plan = _read_mapping(packet_root / "native_task_arena_scene_plan.v1.json",
+                         error="native_task_arena_bundle_packet_plan_invalid")
+    try:
+        return apply_team_embodiment(plan, binding)
+    except TeamEmbodimentError as exc:
+        raise NativeTaskArenaBundleError(
+            ["native_task_arena_bundle_team_embodiment_invalid:" + item for item in exc.blockers]) from exc
+
+
+def _team_arm_path_unassessed(plan: Mapping[str, Any]) -> dict[str, Any]:
+    """The arm-path gate's report for a team robot it has no arm model of: not checked, not Franka's."""
+    from .decision_evidence_contracts import canonical_digest
+    from .robot_arm_path_clearance import SCHEMA_VERSION
+
+    robot = plan.get("robot") or {}
+    result = {"schema_version": SCHEMA_VERSION, "status": "unassessed", "reason": "robot_arm_unmodeled",
+              "robot_id": robot.get("robot_id"), "embodiment_id": robot.get("embodiment_id"),
+              "embodiment_digest": robot.get("embodiment_digest"), "base_mode": robot.get("base_mode"),
+              "arena_scene_plan_digest": plan.get("plan_digest"), "blockers": [],
+              "advisories": ["robot_arm_path_unassessed:" + str(robot.get("embodiment_id"))], "report_digest": ""}
+    result["report_digest"] = canonical_digest(result, digest_field="report_digest")
+    return result
+
+
 def _rendered_external_views(packet_root: Path,
                              bound_runtime_inputs: Mapping[str, str | Path] | None) -> list[tuple[dict, dict]]:
     """Each distinct external camera a bound policy session renders, with the cell plan placing its task.
@@ -547,8 +577,14 @@ def build_native_task_arena_bundle(
     bound_runtime_inputs: Mapping[str, str | Path] | None = None,
     runtime_extra_files: Mapping[str, str | Path] | None = None,
     generated_at: str | None = None,
+    team_embodiment: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Package one exact native-task packet without reconstructing its scene."""
+    """Package one exact native-task packet without reconstructing its scene.
+
+    ``team_embodiment`` is the binding of a team's robot that the worker puts at the
+    station in place of the packet's. The CPU checks then measure that robot and its
+    cameras, or record that they could not, never the robot it replaces.
+    """
 
     if len(implementation_commit) != 40 or any(
         character not in "0123456789abcdef" for character in implementation_commit
@@ -589,6 +625,8 @@ def build_native_task_arena_bundle(
         )
 
     packet_root, packet_receipt, packet_rows = _verified_packet(packet_dir)
+    team_plan = _team_scene_plan(packet_root, team_embodiment)
+    team_scope = {} if team_plan is None else {"scene_plan": team_plan}
     # No paid native run starts from a scene the CPU checks block or cannot measure:
     # rest overlap, background inside the asset, task-range contact, or a contact the
     # policy camera cannot see through the captured scene.
@@ -604,17 +642,18 @@ def build_native_task_arena_bundle(
     )
 
     try:
-        physics_report = require_scene_physics_admission(packet_root)
+        physics_report = require_scene_physics_admission(packet_root, **team_scope)
     except ScenePhysicsAdmissionBlocked as exc:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_scene_physics_blocked:" + item for item in exc.blockers]
         ) from exc
     # A DROID policy runtime renders Arena's external camera, not the plan's world row: measure that one,
     # with the task where each cell places it.
-    rendered = _rendered_external_views(packet_root, bound_runtime_inputs)
+    # A team's own cameras replace that one.
+    rendered = [] if team_plan is not None else _rendered_external_views(packet_root, bound_runtime_inputs)
     try:
         camera_report = require_scene_camera_admission(
-            packet_root, **({"rendered_external_views": rendered} if rendered else {}))
+            packet_root, **({"rendered_external_views": rendered} if rendered else {}), **team_scope)
     except SceneCameraVisibilityBlocked as exc:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_scene_camera_blocked:" + item for item in exc.blockers]
@@ -627,7 +666,8 @@ def build_native_task_arena_bundle(
     )
 
     try:
-        arm_path_report = require_robot_arm_path_admission(packet_root)
+        arm_path_report = (require_robot_arm_path_admission(packet_root) if team_plan is None
+                           else _team_arm_path_unassessed(team_plan))
     except RobotArmPathAdmissionBlocked as exc:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_robot_arm_path_blocked:" + item for item in exc.blockers]

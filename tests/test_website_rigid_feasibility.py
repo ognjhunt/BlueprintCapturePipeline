@@ -88,3 +88,15 @@ def test_an_embodiment_the_gate_cannot_model_is_unassessed_never_refused(tmp_pat
 
 def test_the_default_embodiments_are_the_enabled_screening_candidates():
     assert DROID in enabled_robot_profiles()
+
+
+def test_a_room_with_no_station_abstains_by_name_instead_of_crashing(tmp_path, monkeypatch):
+    from blueprint_pipeline import team_embodiment_stance
+    from blueprint_pipeline.team_embodiment import TeamEmbodimentError
+
+    def nowhere(**_kwargs):
+        raise TeamEmbodimentError(["stance_no_clear_floor"])
+
+    monkeypatch.setattr(team_embodiment_stance, "ground_stance", nowhere)
+    verdict = rigid_task_verdict(preparation=_preparation(DESK), collision_path=_room(tmp_path), robot_profiles=[DROID])
+    assert verdict["status"] == "abstained" and verdict["blockers"] == ["robot_station_stance_no_clear_floor"]

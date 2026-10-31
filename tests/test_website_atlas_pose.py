@@ -73,13 +73,23 @@ class FakeWebApp:
     """The signed preparation-spend endpoint: one dispatch per binding."""
 
     def __init__(self, events, *, lifetime_seconds=3600):
-        self.events, self.spend, self.reserved = events, [], {}
+        self.events, self.spend, self.reserved, self.settled = events, [], {}, []
         self.lifetime_seconds = lifetime_seconds
+        self.calls = []  # (operation, binding) in order, so a release is seen before the next hold
 
     def __call__(self, *, capture_id, operation, payload):
-        # Atlas reports no usage on its operations, so nothing may settle.
+        if operation == "preparation-settlement":
+            # Atlas reports no usage, so a closed attempt settles from its retained outcome:
+            # the reviewed (reserved) price when completed, nothing when failed or refused.
+            command = payload["settlement"]
+            reserved = self.reserved[command["allocation_binding_digest"]]
+            self.settled.append(command)
+            self.calls.append((operation, command["allocation_binding_digest"]))
+            return {**command, "status": "settled",
+                    "actual_cost_usd": reserved["maximum_cost_usd"] if command["outcome"] == "completed" else 0}
         assert operation == "preparation-spend"
         command = payload["spend"]
+        self.calls.append((operation, command["allocation_binding_digest"]))
         self.events.append(("reserve", command["allocation_binding_digest"]))
         self.spend.append(command)
         key = command["allocation_binding_digest"]
@@ -775,6 +785,8 @@ def test_a_credit_refusal_is_resent_after_the_documented_interval(atlas_case):
         atlas_case.run(fake)
     state = _state(atlas_case)
     assert state["status"] == "rejected" and state["provider_rejection"] == {"status": 402, "retryable": True}
+    # A credit refusal is resent under the same hold, so it does not settle yet.
+    assert atlas_case.webapp.settled == []
     # Not in a tight loop: the billing docs ask for a top-up first.
     with pytest.raises(ValueError, match="website_atlas_pose_resend_not_due"):
         atlas_case.run(fake)
@@ -782,6 +794,8 @@ def test_a_credit_refusal_is_resent_after_the_documented_interval(atlas_case):
     later = _later(atlas.CREDIT_RESEND_INTERVAL_SECONDS + 1)
     assert atlas_case.run(fake, now=later, max_polls=3)["status"] == "completed"
     assert len(fake.submissions) == 2 and fake.raw_submissions[0] == fake.raw_submissions[1]
+    # The completed operation settles once, at the reviewed price it was reserved at.
+    assert [(row["outcome"], row["operation_id"]) for row in atlas_case.webapp.settled] == [("completed", "op_atlas_1")]
 
 
 def test_a_definitive_refusal_closes_the_attempt_until_it_is_archived(atlas_case):
@@ -791,6 +805,10 @@ def test_a_definitive_refusal_closes_the_attempt_until_it_is_archived(atlas_case
     with pytest.raises(ValueError, match="website_atlas_pose_attempt_rejected"):
         atlas_case.run(fake)
     assert len(fake.submissions) == 1
+    # A definitive refusal bought nothing: its hold is released once, with no operation.
+    [refused] = atlas_case.webapp.settled
+    assert refused["outcome"] == "refused" and refused["operation_id"] is None
+    assert (atlas_case.root / "atlas_pose" / "world_labs_settlement.json").is_file()
     # A coded transition, not a hand edit: the closed attempt is set aside and
     # the next one is a new binding with its own reservation.
     assert atlas.archive_closed_atlas_pose_attempt(atlas_case.root) == 1
@@ -798,6 +816,7 @@ def test_a_definitive_refusal_closes_the_attempt_until_it_is_archived(atlas_case
     assert atlas_case.run(fake, max_polls=3)["status"] == "completed"
     bindings = [command["allocation_binding_digest"] for command in atlas_case.webapp.spend]
     assert len(set(bindings)) == 2 and _state(atlas_case)["binding"]["attempt"] == 1
+    assert [row["outcome"] for row in atlas_case.webapp.settled] == ["refused", "completed"]
 
 
 def test_a_paid_answer_is_kept_before_it_is_judged(atlas_case):
@@ -822,6 +841,7 @@ def test_a_refusal_after_a_send_that_may_have_bought_never_closes_the_attempt(at
         atlas_case.run(fake)
     state = _state(atlas_case)
     assert state["status"] == "submitting" and state["possibly_bought"] is True
+    assert atlas_case.webapp.settled == []  # It may have bought an operation: the hold stays.
     assert [send["status"] for send in state["sends"]] == [None if first == "timeout" else
                                                            (201 if first == "bad_id" else first), 422]
     with pytest.raises(ValueError, match="website_atlas_pose_attempt_not_closed"):
@@ -892,6 +912,14 @@ def test_documented_resubmittable_pose_failure_starts_a_separately_reserved_atte
     assert (atlas_case.root / "atlas_pose_attempts" / "000" / "submission.json").is_file()
     assert len(atlas_case.webapp.reserved) == 2 and len({key for _, key in fake.submissions}) == 2
     assert atlas_case.run(fake, max_polls=2) == result and len(fake.submissions) == 2
+    # The failed operation (never charged) is released before the new attempt reserves.
+    spends = [binding for operation, binding in atlas_case.webapp.calls if operation == "preparation-spend"]
+    first, second = spends[0], spends[-1]
+    assert atlas_case.webapp.calls.index(("preparation-settlement", first)) < atlas_case.webapp.calls.index(
+        ("preparation-spend", second))
+    assert [(row["outcome"], row["operation_id"]) for row in atlas_case.webapp.settled] == [
+        ("failed", "op_atlas_1"), ("completed", "op_atlas_1_1")]
+    assert (atlas_case.root / "atlas_pose_attempts" / "000" / "world_labs_settlement.json").is_file()
 
 
 def test_an_execution_failed_pose_is_resubmitted_once(atlas_case):
@@ -937,6 +965,8 @@ def test_a_missing_operation_is_gone_only_after_the_retention_period(atlas_case)
         atlas_case.run(fake, now=retained)
     assert _state(atlas_case)["status"] == "failed"
     assert atlas.archive_closed_atlas_pose_attempt(atlas_case.root) == 1
+    # Its outcome is unknown, so it never settles and stays fully held.
+    assert atlas_case.webapp.settled == []
 
 
 def test_a_changed_api_root_never_polls_a_submitted_operation(atlas_case, monkeypatch):
