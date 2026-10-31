@@ -405,6 +405,9 @@ class SupportOutline:
 
 #: Points along an edge's outward normal, as shares of twice the window, tested for the surface resuming.
 GAP_PROBE_SHARES = (0.25, 0.5, 0.75, 1.0)
+#: Where along each piece of an edge (no longer than the window) the surface must resume across it:
+#: a tapered gap narrows from one end of a piece to the other.
+GAP_PROBE_STATIONS = (0.0, 0.5, 1.0)
 
 
 def support_outline(mesh: Any, support: Mapping[str, Any], *, up: int, meters_per_unit: float,
@@ -414,12 +417,15 @@ def support_outline(mesh: Any, support: Mapping[str, Any], *, up: int, meters_pe
     A support's bounding box is not its surface: an oval top leaves the box's
     corners empty (capture-447ae4f4: a tenth of the target region lay past the
     dining table's edge). The surface's faces (``face_indices``) bound it at
-    every edge exactly one of them uses. Across some of those edges the
+    every edge exactly one of them uses. Across parts of those edges the
     surface resumes within twice the support search's window (a face the fit
     dropped; where the removed object sat): those bound a gap every point of
-    which lies within the window of the surface, which the region may cross;
-    the rest are the surface's edges. None when the support has no faces (a
-    registered floor plane): its box is then all there is.
+    which lies within the window of the surface, which the region may cross.
+    That is established piece by piece, each no longer than the window, at
+    both its ends and its middle: one probe cannot speak for a whole edge
+    of a tapered gap (Codex review of #3170). Every other piece is the
+    surface's edge. None when the support has no faces (a registered floor
+    plane): its box is then all there is.
     """
     import trimesh
 
@@ -448,12 +454,26 @@ def support_outline(mesh: Any, support: Mapping[str, Any], *, up: int, meters_pe
     normal /= length[:, None]
     # Outward: away from the corner opposite the edge in its one face.
     normal[((points[opposite[single]] - a) * normal).sum(axis=1) > 0] *= -1
-    probes = ((a + b) / 2)[:, None, :] + normal[:, None, :] * (2 * window * np.asarray(GAP_PROBE_SHARES))[:, None]
+    # Each edge in pieces no longer than the window; every piece is probed across at its stations.
+    count = np.maximum(1, np.ceil(length / window)).astype(np.int64)
+    owner = np.repeat(np.arange(len(single)), count)
+    index = np.arange(int(count.sum())) - np.repeat(np.cumsum(count) - count, count)
+    start, stop = index / count[owner], (index + 1) / count[owner]
+    stations = np.asarray(GAP_PROBE_STATIONS)
+    along = start[:, None] + (stop - start)[:, None] * stations
+    at = a[owner][:, None, :] * (1 - along)[:, :, None] + b[owner][:, None, :] * along[:, :, None]
+    probes = (at[:, :, None, :] + normal[owner][:, None, None, :]
+              * (2 * window * np.asarray(GAP_PROBE_SHARES))[None, None, :, None])
     whole = SupportOutline(vertices[triangles], np.empty((0, 2, 3)), window, up=up)
-    bounding = single[~whole.covers(probes.reshape(-1, 2)).reshape(len(single), -1).any(axis=1)].tolist()
+    resumes = (whole.covers(probes.reshape(-1, 2)).reshape(len(owner), len(stations), len(GAP_PROBE_SHARES))
+               .any(axis=2).all(axis=1))
+    kept = ~resumes
+    first_end, last_end = vertices[edges[single[owner[kept]], 0]], vertices[edges[single[owner[kept]], 1]]
+    pieces = np.stack([first_end * (1 - start[kept])[:, None] + last_end * start[kept][:, None],
+                       first_end * (1 - stop[kept])[:, None] + last_end * stop[kept][:, None]], axis=1)
     # An edge three or more faces use folds the surface: no side of it is known to be surface.
-    bounding = sorted(bounding + first[(uses % 2 == 1) & (uses > 1)].tolist())
-    return SupportOutline(vertices[triangles], vertices[edges[bounding]].reshape(-1, 2, 3), window, up=up)
+    folds = vertices[edges[np.sort(first[(uses % 2 == 1) & (uses > 1)])]].reshape(-1, 2, 3)
+    return SupportOutline(vertices[triangles], np.concatenate([pieces, folds]), window, up=up)
 
 
 def _footprint_over_surface(outline: SupportOutline | None, half: np.ndarray, *, plan: list[int]) -> Any:

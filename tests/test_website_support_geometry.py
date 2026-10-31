@@ -302,7 +302,9 @@ def test_a_relocated_disc_tangent_to_its_surface_stays_inside_it():
     bounds, and the conversion to the simulator frame put it 5.6e-17 m past them (refused)."""
     from blueprint_pipeline.website_support_geometry import DESTINATION_EDGE_GUARD_M, farthest_supported_destination
 
-    table = bumpy_plate(-.6, .6, -.4, .4)
+    # A clean rim at the far corners: at 6 mm of noise a dent of dropped faces opens there,
+    # which the region now keeps clear of instead of resting tangent to the box.
+    table = bumpy_plate(-.6, .6, -.4, .4, noise=.002)
     start_min, start_max = [-.15, -.1, .7], [.05, .1, .75]
     support = support_under(table, start_min, start_max, up=2, meters_per_unit=1)
     clearance = 1.25 * np.hypot(.1, .1) + .01
@@ -398,6 +400,22 @@ def test_a_support_outline_is_the_surface_its_faces_cover(hole, centre, radius, 
     # A footprint's own support with no faces (a registered floor plane) has no outline: its box is all there is.
     assert support_outline(top, {"face_indices": []}, up=2, meters_per_unit=1) is None
 
+
+
+def test_a_tapered_gap_is_an_edge_where_it_is_wider_than_its_search_bridges():
+    """Codex review of #3170: a coarse top with a triangular hole, 10 cm wide at one end, closing to a point
+    a metre away. Surface resumes across each long edge's middle within twice the 3 cm window, but not
+    across the wide part, where a point 3.5 cm from any face lies under the region."""
+    from blueprint_pipeline.website_support_geometry import support_outline
+
+    corners = [(-.5, -.5), (1.5, -.5), (1.5, .5), (-.5, .5), (0, -.05), (1, 0), (0, .05)]
+    faces = [[0, 1, 5], [0, 5, 4], [1, 2, 5], [2, 3, 5], [3, 6, 5], [3, 0, 4], [3, 4, 6]]
+    top = trimesh.Trimesh(vertices=[[x, y, .7] for x, y in corners], faces=faces, process=False)
+    outline = support_outline(top, {"face_indices": list(range(len(faces)))}, up=2, meters_per_unit=1)
+    assert outline.distance((.3, 0), .1) == pytest.approx(.035 * np.cos(np.arctan(.05)), abs=1e-3)
+    assert not outline.holds((.3, .08), .2, tolerance=1e-9)
+    # Where the hole narrows below twice the window it is bridged: a region over its point is held.
+    assert outline.holds((.9, .2), .18, tolerance=1e-9)
 
 #: capture-447ae4f4 in its simulator frame (Z up, metres): the dining table's oval top, 1.29 x 1.57 m
 #: around its bounding box's centre at 0.802 m, the tray's estimated box, the registration's residual
