@@ -151,20 +151,24 @@ def test_each_body_is_measured_from_its_own_station_and_an_unmodelled_one_stays_
     feasibility = candidate_feasibility(scene_plan=scene_plan, catalog=catalog, profile=profile)
     rows, own = feasibility["candidates"], record["embodiment_stations"]
     long = rows["long_arm"]
-    assert (long["status"], long["blockers"], long["station_basis"]) == ("feasible", [], "embodiment_own_station")
-    assert long["station"] == own[body["long"]["embodiment_digest"]]["station"]
-    # Measured from the short arm's own best station on this scene, not the Franka's: infeasible, by name.
+    # Codex review of #3124: the status is measured from the station a screening run stands at today
+    # (the packet's); each body's own station is recorded beside it as advisory evidence.
+    assert (long["status"], long["blockers"], long["station_basis"]) == ("feasible", [], "scene_packet_station")
+    assert long["own_station"]["station"] == own[body["long"]["embodiment_digest"]]["station"]
+    assert (long["own_station"]["status"], long["own_station"]["station_basis"]) == ("feasible", "embodiment_own_station")
+    # The short arm cannot reach from its own best station either: infeasible, by name, in both records.
+    assert rows["short_arm"]["own_station"]["status"] == "infeasible"
     assert rows["short_arm"]["status"] == "infeasible"
     assert infeasible_blockers(feasibility) == {"short_arm": ["team_embodiment_station_out_of_reach"]}
     # A free base has its own floor station but declares no reach; a body without a manifest is not modelled.
     assert rows["rover"]["status"] == "unassessed"
     assert rows["rover"]["blockers"] == ["embodiment_free_base_reach_not_modeled"]
-    assert rows["rover"]["station"] == own[body["wheeled"]["embodiment_digest"]]["station"]
+    assert rows["rover"]["own_station"]["station"] == own[body["wheeled"]["embodiment_digest"]]["station"]
     for key in ("g1_humanoid", "pi05_droid"):
         assert rows[key] == {"status": "unassessed", "blockers": ["embodiment_reach_manifest_not_registered"]}
     # The run built from the station plan holds the long arm where it was measured.
     placed = station_scene_plan(scene_plan, long)
-    assert placed["robot"]["base_pose_world"]["position_world_m"] == long["station"]["position_world_m"]
+    assert placed["robot"]["base_pose_world"]["position_world_m"] == long["own_station"]["station"]["position_world_m"]
     assert placed["plan_digest"] == canonical_digest(placed, digest_field="plan_digest")
     assert station_scene_plan(scene_plan, rows["rover"]) == scene_plan
     model = tmp_path / "robot.usda"
@@ -177,7 +181,7 @@ def test_each_body_is_measured_from_its_own_station_and_an_unmodelled_one_stays_
     other = candidate_feasibility(scene_plan={**scene_plan, "plan_digest": "sha256:" + "0" * 64}, catalog=catalog,
                                   profile=profile)
     assert other["candidates"]["long_arm"]["station_basis"] == "scene_packet_station"
-    assert "station" not in other["candidates"]["long_arm"]
+    assert "own_station" not in other["candidates"]["long_arm"]
 
 
 def test_priority_orders_registered_robots_and_the_budget_decides_how_far(tmp_path, monkeypatch):

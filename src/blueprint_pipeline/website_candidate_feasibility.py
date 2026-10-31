@@ -33,6 +33,10 @@ def _own(station: Mapping[str, Any] | None) -> dict[str, Any]:
             **{key: station[key] for key in ("base_mode", "reach", "grippers", "unassessed") if key in station}}
 
 
+def _status(blockers: Any) -> str:
+    return "feasible" if not blockers else "infeasible" if set(blockers) <= MEASURED_REFUSALS else "unassessed"
+
+
 def candidate_feasibility(*, scene_plan: Mapping[str, Any], catalog: Mapping[str, Any],
                           profile: Mapping[str, Any]) -> dict[str, Any]:
     """Every catalog candidate's feasible, infeasible or unassessed status, with reasons."""
@@ -59,17 +63,19 @@ def candidate_feasibility(*, scene_plan: Mapping[str, Any], catalog: Mapping[str
         own = stations.get(manifest["embodiment_digest"])
         if manifest["base"]["mode"] != "fixed":
             rows[key] = {"status": "unassessed", "blockers": ["embodiment_free_base_reach_not_modeled"],
-                         "embodiment_id": manifest["embodiment_id"], **_own(own)}
+                         "embodiment_id": manifest["embodiment_id"],
+                         **({"own_station": _own(own)} if own is not None else {})}
             continue
-        if own is not None:
-            # Measured when the scene was compiled, from the body's own station; no clear stance is unassessed.
-            blockers, basis = list(own["blockers"]), _own(own)
-        else:
-            blockers, basis = station_reach_blockers(scene_plan, manifest), {"station_basis": "scene_packet_station"}
-        status = ("feasible" if not blockers
-                  else "infeasible" if set(blockers) <= MEASURED_REFUSALS else "unassessed")
-        rows[key] = {"status": status, "blockers": list(blockers), "embodiment_id": manifest["embodiment_id"],
-                     "reach_m": manifest["reach_m"], **basis}
+        # The status is measured from the station a screening run stands at today: the
+        # packet's (beta_policy_screening_team binds the packet's scene plan). The body's
+        # own station, measured when the scene was compiled, is advisory until the run's
+        # binding consumes station_scene_plan; then it becomes the basis.
+        blockers = station_reach_blockers(scene_plan, manifest)
+        rows[key] = {"status": _status(blockers), "blockers": list(blockers),
+                     "embodiment_id": manifest["embodiment_id"], "reach_m": manifest["reach_m"],
+                     "station_basis": "scene_packet_station",
+                     **({"own_station": {**_own(own), "status": _status(own["blockers"]),
+                                         "blockers": list(own["blockers"])}} if own is not None else {})}
     value = {"schema_version": SCHEMA_VERSION, "scene_plan_digest": scene_plan.get("plan_digest"),
              "basis": "team_embodiment.station_reach_blockers_on_reconstructed_scene_packet",
              "candidates": rows, "feasibility_digest": ""}
@@ -83,8 +89,9 @@ def station_scene_plan(scene_plan: Mapping[str, Any], candidate: Mapping[str, An
     ``team_embodiment.apply_team_embodiment`` holds a fixed base at the plan's robot station, so a run
     built from this plan stands where this body's feasibility was measured.
     """
-    station = candidate.get("station") if candidate.get("station_basis") == OWN_STATION else None
-    if station is None or candidate.get("base_mode") != "fixed":
+    own = candidate.get("own_station") or {}
+    station = own.get("station") if own.get("station_basis") == OWN_STATION else None
+    if station is None or own.get("base_mode") != "fixed":
         return dict(scene_plan)
     robot = dict(scene_plan["robot"])
     robot["base_pose_world"] = {"position_world_m": list(station["position_world_m"]),
