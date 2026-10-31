@@ -165,7 +165,8 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     from .task_evaluation_surface_target import surface_execution_limits, surface_target_for_web
     from .website_support_geometry import destination_clear_of_start
     from .website_surface_target_admission import (DESTINATION_SUPPORT_INSTANCE_ID, SUPPORT_INSTANCE_ID,
-                                                   SUPPORT_PRIM_PATH, admit_surface_target, target_radius_m)
+                                                   SUPPORT_PRIM_PATH, admit_surface_target,
+                                                   preparation_size_tolerance, website_target_radius)
     support = owner_task["support"]
     support_record = records.support_plane_input(scene_id=scene_id, instance_id=SUPPORT_INSTANCE_ID,
         semantic_label=support["description"], sage_prim_path=SUPPORT_PRIM_PATH,
@@ -216,11 +217,16 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
             target_support.update(authority=support_record["authority"], physical_scale_measured=False,
                                   source_face_indices=bound["face_indices"])
             start_support = support_record
+        # An estimated subject's region also holds the largest replacement qualification admits.
+        size_tolerance = preparation_size_tolerance(preparation)
+        recorded = preparation.get("destination_relocation")
         if (start_support is None and destination.get("relation") == "on"
-                and not destination_clear_of_start(lower, upper, destination["position_world_m"], up=2,
-                                                   clearance=target_radius_m(lower, upper))):
-            # A preparation from before the same-surface rule: move its destination
-            # off the start by that rule, from its own collider, and say so.
+                and (recorded is not None and recorded.get("replacement_size_tolerance", 0.0) < size_tolerance
+                     or not destination_clear_of_start(lower, upper, destination["position_world_m"], up=2,
+                         clearance=website_target_radius(lower, upper, relative_error=size_tolerance)))):
+            # A preparation from before the same-surface rule, or one that moved its
+            # destination by a smaller clearance than this region's: move it off the
+            # start by that rule, from its own collider, and say so.
             from .website_task_preparation import relocated_destination
             moved = relocated_destination(preparation, paths["preparation"])
             require(moved is not None, "task_destination_overlaps_start")
@@ -228,7 +234,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         # Preparation applied this same admission before the owner was asked to pay.
         target = admit_surface_target(destination=destination, support=support, subject_min=lower, subject_max=upper,
             placement_uncertainty_m=preparation["coordinate_frame"].get("placement_uncertainty_m"),
-            development_support=bool(development))
+            development_support=bool(development), relative_error=size_tolerance)
         position = destination["position_world_m"]
         template, success, execution = records.pick_and_place_task_records(
             task_identity=task_identity, object_identity=construction["subject_identity"],

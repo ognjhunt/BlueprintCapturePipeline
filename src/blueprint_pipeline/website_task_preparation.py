@@ -32,9 +32,10 @@ from .external_scene_frame_registration import _axis_rotations, _sample, _trimme
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_target_bounds
-from .website_support_geometry import (DESTINATION_MARGIN_M, destination_clear_of_start, farthest_supported_destination,
+from .website_support_geometry import (destination_clear_of_start, farthest_supported_destination,
                                        ground_on_observed_floor, same_support_surface, support_under)
-from .website_surface_target_admission import admit_surface_target
+from .website_surface_target_admission import (admit_surface_target, preparation_size_tolerance,
+                                               replacement_size_tolerance, website_target_radius)
 
 
 class RegistrationRefusal(ValueError):
@@ -535,19 +536,23 @@ def relocated_destination(preparation: Mapping[str, Any], preparation_path: Path
                                                np.linalg.inv(runtime_to_sim))
     low, high = _runtime_bounds(rows[0]["estimated_visible_bounds"],
                                 np.asarray(preparation["registration"]["source_to_runtime"], dtype=np.float64))
-    clearance = math.hypot(*[(subject_max[axis] - subject_min[axis]) / 2
-                             for axis in range(3) if axis != up]) + DESTINATION_MARGIN_M / mpu
+    tolerance = preparation_size_tolerance(preparation)
+    clearance = website_target_radius(subject_min, subject_max, relative_error=tolerance, up=up, meters_per_unit=mpu)
     collider = trimesh.load(base_scene["collision_mesh_path"], force="mesh", process=False)
     moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, preparation["support"],
         up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
         placement_residual_m=frame.get("placement_uncertainty_m"))
     if moved is None:
         return None
+    # Moved at preparation with a smaller clearance: the grounded centre is the one it recorded.
+    grounded = (preparation.get("destination_relocation") or {}).get("grounded_centre_world_m",
+                                                                     preparation["destination"]["position_world_m"])
     return {"position_world_m": (runtime_to_sim @ [*moved[0], 1.0])[:3].tolist(),
             "relocation": {"reason": "grounded_destination_centre_overlapped_start",
                            "rule": "farthest_supported_footprint_on_start_surface",
-                           "grounded_centre_world_m": list(preparation["destination"]["position_world_m"]),
-                           "harness_choice": True, "applied_at": "native_submission"}}
+                           "grounded_centre_world_m": list(grounded),
+                           "harness_choice": True, "applied_at": "native_submission",
+                           **({"replacement_size_tolerance": tolerance} if tolerance else {})}}
 
 
 def screen_physics(dimensions_m: Sequence[float], *, gripper: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -943,6 +948,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     sim_support = (_runtime_bounds({"minimum": support["aabb_min"], "maximum": support["aabb_max"]}, runtime_to_sim)
                    if support else (None, None))
     destination_rows = [row for row in task_masks["targets"] if row.get("target_role") == "destination"]
+    subject_dimension_authority = (published["dimension_authority"] if published
+                                   else "synthetic_design" if synthetic is not None else "estimated")
+    # The replacement is qualified within this of each estimated dimension; the region holds it.
+    size_tolerance = replacement_size_tolerance(dimension_authority=subject_dimension_authority,
+                                                relative_error=DIMENSION_RELATIVE_ERROR, development=False)
     destination = distinct_support = relocation = surface_target_admission = None
     interior = None
     if articulated:
@@ -1014,8 +1024,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 else:
                     # Grounded as the surface it already rests on, the region's centre
                     # can lie under the subject: the task would start complete.
-                    clearance = math.hypot(*[(subject_max[axis] - subject_min[axis]) / 2
-                                             for axis in range(3) if axis != up]) + DESTINATION_MARGIN_M / mpu
+                    clearance = website_target_radius(subject_min, subject_max, relative_error=size_tolerance,
+                                                      up=up, meters_per_unit=mpu)
                     if not destination_clear_of_start(subject_min, subject_max, position, up=up, clearance=clearance):
                         stated = (runtime_to_sim @ [*position, 1.0])[:3].tolist()
                         moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, support,
@@ -1027,7 +1037,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                             position = moved[0]
                             relocation = {"reason": "grounded_destination_centre_overlapped_start",
                                           "rule": "farthest_supported_footprint_on_start_surface",
-                                          "grounded_centre_world_m": stated, "harness_choice": True}
+                                          "grounded_centre_world_m": stated, "harness_choice": True,
+                                          **({"replacement_size_tolerance": size_tolerance}
+                                             if size_tolerance else {})}
         label = destination_rows[0].get("semantic_label") or destination_rows[0]["target_id"]
         destination = {"relation": relation, "visible_label": label,
                        **({"mode": "existing_support_surface"} if relation == "on" or interior is not None else {}),
@@ -1058,7 +1070,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                     support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), sim_support)),
                     subject_min=sim_min, subject_max=sim_max,
                     placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
-                    development_support=False)
+                    development_support=False, relative_error=size_tolerance)
             except ValueError as exc:
                 surface_target_admission = {"status": "refused", "code": str(exc),
                                             "basis": "evaluation_admission_rule"}
@@ -1421,8 +1433,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "metric_envelope": {"minimum_xyz_m": sim_min,
                                                  "maximum_xyz_m": sim_max,
                                                  "maximum_dimension_relative_error": DIMENSION_RELATIVE_ERROR},
-                             "dimension_authority": (published["dimension_authority"] if published
-                                                     else "synthetic_design" if synthetic is not None else "estimated")},
+                             "dimension_authority": subject_dimension_authority},
         "physics": physics, "thumbnail": {key: value for key, value in thumbnail.items() if key != "png_base64"},
         "intake_request": request, "compose_back": compose_back,
         "recipe_plan": {"observed_appearance_object_removal": "satisfied_by_website_clean_plate_before_reconstruction",
