@@ -15,6 +15,9 @@ SCHEMA = "task_evaluation_surface_target.v1"
 #: A subject resting on a surface this far from the region's height (the floor
 #: under a desk) is not in the region, whatever its plan position.
 INITIAL_REGION_HEIGHT_TOLERANCE_M = 0.05
+#: A region sits on its support's top within this, unless an estimated support
+#: declares the wider placement uncertainty its region was found within.
+SUPPORT_HEIGHT_TOLERANCE_M = 0.005
 
 
 def require(condition, code):
@@ -134,9 +137,26 @@ def minimum_container_carry_height(task_spec, *, clearance_m):
     return float(rim) - bottom + clearance_m
 
 
+def region_excludes_start(start_min, start_max, centre, radius):
+    """Whether the start cannot already satisfy the region: its centre lies outside the disc.
+
+    Owner decision 2026-10-31 (capture-447ae4f4): the disc may overlap part of
+    the start footprint. Its radius exceeds the subject's half-diagonal, so the
+    subject still moves at least that far, and a start centred outside the disc
+    can never be wholly contained by it. The earlier rule, no overlap at all,
+    left a 31x52 cm tray in the middle of a 1.3 m table no destination.
+    """
+    middle = [(start_min[i] + start_max[i]) / 2 for i in (0, 1)]
+    return math.dist(middle, [centre[0], centre[1]]) > radius
+
+
 def derive_surface_target(*, destination, support, source_min, source_max, support_instance_id,
-                          start_support=None):
-    """The region on ``support``; ``start_support`` is the subject's own surface when it differs."""
+                          start_support=None, height_tolerance_m=SUPPORT_HEIGHT_TOLERANCE_M):
+    """The region on ``support``; ``start_support`` is the subject's own surface when it differs.
+
+    ``height_tolerance_m`` widens the region-to-support-top check only for an
+    estimated support, to the placement uncertainty its region was found within.
+    """
     require(destination.get("kind") == "green_region" and destination.get("relation") in {"on", "inside"}
             and destination.get("orientation_xyzw") == [0, 0, 0, 1],
             "surface_target_destination_invalid")
@@ -160,15 +180,16 @@ def derive_surface_target(*, destination, support, source_min, source_max, suppo
     value["target_digest"] = canonical_digest(value, digest_field="target_digest")
     validate_surface_target(value)
     p, radius = value["surface_position_world_m"], value["radius_m"]
-    require(abs(p[2] - support["bounds_max_xyz_m"][2]) <= 0.005,
+    require(type(height_tolerance_m) in (int, float) and math.isfinite(height_tolerance_m)
+            and height_tolerance_m >= SUPPORT_HEIGHT_TOLERANCE_M, "surface_target_height_tolerance_invalid")
+    require(abs(p[2] - support["bounds_max_xyz_m"][2]) <= height_tolerance_m,
             "surface_target_support_height_mismatch")
     require(all(support["bounds_min_xyz_m"][i] <= p[i] - radius
                 and p[i] + radius <= support["bounds_max_xyz_m"][i] for i in (0, 1)),
             "surface_target_outside_support")
-    nearest = [max(source_min[i], min(source_max[i], p[i])) for i in (0, 1)]
     level = (start_support is None or abs(start_support["bounds_max_xyz_m"][2] - p[2])
              <= INITIAL_REGION_HEIGHT_TOLERANCE_M)
-    require(not level or math.dist(nearest, p[:2]) > radius, "surface_target_initial_overlap")
+    require(not level or region_excludes_start(source_min, source_max, p, radius), "surface_target_initial_overlap")
     require(math.hypot(*[(source_max[i] - source_min[i]) / 2 for i in (0, 1)]) < radius,
             "surface_target_subject_does_not_fit")
     if "interior_bounds_world_m" in value:
@@ -299,9 +320,9 @@ def score_surface_target(*, target, bounds, samples, frequency_hz, minimum_lift_
     # AABB is a conservative native collider envelope, so full footprint
     # containment cannot be manufactured by a center-point-only test.
     initial = poses[0][2]
-    nearest = [max(min(p[i] for p in initial), min(max(p[i] for p in initial), center[i])) for i in (0, 1)]
     level = abs(min(p[2] for p in initial) - center[2]) <= INITIAL_REGION_HEIGHT_TOLERANCE_M
-    result["initially_outside"] = not level or math.dist(nearest, center[:2]) > radius
+    result["initially_outside"] = not level or region_excludes_start(
+        [min(p[i] for p in initial) for i in range(3)], [max(p[i] for p in initial) for i in range(3)], center, radius)
     result["lifted_clear"] = any(min(p[2] for p in world) >= center[2] + minimum_lift_m
                                   and row.get("task_contact_active") is True for row, _, world in poses)
     window = poses[-count:]
