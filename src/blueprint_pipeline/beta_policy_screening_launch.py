@@ -382,6 +382,18 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
                 refusal.update(retryable_capacity_refusal=True, no_policy_api_calls_proven=True,
                                capacity_refusal_receipt=_record(result_path))
             return refusal
+        from .policy_canary_provider_null_closeout import proven_provider_null_closeout
+        null = proven_provider_null_closeout(adapter, root=root, record_file=_record)
+        if null is not None and null["watchdog_retained_until_hard_ttl"] is False:
+            # Vast refused the create (a stale offer; this lane does not
+            # re-select), every attempted label is authenticated absent, the
+            # teardown is empty and the watchdog closed without an allocation.
+            # Nothing exists to close, so the attempt is unallocated: without
+            # this it has no instance for the scoped closeout and stays
+            # reserved and unresolved forever, and its campaign never ends.
+            return {"status": "blocked", "provider_allocation_performed": False,
+                    "provider_zero_verified": True, "no_allocation_proven": True,
+                    "blockers": adapter.get("blockers") or ["beta_screening_allocator_refused"]}
         try:
             absence = collect_scoped_closeout(adapter=adapter, prepared=prepared, adapter_path=result_path)
             observed = root / "provider_absence" / (canonical_digest(absence)[7:] + ".json")
