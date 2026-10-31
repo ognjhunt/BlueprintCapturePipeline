@@ -34,6 +34,7 @@ from .website_assembly_coverage import assembly_constraints, assembly_contract, 
 from .website_task_masks import decode_track_mask, estimate_target_bounds
 from .website_support_geometry import (DESTINATION_MARGIN_M, destination_clear_of_start, farthest_supported_destination,
                                        ground_on_observed_floor, same_support_surface, support_under)
+from .website_surface_target_admission import admit_surface_target
 
 
 class RegistrationRefusal(ValueError):
@@ -966,6 +967,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
             if coverage_bound:
                 blockers.extend(coverage_blockers(coverage, target_id=subject_entry["target_id"], several=False))
     elif len(destination_rows) == 1 and not independent_object:
+        blockers_before = len(blockers)
         low, high = _runtime_bounds(destination_rows[0]["estimated_visible_bounds"], matrix)
         position = [(low[i] + high[i]) / 2 for i in range(3)]
         position[up] = (high if up_sign == 1 else low)[up]
@@ -1042,6 +1044,21 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                        "basis": "registered_reconstructed_container_interior" if interior is not None
                        else "registered_estimated_visible_bounds_and_collider_contact" if contact_bound
                        else "registered_estimated_visible_bounds"}
+        if support is not None and len(blockers) == blockers_before:
+            # A destination held above keeps its own code. Otherwise the region
+            # evaluation will seal goes through the same admission, from the same
+            # simulator-frame inputs, so one it would refuse is held here, before
+            # construction (capture-447ae4f4: intake_ready at 03:39Z, refused by
+            # evaluation preparation at 05:01Z). A compiled support is captured,
+            # never an authored development surface.
+            try:
+                admit_surface_target(destination=destination,
+                    support=dict(zip(("aabb_min_xyz", "aabb_max_xyz"), sim_support)),
+                    subject_min=sim_min, subject_max=sim_max,
+                    placement_uncertainty_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"),
+                    development_support=False)
+            except ValueError as exc:
+                blockers.append(str(exc))
     else:
         blockers.append("task_destination_pose_required")
     track = subject_target["track"]

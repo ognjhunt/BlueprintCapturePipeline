@@ -61,14 +61,26 @@ def test_no_automatic_fallback_or_bypass_of_unrelated_refusals(tmp_path, monkeyp
             task_masks=args['task_masks'], output_root=tmp_path / 'no-output')
 
 
+def test_a_captured_region_evaluation_would_refuse_is_replaced_by_the_authored_surface(tmp_path, monkeypatch):
+    args, original = setup(tmp_path, monkeypatch)
+    original['blockers'].append('surface_target_outside_support')
+    original['digest'] = canonical_digest(original, digest_field='digest')
+    prepared, _ = prepare_development_test(preparation=original, source_geometry=args['source_geometry'],
+        task_masks=args['task_masks'], output_root=tmp_path / 'development')
+    assert prepared['status'] == 'intake_ready'
+    assert prepared['development_test']['source_scene_blockers'] == original['blockers']
+
+
 def test_development_surface_reaches_real_native_submission_with_separate_identity(tmp_path, monkeypatch):
     from pathlib import Path
-    from tests.test_website_native_submission import setup as native_setup, SHA
+    from tests.test_website_native_submission import assert_target_sealed_as_before, setup as native_setup, SHA
     from blueprint_pipeline.website_native_submission import materialize_website_submission
     from blueprint_pipeline.task_evaluation_scene_configuration_submission_publication import _validated_inventory
     kwargs, _ = native_setup(tmp_path, monkeypatch, development=True)
     result = materialize_website_submission(**kwargs)
     assert materialize_website_submission(**kwargs) == result
+    # The authored surface's region keeps the 5 mm height check and its pre-refactor digest.
+    assert_target_sealed_as_before(kwargs)
     root = kwargs['staging_root']
     _validated_inventory(root, SHA)
     request = json.loads((root / 'scene_configuration_preparation_request.v1.json').read_text())

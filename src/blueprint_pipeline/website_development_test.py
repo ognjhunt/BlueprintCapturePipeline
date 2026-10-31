@@ -69,8 +69,10 @@ def prepare_development_test(*, preparation, source_geometry, task_masks, output
                "task_distinct_destination_surface_binding_required"} | REGISTRATION_REFUSALS
     if preparation.get("registration", {}).get("schema_version") == "website_object_local_frame.v1":
         allowed.add("task_destination_pose_required")
+    # The captured target region (website_surface_target_admission) is replaced
+    # by the authored surface's own region, like its support.
     if (preparation.get("claim_ceiling") != "development_only"
-            or set(preparation.get("blockers", [])) - allowed):
+            or {code for code in preparation.get("blockers", []) if not code.startswith("surface_target_")} - allowed):
         raise ValueError("website_development_test_source_not_admitted")
     value = copy.deepcopy(preparation)
     output_root = output_root.resolve()
