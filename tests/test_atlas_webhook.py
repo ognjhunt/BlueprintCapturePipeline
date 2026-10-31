@@ -41,11 +41,16 @@ class Keys:
         return json.dumps({"keys": [{"kty": "RSA", "n": "ignored"}, *map(_jwk, self.private)]}).encode()
 
 
-def _event(operation="op_01jexample"):
+PROJECT = "project_example"
+
+
+def _event(operation="op_01jexample", project=PROJECT):
+    data = {"accountId": "acct_example", "projectId": project, "operationId": operation,
+            "taskName": "posedImages2Splats", "state": "SUCCEEDED"}
+    if project is None:
+        del data["projectId"]
     return json.dumps({"id": "evt_op_01jexample", "type": "task.succeeded", "schemaVersion": "1",
-                       "createdAt": "2026-10-30T18:10:00Z",
-                       "data": {"accountId": "acct_example", "projectId": "project_example", "operationId": operation,
-                                "taskName": "posedImages2Splats", "state": "SUCCEEDED"}}).encode()
+                       "createdAt": "2026-10-30T18:10:00Z", "data": data}).encode()
 
 
 def _headers(private, body, *, delivery="del_01jexample", stamp=None):
@@ -57,13 +62,14 @@ def _headers(private, body, *, delivery="del_01jexample", stamp=None):
 @pytest.fixture
 def hook(tmp_path):
     key = Ed25519PrivateKey.generate()
-    keys, clock = Keys(key), [1000.0]
+    keys, clock, project = Keys(key), [1000.0], [PROJECT]
     request = tmp_path / "atlas-provider-poll" / "requested"
-    receiver = webhook.AtlasWebhookReceiver(poll_request=request, fetch_jwks=keys, monotonic=lambda: clock[0])
+    receiver = webhook.AtlasWebhookReceiver(poll_request=request, fetch_jwks=keys, monotonic=lambda: clock[0],
+                                            expected_project=lambda: project[0])
     app = FastAPI()
     webhook.register_atlas_webhook_route(app, receiver)
     return SimpleNamespace(key=key, keys=keys, clock=clock, receiver=receiver, request=request,
-                           client=TestClient(app))
+                           client=TestClient(app), project=project)
 
 
 def _post(hook, body, headers):
@@ -113,6 +119,78 @@ def test_an_unverified_or_stale_delivery_is_refused_and_requests_nothing(hook, c
         headers["webhook-timestamp"] = ("²" * 3).encode("latin-1")  # str.isdigit() says yes
     assert _post(hook, body, headers).status_code == status
     assert not hook.request.exists()
+
+
+def test_an_event_for_the_configured_project_requests_a_poll(hook, tmp_path, monkeypatch):
+    monkeypatch.delenv(webhook.PROJECT_ID_ENV, raising=False)
+    settings = tmp_path / "website-atlas-preview.env"
+    settings.write_text(f"WORLDLABS_ATLAS_API_KEY=wlt_secret\nBLUEPRINT_ATLAS_WEBHOOK_URL=https://hooks.example.com/h\n"
+                        f"{webhook.PROJECT_ID_ENV}={PROJECT}\n")
+    receiver = webhook.AtlasWebhookReceiver(poll_request=hook.request, fetch_jwks=hook.keys,
+                                            expected_project=lambda: webhook.expected_project_id(settings))
+    body = _event()
+    assert receiver.receive("POST", _headers(hook.key, body), body) == 204 and hook.request.is_file()
+
+
+@pytest.mark.parametrize("project", ["project_someone_else", "PROJECT_EXAMPLE", "", None, 7, "project_example\n"])
+def test_a_signed_event_for_another_project_is_refused_for_good_and_requests_nothing(hook, caplog, project):
+    # World Labs signs every account's callbacks with one key; anyone can point a webhookUrl here.
+    body = _event(project=project)
+    with caplog.at_level(logging.WARNING, logger=webhook.__name__):
+        assert _post(hook, body, _headers(hook.key, body)).status_code == 410
+    assert not hook.request.exists() and hook.keys.fetches == 1
+    assert f"reason={webhook.PROJECT_MISMATCH}" in caplog.text and "\n" not in caplog.records[-1].getMessage()
+
+
+def test_without_a_configured_project_every_event_is_refused_until_it_is_set(hook, caplog):
+    hook.project[0] = None
+    body = _event()
+    headers = _headers(hook.key, body)
+    with caplog.at_level(logging.WARNING, logger=webhook.__name__):
+        assert _post(hook, body, headers).status_code == 503
+    assert not hook.request.exists() and f"reason={webhook.PROJECT_UNCONFIGURED}" in caplog.text
+    # Unsigned traffic still learns nothing beyond the signature refusal.
+    forged = _headers(Ed25519PrivateKey.generate(), body, delivery="del_forged")
+    assert _post(hook, body, forged).status_code == 401
+    hook.project[0] = PROJECT  # World Labs retries the refused delivery for 24 hours
+    assert _post(hook, body, headers).status_code == 204 and hook.request.is_file()
+
+
+@pytest.mark.parametrize("contents, expected", [
+    (None, None),
+    ("WORLDLABS_ATLAS_API_KEY=wlt_secret\n", None),
+    (f"{webhook.PROJECT_ID_ENV}=\n", None),
+    (f"{webhook.PROJECT_ID_ENV}=project one\n", None),
+    (f"{webhook.PROJECT_ID_ENV}=../etc\n", None),
+    (f"# {webhook.PROJECT_ID_ENV}=project_commented\n", None),
+    (f"WORLDLABS_ATLAS_API_KEY=wlt_secret\n{webhook.PROJECT_ID_ENV}={PROJECT}\n", PROJECT),
+    (f'{webhook.PROJECT_ID_ENV}="{PROJECT}"\n', PROJECT),
+    (f" {webhook.PROJECT_ID_ENV} = project_old \n{webhook.PROJECT_ID_ENV}={PROJECT}\n", PROJECT),
+])
+def test_the_expected_project_is_read_from_the_preview_workers_env_file(tmp_path, monkeypatch, contents, expected):
+    monkeypatch.delenv(webhook.PROJECT_ID_ENV, raising=False)
+    settings = tmp_path / "website-atlas-preview.env"
+    if contents is not None:
+        settings.write_text(contents)
+    assert webhook.expected_project_id(settings) == expected
+
+
+def test_the_environment_names_the_expected_project_as_it_names_the_webhook_url(tmp_path, monkeypatch):
+    settings = tmp_path / "website-atlas-preview.env"
+    settings.write_text(f"{webhook.PROJECT_ID_ENV}=project_from_file\n")
+    monkeypatch.setenv(webhook.PROJECT_ID_ENV, f" {PROJECT} ")
+    assert webhook.expected_project_id(settings) == PROJECT
+    monkeypatch.setenv(webhook.PROJECT_ID_ENV, "not a project")
+    assert webhook.expected_project_id(settings) is None
+    unreadable = tmp_path / "unreadable"
+    unreadable.mkdir()  # reading a directory fails like a file the intake may not read
+    monkeypatch.delenv(webhook.PROJECT_ID_ENV)
+    assert webhook.expected_project_id(unreadable) is None
+    assert webhook.PROJECT_ID_FILE == Path("/etc/blueprint/website-atlas-preview.env")
+    for unit in ("blueprint-website-atlas-preview.service", f"{UNIT}.service"):
+        assert f"EnvironmentFile=-{webhook.PROJECT_ID_FILE}\n" in (SYSTEMD / unit).read_text()
+    # The intake never loads the file holding the Atlas key; it reads only the one assignment.
+    assert str(webhook.PROJECT_ID_FILE) not in (SYSTEMD / "blueprint-pipeline-intake.service").read_text()
 
 
 def test_only_post_is_accepted(hook):
@@ -180,6 +258,9 @@ def test_the_intake_serves_the_route_and_the_poll_units_consume_what_it_writes()
     assert f"rm -f {webhook.POLL_REQUEST_PATH};" in service
     caddy = (ROOT / "deploy" / "caddy" / "Caddyfile").read_text()
     assert "handle /api/live-pipeline/* {\n\t\treverse_proxy 127.0.0.1:8765" in caddy
+    # The edge refuses an oversized webhook body too, at the receiver's own cap.
+    assert webhook.MAX_BODY_BYTES == 16 * 1024
+    assert f"\t\trequest_body {webhook.ROUTE} {{\n\t\t\tmax_size 16KiB\n\t\t}}\n" in caddy
 
 
 def test_the_poll_unit_is_the_preview_workers_read_only_sibling():

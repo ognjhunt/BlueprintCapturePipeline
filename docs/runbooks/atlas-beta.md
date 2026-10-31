@@ -65,7 +65,8 @@ per-upload cap the WebApp grant enforces. It is development-only and unscaled.
 - **Secrets.** Only the worker reads `/etc/blueprint/website-atlas-preview.env`:
   `WORLDLABS_ATLAS_API_KEY` (or `_FILE`), `WORLDLABS_ATLAS_API_BASE_URL` and
   `BLUEPRINT_ATLAS_PROVIDER_RETENTION`. The key needs `assets.delete` besides the
-  scopes in `docs/website-atlas-pose-operation.md`.
+  scopes in `docs/website-atlas-pose-operation.md`. The intake reads one line of
+  it, `BLUEPRINT_ATLAS_WEBHOOK_PROJECT_ID` (see Receiver), and never loads the rest.
 - **Privacy.** Every frame Atlas receives is face-screened first
   (`atlas_privacy_screen`, YuNet, refusing when the model or OpenCV detector is
   missing) and recorded in `atlas_view_selection.json`; the planner still excludes
@@ -114,7 +115,15 @@ longer waits on deploys.
   its own restart, and World Labs retries for 24 hours. It accepts only a
   Standard Webhooks `v1a` Ed25519 signature from the published JWKS (cached a
   day, fetched again at most once a minute when no key verifies), a timestamp
-  within 5 minutes, a body of at most 16 KiB and 120 requests a minute. A
+  within 5 minutes, a body of at most 16 KiB (Caddy's `request_body` cap for the
+  route matches it) and 120 requests a minute. One World Labs key signs every
+  account's callbacks, so a signed event wakes the poll only when its
+  `data.projectId` is `BLUEPRINT_ATLAS_WEBHOOK_PROJECT_ID`, set next to the URL in
+  `/etc/blueprint/website-atlas-preview.env` (the intake's own environment wins).
+  Another project's event is answered 410, which stops World Labs retrying it
+  (`atlas_webhook_project_mismatch`); with the setting missing, unreadable by the
+  `blueprint` user or unusable, every event is answered 503 and retried for 24
+  hours (`atlas_webhook_project_unconfigured`). Neither requests a poll. A
   first-seen `webhook-id` touches
   `/var/lib/blueprint/pipeline-control-plane/atlas-provider-poll/requested`;
   `blueprint-website-atlas-provider-poll.path` then starts the poll at once, and

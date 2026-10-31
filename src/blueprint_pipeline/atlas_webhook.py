@@ -9,6 +9,12 @@ asks ``blueprint-website-atlas-provider-poll`` to run now (its path unit watches
 adapters, as it does every minute anyway. Verification needs no secret: World
 Labs signs with Ed25519 and publishes its public keys.
 
+One key signs every World Labs account's callbacks, and anyone can name this
+route as their ``webhookUrl``, so a valid signature does not make the event
+ours: only one whose ``data.projectId`` is the operator-configured project
+(``PROJECT_ID_ENV``) wakes the poll, and with no usable setting every event is
+refused.
+
 Served by the intake service, which keeps answering through a control-plane
 deploy (only timer and path units are quiesced) apart from its own restart once
 the release moves; World Labs retries a delivery for 24 hours.
@@ -20,6 +26,7 @@ import base64
 import json
 import logging
 import math
+import os
 import re
 import threading
 import time
@@ -44,6 +51,15 @@ JWKS_TTL_SECONDS = 24 * 3600
 #: At most one JWKS fetch per interval, so unsigned traffic cannot drive fetches.
 JWKS_FETCH_INTERVAL_SECONDS = 60
 SEEN_LIMIT = 4096
+#: The World Labs project this receiver serves; set next to BLUEPRINT_ATLAS_WEBHOOK_URL.
+PROJECT_ID_ENV = "BLUEPRINT_ATLAS_WEBHOOK_PROJECT_ID"
+#: The preview worker's env file, which names BLUEPRINT_ATLAS_WEBHOOK_URL. The
+#: intake does not load it (it holds the Atlas API key): only this one assignment is read.
+PROJECT_ID_FILE = Path("/etc/blueprint/website-atlas-preview.env")
+PROJECT_ID_FILE_MAX_BYTES = 64 * 1024
+#: Typed refusals of a verified event; neither requests a poll.
+PROJECT_UNCONFIGURED = "atlas_webhook_project_unconfigured"
+PROJECT_MISMATCH = "atlas_webhook_project_mismatch"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _DIGITS = re.compile(r"[0-9]{1,12}")
 
@@ -90,20 +106,65 @@ def _verifies(keys: list[Ed25519PublicKey], signatures: list[bytes], signed: byt
     return False
 
 
-def _operation_id(body: bytes) -> str | None:
+def _data_id(body: bytes, field: str) -> str | None:
     try:
-        value = json.loads(body)["data"]["operationId"]
+        value = json.loads(body)["data"][field]
     except (ValueError, TypeError, KeyError):
         return None
     return value if isinstance(value, str) and _ID.fullmatch(value) else None
+
+
+def _operation_id(body: bytes) -> str | None:
+    return _data_id(body, "operationId")
+
+
+def _assigned(text: str, name: str) -> str | None:
+    """The last ``name=value`` in a systemd environment file, unquoted; no other line is kept."""
+    found = None
+    for line in text.splitlines():
+        key, sep, value = line.strip().partition("=")
+        if sep and key.strip() == name:
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                value = value[1:-1]
+            found = value
+    return found
+
+
+def expected_project_id(env_file: Path = PROJECT_ID_FILE) -> str | None:
+    """The World Labs project whose events may wake the poll, or None.
+
+    Read as ``BLUEPRINT_ATLAS_WEBHOOK_URL`` is, from the environment, and
+    otherwise from that one assignment in the preview worker's env file. An unset,
+    unreadable or unusable value is None, which refuses every event.
+    """
+    raw = os.environ.get(PROJECT_ID_ENV, "").strip()
+    if not raw:
+        try:
+            with env_file.open("rb") as handle:
+                text = handle.read(PROJECT_ID_FILE_MAX_BYTES).decode("utf-8")
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeDecodeError) as error:
+            logger.warning("atlas_webhook_project_id_unreadable type=%s", type(error).__name__)
+            return None
+        raw = (_assigned(text, PROJECT_ID_ENV) or "").strip()
+    if not raw:
+        return None
+    if not _ID.fullmatch(raw):
+        logger.warning("atlas_webhook_project_id_unusable; every webhook event is refused")
+        return None
+    return raw
 
 
 class AtlasWebhookReceiver:
     """Verify, deduplicate and turn one delivery into a poll request; no other effect."""
 
     def __init__(self, *, poll_request: Path = POLL_REQUEST_PATH, fetch_jwks: Callable[[], bytes] = _fetch_jwks,
-                 clock: Callable[[], float] = time.time, monotonic: Callable[[], float] = time.monotonic) -> None:
+                 clock: Callable[[], float] = time.time, monotonic: Callable[[], float] = time.monotonic,
+                 expected_project: Callable[[], str | None] = expected_project_id) -> None:
         self._poll_request, self._fetch, self._clock, self._monotonic = poll_request, fetch_jwks, clock, monotonic
+        self._expected_project = expected_project
         self._lock = threading.Lock()
         self._keys: list[Ed25519PublicKey] = []
         self._keys_at = self._fetched_at = -math.inf
@@ -155,6 +216,14 @@ class AtlasWebhookReceiver:
             if not verified:
                 logger.warning("atlas_webhook_signature_rejected id=%s", delivery)
                 return 401
+            # Signed by World Labs, but possibly for another account's project.
+            expected, project = self._expected_project(), _data_id(body, "projectId")
+            if expected is None or project != expected:
+                reason = PROJECT_UNCONFIGURED if expected is None else PROJECT_MISMATCH
+                logger.warning("atlas_webhook_refused reason=%s id=%s project=%s", reason, delivery, project)
+                # A 503 is retried for 24 h, so a delivery outlives a missing setting (the
+                # timer polls meanwhile); a 410 stops retries of an event that is not ours.
+                return 503 if expected is None else 410
             if delivery in self._seen:
                 return 204
             try:
