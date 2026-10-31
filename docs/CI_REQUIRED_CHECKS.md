@@ -8,6 +8,12 @@ Branch protection for `main` requires one stable aggregate merge check:
 | --- | --- | --- |
 | `Impacted test and sentinel gate` | `.github/workflows/ci.yml` | Runs dependency-mapped tests plus always-on success-claim, runtime-security, paid-resource-admission, and release-policy sentinels. The ordinary lane is capped at ten minutes. If deterministic impact analysis classifies the change as cross-cutting, this aggregate waits for the reusable full lane and fails unless it passes. |
 
+A pull request keeps only its newest CI run. A newer push cancels every job of
+the older run, including this gate. A cancelled gate concludes `cancelled`, which
+never satisfies the required check, so the newest run decides. Runs on `main` are
+never cancelled: each main commit has its own concurrency group, because its
+`supply-chain` job is the only producer of that commit's source attestation.
+
 Other CI, CodeQL, compatibility, container, supply-chain, and simulator jobs are
 hosted diagnostics or claim-specific release evidence. They remain visible and
 must be green when their claim or promotion scope requires them, but they are
