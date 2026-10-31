@@ -87,7 +87,7 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
     # Keep v2's native receipts intact. Its unpadded portrait images lost
     # context on the backend's native square raster, then cropped again at
     # targetResolution. v3 pads first; the final portrait crop removes padding.
-    from .atlas_context_fov import square_pad, verify_pose_context_fov
+    from .atlas_context_fov import square_pad, square_pad_transform, verify_pose_context_fov, verify_square_padding
     from PIL import Image
     import numpy as np
 
@@ -103,16 +103,20 @@ def _fallback_pose(background, root, source_digest, context, policy, pose_runner
             raise ValueError("atlas_fallback_rgb_changed")
         dst = input_root / f"{i:04d}.png"
         source = source_root / f"{i:04d}{src.suffix.lower()}"
-        if source.exists() and _sha256_file(source) != row["image_digest"]:
-            raise ValueError("atlas_fallback_rgb_changed")
-        shutil.copyfile(src, source)
-        with Image.open(source) as image:
-            padded, transform = square_pad(np.asarray(image.convert("RGB")))
-        if dst.exists():
-            with Image.open(dst) as image:
-                if not np.array_equal(np.asarray(image.convert("RGB")), padded):
-                    raise ValueError("atlas_context_padding_changed")
+        if source.exists():
+            # Rewriting identical bytes every tick only changed the file's
+            # fingerprint, so its unchanged digest was recomputed each time.
+            if _sha256_file(source) != row["image_digest"]:
+                raise ValueError("atlas_fallback_rgb_changed")
         else:
+            shutil.copyfile(src, source)
+        if dst.exists():
+            with Image.open(source) as image:  # the header only: the size fixes the padding
+                transform = square_pad_transform(*image.size)
+            verify_square_padding(source, row["image_digest"], dst, transform)
+        else:
+            with Image.open(source) as image:
+                padded, transform = square_pad(np.asarray(image.convert("RGB")))
             Image.fromarray(padded).save(dst)
         sources.append({"frame_id": row["frame_id"], "image_path": str(source),
                         "image_digest": row["image_digest"], "padding": transform})
@@ -557,6 +561,7 @@ def run_automation(
                 value['digest'] = canonical_digest(value, digest_field='digest')
                 write_json(output_root / 'export_replays' / (splat['digest'][7:23] + '.json'), value)
                 return value
+            refined_splat = None
             if "refined_splat_cost_usd" in policy:
                 # Atlas's refined splat replaces the draft as the final appearance;
                 # the draft above stays the gap and coverage evidence.
@@ -564,10 +569,11 @@ def run_automation(
                 native = run_native_splat(frames=derived_frames, result=effective_pose, draft=splat,
                     output_root=splat_root.parent / f"{splat_root.name}-refined", policy=policy,
                     task_context=task_context, task_runner=task_runner, max_polls=max_polls,
-                    checkpoint=checkpoint)
+                    checkpoint=checkpoint, retained_only=retained_only)
                 if native["status"] != "completed":
                     return native
                 splat_root, splat = Path(native["splat_root"]), native["splat_manifest"]
+                refined_splat = native.get("refined_splat")
                 recovery_suffix += "-refined-" + splat["digest"][7:23]
             mesh_root = None
             from .atlas_result_bundle import retained_mesh_for_splat, find_retained_mesh_root
@@ -655,6 +661,8 @@ def run_automation(
                 splat_kind=splat.get("splat_kind", "depth_fused_draft"),
                 splat_manifest_digest=splat["digest"],
                 mesh_available=mesh_root is not None,
+                # After the bundle: an upgrade that fails leaves the archived bundle unchanged.
+                **({"refined_splat": refined_splat} if refined_splat else {}),
             )
     except (ValueError, StopIteration) as exc:
         # Keep source reconstruction and usable size estimates even when consent,

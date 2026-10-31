@@ -198,10 +198,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     execution = process_screening_queue(queue_root=root, max_campaigns=args.max_campaigns,
         max_launches=args.max_launches)
     after = deliver_publications(queue_root=root)
-    from .website_candidate_selection import retain_selections
+    from .website_candidate_selection import deliver_selections, retain_selections
     try:
         # After a terminal result is published, choose from it; local and unpaid.
         selections = retain_selections(queue_root=root)
+        selections["delivery"] = deliver_selections(queue_root=root)
     except (OSError, ValueError, KeyError) as exc:
         code = str(exc) if isinstance(exc, ValueError) else ""
         selections = {"status": "failed", "blocker": code if re.fullmatch(r"[a-z][a-z0-9_:,-]{0,199}", code)

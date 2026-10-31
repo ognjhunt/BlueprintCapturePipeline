@@ -1,9 +1,11 @@
 """Development-only authorization, recovery and per-body publication contracts."""
 from __future__ import annotations
 
+import os
+
 from copy import deepcopy
 import hashlib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import time
 from types import SimpleNamespace
 
@@ -136,7 +138,8 @@ def _bundle_fixture(tmp_path, monkeypatch):
     receipt = tmp_path / "native.json"
     receipt.write_text("{}")
     monkeypatch.setattr(bundle_module, "verify_native_task_runtime_source_packet", lambda *a: {
-        "verified_packet_path": str(packet), "receipt_digest": "sha256:" + "c" * 64, "packet_size_bytes": packet.stat().st_size})
+        "verified_packet_path": str(packet), "receipt_digest": "sha256:" + "c" * 64, "packet_size_bytes": packet.stat().st_size,
+        "packet_sha256": contract.sha(packet)})
     monkeypatch.setattr(bundle_module, "WHEELS", (("fixture.whl", hashlib.sha256(b"wheel").hexdigest(), "https://fixture.invalid"),))
     def materialize(identity, output):
         if identity == IDS[1]:
@@ -165,6 +168,35 @@ def test_bundle_keeps_other_sources_and_can_retry_interrupted_publication(tmp_pa
     assert bundle_module.build_bundle(**params) == built
     with pytest.raises(ValueError, match="bundle_invalid"):
         bundle_module.load_verified_bundle(params["output"] / bundle_module.RECEIPT, expected_implementation_commit="2" * 40)
+
+
+def test_bundle_streams_the_verified_runtime_packet_without_a_staged_copy(tmp_path, monkeypatch):
+    import zipfile
+    params = _bundle_fixture(tmp_path, monkeypatch)
+    packet = tmp_path / "native.zip"
+    copied = []
+    copyfile = bundle_module.shutil.copyfile
+    monkeypatch.setattr(bundle_module.shutil, "copyfile", lambda src, dst, *a, **k: (copied.append(Path(src)), copyfile(src, dst, *a, **k))[1])
+    built = bundle_module.build_bundle(**params)
+    assert packet not in copied
+    name = "provider_runtime/native_task_runtime_sources/native_task_runtime_sources.zip"
+    assert {"path": name, "size_bytes": packet.stat().st_size, "sha256": contract.sha(packet)} in built["files"]
+    assert [row["path"] for row in built["files"]] == sorted((row["path"] for row in built["files"]), key=PurePosixPath)
+    with zipfile.ZipFile(params["output"] / "embodiment_asset_preparation.zip") as archive:
+        assert archive.read(name) == packet.read_bytes()
+        assert archive.getinfo(name).compress_type == zipfile.ZIP_STORED
+        bundle_module.validate_archive(archive)
+
+
+def test_bundle_refuses_a_runtime_packet_that_changed_after_verification(tmp_path, monkeypatch):
+    params = _bundle_fixture(tmp_path, monkeypatch)
+    packet = tmp_path / "native.zip"
+    verified = bundle_module.verify_native_task_runtime_source_packet()
+    monkeypatch.setattr(bundle_module, "verify_native_task_runtime_source_packet", lambda *a: {
+        **verified, "packet_sha256": "sha256:" + hashlib.sha256(b"the bytes that were verified").hexdigest()})
+    with pytest.raises(ValueError, match="runtime_source_packet_changed"):
+        bundle_module.build_bundle(**params)
+    assert not params["output"].exists() and packet.is_file()
 
 
 def test_no_available_source_has_individual_reasons_and_no_bundle(tmp_path, monkeypatch):
@@ -333,11 +365,37 @@ def test_disk_reservation_accounts_for_actual_runtime_packet_before_build(tmp_pa
         return {"status": "development_only"}
     monkeypatch.setattr(controller, "process_entry", process)
     controller.process_reserved_entry(item, root=tmp_path, store=tmp_path / "models", commit=COMMIT)
-    assert calls[0][1]["expected_bytes"] == 2 * packet_size + 4 * 1024**3
+    assert calls[0][1]["expected_bytes"] == packet_size + 4 * 1024**3
     assert calls[1][1]["expected_bytes"] == contract.MAX_OUTPUT_BYTES
     evidence = contract.read(job / "disk-admission.json")
     assert evidence["authorization_id"] == grant["authorization_id"]
     assert evidence["workspace_path"] == str(controller.workspace_for(job))
+
+
+def test_allocator_inherits_only_this_jobs_workspace_hold_as_enclosing(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from blueprint_pipeline import control_plane_disk_budget, native_task_runtime_source_packet
+    _, _job, item = _queued(tmp_path)
+    tokens = iter(["a" * 32, "b" * 32])
+    @contextmanager
+    def reserve(role, **kwargs):
+        token = next(tokens)
+        yield SimpleNamespace(receipt=lambda: {"reservation_token": token})
+    monkeypatch.setattr(control_plane_disk_budget, "reserve_control_plane_disk", reserve)
+    monkeypatch.setattr(controller, "runtime_source_receipt", lambda: tmp_path / "runtime.json")
+    monkeypatch.setattr(native_task_runtime_source_packet, "verify_native_task_runtime_source_packet",
+                        lambda *a: {"packet_size_bytes": 1})
+    monkeypatch.setenv(control_plane_disk_budget.ENCLOSING_RESERVATIONS_ENV, "c" * 32)
+    seen = []
+    def process(*a, **k):
+        seen.append(os.environ[control_plane_disk_budget.ENCLOSING_RESERVATIONS_ENV])
+        raise RuntimeError("development_only_stop")
+    monkeypatch.setattr(controller, "process_entry", process)
+    with pytest.raises(RuntimeError, match="development_only_stop"):
+        controller.process_reserved_entry(item, root=tmp_path, store=tmp_path / "models", commit=COMMIT)
+    # The workspace hold (first) is enclosing; the model-store hold is not.
+    assert seen == ["c" * 32 + "," + "a" * 32]
+    assert os.environ[control_plane_disk_budget.ENCLOSING_RESERVATIONS_ENV] == "c" * 32
 
 
 def test_sealed_completed_recovery_does_not_need_live_registry_runtime_packet(tmp_path, monkeypatch):

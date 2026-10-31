@@ -61,6 +61,7 @@ def import_one(runtime: Path, output: Path, identity: str) -> dict:
         write_once(output / "import-checkpoint.json", sealed({
             "schema_version": "embodiment_import_checkpoint.v1", "body_result": row,
             "binding_digest": canonical_digest(binding)}, "checkpoint_digest"))
+        seal_verified_import(output, identity)
     except Exception:
         # Fast shutdown can suppress the pending exception as well as return
         # code. Preserve its exact diagnostic in the parent's bounded log.
@@ -81,20 +82,68 @@ def print_imported_structure(prepared: Path) -> None:
     """A binding mismatch is diagnosable only from the names the importer produced.
 
     Failed bodies are not retained, so their bounded log carries the imported
-    body paths, joint names and world anchors (public asset names only).
+    body paths, joint names, world anchors and any source names the importer
+    recorded for prims it renamed (public asset names only).
     """
     import json
     try:
         structure = json.loads((prepared / "asset-import.json").read_text(encoding="utf-8"))["structure"]
         summary = {key: list(structure.get(key) or [])[:400]
                    for key in ("body_paths", "joint_names", "world_anchor_links")}
+        summary.update({key: dict(list(structure[key].items())[:400])
+                        for key in ("body_source_names", "joint_source_names") if structure.get(key)})
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return
     print("imported_structure " + json.dumps(summary, sort_keys=True), file=sys.stderr)
 
 
+def _closure_digest(body: Path) -> str:
+    """Every configuration, prepared-model and binding byte, recomputable without USD."""
+    from .decision_evidence_contracts import canonical_digest
+    files = [p for root in ("configuration", "prepared") for p in sorted((body / root).rglob("*")) if p.is_file()]
+    return canonical_digest({"files": [[p.relative_to(body).as_posix(), sha(p)]
+                                       for p in [*files, body / "binding-inputs.json"]]})
+
+
+def seal_verified_import(body: Path, identity: str) -> dict:
+    """Reopen the closure with Kit's USD and seal what was verified for the batch parent.
+
+    Isaac Sim 6's python.sh no longer puts pxr on the path, so the batch parent
+    cannot reopen USD (public-robot-imports-20261030-07). The import process can,
+    while Kit is up; the parent then recomputes the closure digest from disk.
+    """
+    from .decision_evidence_contracts import canonical_digest
+    row = verified_import_checkpoint(body, identity)
+    checkpoint = read(body / "import-checkpoint.json")
+    value = sealed({
+        "schema_version": "embodiment_verified_import.v1", "checkpoint_digest": checkpoint["checkpoint_digest"],
+        "binding_digest": canonical_digest(read(body / "binding-inputs.json")), "body_result": row,
+        "closure_digest": _closure_digest(body)}, "verification_digest")
+    write_once(body / "verified-import.json", value)
+    return value
+
+
+def checkpoint_row(body: Path, identity: str) -> dict:
+    """The batch parent's check before any diagnostic or retention; needs no USD."""
+    from .decision_evidence_contracts import canonical_digest
+    checkpoint = read(body / "import-checkpoint.json")
+    verified = read(body / "verified-import.json")
+    require(checkpoint.get("schema_version") == "embodiment_import_checkpoint.v1"
+            and checkpoint.get("checkpoint_digest") == canonical_digest(checkpoint, digest_field="checkpoint_digest")
+            and verified.get("schema_version") == "embodiment_verified_import.v1"
+            and verified.get("verification_digest") == canonical_digest(verified, digest_field="verification_digest")
+            and verified["checkpoint_digest"] == checkpoint["checkpoint_digest"], "import_checkpoint_invalid")
+    require(canonical_digest(read(body / "binding-inputs.json")) == checkpoint["binding_digest"] == verified["binding_digest"]
+            and _closure_digest(body) == verified["closure_digest"], "import_checkpoint_binding_changed")
+    row = dict(checkpoint["body_result"])
+    require(row == verified["body_result"] and row.get("embodiment_id") == identity and row.get("status") == "imported"
+            and row.get("task_executed") is False and row.get("policy_executed") is False,
+            "import_checkpoint_identity_changed")
+    return row
+
+
 def verified_import_checkpoint(body: Path, identity: str) -> dict:
-    """Reopen the actual source/model closure before any diagnostic or retention."""
+    """Reopen the actual source/model closure (needs Kit's USD) before sealing it."""
     from .decision_evidence_contracts import canonical_digest
     from .deployment_embodiment_runtime_configuration import bind_prepared_configuration
     checkpoint = read(body / "import-checkpoint.json")
@@ -135,7 +184,7 @@ def logged_failure(log: Path) -> str | None:
 
 def recover_import_checkpoint(body: Path, identity: str, reason: str) -> dict:
     """An interrupted diagnostic cannot erase an already verified import."""
-    row = verified_import_checkpoint(body, identity)
+    row = checkpoint_row(body, identity)
     row["native_controller_smoke"] = {"status": "failed", "reasons": ["import_process_interrupted_after_checkpoint:" + reason],
                                       "smoke_digest": None, "checkpoint_recovered": True}
     prior = body / "body-result.json"
@@ -178,7 +227,7 @@ def run_batch(runtime: Path, output: Path, *, run=subprocess.run, now=time.monot
                     row = {"embodiment_id": identity, "status": "import_failed", "reason": "isaac_import_process_failed",
                            "exit_code": process.returncode, "log": log.name}
                 else:
-                    row = verified_import_checkpoint(body, identity)
+                    row = checkpoint_row(body, identity)
                     # Keep the original per-body deadline and both provider
                     # clocks. SDK shutdown must not grant a fresh smoke window.
                     smoke = run_bounded_smoke_process(body, wall_seconds=max(0., min(
@@ -189,14 +238,14 @@ def run_batch(runtime: Path, output: Path, *, run=subprocess.run, now=time.monot
                     write_once(body / "body-result.json", row)
             except subprocess.TimeoutExpired:
                 row = {"embodiment_id": identity, "status": "import_failed", "reason": "isaac_import_timeout", "log": log.name}
-            except (OSError, ValueError, KeyError, TypeError) as exc:
+            except Exception as exc:  # noqa: BLE001 - one body's failure never stops the rest of the batch
                 reason = (logged_failure(log) if not (body / "import-checkpoint.json").exists() else None)
                 row = {"embodiment_id": identity, "status": "import_failed", "reason": reason or type(exc).__name__,
                        "log": log.name}
             if row["status"] != "imported" and (body / "import-checkpoint.json").is_file():
                 try:
                     row = recover_import_checkpoint(body, identity, row["reason"])
-                except (OSError, ValueError, KeyError, TypeError) as exc:
+                except Exception as exc:  # noqa: BLE001 - an unverifiable checkpoint is this body's failure only
                     row["checkpoint_recovery"] = "unverified:" + type(exc).__name__
             if row["status"] == "imported":
                 try:

@@ -144,3 +144,37 @@ def test_completion_rejects_cropped_context_before_planner_or_upload(tmp_path, m
             review={}, root=tmp_path / 'complete', context={}, configuration={},
             task_runner=forbidden, planner_runner=forbidden, release_blockers=forbidden, max_polls=1)
     assert not (tmp_path / 'complete/context-uploads').exists()
+
+
+def test_a_verified_padding_is_decoded_once_per_job_and_a_change_is_still_refused(tmp_path, monkeypatch):
+    # capture-447ae4f4 (2026-10-30): every tick decoded each retained source and
+    # padded input three times to re-prove the same bytes.
+    import time
+    from pathlib import Path
+    from blueprint_pipeline import file_digest_cache
+    from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
+
+    monkeypatch.setattr(file_digest_cache, 'RACY_NANOSECONDS', -60 * 10**9)  # long-settled files
+    source, padded = tmp_path / 'source.png', tmp_path / 'padded.png'
+    Image.fromarray(texture()).save(source)
+    array, transform = fov.square_pad(texture())
+    Image.fromarray(array).save(padded)
+    inputs = {'frames': [{'frame_id': 'a', 'image_path': str(padded)}],
+              'full_view_sources': [{'frame_id': 'a', 'image_path': str(source),
+                                    'image_digest': _sha256_file(source), 'padding': transform}]}
+    decoded, opened = [], Image.open
+    monkeypatch.setattr(Image, 'open', lambda path, *a, **k: (decoded.append(Path(path).name), opened(path, *a, **k))[1])
+    sidecar = tmp_path / file_digest_cache.SIDECAR
+    for _tick in range(3):
+        with file_digest_cache.file_digest_cache(sidecar):
+            assert fov.full_view_sources(inputs, tmp_path) == inputs['full_view_sources']
+            assert fov.full_view_sources(inputs, tmp_path) == inputs['full_view_sources']
+    assert decoded == ['source.png', 'padded.png']
+    time.sleep(.05)
+    array[0, 0] = 0
+    Image.fromarray(array).save(padded)
+    with file_digest_cache.file_digest_cache(sidecar), pytest.raises(ValueError, match='padding_changed'):
+        fov.full_view_sources(inputs, tmp_path)
+    changed = {**inputs['full_view_sources'][0], 'padding': {**transform, 'source_rect': [0, 0, 1, 1]}}
+    with file_digest_cache.file_digest_cache(sidecar), pytest.raises(ValueError, match='padding_changed'):
+        fov.full_view_sources({**inputs, 'full_view_sources': [changed]}, tmp_path)

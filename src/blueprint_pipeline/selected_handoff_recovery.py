@@ -319,11 +319,14 @@ def recover_selected_handoff(
             reason = native.get("owner_observation_reason")
             if type(reason) is str and reason in OWNER_OBSERVATION_REASON_CODES:
                 result["owner_observation_reason"] = reason
-            from .capture_delivery_staging import STAGING_REASON_CODES
+            from .capture_delivery_staging import STAGING_REASON_CODES, bounded_staging_error
 
             reason = native.get("staging_reason")
             if type(reason) is str and reason in STAGING_REASON_CODES:
                 result["staging_reason"] = reason
+            staging_error = bounded_staging_error(native.get("staging_error"))
+            if staging_error is not None:
+                result["staging_error"] = staging_error
             if (
                 native.get("status") != "processed"
                 or native.get("queue_disposition") != "terminal_success"
