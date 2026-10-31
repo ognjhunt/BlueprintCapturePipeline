@@ -31,12 +31,24 @@ def _publisher_observation(function):
     Context-local state prevents independent synchronous/thread calls sharing
     counters. Only the outer existing publisher closes its own original budget.
     """
+    return _observed(function, lambda: ReferenceCollectionBudget(values_limit=10000))
+
+
+def _launch_admission_observation(function):
+    """The launch dispatcher's scope: the same accounting under the launch-admission
+    allowance, which covers its catalog and input verification. A dispatch nested
+    in another publisher still spends that publisher's original budget."""
+    return _observed(
+        function, lambda: ReferenceCollectionBudget._for_launch_admission(values_limit=10000))
+
+
+def _observed(function, new_budget):
     @wraps(function)
     def observed(*args, **kwargs):
         budget = _PUBLISHER_BUDGET.get()
         owned = budget is None
         if owned:
-            budget = ReferenceCollectionBudget(values_limit=10000)
+            budget = new_budget()
             token = _PUBLISHER_BUDGET.set(budget)
             owner_token = _PUBLISHER_OWNER.set((function.__module__, function.__qualname__))
         try:
