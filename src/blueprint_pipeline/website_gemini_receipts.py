@@ -6,7 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -52,25 +52,16 @@ def _completed_result(path: Path, digest: str) -> dict[str, Any]:
     return result
 
 
-def retained_gemini_result(*, output_root: Path, binding: Mapping[str, Any], task_context: Mapping[str, Any],
-                           maximum_cost_usd: float, source_video_digest: str | None = None) -> dict[str, Any] | None:
-    """The completed result already bought for exactly this request, or None; reads only.
-
-    A receipt that may have been charged without a result is never a reason to
-    buy another answer: it raises as ``retained_gemini_call`` does.
-    """
-    _, digest = _request(binding=binding, task_context=task_context, maximum_cost_usd=maximum_cost_usd,
-                         source_video_digest=source_video_digest)
-    path = output_root / f"{digest[7:]}.json"
-    return _completed_result(path, digest) if path.exists() else None
-
-
 def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
                         task_context: Mapping[str, Any], maximum_cost_usd: float,
                         preflight: Callable[[], None], invoke: Callable[[], dict[str, Any]],
-                        source_video_digest: str | None = None) -> dict[str, Any]:
+                        source_video_digest: str | None = None,
+                        earlier_requests: Sequence[tuple[Mapping[str, Any], float]] = ()) -> dict[str, Any]:
     """Reuse completed results; an uncertain call never authorizes another call.
 
+    ``earlier_requests`` are superseded ``(binding, maximum_cost_usd)`` forms of
+    this same decision: one already bought is reused as it stands, and one that
+    may have been charged still needs reconciliation, never a new purchase.
     The existing WebApp transaction is the cross-worker spending authority.
     Local flock and exclusive durable intent cover restarts on this worker.
     """
@@ -85,6 +76,11 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
             raise ValueError("website_gemini_request_in_progress") from exc
         if path.exists():
             return _completed_result(path, digest)
+        for earlier_binding, earlier_cost in earlier_requests:
+            _, earlier = _request(binding=earlier_binding, task_context=task_context,
+                                  maximum_cost_usd=earlier_cost, source_video_digest=source_video_digest)
+            if (output_root / f"{earlier[7:]}.json").exists():
+                return _completed_result(output_root / f"{earlier[7:]}.json", earlier)
         preflight()
         admission, grant = reserve_website_preparation_spend(task_context=task_context,
             binding_digest=digest, maximum_cost_usd=maximum_cost_usd, request_count=1,

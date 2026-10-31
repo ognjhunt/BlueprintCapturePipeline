@@ -950,7 +950,7 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
         return empty_removal_plan(status="blocked", model=model or _string_env(MODEL_ENV, DEFAULT_MODEL),
                                   processing=processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING),
                                   blockers=["confirmed_task_context_required"])
-    from .website_gemini_receipts import gemini_quote, retained_gemini_call, retained_gemini_result
+    from .website_gemini_receipts import gemini_quote, retained_gemini_call
     model_name = model or _string_env(MODEL_ENV, DEFAULT_MODEL)
     processing_mode = processing or _string_env(PROCESSING_ENV, DEFAULT_PROCESSING)
     path = Path(video_path).expanduser() if video_path else None
@@ -978,13 +978,6 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
                                                                   max_output_tokens=8192))
 
     binding, maximum_cost_usd = request(PROMPT_INSTRUCTION, RESPONSE_SCHEMA)
-    # The same decision bought before the destination region was asked for is
-    # reused as it stands (no region): its exact request, never a second purchase.
-    prior_binding, prior_cost = request(PRIOR_PROMPT_INSTRUCTION, PRIOR_RESPONSE_SCHEMA)
-    prior = retained_gemini_result(output_root=output_root, binding=prior_binding, task_context=task_context,
-                                   maximum_cost_usd=prior_cost)
-    if prior is not None:
-        return prior
 
     def preflight():
         if not _truthy(os.getenv(GATE_ENV)) or not _api_key()[0]:
@@ -997,5 +990,8 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
             raise ValueError("website_gemini_source_changed")
         return result
 
+    # The same decision bought before the destination region was asked for is
+    # reused as it stands (no region), by its exact request: never bought again.
     return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
-        maximum_cost_usd=maximum_cost_usd, preflight=preflight, invoke=invoke)
+        maximum_cost_usd=maximum_cost_usd, preflight=preflight, invoke=invoke,
+        earlier_requests=[request(PRIOR_PROMPT_INSTRUCTION, PRIOR_RESPONSE_SCHEMA)])

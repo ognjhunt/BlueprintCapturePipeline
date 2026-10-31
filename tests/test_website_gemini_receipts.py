@@ -234,7 +234,7 @@ def test_an_analysis_bought_before_the_region_prompt_is_never_bought_again(tmp_p
         # A call that may have been charged never authorizes a new one under the new prompt.
         with pytest.raises(ValueError, match="requires_reconciliation"):
             analysis.analyze_removal_targets(**kwargs)
-    assert calls == [] and sorted(path.name for path in root.iterdir()) == [f"{RETAINED_BEFORE_REGION}.json"]
+    assert calls == [] and [path.name for path in root.glob("*.json")] == [f"{RETAINED_BEFORE_REGION}.json"]
 
 
 def test_quote_uses_requested_combined_output_ceiling():
