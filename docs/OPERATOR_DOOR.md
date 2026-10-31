@@ -312,8 +312,9 @@ receipt's `runtime_diagnostic` then has phase `await_attestation` and reason
 
 **Deploys requested during a deploy wait their turn.** An iteration deploy
 requested while another deploy runs gets the result `parked` instead of a refusal.
-Up to 16 wait, for at most 4 hours. Within 30 seconds of the running deploy ending,
-the newest parked request starts and takes over the older ones. Each older one is
+Up to 16 wait, for at most 4 hours. Within about a minute of the running deploy
+ending, the newest parked request starts and takes over the older ones: the hold
+sweep's timer wakes the runner, so this also survives a reboot. Each older one is
 settled after that deploy fetches main: if the newest commit contains it, its
 outcome is `superseded`, with `superseded_by`, and `--wait` follows the newer
 request. If not, its outcome is `failed`, code `parked_commit_not_contained`,

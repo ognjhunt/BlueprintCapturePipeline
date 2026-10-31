@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import os
@@ -163,23 +162,47 @@ def test_a_deploy_requested_during_a_deploy_is_parked_not_refused(config: DoorCo
     assert not list((Path(config.spool_root) / "pending").glob("*.json"))
 
 
-def test_a_parked_deploy_keeps_a_retry_armed_that_cannot_look_like_a_deploy(config: DoorConfig) -> None:
-    _spooled(config, {"kind": "deploy", "commit": SHA})
+def test_a_wake_up_while_the_deploy_still_runs_launches_nothing(config: DoorConfig) -> None:
+    request_id = _spooled(config, {"kind": "deploy", "commit": SHA})
     runner = FakeRunner(active_deploy=ACTIVE_DEPLOY)
     process_spool(config, runner=runner)
 
-    retries = [call for call in runner.calls if call[0] == "systemd-run" and "--on-active=30s" in call]
-    assert len(retries) == 1
-    assert retries[0][-4:] == ["/usr/bin/systemctl", "start", "--no-block", "blueprint-operator-door-runner.service"]
-    # `blueprint-*deploy*` is what a deploy waits on: the retry must never match it.
-    assert not fnmatch.fnmatch(spool_runner._PARKED_RETRY_UNIT + ".service", "blueprint-*deploy*")
-    assert not fnmatch.fnmatch(spool_runner._PARKED_RETRY_UNIT + ".timer", "blueprint-*deploy*")
-
-    # A wake-up while the deploy still runs launches nothing and re-arms.
     runner.calls.clear()
     process_spool(config, runner=runner)
-    assert _deploy_launches(runner) == []
-    assert any(call[0] == "systemd-run" and "--on-active=30s" in call for call in runner.calls)
+
+    assert not any(call[0] == "systemd-run" for call in runner.calls)
+    assert _parked(config) == [request_id]
+
+
+def test_the_hold_sweep_wakes_the_runner_only_while_a_deploy_is_parked(config: DoorConfig) -> None:
+    """Nothing else notices a deploy ending. A self-rearming timer could strand the request."""
+    idle = FakeRunner()
+    assert spool_runner.wake_parked(config, runner=idle) == 0
+    assert idle.calls == []
+
+    _spooled(config, {"kind": "deploy", "commit": SHA})
+    process_spool(config, runner=FakeRunner(active_deploy=ACTIVE_DEPLOY))
+    woken = FakeRunner()
+    assert spool_runner.wake_parked(config, runner=woken) == 0
+    assert woken.calls == [["systemctl", "start", "--no-block", "blueprint-operator-door-runner.service"]]
+
+
+def test_waking_with_no_parked_directory_yet_is_harmless(tmp_path: Path) -> None:
+    """A sweep can run before the first spool pass after an upgrade made the directory."""
+    config = DoorConfig(state_root=str(tmp_path), install_root="/opt/blueprint/operator-door")
+    runner = FakeRunner()
+
+    assert spool_runner.wake_parked(config, runner=runner) == 0
+    assert runner.calls == []
+
+
+def test_wake_parked_is_a_door_command() -> None:
+    """The unit calls it by this name, so a rename must fail here and not on the host."""
+    from operator_door import __main__ as door_main
+
+    with pytest.raises(SystemExit) as stopped:
+        door_main.main(["wake-parked", "--help"])
+    assert stopped.value.code == 0
 
 
 def test_the_parked_deploy_starts_once_the_running_one_ends(config: DoorConfig) -> None:

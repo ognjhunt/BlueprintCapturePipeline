@@ -42,9 +42,6 @@ RESULT_SCHEMA = "blueprint_operator_door_result.v1"
 _CALLER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _ACTIVE_STATES = "active,activating,deactivating,reloading"
 _UNIT_OBSERVATION_PROPERTIES = "ActiveState,SubState,Result,InvocationID,ExecMainStatus,Type"
-# Must never match `blueprint-*deploy*`, or a parked deploy would wait on its own retry.
-_PARKED_RETRY_UNIT = "blueprint-operator-door-parked-retry"
-_PARKED_RETRY_SECONDS = 30
 _PARKED_MAX = 16
 # Longer than one deploy's 3 h limit. A request this old no longer says what its owner wants.
 _PARKED_MAX_AGE_SECONDS = 4 * 3600
@@ -577,23 +574,13 @@ def _parkable(request: dict[str, Any]) -> bool:
     return request["kind"] == "deploy" and "release_provenance_json" not in request
 
 
-def _arm_parked_retry(runner: CommandRunner) -> None:
-    """Come back when the deploy may have ended. A retry already armed makes this fail, harmlessly."""
-
-    runner.run(["systemd-run", f"--unit={_PARKED_RETRY_UNIT}", f"--on-active={_PARKED_RETRY_SECONDS}s",
-                "--timer-property=AccuracySec=5s", "--collect", "--",
-                "/usr/bin/systemctl", "start", "--no-block", "blueprint-operator-door-runner.service"], timeout=30)
-
-
-def _park_deploy(config: DoorConfig, runner: CommandRunner, request_id: str, request: dict[str, Any],
-                 busy: str) -> dict[str, Any]:
+def _park_deploy(config: DoorConfig, request_id: str, request: dict[str, Any], busy: str) -> dict[str, Any]:
     parked = Path(config.spool_root) / "parked"
     if len(list(parked.glob("*.json"))) >= _PARKED_MAX:
         return {"status": "refused", "code": f"deploy_in_progress:{busy}"}
     # Only the id and the time: the request itself stays in completed/ and is revalidated at release.
     record = json.dumps({"id": request_id, "parked_at_epoch": time.time()})
     (parked / f"{request_id}.json").write_text(record, encoding="utf-8")
-    _arm_parked_retry(runner)
     return {"status": "parked", "parked_behind": busy, "commit": request["commit"]}
 
 
@@ -629,7 +616,6 @@ def _release_parked(config: DoorConfig, runner: CommandRunner) -> None:
     if not paths:
         return
     if _active_deploy_unit(runner) is not None:
-        _arm_parked_retry(runner)
         return
     now = time.time()
     live: list[tuple[str, dict[str, Any]]] = []
@@ -880,7 +866,7 @@ def _act(config: DoorConfig, runner: CommandRunner, request_id: str, request: di
         busy = _active_deploy_unit(runner)
         if busy is not None:
             if _parkable(request):
-                return _park_deploy(config, runner, request_id, request, busy)
+                return _park_deploy(config, request_id, request, busy)
             return {"status": "refused", "code": f"deploy_in_progress:{busy}"}
     if request["kind"] not in _LAUNCHES:
         return {"status": "refused", "code": "kind_unknown"}
@@ -958,6 +944,21 @@ def _prune(spool: Path, retention_days: int) -> None:
                 path.unlink()
         except OSError:
             continue
+
+
+def wake_parked(config: DoorConfig, *, runner: CommandRunner | None = None) -> int:
+    """Start the runner if a deploy is parked. The hold sweep's one-minute timer calls this.
+
+    A new request starts the runner by itself, but nothing else notices a deploy
+    ending. A timer that re-arms itself can lose a race with its own winding-down
+    unit and strand the request, and this one already runs every minute and at boot.
+    """
+
+    if not any((Path(config.spool_root) / "parked").glob("*.json")):
+        return 0
+    runner = runner or SubprocessRunner()
+    return runner.run(["systemctl", "start", "--no-block", "blueprint-operator-door-runner.service"],
+                      timeout=30).returncode
 
 
 def process_spool(config: DoorConfig, *, runner: CommandRunner | None = None) -> int:
