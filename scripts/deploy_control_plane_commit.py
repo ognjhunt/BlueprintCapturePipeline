@@ -1879,6 +1879,7 @@ def _prepare_capture_transfer_from_source(source: Path, source_commit: str) -> d
 
 
 def _verify_capture_transfer_runtime(*, release: Path, unit_text: str, account: str) -> dict[str, Any] | None:
+    from blueprint_pipeline.capture_upload_runtime import SCANNER_CONTROLS_TIMEOUT_SECONDS
     configuration = _capture_transfer_configuration(unit_text)
     if configuration is None:
         return None
@@ -1886,7 +1887,8 @@ def _verify_capture_transfer_runtime(*, release: Path, unit_text: str, account: 
         result = subprocess.run(
             ["/usr/sbin/runuser", "--user", account, "--", sys.executable,
              "-m", "blueprint_pipeline.capture_upload_runtime"],
-            input=json.dumps(configuration), text=True, check=False, capture_output=True, timeout=150,
+            input=json.dumps(configuration), text=True, check=False, capture_output=True,
+            timeout=SCANNER_CONTROLS_TIMEOUT_SECONDS,
             cwd=release, env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
                               "PYTHONPATH": str(release / "src"), "PYTHONDONTWRITEBYTECODE": "1"},
         )
