@@ -400,6 +400,55 @@ def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
             "complete_object_dimensions": False, "metric_measurement_proven": False}
 
 
+def estimate_region_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]],
+                           evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Bounds of the part of a tracked surface inside the analysis's region boxes.
+
+    Each box keeps the track's own mask pixels inside it, in the nearest observed
+    frame within the coarse analysis window (as ``anchor_scores`` reads anchor
+    boxes), and ``estimate_target_bounds`` lifts them with the same estimated
+    depth and cameras as the whole target. None when no observed frame lies near
+    a box, or no surface pixel with depth lies inside one: the region is then
+    unregistered, never guessed.
+    """
+    by_id = {frame["frame_id"]: frame for frame in frames}
+    clipped: dict[str, tuple[Mapping[str, Any], np.ndarray]] = {}
+    for row in evidence:
+        nearby = [observation for observation in track["observations"] if observation["source_frame_id"] in by_id
+                  and abs(float(by_id[observation["source_frame_id"]]["timestamp_seconds"])
+                          - row["timestamp_seconds"]) <= 0.5]
+        if not nearby:
+            continue
+        observation = min(nearby, key=lambda item: abs(
+            float(by_id[item["source_frame_id"]]["timestamp_seconds"]) - row["timestamp_seconds"]))
+        mask = decode_track_mask(observation)
+        x, y, width, height = row["box_xywh_normalized"]
+        columns, rows = np.arange(mask.shape[1]) + 0.5, np.arange(mask.shape[0]) + 0.5
+        inside = (((rows >= y * mask.shape[0]) & (rows <= (y + height) * mask.shape[0]))[:, None]
+                  & ((columns >= x * mask.shape[1]) & (columns <= (x + width) * mask.shape[1]))[None, :])
+        frame_id = observation["source_frame_id"]
+        previous = clipped.get(frame_id, (observation, np.zeros_like(mask)))[1]
+        clipped[frame_id] = (observation, previous | (mask & inside))
+    observations = []
+    for observation, mask in clipped.values():
+        if not mask.any():
+            continue
+        edges = np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1)))
+        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        observations.append({**observation, "runs": [{"start": int(start), "length": int(end - start)}
+                                                     for start, end in zip(starts, ends)]})
+    if not observations:
+        return None
+    try:
+        bounds = estimate_target_bounds({**track, "observations": observations}, frames)
+    except ValueError as exc:
+        if str(exc) != "task_target_has_no_estimated_geometry":
+            raise
+        return None
+    return {**bounds, "basis": "visible_target_mask_inside_region_boxes_with_model_estimated_depth_and_cameras",
+            "source_frame_ids": [observation["source_frame_id"] for observation in observations]}
+
+
 def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
                           output_root: Path, meta_admission: Mapping[str, Any] | None = None,
                           meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None,

@@ -1138,6 +1138,162 @@ def test_the_destination_support_is_searched_within_the_same_measured_residual(t
     assert calls == [value["registration"]["task_region"]["trimmed_rmse_m"]] * 2
 
 
+def _surface_arguments(tmp_path, *, first_row=25, region=None, args=None):
+    """The destination is the surface the subject stands on, as the analysis grounds a table."""
+    from blueprint_pipeline.website_task_masks import estimate_target_bounds
+    args = _arguments(tmp_path) if args is None else args
+    mask = np.zeros((HEIGHT, WIDTH), dtype=bool)
+    mask[first_row:, :] = True
+    mask[20:25, 21:25] = False  # the subject's own pixels are not the surface
+    edges = np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1)))
+    runs = [{"start": int(a), "length": int(b - a)}
+            for a, b in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))]
+    track = {"track_id": "t2", "label": "tray-1", "observations": [
+        {"source_frame_id": f"frame-{index}", "height": HEIGHT, "width": WIDTH, "runs": runs} for index in range(2)]}
+    args["task_masks"]["targets"][1].update(
+        track=track, estimated_visible_bounds=estimate_target_bounds(track, args["source_geometry"]["frames"]))
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    if region is not None:
+        args["removal_manifest"] = {**REMOVAL, "destination_region": {
+            "destination_target_id": "tray-1", "region_basis_quote": "the other end", "spatial_evidence": region}}
+    return args
+
+
+def _inside(point, bounds):
+    return all(bounds["minimum"][axis] <= point[axis] <= bounds["maximum"][axis] for axis in (0, 1))
+
+
+@pytest.mark.parametrize("box", [[0.0, 0.8, 0.25, 0.2], [0.75, 0.8, 0.25, 0.2]])
+def test_a_place_named_on_the_destination_surface_centres_the_destination_inside_it(tmp_path, box):
+    whole = preparation.compile_website_scene_preparation(**_surface_arguments(tmp_path))
+    value = preparation.compile_website_scene_preparation(**_surface_arguments(
+        tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": box}]))
+    assert value["status"] == whole["status"] == "intake_ready", value["blockers"]
+    region = value["destination_region"]
+    assert region["destination_region_basis"] == "registered_region_boxes_on_destination_mask"
+    assert region["source_frame_ids"] == ["frame-0"] and region["region_basis_quote"] == "the other end"
+    position = value["destination"]["position_world_m"]
+    assert _inside(position, region["estimated_bounds_world_m"])
+    assert not _inside(whole["destination"]["position_world_m"], region["estimated_bounds_world_m"])
+    # Projected onto the same surface by the same contact search; the WebApp keys and basis are unchanged.
+    assert position[2] == pytest.approx(whole["destination"]["position_world_m"][2], abs=1e-6)
+    assert set(value["destination"]) == set(whole["destination"])
+    assert value["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact"
+    assert value["intake_request"]["task"]["destination"] == value["destination"]
+    assert "destination_region" not in whole and "destination_relocation" not in value
+
+
+def test_a_region_with_no_observed_frame_near_its_boxes_keeps_the_whole_surface(tmp_path):
+    whole = preparation.compile_website_scene_preparation(**_surface_arguments(tmp_path))
+    value = preparation.compile_website_scene_preparation(**_surface_arguments(
+        tmp_path, region=[{"timestamp_seconds": 5.0, "box_xywh_normalized": [0.0, 0.8, 0.25, 0.2]}]))
+    assert value["destination_region"]["destination_region_basis"] == "region_unregistered_whole_destination_centre"
+    assert value["destination"] == whole["destination"] and value["blockers"] == whole["blockers"] == []
+
+
+def test_a_region_over_the_start_still_moves_by_the_same_surface_rule(tmp_path):
+    value = preparation.compile_website_scene_preparation(**_surface_arguments(
+        tmp_path, first_row=23, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.5, 0.8, 0.15, 0.07]}]))
+    assert value["status"] == "intake_ready", value["blockers"]
+    region, relocation = value["destination_region"], value["destination_relocation"]
+    assert relocation["reason"] == "grounded_destination_centre_overlapped_start"
+    assert _inside(relocation["grounded_centre_world_m"], region["estimated_bounds_world_m"])
+    subject = value["subject"]
+    start = [(subject["aabb_min_xyz"][axis] + subject["aabb_max_xyz"][axis]) / 2 for axis in (0, 1)]
+    assert math.dist(start, value["destination"]["position_world_m"][:2]) > math.dist(
+        start, relocation["grounded_centre_world_m"][:2])
+
+
+def test_a_named_place_is_flattened_where_it_is_set_down(tmp_path, monkeypatch):
+    """#3173 looks up the surfaces it flattens exactly where placement sets the subject down: with a
+    named place, at that place's centre, so the place is set down on the sealed, flattened collider."""
+    from tests.test_website_collider_conditioning import _bumpy_arguments
+    args = _surface_arguments(tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.75, 0.8, 0.25, 0.2]}],
+                              args=_bumpy_arguments(tmp_path, monkeypatch))
+    raw = trimesh.load(args["base_scene"]["collision_mesh_path"], force="mesh", process=False).vertices
+    calls, real = [], preparation.support_under
+
+    def lookup(mesh, lower, upper, **kwargs):
+        calls.append((np.array_equal(mesh.vertices, raw), np.asarray(lower).tolist(), np.asarray(upper).tolist()))
+        return real(mesh, lower, upper, **kwargs)
+
+    monkeypatch.setattr(preparation, "support_under", lookup)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready", value["blockers"]
+    assert value["collider_conditioning"]["status"] == "conditioned"
+    assert value["destination_region"]["destination_region_status"] == "placed_at_region_centre"
+    on_raw = [footprint for unchanged, *footprint in calls if unchanged]
+    on_sealed = [footprint for unchanged, *footprint in calls if not unchanged]
+    # The start, then the destination at the named place: found there on the raw collider to
+    # flatten it, and the same two footprints are the first placement tests on the sealed one.
+    assert len(on_raw) == 2 and on_sealed[:2] == on_raw
+    receipt = json.loads(Path(value["collider_conditioning"]["receipt_path"]).read_text())
+    placements = receipt["binding"]["placements"]
+    assert [row["role"] for row in placements] == ["start_support", "destination_support"]
+    assert placements[1]["footprint"] == on_raw[1]
+
+
+def _rounded(value):
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, list):
+        return [_rounded(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _rounded(item) for key, item in value.items()}
+    return value
+
+
+def test_without_a_region_the_existing_fixture_compiles_to_the_same_preparation(tmp_path, monkeypatch):
+    # Pinned on origin/main before the destination region (2026-10-31), with
+    # relative fixture paths; floats rounded to 1 um so only an output change moves it.
+    monkeypatch.chdir(tmp_path)
+    value = preparation.compile_website_scene_preparation(**_arguments(Path(".")))
+    assert "destination_region" not in value and "destination_region" not in REMOVAL
+    assert canonical_digest(_rounded({key: item for key, item in value.items() if key != "digest"})) == (
+        "sha256:54f20485d07a2fbf87311e1c5791f8cefc7d1675ba41a0c8ac06ad9e76938d43")
+
+
+def _region_centre(region):
+    bounds = region["estimated_bounds_world_m"]
+    return [(bounds["minimum"][axis] + bounds["maximum"][axis]) / 2 for axis in (0, 1)]
+
+
+def test_a_region_at_the_surface_edge_moves_to_the_nearest_supported_spot(tmp_path):
+    # Codex review on #3149: a place at an edge leaves the footprint's own centre
+    # unsupported; that refinement must not stop the job.
+    whole = preparation.compile_website_scene_preparation(**_surface_arguments(tmp_path))
+    value = preparation.compile_website_scene_preparation(**_surface_arguments(
+        tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.0, 0.8, 0.05, 0.2]}]))
+    assert value["status"] == "intake_ready", value["blockers"]
+    region = value["destination_region"]
+    assert region["destination_region_status"] == "nearest_supported_spot_near_region"
+    position, target = value["destination"]["position_world_m"], _region_centre(region)
+    assert region["region_centre_world_m"][:2] == pytest.approx(target)
+    assert math.dist(position[:2], target) < math.dist(whole["destination"]["position_world_m"][:2], target)
+    half = [(value["subject"]["aabb_max_xyz"][axis] - value["subject"]["aabb_min_xyz"][axis]) / 2 for axis in (0, 1)]
+    bounds = region["estimated_bounds_world_m"]
+    assert all(bounds["minimum"][axis] - half[axis] <= position[axis] <= bounds["maximum"][axis] + half[axis]
+               for axis in (0, 1))
+    assert value["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact"
+
+
+def test_a_region_with_no_supported_spot_keeps_the_whole_surface_result(tmp_path):
+    args = _surface_arguments(tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.0, 0.8, 0.25, 0.2]}])
+    # The collider has no surface under the named end; the rest of the surface remains.
+    mesh = trimesh.load(args["base_scene"]["collision_mesh_path"], force="mesh", process=False)
+    mesh.update_faces(mesh.triangles_center[:, 0] >= 0.9)
+    mesh.export(args["base_scene"]["collision_mesh_path"])
+    args["base_scene"]["collision_mesh_digest"] = _sha256_file(Path(args["base_scene"]["collision_mesh_path"]))
+    whole = preparation.compile_website_scene_preparation(**{**args, "removal_manifest": REMOVAL})
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == whole["status"] == "intake_ready", value["blockers"]
+    assert value["destination"] == whole["destination"] and value["blockers"] == whole["blockers"] == []
+    region = value["destination_region"]
+    assert region["destination_region_status"] == "unplaceable"
+    assert region["destination_region_reason"] == "no_supported_footprint_near_region"
+    assert region["destination_region_basis"] == "registered_region_boxes_on_destination_mask"
+
+
 def _destination_bounds(args, minimum, maximum):
     args["task_masks"]["targets"][1]["estimated_visible_bounds"] = _bounds(minimum, maximum)
     args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")

@@ -27,16 +27,17 @@ from scipy.spatial import cKDTree
 
 from . import task_evaluation_scene_intake as intake
 from .adp009d_newton_gripper_drive import FULL_STROKE_M
+from .clean_plate_removal_response_schema import region_evidence
 from .core.handoff_lease import guarded_handoff_write_json as write_json
 from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
-from .website_task_masks import decode_track_mask, estimate_target_bounds
+from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
 from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start,
-                                       farthest_supported_destination, ground_on_observed_floor,
-                                       nearest_supported_destination, same_support_surface, support_outline,
-                                       support_under)
+                                       farthest_supported_destination, footprint_at, ground_on_observed_floor,
+                                       nearest_supported_destination, same_support_surface,
+                                       supported_destination_near_place, support_outline, support_under)
 from .website_surface_target_admission import (admit_surface_target, preparation_size_tolerance,
                                                replacement_size_tolerance, website_target_radius)
 
@@ -519,18 +520,42 @@ def _grounded_destination(row: Mapping[str, Any], matrix: np.ndarray, *, up: int
     return low, high, position
 
 
-def _set_down(subject_min: Sequence[float], subject_max: Sequence[float], position: Sequence[float], *,
-              up: int, up_sign: int) -> tuple[np.ndarray, np.ndarray]:
-    """The subject's footprint set down at ``position``: tested against real triangles, not the mask's box."""
-    destination_min, destination_max = np.asarray(subject_min, dtype=float).copy(), np.asarray(subject_max, dtype=float).copy()
-    for axis in range(3):
-        if axis != up:
-            half_width = (subject_max[axis] - subject_min[axis]) / 2
-            destination_min[axis], destination_max[axis] = position[axis] - half_width, position[axis] + half_width
-    height = subject_max[up] - subject_min[up]
-    destination_min[up] = position[up] - (height if up_sign == -1 else 0)
-    destination_max[up] = position[up] + (height if up_sign == 1 else 0)
-    return destination_min, destination_max
+def _named_destination_place(removal_manifest: Mapping[str, Any], row: Mapping[str, Any], *,
+                             frames: list[Mapping[str, Any]], matrix: np.ndarray, runtime_to_sim: np.ndarray,
+                             up: int, up_sign: int
+                             ) -> tuple[dict[str, Any], tuple[list[float], list[float]] | None, list[float] | None] | None:
+    """The place a task names on its destination surface, when the analysis returned one.
+
+    capture-447ae4f4: "the other end". Its boxes, lifted from the destination's
+    own mask like the whole surface, centre the footprint instead of the
+    surface's middle. Returns None without a region, else its record, its
+    runtime bounds and the centre of its top; unregistered, the record alone
+    (the whole surface is used as before).
+    """
+    region = removal_manifest.get("destination_region")
+    if region is None:
+        return None
+    region = region if isinstance(region, Mapping) else {}
+    evidence = (region_evidence(region.get("spatial_evidence"))
+                if region.get("destination_target_id") == row["target_id"] else None)
+    track = row.get("track")
+    bounds = (estimate_region_bounds(track, frames, evidence)
+              if evidence is not None and isinstance(track, Mapping) else None)
+    record = {"destination_target_id": row["target_id"], "region_basis_quote": region.get("region_basis_quote"),
+              "destination_region_basis": ("registered_region_boxes_on_destination_mask" if bounds is not None
+                                           else "region_unregistered_whole_destination_centre")}
+    record["destination_region_status"] = "unregistered"
+    if bounds is None:
+        return record, None, None
+    region_low, region_high = _runtime_bounds(bounds, matrix)
+    position = [(region_low[i] + region_high[i]) / 2 for i in range(3)]
+    position[up] = (region_high if up_sign == 1 else region_low)[up]
+    record.update(source_frame_ids=bounds["source_frame_ids"], bounds_basis=bounds["basis"],
+                  estimated_bounds_world_m=dict(zip(("minimum", "maximum"), _runtime_bounds(
+                      {"minimum": region_low, "maximum": region_high}, runtime_to_sim))),
+                  region_centre_world_m=(runtime_to_sim @ [*position, 1.0])[:3].tolist(),
+                  destination_region_status="placed_at_region_centre")
+    return record, (region_low, region_high), position
 
 
 class _SupportLookups:
@@ -557,11 +582,14 @@ class _SupportLookups:
 def _seal_placement_collider(*, collider: Any, base_scene: Mapping[str, Any], placed: Any,
                              destination_rows: Sequence[Mapping[str, Any]], matrix: np.ndarray, up: int,
                              up_sign: int, meters_per_unit: float, placement_residual_m: float | None,
-                             articulated: bool, output_root: Path) -> tuple[Any, Mapping[str, Any], Any, Any]:
+                             articulated: bool, output_root: Path,
+                             named_position: Sequence[float] | None = None) -> tuple[Any, Mapping[str, Any], Any, Any]:
     """Flatten the surfaces the subject starts and ends on, and seal that collider in the base scene.
 
     The supports are looked up on the base scene's collider exactly as placement
-    looks them up (website_collider_conditioning). A conditioned collider is
+    looks them up (website_collider_conditioning): the destination at the
+    centre of a place the task named on it (``named_position``), else where the
+    whole destination is grounded. A conditioned collider is
     written and bound in ``base_scene.json`` before ``collision_mesh_digest`` is,
     and every later lookup, admission, native bind and relocation reads it.
     Returns the collider, base scene and lookups to place on, and the record
@@ -577,12 +605,14 @@ def _seal_placement_collider(*, collider: Any, base_scene: Mapping[str, Any], pl
         placements.append({"role": "start_support", "support": support, "footprint": (subject_min, subject_max)})
         row = destination_rows[0] if len(destination_rows) == 1 else {}
         if not articulated and row.get("placement_relation") == "on":
-            position = _grounded_destination(row, matrix, up=up, up_sign=up_sign)[2]
-            footprint = _set_down(subject_min, subject_max, position, up=up, up_sign=up_sign)
-            found = lookup(collider, *footprint, up=up, meters_per_unit=meters_per_unit, up_sign=up_sign,
-                           placement_residual_m=placement_residual_m)
-            if found is not None:
-                placements.append({"role": "destination_support", "support": found, "footprint": footprint})
+            grounded = _grounded_destination(row, matrix, up=up, up_sign=up_sign)[2]
+            for position in ([] if named_position is None else [named_position]) + [grounded]:
+                footprint = footprint_at(subject_min, subject_max, position, up=up, up_sign=up_sign)
+                found = lookup(collider, *footprint, up=up, meters_per_unit=meters_per_unit, up_sign=up_sign,
+                               placement_residual_m=placement_residual_m)
+                if found is not None:
+                    placements.append({"role": "destination_support", "support": found, "footprint": footprint})
+                    break
     result = conditioning.condition_placement_collider(base_scene=base_scene, collider=collider,
         placements=placements, up=up, up_sign=up_sign, meters_per_unit=meters_per_unit,
         placement_uncertainty_m=placement_residual_m, output_root=output_root,
@@ -1022,6 +1052,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         return choose_start(collider=mesh, region=region, attractor=attractor, design=synthetic, up=up,
                             up_sign=up_sign, meters_per_unit=mpu, support_under=lookup)
 
+    # A place the task named on its one "on" destination: the destination is set down at its centre.
+    named_place = (_named_destination_place(removal_manifest, destination_rows[0], frames=source_geometry["frames"],
+                                            matrix=matrix, runtime_to_sim=runtime_to_sim, up=up, up_sign=up_sign)
+                   if len(destination_rows) == 1 and not independent_object and not articulated
+                   and destination_rows[0].get("placement_relation") == "on" else None)
     support = collider_conditioning = None
     if not independent_object:
         # The surfaces the subject starts and ends on are flattened before anything rests
@@ -1029,7 +1064,8 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         collider, base_scene, collider_conditioning, lookup = _seal_placement_collider(
             collider=collider, base_scene=base_scene, placed=placed, destination_rows=destination_rows,
             matrix=matrix, up=up, up_sign=up_sign, meters_per_unit=mpu, placement_residual_m=residual,
-            articulated=articulated, output_root=output_root)
+            articulated=articulated, output_root=output_root,
+            named_position=None if named_place is None else named_place[2])
         placed_min, placed_max, support, start = placed(collider, lookup)
         if synthetic is not None and support is not None:
             subject_min, subject_max = placed_min, placed_max
@@ -1076,7 +1112,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     # The replacement is qualified within this of each estimated dimension; the region holds it.
     size_tolerance = replacement_size_tolerance(dimension_authority=subject_dimension_authority,
                                                 relative_error=DIMENSION_RELATIVE_ERROR, development=False)
-    destination = distinct_support = relocation = surface_target_admission = region_outline = None
+    destination = distinct_support = relocation = region_record = surface_target_admission = region_outline = None
     interior = None
     if articulated:
         # The moving part stays inside its assembly: no destination pose exists.
@@ -1120,12 +1156,41 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 distinct_support = interior["floor"]
                 contact_bound = True
         elif support is not None:
+            # The one target radius (holds the largest admitted replacement): every clearance below uses it.
+            clearance = website_target_radius(subject_min, subject_max, relative_error=size_tolerance,
+                                              up=up, meters_per_unit=mpu)
+            whole_position, region_bounds = list(position), None
+            if named_place is not None:
+                # The task named a place on this surface: it is set down at that place's
+                # centre and then follows every rule below as the grounded centre would.
+                region_record, region_bounds, named_position = named_place
+                if named_position is not None:
+                    position = list(named_position)
             # Test the subject's footprint at the destination against real
             # triangles, not the destination mask's enclosing box.
             # The destination is placed by the same registration as the subject.
-            destination_min, destination_max = _set_down(subject_min, subject_max, position, up=up, up_sign=up_sign)
+            destination_min, destination_max = footprint_at(subject_min, subject_max, position, up=up, up_sign=up_sign)
             destination_support = lookup(collider, destination_min, destination_max,
                                          up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
+            if destination_support is None and region_bounds is not None:
+                # A place at an edge or corner can leave the footprint's own centre
+                # unsupported. The region only refines the destination: take the
+                # supported spot nearest it, else the whole surface as without one.
+                near = supported_destination_near_place(collider, subject_min, subject_max, position, *region_bounds,
+                    low, high, up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual,
+                    clearance=clearance)
+                if near is not None:
+                    position, destination_support = near
+                    region_record["destination_region_status"] = "nearest_supported_spot_near_region"
+                else:
+                    region_record.update(destination_region_status="unplaceable",
+                                         destination_region_reason="no_supported_footprint_near_region")
+                    position = whole_position
+                destination_min, destination_max = footprint_at(subject_min, subject_max, position, up=up,
+                                                                up_sign=up_sign)
+                if near is None:
+                    destination_support = lookup(collider, destination_min, destination_max, up=up,
+                                                 meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
@@ -1140,8 +1205,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 # scorer accepts the subject anywhere in the region (capture-447ae4f4: an oval table).
                 outline = support_outline(collider, region_support, up=up, meters_per_unit=mpu,
                                           placement_residual_m=residual)
-                clearance = website_target_radius(subject_min, subject_max, relative_error=size_tolerance,
-                                                  up=up, meters_per_unit=mpu)
                 stated = (runtime_to_sim @ [*position, 1.0])[:3].tolist()
                 recorded_tolerance = {"replacement_size_tolerance": size_tolerance} if size_tolerance else {}
                 plan_axes = [axis for axis in range(3) if axis != up]
@@ -1558,6 +1621,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         "subject": request["task"]["subject"], "support": support, "destination": destination,
         **({"destination_support": distinct_support} if distinct_support is not None else {}),
         **({"destination_relocation": relocation} if relocation is not None else {}),
+        **({"destination_region": region_record} if region_record is not None else {}),
         **({"surface_target_admission": surface_target_admission} if surface_target_admission is not None else {}),
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
         **({"collider_conditioning": collider_conditioning} if collider_conditioning is not None else {}),

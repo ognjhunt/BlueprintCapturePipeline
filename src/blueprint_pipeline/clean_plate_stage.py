@@ -218,6 +218,8 @@ def _build_removal_manifest(plan: Mapping[str, Any]) -> Dict[str, Any]:
         "entries": entries,
         # A task that adds a new object removes nothing; its design rides here.
         **({"synthetic_subject": dict(plan["synthetic_subject"])} if plan.get("synthetic_subject") else {}),
+        # The place on the destination surface the task names, when it names one.
+        **({"destination_region": dict(plan["destination_region"])} if plan.get("destination_region") else {}),
     }
 
 
