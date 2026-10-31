@@ -5539,3 +5539,19 @@ def test_bundle_archive_bounds_fit_the_provider_disk_and_still_refuse_past_them(
     monkeypatch.setattr(bundle_module, "_MAX_MEMBER_BYTES", 32)
     with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="archive_limit_exceeded"):
         bundle_module._zip_tree(stage, tmp_path / "over_member.zip")
+
+
+def test_zip_tree_writes_members_past_the_zip64_limit(tmp_path, monkeypatch):
+    """A member over 2 GiB needs ZIP64 headers before it is written, or closing it raises."""
+    import zipfile as _zipfile
+    from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle_module
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    payload = bytes(range(256)) * 16
+    (stage / "libbig.so").write_bytes(payload)
+    monkeypatch.setattr(_zipfile, "ZIP64_LIMIT", 1024)
+    destination = tmp_path / "bundle.zip"
+    bundle_module._zip_tree(stage, destination)
+    with _zipfile.ZipFile(destination) as archive:
+        assert archive.read("libbig.so") == payload
