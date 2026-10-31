@@ -1269,6 +1269,37 @@ def test_a_grounded_region_reaching_past_its_surface_moves_to_the_nearest_spot_o
     assert outline.holds(moved[:2], radius, tolerance=1e-9)
 
 
+
+def test_the_region_is_placed_and_admitted_on_the_sealed_flattened_collider(tmp_path, monkeypatch):
+    """#3173 flattens the placement surfaces and seals that collider first: the region's outline,
+    its relocation and its admission read the sealed collider and its support records, never the raw one."""
+    from tests.test_website_collider_conditioning import _bumpy_arguments
+    args = _destination_bounds(_bumpy_arguments(tmp_path, monkeypatch), *UNDER_THE_SUBJECT)
+    raw = trimesh.load(args["base_scene"]["collision_mesh_path"], force="mesh", process=False).vertices
+    outlines, searches = [], []
+    real_outline, real_search = preparation.support_outline, preparation.farthest_supported_destination
+
+    def outline(mesh, support, **kwargs):
+        outlines.append((np.asarray(mesh.vertices).copy(), list(support["face_indices"])))
+        return real_outline(mesh, support, **kwargs)
+
+    def search(mesh, *args, **kwargs):
+        searches.append(np.asarray(mesh.vertices).copy())
+        return real_search(mesh, *args, **kwargs)
+
+    monkeypatch.setattr(preparation, "support_outline", outline)
+    monkeypatch.setattr(preparation, "farthest_supported_destination", search)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready" and value["collider_conditioning"]["status"] == "conditioned"
+    assert "region_on_support_surface" not in value["destination_relocation"]
+    assert "surface_target_admission" not in value
+    sealed = trimesh.load(json.loads((args["output_root"] / "base_scene.json").read_text())["collision_mesh_path"],
+                          force="mesh", process=False).vertices
+    assert not np.array_equal(sealed, raw)
+    assert outlines and all(np.array_equal(vertices, sealed) and faces == value["support"]["face_indices"]
+                            for vertices, faces in outlines)
+    assert searches and all(np.array_equal(vertices, sealed) for vertices in searches)
+
 def test_a_relocated_region_that_fits_nowhere_on_its_surface_is_flagged_and_the_job_continues(tmp_path, monkeypatch):
     # Geometry is not a hard stop: placed by the rule before, the region's overhang travels as advisory evidence.
     from blueprint_pipeline.website_support_geometry import SupportOutline
