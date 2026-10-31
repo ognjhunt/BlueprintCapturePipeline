@@ -56,6 +56,10 @@ SETTLED_SPEND_BASES = {
     "downstream_of_blocked_launch",     # controls rows behind a launch that blocked before controls eligibility
     "launch_never_queued",              # nothing ever started for this row
 }
+PREPARATION_ONLY_BASIS = "preparation_only_no_execution_authority_issued"
+# What ``_release_successor`` records under that basis, apart from an optional
+# ``preparation_failure``. It never records a ``reconciliation``.
+_PREPARATION_ONLY_LINEAGE_KEYS = frozenset({"attempt", "factory", "new_source_commit", "basis"})
 
 
 def _require(condition: Any, code: str) -> None:
@@ -405,6 +409,42 @@ def settle_retired_attempt_rows(*, directory: Path, retired_attempt: Mapping[str
             "rows": settled, "skipped": skipped, "provider_mutation_performed": False}
 
 
+def _require_nothing_to_settle(*, directory: Path, lineage: Mapping[str, Any]) -> None:
+    """Accept a released free preparation that never held execution authority.
+
+    ``_release_successor`` records this basis only for a zero-spend preparation
+    row without an activation link, once every paid row on disk carries a
+    validated cancellation. It binds no factory and no reconciliation, so it has
+    no rows to settle. Any other shape under this basis is rejected.
+    """
+    from . import task_evaluation_scene_intake as intake
+    from .task_evaluation_scene_preparation_identity import SCHEMA as PREPARATION_SCHEMA
+
+    attempt_ref = lineage.get("attempt")
+    _require(set(lineage) - {"preparation_failure"} == _PREPARATION_ONLY_LINEAGE_KEYS
+             and lineage["factory"] is None and isinstance(attempt_ref, Mapping), "lineage_shape_invalid")
+    path = Path(str(attempt_ref.get("path") or ""))
+    row = intake._read(path, "attempt_digest")
+    _require(attempt_ref.get("sha256") == _file(path)["digest"]
+             and row.get("schema_version") == PREPARATION_SCHEMA
+             and row.get("maximum_spend_usd") == 0
+             and row.get("paid_authority_granted") is False, "lineage_shape_invalid")
+    # A paid row reserved under this preparation's own link must already be released.
+    marker = "-" + str(row["attempt_id"]) + "-"
+    for link_path in sorted((directory / "preparations").glob("*.json")):
+        if link_path.name.endswith(".activation.json"):
+            continue
+        link = _read(link_path)
+        if (link.get("schema_version") != "task_evaluation_scene_preparation_link.v1"
+                or marker not in str(link.get("preparation_id", ""))):
+            continue
+        for row_id in dependent_row_ids(str(link.get("request_digest"))):
+            row_path = directory / "attempts" / (row_id + ".json")
+            _require(not row_path.is_file()
+                     or validated_cancellation(directory, intake._read(row_path, "attempt_digest")) is not None,
+                     "lineage_shape_invalid")
+
+
 @scene_participant()
 def sweep_retired_attempts(*, directory: Path, state: Mapping[str, Any], config: Mapping[str, Any],
                            dry_run: bool = False) -> dict[str, Any]:
@@ -413,13 +453,20 @@ def sweep_retired_attempts(*, directory: Path, state: Mapping[str, Any], config:
     summary: dict[str, Any] = {"settled_rows": 0, "already_released_rows": 0, "skipped": []}
     entries = []
     for lineage in state.get("release_predecessors") or []:
-        entries.append((lineage.get("attempt"), lineage.get("reconciliation"), lineage.get("factory"))
-                       if isinstance(lineage, Mapping) else (None, None, None))
+        if not isinstance(lineage, Mapping):
+            entries.append((None, None, None, None))
+        elif lineage.get("basis") == PREPARATION_ONLY_BASIS:
+            entries.append((lineage.get("attempt"), None, None, lineage))
+        else:
+            entries.append((lineage.get("attempt"), lineage.get("reconciliation"), lineage.get("factory"), None))
     for lineage in state.get("recovery_predecessors") or []:
-        entries.append((lineage.get("attempt"), lineage.get("evidence"), None)
-                       if isinstance(lineage, Mapping) else (None, None, None))
-    for attempt_ref, evidence, factory_ref in entries:
+        entries.append((lineage.get("attempt"), lineage.get("evidence"), None, None)
+                       if isinstance(lineage, Mapping) else (None, None, None, None))
+    for attempt_ref, evidence, factory_ref, preparation_only in entries:
         try:
+            if preparation_only is not None:
+                _require_nothing_to_settle(directory=directory, lineage=preparation_only)
+                continue  # Released with zero rows: nothing to settle.
             if not isinstance(attempt_ref, Mapping) or not isinstance(evidence, Mapping):
                 raise ValueError("terminal_settlement_lineage_shape_invalid")
             from . import task_evaluation_scene_intake as intake

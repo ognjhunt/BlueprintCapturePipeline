@@ -349,6 +349,67 @@ def test_sweep_settles_lineage_and_tolerates_broken_entries(tmp_path: Path) -> N
     assert again["summary_digest"] != summary["summary_digest"]
 
 
+FREE_PREPARATIONS = ("source-2ce4d991285fdcd23e7bea1f", "source-2e4bb91cd79eaaa136f3ee7a")
+
+
+def _released_free_preparations(tmp_path, monkeypatch, **intent_kwargs):
+    """Two free preparations the progression released before issuing any execution authority."""
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    from blueprint_pipeline.task_evaluation_scene_preparation_attempts import create_preparation_attempt
+    fx = _fixture(tmp_path, **intent_kwargs)
+    _settle(fx)  # The release refuses while any paid row on disk is unsettled.
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT", str(fx["root"]))
+    monkeypatch.setenv("BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_CLIENT_IDS", "webapp")
+    state = {}
+    for attempt_id in FREE_PREPARATIONS:
+        create_preparation_attempt(directory=fx["directory"], attempt_id=attempt_id, source_commit=COMMIT,
+            runtime_digest="sha256:" + "e" * 64, input_digest="sha256:" + "f" * 64, now=101)
+        state.update(attempt_id=attempt_id,
+                     attempt=record(fx["directory"] / "preparation-attempts" / (attempt_id + ".json")))
+        assert engine._release_successor(directory=fx["directory"], intent=fx["intent"], state=state,
+            config={"factory_output_root": str(tmp_path / "factory")},
+            release={"source_commit": "b" * 40}, now=300) is True
+    config = {"launch_execution_root": str(fx["launches"]), "launch_queue_root": str(fx["queue"])}
+    return fx, state, config
+
+
+def test_sweep_has_nothing_to_settle_for_free_preparations_released_without_authority(tmp_path, monkeypatch):
+    fx, state, config = _released_free_preparations(tmp_path, monkeypatch)
+    lineages = state["release_predecessors"]
+    assert [row["basis"] for row in lineages] == ["preparation_only_no_execution_authority_issued"] * 2
+    assert all(row["factory"] is None and "reconciliation" not in row for row in lineages)
+    summary = settlement.sweep_retired_attempts(directory=fx["directory"], state=state, config=config)
+    assert (summary["settled_rows"], summary["already_released_rows"], summary["skipped"]) == (0, 0, [])
+
+
+@pytest.mark.parametrize("mutation", ["factory", "reconciliation", "paid_attempt", "unreleased_row"])
+def test_sweep_rejects_free_preparation_lineage_that_binds_authority_or_rows(tmp_path, monkeypatch, mutation):
+    fx, state, config = _released_free_preparations(tmp_path, monkeypatch, spend=60.0)
+    lineage = state["release_predecessors"][0]
+    if mutation == "factory":
+        prepared = json.loads(Path(lineage["attempt"]["path"]).read_text())
+        lineage["factory"] = record(_write(tmp_path / "factory.json", _seal({
+            "schema_version": "website_scene_attempt_factory.v1", "attempt_digest": prepared["attempt_digest"],
+            "intent_digest": fx["intent"]["intent_digest"], "source_commit": COMMIT}, "factory_digest")))
+    elif mutation == "reconciliation":
+        lineage["reconciliation"] = {"failure": record(fx["transition"]),
+                                     "ownership_reconciliation": record(fx["ownership"])}
+    elif mutation == "paid_attempt":
+        lineage["attempt"] = record(fx["directory"] / "attempts" / (fx["source"]["attempt_id"] + ".json"))
+    else:
+        # A scene-configuration row reserved under this preparation's own link and never released.
+        digest = "sha256:" + "8" * 64
+        _reserve(fx["root"], fx["intent"], "scene-configuration-" + digest[7:31], 16.76, input_digest=digest)
+        link = json.loads(next((fx["directory"] / "preparations").glob("*.json")).read_text())
+        link.update(preparation_id=link["preparation_id"].replace(fx["source"]["attempt_id"], FREE_PREPARATIONS[0]),
+                    request_digest=digest)
+        _write(fx["directory"] / "preparations" / (digest[7:] + ".json"), _seal(link, "link_digest"))
+    summary = settlement.sweep_retired_attempts(directory=fx["directory"], state=state, config=config)
+    assert summary["skipped"] == [{"attempt": lineage["attempt"]["path"][-60:],
+                                   "reason": "terminal_settlement_lineage_shape_invalid"}]
+    assert summary["settled_rows"] == 0
+
+
 def _website_preallocation_failure(tmp_path, monkeypatch, *, allocated=False,
         teardown_status="not_required_provider_adapter_never_invoked"):
     fx, row_id = _website_preparation(tmp_path, monkeypatch)
