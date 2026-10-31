@@ -377,3 +377,164 @@ def test_an_empty_component_file_publishes_and_validates(tmp_path: Path) -> None
     empty = [row for row in manifest["files"] if row["size_bytes"] == 0]
     assert [row["relative_path"].rsplit("/", 1)[-1] for row in empty] == ["py.typed"]
     assert empty[0]["sha256"] == "sha256:" + hashlib.sha256(b"").hexdigest()
+
+
+class _RecordingServiceAccount:
+    """The production reader process (as the test user), recording what it read and what it only opened."""
+
+    def __init__(self) -> None:
+        from blueprint_pipeline.service_account_reader import ServiceAccountReader
+
+        self.reader = ServiceAccountReader("blueprint", command_prefix=())
+        self.read: list[str] = []
+        self.opened: list[str] = []
+
+    def __call__(self, path: Path) -> bytes:
+        self.read.append(path.name)
+        return self.reader(path)
+
+    def digest(self, path: Path) -> tuple[int, str]:
+        self.read.append(path.name)
+        return self.reader.digest(path)
+
+    def identity(self, path: Path) -> tuple[int, ...]:
+        self.opened.append(path.name)
+        return self.reader.identity(path)
+
+
+_PAYLOAD = b"vendored library bytes\n" * 4096  # above the 64 KiB package reuse floor
+
+
+def _publish_with_payload(tmp_path, releases, commit, *, payload=_PAYLOAD,
+                          actor="service-account:blueprint"):
+    """One deploy: its own process-wide digest publication, its own service-account reader."""
+    import contextvars
+
+    packages = _component_packages(tmp_path / f"packages-{commit[:1]}")
+    adapter, package = next(iter(packages.items()))
+    package.chmod(0o755)
+    (package / "libvendor.so").write_bytes(payload)
+    (package / "libvendor.so").chmod(0o444)
+    manifest_path = package / f"{COMPONENT_PACKAGE_SCHEMA_VERSION}.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"].append({"relative_path": "libvendor.so", "sha256": _sha256(package / "libvendor.so"),
+                              "size_bytes": len(payload), "executable": False})
+    manifest["package_digest"] = canonical_digest(manifest, digest_field="package_digest")
+    manifest_path.chmod(0o644)
+    manifest_path.write_text(json.dumps(manifest))
+    manifest_path.chmod(0o444)
+    package.chmod(0o555)
+    account = _RecordingServiceAccount()
+
+    def deploy():
+        with immutable_file_digest_cache():
+            return build_published_scene_configuration_toolchain(
+                source_commit=commit, output_root=releases / commit, readback=account,
+                readback_actor=actor, component_packages=packages)
+
+    try:
+        receipt = contextvars.Context().run(deploy)
+    finally:
+        account.reader.close()
+    return receipt, account, releases / commit / "components" / adapter / "package" / "libvendor.so"
+
+
+def test_unchanged_inode_read_back_by_the_previous_release_is_opened_not_read_again(tmp_path):
+    from blueprint_pipeline.readback_ledger import ledger_path
+
+    releases = tmp_path / "scene-configuration"
+    first, first_account, first_payload = _publish_with_payload(tmp_path, releases, "a" * 40)
+    assert "libvendor.so" in first_account.read and first_account.opened == []
+    assert first["service_account_readback"]["previously_read_inode_file_count"] == 0
+    ledger = first["service_account_readback"]["ledger"]
+    assert ledger["status"] == "written" and ledger["file_count"] == first["file_count"]
+    assert stat.S_IMODE(ledger_path(releases / ("a" * 40)).stat().st_mode) == 0o444
+
+    second, account, payload = _publish_with_payload(tmp_path, releases, "b" * 40)
+    assert payload.stat().st_ino == first_payload.stat().st_ino
+    assert account.opened == ["libvendor.so"] and "libvendor.so" not in account.read
+    assert len(account.read) == second["file_count"]  # every other file, plus the manifest
+    readback = second["service_account_readback"]
+    assert readback["previously_read_inode_file_count"] == 1
+    assert readback["previously_read_inode_bytes"] == len(_PAYLOAD)
+    assert readback["full_byte_read_file_count"] == second["file_count"] - 1
+    assert readback["proven_by_previous_toolchains"] == {"a" * 40: first["file_count"]}
+    assert readback["ledger"]["file_count"] == second["file_count"]
+    # The release's own identity is untouched: same manifest shape, same claims, validates.
+    manifest = validate_scene_configuration_toolchain(root=releases / ("b" * 40), expected_source_commit="b" * 40)
+    first_manifest = json.loads((releases / ("a" * 40) / f"{manifest['schema_version']}.json").read_text())
+    assert set(manifest) == set(first_manifest)
+    assert manifest["full_byte_service_account_readback_passed"] is True
+    assert second["toolchain_digest"] == manifest["toolchain_digest"]
+    assert payload.read_bytes() == _PAYLOAD
+
+
+@pytest.mark.parametrize("case", ("changed_bytes", "rewritten_in_place", "touched", "replaced",
+                                  "ledger_edited", "ledger_writable", "other_reader"))
+def test_changed_or_tampered_inode_is_read_back_in_full(tmp_path, case):
+    from blueprint_pipeline.readback_ledger import ledger_path
+
+    releases = tmp_path / "scene-configuration"
+    _first, _account, first_payload = _publish_with_payload(tmp_path, releases, "a" * 40)
+    payload = _PAYLOAD
+    ledger = ledger_path(releases / ("a" * 40))
+    if case == "changed_bytes":
+        payload = _PAYLOAD.replace(b"vendored", b"upgraded")
+    elif case == "rewritten_in_place":
+        payload = _PAYLOAD.replace(b"vendored", b"tampered")
+        first_payload.chmod(0o644)
+        first_payload.write_bytes(payload)
+        first_payload.chmod(0o444)
+    elif case == "touched":
+        before = first_payload.stat()
+        os.utime(first_payload, ns=(before.st_atime_ns, before.st_mtime_ns + 1))
+    elif case == "replaced":
+        before = first_payload.stat()
+        replacement = first_payload.with_name("replacement")
+        first_payload.parent.chmod(0o755)
+        replacement.write_bytes(_PAYLOAD)
+        replacement.chmod(0o444)
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.replace(replacement, first_payload)
+        first_payload.parent.chmod(0o555)
+    elif case == "ledger_edited":
+        value = json.loads(ledger.read_text())
+        relative = next(name for name in value["inodes"] if name.endswith("libvendor.so"))
+        value["inodes"][relative][1] += 1
+        ledger.chmod(0o644)
+        ledger.write_text(json.dumps(value))
+        ledger.chmod(0o444)
+    elif case == "ledger_writable":
+        ledger.chmod(0o644)
+    second, account, installed = _publish_with_payload(
+        tmp_path, releases, "b" * 40, payload=payload,
+        actor="service-account:other" if case == "other_reader" else "service-account:blueprint")
+    assert account.opened == [] and "libvendor.so" in account.read
+    assert second["service_account_readback"]["previously_read_inode_file_count"] == 0
+    assert installed.read_bytes() == payload
+    validate_scene_configuration_toolchain(root=releases / ("b" * 40), expected_source_commit="b" * 40)
+
+
+def test_retiring_the_previous_release_keeps_inodes_a_retained_release_still_links(tmp_path):
+    from blueprint_pipeline import control_plane_release_retirement as retirement
+    from blueprint_pipeline.readback_ledger import ledger_path
+
+    releases = tmp_path / "scene-configuration"
+    _first, _account, first_payload = _publish_with_payload(tmp_path, releases, "a" * 40)
+    _second, _account, payload = _publish_with_payload(tmp_path, releases, "b" * 40)
+    # Moving a directory to a new parent rewrites its "..": root may through
+    # 0555, the test user needs write on the published root.
+    (releases / ("a" * 40)).chmod(0o755)
+    retiring = retirement._stage_aside(releases / ("a" * 40), "test")
+    for directory in [retiring, *(path for path in retiring.rglob("*") if path.is_dir())]:
+        directory.chmod(0o700)  # root deletes through 0555 directories; the test user cannot
+    deleted = retirement.delete_retiring_trees([releases])
+    assert deleted["failed"] == [] and deleted["shared_bytes"] >= len(_PAYLOAD)
+    assert not first_payload.exists() and payload.read_bytes() == _PAYLOAD
+    validate_scene_configuration_toolchain(root=releases / ("b" * 40), expected_source_commit="b" * 40)
+
+    third, account, third_payload = _publish_with_payload(tmp_path, releases, "c" * 40)
+    assert third_payload.stat().st_ino == payload.stat().st_ino
+    assert account.opened == ["libvendor.so"]
+    assert list(third["service_account_readback"]["proven_by_previous_toolchains"]) == ["b" * 40]
+    assert not ledger_path(releases / ("a" * 40)).exists()  # pruned with its retired tree

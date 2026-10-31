@@ -328,6 +328,7 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                     verdict = rigid_task_verdict(preparation=preparation, collision_path=Path(runtime_inputs["collision"]["path"]))
                     write_json(native_root / "capability_verdict.json", verdict)
                     result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
+                        **({"risks": verdict["risks"]} if "risks" in verdict else {}),
                         "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
                     if verdict["status"] == "abstained":
                         result.update(status="needs_input", blockers=list(verdict["blockers"]))

@@ -262,6 +262,31 @@ def test_preparation_failure_releases_reservation_and_redacts_private_error(tmp_
     value = publication(tmp_path)
     assert backend.launches == 0 and value["budget"]["committed_upper_bound_usd"] == "0"
     assert value["candidates"][0]["blockers"] == ["beta_screening_preparation_failed"]
+    # Only the attempt keeps the failure behind the generic code; the publication never does.
+    row = coordinator._ledger(tmp_path)["campaigns"][value["campaign_id"]]["candidates"][
+        value["candidates"][0]["candidate_id"]]
+    assert row["attempt"]["error"] == {"type": "builtins.RuntimeError",
+                                       "message": "https://private.example/?<redacted>"}
+    assert "credential" not in json.dumps(value) and "error" not in value["candidates"][0]
+
+
+@pytest.mark.parametrize("raised", [OSError(28, "No space left on device"), RuntimeError("vast API HTTP 429")])
+def test_capacity_preflight_failure_keeps_its_bounded_cause_on_the_attempt(tmp_path, raised):
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+
+    class FailedPreflight(Backend):
+        def preflight_candidate_capacity(self, **kwargs):
+            raise raised
+    backend = FailedPreflight()
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    value = publication(tmp_path)
+    assert backend.launches == 0 and value["budget"]["committed_upper_bound_usd"] == "0"
+    assert value["candidates"][0]["blockers"] == ["beta_screening_capacity_preflight_failed"]
+    attempt = coordinator._ledger(tmp_path)["campaigns"][value["campaign_id"]]["candidates"][
+        value["candidates"][0]["candidate_id"]]["attempt"]
+    assert attempt["reservation_status"] == "released"
+    assert attempt["error"] == {"type": f"builtins.{type(raised).__name__}", "message": str(raised)}
+    assert "error" not in value["candidates"][0]
 
 
 def test_quote_expired_after_prepare_does_not_launch(tmp_path, monkeypatch):

@@ -60,6 +60,15 @@ def test_real_lift_and_one_second_stable_release_passes():
     assert result["satisfied"] and result["readback_complete"]
 
 
+def test_the_scorer_applies_the_same_start_rule_as_the_region():
+    # The start footprint reaches into the disc (x 0.29-0.37 against 0.33-0.47); its centre does not.
+    rows = episode()
+    rows[0]["task_object_pose_world"] = [0.325, 0, 0.82, 0, 0, 0, 1]
+    assert score(rows)["initially_outside"] and score(rows)["satisfied"]
+    rows[0]["task_object_pose_world"] = [0.335, 0, 0.82, 0, 0, 0, 1]
+    assert not score(rows)["initially_outside"] and not score(rows)["satisfied"]
+
+
 def test_container_target_keeps_inside_relation_and_checks_whole_object_height():
     target = target_fixture(relation="inside", interior_bounds_world_m={
         "minimum": [.25, -.15, .75], "maximum": [.55, .15, .95]})
@@ -135,6 +144,38 @@ def test_invalid_or_failed_placements_never_pass(defect):
 def test_bad_regions_refused_before_execution(position, radius, reason):
     with pytest.raises(ValueError, match=reason):
         target_fixture(position_world_m=position, radius_m=radius)
+
+
+def test_a_region_may_overlap_the_start_footprint_but_never_its_centre():
+    """Owner decision 2026-10-31: the start must not already satisfy the region, not stay wholly clear of it."""
+    from blueprint_pipeline.task_evaluation_surface_target import region_excludes_start
+
+    # Subject 8x6 cm at the origin; a 7 cm region 7.5 cm away reaches over its footprint, not its centre.
+    assert target_fixture(position_world_m=[0.075, 0.0, 0.75])["surface_position_world_m"][0] == 0.075
+    with pytest.raises(ValueError, match="initial_overlap"):
+        target_fixture(position_world_m=[0.06, 0.0, 0.75])
+    assert region_excludes_start([-.04, -.03, 0], [.04, .03, .1], [.075, 0, 0], .07)
+    assert not region_excludes_start([-.04, -.03, 0], [.04, .03, .1], [.07, 0, 0], .07)
+
+
+def test_an_estimated_support_widens_only_the_height_check_to_its_placement_uncertainty():
+    """capture-447ae4f4: the region sat 1.2 cm under the estimated table's highest face (7.2 cm uncertainty)."""
+    def derive(position, **tolerance):
+        return derive_surface_target(
+            destination={"kind": "green_region", "relation": "on", "visible_label": "green spot",
+                         "position_world_m": position, "orientation_xyzw": [0, 0, 0, 1], "radius_m": 0.07},
+            support={"sage_prim_path": "/Room/Table", "bounds_min_xyz_m": [-1, -1, 0], "bounds_max_xyz_m": [1, 1, 0.75]},
+            source_min=[-0.04, -0.03, 0.75], source_max=[0.04, 0.03, 0.89], support_instance_id="table-17",
+            **tolerance)
+
+    with pytest.raises(ValueError, match="height_mismatch"):
+        derive([0.4, 0.0, 0.738])
+    assert derive([0.4, 0.0, 0.738], height_tolerance_m=0.072)["surface_position_world_m"][2] == 0.738
+    with pytest.raises(ValueError, match="height_mismatch"):
+        derive([0.4, 0.0, 0.65], height_tolerance_m=0.072)
+    for tolerance in (0.001, float("nan"), True, "0.07"):
+        with pytest.raises(ValueError, match="height_tolerance_invalid"):
+            derive([0.4, 0.0, 0.75], height_tolerance_m=tolerance)
 
 
 def test_thresholds_are_task_inputs_and_marker_is_bound():

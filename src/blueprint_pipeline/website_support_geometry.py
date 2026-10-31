@@ -270,6 +270,111 @@ def same_support_surface(first: dict[str, Any], second: dict[str, Any]) -> bool:
     return len(a & b) >= SAME_FITTED_SURFACE_MIN_OVERLAP * len(a | b)
 
 
+def destination_clear_of_start(start_min: Sequence[float], start_max: Sequence[float],
+                               centre: Sequence[float], *, up: int, clearance: float) -> bool:
+    """Whether a target disc of radius ``clearance`` at ``centre`` excludes the start's centre.
+
+    The same rule as ``surface_target_initial_overlap``
+    (``task_evaluation_surface_target.region_excludes_start``) in this frame:
+    otherwise the task could begin complete.
+    """
+    plan = [axis for axis in range(3) if axis != up]
+    middle = [(float(start_min[axis]) + float(start_max[axis])) / 2 for axis in plan]
+    return math.dist(middle, [float(centre[axis]) for axis in plan]) > clearance
+
+
+#: The target disc's radius beyond the subject's half-diagonal (the website task's green region).
+DESTINATION_MARGIN_M = 0.01
+#: Plan positions tried along each axis when a destination must move off the start.
+DESTINATION_GRID_STEPS = 9
+#: Footprints checked against the collider, farthest first, before none is placed. Only
+#: footprints whose probe points all lie over the surface's own faces count against it:
+#: a round table's bounding-box corners would otherwise use it up.
+DESTINATION_MAX_PROBES = 24
+
+
+def _plan_distance_to_triangles(point: Sequence[float], triangles: np.ndarray) -> float:
+    """A plan point's distance to the nearest of ``triangles`` (shape (n, 3, 2)); zero over one."""
+    p = np.asarray(point, dtype=float)
+    corners = [triangles[:, i] for i in range(3)]
+    crosses = []
+    nearest = np.full(len(triangles), np.inf)
+    for start, end in ((corners[0], corners[1]), (corners[1], corners[2]), (corners[2], corners[0])):
+        edge, offset = end - start, p - start
+        crosses.append(edge[:, 0] * offset[:, 1] - edge[:, 1] * offset[:, 0])
+        t = np.clip((offset * edge).sum(axis=1) / np.maximum((edge * edge).sum(axis=1), 1e-18), 0.0, 1.0)
+        nearest = np.minimum(nearest, np.linalg.norm(offset - t[:, None] * edge, axis=1))
+    a, b, c = crosses
+    inside = ((a >= 0) & (b >= 0) & (c >= 0)) | ((a <= 0) & (b <= 0) & (c <= 0))
+    return 0.0 if inside.any() else float(nearest.min()) if len(nearest) else math.inf
+
+
+def farthest_supported_destination(mesh: Any, start_min: Sequence[float], start_max: Sequence[float],
+                                   region_min: Sequence[float], region_max: Sequence[float],
+                                   start_support: dict[str, Any], *, up: int, meters_per_unit: float,
+                                   up_sign: int = 1, placement_residual_m: float | None = None,
+                                   clearance: float) -> tuple[list[float], dict[str, Any]] | None:
+    """The start footprint moved as far from the start as its own surface and ``region`` allow.
+
+    Only for a destination grounded as the very surface the subject rests on
+    (capture-447ae4f4: the whole dining table for "the other end of the same
+    table", whose centre lay under the tray). Each candidate keeps the target
+    disc inside ``region`` and the support's bounds and clear of the start, and
+    must rest on the same surface by ``support_under`` against real triangles.
+    Returns ``(centre, support)`` in runtime units, or None when none does.
+    """
+    start_min, start_max = np.asarray(start_min, dtype=float), np.asarray(start_max, dtype=float)
+    plan = [axis for axis in range(3) if axis != up]
+    half, origin = (start_max - start_min) / 2, (start_min + start_max) / 2
+    steps = []
+    for axis in plan:
+        low = max(float(region_min[axis]) + half[axis], float(start_support["aabb_min"][axis]) + clearance)
+        high = min(float(region_max[axis]) - half[axis], float(start_support["aabb_max"][axis]) - clearance)
+        if low > high:
+            return None
+        steps.append(np.linspace(low, high, DESTINATION_GRID_STEPS))
+    candidates = []
+    for first, second in ((a, b) for a in steps[0] for b in steps[1]):
+        centre = origin.copy()
+        centre[plan[0]], centre[plan[1]] = first, second
+        if destination_clear_of_start(start_min, start_max, centre, up=up, clearance=clearance):
+            candidates.append(centre)
+    faces = np.asarray(start_support.get("face_indices") or [], dtype=np.int64)
+    if len(faces):
+        # The same nine probe points support_under tests, each over or within its
+        # search window of one of this surface's triangles (in plan, so any
+        # tessellation); the exact test follows below.
+        triangles = np.asarray(mesh.triangles, dtype=float)[faces][:, :, plan]
+        window_m = 0.03
+        if (not isinstance(placement_residual_m, bool) and isinstance(placement_residual_m, (int, float))
+                and math.isfinite(placement_residual_m)):
+            window_m = max(window_m, float(placement_residual_m))
+        from scipy.spatial import cKDTree
+
+        # Only triangles whose centre lies within their own reach plus the window can qualify.
+        centres = triangles.mean(axis=1)
+        reach = float(np.linalg.norm(triangles - centres[:, None], axis=2).max()) + window_m / meters_per_unit
+        nearby = cKDTree(centres)
+        signs = [(a, b) for a in (-1, 0, 1) for b in (-1, 0, 1)]
+
+        def supported(point: list[float]) -> bool:
+            rows = nearby.query_ball_point(point, reach)
+            return bool(rows) and _plan_distance_to_triangles(point, triangles[rows]) <= window_m / meters_per_unit
+
+        candidates = [centre for centre in candidates if all(
+            supported([centre[plan[0]] + a * half[plan[0]], centre[plan[1]] + b * half[plan[1]]]) for a, b in signs)]
+    candidates.sort(key=lambda centre: -math.dist(centre[plan], origin[plan]))
+    for centre in candidates[:DESTINATION_MAX_PROBES]:
+        offset = centre - origin
+        found = support_under(mesh, start_min + offset, start_max + offset, up=up, meters_per_unit=meters_per_unit,
+                              up_sign=up_sign, placement_residual_m=placement_residual_m)
+        if found is not None and same_support_surface(found, start_support):
+            centre = centre.copy()
+            centre[up] = found["top_runtime_units"]
+            return centre.tolist(), found
+    return None
+
+
 #: The unobserved lowest band of a built-in, floor-standing assembly (a toe
 #: kick and the bottom of a front panel) is at most this tall.
 FLOOR_GROUNDING_MAX_GAP_M = 0.35

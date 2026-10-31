@@ -890,6 +890,10 @@ ROBOT_FIXED_VOLUMES: dict[str, dict[str, Any]] = {
 }
 
 
+# ``team_embodiment.ROBOT_ID``: the plan robot row of a team body applied at the station.
+TEAM_ROBOT_ID = "team_embodiment"
+
+
 def robot_fixed_surface(robot_id: str, spacing: float = DEFAULT_SAMPLE_SPACING_M) -> np.ndarray:
     """Surface samples of a robot's fixed volumes, in its base frame."""
     volumes = ROBOT_FIXED_VOLUMES.get(robot_id)
@@ -1105,7 +1109,8 @@ def task_motion_ranges(plan: Mapping[str, Any]) -> dict[str, list[float]]:
     return {str(prim).rsplit("/", 1)[-1] if prim else target: sorted([reset, goal])}
 
 
-def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str, Any]:
+def preflight_native_packet(packet_dir: str | Path, *, scene_plan: Mapping[str, Any] | None = None,
+                           **options: Any) -> dict[str, Any]:
     """Run the preflight for every articulated object of a native task arena packet.
 
     The background is the plan's one ``scene_collision`` object at its pose; each
@@ -1117,6 +1122,11 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
     gravity carries the released joint and are reported elsewhere.
     Every file is bound to the digest the plan recorded for it. A plan with no
     articulated object is ``not_applicable``.
+
+    ``scene_plan`` is the plan the run executes when it differs from the packet's file: a
+    team's robot applied at the station. Its scene files are the packet's. A robot whose
+    fixed volumes were never measured is reported ``unassessed`` with an advisory, never
+    measured as another robot.
     """
     import json
 
@@ -1124,7 +1134,8 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
     from .adp_task_scoring import articulated_release_required
 
     root = Path(packet_dir)
-    plan = json.loads((root / "native_task_arena_scene_plan.v1.json").read_text())
+    plan = (dict(scene_plan) if scene_plan is not None
+            else json.loads((root / "native_task_arena_scene_plan.v1.json").read_text()))
     if "release_required" in options:
         raise ScenePhysicsPreflightError("scene_physics_task_release_override_forbidden")
     try:
@@ -1176,10 +1187,23 @@ def preflight_native_packet(packet_dir: str | Path, **options: Any) -> dict[str,
             raise ScenePhysicsPreflightError("scene_physics_robot_pose_missing")
         subject, ((joint_id, span),) = subjects[0], reach.items()
         reset = subject.get("reset_state") or {}
+        # A team's robot at the station is measured as itself, by its embodiment.
+        measured_id = str(robot.get("embodiment_id") if robot.get("robot_id") == TEAM_ROBOT_ID else robot.get("robot_id"))
+    if reach and robot.get("robot_id") == TEAM_ROBOT_ID and (
+            measured_id not in ROBOT_FIXED_VOLUMES
+            or robot.get("usd_sha256") != ROBOT_FIXED_VOLUMES[measured_id]["measured_from_sha256"]):
+        # Volumes measured on another model would measure the wrong body, whatever the team named
+        # it: say so, and keep going.
+        robot_report = {"status": "unassessed", "reason": "robot_fixed_volumes_unmeasured",
+                        "robot_id": TEAM_ROBOT_ID, "embodiment_id": robot.get("embodiment_id"),
+                        "embodiment_digest": robot.get("embodiment_digest"), "base_mode": robot.get("base_mode"),
+                        "blockers": [], "advisories": [], "notices": []}
+        advisories.append(f"{subject.get('name')}:scene_physics_robot_clearance_unassessed:{robot.get('embodiment_id')}")
+    elif reach:
         robot_report = robot_motion_clearance(
             asset_usd=bound(subject), asset_pose_world=reset.get("root_pose_world") or subject["pose_world"],
             reset_joint_positions=reset.get("joint_positions"), joint_id=joint_id, task_range=span,
-            robot_id=str(robot.get("robot_id")), robot_pose_world=robot["base_pose_world"], **options)
+            robot_id=measured_id, robot_pose_world=robot["base_pose_world"], **options)
         runtime = ((plan.get("articulation") or {}).get("robot_contact_topology") or {}).get("runtime_asset") or {}
         if runtime.get("sha256") and runtime["sha256"] != robot_report["measured_from_sha256"]:
             robot_report["notices"].append("scene_physics_robot_volumes_measured_on_other_asset")

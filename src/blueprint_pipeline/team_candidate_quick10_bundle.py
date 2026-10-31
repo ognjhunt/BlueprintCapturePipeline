@@ -273,7 +273,7 @@ def build_team_candidate_session_bundle(
         package_source_dir=package, shipped_module_names=sorted(path.name for path in runtime_modules),
         shipped_package_files=CANARY_SHIPPED_PACKAGE_FILES, code="team_candidate_bundle_import_closure_incomplete")
     base = build_native_task_arena_bundle(
-        job_dir=job / "base", packet_dir=packet_dir,
+        job_dir=job / "base", packet_dir=packet_dir, team_embodiment=spec.get("team_embodiment"),
         worker_source=package / "native_task_arena_policy_canary_worker.py",
         runtime_module_sources=runtime_modules, implementation_commit=implementation_commit,
         execution_mode="construction_canary", expected_output_filename=PROVIDER_RESULT_FILENAME,

@@ -181,6 +181,7 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
         "toolchain",
     ]
     assert calls[1][1]["vgg16_weights_path"] == vgg16_weights
+    assert calls[4][1]["proven_readback"] == {}  # admitted before any component: none published yet
     assert calls[1][1]["python_runtime_profile"] == ("astra_asset_authoring" if astra else "base")
     assert calls[2][1]["blender_archive_path"] == (tmp_path / "blender.tar.xz" if astra else None)
     assert result["status"] == "ready"

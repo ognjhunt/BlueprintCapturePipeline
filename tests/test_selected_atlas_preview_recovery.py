@@ -689,3 +689,36 @@ def test_native_resume_preserves_a_bounded_unrecognized_staging_error(site, monk
     assert result['staging_reason'] == 'capture_staging_unavailable'
     assert result.get('staging_error') == expected
     assert 'secret' not in json.dumps(result) and 'X-Goog' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('described,expected', [
+    ({'type': 'urllib.error.HTTPError', 'message': 'HTTP Error 503: Service Unavailable session=hunter2'},
+     {'type': 'urllib.error.HTTPError', 'message': 'HTTP Error 503: Service Unavailable session=<redacted>'}),
+    ({'type': 'urllib.error.HTTPError', 'message': 'HTTP Error 503', 'body': 'private token=secret'}, None),
+])
+def test_native_resume_preserves_a_bounded_owner_observation_error(site, monkeypatch, described, expected):
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+
+    delivery = 'sha256:' + '8' * 64
+    site.observation['producer_delivery']['delivery_key'] = delivery
+    ledger = {'scene_id': 'site-fixture', 'capture_id': 'walkthrough-fixture',
+              'status': 'failed_retryable', 'revision': 13, 'attempt_count': 5,
+              'source_payload_sha256': '7' * 64, 'producer_delivery_key': delivery}
+    (site.capture / listener.JOB_LEDGER_FILENAME).write_text(json.dumps(ledger))
+    write_job(site, state='ready')
+    reviewed = recover(site)['atlas']['atlas_status_digest']
+    monkeypatch.setenv('BLUEPRINT_PUBSUB_HANDOFF_PROVIDER', 'openai')
+    result = recovery.recover_selected_atlas_preview(
+        {**site.selection, 'mode': 'preparation-resume', 'atlas_status_digest': reviewed},
+        observation=site.observation, membership=site.membership,
+        capture_root=site.capture, storage_root=site.storage,
+        handoff_payload=b'original selected bytes',
+        listener=SimpleNamespace(process_handoff_payload=lambda *_a, **_k: {
+            'status': 'capture_owner_observation_unavailable_retryable', 'queue_disposition': 'retryable',
+            'owner_observation_reason': 'capture_owner_response_unavailable',
+            'owner_observation_error': described}))
+    assert result['status'] == 'blocked'
+    assert result['owner_observation_reason'] == 'capture_owner_response_unavailable'
+    # Only the exact shape is repeated, bounded again here.
+    assert result.get('owner_observation_error') == expected
+    assert 'secret' not in json.dumps(result) and 'hunter2' not in json.dumps(result)

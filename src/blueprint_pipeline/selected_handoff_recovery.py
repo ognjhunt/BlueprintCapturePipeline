@@ -324,9 +324,10 @@ def recover_selected_handoff(
             reason = native.get("staging_reason")
             if type(reason) is str and reason in STAGING_REASON_CODES:
                 result["staging_reason"] = reason
-            staging_error = bounded_staging_error(native.get("staging_error"))
-            if staging_error is not None:
-                result["staging_error"] = staging_error
+            for field in ("owner_observation_error", "staging_error"):
+                described = bounded_staging_error(native.get(field))
+                if described is not None:
+                    result[field] = described
             if (
                 native.get("status") != "processed"
                 or native.get("queue_disposition") != "terminal_success"
@@ -347,12 +348,14 @@ def recover_selected_handoff(
             "website_capture_withdrawn": "selected_handoff_atlas_capture_withdrawn",
             "atlas_preview_retry_requires_recoverable_failure": "selected_handoff_atlas_retry_requires_recoverable_failure",
         }.get(code, code)
-        safe_code = (
-            code
-            if re.fullmatch(r"selected_handoff_[a-z_]+", code)
-            else "selected_handoff_current_lookup_or_admission_failed"
-        )
-        return {**result, "status": "blocked", "blockers": [safe_code]}
+        if re.fullmatch(r"selected_handoff_[a-z_]+", code):
+            return {**result, "status": "blocked", "blockers": [code]}
+        # The generic code covers every source read, owner read, admission and
+        # native handler failure. Keep its type and a redacted, trimmed message.
+        from .bounded_error import error_description
+
+        return {**result, "status": "blocked", "error": error_description(exc),
+                "blockers": ["selected_handoff_current_lookup_or_admission_failed"]}
 
 
 def main(argv=None):
