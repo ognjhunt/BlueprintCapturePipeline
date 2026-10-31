@@ -606,6 +606,99 @@ def tick(storage_root: Path, *, now: Callable[[], float] = time.time, continue_s
     return counts
 
 
+def _read_only_client(transport: Any = None) -> Any:
+    """An Atlas client that can read operations, assets and output read URLs, and nothing else."""
+    from . import website_atlas_pose as pose
+    base, key = pose.atlas_api_config()
+    send = transport or pose._safe_transport(base)
+
+    def read_only(method: str, url: str, headers: Mapping[str, str], data: bytes | None) -> Any:
+        read_url = method == "POST" and url.startswith(base + "/assets/") and url.endswith(":createReadUrl")
+        if method != "GET" and not read_url:
+            raise ValueError("atlas_provider_poll_read_only")
+        return send(method, url, headers, data)
+    return pose.AtlasClient(base_url=base, api_key=key, transport=read_only)
+
+
+def _live_submissions(job_dir: Path) -> list[Path]:
+    """Roots of submissions whose operation World Labs is still running, as far as the record knows."""
+    roots = []
+    for path in sorted(job_dir.rglob("atlas_pose/submission.json")):
+        state = {} if path.is_symlink() else json.loads(path.read_text())
+        if state.get("status") == "submitted" and isinstance(state.get("operation_id"), str):
+            roots.append(path.parent.parent)
+    return roots
+
+
+def _poll_submission(root: Path, *, client: Any, now: Callable[[], float]) -> str:
+    """One read through the submission's own adapter, recording exactly what its poll records."""
+    from . import website_atlas_pose as pose
+    from .website_atlas_tasks import poll_atlas_task_submission
+    try:
+        if (pose.atlas_pose_submission_state(root) or {}).get("schema_version") == pose.SUBMISSION_SCHEMA:
+            result = pose.collect_atlas_pose_operation(output_root=root, client=client, sleep=time.sleep, now=now,
+                                                       max_polls=1, poll_interval_seconds=0)
+        else:
+            result = poll_atlas_task_submission(root, client=client, now=now)
+    except ValueError as error:
+        if str(error) in {"website_atlas_pose_operation_failed", "atlas_task_operation_failed"}:
+            return "failed"  # recorded; whether to resubmit is the next tick's decision
+        raise
+    return str(result.get("status") or "completed")
+
+
+def poll_jobs(jobs: list[tuple[Path, Callable[[Path], dict[str, Any]], Callable[[dict[str, Any]], bool]]], *,
+              now: Callable[[], float] = time.time, transport: Any = None) -> dict[str, int]:
+    """Read each processing job's live Atlas operations once; the deploy-safe half of a tick.
+
+    A finished operation is retained, or its failure recorded, exactly as the
+    adapter's own poll would, so the next tick moves the job on at once. Nothing
+    here loads a task context or reaches an admission, reservation, upload,
+    submission, settlement or retry, the job record is never written, and the
+    client refuses every provider mutation but an output read URL: it cannot
+    spend, which is why ``blueprint-website-atlas-provider-poll`` keeps running
+    through control-plane deploys. Each entry is (job path, reader, source still live).
+    """
+    counts: dict[str, int] = {}
+    client = None
+    for path, reader, source_live in jobs:
+        outcomes = ["idle"]
+        try:
+            # The tick's own lock: a tick finding the adapter's lock taken would fail its job.
+            with preparation_job_lock(path.parent):
+                job, current = reader(path), int(now())
+                if (job["state"] == "processing" and current >= job["next_attempt_at_epoch"]
+                        and current - job["enqueued_at_epoch"] <= MAXIMUM_JOB_SECONDS and source_live(job)):
+                    roots = _live_submissions(path.parent)
+                    if roots:
+                        client = client or _read_only_client(transport)
+                        outcomes = []
+                    for root in roots:
+                        try:
+                            outcomes.append(_poll_submission(root, client=client, now=now))
+                        except Exception as error:  # noqa: BLE001 - the next tick sees the same record
+                            logger.warning("website_atlas_provider_poll_failed type=%s code=%s",
+                                           type(error).__name__, _reason(error))
+                            outcomes.append("error")
+        except PreparationJobBusy:
+            outcomes = ["busy"]
+        except Exception as error:  # noqa: BLE001 - one job (or a missing key) never stops the others
+            logger.warning("website_atlas_provider_poll_job_failed type=%s code=%s", type(error).__name__,
+                           _reason(error))
+            outcomes = ["error"]
+        for outcome in outcomes:
+            counts[outcome] = counts.get(outcome, 0) + 1
+    return counts
+
+
+def poll(storage_root: Path, *, now: Callable[[], float] = time.time, transport: Any = None) -> dict[str, int]:
+    """``poll_jobs`` over the website preview jobs; a withdrawn capture is left to the tick."""
+    jobs = [(path, _read, lambda _job, capture=path.parents[2]: not _withdrawn(capture))
+            for path in sorted(Path(storage_root).glob(f"*/scenes/site-*/captures/*/pipeline/atlas/{JOB_FILE}"))
+            if capture_name_matches_request(path.parents[4].name.removeprefix("site-"), path.parents[2].name)]
+    return poll_jobs(jobs, now=now, transport=transport)
+
+
 def continue_seconds_from_environment() -> float:
     """The continuation budget; an unreadable setting keeps the default, 0 turns it off."""
     text = os.getenv(CONTINUE_SECONDS_ENV, "").strip()
@@ -654,6 +747,8 @@ def main(argv: list[str] | None = None) -> int:
     advance = commands.add_parser("tick", help="advance every preview job one bounded step, and jobs that "
                                   "advanced again at once for up to " + CONTINUE_SECONDS_ENV + " seconds")
     advance.add_argument("--storage-root", type=Path, required=True)
+    read = commands.add_parser("poll", help="read live Atlas operations once; never spends or advances a job")
+    read.add_argument("--storage-root", type=Path, required=True)
     retry = commands.add_parser("retry", help="resume one failed job after its cause is fixed (run as the service user)")
     retry.add_argument("--job", type=Path, required=True)
     args = parser.parse_args(argv)
@@ -662,6 +757,12 @@ def main(argv: list[str] | None = None) -> int:
         job = retry_failed_job(args.job)
         print(json.dumps({key: job[key] for key in ("capture_id", "state", "revision", "retries")},
                          sort_keys=True), flush=True)
+        return 0
+    if args.command == "poll":
+        from .owned_capture_atlas_worker import poll_from_environment
+        counts = poll(args.storage_root)
+        counts.update({"owned_" + key: value for key, value in poll_from_environment().items()})
+        print(json.dumps(counts, sort_keys=True), flush=True)
         return 0
     counts = tick(args.storage_root, continue_seconds=continue_seconds_from_environment(),
                   stop_reason=trigger_stop_reason())

@@ -302,7 +302,11 @@ also takes precedence over automatic timer/path arming: deploy leaves that
 unit stopped and records its owner, reason and expiry in the receipt. If the
 holds directory cannot be read, the receipt alerts `door_holds_unreadable`.
 The signed hotfix overlay path of the iteration wrapper is not offered through
-the door.
+the door. The Atlas provider poll (`blueprint-website-atlas-provider-poll.timer`
+and `.path`) is the one exception to the deploy's quiesce: it only reads
+operations already bought, so it keeps running through a deploy and is
+restarted with the release; see "Provider poll and completion webhooks" in
+`docs/runbooks/atlas-beta.md`.
 
 Pause a safe trigger through the door with an owner and automatic expiry:
 

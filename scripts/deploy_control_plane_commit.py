@@ -504,6 +504,21 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-pipeline-intake.service",
     "blueprint-website-atlas-preview.service",
     "blueprint-website-atlas-preview.timer",
+    "blueprint-website-atlas-provider-poll.service",
+    "blueprint-website-atlas-provider-poll.timer",
+    "blueprint-website-atlas-provider-poll.path",
+)
+#: Triggers a deploy never quiesces. The Atlas provider poll only reads
+#: operations World Labs is already running for us and records what the next
+#: preview tick would; it uploads, reserves, submits and settles nothing and
+#: never advances a job, so it cannot spend while release identities move, and
+#: a finished operation is not left waiting out a 30-40 minute deploy. A run
+#: that overlaps the release switch keeps the release it started in. Each
+#: deploy still installs these units and restarts the triggers (never a running
+#: poll) with the other no-spend watchers; an owner hold still stops them.
+DEPLOY_EXEMPT_TRIGGER_UNITS = (
+    "blueprint-website-atlas-provider-poll.timer",
+    "blueprint-website-atlas-provider-poll.path",
 )
 #: Watchers whose execution surface is provably no-spend and may be armed on a
 #: fresh host without widening provider authority.  The paid dispatcher is
@@ -5071,7 +5086,7 @@ def deploy_control_plane_commit(
     automation_unit_names = [
         {"unit": unit}
         for unit in DEFAULT_DEPLOYED_SYSTEMD_UNITS
-        if unit.endswith((".path", ".timer"))
+        if unit.endswith((".path", ".timer")) and unit not in DEPLOY_EXEMPT_TRIGGER_UNITS
     ]
     # Where a deploy's minutes go is otherwise invisible; the receipt records
     # each stage so a slow deploy is a measurement, not a feeling.
@@ -5364,7 +5379,7 @@ def deploy_control_plane_commit(
                 installed_systemd_units,
                 before=automation_unit_states_before,
                 arm_path_units=arm_path_units,
-                always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
+                always_arm_units=(*DEFAULT_ALWAYS_ARM_PATH_UNITS, *DEPLOY_EXEMPT_TRIGGER_UNITS),
                 always_arm_authority_gated_units=(
                     DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
                 ),
