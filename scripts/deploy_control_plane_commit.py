@@ -3595,6 +3595,28 @@ def _restore_drained_triggers(
         ) from error
 
 
+def _drain_unit_triggers(
+    units: Sequence[str], installed_units: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """The triggers a drain stops, refusing any unit or trigger it cannot restore.
+
+    Read-only. The deploy calls it once before the release build as well, so a
+    drain it would refuse refuses before the build, not twenty minutes later.
+    """
+    managed = {str(entry.get("unit") or "") for entry in installed_units}
+    triggers: set[str] = set()
+    for unit in units:
+        if not _DRAINABLE_SERVICE.fullmatch(unit):
+            raise ControlPlaneDeployError(f"deploy_drain_unit_invalid:{unit}")
+        for trigger in _systemd_show(unit, "TriggeredBy").get("TriggeredBy", "").split():
+            if trigger not in managed:
+                # The deploy only restores triggers it installs; stopping any
+                # other could leave it off after a successful deploy.
+                raise ControlPlaneDeployError(f"deploy_drain_trigger_unmanaged:{unit}:{trigger}")
+            triggers.add(trigger)
+    return sorted(triggers)
+
+
 @contextlib.contextmanager
 def _draining_service_units(
     units: Sequence[str],
@@ -3615,18 +3637,7 @@ def _draining_service_units(
     if not units:
         yield {}, {}
         return
-    managed = {str(entry.get("unit") or "") for entry in installed_units}
-    triggers: set[str] = set()
-    for unit in units:
-        if not _DRAINABLE_SERVICE.fullmatch(unit):
-            raise ControlPlaneDeployError(f"deploy_drain_unit_invalid:{unit}")
-        for trigger in _systemd_show(unit, "TriggeredBy").get("TriggeredBy", "").split():
-            if trigger not in managed:
-                # The deploy only restores triggers it installs; stopping any
-                # other could leave it off after a successful deploy.
-                raise ControlPlaneDeployError(f"deploy_drain_trigger_unmanaged:{unit}:{trigger}")
-            triggers.add(trigger)
-    entries = [{"unit": trigger} for trigger in sorted(triggers)]
+    entries = [{"unit": trigger} for trigger in _drain_unit_triggers(units, installed_units)]
     prior = _installed_path_unit_states(entries)
     try:
         _quiesce_active_path_units(prior)
@@ -4909,6 +4920,7 @@ def deploy_control_plane_commit(
 
     global _DEPLOY_ACTIVE_TRANSITION
     _DEPLOY_ACTIVE_TRANSITION = False
+    deploy_started = time.monotonic()
 
     if preserve_configured_controls_state and arm_path_units:
         raise ControlPlaneDeployError("deploy_conflicting_configured_controls_intent")
@@ -5080,46 +5092,38 @@ def deploy_control_plane_commit(
     # each stage so a slow deploy is a measurement, not a feeling.
     stage_timings: dict[str, float] = {}
     capture_transfer_prerequisites = None
-    stage_clock = [time.monotonic()]
+    stage_clock = [deploy_started]
+    pause_clock: dict[str, float] = {}
 
     def _mark_stage(name: str) -> None:
         now = time.monotonic()
         stage_timings[name] = round(now - stage_clock[0], 3)
         stage_clock[0] = now
 
-    # Held for the whole deploy, not sampled before it: a launch that starts
-    # mid-deploy would read a release being swapped underneath it.  The nested
-    # guard restores exact watcher intent before the paid locks are released if
-    # any later deploy step fails.
+    # Two phases under one deploy lock. The build writes only this commit's own
+    # release checkout and runtime trees, which nothing reads until the release
+    # link moves, so every trigger and paid launch stays live while it runs (it
+    # was ~21 of the ~33 minutes every timer stood still, 2026-10-30). The
+    # pause stack then drains, closes the paid-launch gate and quiesces every
+    # watcher before the first step that changes anything a running unit or a
+    # launch reads (provenance, shared interpreter, scene-retirement runtime,
+    # sandbox paths, scene-configuration environment, source, release link),
+    # and holds them until the watchers are restored. A failure while building
+    # has stopped nothing; any later failure restores exact watcher intent
+    # before the paid locks are released, as before.
     with (
         disk_reservation or contextlib.nullcontext(),
         staging_reservation or contextlib.nullcontext(),
         _holding_deploy_lock(state),
-        # Before the gate and the full quiesce: only the drained services'
-        # triggers stop while their in-flight runs finish.
-        _draining_service_units(
-            tuple(drain_units), wait_seconds=drain_seconds,
-            installed_units=automation_unit_names, door_holds_dir=door_holds_dir,
-        ) as (drained_units, drained_trigger_states),
-        _holding_paid_launch_gate(paid_launch_locks) as paid_runs_in_flight,
-        _restore_path_unit_states_on_deploy_failure(
-            automation_unit_names, door_holds_dir=door_holds_dir,
-            prior_states=drained_trigger_states,
-        ) as (
-            automation_unit_states_before,
-            quiesced_automation_units,
-        ),
+        contextlib.ExitStack() as pause,
     ):
-        if Path(controls_autoprovision_bootstrap_file).expanduser().exists():
-            _require_terminal_controls_quiescence(wait_seconds=600)
+        _mark_stage("admission_and_deploy_lock")
+        if drain_units:
+            _drain_unit_triggers(tuple(drain_units), automation_unit_names)
+        # Intake, the only unit that uses the capture-transfer runtime, is never
+        # paused, so this needs no pause; it still fails before the long build.
         capture_transfer_prerequisites = _prepare_capture_transfer_from_source(source, source_commit)
         _mark_stage("capture_transfer_prerequisites")
-        installed_provenance = _install_release_provenance(
-            payload=provenance_payload,
-            state_root=state,
-            source_commit=source_commit,
-            receipt=provenance_receipt,
-        )
         staged_release = stage_task_evaluation_control_plane_release(
             source_repo=source,
             source_commit=source_commit,
@@ -5129,27 +5133,13 @@ def deploy_control_plane_commit(
             activate=False,
             allow_unmerged_remote_commit=canary,
         )
-        scene_retirement_runtime = _prepare_scene_retirement_runtime(
-            source_repo=source, source_commit=source_commit
-        )
-        shared_runtime_dependencies = _synchronize_shared_control_plane_dependencies(
-            release_path=staged_release["release_path"]
-        )
-        scene_retirement_stores = _install_scene_retirement_stores()
-        _mark_stage("release_staged")
+        _mark_stage("release_checkout_staged")
         # Record what this deploy really stages (the release checkout it created
         # and the runtime trees it provisions) as the deploy role's footprint.
         runtime_trees_root = Path(scene_configuration_runtime_root).expanduser()
         runtime_trees_before: set[Path] = set()
         if disk_reservation is not None:
             runtime_trees_before = _release_runtime_trees(runtime_trees_root, source_commit)
-        # Every path the new units' sandboxes name must exist before the
-        # release link moves, or the first worker to start after the switch
-        # dies on mount setup and the deploy still reports success.
-        unit_sandbox_paths = _install_unit_sandbox_paths(
-            release_path=staged_release["release_path"]
-        )
-        _mark_stage("unit_sandbox_paths")
         try:
             # Unnamed: the one builder setting (Astra until ARTISAN go-live).
             from blueprint_pipeline.task_object_authoring_backend import default_backend
@@ -5190,6 +5180,64 @@ def deploy_control_plane_commit(
             ) from exc
         if staging_reservation is not None:
             staging_reservation.release()  # the step removed its scratch copy
+        if disk_reservation is not None:
+            created_usage = _created_release_usage(
+                created_release_checkout=bool(staged_release.get("created_release_checkout")),
+                release_path=staged_release["release_path"],
+                runtime_root=runtime_trees_root,
+                commit=source_commit,
+                runtime_trees_before=runtime_trees_before,
+            )
+            _observe_created_release_usage(disk_reservation, created_usage)
+        _mark_stage("runtime_trees_provisioned")
+
+        # The pause. Only the drained services' triggers stop while their
+        # in-flight runs finish; then no new paid launch can start, then every
+        # watcher stops with its prior state recorded.
+        pause_clock["drain_started"] = time.monotonic()
+        drained_units, drained_trigger_states = pause.enter_context(_draining_service_units(
+            tuple(drain_units), wait_seconds=drain_seconds,
+            installed_units=automation_unit_names, door_holds_dir=door_holds_dir,
+        ))
+        paid_runs_in_flight = pause.enter_context(_holding_paid_launch_gate(paid_launch_locks))
+        pause_clock["gate_acquired"] = time.monotonic()
+        # The build left launches open, so a run may have started in a unit this
+        # deploy restarts. With the gate held that set can only shrink: refuse
+        # now, before anything moves, not after the release link has.
+        _require_in_flight_runs_outside_units(
+            paid_runs_in_flight, _required_restart_units(restart_units)
+        )
+        automation_unit_states_before, quiesced_automation_units = pause.enter_context(
+            _restore_path_unit_states_on_deploy_failure(
+                automation_unit_names, door_holds_dir=door_holds_dir,
+                prior_states=drained_trigger_states,
+            )
+        )
+        pause_clock["quiesced"] = time.monotonic()
+        if Path(controls_autoprovision_bootstrap_file).expanduser().exists():
+            _require_terminal_controls_quiescence(wait_seconds=600)
+        _mark_stage("triggers_paused")
+        installed_provenance = _install_release_provenance(
+            payload=provenance_payload,
+            state_root=state,
+            source_commit=source_commit,
+            receipt=provenance_receipt,
+        )
+        scene_retirement_runtime = _prepare_scene_retirement_runtime(
+            source_repo=source, source_commit=source_commit
+        )
+        shared_runtime_dependencies = _synchronize_shared_control_plane_dependencies(
+            release_path=staged_release["release_path"]
+        )
+        scene_retirement_stores = _install_scene_retirement_stores()
+        _mark_stage("scene_retirement_runtime_and_shared_dependencies")
+        # Every path the new units' sandboxes name must exist before the
+        # release link moves, or the first worker to start after the switch
+        # dies on mount setup and the deploy still reports success.
+        unit_sandbox_paths = _install_unit_sandbox_paths(
+            release_path=staged_release["release_path"]
+        )
+        _mark_stage("unit_sandbox_paths")
         scene_configuration_environment = _install_scene_configuration_environment(
             Path(scene_configuration_environment_file).expanduser(),
             environment=scene_configuration_runtime["environment"],
@@ -5201,16 +5249,7 @@ def deploy_control_plane_commit(
         else:
             scene_preparation_installation = {"status": "not_configured", "bootstrap_path": str(bootstrap),
                                               "provider_mutation_performed": False}
-        if disk_reservation is not None:
-            created_usage = _created_release_usage(
-                created_release_checkout=bool(staged_release.get("created_release_checkout")),
-                release_path=staged_release["release_path"],
-                runtime_root=runtime_trees_root,
-                commit=source_commit,
-                runtime_trees_before=runtime_trees_before,
-            )
-            _observe_created_release_usage(disk_reservation, created_usage)
-        _mark_stage("runtime_trees_provisioned")
+        _mark_stage("scene_configuration_environment_installed")
         agent_pre_activation_drain = _drain_agent_execution_before_release_switch(
             expected_commit=source_commit
         )
@@ -5296,6 +5335,9 @@ def deploy_control_plane_commit(
                 "provider_mutation_performed": False,
             }
             terminal_controls_adoptions = {'status': 'not_configured', 'provider_mutation_performed': False}
+        # Half the deploys of 2026-10-30 spent ~5 minutes in the stage around
+        # this and half ~10 seconds; mark it so the next receipt says which step.
+        _mark_stage("controls_autoprovision_installed")
 
         runtime_binding = _install_intake_runtime_identity_drop_in(
             Path(intake_runtime_drop_in).expanduser(),
@@ -5350,6 +5392,17 @@ def deploy_control_plane_commit(
             automation_unit_state_receipts, door_holds_dir=door_holds_dir,
         )
         door_holds_warning = door_holds_warning or verification_warning
+        _mark_stage("agent_activated_and_triggers_rearmed")
+        pause_clock["rearmed"] = time.monotonic()
+    pause_clock["gate_released"] = time.monotonic()
+    # How long jobs actually stood still, which the stage list alone hides:
+    # drained triggers from the drain, every other watcher from the quiesce,
+    # and new paid launches while the gate was held.
+    trigger_pause_seconds = {
+        "drained_triggers": round(pause_clock["rearmed"] - pause_clock["drain_started"], 3),
+        "all_triggers": round(pause_clock["rearmed"] - pause_clock["quiesced"], 3),
+        "paid_launch_gate": round(pause_clock["gate_released"] - pause_clock["gate_acquired"], 3),
+    }
 
     # Deployment authority does not authorize deletion. Leave even interrupted
     # retirement trees untouched, and preserve the last actual retirement summary.
@@ -5375,6 +5428,7 @@ def deploy_control_plane_commit(
         "unit_sandbox_paths": unit_sandbox_paths,
         "capture_transfer_prerequisites": capture_transfer_prerequisites,
         "stage_timings_seconds": stage_timings,
+        "trigger_pause_seconds": trigger_pause_seconds,
         "drained_units": drained_units,
         "source_commit": commit,
         "disk_reservation": disk_reservation_receipt,
