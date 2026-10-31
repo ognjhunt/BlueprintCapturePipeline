@@ -37,7 +37,10 @@ TasksMax=512
 LimitNOFILE=8192
 MemoryMax=8G
 CPUQuota=200%
-TimeoutStartSec=1h
+# The worker gives its preparation command four hours (ACTIVATION_PREPARER_TIMEOUT_SECONDS);
+# systemd allows a little more so the worker, not a kill, records the outcome. On
+# 2026-10-31 a scene-configuration provider bundle was still being written at 1h.
+TimeoutStartSec=4h15min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations

@@ -1098,3 +1098,16 @@ def test_intake_reads_website_preparation_status_from_the_listener_tree() -> Non
     binding = "Environment=BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT=/var/lib/blueprint/pubsub-handoffs"
     for name in ("blueprint-pipeline-intake.service", "blueprint-pubsub-handoff-listener.service"):
         assert binding in _read(name).splitlines(), name
+
+
+def test_launch_activation_unit_outlasts_its_preparation_command():
+    """2026-10-31: a scene-configuration bundle was still being written when the 1h unit timeout fired."""
+    from blueprint_pipeline.task_evaluation_launch_activation_worker import (
+        ACTIVATION_PREPARER_TIMEOUT_SECONDS,
+    )
+
+    text = _read("blueprint-task-evaluation-launch-activation.service")
+    timeouts = [line.split("=", 1)[1] for line in text.splitlines() if line.startswith("TimeoutStartSec=")]
+    assert timeouts == ["4h15min"]
+    assert ACTIVATION_PREPARER_TIMEOUT_SECONDS == 4 * 3600
+    assert ACTIVATION_PREPARER_TIMEOUT_SECONDS < 4 * 3600 + 15 * 60
