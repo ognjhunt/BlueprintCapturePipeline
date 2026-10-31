@@ -102,10 +102,10 @@ def test_minus_y_up_worlds_ground_in_the_source_frame():
     assert value["extended_runtime_units"] == pytest.approx(.2)
 
 
-def bumpy_plate(x0=-.3, x1=.3, y0=-.3, y1=.3, height=.7, *, noise=.006, slope=0.0, seed=0):
+def bumpy_plate(x0=-.3, x1=.3, y0=-.3, y1=.3, height=.7, *, noise=.006, slope=0.0, seed=0, step=.01):
     """A reconstructed counter: a dense 1 cm grid whose vertices wander millimetres, as Atlas meshes do."""
     rng = np.random.default_rng(seed)
-    xs, ys = np.arange(x0, x1 + 1e-9, .01), np.arange(y0, y1 + 1e-9, .01)
+    xs, ys = np.arange(x0, x1 + 1e-9, step), np.arange(y0, y1 + 1e-9, step)
     gx, gy = np.meshgrid(xs, ys, indexing="ij")
     gz = height + slope * gx + rng.normal(0.0, noise, gx.shape)
     k = (np.arange(len(xs) - 1)[:, None] * len(ys) + np.arange(len(ys) - 1)[None, :]).reshape(-1)
@@ -164,6 +164,19 @@ def test_two_fits_on_one_bumpy_counter_name_the_same_surface():
     assert elsewhere is not None and not same_support_surface(start, elsewhere)
     exact = support_under(plate(), [-.03, -.03, .71], [.03, .03, .8], up=2, meters_per_unit=1)
     assert same_support_surface(exact, exact) and not same_support_surface(exact, start)
+
+
+def test_a_level_patch_within_a_fitted_surface_is_that_surface():
+    """A conditioned collider (website_collider_conditioning) reads level under a footprint
+    wholly on its flattened patch and fitted under one over a gap in it: one surface."""
+    from blueprint_pipeline.website_support_geometry import same_support_surface
+
+    fitted = {"basis": "fitted_surface_under_footprint", "face_indices": list(range(100))}
+    level = {"basis": "reconstructed_triangle_footprint_contacts", "face_indices": list(range(5, 95))}
+    assert same_support_surface(level, fitted) and same_support_surface(fitted, level)
+    assert not same_support_surface({**level, "face_indices": list(range(50, 140))}, fitted)
+    assert not same_support_surface({**level, "face_indices": []}, fitted)
+    assert not same_support_surface({**fitted, "basis": "collider_floor_beside_footprint"}, fitted)
 
 
 def test_a_y_up_bumpy_counter_in_estimated_units_is_fitted():
@@ -287,7 +300,7 @@ def test_a_destination_grounded_as_the_start_surface_moves_to_its_farthest_suppo
     support = support_under(table, start_min, start_max, up=2, meters_per_unit=1)
     clearance = np.hypot(.1, .1) + .01
     assert not destination_clear_of_start(start_min, start_max, [0, 0, .7], up=2, clearance=clearance)
-    centre, found = farthest_supported_destination(table, start_min, start_max, [-.6, -.4, .6], [.6, .4, .8],
+    centre, found, on_surface = farthest_supported_destination(table, start_min, start_max, [-.6, -.4, .6], [.6, .4, .8],
                                                    support, up=2, meters_per_unit=1, clearance=clearance)
     assert centre[0] > .3  # the far end from a start left of centre
     assert destination_clear_of_start(start_min, start_max, centre, up=2, clearance=clearance)
@@ -295,6 +308,25 @@ def test_a_destination_grounded_as_the_start_surface_moves_to_its_farthest_suppo
     assert all(support["aabb_min"][a] + clearance - 1e-9 <= centre[a] <= support["aabb_max"][a] - clearance + 1e-9
                for a in (0, 1))
     assert centre[2] == pytest.approx(.7, abs=.01) and found["basis"] == support["basis"]
+
+
+def test_a_relocated_disc_tangent_to_its_surface_stays_inside_it():
+    """capture-447ae4f4 at the 0.25 size tolerance: the farthest spot left the disc on the table's
+    bounds, and the conversion to the simulator frame put it 5.6e-17 m past them (refused)."""
+    from blueprint_pipeline.website_support_geometry import DESTINATION_EDGE_GUARD_M, farthest_supported_destination
+
+    # A clean rim at the far corners: at 6 mm of noise a dent of dropped faces opens there,
+    # which the region now keeps clear of instead of resting tangent to the box.
+    table = bumpy_plate(-.6, .6, -.4, .4, noise=.002)
+    start_min, start_max = [-.15, -.1, .7], [.05, .1, .75]
+    support = support_under(table, start_min, start_max, up=2, meters_per_unit=1)
+    clearance = 1.25 * np.hypot(.1, .1) + .01
+    # The destination's region reaches past the surface: the surface's bounds limit the move.
+    centre, _, _ = farthest_supported_destination(table, start_min, start_max, [-1, -1, .6], [1, 1, .8], support,
+                                               up=2, meters_per_unit=1, clearance=clearance)
+    margins = [min(centre[a] - clearance - support["aabb_min"][a], support["aabb_max"][a] - centre[a] - clearance)
+               for a in (0, 1)]
+    assert min(margins) > 0 and min(margins) == pytest.approx(DESTINATION_EDGE_GUARD_M, abs=1e-12)
 
 
 def test_no_destination_is_placed_when_the_surface_leaves_no_room_off_the_start():
@@ -335,7 +367,7 @@ def test_a_round_table_is_searched_past_its_unsupported_bounding_box_corners():
     moved = farthest_supported_destination(table, start_min, start_max, [-.8, -.8, .6], [.8, .8, .8], support,
                                            up=2, meters_per_unit=1, clearance=clearance)
     assert moved is not None
-    centre, found = moved
+    centre, found, on_surface = moved
     assert destination_clear_of_start(start_min, start_max, centre, up=2, clearance=clearance)
     # Every corner of the moved footprint is on the round top.
     assert all(np.hypot(centre[0] + a * .1, centre[1] + b * .1) <= .8 for a in (-1, 1) for b in (-1, 1))
@@ -350,3 +382,210 @@ def test_a_coarsely_triangulated_surface_keeps_its_supported_destinations():
     moved = farthest_supported_destination(plate(), start_min, start_max, [-1, -1, .6], [1, 1, .8], support,
                                            up=2, meters_per_unit=1, clearance=np.hypot(.1, .1) + .01)
     assert moved is not None and max(abs(moved[0][0]), abs(moved[0][1])) > .5
+
+
+def _cut(plate, keep):
+    """The faces of ``plate`` whose centres pass ``keep(x, y)``: a top of any outline, holes and all."""
+    centres = plate.triangles_center
+    return trimesh.Trimesh(vertices=plate.vertices, faces=plate.faces[keep(centres[:, 0], centres[:, 1])],
+                           process=False)
+
+
+@pytest.mark.parametrize("hole, centre, radius, holds", [
+    (None, (0, 0), .5, True),
+    # A 4 cm gap (a face the fit dropped, where the removed object sat): within twice the 3 cm window.
+    (.02, (0, 0), .5, True),
+    # A 30 cm sink: an edge, wherever the region reaches it, or when the region sits inside it.
+    (.15, (0, 0), .5, False),
+    (.15, (0, 0), .1, False),
+    (.15, (.4, .4), .3, True),
+    # Past the top's own edge, though inside its bounding box.
+    (None, (.75, .75), .3, False),
+])
+def test_a_support_outline_is_the_surface_its_faces_cover(hole, centre, radius, holds):
+    from blueprint_pipeline.website_support_geometry import support_outline
+
+    plate = bumpy_plate(-1, 1, -1, 1, noise=.002, step=.02)
+    top = _cut(plate, lambda x, y: (np.hypot(x, y) <= 1) & ((np.abs(x) >= (hole or 0)) | (np.abs(y) >= (hole or 0))))
+    outline = support_outline(top, {"face_indices": list(range(len(top.faces)))}, up=2, meters_per_unit=1)
+    assert outline.window == .03
+    assert outline.holds(centre, radius, tolerance=1e-9) is holds
+    # A footprint's own support with no faces (a registered floor plane) has no outline: its box is all there is.
+    assert support_outline(top, {"face_indices": []}, up=2, meters_per_unit=1) is None
+
+
+
+def test_a_tapered_gap_is_an_edge_where_it_is_wider_than_its_search_bridges():
+    """Codex review of #3170: a coarse top with a triangular hole, 10 cm wide at one end, closing to a point
+    a metre away. Surface resumes across each long edge's middle within twice the 3 cm window, but not
+    across the wide part, where a point 3.5 cm from any face lies under the region."""
+    from blueprint_pipeline.website_support_geometry import support_outline
+
+    corners = [(-.5, -.5), (1.5, -.5), (1.5, .5), (-.5, .5), (0, -.05), (1, 0), (0, .05)]
+    faces = [[0, 1, 5], [0, 5, 4], [1, 2, 5], [2, 3, 5], [3, 6, 5], [3, 0, 4], [3, 4, 6]]
+    top = trimesh.Trimesh(vertices=[[x, y, .7] for x, y in corners], faces=faces, process=False)
+    outline = support_outline(top, {"face_indices": list(range(len(faces)))}, up=2, meters_per_unit=1)
+    assert outline.distance((.3, 0), .1) == pytest.approx(.035 * np.cos(np.arctan(.05)), abs=1e-3)
+    assert not outline.holds((.3, .08), .2, tolerance=1e-9)
+    # Where the hole narrows below twice the window it is bridged: a region over its point is held.
+    assert outline.holds((.9, .2), .18, tolerance=1e-9)
+
+#: capture-447ae4f4 in its simulator frame (Z up, metres): the dining table's oval top, 1.29 x 1.57 m
+#: around its bounding box's centre at 0.802 m, the tray's estimated box, the registration's residual
+#: near the task, and the runtime frame (Y up, 1.1033 m per unit) the relocation searches in.
+OVAL_CENTRE, OVAL_SEMI_AXES, OVAL_TOP = (-0.356, -0.271), (0.646, 0.786), 0.802
+TRAY_447 = ([-0.5893, -0.5637, 0.8019], [-0.2759, -0.0425, 0.8468])
+RESIDUAL_447, MPU_447 = 0.072, 1.103344777840341
+RUNTIME_TO_SIMULATOR_447 = [[MPU_447, 0, 0, 0], [0, 0, -MPU_447, 0], [0, MPU_447, 0, 0], [0, 0, 0, 1]]
+
+
+def _to_runtime(points):
+    return np.asarray(points, dtype=float) @ np.linalg.inv(np.asarray(RUNTIME_TO_SIMULATOR_447)[:3, :3]).T
+
+
+def _to_simulator(point):
+    return (np.asarray(RUNTIME_TO_SIMULATOR_447)[:3, :3] @ np.asarray(point, dtype=float)).tolist()
+
+
+def oval_table_447():
+    """A capture-447ae4f4-like reconstructed oval top, in its runtime frame: a 2 cm grid wandering 3 mm,
+    with a 12 x 20 cm gap beside the tray where the removed tray left one in the real mesh."""
+    (cx, cy), (a, b) = OVAL_CENTRE, OVAL_SEMI_AXES
+    plate = bumpy_plate(cx - a, cx + a, cy - b, cy + b, OVAL_TOP, noise=.003, step=.02)
+    top = _cut(plate, lambda x, y: (((x - cx) / a) ** 2 + ((y - cy) / b) ** 2 <= 1)
+               & ~((np.abs(x + .59) < .06) & (np.abs(y + .57) < .1)))
+    return trimesh.Trimesh(vertices=_to_runtime(top.vertices), faces=top.faces, process=False)
+
+
+def _on_oval(centre, radius, slack):
+    """Every point of the disc lies within the oval grown by ``slack`` (the grid's jagged rim)."""
+    (cx, cy), (a, b) = OVAL_CENTRE, OVAL_SEMI_AXES
+    angles = np.linspace(0, 2 * np.pi, 720, endpoint=False)
+    x, y = centre[0] + radius * np.cos(angles), centre[1] + radius * np.sin(angles)
+    return bool(np.all(((x - cx) / (a + slack)) ** 2 + ((y - cy) / (b + slack)) ** 2 <= 1))
+
+
+def test_a_relocated_region_on_an_oval_table_lies_wholly_on_it(monkeypatch):
+    """capture-447ae4f4: the region was admitted against the oval top's bounding box; 8.9 cm of it hung past the edge."""
+    from blueprint_pipeline.website_support_geometry import (SupportOutline, destination_clear_of_start,
+                                                             farthest_supported_destination, support_outline)
+    from blueprint_pipeline.website_surface_target_admission import admit_surface_target, website_target_radius
+
+    table = oval_table_447()
+    lower, upper = (_to_runtime(corner).tolist() for corner in TRAY_447)
+    lower, upper = np.minimum(lower, upper).tolist(), np.maximum(lower, upper).tolist()
+    support = support_under(table, lower, upper, up=1, meters_per_unit=MPU_447, placement_residual_m=RESIDUAL_447)
+    assert support["basis"] == "fitted_surface_under_footprint"
+    clearance = website_target_radius(lower, upper, relative_error=.25, up=1, meters_per_unit=MPU_447)
+    radius = website_target_radius(*TRAY_447, relative_error=.25)
+    assert radius == pytest.approx(.39, abs=.001)
+    search = {"up": 1, "meters_per_unit": MPU_447, "placement_residual_m": RESIDUAL_447, "clearance": clearance}
+    # The destination was grounded as the whole table, its centre under the tray.
+    moved = farthest_supported_destination(table, lower, upper, support["aabb_min"], support["aabb_max"], support,
+                                           **search)
+    centre = _to_simulator(moved.centre)
+    assert moved.region_on_surface and _on_oval(centre, radius, slack=.02)
+    assert destination_clear_of_start(lower, upper, moved.centre, up=1, clearance=clearance)
+    # Still the other end of the table: its far half along the long axis.
+    assert abs(centre[1] - OVAL_CENTRE[1]) > .3
+    # The rule before: the farthest supported footprint, its region bounded by the top's box alone.
+    with monkeypatch.context() as before:
+        before.setattr(SupportOutline, "holds", lambda *args, **kwargs: False)
+        old = farthest_supported_destination(table, lower, upper, support["aabb_min"], support["aabb_max"], support,
+                                             **search)
+    assert not old.region_on_surface and not _on_oval(_to_simulator(old.centre), radius, slack=.02)
+    # Admission: both inside the top's box; against the top itself only the new one.
+    outline = support_outline(table, support, up=1, meters_per_unit=MPU_447,
+                              placement_residual_m=RESIDUAL_447).in_frame(RUNTIME_TO_SIMULATOR_447)
+    bounds = dict(zip(("aabb_min_xyz", "aabb_max_xyz"), (np.sort([_to_simulator(support["aabb_min"]),
+                                                                  _to_simulator(support["aabb_max"])], axis=0)
+                                                          .tolist())))
+
+    def admit(position, **kwargs):
+        destination = {"relation": "on", "visible_label": "the other end of the same table",
+                       "mode": "existing_support_surface", "position_world_m": position,
+                       "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                       "basis": "registered_estimated_visible_bounds_and_collider_contact"}
+        return admit_surface_target(destination=destination, support=bounds, subject_min=TRAY_447[0],
+                                    subject_max=TRAY_447[1], placement_uncertainty_m=RESIDUAL_447,
+                                    development_support=False, relative_error=.25, **kwargs)
+
+    assert admit(_to_simulator(old.centre))["radius_m"] == radius
+    with pytest.raises(ValueError, match="surface_target_outside_support"):
+        admit(_to_simulator(old.centre), support_outline=outline)
+    assert admit(centre, support_outline=outline) == admit(centre)
+
+
+def test_a_region_that_fits_nowhere_on_its_surface_is_placed_by_the_rule_before_and_flagged():
+    """An L-shaped counter 44 cm deep: the region holding a 30 cm tray at any yaw is wider than either arm."""
+    from blueprint_pipeline.website_support_geometry import farthest_supported_destination, support_outline
+
+    counter = _cut(bumpy_plate(0, 2, 0, 2, noise=.002, step=.02), lambda x, y: (x < .45) | (y < .45))
+    start_min, start_max = [.85, .075, .7], [1.15, .375, .75]
+    support = support_under(counter, start_min, start_max, up=2, meters_per_unit=1)
+    clearance = 1.25 * np.hypot(.15, .15) + .01
+    moved = farthest_supported_destination(counter, start_min, start_max, [0, 0, .6], [2, 2, .8], support,
+                                           up=2, meters_per_unit=1, clearance=clearance)
+    # The footprint rests on the far arm, as before; the admission is told its region does not.
+    assert moved is not None and not moved.region_on_surface
+    assert moved.centre[1] > 1.5 and moved.centre[0] - .15 >= 0 and moved.centre[0] + .15 <= .45
+    outline = support_outline(counter, support, up=2, meters_per_unit=1)
+    assert not outline.holds(moved.centre[:2], clearance, tolerance=1e-9)
+
+
+#: origin/main before the region had to lie on its surface: the farthest corner of a rectangle and its seal.
+RECTANGLE_BEFORE = {
+    "exact": ([-0.2616297273083672, -0.4116297273083672, 0.8],
+              "sha256:fa171e5da127acf89c791d0740f67cb40b155f4e2352f0a1c22c41e2be4a8bdd"),
+    "reconstructed": ([0.2616297273083683, 0.41162972730836855, 0.8012306227985251],
+                      "sha256:1fc6a3aee9675228321fff697518b869aba5caa622aa252e20b5ffa4c586602e"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(RECTANGLE_BEFORE))
+def test_a_rectangular_top_places_and_seals_its_region_bit_for_bit_as_before(case):
+    """A rectangle's bounding box is its surface: the same corner, the same sealed region and digest."""
+    from blueprint_pipeline.website_support_geometry import farthest_supported_destination, support_outline
+    from blueprint_pipeline.website_surface_target_admission import admit_surface_target, website_target_radius
+
+    table = (plate(-.65, .65, -.8, .8, height=.8) if case == "exact"
+             else bumpy_plate(-.65, .65, -.8, .8, height=.8, noise=.002))
+    tray_min, tray_max = [-0.155, -0.26, 0.80], [0.155, 0.26, 0.845]
+    support = support_under(table, tray_min, tray_max, up=2, meters_per_unit=1, placement_residual_m=.072)
+    moved = farthest_supported_destination(table, tray_min, tray_max, [-.65, -.8, .7], [.65, .8, .9], support,
+        up=2, meters_per_unit=1, placement_residual_m=.072,
+        clearance=website_target_radius(tray_min, tray_max, relative_error=.25))
+    centre, digest = RECTANGLE_BEFORE[case]
+    assert moved.centre == centre and moved.region_on_surface
+    destination = {"relation": "on", "visible_label": "the other end of the table", "mode": "existing_support_surface",
+                   "position_world_m": moved.centre, "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+                   "basis": "registered_estimated_visible_bounds_and_collider_contact"}
+    target = admit_surface_target(destination=destination,
+        support={"aabb_min_xyz": support["aabb_min"], "aabb_max_xyz": support["aabb_max"]},
+        subject_min=tray_min, subject_max=tray_max, placement_uncertainty_m=.072, development_support=False,
+        relative_error=.25, support_outline=support_outline(table, support, up=2, meters_per_unit=1,
+                                                            placement_residual_m=.072))
+    assert target["target_digest"] == digest
+
+
+def test_a_place_at_the_surface_edge_gets_the_nearest_supported_footprint():
+    """Codex review on #3149: "the far corner" centres the footprint over the edge."""
+    from blueprint_pipeline.website_support_geometry import (destination_clear_of_start,
+                                                             supported_destination_near_place)
+
+    table = bumpy_plate(-.6, .6, -.4, .4)
+    start_min, start_max = [-.15, -.1, .7], [.05, .1, .75]
+    clearance = np.hypot(.1, .1) + .01
+    corner = [.58, .38, .7]
+    assert support_under(table, [.48, .28, .7], [.68, .48, .75], up=2, meters_per_unit=1) is None
+    centre, found = supported_destination_near_place(table, start_min, start_max, corner, [.5, .3, .7],
+                                                     [.6, .4, .7], [-.6, -.4, .7], [.6, .4, .7], up=2,
+                                                     meters_per_unit=1, clearance=clearance)
+    # Pulled in just far enough for the whole footprint, still touching the named place.
+    assert .4 <= centre[0] <= .5 + 1e-9 and .2 <= centre[1] <= .3 + 1e-9
+    assert centre[2] == pytest.approx(.7, abs=.01)
+    assert found is not None and destination_clear_of_start(start_min, start_max, centre, up=2, clearance=clearance)
+    # A place past the surface leaves nothing to support it.
+    assert supported_destination_near_place(plate(-.6, -.2, -.4, .4), start_min, start_max, corner, [.5, .3, .7],
+                                            [.6, .4, .7], [-.6, -.4, .7], [.6, .4, .7], up=2, meters_per_unit=1,
+                                            clearance=clearance) is None

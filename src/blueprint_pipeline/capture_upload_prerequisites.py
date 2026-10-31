@@ -20,7 +20,7 @@ import time
 from typing import Any, Callable
 import uuid
 
-from .capture_upload_runtime import CaptureUploadRuntimeError
+from .capture_upload_runtime import SCANNER_CONTROLS_TIMEOUT_SECONDS, CaptureUploadRuntimeError
 
 
 SYSTEM_SCANNER = Path("/usr/bin/clamscan")
@@ -342,7 +342,7 @@ def main() -> int:
             Path(configuration["store_root"]), (account.pw_uid, account.pw_gid), "scanner_controls",
             ["/usr/sbin/runuser", "--user", args.account, "--", sys.executable,
              "-m", "blueprint_pipeline.capture_upload_runtime"],
-            input_bytes=json.dumps(configuration).encode(), check=False, timeout=150,
+            input_bytes=json.dumps(configuration).encode(), check=False, timeout=SCANNER_CONTROLS_TIMEOUT_SECONDS,
             cwd=source.parent, environment={"PATH": "/usr/bin:/bin", "LC_ALL": "C",
                                     "PYTHONPATH": str(source), "PYTHONDONTWRITEBYTECODE": "1"})
         try:

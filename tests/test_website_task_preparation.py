@@ -538,6 +538,27 @@ def test_physics_screen_escalates_the_smallest_missing_measurement():
     assert all(row["basis"] == "estimated" for row in [medium])
 
 
+def test_a_registered_bodys_gripper_is_screened_on_its_own_opening_and_its_hold_stays_unassessed(tmp_path):
+    from blueprint_pipeline.team_embodiment import validate_embodiment_manifest
+    from tests.test_team_embodiment import manifest, write_robot_usd
+
+    body = validate_embodiment_manifest(manifest(write_robot_usd(tmp_path / "robot.usda")))
+    [tool] = preparation.embodiment_grippers(body)
+    # The manifest's own 80 mm opening; it declares no grip force, so no reference force stands in for it.
+    assert tool == {"model": "acme-arm-v2/gripper", "full_stroke_m": 0.08, "grip_force_n": None,
+                    "source": "registered_embodiment_manifest"}
+    narrow = preparation.screen_physics([0.06, 0.06, 0.6], gripper=tool)
+    assert narrow["sensitivity"] == "hold_unassessed_grip_force_not_declared"
+    assert narrow["measurement_escalation"] is None and narrow["gripper"] == tool
+    wide = preparation.screen_physics([0.1, 0.1, 0.1], gripper=tool)
+    assert wide["sensitivity"] == "blocked_by_estimate"
+    assert wide["measurement_escalation"]["property"] == "smallest_dimension_m"
+    # The Robotiq reference's verdict on the narrow object is unchanged.
+    assert preparation.screen_physics([0.06, 0.06, 0.6], gripper=preparation.GRIPPER)["sensitivity"] == (
+        "outcome_depends_on_estimate")
+    assert preparation.embodiment_grippers({**body, "gripper": None}) == []
+
+
 def test_capture_consent_does_not_invent_paid_execution_permission(tmp_path):
     value = _compile(tmp_path, spend={key: val for key, val in SPEND.items() if key not in {"owner", "consent"}})
     assert value["status"] == "needs_input"
@@ -1117,6 +1138,162 @@ def test_the_destination_support_is_searched_within_the_same_measured_residual(t
     assert calls == [value["registration"]["task_region"]["trimmed_rmse_m"]] * 2
 
 
+def _surface_arguments(tmp_path, *, first_row=25, region=None, args=None):
+    """The destination is the surface the subject stands on, as the analysis grounds a table."""
+    from blueprint_pipeline.website_task_masks import estimate_target_bounds
+    args = _arguments(tmp_path) if args is None else args
+    mask = np.zeros((HEIGHT, WIDTH), dtype=bool)
+    mask[first_row:, :] = True
+    mask[20:25, 21:25] = False  # the subject's own pixels are not the surface
+    edges = np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1)))
+    runs = [{"start": int(a), "length": int(b - a)}
+            for a, b in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))]
+    track = {"track_id": "t2", "label": "tray-1", "observations": [
+        {"source_frame_id": f"frame-{index}", "height": HEIGHT, "width": WIDTH, "runs": runs} for index in range(2)]}
+    args["task_masks"]["targets"][1].update(
+        track=track, estimated_visible_bounds=estimate_target_bounds(track, args["source_geometry"]["frames"]))
+    args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
+    if region is not None:
+        args["removal_manifest"] = {**REMOVAL, "destination_region": {
+            "destination_target_id": "tray-1", "region_basis_quote": "the other end", "spatial_evidence": region}}
+    return args
+
+
+def _inside(point, bounds):
+    return all(bounds["minimum"][axis] <= point[axis] <= bounds["maximum"][axis] for axis in (0, 1))
+
+
+@pytest.mark.parametrize("box", [[0.0, 0.8, 0.25, 0.2], [0.75, 0.8, 0.25, 0.2]])
+def test_a_place_named_on_the_destination_surface_centres_the_destination_inside_it(tmp_path, box):
+    whole = preparation.compile_website_scene_preparation(**_surface_arguments(tmp_path))
+    value = preparation.compile_website_scene_preparation(**_surface_arguments(
+        tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": box}]))
+    assert value["status"] == whole["status"] == "intake_ready", value["blockers"]
+    region = value["destination_region"]
+    assert region["destination_region_basis"] == "registered_region_boxes_on_destination_mask"
+    assert region["source_frame_ids"] == ["frame-0"] and region["region_basis_quote"] == "the other end"
+    position = value["destination"]["position_world_m"]
+    assert _inside(position, region["estimated_bounds_world_m"])
+    assert not _inside(whole["destination"]["position_world_m"], region["estimated_bounds_world_m"])
+    # Projected onto the same surface by the same contact search; the WebApp keys and basis are unchanged.
+    assert position[2] == pytest.approx(whole["destination"]["position_world_m"][2], abs=1e-6)
+    assert set(value["destination"]) == set(whole["destination"])
+    assert value["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact"
+    assert value["intake_request"]["task"]["destination"] == value["destination"]
+    assert "destination_region" not in whole and "destination_relocation" not in value
+
+
+def test_a_region_with_no_observed_frame_near_its_boxes_keeps_the_whole_surface(tmp_path):
+    whole = preparation.compile_website_scene_preparation(**_surface_arguments(tmp_path))
+    value = preparation.compile_website_scene_preparation(**_surface_arguments(
+        tmp_path, region=[{"timestamp_seconds": 5.0, "box_xywh_normalized": [0.0, 0.8, 0.25, 0.2]}]))
+    assert value["destination_region"]["destination_region_basis"] == "region_unregistered_whole_destination_centre"
+    assert value["destination"] == whole["destination"] and value["blockers"] == whole["blockers"] == []
+
+
+def test_a_region_over_the_start_still_moves_by_the_same_surface_rule(tmp_path):
+    value = preparation.compile_website_scene_preparation(**_surface_arguments(
+        tmp_path, first_row=23, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.5, 0.8, 0.15, 0.07]}]))
+    assert value["status"] == "intake_ready", value["blockers"]
+    region, relocation = value["destination_region"], value["destination_relocation"]
+    assert relocation["reason"] == "grounded_destination_centre_overlapped_start"
+    assert _inside(relocation["grounded_centre_world_m"], region["estimated_bounds_world_m"])
+    subject = value["subject"]
+    start = [(subject["aabb_min_xyz"][axis] + subject["aabb_max_xyz"][axis]) / 2 for axis in (0, 1)]
+    assert math.dist(start, value["destination"]["position_world_m"][:2]) > math.dist(
+        start, relocation["grounded_centre_world_m"][:2])
+
+
+def test_a_named_place_is_flattened_where_it_is_set_down(tmp_path, monkeypatch):
+    """#3173 looks up the surfaces it flattens exactly where placement sets the subject down: with a
+    named place, at that place's centre, so the place is set down on the sealed, flattened collider."""
+    from tests.test_website_collider_conditioning import _bumpy_arguments
+    args = _surface_arguments(tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.75, 0.8, 0.25, 0.2]}],
+                              args=_bumpy_arguments(tmp_path, monkeypatch))
+    raw = trimesh.load(args["base_scene"]["collision_mesh_path"], force="mesh", process=False).vertices
+    calls, real = [], preparation.support_under
+
+    def lookup(mesh, lower, upper, **kwargs):
+        calls.append((np.array_equal(mesh.vertices, raw), np.asarray(lower).tolist(), np.asarray(upper).tolist()))
+        return real(mesh, lower, upper, **kwargs)
+
+    monkeypatch.setattr(preparation, "support_under", lookup)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready", value["blockers"]
+    assert value["collider_conditioning"]["status"] == "conditioned"
+    assert value["destination_region"]["destination_region_status"] == "placed_at_region_centre"
+    on_raw = [footprint for unchanged, *footprint in calls if unchanged]
+    on_sealed = [footprint for unchanged, *footprint in calls if not unchanged]
+    # The start, then the destination at the named place: found there on the raw collider to
+    # flatten it, and the same two footprints are the first placement tests on the sealed one.
+    assert len(on_raw) == 2 and on_sealed[:2] == on_raw
+    receipt = json.loads(Path(value["collider_conditioning"]["receipt_path"]).read_text())
+    placements = receipt["binding"]["placements"]
+    assert [row["role"] for row in placements] == ["start_support", "destination_support"]
+    assert placements[1]["footprint"] == on_raw[1]
+
+
+def _rounded(value):
+    if isinstance(value, float):
+        return round(value, 6)
+    if isinstance(value, list):
+        return [_rounded(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _rounded(item) for key, item in value.items()}
+    return value
+
+
+def test_without_a_region_the_existing_fixture_compiles_to_the_same_preparation(tmp_path, monkeypatch):
+    # Pinned on origin/main before the destination region (2026-10-31), with
+    # relative fixture paths; floats rounded to 1 um so only an output change moves it.
+    monkeypatch.chdir(tmp_path)
+    value = preparation.compile_website_scene_preparation(**_arguments(Path(".")))
+    assert "destination_region" not in value and "destination_region" not in REMOVAL
+    assert canonical_digest(_rounded({key: item for key, item in value.items() if key != "digest"})) == (
+        "sha256:54f20485d07a2fbf87311e1c5791f8cefc7d1675ba41a0c8ac06ad9e76938d43")
+
+
+def _region_centre(region):
+    bounds = region["estimated_bounds_world_m"]
+    return [(bounds["minimum"][axis] + bounds["maximum"][axis]) / 2 for axis in (0, 1)]
+
+
+def test_a_region_at_the_surface_edge_moves_to_the_nearest_supported_spot(tmp_path):
+    # Codex review on #3149: a place at an edge leaves the footprint's own centre
+    # unsupported; that refinement must not stop the job.
+    whole = preparation.compile_website_scene_preparation(**_surface_arguments(tmp_path))
+    value = preparation.compile_website_scene_preparation(**_surface_arguments(
+        tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.0, 0.8, 0.05, 0.2]}]))
+    assert value["status"] == "intake_ready", value["blockers"]
+    region = value["destination_region"]
+    assert region["destination_region_status"] == "nearest_supported_spot_near_region"
+    position, target = value["destination"]["position_world_m"], _region_centre(region)
+    assert region["region_centre_world_m"][:2] == pytest.approx(target)
+    assert math.dist(position[:2], target) < math.dist(whole["destination"]["position_world_m"][:2], target)
+    half = [(value["subject"]["aabb_max_xyz"][axis] - value["subject"]["aabb_min_xyz"][axis]) / 2 for axis in (0, 1)]
+    bounds = region["estimated_bounds_world_m"]
+    assert all(bounds["minimum"][axis] - half[axis] <= position[axis] <= bounds["maximum"][axis] + half[axis]
+               for axis in (0, 1))
+    assert value["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact"
+
+
+def test_a_region_with_no_supported_spot_keeps_the_whole_surface_result(tmp_path):
+    args = _surface_arguments(tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.0, 0.8, 0.25, 0.2]}])
+    # The collider has no surface under the named end; the rest of the surface remains.
+    mesh = trimesh.load(args["base_scene"]["collision_mesh_path"], force="mesh", process=False)
+    mesh.update_faces(mesh.triangles_center[:, 0] >= 0.9)
+    mesh.export(args["base_scene"]["collision_mesh_path"])
+    args["base_scene"]["collision_mesh_digest"] = _sha256_file(Path(args["base_scene"]["collision_mesh_path"]))
+    whole = preparation.compile_website_scene_preparation(**{**args, "removal_manifest": REMOVAL})
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == whole["status"] == "intake_ready", value["blockers"]
+    assert value["destination"] == whole["destination"] and value["blockers"] == whole["blockers"] == []
+    region = value["destination_region"]
+    assert region["destination_region_status"] == "unplaceable"
+    assert region["destination_region_reason"] == "no_supported_footprint_near_region"
+    assert region["destination_region_basis"] == "registered_region_boxes_on_destination_mask"
+
+
 def _destination_bounds(args, minimum, maximum):
     args["task_masks"]["targets"][1]["estimated_visible_bounds"] = _bounds(minimum, maximum)
     args["task_masks"]["digest"] = canonical_digest(args["task_masks"], digest_field="digest")
@@ -1132,7 +1309,8 @@ def _on_another_level_surface(monkeypatch):
         calls.append(found)
         # Each preparation looks up the subject's support, then the destination's.
         if len(calls) % 2 == 0 and found is not None:
-            found = {**found, "face_indices": [index + 10 ** 6 for index in found["face_indices"]]}
+            # Real faces of the collider, a different set: the region is checked against them.
+            found = {**found, "face_indices": found["face_indices"][1:]}
         return found
     monkeypatch.setattr(preparation, "support_under", another_surface)
 
@@ -1184,3 +1362,135 @@ def test_a_region_evaluation_admits_leaves_the_preparation_unchanged(tmp_path, m
     assert "surface_target_admission" not in value
     monkeypatch.setattr(preparation, "admit_surface_target", lambda **_: None)
     assert preparation.compile_website_scene_preparation(**args)["digest"] == value["digest"]
+
+
+#: Destinations grounded as the whole surface the cup rests on. The first's centre lies
+#: under the cup; the second's 10.5 cm from its centre, clear of the 9.2 cm disc that
+#: holds the estimate, inside the 11.3 cm one that holds a 25% larger replacement.
+UNDER_THE_SUBJECT = ([-0.19, 0.48, 1.34], [0.46, 0.5, 1.84])
+INSIDE_ONLY_THE_LARGER_DISC = ([-0.25, 0.48, 1.25], [0.4, 0.5, 1.75])
+
+
+def test_a_relocated_destination_clears_the_region_that_holds_the_largest_admitted_replacement(tmp_path, monkeypatch):
+    """capture-447ae4f4: relocation, admission, the scorer and native bind read one radius."""
+    from blueprint_pipeline.website_surface_target_admission import website_target_radius
+    args = _destination_bounds(_arguments(tmp_path), *INSIDE_ONLY_THE_LARGER_DISC)
+    with monkeypatch.context() as before_this_rule:
+        before_this_rule.setattr(preparation, "replacement_size_tolerance", lambda **_: 0.0)
+        before = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "before"})
+    assert before["status"] == "intake_ready" and "destination_relocation" not in before
+    real, clearances = preparation.farthest_supported_destination, []
+
+    def recording(*args, **kwargs):
+        clearances.append(kwargs["clearance"])
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(preparation, "farthest_supported_destination", recording)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready" and value["blockers"] == []
+    assert value["authoring_inputs"]["metric_envelope"]["maximum_dimension_relative_error"] == 0.25
+    assert value["destination_relocation"]["replacement_size_tolerance"] == 0.25
+    assert "surface_target_admission" not in value  # admitted with the larger region
+    subject, mpu = value["subject"], value["coordinate_frame"]["declared_meters_per_unit"]
+    radius = website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
+    assert radius > website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0)
+    # The clearance is that radius in runtime units, and the moved centre lies outside it.
+    assert clearances == [pytest.approx(radius / mpu, rel=1e-9)]
+    start = [(subject["aabb_min_xyz"][i] + subject["aabb_max_xyz"][i]) / 2 for i in (0, 1)]
+    assert math.dist(start, value["destination"]["position_world_m"][:2]) > radius
+    # An older preparation is moved at native submission by the same rule and the same clearance.
+    for name, record in (("base_scene.json", args["base_scene"]), ("task_masks.geometry.json", args["task_masks"])):
+        (args["output_root"] / name).write_text(json.dumps(record))
+    moved = preparation.relocated_destination(value, args["output_root"] / "preparation.json")
+    assert clearances[1] == pytest.approx(clearances[0], rel=1e-9)
+    assert moved["position_world_m"] == pytest.approx(value["destination"]["position_world_m"], abs=1e-9)
+    assert moved["relocation"] == {**value["destination_relocation"], "applied_at": "native_submission"}
+
+
+#: A destination grounded 8.7 cm inside the wedge-shaped floor's slanted side: inside the floor's
+#: bounding box, the 11.3 cm region holding the cup's largest admitted replacement reaches past it.
+NEAR_THE_SLANTED_SIDE = ([0.6, 0.48, 1.2], [0.84, 0.5, 1.4])
+
+
+def _region_outline(value, collision_mesh_path):
+    """The preparation's support surface in the simulator frame, and its region's radius."""
+    from blueprint_pipeline.website_surface_target_admission import website_target_radius
+    frame = value["coordinate_frame"]
+    collider = trimesh.load(collision_mesh_path, force="mesh", process=False)
+    outline = preparation.support_outline(collider, value["support"], up=1,
+        meters_per_unit=frame["declared_meters_per_unit"],
+        placement_residual_m=frame["placement_uncertainty_m"]).in_frame(frame["runtime_to_simulator"])
+    subject = value["subject"]
+    return outline, website_target_radius(subject["aabb_min_xyz"], subject["aabb_max_xyz"], relative_error=0.25)
+
+
+def test_a_grounded_region_reaching_past_its_surface_moves_to_the_nearest_spot_on_it(tmp_path, monkeypatch):
+    """capture-447ae4f4: the region was admitted against its surface's bounding box, not the surface,
+    so part of it hung past an oval table's edge."""
+    args = _destination_bounds(_arguments(tmp_path), *NEAR_THE_SLANTED_SIDE)
+    with monkeypatch.context() as before:
+        # The rule before: the region bounded by the floor's box alone.
+        before.setattr(preparation, "support_outline", lambda *args, **kwargs: None)
+        unchecked = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "before"})
+    assert "destination_relocation" not in unchecked and "surface_target_admission" not in unchecked
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready" and value["blockers"] == []
+    grounded, moved = unchecked["destination"]["position_world_m"], value["destination"]["position_world_m"]
+    assert value["destination_relocation"] == {
+        "reason": "grounded_region_reached_past_its_surface", "rule": "nearest_region_on_destination_surface",
+        "grounded_centre_world_m": grounded, "harness_choice": True, "replacement_size_tolerance": 0.25}
+    assert "surface_target_admission" not in value  # admitted against the floor's own faces
+    assert 0 < math.dist(moved[:2], grounded[:2]) < 0.05 and moved[2] == grounded[2]
+    outline, radius = _region_outline(value, args["base_scene"]["collision_mesh_path"])
+    assert not outline.holds(grounded[:2], radius, tolerance=1e-9)
+    assert outline.holds(moved[:2], radius, tolerance=1e-9)
+
+
+
+def test_the_region_is_placed_and_admitted_on_the_sealed_flattened_collider(tmp_path, monkeypatch):
+    """#3173 flattens the placement surfaces and seals that collider first: the region's outline,
+    its relocation and its admission read the sealed collider and its support records, never the raw one."""
+    from tests.test_website_collider_conditioning import _bumpy_arguments
+    args = _destination_bounds(_bumpy_arguments(tmp_path, monkeypatch), *UNDER_THE_SUBJECT)
+    raw = trimesh.load(args["base_scene"]["collision_mesh_path"], force="mesh", process=False).vertices
+    outlines, searches = [], []
+    real_outline, real_search = preparation.support_outline, preparation.farthest_supported_destination
+
+    def outline(mesh, support, **kwargs):
+        outlines.append((np.asarray(mesh.vertices).copy(), list(support["face_indices"])))
+        return real_outline(mesh, support, **kwargs)
+
+    def search(mesh, *args, **kwargs):
+        searches.append(np.asarray(mesh.vertices).copy())
+        return real_search(mesh, *args, **kwargs)
+
+    monkeypatch.setattr(preparation, "support_outline", outline)
+    monkeypatch.setattr(preparation, "farthest_supported_destination", search)
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready" and value["collider_conditioning"]["status"] == "conditioned"
+    assert "region_on_support_surface" not in value["destination_relocation"]
+    assert "surface_target_admission" not in value
+    sealed = trimesh.load(json.loads((args["output_root"] / "base_scene.json").read_text())["collision_mesh_path"],
+                          force="mesh", process=False).vertices
+    assert not np.array_equal(sealed, raw)
+    assert outlines and all(np.array_equal(vertices, sealed) and faces == value["support"]["face_indices"]
+                            for vertices, faces in outlines)
+    assert searches and all(np.array_equal(vertices, sealed) for vertices in searches)
+
+def test_a_relocated_region_that_fits_nowhere_on_its_surface_is_flagged_and_the_job_continues(tmp_path, monkeypatch):
+    # Geometry is not a hard stop: placed by the rule before, the region's overhang travels as advisory evidence.
+    from blueprint_pipeline.website_support_geometry import SupportOutline
+    args = _destination_bounds(_arguments(tmp_path), *UNDER_THE_SUBJECT)
+    fits = preparation.compile_website_scene_preparation(**{**args, "output_root": tmp_path / "fits"})
+    assert "region_on_support_surface" not in fits["destination_relocation"]
+    monkeypatch.setattr(SupportOutline, "holds", lambda *args, **kwargs: False)  # a surface it fits nowhere on
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == "intake_ready" and value["blockers"] == []
+    assert value["destination_relocation"] == {**fits["destination_relocation"], "region_on_support_surface": False}
+    assert value["surface_target_admission"] == {"status": "refused", "code": "surface_target_outside_support",
+                                                 "basis": "evaluation_admission_rule"}
+    # Native submission's relocation of an older preparation says the same.
+    for name, record in (("base_scene.json", args["base_scene"]), ("task_masks.geometry.json", args["task_masks"])):
+        (args["output_root"] / name).write_text(json.dumps(record))
+    moved = preparation.relocated_destination(value, args["output_root"] / "preparation.json")
+    assert moved["relocation"] == {**value["destination_relocation"], "applied_at": "native_submission"}

@@ -87,24 +87,7 @@ def _sdk(monkeypatch, asset=None):
 # A faithful development fake of what batch06 ran (nvcr.io/nvidia/isaac-sim:6.0.1, Isaac Lab
 # ffff603e = v3.0.0-beta2.patch1, urdf-usd-converter 0.1.3 pinned by deps/pip_urdf_usd.toml).
 # It reproduces the output structure, not the simulator: geometry is a placeholder cube.
-_B62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-
-
-def _usdex_prim_name(name):
-    """usdex.core.getValidPrimName for ASCII names (usd-exchange Transcoding.cpp encodeIdentifier)."""
-    kept = [char.isascii() and (char.isalnum() or char == "_") for char in name]
-    output = "".join(char for char, keep in zip(name, kept) if keep)
-    output += "_" if output else ""
-    present, previous = {index for index, keep in enumerate(kept) if keep}, 0
-    for code, position in sorted((ord(char), index) for index, char in enumerate(name) if not kept[index]):
-        delta = sum(index < position for index in present) + (code - previous) * (len(present) + 1)
-        while delta >= 31:
-            output += _B62[31 + (delta - 31) % 31]
-            delta = (delta - 31) // 31
-        output += _B62[delta]
-        previous = code
-        present.add(position)
-    return name if output == name + "_" and (name[0].isalpha() or name[0] == "_") else "tn__" + output
+from blueprint_pipeline.team_embodiment import usd_prim_name as _usdex_prim_name  # noqa: E402
 
 
 def _urdf_usd_converter(urdf, asset_dir, output_dir):

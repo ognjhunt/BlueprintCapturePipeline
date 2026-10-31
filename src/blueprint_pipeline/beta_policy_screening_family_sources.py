@@ -49,6 +49,8 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
     from .task_evaluation_scene_configuration_submission_inputs import read
     from .website_task_family_scene_inputs import read_family_scene_inputs
     from .team_candidate_quick10_registry import profile_for_capture
+    from .website_candidate_ranking import retained_priority
+    from .website_candidate_selection import retain_campaign_catalog
 
     if type(max_sources) is not int or not 1 <= max_sources <= 100:
         raise ValueError('beta_screening_family_source_limit_invalid')
@@ -90,13 +92,16 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                 if existing.exists():
                     plan = _read(existing)
                 else:
+                    priority = retained_priority(Path(profile['capture_root']) / 'pipeline',
+                                                 task_context_digest=source['task_context_digest'])
                     planning = build_planning_inputs(catalog=catalog, profile=profile,
                         capture_root=Path(profile['capture_root']), source=source,
-                        inputs_dir=root / 'inputs' / campaign_id)
+                        inputs_dir=root / 'inputs' / campaign_id, priority=priority)
                     plan = plan_within_job_ceiling(catalog, planning['scene'], campaign_id=campaign_id,
                         queue_root=root, context=context, capture_root=Path(profile['capture_root']),
                         capabilities=planning['capabilities'], cost_quotes=planning['cost_quotes'],
-                        candidate_ids=planning.get('candidate_ids'))
+                        candidate_ids=planning.get('candidate_ids'), priority=planning.get('candidate_priority'))
+                    retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
                 outcome.update(enqueue_screening_campaign(plan, queue_root=root))
             except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:
                 code = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else ''

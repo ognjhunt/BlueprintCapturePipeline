@@ -4440,3 +4440,107 @@ def test_a_team_robot_run_is_checked_as_that_robot_and_never_as_the_franka_it_re
     assert error.value.errors == (
         "native_task_arena_bundle_team_embodiment_invalid:team_embodiment_binding_invalid",)
     assert not (tmp_path / "job-invalid").exists()
+
+
+def test_a_team_robots_own_arms_decide_the_arm_path_gate_when_its_model_is_bound(tmp_path, monkeypatch):
+    from blueprint_pipeline import robot_arm_path_clearance as arm
+    from blueprint_pipeline import scene_camera_visibility as camera
+    from blueprint_pipeline import scene_physics_preflight as physics
+    from blueprint_pipeline import team_arm_reach as reach
+    from blueprint_pipeline import team_embodiment
+
+    worker = tmp_path / "worker.py"
+    worker.write_text("VALUE = 1\n", encoding="utf-8")
+    module = tmp_path / "runtime_helper.py"
+    module.write_text("HELPER = 1\n", encoding="utf-8")
+    model = tmp_path / "robot.usda"
+    model.write_text("#usda 1.0\n")
+    binding = {"binding_digest": "sha256:" + "b" * 64, "manifest": {"embodiment_id": "acme-arm"}}
+    kwargs = {"packet_dir": _packet(tmp_path, scene_id="840313"), "worker_source": worker,
+              "runtime_module_sources": [module], "implementation_commit": "a" * 40, "generated_at": "fixed",
+              "team_embodiment": binding, "team_robot_model": model}
+    monkeypatch.setattr(team_embodiment, "apply_team_embodiment", lambda plan, given: {
+        **plan, "robot": {"robot_id": "team_embodiment", "embodiment_id": "acme-arm", "base_mode": "fixed_at_station"}})
+    monkeypatch.setattr(physics, "require_scene_physics_admission", lambda packet_dir, **options: {"status": "passed"})
+    monkeypatch.setattr(camera, "require_scene_camera_admission", lambda packet_dir, **options: {"status": "passed"})
+    monkeypatch.setattr(arm, "require_robot_arm_path_admission", lambda packet_dir: pytest.fail("Franka gate ran"))
+    calls = []
+
+    def measured(status, blockers=()):
+        def gate(plan, *, model_path, manifest):
+            calls.append((plan["robot"]["embodiment_id"], Path(model_path), manifest))
+            return {"status": status, "blockers": list(blockers), "advisories": []}
+        return gate
+
+    # Reach is not a privacy, rights or money control: even a proven miss is written beside the run.
+    monkeypatch.setattr(reach, "team_arm_reach", measured("out_of_reach"))
+    build_native_task_arena_bundle(job_dir=tmp_path / "job-far", **kwargs)
+    assert json.loads((tmp_path / "job-far" / arm.PACKET_REPORT_FILENAME).read_text())["status"] == "out_of_reach"
+    assert calls == [("acme-arm", model, binding["manifest"])]
+    monkeypatch.setattr(reach, "team_arm_reach", measured("flagged"))
+    build_native_task_arena_bundle(job_dir=tmp_path / "job", **kwargs)
+    assert json.loads((tmp_path / "job" / arm.PACKET_REPORT_FILENAME).read_text())["status"] == "flagged"
+
+
+def test_a_team_runs_world_cameras_are_measured_in_each_cell_with_its_binding_applied(tmp_path, monkeypatch):
+    from blueprint_pipeline import native_task_arena_bundle as bundle
+    from blueprint_pipeline import policy_canary_scene_resolution as resolution
+    from blueprint_pipeline import team_embodiment
+
+    packet = _packet(tmp_path, scene_id="840313")
+    inputs = tmp_path / "policy_canary_runtime_inputs.json"
+    inputs.write_text(json.dumps({"task_success_contract": {"contract_digest": "sha256:c"},
+                                  "cells": [{"shift": 0.0}, {"shift": 0.0}, {"shift": 0.02}]}))
+    monkeypatch.setattr(resolution, "resolved_scene_plan", lambda plan, cell, task_success_contract: {
+        "shift": cell["shift"], "objects": [{"task_subject": True, "object_type": "RIGID", "pose_world": {}}]})
+    binding = {"binding_digest": "sha256:" + "b" * 64}
+    applied = []
+
+    def apply(plan, given):
+        assert given is binding
+        applied.append(plan["shift"])
+        camera = {"policy_input": True, "review_only": False, "intrinsics": {}}
+        return {**plan, "cameras": [
+            {**camera, "role": "team_camera_0", "pose_frame": "world", "frame_from_camera_matrix": [plan["shift"]]},
+            {**camera, "role": "team_camera_1", "pose_frame": "robot_body", "frame_from_camera_matrix": [0.0]},
+            {"role": "overview", "pose_frame": "world", "policy_input": False, "review_only": True,
+             "intrinsics": {}, "frame_from_camera_matrix": [9.0]}]}
+
+    monkeypatch.setattr(team_embodiment, "apply_team_embodiment", apply)
+    views = bundle._rendered_external_views(packet, {"policy_canary_runtime_inputs.json": inputs}, binding)
+    # Each cell is resolved and then given the team's robot, as the worker runs it; only the
+    # team's world-fixed policy camera is measured, once per distinct placement.
+    assert applied == [0.0, 0.0, 0.02]
+    assert [(row["role"], row["frame_from_camera_matrix"]) for row, _ in views] == [
+        ("team_camera_0", [0.0]), ("team_camera_0", [0.02])]
+
+
+def test_the_gates_read_a_team_robot_at_its_own_rate_while_the_session_sets_the_cell_cadence(tmp_path, monkeypatch):
+    # The session resolves each cell to its own cadence before the worker applies the team's robot;
+    # the packet's frozen rate alone must not refuse a team the worker would run (Quick-10, 15 Hz).
+    from blueprint_pipeline import native_task_arena_bundle as bundle
+    from blueprint_pipeline import team_embodiment
+
+    packet = _packet(tmp_path, scene_id="840313")
+    plan = json.loads((packet / "native_task_arena_scene_plan.v1.json").read_text())
+    plan.update(task_spec={**plan.get("task_spec", {}), "control_frequency_hz": 10.0},
+                cadence={"physics_frequency_hz": 100.0})
+    (packet / "native_task_arena_scene_plan.v1.json").write_text(json.dumps(plan))
+    seen = []
+
+    def apply(value, binding):
+        seen.append((value["task_spec"]["control_frequency_hz"], value["cadence"]["physics_frequency_hz"]))
+        if 15.0 % value["task_spec"]["control_frequency_hz"] or value["cadence"]["physics_frequency_hz"] % 15.0:
+            raise team_embodiment.TeamEmbodimentError(["team_embodiment_control_hz_incompatible_with_scene"])
+        return {**value, "robot": {"robot_id": "team_embodiment"}}
+
+    monkeypatch.setattr(team_embodiment, "apply_team_embodiment", apply)
+    team = bundle._team_scene_plan(packet, {"manifest": {"control_hz": 15}})
+    assert team["robot"] == {"robot_id": "team_embodiment"} and seen == [(10.0, 100.0), (15.0, 105.0)]
+
+    def invalid(value, binding):
+        raise team_embodiment.TeamEmbodimentError(["team_embodiment_binding_invalid"])
+
+    monkeypatch.setattr(team_embodiment, "apply_team_embodiment", invalid)
+    with pytest.raises(NativeTaskArenaBundleError, match="team_embodiment_invalid:team_embodiment_binding_invalid"):
+        bundle._team_scene_plan(packet, {"manifest": {"control_hz": 15}})

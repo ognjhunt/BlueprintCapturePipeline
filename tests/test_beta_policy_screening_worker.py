@@ -101,7 +101,9 @@ def test_failed_delivery_retains_durable_outbox_and_retry_acknowledges(tmp_path)
     coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
     def unavailable(_):
         raise OSError("temporary network failure")
-    assert worker.deliver_publications(queue_root=tmp_path, transport=unavailable) == {"acknowledged": 0, "pending": 1}
+    assert worker.deliver_publications(queue_root=tmp_path, transport=unavailable) == {
+        "acknowledged": 0, "pending": 1, "last_failure_category": "unavailable",
+        "last_error": {"type": "builtins.OSError", "message": "temporary network failure"}}
     pending = coordinator.pending_publications(queue_root=tmp_path)
     received = []
     assert worker.deliver_publications(queue_root=tmp_path, transport=received.append) == {"acknowledged": 1, "pending": 0}
@@ -118,7 +120,8 @@ def test_restart_revalidates_accepted_source_and_refusal_blocks_new_spend(tmp_pa
     def source_expired(_):
         raise ValueError("beta_screening_publication_http_409")
     assert worker.deliver_publications(queue_root=tmp_path, transport=source_expired,
-        refresh_startable=True) == {"acknowledged": 0, "pending": 1}
+        refresh_startable=True) == {"acknowledged": 0, "pending": 1, "last_failure_category": "source",
+        "last_error": {"type": "builtins.ValueError", "message": "beta_screening_publication_http_409"}}
     backend = Backend()
     coordinator.process_screening_queue(queue_root=tmp_path, executor=backend)
     assert backend.preparations == backend.launches == 0
@@ -310,6 +313,49 @@ def test_automatic_adoption_rejects_unready_packet_or_current_withdrawal_before_
     assert outcome["status"] == "blocked" and outcome["blockers"] == [expected]
     assert not world["planning_calls"] and not world["validated"]
     assert not list((world["screening_queue"] / "plans").iterdir())
+    # A typed refusal is its own cause.
+    assert "error" not in outcome
+
+
+def test_generic_source_refusal_keeps_its_bounded_cause(tmp_path, monkeypatch):
+    from blueprint_pipeline import rigid_robot_free_probe_runner as probe
+
+    world = prepared_source_queue(tmp_path, monkeypatch)
+
+    def full(_capture):
+        # A full work volume: the generic code alone cannot say so.
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr(probe, "enqueue_rigid_robot_free_probe", full)
+    [outcome] = worker.enqueue_prepared_scenes(queue_root=world["screening_queue"],
+        packet_queue_root=world["packet_queue"])["sources"]
+    assert outcome["status"] == "blocked" and outcome["blockers"] == ["beta_screening_source_unavailable"]
+    assert outcome["error"] == {"type": "builtins.OSError", "message": "[Errno 28] No space left on device"}
+    [state] = (world["screening_queue"] / "sources").iterdir()
+    assert json.loads(state.read_text())["error"] == outcome["error"]
+
+
+@pytest.mark.parametrize("raised,category", [
+    (ValueError("beta_screening_publication_http_429"), "unavailable"),
+    (ValueError("beta_screening_publication_http_503"), "unavailable"),
+    (ValueError("beta_screening_publication_http_401"), "auth"),
+    (ValueError("beta_screening_publication_ack_invalid"), "ack"),
+    (TimeoutError("timed out"), "unavailable"),
+    (RuntimeError("unexpected https://h/p?sig=abc"), "unknown"),
+])
+def test_failed_delivery_names_its_category_for_the_worker_status(tmp_path, raised, category):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from blueprint_pipeline.beta_policy_screening_status import build_worker_status
+    from tests.test_beta_policy_screening_coordinator import plan
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+
+    def refused(_):
+        raise raised
+    delivered = worker.deliver_publications(queue_root=tmp_path, transport=refused)
+    assert delivered["pending"] == 1 and delivered["last_failure_category"] == category
+    assert delivered["last_error"]["type"] == f"builtins.{type(raised).__name__}"
+    assert "sig=abc" not in json.dumps(delivered)
+    status = build_worker_status(tmp_path, publication_after=delivered)
+    assert status["last_publication_failure"]["category"] == category
 
 
 def test_fresh_deploy_provisions_screening_sandbox_before_timer_can_start(tmp_path):

@@ -431,6 +431,7 @@ def test_valid_join_never_reads_files_or_calls_current_admission(monkeypatch):
     from pathlib import Path
     import subprocess
     from blueprint_pipeline import task_evaluation_controls_autoprovision as controls
+    from blueprint_pipeline import task_evaluation_controls_byte_digests as byte_digests
     from blueprint_pipeline import task_evaluation_scene_intake as intake
 
     args = fixture()
@@ -447,8 +448,9 @@ def test_valid_join_never_reads_files_or_calls_current_admission(monkeypatch):
     monkeypatch.setattr(subprocess, "run", forbidden)
     for name in ("_read", "validate_request", "reserve_scene_attempt", "_root"):
         monkeypatch.setattr(intake, name, forbidden)
-    for name in ("_json", "_sealed", "payload_digest", "_persisted_digest"):
+    for name in ("_json", "_sealed", "payload_digest"):
         monkeypatch.setattr(controls, name, forbidden)
+    monkeypatch.setattr(byte_digests, "_persisted_digest", forbidden)
     report = lineage.join_scene_preparation_lineage(**args)
     assert report["preparation_count"] == 1
 

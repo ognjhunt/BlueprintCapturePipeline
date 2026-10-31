@@ -6,9 +6,18 @@ alone cannot show that it supports the task object: gaps and table edges matter.
 from __future__ import annotations
 
 import math
-from typing import Any, Sequence
+from typing import Any, Mapping, NamedTuple, Sequence
 
 import numpy as np
+
+
+def search_window_m(placement_residual_m: float | None) -> float:
+    """How far from a footprint's estimated bottom its surface is searched: 3 cm, or the residual when larger."""
+    window_m = 0.03
+    if (not isinstance(placement_residual_m, bool) and isinstance(placement_residual_m, (int, float))
+            and math.isfinite(placement_residual_m)):
+        window_m = max(window_m, float(placement_residual_m))
+    return window_m
 
 
 def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
@@ -26,10 +35,7 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
     the task) when that is larger: an estimate cannot place the bottom closer
     than its own fit (capture-447ae4f4: 7.2 cm, bottom 4 cm into the counter).
     """
-    window_m = 0.03
-    if (not isinstance(placement_residual_m, bool) and isinstance(placement_residual_m, (int, float))
-            and math.isfinite(placement_residual_m)):
-        window_m = max(window_m, float(placement_residual_m))
+    window_m = search_window_m(placement_residual_m)
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
     if (lower.shape != (3,) or upper.shape != (3,) or not np.isfinite([lower, upper]).all()
             or np.any(upper <= lower) or up not in {1, 2} or up_sign not in {-1, 1}
@@ -261,9 +267,19 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
 
 
 def same_support_surface(first: dict[str, Any], second: dict[str, Any]) -> bool:
-    """Whether two support results name one surface: the same exact faces, or mostly the same fitted ones."""
+    """Whether two support results name one surface: the same exact faces, or mostly the same fitted ones.
+
+    Level faces nearly all within a fitted surface are that surface: a conditioned
+    collider's flattened patch (website_collider_conditioning) reads level under a
+    footprint wholly on it, and fitted under one that spans a gap in it.
+    """
     if first["basis"] != second["basis"]:
-        return False
+        bases = {first["basis"]: first, second["basis"]: second}
+        if set(bases) != {"fitted_surface_under_footprint", "reconstructed_triangle_footprint_contacts"}:
+            return False
+        level = set(bases["reconstructed_triangle_footprint_contacts"]["face_indices"])
+        fitted = set(bases["fitted_surface_under_footprint"]["face_indices"])
+        return bool(level) and len(level & fitted) >= SAME_FITTED_SURFACE_MIN_OVERLAP * len(level)
     if first["basis"] != "fitted_surface_under_footprint":
         return first["face_indices"] == second["face_indices"]
     a, b = set(first["face_indices"]), set(second["face_indices"])
@@ -285,12 +301,34 @@ def destination_clear_of_start(start_min: Sequence[float], start_max: Sequence[f
 
 #: The target disc's radius beyond the subject's half-diagonal (the website task's green region).
 DESTINATION_MARGIN_M = 0.01
+#: A relocated disc left tangent to its surface's bounds is moved this far inside them, so the
+#: runtime-to-simulator conversion cannot round it past the edge the admission checks
+#: (capture-447ae4f4 at the replacement's 0.25 size tolerance: 5.6e-17 m past, refused).
+DESTINATION_EDGE_GUARD_M = 1e-9
+#: How far past its surface's outline a placed region may reach, from rounding alone. The
+#: admission allows twice this, so converting a placed region to the simulator frame cannot
+#: refuse it.
+REGION_EDGE_ROUNDING_M = DESTINATION_EDGE_GUARD_M / 2
 #: Plan positions tried along each axis when a destination must move off the start.
 DESTINATION_GRID_STEPS = 9
-#: Footprints checked against the collider, farthest first, before none is placed. Only
-#: footprints whose probe points all lie over the surface's own faces count against it:
-#: a round table's bounding-box corners would otherwise use it up.
+#: Plan positions tried along each axis for a region that must lie wholly on its surface. A
+#: curved outline's farthest or nearest such spot falls between the coarse grid's points
+#: (capture-447ae4f4: one of its 81 held the region on the oval top). 33 = 4 x 8 + 1, so every
+#: coarse point is also one of these, bit for bit.
+REGION_GRID_STEPS = 33
+#: Footprints checked against the collider, nearest or farthest first, before none is placed;
+#: once per rule. Only candidates that already pass the rule's plan test against the surface's
+#: own faces count against it: a round table's bounding-box corners would otherwise use it up.
 DESTINATION_MAX_PROBES = 24
+
+
+class Destination(NamedTuple):
+    """A moved destination in runtime units, the support under its footprint there, and
+    whether its whole target region lies on that surface (``SupportOutline.holds``)."""
+
+    centre: list[float]
+    support: dict[str, Any]
+    region_on_surface: bool
 
 
 def _plan_distance_to_triangles(point: Sequence[float], triangles: np.ndarray) -> float:
@@ -309,69 +347,331 @@ def _plan_distance_to_triangles(point: Sequence[float], triangles: np.ndarray) -
     return 0.0 if inside.any() else float(nearest.min()) if len(nearest) else math.inf
 
 
+class SupportOutline:
+    """A support surface in plan, in one frame and unit: its own triangles, the edges
+    that bound it, and the gap its support search bridges (``window``)."""
+
+    def __init__(self, triangles: np.ndarray, edges: np.ndarray, window: float, *, up: int):
+        from scipy.spatial import cKDTree
+
+        self.up, self.window = up, float(window)
+        self.triangles_3d, self.edges_3d = np.asarray(triangles, dtype=float), np.asarray(edges, dtype=float)
+        plan = [axis for axis in range(3) if axis != up]
+        self.triangles, self.edges = self.triangles_3d[:, :, plan], self.edges_3d[:, :, plan]
+        centres = self.triangles.mean(axis=1)
+        self._reach = float(np.linalg.norm(self.triangles - centres[:, None], axis=2).max())
+        self._nearby = cKDTree(centres)
+
+    def in_frame(self, matrix: Sequence[Sequence[float]], *, up: int = 2) -> SupportOutline:
+        """The same outline in another frame, ``matrix`` (4x4) a similarity such as ``runtime_to_simulator``."""
+        matrix = np.asarray(matrix, dtype=float)
+        scale = abs(float(np.linalg.det(matrix[:3, :3]))) ** (1 / 3)
+        return SupportOutline(self.triangles_3d @ matrix[:3, :3].T + matrix[:3, 3],
+                              self.edges_3d @ matrix[:3, :3].T + matrix[:3, 3], self.window * scale, up=up)
+
+    def covers(self, points: np.ndarray) -> np.ndarray:
+        """Whether each of the plan ``points`` (shape (n, 2)) lies over one of the surface's faces."""
+        from itertools import chain
+
+        points = np.asarray(points, dtype=float).reshape(-1, 2)
+        if not len(points):
+            return np.zeros(0, dtype=bool)
+        rows = self._nearby.query_ball_point(points, self._reach)
+        owner = np.repeat(np.arange(len(points)), [len(row) for row in rows])
+        triangles = self.triangles[np.fromiter(chain.from_iterable(rows), dtype=np.int64, count=len(owner))]
+        p, crosses = points[owner], []
+        for start, end in ((0, 1), (1, 2), (2, 0)):
+            edge, offset = triangles[:, end] - triangles[:, start], p - triangles[:, start]
+            crosses.append(edge[:, 0] * offset[:, 1] - edge[:, 1] * offset[:, 0])
+        a, b, c = crosses
+        inside = ((a >= 0) & (b >= 0) & (c >= 0)) | ((a <= 0) & (b <= 0) & (c <= 0))
+        covered = np.zeros(len(points), dtype=bool)
+        covered[owner[inside]] = True
+        return covered
+
+    def distance(self, point: Sequence[float], limit: float) -> float:
+        """A plan point's distance to the surface's faces, when within ``limit``; zero over one, else inf."""
+        rows = self._nearby.query_ball_point(point, self._reach + limit)
+        return _plan_distance_to_triangles(point, self.triangles[rows]) if rows else math.inf
+
+    def holds(self, centre: Sequence[float], radius: float, *, tolerance: float) -> bool:
+        """Whether a disc of ``radius`` at the plan point ``centre`` lies wholly on the surface.
+
+        Its centre lies on the surface's faces, or in a gap of them within
+        the window, and none of the surface's edges comes nearer than its
+        radius, less ``tolerance`` (rounding only).
+        """
+        if self.distance(centre, self.window) > min(self.window, radius):
+            return False
+        if not len(self.edges):
+            return True
+        a, b = self.edges[:, 0], self.edges[:, 1]
+        along = b - a
+        p = np.asarray(centre, dtype=float)
+        t = np.clip(((p - a) * along).sum(axis=1) / np.maximum((along * along).sum(axis=1), 1e-300), 0.0, 1.0)
+        nearest = a + t[:, None] * along - p
+        return bool(np.sqrt((nearest * nearest).sum(axis=1)).min() >= radius - tolerance)
+
+
+#: Points along an edge's outward normal, as shares of twice the window, tested for the surface resuming.
+GAP_PROBE_SHARES = (0.25, 0.5, 0.75, 1.0)
+#: Where along each piece of an edge (no longer than the window) the surface must resume across it:
+#: a tapered gap narrows from one end of a piece to the other.
+GAP_PROBE_STATIONS = (0.0, 0.5, 1.0)
+
+
+def support_outline(mesh: Any, support: Mapping[str, Any], *, up: int, meters_per_unit: float,
+                    placement_residual_m: float | None = None) -> SupportOutline | None:
+    """The surface a support's own faces cover, in the mesh's frame and units.
+
+    A support's bounding box is not its surface: an oval top leaves the box's
+    corners empty (capture-447ae4f4: a tenth of the target region lay past the
+    dining table's edge). The surface's faces (``face_indices``) bound it at
+    every edge exactly one of them uses. Across parts of those edges the
+    surface resumes within twice the support search's window (a face the fit
+    dropped; where the removed object sat): those bound a gap every point of
+    which lies within the window of the surface, which the region may cross.
+    That is established piece by piece, each no longer than the window, at
+    both its ends and its middle: one probe cannot speak for a whole edge
+    of a tapered gap (Codex review of #3170). Every other piece is the
+    surface's edge. None when the support has no faces (a registered floor
+    plane): its box is then all there is.
+    """
+    import trimesh
+
+    faces = np.asarray(support.get("face_indices") or [], dtype=np.int64)
+    if not len(faces):
+        return None
+    plan = [axis for axis in range(3) if axis != up]
+    corners = np.asarray(mesh.vertices, dtype=float)[np.asarray(mesh.faces)[faces]].reshape(-1, 3)
+    # Merged as support_under merged them, so faces share the edges its adjacency used.
+    surface = trimesh.Trimesh(vertices=corners, faces=np.arange(len(corners)).reshape(-1, 3), process=False)
+    surface.merge_vertices()
+    vertices, triangles = np.asarray(surface.vertices, dtype=float), np.asarray(surface.faces)
+    triangles = triangles[(triangles[:, 0] != triangles[:, 1]) & (triangles[:, 1] != triangles[:, 2])
+                          & (triangles[:, 2] != triangles[:, 0])]
+    # Each face's three edges, with the corner opposite each: it lies on the surface's side.
+    edges = np.sort(triangles[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
+    opposite = triangles[:, [2, 0, 1]].reshape(-1)
+    _, first, uses = np.unique(edges, axis=0, return_index=True, return_counts=True)
+    single = np.sort(first[uses == 1])
+    window = search_window_m(placement_residual_m) / meters_per_unit
+    points = vertices[:, plan]
+    a, b = points[edges[single, 0]], points[edges[single, 1]]
+    normal = np.c_[b[:, 1] - a[:, 1], a[:, 0] - b[:, 0]]
+    length = np.hypot(normal[:, 0], normal[:, 1])
+    single, a, b, normal, length = (value[length > 0] for value in (single, a, b, normal, length))
+    normal /= length[:, None]
+    # Outward: away from the corner opposite the edge in its one face.
+    normal[((points[opposite[single]] - a) * normal).sum(axis=1) > 0] *= -1
+    # Each edge in pieces no longer than the window; every piece is probed across at its stations.
+    count = np.maximum(1, np.ceil(length / window)).astype(np.int64)
+    owner = np.repeat(np.arange(len(single)), count)
+    index = np.arange(int(count.sum())) - np.repeat(np.cumsum(count) - count, count)
+    start, stop = index / count[owner], (index + 1) / count[owner]
+    stations = np.asarray(GAP_PROBE_STATIONS)
+    along = start[:, None] + (stop - start)[:, None] * stations
+    at = a[owner][:, None, :] * (1 - along)[:, :, None] + b[owner][:, None, :] * along[:, :, None]
+    probes = (at[:, :, None, :] + normal[owner][:, None, None, :]
+              * (2 * window * np.asarray(GAP_PROBE_SHARES))[None, None, :, None])
+    whole = SupportOutline(vertices[triangles], np.empty((0, 2, 3)), window, up=up)
+    resumes = (whole.covers(probes.reshape(-1, 2)).reshape(len(owner), len(stations), len(GAP_PROBE_SHARES))
+               .any(axis=2).all(axis=1))
+    kept = ~resumes
+    first_end, last_end = vertices[edges[single[owner[kept]], 0]], vertices[edges[single[owner[kept]], 1]]
+    pieces = np.stack([first_end * (1 - start[kept])[:, None] + last_end * start[kept][:, None],
+                       first_end * (1 - stop[kept])[:, None] + last_end * stop[kept][:, None]], axis=1)
+    # An edge three or more faces use folds the surface: no side of it is known to be surface.
+    folds = vertices[edges[np.sort(first[(uses % 2 == 1) & (uses > 1)])]].reshape(-1, 2, 3)
+    return SupportOutline(vertices[triangles], np.concatenate([pieces, folds]), window, up=up)
+
+
+def _footprint_over_surface(outline: SupportOutline | None, half: np.ndarray, *, plan: list[int]) -> Any:
+    """Whether the nine probe points support_under tests lie over, or within its window of, the surface's faces.
+
+    In plan, so any tessellation; the exact test is support_under itself.
+    """
+    if outline is None:
+        return lambda centre: True
+    signs = [(a, b) for a in (-1, 0, 1) for b in (-1, 0, 1)]
+    return lambda centre: all(outline.distance([centre[plan[0]] + a * half[plan[0]], centre[plan[1]] + b * half[plan[1]]],
+                                               outline.window) <= outline.window for a, b in signs)
+
+
+def _first_supported(mesh: Any, lower: Sequence[float], upper: Sequence[float], region_min: Sequence[float],
+                     region_max: Sequence[float], support: Mapping[str, Any], *, up: int, meters_per_unit: float,
+                     up_sign: int, placement_residual_m: float | None, clearance: float, steps: int,
+                     admissible: Any, farthest: bool) -> tuple[list[float], dict[str, Any]] | None:
+    """The footprint ``lower``..``upper`` moved over a plan grid, farthest from or nearest to where it is.
+
+    Each candidate keeps the footprint inside ``region`` and the target disc
+    inside the support's bounds, passes ``admissible`` (a plan test), and
+    must rest on the same surface by ``support_under`` against real
+    triangles. Returns ``(centre, support)`` in runtime units, or None.
+    """
+    lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
+    plan = [axis for axis in range(3) if axis != up]
+    half, origin = (upper - lower) / 2, (lower + upper) / 2
+    grid = []
+    for axis in plan:
+        low = max(float(region_min[axis]) + half[axis], float(support["aabb_min"][axis]) + clearance)
+        high = min(float(region_max[axis]) - half[axis], float(support["aabb_max"][axis]) - clearance)
+        if low > high:
+            return None
+        grid.append(np.linspace(low, high, steps))
+    candidates = []
+    for first, second in ((a, b) for a in grid[0] for b in grid[1]):
+        centre = origin.copy()
+        centre[plan[0]], centre[plan[1]] = first, second
+        if admissible(centre):
+            candidates.append(centre)
+    sign = -1 if farthest else 1
+    candidates.sort(key=lambda centre: sign * math.dist(centre[plan], origin[plan]))
+    for centre in candidates[:DESTINATION_MAX_PROBES]:
+        offset = centre - origin
+        found = support_under(mesh, lower + offset, upper + offset, up=up, meters_per_unit=meters_per_unit,
+                              up_sign=up_sign, placement_residual_m=placement_residual_m)
+        if found is not None and same_support_surface(found, support):
+            centre = centre.copy()
+            centre[up] = found["top_runtime_units"]
+            # Only a centre within the guard of a bound moves; every other one is returned exactly.
+            guard = DESTINATION_EDGE_GUARD_M / meters_per_unit
+            for axis in plan:
+                centre[axis] = min(max(centre[axis], float(support["aabb_min"][axis]) + clearance + guard),
+                                   float(support["aabb_max"][axis]) - clearance - guard)
+            return centre.tolist(), found
+    return None
+
+
 def farthest_supported_destination(mesh: Any, start_min: Sequence[float], start_max: Sequence[float],
                                    region_min: Sequence[float], region_max: Sequence[float],
                                    start_support: dict[str, Any], *, up: int, meters_per_unit: float,
                                    up_sign: int = 1, placement_residual_m: float | None = None,
-                                   clearance: float) -> tuple[list[float], dict[str, Any]] | None:
+                                   clearance: float, outline: SupportOutline | None = None) -> Destination | None:
     """The start footprint moved as far from the start as its own surface and ``region`` allow.
 
     Only for a destination grounded as the very surface the subject rests on
     (capture-447ae4f4: the whole dining table for "the other end of the same
     table", whose centre lay under the tray). Each candidate keeps the target
-    disc inside ``region`` and the support's bounds and clear of the start, and
-    must rest on the same surface by ``support_under`` against real triangles.
-    Returns ``(centre, support)`` in runtime units, or None when none does.
+    disc of radius ``clearance`` clear of the start and the footprint inside
+    ``region``, and must rest on the same surface by ``support_under``.
+
+    The scorer accepts the subject wherever its whole footprint lies in the
+    disc, and those footprints together cover the disc: every point of it is
+    somewhere an accepted subject rests. So the farthest spot whose whole disc
+    lies on the surface (``support_outline``, or the given ``outline`` of
+    ``start_support``) is taken. Where the disc fits nowhere on it, the rule
+    before this one places it (the footprint alone over the surface's faces),
+    with ``region_on_surface`` False for the admission to flag. None when
+    neither places one.
     """
     start_min, start_max = np.asarray(start_min, dtype=float), np.asarray(start_max, dtype=float)
     plan = [axis for axis in range(3) if axis != up]
-    half, origin = (start_max - start_min) / 2, (start_min + start_max) / 2
+    common = {"up": up, "meters_per_unit": meters_per_unit, "up_sign": up_sign,
+              "placement_residual_m": placement_residual_m, "clearance": clearance, "farthest": True}
+
+    def clear(centre: np.ndarray) -> bool:
+        return destination_clear_of_start(start_min, start_max, centre, up=up, clearance=clearance)
+
+    if outline is None:
+        outline = support_outline(mesh, start_support, up=up, meters_per_unit=meters_per_unit,
+                                  placement_residual_m=placement_residual_m)
+    if outline is not None:
+        rounding = REGION_EDGE_ROUNDING_M / meters_per_unit
+        found = _first_supported(mesh, start_min, start_max, region_min, region_max, start_support,
+                                 steps=REGION_GRID_STEPS, **common, admissible=lambda centre: clear(centre)
+                                 and outline.holds(centre[plan], clearance, tolerance=rounding))
+        if found is not None:
+            return Destination(*found, True)
+    over = _footprint_over_surface(outline, (start_max - start_min) / 2, plan=plan)
+    found = _first_supported(mesh, start_min, start_max, region_min, region_max, start_support,
+                             steps=DESTINATION_GRID_STEPS, **common,
+                             admissible=lambda centre: clear(centre) and over(centre))
+    return None if found is None else Destination(*found, outline is None)
+
+
+def nearest_supported_destination(mesh: Any, lower: Sequence[float], upper: Sequence[float],
+                                  region_min: Sequence[float], region_max: Sequence[float],
+                                  support: dict[str, Any], *, up: int, meters_per_unit: float, up_sign: int = 1,
+                                  placement_residual_m: float | None = None, clearance: float,
+                                  outline: SupportOutline, start_min: Sequence[float] | None = None,
+                                  start_max: Sequence[float] | None = None) -> Destination | None:
+    """The grounded footprint ``lower``..``upper`` moved the least that puts its whole target disc on ``support``.
+
+    For a destination whose disc of radius ``clearance`` reaches past its
+    surface (``outline``, of ``support``) where it was grounded: within
+    ``region`` and, with the start on the same surface, clear of it. None
+    when the disc fits nowhere there: the grounded spot then stands, and the
+    admission flags it.
+    """
+    plan = [axis for axis in range(3) if axis != up]
+    rounding = REGION_EDGE_ROUNDING_M / meters_per_unit
+
+    def admissible(centre: np.ndarray) -> bool:
+        return ((start_min is None or destination_clear_of_start(start_min, start_max, centre, up=up,
+                                                                 clearance=clearance))
+                and outline.holds(centre[plan], clearance, tolerance=rounding))
+
+    found = _first_supported(mesh, lower, upper, region_min, region_max, support, up=up,
+                             meters_per_unit=meters_per_unit, up_sign=up_sign,
+                             placement_residual_m=placement_residual_m, clearance=clearance,
+                             steps=REGION_GRID_STEPS, admissible=admissible, farthest=False)
+    return None if found is None else Destination(*found, True)
+
+
+def footprint_at(start_min: Sequence[float], start_max: Sequence[float], centre: Sequence[float], *,
+                 up: int, up_sign: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    """The start's footprint moved to ``centre``, its bottom (top when ``up_sign`` is -1) at ``centre[up]``."""
+    lower, upper = np.asarray(start_min, dtype=float).copy(), np.asarray(start_max, dtype=float).copy()
+    for axis in range(3):
+        if axis != up:
+            half_width = (start_max[axis] - start_min[axis]) / 2
+            lower[axis], upper[axis] = centre[axis] - half_width, centre[axis] + half_width
+    height = start_max[up] - start_min[up]
+    lower[up] = centre[up] - (height if up_sign == -1 else 0)
+    upper[up] = centre[up] + (height if up_sign == 1 else 0)
+    return lower, upper
+
+
+def supported_destination_near_place(mesh: Any, start_min: Sequence[float], start_max: Sequence[float],
+                                     centre: Sequence[float], region_min: Sequence[float],
+                                     region_max: Sequence[float], surface_min: Sequence[float],
+                                     surface_max: Sequence[float], *, up: int, meters_per_unit: float,
+                                     up_sign: int = 1, placement_residual_m: float | None = None,
+                                     clearance: float) -> tuple[list[float], dict[str, Any]] | None:
+    """The supported footprint nearest a named place whose own centre has no contact.
+
+    A place at a surface's edge or corner puts the footprint's centre too near
+    the boundary. Candidates on the coarse grid (``DESTINATION_GRID_STEPS``)
+    overlap the place, keep the footprint inside the surface's bounds and clear
+    of the start, and are probed nearest ``centre`` first, at most
+    ``DESTINATION_MAX_PROBES`` times, by ``support_under`` against real triangles.
+    Returns ``(centre, support)`` in runtime units, or None when none is supported.
+    """
+    plan = [axis for axis in range(3) if axis != up]
+    half = (np.asarray(start_max, dtype=float) - np.asarray(start_min, dtype=float)) / 2
+    target = np.asarray(centre, dtype=float)
     steps = []
     for axis in plan:
-        low = max(float(region_min[axis]) + half[axis], float(start_support["aabb_min"][axis]) + clearance)
-        high = min(float(region_max[axis]) - half[axis], float(start_support["aabb_max"][axis]) - clearance)
+        low = max(float(region_min[axis]) - half[axis], float(surface_min[axis]) + half[axis])
+        high = min(float(region_max[axis]) + half[axis], float(surface_max[axis]) - half[axis])
         if low > high:
             return None
         steps.append(np.linspace(low, high, DESTINATION_GRID_STEPS))
     candidates = []
     for first, second in ((a, b) for a in steps[0] for b in steps[1]):
-        centre = origin.copy()
-        centre[plan[0]], centre[plan[1]] = first, second
-        if destination_clear_of_start(start_min, start_max, centre, up=up, clearance=clearance):
-            candidates.append(centre)
-    faces = np.asarray(start_support.get("face_indices") or [], dtype=np.int64)
-    if len(faces):
-        # The same nine probe points support_under tests, each over or within its
-        # search window of one of this surface's triangles (in plan, so any
-        # tessellation); the exact test follows below.
-        triangles = np.asarray(mesh.triangles, dtype=float)[faces][:, :, plan]
-        window_m = 0.03
-        if (not isinstance(placement_residual_m, bool) and isinstance(placement_residual_m, (int, float))
-                and math.isfinite(placement_residual_m)):
-            window_m = max(window_m, float(placement_residual_m))
-        from scipy.spatial import cKDTree
-
-        # Only triangles whose centre lies within their own reach plus the window can qualify.
-        centres = triangles.mean(axis=1)
-        reach = float(np.linalg.norm(triangles - centres[:, None], axis=2).max()) + window_m / meters_per_unit
-        nearby = cKDTree(centres)
-        signs = [(a, b) for a in (-1, 0, 1) for b in (-1, 0, 1)]
-
-        def supported(point: list[float]) -> bool:
-            rows = nearby.query_ball_point(point, reach)
-            return bool(rows) and _plan_distance_to_triangles(point, triangles[rows]) <= window_m / meters_per_unit
-
-        candidates = [centre for centre in candidates if all(
-            supported([centre[plan[0]] + a * half[plan[0]], centre[plan[1]] + b * half[plan[1]]]) for a, b in signs)]
-    candidates.sort(key=lambda centre: -math.dist(centre[plan], origin[plan]))
-    for centre in candidates[:DESTINATION_MAX_PROBES]:
-        offset = centre - origin
-        found = support_under(mesh, start_min + offset, start_max + offset, up=up, meters_per_unit=meters_per_unit,
-                              up_sign=up_sign, placement_residual_m=placement_residual_m)
-        if found is not None and same_support_surface(found, start_support):
-            centre = centre.copy()
-            centre[up] = found["top_runtime_units"]
-            return centre.tolist(), found
+        candidate = target.copy()
+        candidate[plan[0]], candidate[plan[1]] = first, second
+        if destination_clear_of_start(start_min, start_max, candidate, up=up, clearance=clearance):
+            candidates.append(candidate)
+    candidates.sort(key=lambda candidate: math.dist(candidate[plan], target[plan]))
+    for candidate in candidates[:DESTINATION_MAX_PROBES]:
+        found = support_under(mesh, *footprint_at(start_min, start_max, candidate, up=up, up_sign=up_sign), up=up,
+                              meters_per_unit=meters_per_unit, up_sign=up_sign,
+                              placement_residual_m=placement_residual_m)
+        if found is not None:
+            candidate[up] = found["top_runtime_units"]
+            return candidate.tolist(), found
     return None
 
 

@@ -81,6 +81,11 @@ def test_real_compiled_task_prepares_native_g1_with_frozen_task_and_visible_assu
     x, y, z = assumptions["stance"]["position_world_m"]
     assert not (2.5 <= x <= 4.5 and -9.5 <= y <= -1.4)
     assert z == pytest.approx(0.79) and assumptions["large_collision_bounds_retained"] is True
+    # The stance is the closest clear one the G1's nominal arm span covers the task from, else the closest.
+    reach = assumptions["stance_reach"]
+    assert reach["rule"] == "closest_clear_stance_within_nominal_arm_span" and reach["clear_stances_measured"] > 1
+    assert reach["within_nominal_arm_span"] is (reach["interpretation"] == "nominal_static_reach_candidate")
+    assert request["robot_base_pose_world"]["position_world_m"] == assumptions["stance"]["position_world_m"]
     assert root.name == canonical_digest(args["source"])[7:]
     assert len(result["candidate_reasons"]) == 2 and all(k.endswith("vision_navi") for k in result["candidate_reasons"])
     assert not any("navigation_goal" in k for k in request["task_spec"])

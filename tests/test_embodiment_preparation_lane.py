@@ -530,6 +530,76 @@ def test_diagnostic_retention_failure_still_publishes_verified_model(tmp_path, m
     assert "diagnostic_path" not in row["native_controller_smoke"]
 
 
+def _uploaded(job, digest="sha256:" + "b" * 64):
+    archive = controller.workspace_for(job) / "bundle" / controller.BUNDLE_ARCHIVE
+    contract.write_once(archive.parent / controller.RECEIPT, {"bundle_sha256": digest})
+    archive.write_bytes(b"development-only upload bytes")
+    archive.parent.chmod(0o555)  # as publish_staged_immutable_directory leaves it
+    return archive
+
+
+@pytest.mark.parametrize("state,released", [
+    ("published", True), ("not_completed", True), ("completed_unpromoted", False), ("running", False), ("built", False)])
+def test_a_terminal_batch_releases_its_upload_archive_and_keeps_its_evidence(tmp_path, state, released):
+    grant, job, _ = _queued(tmp_path)
+    archive = _uploaded(job)
+    if state == "published":
+        contract.write_once(job / "publication.json", {"status": "completed"})
+    elif state in {"not_completed", "completed_unpromoted"}:
+        contract.write_once(job / "allocator_result.json", {
+            "status": "blocked" if state == "not_completed" else "completed", "continuing_spend_from_this_run": False})
+    elif state == "running":
+        contract.write_once(job / "allocator_launch_intent.json", {"bundle_sha256": "sha256:" + "b" * 64})
+    rows = controller.release_terminal_workspaces(tmp_path, commit=COMMIT)
+    # Promotion and reconciliation still read the archive; a published or ended batch never does.
+    assert archive.exists() is not released
+    assert (archive.parent / controller.RECEIPT).is_file()
+    assert archive.parent.stat().st_mode & 0o777 == 0o555
+    if released:
+        record = contract.read(job / controller.WORKSPACE_RELEASE)
+        assert rows == [record] and record["bundle_sha256"] == "sha256:" + "b" * 64
+        assert record["released_bytes"] == len(b"development-only upload bytes")
+        assert controller.release_terminal_workspaces(tmp_path, commit=COMMIT) == []
+    else:
+        assert rows == [] and not (job / controller.WORKSPACE_RELEASE).exists()
+
+
+def test_only_the_installed_releases_source_cache_is_kept(tmp_path):
+    sources = tmp_path / "work" / "sources"
+    for commit in (COMMIT, "2" * 40):
+        cache = sources / commit / "universal_robots_ur5e"
+        cache.mkdir(parents=True)
+        (cache / "robot.urdf").write_text("development-only")
+        cache.chmod(0o500)  # retained sources keep read-only modes
+    rows = controller.release_terminal_workspaces(tmp_path, commit=COMMIT)
+    assert rows == [{"source_cache_release": "2" * 40}]
+    assert sorted(p.name for p in sources.iterdir()) == [COMMIT]
+    assert (sources / COMMIT / "universal_robots_ur5e" / "robot.urdf").is_file()
+
+
+def test_the_queue_pass_releases_terminal_workspaces_and_reports_them(tmp_path, monkeypatch):
+    _, job, _ = _queued(tmp_path)
+    archive = _uploaded(job)
+    contract.write_once(job / "publication.json", {"status": "completed", "results": []})
+    monkeypatch.setattr(controller, "source_commit", lambda: COMMIT)
+    monkeypatch.setattr(controller, "process_reserved_entry", lambda item, **k: contract.read(job / "publication.json"))
+    value = controller.run_queue(root=tmp_path, store=tmp_path / "models")
+    assert not archive.exists() and [row["authorization_id"] for row in value["workspace_releases"]] == [job.name]
+
+
+def test_a_release_that_cannot_unlink_is_reported_and_the_queue_still_runs(tmp_path, monkeypatch):
+    _, job, _ = _queued(tmp_path)
+    _uploaded(job)
+    contract.write_once(job / "publication.json", {"status": "completed"})
+
+    def refused(self, *args, **kwargs):
+        raise PermissionError(13, "read-only")
+
+    monkeypatch.setattr(controller.Path, "unlink", refused)
+    assert controller.release_terminal_workspaces(tmp_path, commit=COMMIT) == [
+        {"authorization_id": job.name, "release_blocked": "PermissionError"}]
+
+
 def test_a_batch_waits_unbuilt_and_unconsumed_for_the_spend_guards_current_lock(tmp_path, monkeypatch):
     # public-robot-imports-20261031-08: launched before the guard's first post-deploy pass,
     # the batch consumed its single-use grant and the provider preflight then refused it.

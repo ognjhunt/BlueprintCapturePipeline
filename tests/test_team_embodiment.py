@@ -992,3 +992,26 @@ def test_world_anchor_is_a_fixed_joint_between_the_static_world_and_one_rigid_bo
     declared = validate_embodiment_manifest(manifest(path))
     blockers = model_structure_blockers(declared, structure)
     assert ("team_embodiment_model_base_not_anchored_to_world" in blockers) is not anchored
+
+
+def test_a_fixed_body_bound_to_its_own_station_stands_there_in_every_cell(tmp_path) -> None:
+    model = write_robot_usd(tmp_path / "acme_arm.usda")
+    declared = validate_embodiment_manifest(manifest(model))
+    inputs = {"model_record": verify_model_file(declared, model), "structure": read_model_structure(model)}
+    plan = station_plan()
+    base = plan["robot"]["base_pose_world"]
+    station = {"position_world_m": [base["position_world_m"][0] + 0.1, base["position_world_m"][1] - 0.05,
+                                    base["position_world_m"][2]], "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    sealed = team_embodiment_binding(declared, scene_plan=plan, station=station, **inputs)
+    assert sealed["station"] == station
+    assert sealed["binding_digest"] == canonical_digest(dict(sealed), digest_field="binding_digest")
+    # The plan itself still has the scene's station: the binding, not the plan, places the body.
+    assert apply_team_embodiment(plan, sealed)["robot"]["base_pose_world"] == station
+    unbound = team_embodiment_binding(declared, scene_plan=plan, **inputs)
+    assert "station" not in unbound and apply_team_embodiment(plan, unbound)["robot"]["base_pose_world"] == base
+    # Reach is checked from the station the body will stand at.
+    far = {**station, "position_world_m": [station["position_world_m"][0] + 50.0, *station["position_world_m"][1:]]}
+    with pytest.raises(TeamEmbodimentError, match="team_embodiment_station_out_of_reach"):
+        team_embodiment_binding(declared, scene_plan=plan, station=far, **inputs)
+    with pytest.raises(TeamEmbodimentError, match="team_embodiment_own_station_invalid"):
+        team_embodiment_binding(declared, scene_plan=plan, station={"position_world_m": [0.0, 0.0]}, **inputs)

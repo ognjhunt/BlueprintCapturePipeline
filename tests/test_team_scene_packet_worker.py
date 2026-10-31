@@ -41,12 +41,13 @@ def _sealed(value: dict[str, Any], field: str) -> dict[str, Any]:
     return value
 
 
-def _registry(operator: Path, *, packet_inputs: dict[str, Any] | None, profiles: list[dict] | None = None) -> None:
+def _registry(operator: Path, *, packet_inputs: dict[str, Any] | None, profiles: list[dict] | None = None,
+              defaults: dict[str, Any] | None = None) -> None:
     # The operator decides who may fund a run, at what rate, the salt and the fixed compile inputs; never the scene.
     derived: dict[str, Any] = {
         "root": str(operator / "derived"), "scored_matrix_salt_key_path": str(operator / "salt.key"),
         "defaults": {"allowed_founder_approvers": ["founder@blueprint"], "max_hourly_rate_usd": 0.8,
-                     "open_loop_horizon": 8}}
+                     "open_loop_horizon": 8, **(defaults or {})}}
     if packet_inputs is not None:
         derived["packet_inputs"] = packet_inputs
     path = operator / "registry.json"
@@ -145,6 +146,9 @@ def test_a_completed_website_scene_is_compiled_recorded_and_offered_without_a_pe
     assert Path(status["attempt_root"]).parent == world["halves"]
     assert read_team_scene_inputs(profile["team_scene_inputs_path"])["scene_revision_digest"] == (
         profile["scene_revision_digest"])
+    # No team body is registered: the half is the Franka-only one, with no body stations and nothing named.
+    assert "embodiment_stations" not in json.loads(Path(profile["team_scene_inputs_path"]).read_text())
+    assert "embodiment_manifests_unreadable" not in status
     # The offer was republished; a rigid scene stays unlisted, by name, until its probe passes.
     assert status["offer"]["team_evaluation_listed"] is False
     assert status["offer"]["team_candidate_offer_refused"] == "team_evaluation_robot_free_probe_receipt_missing"
@@ -168,6 +172,41 @@ def test_a_completed_website_scene_is_compiled_recorded_and_offered_without_a_pe
     assert offer["team_evaluation"]["contract"]["task_kind"] == "rigid_pick_place"
     assert profile_for_capture(world["capture"]) == profile
     assert [path.name for path in world["halves"].iterdir()] == [Path(status["attempt_root"]).name]
+
+
+def test_every_registered_team_body_is_compiled_with_the_scene_at_its_own_station(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from tests.test_team_scene_packet import bodies
+
+    world = _world(tmp_path, monkeypatch)
+    body = bodies(tmp_path)
+    records = {name: launch._record(launch._write(tmp_path / f"{name}.manifest.json", value))
+               for name, value in body.items()}
+    changed = {**records["short"], "sha256": "sha256:" + "0" * 64}
+    # The long arm's own model, as registered; the rover is registered with a model that is not its own.
+    arm = launch._record(tmp_path / "robot.usda")
+    _registry(world["operator"], packet_inputs=world["inputs"], defaults={"screening_candidates": {
+        "team_long": {"robot_policy": {"manifest": records["long"], "model": arm}},
+        "team_long_again": {"robot_policy": {"manifest": records["long"]}},
+        "team_rover": {"robot_policy": {"manifest": records["wheeled"], "model": arm}},
+        "team_changed": {"robot_policy": {"manifest": changed}},
+        "team_g1": {"native_g1": {"registered": "with its own scene packet"}}}})
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    # A manifest whose bytes changed is named and left out; nothing is guessed for it.
+    assert status["embodiment_manifests_unreadable"] == ["team_changed"]
+    record = json.loads(Path(status["team_scene_inputs_path"]).read_text())
+    assert set(record["embodiment_stations"]) == {body["long"]["embodiment_digest"],
+                                                  body["wheeled"]["embodiment_digest"]}
+    assert read_team_scene_inputs(status["team_scene_inputs_path"])["scene_revision_digest"] == (
+        world["scene"]["revision"]["revision_digest"])
+    # Only the model that is the body's own is handed on: the long arm's station is also solved with its arm.
+    assert worker.registered_embodiment_models(json.loads((world["operator"] / "registry.json").read_text())) == {
+        body["long"]["embodiment_digest"]: tmp_path / "robot.usda"}
+    long = record["embodiment_stations"][body["long"]["embodiment_digest"]]
+    assert long["reach"]["own_arm"]["rule"] == "closest_clear_stance_own_arm_reaches_every_phase"
+    assert "reach" not in record["embodiment_stations"][body["wheeled"]["embodiment_digest"]] or (
+        record["embodiment_stations"][body["wheeled"]["embodiment_digest"]]["reach"] is None)
 
 
 @pytest.mark.parametrize("owner", ["operator_row", "frozen_pair"])
@@ -223,6 +262,7 @@ def test_a_refused_compile_leaves_no_partial_half_and_its_retry_compiles_cleanly
     _registry(world["operator"], packet_inputs={**world["inputs"], "droid_profile_digest": "sha256:" + "0" * 64})
     [status] = world["process"]()["results"]
     assert (status["status"], status["blockers"]) == ("blocked", ["team_scene_droid_profile_binding_invalid"])
+    assert "error" not in status  # A typed refusal is its own cause.
     assert list(world["halves"].iterdir()) == []
     assert profile_for_capture(world["capture"]) is None and world["calls"] == []
     _registry(world["operator"], packet_inputs=world["inputs"])
@@ -233,6 +273,20 @@ def test_a_refused_compile_leaves_no_partial_half_and_its_retry_compiles_cleanly
     assert profile_for_capture(world["capture"])["team_scene_inputs_path"] == retried["team_scene_inputs_path"]
     # A completed request is never requeued.
     assert worker.requeue_unfinished(queue_root=world["queue"])["requeued"] == []
+
+
+def test_an_untyped_compile_failure_keeps_its_bounded_cause_beside_the_type_code(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+
+    def full(*_args, **_kwargs):
+        raise OSError(28, "No space left on device", "/var/lib/halves/token=abc")
+    monkeypatch.setattr(worker, "_compile", full)
+    [status] = world["process"]()["results"]
+    # The code stays the type name; the record keeps the redacted, trimmed message.
+    assert (status["status"], status["blockers"]) == ("blocked", ["team_scene_packet_failed:OSError"])
+    assert status["error"] == {"type": "builtins.OSError",
+                               "message": "[Errno 28] No space left on device: '/var/lib/halves/token=<redacted>"}
+    assert json.loads((world["queue"] / "status" / f"{world['key']}.json").read_text())["error"] == status["error"]
 
 
 def test_an_interrupted_attempt_is_blocked_by_name_and_its_unnamed_directory_removed(tmp_path, monkeypatch):

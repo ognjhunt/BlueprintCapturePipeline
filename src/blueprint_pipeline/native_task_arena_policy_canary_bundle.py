@@ -597,6 +597,7 @@ def build_policy_canary_session_bundle(
         packet_dir=packet_dir,
         # The pre-GPU checks measure the robot that runs, not the packet's.
         team_embodiment=team_bindings[0] if team_bindings else None,
+        team_robot_model=team_robot_model_path if team_bindings else None,
         worker_source=package / "native_task_arena_policy_canary_worker.py",
         runtime_module_sources=sorted(set(runtime_modules)),
         implementation_commit=implementation_commit,

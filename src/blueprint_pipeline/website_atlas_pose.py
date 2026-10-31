@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import fcntl
 import http.client
+import ipaddress
 import json
+import logging
 import math
 import os
 import re
@@ -47,6 +49,7 @@ ATLAS_API_BASE_URL_ENV = "WORLDLABS_ATLAS_API_BASE_URL"
 ATLAS_API_KEY_ENV = "WORLDLABS_ATLAS_API_KEY"
 ATLAS_PRICE_REVIEW_ENV = "BLUEPRINT_ATLAS_POSE_PRICE_REVIEW_JSON"
 ATLAS_PROVIDER_RETENTION_ENV = "BLUEPRINT_ATLAS_PROVIDER_RETENTION"
+ATLAS_WEBHOOK_URL_ENV = "BLUEPRINT_ATLAS_WEBHOOK_URL"
 PRICE_REVIEW_SCHEMA = "website_atlas_pose_price_review.v1"
 INPUTS_SCHEMA = "website_atlas_pose_inputs.v1"
 SUBMISSION_SCHEMA = "website_atlas_pose_submission.v1"
@@ -130,6 +133,8 @@ _REVIEW_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 _CONTENT_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"}
 _OUTPUT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".exr"}
 _HELD_LOCKS = threading.local()
+
+logger = logging.getLogger(__name__)
 
 TransportResponse = tuple[int, bytes] | tuple[int, bytes, Mapping[str, str]]
 Transport = Callable[[str, str, Mapping[str, str], "bytes | None"], TransportResponse]
@@ -221,6 +226,50 @@ def _json_object(status: int, payload: bytes) -> dict[str, Any]:
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def atlas_webhook_url() -> str | None:
+    """The completion callback a new task request names, or None.
+
+    World Labs takes https on 443 to a public DNS name, with no credentials or
+    fragment (https://docs.atlas-beta.worldlabs.ai/webhooks). The callback only
+    wakes the provider poll early, so an unusable value is flagged and left out.
+    """
+    raw = os.environ.get(ATLAS_WEBHOOK_URL_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        parts = urlsplit(raw)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        # Malformed (e.g. an unclosed IPv6 bracket): the optional callback is
+        # left out; the Atlas work itself still goes ahead.
+        logger.warning("atlas_webhook_url_unusable; tasks are submitted without a callback")
+        return None
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    try:
+        numeric = bool(ipaddress.ip_address(host))
+    except ValueError:
+        numeric = False
+    if (parts.scheme != "https" or port not in (None, 443) or numeric or "." not in host
+            or parts.username or parts.password or "#" in raw or any(c.isspace() for c in raw)):
+        logger.warning("atlas_webhook_url_unusable; tasks are submitted without a callback")
+        return None
+    return raw
+
+
+def new_request_body(request: Mapping[str, Any]) -> str:
+    """The exact bytes of a task request that has never been sent.
+
+    The configured callback rides only here, outside the request record, its
+    digest and its idempotency key: a configuration change never re-identifies a
+    purchase, and a request already on record is resent byte for byte.
+    """
+    url = atlas_webhook_url()
+    return _canonical_json({**request, "webhookUrl": url} if url else dict(request))
 
 
 def _without_urls(value: Any) -> Any:
@@ -889,7 +938,7 @@ def submit_atlas_pose_operation(*, pose_inputs: Mapping[str, Any], output_root: 
                        "targetResolution": list(binding["target_resolution"]), **request_options()}
             # The exact bytes are kept, so every resend under the key is identical.
             state.update(status="submitting", resends=0, sends=[], possibly_bought=False, request=request,
-                         request_body=_canonical_json(request), submitting_at_epoch=now())
+                         request_body=new_request_body(request), submitting_at_epoch=now())
         else:
             # The documented recovery: the identical bytes under the same key.
             state.update(status="submitting", resends=state["resends"] + 1)

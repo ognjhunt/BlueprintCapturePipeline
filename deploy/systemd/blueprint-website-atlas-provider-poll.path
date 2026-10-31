@@ -1,0 +1,13 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-website-atlas-provider-poll.path.json
+Description=Read live World Labs Atlas operations as soon as a signed completion webhook arrives
+
+[Path]
+# Written by the intake's /api/live-pipeline/atlas-webhook route (blueprint_pipeline.atlas_webhook).
+PathExists=/var/lib/blueprint/pipeline-control-plane/atlas-provider-poll/requested
+Unit=blueprint-website-atlas-provider-poll.service
+
+[Install]
+WantedBy=multi-user.target

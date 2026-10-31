@@ -58,7 +58,12 @@ def validate_preparation_proposal(authority, context):
     _require(all(type(proposal[key]) is str for key in ("job_id", "run_id", "source_key", "context_digest", "packet_sha256")))
 
 
-def validate_preparation_authority(*, task_context, authority, now):
+def validate_preparation_authority(*, task_context, authority, now, valid_until=None):
+    """``valid_until`` is the bound intent's effective (owner-extended) expiry.
+
+    It moves only the "still valid now" check, never past raw expiry + 7 days;
+    the grant's own issued-to-expiry window is checked unchanged.
+    """
     validate_website_task_context(
         task_context,
         request_id=task_context["request_id"],
@@ -71,6 +76,12 @@ def validate_preparation_authority(*, task_context, authority, now):
     consent = authority.get("consent") or {}
     issued = consent.get("accepted_at_epoch")
     expiry = authority.get("expires_at_epoch")
+    current = expiry
+    if valid_until is not None:
+        if isinstance(valid_until, bool) or not isinstance(valid_until, (int, float)) or not math.isfinite(valid_until):
+            raise ValueError("website_preparation_authority_invalid")
+        if isinstance(expiry, (int, float)) and not isinstance(expiry, bool):
+            current = min(max(expiry, valid_until), expiry + 7 * 86400)
     limits = [
         authority.get(k)
         for k in (
@@ -114,7 +125,7 @@ def validate_preparation_authority(*, task_context, authority, now):
             for v in (issued, expiry, now)
         )
         or issued > now + 60
-        or not now < expiry
+        or not now < current
         or not 0 < expiry - issued <= 86400
     ):
         raise ValueError("website_preparation_authority_invalid")
@@ -122,9 +133,10 @@ def validate_preparation_authority(*, task_context, authority, now):
     return dict(authority)
 
 
-def validate_preparation_request(*, request, task_context, authority, now):
+def validate_preparation_request(*, request, task_context, authority, now, valid_until=None):
     from .website_preparation_revision_identity import capture_id
-    validate_preparation_authority(task_context=task_context, authority=authority, now=now)
+    validate_preparation_authority(task_context=task_context, authority=authority, now=now,
+                                   valid_until=valid_until)
     execution = request.get("execution") or {}
     source = request.get("source") or {}
     task = request.get('task') or {}

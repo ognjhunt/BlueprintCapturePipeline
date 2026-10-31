@@ -274,6 +274,9 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             **({"task_semantics": semantics} if semantics is not None else {}),
         )
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
+        if (preparation.get("collider_conditioning") or {}).get("status") == "conditioned":
+            # Compile sealed a conditioned collider into the base scene; runtime inputs read that one.
+            base = json.loads((root / "base_scene.json").read_text())
         result.update(status=preparation["status"], blockers=preparation["blockers"],
                       preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
                       thumbnail=preparation["thumbnail"], base_scene_path=str(root / "base_scene.json"))

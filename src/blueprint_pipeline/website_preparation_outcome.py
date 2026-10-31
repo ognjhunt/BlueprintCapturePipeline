@@ -58,6 +58,8 @@ def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
                 "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
     ref = handoff.get("capability_verdict")
     if isinstance(ref, dict) and ref.get("status") == "abstained":
+        from .robot_arm_path_clearance import ROBOT_PROFILE_ARMS
+
         preparation = _load(Path(handoff["preparation_path"]), root, "digest")
         verdict = _load(Path(ref["path"]), root, "verdict_digest")
         runtime_ref = handoff.get("runtime_inputs") or {}
@@ -72,7 +74,8 @@ def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
                 or verdict.get("schema_version") != "website_rigid_task_capability_verdict.v1"
                 or verdict.get("preparation_digest") != preparation["digest"]
                 or verdict.get("verdict_digest") != ref.get("digest")
-                or verdict.get("status") != "abstained" or verdict.get("robot_id") != "franka_panda"
+                or verdict.get("status") != "abstained"
+                or verdict.get("robot_id") not in set(ROBOT_PROFILE_ARMS.values())
                 or verdict.get("claim_ceiling") != "development_only"
                 or verdict.get("physical_world_truth_claimed") is not False):
             raise ValueError("preparation_outcome_verdict_binding_invalid")

@@ -6,7 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from .common import write_json
 from .decision_evidence_contracts import canonical_digest
@@ -30,22 +30,43 @@ def gemini_quote(*, model: str, input_tokens: int, max_output_tokens: int = 65_5
     return math.ceil((input_tokens * 0.75 + max_output_tokens * 3.75) / 10_000) / 100
 
 
-def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
-                        task_context: Mapping[str, Any], maximum_cost_usd: float,
-                        preflight: Callable[[], None], invoke: Callable[[], dict[str, Any]],
-                        source_video_digest: str | None = None) -> dict[str, Any]:
-    """Reuse completed results; an uncertain call never authorizes another call.
-
-    The existing WebApp transaction is the cross-worker spending authority.
-    Local flock and exclusive durable intent cover restarts on this worker.
-    """
+def _request(*, binding: Mapping[str, Any], task_context: Mapping[str, Any], maximum_cost_usd: float,
+             source_video_digest: str | None) -> tuple[dict[str, Any], str]:
     validate_website_task_context(task_context, request_id=task_context["request_id"],
         scene_id=task_context["scene_id"], capture_id=task_context["capture_id"], purpose="scene_preparation")
     request = {"binding": dict(binding), "task_context_digest": task_context["context_digest"],
                "maximum_cost_usd": maximum_cost_usd}
     if source_video_digest is not None:
         request["source_video_digest"] = source_video_digest
-    digest = canonical_digest(request)
+    return request, canonical_digest(request)
+
+
+def _completed_result(path: Path, digest: str) -> dict[str, Any]:
+    receipt = json.loads(path.read_text())
+    if receipt.get("status") != "completed":
+        raise ValueError("website_gemini_requires_reconciliation")
+    result = receipt.get("result")
+    if (receipt.get("request_digest") != digest or not isinstance(result, dict)
+            or receipt.get("result_digest") != canonical_digest(result)):
+        raise ValueError("website_gemini_receipt_invalid")
+    return result
+
+
+def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
+                        task_context: Mapping[str, Any], maximum_cost_usd: float,
+                        preflight: Callable[[], None], invoke: Callable[[], dict[str, Any]],
+                        source_video_digest: str | None = None,
+                        earlier_requests: Sequence[tuple[Mapping[str, Any], float]] = ()) -> dict[str, Any]:
+    """Reuse completed results; an uncertain call never authorizes another call.
+
+    ``earlier_requests`` are superseded ``(binding, maximum_cost_usd)`` forms of
+    this same decision: one already bought is reused as it stands, and one that
+    may have been charged still needs reconciliation, never a new purchase.
+    The existing WebApp transaction is the cross-worker spending authority.
+    Local flock and exclusive durable intent cover restarts on this worker.
+    """
+    request, digest = _request(binding=binding, task_context=task_context, maximum_cost_usd=maximum_cost_usd,
+                               source_video_digest=source_video_digest)
     output_root.mkdir(parents=True, exist_ok=True)
     path = output_root / f"{digest[7:]}.json"
     with (output_root / f"{digest[7:]}.lock").open("a") as lock:
@@ -54,14 +75,12 @@ def retained_gemini_call(*, output_root: Path, binding: Mapping[str, Any],
         except BlockingIOError as exc:
             raise ValueError("website_gemini_request_in_progress") from exc
         if path.exists():
-            receipt = json.loads(path.read_text())
-            if receipt.get("status") != "completed":
-                raise ValueError("website_gemini_requires_reconciliation")
-            result = receipt.get("result")
-            if (receipt.get("request_digest") != digest or not isinstance(result, dict)
-                    or receipt.get("result_digest") != canonical_digest(result)):
-                raise ValueError("website_gemini_receipt_invalid")
-            return result
+            return _completed_result(path, digest)
+        for earlier_binding, earlier_cost in earlier_requests:
+            _, earlier = _request(binding=earlier_binding, task_context=task_context,
+                                  maximum_cost_usd=earlier_cost, source_video_digest=source_video_digest)
+            if (output_root / f"{earlier[7:]}.json").exists():
+                return _completed_result(output_root / f"{earlier[7:]}.json", earlier)
         preflight()
         admission, grant = reserve_website_preparation_spend(task_context=task_context,
             binding_digest=digest, maximum_cost_usd=maximum_cost_usd, request_count=1,

@@ -31,6 +31,12 @@ door_init_git() {
   echo "[$(date -u +%FT%TZ)] ${DOOR_KIND} ${DOOR_COMMIT} (request ${DOOR_REQUEST_ID})"
 }
 
+# door_phase NAME: a timestamp in the request log. The deploy tool's receipt times
+# its own stages; this measures what the door does before the tool starts.
+door_phase() {
+  echo "[$(date -u +%FT%TZ)] phase=$1"
+}
+
 # door_outcome STATUS CODE EXIT_CODE [KEY VALUE]... -> results/<id>.outcome.json
 door_outcome() {
   local status="$1" code="$2" rc="$3"
@@ -113,8 +119,28 @@ door_prepare_source() {
     git -C "$src" config core.sshCommand "$DOOR_GIT_SSH"
     git -C "$src" config url.git@github.com:.insteadOf https://github.com/
   fi
-  git -C "$src" fetch --quiet --prune origin '+refs/heads/*:refs/remotes/origin/*' || door_fail fetch_failed
+  # Only main decides what the door may deploy, and nothing on the door's path
+  # reads another remote branch: this script and the tool never pass --canary.
+  door_phase fetch_main_start
+  git -C "$src" fetch --quiet origin '+refs/heads/main:refs/remotes/origin/main' || door_fail fetch_failed
+  door_phase fetch_main_done
+  door_forget_other_remote_branches "$src"
+  if ! git -C "$src" cat-file -e "${DOOR_COMMIT}^{commit}" 2>/dev/null; then
+    # A pushed commit that main does not contain still refuses as commit_not_on_main.
+    git -C "$src" fetch --quiet origin "$DOOR_COMMIT" 2>/dev/null || true
+  fi
   git -C "$src" cat-file -e "${DOOR_COMMIT}^{commit}" 2>/dev/null || door_fail commit_not_found
+}
+
+# A narrow refspec cannot prune what an older door fetched. Those tracking refs
+# only slow every `for-each-ref --contains` the release staging runs.
+door_forget_other_remote_branches() {
+  local stale
+  stale="$(git -C "$1" for-each-ref --format='delete %(refname)' refs/remotes/origin \
+    | { grep -vE '^delete refs/remotes/origin/(main|HEAD)$' || true; })"
+  if [ -n "$stale" ]; then
+    printf '%s\n' "$stale" | git -C "$1" update-ref --stdin || echo "keeping stale remote branches: update-ref failed"
+  fi
 }
 
 door_require_on_main() {

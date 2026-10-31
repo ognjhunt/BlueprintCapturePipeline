@@ -232,8 +232,10 @@ def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: lis
     """Return a grounded target whose concept the segmenter actually resolves.
 
     The video-analysis noun already bought a full clip and found nothing. Each
-    task-grounded noun or model proposal is spent on one frame before it is
-    spent on the whole clip.
+    further noun comes from the model looking at the crop of the target it
+    localized, and is spent on one frame before it is spent on the whole clip.
+    The task text never picks a noun here: one harness serves every site, task
+    and object (owner rule 2026-10-29).
     """
     from .website_task_grounding import ground_task_target as _ground
 
@@ -242,31 +244,13 @@ def resolve_video_segmentation_concept(*, target: Mapping[str, Any], tracks: lis
         return any(concept == row.casefold() for row in rejected)
 
     grounded, rejected, outcome = target, [failed_concept.strip()], CONCEPT_NO_INSTANCE
-    # The task itself can supply a more specific, visually testable noun than
-    # the grounding model. A cabinet explicitly described as under the desk is
-    # probed as one assembly before asking for more free-form synonyms. The
-    # one-frame coverage gate below still decides whether it is actually this
-    # object; the task phrase alone never authorizes a full-video call.
-    task_words = str(target.get("task_basis_quote", "")).casefold()
-    task_noun = ("under-desk cabinet" if "cabinet" in task_words
-                 and ("under the desk" in task_words or "under-desk" in task_words)
-                 else None)
     if not 0 <= maximum_probes <= MAXIMUM_CONCEPT_PROBES:
         raise ValueError("website_concept_probe_budget_invalid")
-    remaining_probes = maximum_probes
-    if remaining_probes and task_noun and task_noun.casefold() not in (row.casefold() for row in rejected):
-        grounded = {**grounded, "segmentation_prompt": task_noun}
-        outcome = probe_segmentation_concept(target=grounded, concept=task_noun,
-                                             task_context=task_context, output_root=probe_root)
-        if outcome == CONCEPT_RESOLVED:
-            return grounded
-        rejected.append(task_noun)
-        remaining_probes -= 1
     # The budget counts probes, not turns. A grounding that hands back a noun
     # already tried costs nothing and must not use one up, or the two nouns
     # already known to fail would spend the whole search before the model is
     # ever told what went wrong with them.
-    for _ in range(remaining_probes):
+    for _ in range(maximum_probes):
         if tried(grounded):
             grounded = _ground(target=grounded, tracks=tracks, registry=registry, video=video,
                 task_context=task_context, output_root=grounding_root,
@@ -416,6 +400,55 @@ def estimate_target_bounds(track: Mapping[str, Any], frames: list[Mapping[str, A
             "complete_object_dimensions": False, "metric_measurement_proven": False}
 
 
+def estimate_region_bounds(track: Mapping[str, Any], frames: list[Mapping[str, Any]],
+                           evidence: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Bounds of the part of a tracked surface inside the analysis's region boxes.
+
+    Each box keeps the track's own mask pixels inside it, in the nearest observed
+    frame within the coarse analysis window (as ``anchor_scores`` reads anchor
+    boxes), and ``estimate_target_bounds`` lifts them with the same estimated
+    depth and cameras as the whole target. None when no observed frame lies near
+    a box, or no surface pixel with depth lies inside one: the region is then
+    unregistered, never guessed.
+    """
+    by_id = {frame["frame_id"]: frame for frame in frames}
+    clipped: dict[str, tuple[Mapping[str, Any], np.ndarray]] = {}
+    for row in evidence:
+        nearby = [observation for observation in track["observations"] if observation["source_frame_id"] in by_id
+                  and abs(float(by_id[observation["source_frame_id"]]["timestamp_seconds"])
+                          - row["timestamp_seconds"]) <= 0.5]
+        if not nearby:
+            continue
+        observation = min(nearby, key=lambda item: abs(
+            float(by_id[item["source_frame_id"]]["timestamp_seconds"]) - row["timestamp_seconds"]))
+        mask = decode_track_mask(observation)
+        x, y, width, height = row["box_xywh_normalized"]
+        columns, rows = np.arange(mask.shape[1]) + 0.5, np.arange(mask.shape[0]) + 0.5
+        inside = (((rows >= y * mask.shape[0]) & (rows <= (y + height) * mask.shape[0]))[:, None]
+                  & ((columns >= x * mask.shape[1]) & (columns <= (x + width) * mask.shape[1]))[None, :])
+        frame_id = observation["source_frame_id"]
+        previous = clipped.get(frame_id, (observation, np.zeros_like(mask)))[1]
+        clipped[frame_id] = (observation, previous | (mask & inside))
+    observations = []
+    for observation, mask in clipped.values():
+        if not mask.any():
+            continue
+        edges = np.diff(np.pad(mask.reshape(-1).astype(np.int8), (1, 1)))
+        starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+        observations.append({**observation, "runs": [{"start": int(start), "length": int(end - start)}
+                                                     for start, end in zip(starts, ends)]})
+    if not observations:
+        return None
+    try:
+        bounds = estimate_target_bounds({**track, "observations": observations}, frames)
+    except ValueError as exc:
+        if str(exc) != "task_target_has_no_estimated_geometry":
+            raise
+        return None
+    return {**bounds, "basis": "visible_target_mask_inside_region_boxes_with_model_estimated_depth_and_cameras",
+            "source_frame_ids": [observation["source_frame_id"] for observation in observations]}
+
+
 def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[str, Any],
                           output_root: Path, meta_admission: Mapping[str, Any] | None = None,
                           meta_admission_grant: Any = None, task_context: Mapping[str, Any] | None = None,
@@ -541,10 +574,7 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
             from .website_task_grounding import ground_task_target
             grounded = ground_task_target(target=target, tracks=[], registry=registry,
                 video=video_artifact, task_context=task_context, output_root=root / "grounding")
-            task_words = str(target.get("task_basis_quote", "")).casefold()
-            concept = ("under-desk cabinet" if "cabinet" in task_words
-                       and ("under the desk" in task_words or "under-desk" in task_words)
-                       else grounded["segmentation_prompt"])
+            concept = grounded["segmentation_prompt"]
             initial = probe_segmentation_concept(target=grounded, concept=concept,
                 task_context=task_context, output_root=root / "concept_probes")
             if initial != CONCEPT_RESOLVED:
@@ -552,8 +582,6 @@ def run_website_task_masks(*, plan: Mapping[str, Any], source_geometry: Mapping[
                     video=video_artifact, task_context=task_context, grounding_root=root / "grounding",
                     probe_root=root / "concept_probes", failed_concept=concept,
                     maximum_probes=MAXIMUM_CONCEPT_PROBES - 1)
-            else:
-                grounded = {**grounded, "segmentation_prompt": concept}
             grounded_targets[target["target_id"]] = grounded
             text = grounded["segmentation_prompt"]
         shared = next((p for p in prompts if p["text"].strip().casefold() == text.strip().casefold()), None) if provider == "meta" else None

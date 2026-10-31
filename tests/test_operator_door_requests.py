@@ -564,3 +564,43 @@ def test_selected_handoff_selector_discovery_is_readonly_identity_only():
     for mode in ("inspect", "dispatch", "atlas-status", "atlas-retry"):
         with pytest.raises(RequestRefused):
             validate_request({**body, "mode": mode})
+
+
+SCENE_WINDOW = {"kind": "extend-scene-execution-window", "intent_id": "scene-" + "a" * 64,
+                "intent_digest": "sha256:" + "b" * 64, "expires_at": "2026-11-07T10:30:10Z",
+                "authorization_reference": "founder approval 2026-10-31 (time only)",
+                "ack": "extend-scene-execution-window", "apply": False}
+
+
+def test_scene_window_extension_is_an_exact_operate_request() -> None:
+    assert required_scope("extend-scene-execution-window") == "operate"
+    assert validate_request(dict(SCENE_WINDOW)) == SCENE_WINDOW
+    assert validate_request({**SCENE_WINDOW, "apply": True})["apply"] is True
+
+
+@pytest.mark.parametrize(("change", "code"), [
+    ({"intent_id": "scene-1"}, "scene_window_fields_invalid"),
+    ({"intent_id": "../scene-" + "a" * 64}, "scene_window_fields_invalid"),
+    ({"intent_digest": "b" * 64}, "scene_window_fields_invalid"),
+    ({"expires_at": "2026-11-07T10:30:10"}, "scene_window_fields_invalid"),
+    ({"expires_at": 1794047410}, "scene_window_fields_invalid"),
+    ({"expires_at": "2026-02-30T10:30:10Z"}, "scene_window_expiry_invalid"),
+    ({"apply": "yes"}, "scene_window_fields_invalid"),
+    ({"authorization_reference": ""}, "scene_window_authorization_reference_invalid"),
+    ({"authorization_reference": " padded"}, "scene_window_authorization_reference_invalid"),
+    ({"authorization_reference": "x" * 501}, "scene_window_authorization_reference_invalid"),
+    ({"authorization_reference": "a\nb"}, "scene_window_authorization_reference_invalid"),
+    ({"ack": "yes"}, "scene_window_unacknowledged"),
+    # Spend, attempts, providers, task and rights are not fields: they cannot change here.
+    ({"max_total_spend_usd": 100}, "scene_window_fields_invalid"),
+    ({"max_paid_attempts": 9}, "scene_window_fields_invalid"),
+    ({"allowed_providers": ["vast"]}, "scene_window_fields_invalid"),
+])
+def test_scene_window_extension_refuses_anything_else(change: dict, code: str) -> None:
+    with pytest.raises(RequestRefused) as error:
+        validate_request({**SCENE_WINDOW, **change})
+    assert error.value.code == code
+    body = dict(SCENE_WINDOW)
+    body.pop("ack")
+    with pytest.raises(RequestRefused):
+        validate_request(body)

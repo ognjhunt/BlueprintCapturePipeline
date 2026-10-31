@@ -628,7 +628,8 @@
               "status": {
                 "enum": [
                   "unavailable",
-                  "deferred"
+                  "deferred",
+                  "infeasible"
                 ]
               }
             },

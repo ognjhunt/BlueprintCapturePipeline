@@ -52,14 +52,19 @@ fi
 
 # Bind full-copy admission and child builders to the trusted work volume.
 # Verified vendor reuse retains its existing override and discount.
+door_phase staging_guard_start
 if ! deploy_tmp="$(python3 -I -S "$(dirname "$0")/operator_door/deploy_staging.py")"; then
   door_fail deploy_staging_parent_unsafe
 fi
 export TMPDIR="$deploy_tmp"
+door_phase staging_guard_done
 
 door_prepare_source
+door_phase prepare_source_done
 door_require_on_main
+door_phase require_on_main_done
 door_add_tool
+door_phase tool_worktree_done
 
 drain_options=()
 if [ "${DOOR_WAIT_FOR_IDLE:-1}" = "1" ]; then
@@ -92,6 +97,7 @@ if [ "${DOOR_WAIT_FOR_IDLE:-1}" = "1" ]; then
 fi
 
 receipt="$DOOR_STATE_ROOT/deploy-receipts/${mode}_${DOOR_COMMIT:0:12}_door.json"
+door_phase tool_start
 set +e
 PYTHONDONTWRITEBYTECODE=1 "$DOOR_VENV_PYTHON" "$DOOR_TOOL/scripts/deploy_control_plane_commit.py" \
   --source-repo "$DOOR_SOURCE_CLONE" \

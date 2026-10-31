@@ -22,6 +22,7 @@ from .project_spend_reconciliation import validate_project_spend_reconciliation
 from .task_evaluation_configured_scene_object_store import (
     TaskEvaluationConfiguredSceneObjectStoreError as _StoreError,
 )
+from .task_evaluation_controls_byte_digests import asset_digest, payload_digest
 from .task_evaluation_controls_context_contracts import (
     CATALOG_SCHEMA as CATALOG_SCHEMA,  # noqa: PLC0414 - compatibility reexport
 )
@@ -51,14 +52,6 @@ from .task_evaluation_scene_preparation_link_contract import (
     validate_preparation_link,
 )
 
-#: Persisted byte-digest verdicts: the controls tick re-hashed the multi-GB robot
-#: runtime payload and every catalog asset on every tick (2026-09-13: about two of
-#: every six minutes per tick), although nothing had moved. A stored digest is reused
-#: only while every consulted file keeps its exact stat identity (large files) or
-#: re-hashes equal (small files); see validation_verdict_store.
-PAYLOAD_DIGEST_VERDICT = "controls_runtime_payload_digest"
-ASSET_DIGEST_VERDICT = "controls_asset_sha256"
-
 
 def resolve_robot_catalog(value: Mapping[str, Any], *, source_commit: str) -> dict[str, Any]:
     """Bind retained robot/runtime content to execution without rewriting the seed."""
@@ -86,59 +79,11 @@ def build_preparation_link(**fields: Any) -> dict[str, Any]:
     return validate_preparation_link(value)
 
 
-def _persisted_digest(name: str, key: Mapping[str, Any], compute: Callable[[], Any]) -> Any:
-    """Reuse a byte-derived verdict while its code closure and every consulted byte are unchanged."""
-    from .task_evaluation_release_identity import running_release_commit
-    from .validation_file_digests import touched_files
-    from .validation_verdict_store import executed_code_identity, lookup_entry, store
-    found, stored = lookup_entry(name=name, key=key)
-    if found:
-        return stored
-    with touched_files() as touched:
-        verdict, code = executed_code_identity(compute, always=[__name__])
-    try:
-        release = running_release_commit()
-    except (OSError, ValueError):
-        release = ""
-    store(name=name, key=key, files=touched, verdict=verdict, source_commit=release, code=code)
-    return verdict
-
-
-def _consulted_sha256(path: Path) -> str:
-    """Hash through the evidence reader so the byte is recorded as consulted by the verdict."""
-    from .validation_file_digests import _identity, record_touched, sha256_file
-    try:
-        return sha256_file(path)
-    except ValueError:
-        # The reader refuses symlinked parents; keep the historical hash and still
-        # record the identity so the verdict re-proves this byte before reuse.
-        digest = producer._sha256(path)
-        record_touched(path, _identity(path.lstat()), digest)
-        return digest
-
-
-def payload_digest(root: Path) -> str:
-    _require(root.is_dir() and not root.is_symlink(), "runtime_missing")
-    listing = []
-    for path in sorted(root.rglob("*")):
-        _require(not path.is_symlink(), "runtime_symlink")
-        if path.is_file():
-            listing.append(path.relative_to(root).as_posix())
-    _require(bool(listing), "runtime_empty")
-
-    def compute() -> str:
-        return canonical_digest({relative: _consulted_sha256(root / relative) for relative in listing})
-
-    # The listing is part of the key: an added or removed file is a different payload.
-    return str(_persisted_digest(PAYLOAD_DIGEST_VERDICT, {"root": str(root), "files": listing}, compute))
-
-
 def _asset(row: Mapping[str, Any]) -> Path:
     path = Path(row["path"])
     _require(path.is_absolute() and not any(p.is_symlink() for p in (path, *path.parents))
              and path.is_file(), "asset_invalid")
-    digest = _persisted_digest(ASSET_DIGEST_VERDICT, {"path": str(path)}, lambda: _consulted_sha256(path))
-    _require(digest == row["digest"], "asset_invalid")
+    _require(asset_digest(path) == row["digest"], "asset_invalid")
     return path
 
 

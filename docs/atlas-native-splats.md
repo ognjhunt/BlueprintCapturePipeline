@@ -88,6 +88,46 @@ admitted and nothing more is bought. The verdicts are kept in the root
 (`whole_view_review.json`), the input binding and each posted view's provenance.
 The prompt is scene-agnostic and covered by `test_harness_prompts_scene_agnostic`.
 
+**Candidates corrected where they contradict the capture** (`atlas_gap_composite`).
+`atlasGenerate` documents no keep or mask input, so each generated view is a whole
+new image, and completion's preservation pastes sparse cross-view-supported
+context into it (42% and 32% of capture-447ae4f4's two gap views, 2026-10-30).
+That speckled frame is what the review refused. Before the review,
+`composited_views` now rebuilds each partly admitted view from the provider's own
+image (`provider_rgb`, kept by `restrict_frame` when completion replaces `rgb`).
+The real frames are rendered into its camera with per-pixel quality (photographs
+resampled at a recorded centre; elsewhere the draft's smoothed depth splatted
+over each pixel's footprint, nearest camera first, colour sampled back from its
+frame). A capture pixel and its depth replace the provider's only where the
+capture is well observed and the provider contradicts it; the admitted region,
+everything seen poorly and everything never seen stay the provider's, and a
+replaced region blends over 4 px into its agreeing neighbours.
+
+The thresholds come from capture-447's retained frames:
+
+| quantity | value | derivation |
+|---|---|---|
+| depth contradiction | relative difference > 0.0394 | q99 of provider vs capture on known-agree content: the provider's re-render at the two recorded centres it was given, against the capture rendered there from frames ≥ 0.5 units away (0.0394, 0.0305) |
+| colour contradiction | > 80.9 after a 1.13 px blur | blur = median misregistration (optical flow) on that content; tolerance = larger of its q99 max-channel difference (78.1) and the render's own q99 error inside the gate (80.9) |
+| stretch (view-angle and distance change) | < 1.850 | four photographs against their renders from frames ≥ 0.4 away, equal-count bins of 2,000 px: first bin whose q90 render depth error exceeds 0.0394 |
+| incidence | ≥ 0.150 | same: last failing bin ends there |
+| depth confidence | ≥ 0.635 | no bin fails; the lowest value calibrated |
+| agreeing views | ≥ 3 | q90 render depth error 0.069 / 0.041 / 0.032 at 1 / 2 / 3 views |
+
+The review judges, and the request posts, that frame and its depth; the record
+carries `candidate_basis` and per-view `gap_composites` receipts (counts by
+source and the thresholds), and the input binding repeats the receipt. The
+candidate basis is written to `whole_view_candidates.json` before any review
+call. A root an earlier release reviewed, or began to review (any receipt,
+intent or lock without that record), keeps the provider's frames, so its call is
+found again and never bought twice. The render reuses frames already in the same
+request: nothing new is disclosed or bought. Offline on capture-447's retained
+request, 3.2% and 0.5% of the two views became capture pixels; the foreground
+tabletop, every selected gap pixel and the chairs (seen by the capture only at a
+median stretch of 3.35 and 3.56; 98% and 100% provider pixels) stay the
+provider's, and the pasted context is gone.
+Whether the review now admits them needs one bounded review call.
+
 **Upgrade of a finished job.** When the adopted splat is `documented_minimal`
 and left generated views out, the result records
 `refined_splat.left_out_admitted_view_ids` and whether the reviewed-whole form

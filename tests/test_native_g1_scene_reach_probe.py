@@ -85,3 +85,32 @@ def test_probe_rejects_rotated_task_bounds_instead_of_measuring_wrong_box(
     path.write_text(json.dumps(request))
     with pytest.raises(ValueError, match="g1_reach_probe_task_unsupported"):
         probe.probe_g1_scene_static_reach(source_packet_dir=packet, floor_z_m=0.0)
+
+
+def _facing(x: float, y: float, z: float, toward: tuple[float, float]) -> dict:
+    import math
+
+    half = math.atan2(toward[1] - y, toward[0] - x) / 2.0
+    return {"position_world_m": [x, y, z], "orientation_xyzw": [0.0, 0.0, math.sin(half), math.cos(half)]}
+
+
+def test_the_closest_stance_whose_nominal_arm_span_covers_pick_and_place_is_chosen() -> None:
+    # Pelvis at 0.79 m, shoulders 0.29 m above it: 1.08 m. A pick on a 0.9 m table, a place beside it.
+    start, target = [0.0, 0.0, 0.9], [0.0, 0.25, 0.9]
+    far = _facing(1.2, 0.1, 0.79, (0.0, 0.0))
+    near = _facing(0.3, 0.1, 0.79, (0.0, 0.0))
+    index, record = probe.g1_stance_static_reach([far, near, far], start=start, target=target)
+    assert index == 1 and record["chosen_rank"] == 1 and record["within_nominal_arm_span"] is True
+    assert record["rule"] == probe.STANCE_RULE and record["clear_stances_measured"] == 3
+    assert max(record["pick_nominal_shoulder_distance_m"], record["place_nominal_shoulder_distance_m"]) <= (
+        record["nominal_arm_span_m"])
+    assert record["interpretation"] == "nominal_static_reach_candidate"
+    assert record["claim_ceiling"] == "development_only_static_geometry"
+    # None in span: the closest stays, flagged, never refused.
+    index, record = probe.g1_stance_static_reach([far, far], start=start, target=target)
+    assert (index, record["chosen_rank"], record["within_nominal_arm_span"]) == (0, 0, False)
+    assert record["interpretation"] == "body_motion_or_new_stance_required"
+    assert record["pick_nominal_shoulder_distance_m"] > record["nominal_arm_span_m"]
+    for stances, bad_target in (([], target), ([near], [0.0, 0.25]), ([near], [0.0, float("nan"), 0.9])):
+        with pytest.raises(ValueError, match="g1_stance_reach_inputs_invalid"):
+            probe.g1_stance_static_reach(stances, start=start, target=bad_target)

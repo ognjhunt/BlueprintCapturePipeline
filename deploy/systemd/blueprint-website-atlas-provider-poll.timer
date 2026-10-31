@@ -1,0 +1,15 @@
+[Unit]
+Wants=blueprint-operator-door-hold-sweep.service
+After=blueprint-operator-door-hold-sweep.service
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-website-atlas-provider-poll.timer.json
+Description=Read live World Labs Atlas operations every minute, also during deploys
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=60s
+RandomizedDelaySec=10s
+Persistent=true
+Unit=blueprint-website-atlas-provider-poll.service
+
+[Install]
+WantedBy=timers.target

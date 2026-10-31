@@ -1,0 +1,1376 @@
+{
+  "schema_version": "embodiment_runtime_configuration.v1",
+  "claim_ceiling": "configuration_only",
+  "embodiment_id": "yaskawa_gp12_robotiq_2f85_sim",
+  "source_bundle_digest": "sha256:22ee68b67e1891b7caa11c50917259f63efe48ef45cc9f9930f30d801507361c",
+  "station_parameters": null,
+  "manifest_fields": {
+    "schema_version": "blueprint.robot_embodiment.v2",
+    "embodiment_id": "yaskawa_gp12_robotiq_2f85_sim",
+    "form": "fixed_base_arm",
+    "base": {
+      "mode": "fixed"
+    },
+    "joints": [
+      {
+        "name": "joint_1_s",
+        "control": "position",
+        "lower": -2.967,
+        "upper": 2.967,
+        "max_velocity": 1.0,
+        "stiffness": 9261.0,
+        "damping": 2485.2617612242325
+      },
+      {
+        "name": "joint_2_l",
+        "control": "position",
+        "lower": -1.5708,
+        "upper": 2.7052,
+        "max_velocity": 1.0,
+        "stiffness": 10290.0,
+        "damping": 2230.2972029227035
+      },
+      {
+        "name": "joint_3_u",
+        "control": "position",
+        "lower": -1.4835,
+        "upper": 2.6179,
+        "max_velocity": 1.0,
+        "stiffness": 5512.5,
+        "damping": 862.2557886062132
+      },
+      {
+        "name": "joint_4_r",
+        "control": "position",
+        "lower": -3.4906,
+        "upper": 3.4906,
+        "max_velocity": 1.0,
+        "stiffness": 899.5999999999999,
+        "damping": 105.35482455068593
+      },
+      {
+        "name": "joint_5_b",
+        "control": "position",
+        "lower": -2.6179,
+        "upper": 2.6179,
+        "max_velocity": 1.0,
+        "stiffness": 670.3,
+        "damping": 57.00120203234036
+      },
+      {
+        "name": "joint_6_t",
+        "control": "position",
+        "lower": -7.9412,
+        "upper": 7.9412,
+        "max_velocity": 1.0,
+        "stiffness": 332.99999999999994,
+        "damping": 39.36348815862043
+      }
+    ],
+    "grippers": [
+      {
+        "name": "arm_gripper",
+        "tool_link": "robotiq_85_base_link",
+        "joints": [
+          {
+            "name": "robotiq_85_left_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          },
+          {
+            "name": "robotiq_85_right_inner_knuckle_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_left_finger_tip_joint",
+            "open": 0.0,
+            "closed": -0.7929
+          },
+          {
+            "name": "robotiq_85_right_finger_tip_joint",
+            "open": 0.0,
+            "closed": 0.7929
+          }
+        ],
+        "max_width_m": 0.085,
+        "contact_links": [
+          "robotiq_85_left_finger_tip_link",
+          "robotiq_85_right_finger_tip_link"
+        ]
+      }
+    ],
+    "tool_link": "robotiq_85_base_link",
+    "reset_joint_positions": {
+      "joint_1_s": 0.0,
+      "joint_2_l": 0.0,
+      "joint_3_u": 0.0,
+      "joint_4_r": 0.0,
+      "joint_5_b": 0.0,
+      "joint_6_t": 0.0,
+      "robotiq_85_left_knuckle_joint": 0.0,
+      "robotiq_85_right_knuckle_joint": 0.0,
+      "robotiq_85_left_inner_knuckle_joint": 0.0,
+      "robotiq_85_right_inner_knuckle_joint": 0.0,
+      "robotiq_85_left_finger_tip_joint": 0.0,
+      "robotiq_85_right_finger_tip_joint": 0.0
+    },
+    "actuator": {
+      "stiffness": 100.0,
+      "damping": 20.0
+    },
+    "cameras": [
+      {
+        "name": "overhead",
+        "mount_link": null,
+        "position_m": [
+          0.5,
+          0.0,
+          1.5
+        ],
+        "orientation_xyzw": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      },
+      {
+        "name": "arm_wrist",
+        "mount_link": "robotiq_85_base_link",
+        "position_m": [
+          0.0,
+          0.08,
+          0.0
+        ],
+        "orientation_xyzw": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "width": 320,
+        "height": 176,
+        "horizontal_fov_deg": 90.0
+      }
+    ],
+    "control_hz": 60,
+    "action_chunk_rows": 48,
+    "reach_m": 2.1235221845696084,
+    "arms": [
+      {
+        "name": "arm",
+        "joint_names": [
+          "joint_1_s",
+          "joint_2_l",
+          "joint_3_u",
+          "joint_4_r",
+          "joint_5_b",
+          "joint_6_t"
+        ],
+        "base_link": "base_link",
+        "tool_link": "robotiq_85_base_link",
+        "gripper_name": "arm_gripper",
+        "tool_from_tcp": {
+          "position_m": [
+            2.8804784739480975e-17,
+            5.439161231619047e-24,
+            0.13399999999999992
+          ],
+          "orientation_xyzw": [
+            1.6407142168169801e-24,
+            7.90407499410661e-26,
+            1.0,
+            6.123233995736752e-17
+          ]
+        }
+      }
+    ]
+  },
+  "source_name_mapping": {
+    "base": "base",
+    "base_link": "base_link",
+    "base_link-base": "base_link_base",
+    "blueprint_grasp_frame": "blueprint_grasp_frame",
+    "grasp_link": "grasp_link",
+    "joint_1_s": "joint_1_s",
+    "joint_2_l": "joint_2_l",
+    "joint_3_u": "joint_3_u",
+    "joint_4_r": "joint_4_r",
+    "joint_5_b": "joint_5_b",
+    "joint_6_t": "joint_6_t",
+    "joint_6_t-tool0": "joint_6_t_tool0",
+    "link_1_s": "link_1_s",
+    "link_2_l": "link_2_l",
+    "link_3_u": "link_3_u",
+    "link_4_r": "link_4_r",
+    "link_5_b": "link_5_b",
+    "link_6_t": "link_6_t",
+    "robotiq_85_base_joint": "robotiq_85_base_joint",
+    "robotiq_85_base_link": "robotiq_85_base_link",
+    "robotiq_85_left_finger_joint": "robotiq_85_left_finger_joint",
+    "robotiq_85_left_finger_link": "robotiq_85_left_finger_link",
+    "robotiq_85_left_finger_tip_joint": "robotiq_85_left_finger_tip_joint",
+    "robotiq_85_left_finger_tip_link": "robotiq_85_left_finger_tip_link",
+    "robotiq_85_left_inner_knuckle_joint": "robotiq_85_left_inner_knuckle_joint",
+    "robotiq_85_left_inner_knuckle_link": "robotiq_85_left_inner_knuckle_link",
+    "robotiq_85_left_knuckle_joint": "robotiq_85_left_knuckle_joint",
+    "robotiq_85_left_knuckle_link": "robotiq_85_left_knuckle_link",
+    "robotiq_85_right_finger_joint": "robotiq_85_right_finger_joint",
+    "robotiq_85_right_finger_link": "robotiq_85_right_finger_link",
+    "robotiq_85_right_finger_tip_joint": "robotiq_85_right_finger_tip_joint",
+    "robotiq_85_right_finger_tip_link": "robotiq_85_right_finger_tip_link",
+    "robotiq_85_right_inner_knuckle_joint": "robotiq_85_right_inner_knuckle_joint",
+    "robotiq_85_right_inner_knuckle_link": "robotiq_85_right_inner_knuckle_link",
+    "robotiq_85_right_knuckle_joint": "robotiq_85_right_knuckle_joint",
+    "robotiq_85_right_knuckle_link": "robotiq_85_right_knuckle_link",
+    "tool0": "tool0"
+  },
+  "simulation_assumptions": [
+    "interior_zero_reset_pose",
+    "default_PD_gains_unless_source_drive_present",
+    "arm_velocity_capped_at_1_SI_unit_per_second",
+    "90_degree_simulated_camera_rig_not_site_calibration",
+    "parallel_gripper_width_is_nominal",
+    "reach_is_source_chain_upper_bound",
+    "hollow_structure_and_actuator_mass_distribution_unknown",
+    "nominal_total_mass_does_not_establish_per_link_distribution",
+    "source_effort_limits_not_manufacturer_verified_drive_torques",
+    "PD_gains_and_payload_lever_are_simulation_assumptions",
+    "tool_source_inertias_added_separately_to_bare_arm_mass",
+    "ideal_fixed_mount_without_adapter_geometry_or_hardware_fit_validation",
+    "not_physical_feasibility_or_policy_ranking_evidence",
+    "source_package_names_GP12_Default_without_exact_SKU_or_revision",
+    "primary_flyer_conflicts_06VX12_protection_labels_with_25VX12_footer",
+    "source_U_upper_2.6179_rad_retained_despite_current_flyer_155_degrees",
+    "older_130kg_claims_lack_verified_primary_SKU_revision_mapping",
+    "yaskawa_geometry_based_dynamics_and_PD_estimates"
+  ],
+  "source_dynamics": {
+    "moving_link_count": 12,
+    "moving_links_without_positive_authored_mass_and_inertia": [
+      "link_1_s",
+      "link_2_l",
+      "link_3_u",
+      "link_4_r",
+      "link_5_b",
+      "link_6_t"
+    ],
+    "estimated_inertias_added": true,
+    "simulator_dynamics_validated": false
+  },
+  "source_limitations": [
+    "native_import_and_episode_receipts",
+    "publisher_hardware_and_policy_match_not_established",
+    "link_dynamics_are_declared_simulation_estimates",
+    "exact_gp12_sku_revision_unverified",
+    "current_primary_flyer_u_limit_differs_from_retained_source",
+    "missing_positive_authored_moving_link_inertias:link_1_s,link_2_l,link_3_u,link_4_r,link_5_b,link_6_t"
+  ],
+  "execution_authorized": false,
+  "policy_compatibility_established": false,
+  "source_urdf_sha256": "sha256:3696732c53ea01cd42dd2b0b80ebb483229807b22811f97c01cd64556c78be49",
+  "simulation_model": {
+    "schema_version": "yaskawa_robotiq_simulation_model.v1",
+    "embodiment_id": "yaskawa_gp12_robotiq_2f85_sim",
+    "claim_ceiling": "unvalidated_simulation_estimate",
+    "manufacturer_dynamics": false,
+    "arm_model": {
+      "embodiment_id": "yaskawa_gp12",
+      "method": "uniform_collision_aabb_box_in_link_frame",
+      "effective_density_kg_m3": 842.8993827633227,
+      "nominal_robot_mass_kg": 150.0,
+      "mass_reference": {
+        "document_revision": "C-03-2024",
+        "article_number": "206024",
+        "page": 2,
+        "url": "https://www.yaskawa.de/Global%20Assets/Downloads/Brochures_Catalogues/Robotics/MOTOMAN_Robots/GP-Series/Flyer_Robot_GP12_E_11.2020.pdf",
+        "download_sha256": "sha256:6f10791025a69e2bd69428ae16ececa7969489332dba0fde5e89ae2d497315cc",
+        "nominal_mass_kg": 150.0,
+        "exact_source_variant_established": false,
+        "basis": "current_published_GP12_family_mass_assumed_applicable_to_retained_generic_geometry",
+        "uncertainties": [
+          "source_package_names_GP12_Default_without_exact_SKU_or_revision",
+          "primary_flyer_conflicts_06VX12_protection_labels_with_25VX12_footer",
+          "source_U_upper_2.6179_rad_retained_despite_current_flyer_155_degrees",
+          "older_130kg_claims_lack_verified_primary_SKU_revision_mapping"
+        ]
+      },
+      "modeled_robot_mass_total_kg": 150.0,
+      "mass_distribution_assumption": "uniform_density_over_base_and_six_link_collision_aabbs",
+      "links": [
+        {
+          "link": "base_link",
+          "mass_kg": 19.538348334117018,
+          "center_of_mass_m": [
+            -0.06619980931282043,
+            -0.001500941812992096,
+            0.0872499390726702
+          ],
+          "diagonal_inertia_kg_m2": [
+            0.19906398676368794,
+            0.36250994779145707,
+            0.4624158563183593
+          ],
+          "bounds_m": [
+            0.43840038776397705,
+            0.3030019551515579,
+            0.1745001287687984
+          ],
+          "collision_meshes": [
+            {
+              "sha256": "sha256:e0a78c19d9495df7430a4a3fc03232c3ebb4857536eb961bb55de47af998d2c2",
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "link_from_collision": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  -0.0,
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "link": "link_1_s",
+          "mass_kg": 60.00760562515111,
+          "center_of_mass_m": [
+            0.009491734206676483,
+            0.0006529539823532104,
+            -0.09149995446205139
+          ],
+          "diagonal_inertia_kg_m2": [
+            1.5355825122395454,
+            1.930715306493271,
+            1.7768730939900328
+          ],
+          "bounds_m": [
+            0.46601830422878265,
+            0.3716941177845001,
+            0.4110000729560852
+          ],
+          "collision_meshes": [
+            {
+              "sha256": "sha256:6fafcaa7eb5420543501970315192cda044344b73aa8aa19357709a013a3c2b7",
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "link_from_collision": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  -0.0,
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "link": "link_2_l",
+          "mass_kg": 20.378883684445253,
+          "center_of_mass_m": [
+            -0.007928222417831421,
+            -0.11825020797550678,
+            0.2993103861808777
+          ],
+          "diagonal_inertia_kg_m2": [
+            1.0788178437784304,
+            1.10224402016444,
+            0.10768056475187422
+          ],
+          "bounds_m": [
+            0.19647076725959778,
+            0.15750041231513023,
+            0.7813129425048828
+          ],
+          "collision_meshes": [
+            {
+              "sha256": "sha256:e9d64c8f2be0e95ce5143adbffb304710b1a3b07743b0178e1a88d0cbb38ec3e",
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "link_from_collision": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  -0.0,
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "link": "link_3_u",
+          "mass_kg": 37.64754084801164,
+          "center_of_mass_m": [
+            0.09499996900558472,
+            -0.020250000059604645,
+            0.08522436022758484
+          ],
+          "diagonal_inertia_kg_m2": [
+            0.8341217413382438,
+            0.8436589429076277,
+            0.7158068327688868
+          ],
+          "bounds_m": [
+            0.34000033140182495,
+            0.3355000466108322,
+            0.39155155420303345
+          ],
+          "collision_meshes": [
+            {
+              "sha256": "sha256:acc10b364ae85f196ffcf37faf1bf63f67fdb43f1405f1f5ca1f083fc3dde504",
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "link_from_collision": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  -0.0,
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "link": "link_4_r",
+          "mass_kg": 10.256987467391824,
+          "center_of_mass_m": [
+            -0.1549999713897705,
+            0.004954427480697632,
+            1.150369644165039e-05
+          ],
+          "diagonal_inertia_kg_m2": [
+            0.04766703800511209,
+            0.18627451285133087,
+            0.19235140684836083
+          ],
+          "bounds_m": [
+            0.440000057220459,
+            0.1773088574409485,
+            0.15597712993621826
+          ],
+          "collision_meshes": [
+            {
+              "sha256": "sha256:32259cd02c1553c3edb1de14024aa16a77380065089d0bd0fb5c0345b5442e40",
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "link_from_collision": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  -0.0,
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "link": "link_5_b",
+          "mass_kg": 2.1511934544706115,
+          "center_of_mass_m": [
+            0.019600003957748413,
+            -3.725290298461914e-08,
+            0.0029976963996887207
+          ],
+          "diagonal_inertia_kg_m2": [
+            0.006155787437767671,
+            0.007187896209739903,
+            0.006906319369674824
+          ],
+          "bounds_m": [
+            0.1488000750541687,
+            0.1280001997947693,
+            0.1339954137802124
+          ],
+          "collision_meshes": [
+            {
+              "sha256": "sha256:c0a9e25712dbe9d9fbc76db0a1d971838b2b1078a92aead5d55e719b54129aac",
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "link_from_collision": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  -0.0,
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ]
+            }
+          ]
+        },
+        {
+          "link": "link_6_t",
+          "mass_kg": 0.019440586412541906,
+          "center_of_mass_m": [
+            0.09700003266334534,
+            0.0,
+            0.0
+          ],
+          "diagonal_inertia_kg_m2": [
+            1.2454943519811197e-05,
+            6.285796543770009e-06,
+            6.2857898085378925e-06
+          ],
+          "bounds_m": [
+            0.0059999823570251465,
+            0.06200000271201134,
+            0.06200003623962402
+          ],
+          "collision_meshes": [
+            {
+              "sha256": "sha256:9aa17885e44fa99ac91407573dd612991371f056c01973b2bc9099192b3532f7",
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ],
+              "link_from_collision": [
+                [
+                  1.0,
+                  0.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  1.0,
+                  0.0,
+                  0.0
+                ],
+                [
+                  -0.0,
+                  0.0,
+                  1.0,
+                  0.0
+                ],
+                [
+                  0.0,
+                  0.0,
+                  0.0,
+                  1.0
+                ]
+              ]
+            }
+          ]
+        }
+      ],
+      "joints": [
+        {
+          "joint": "joint_1_s",
+          "effort_limit_nm": 926.1,
+          "source_limits": {
+            "effort": "926.10",
+            "lower": "-2.9670",
+            "upper": "2.9670",
+            "velocity": "4.5355"
+          },
+          "stiffness_nm_per_rad": 9261.0,
+          "damping_nm_s_per_rad": 2485.2617612242325,
+          "effective_inertia_estimate_kg_m2": 166.7348564356812
+        },
+        {
+          "joint": "joint_2_l",
+          "effort_limit_nm": 1029.0,
+          "source_limits": {
+            "effort": "1029.00",
+            "lower": "-1.5708",
+            "upper": "2.7052",
+            "velocity": "4.0132"
+          },
+          "stiffness_nm_per_rad": 10290.0,
+          "damping_nm_s_per_rad": 2230.2972029227035,
+          "effective_inertia_estimate_kg_m2": 120.85096242382983
+        },
+        {
+          "joint": "joint_3_u",
+          "effort_limit_nm": 551.25,
+          "source_limits": {
+            "effort": "551.25",
+            "lower": "-1.4835",
+            "upper": "2.6179",
+            "velocity": "4.5375"
+          },
+          "stiffness_nm_per_rad": 5512.5,
+          "damping_nm_s_per_rad": 862.2557886062132,
+          "effective_inertia_estimate_kg_m2": 33.7181426297017
+        },
+        {
+          "joint": "joint_4_r",
+          "effort_limit_nm": 89.96,
+          "source_limits": {
+            "effort": "89.96",
+            "lower": "-3.4906",
+            "upper": "3.4906",
+            "velocity": "8.2007"
+          },
+          "stiffness_nm_per_rad": 899.5999999999999,
+          "damping_nm_s_per_rad": 105.35482455068593,
+          "effective_inertia_estimate_kg_m2": 3.084604006254396
+        },
+        {
+          "joint": "joint_5_b",
+          "effort_limit_nm": 67.03,
+          "source_limits": {
+            "effort": "67.03",
+            "lower": "-2.6179",
+            "upper": "2.6179",
+            "velocity": "8.1992"
+          },
+          "stiffness_nm_per_rad": 670.3,
+          "damping_nm_s_per_rad": 57.00120203234036,
+          "effective_inertia_estimate_kg_m2": 1.2118219577546185
+        },
+        {
+          "joint": "joint_6_t",
+          "effort_limit_nm": 33.3,
+          "source_limits": {
+            "effort": "33.30",
+            "lower": "-7.9412",
+            "upper": "7.9412",
+            "velocity": "12.2143"
+          },
+          "stiffness_nm_per_rad": 332.99999999999994,
+          "damping_nm_s_per_rad": 39.36348815862043,
+          "effective_inertia_estimate_kg_m2": 1.1632764264368247
+        }
+      ],
+      "nominal_payload_kg": 12.0,
+      "minimum_assumed_payload_lever_from_last_joint_m": 0.3,
+      "source_tool_lever_bound_m": 0.26414897292201744,
+      "drive_effort_basis": "source_URDF_values_retained_not_manufacturer_verified_torques",
+      "gain_basis": "source_effort_saturation_at_0.1_rad_critical_damping_for_estimated_load_inertia"
+    },
+    "tool_source_dynamics": {
+      "source_revision": "a74d007d8f2f06dc6a503ad21038ba869d4999a6",
+      "mass_total_kg": 0.9208642730400001,
+      "links": [
+        {
+          "link": "robotiq_85_base_link",
+          "mass_kg": 0.66320197,
+          "center_of_mass_m": [
+            0.0,
+            2.274e-05,
+            0.03232288
+          ],
+          "inertia_body_frame_kg_m2": [
+            [
+              0.00051617816,
+              2.936e-08,
+              0.0
+            ],
+            [
+              2.936e-08,
+              0.00058802208,
+              -3.2296e-07
+            ],
+            [
+              0.0,
+              -3.2296e-07,
+              0.00039462776
+            ]
+          ]
+        },
+        {
+          "link": "robotiq_85_left_knuckle_link",
+          "mass_kg": 0.01384773208,
+          "center_of_mass_m": [
+            0.01213197,
+            0.0002,
+            -0.00058647
+          ],
+          "inertia_body_frame_kg_m2": [
+            [
+              3.5232e-07,
+              0.0,
+              1.1744e-07
+            ],
+            [
+              0.0,
+              2.31944e-06,
+              0.0
+            ],
+            [
+              1.1744e-07,
+              0.0,
+              2.23136e-06
+            ]
+          ]
+        },
+        {
+          "link": "robotiq_85_right_knuckle_link",
+          "mass_kg": 0.01384773208,
+          "center_of_mass_m": [
+            -0.01213197,
+            0.0002,
+            -0.00058647
+          ],
+          "inertia_body_frame_kg_m2": [
+            [
+              3.5232e-07,
+              0.0,
+              -1.1744e-07
+            ],
+            [
+              0.0,
+              2.31944e-06,
+              0.0
+            ],
+            [
+              -1.1744e-07,
+              0.0,
+              2.23136e-06
+            ]
+          ]
+        },
+        {
+          "link": "robotiq_85_left_finger_link",
+          "mass_kg": 0.04260376752,
+          "center_of_mass_m": [
+            0.00346899,
+            -0.00079447,
+            0.01867121
+          ],
+          "inertia_body_frame_kg_m2": [
+            [
+              1.385792e-05,
+              0.0,
+              -2.17264e-06
+            ],
+            [
+              0.0,
+              1.183208e-05,
+              0.0
+            ],
+            [
+              -2.17264e-06,
+              0.0,
+              5.19672e-06
+            ]
+          ]
+        },
+        {
+          "link": "robotiq_85_right_finger_link",
+          "mass_kg": 0.04260376752,
+          "center_of_mass_m": [
+            -0.00346899,
+            -5.53e-06,
+            0.01867121
+          ],
+          "inertia_body_frame_kg_m2": [
+            [
+              1.385792e-05,
+              0.0,
+              2.17264e-06
+            ],
+            [
+              0.0,
+              1.183208e-05,
+              0.0
+            ],
+            [
+              2.17264e-06,
+              0.0,
+              5.19672e-06
+            ]
+          ]
+        },
+        {
+          "link": "robotiq_85_left_inner_knuckle_link",
+          "mass_kg": 0.02969376448,
+          "center_of_mass_m": [
+            0.01897699,
+            0.00015001,
+            0.02247101
+          ],
+          "inertia_body_frame_kg_m2": [
+            [
+              9.57136e-06,
+              0.0,
+              -3.93424e-06
+            ],
+            [
+              0.0,
+              8.69056e-06,
+              0.0
+            ],
+            [
+              -3.93424e-06,
+              0.0,
+              8.19144e-06
+            ]
+          ]
+        },
+        {
+          "link": "robotiq_85_right_inner_knuckle_link",
+          "mass_kg": 0.02969376448,
+          "center_of_mass_m": [
+            -0.01926824,
+            5.001e-05,
+            0.02222178
+          ],
+          "inertia_body_frame_kg_m2": [
+            [
+              9.42456e-06,
+              0.0,
+              3.9636e-06
+            ],
+            [
+              0.0,
+              8.69056e-06,
+              0.0
+            ],
+            [
+              3.9636e-06,
+              0.0,
+              8.33824e-06
+            ]
+          ]
+        },
+        {
+          "link": "robotiq_85_left_finger_tip_link",
+          "mass_kg": 0.04268588744,
+          "center_of_mass_m": [
+            -0.01456706,
+            -0.0008,
+            0.01649701
+          ],
+          "inertia_body_frame_kg_m2": [
+            [
+              1.048152e-05,
+              0.0,
+              3.5232e-06
+            ],
+            [
+              0.0,
+              1.197888e-05,
+              0.0
+            ],
+            [
+              3.5232e-06,
+              0.0,
+              4.22784e-06
+            ]
+          ]
+        },
+        {
+          "link": "robotiq_85_right_finger_tip_link",
+          "mass_kg": 0.04268588744,
+          "center_of_mass_m": [
+            0.01456706,
+            5e-05,
+            0.01649701
+          ],
+          "inertia_body_frame_kg_m2": [
+            [
+              1.048152e-05,
+              0.0,
+              -3.5232e-06
+            ],
+            [
+              0.0,
+              1.197888e-05,
+              0.0
+            ],
+            [
+              -3.5232e-06,
+              0.0,
+              4.22784e-06
+            ]
+          ]
+        }
+      ],
+      "joints": [
+        {
+          "joint": "robotiq_85_left_knuckle_joint",
+          "effort_limit_nm": 50.0,
+          "velocity_limit_rad_s": 0.5
+        },
+        {
+          "joint": "robotiq_85_right_knuckle_joint",
+          "effort_limit_nm": 50.0,
+          "velocity_limit_rad_s": 0.5
+        },
+        {
+          "joint": "robotiq_85_left_inner_knuckle_joint",
+          "effort_limit_nm": 50.0,
+          "velocity_limit_rad_s": 0.5
+        },
+        {
+          "joint": "robotiq_85_right_inner_knuckle_joint",
+          "effort_limit_nm": 50.0,
+          "velocity_limit_rad_s": 0.5
+        },
+        {
+          "joint": "robotiq_85_left_finger_tip_joint",
+          "effort_limit_nm": 50.0,
+          "velocity_limit_rad_s": 0.5
+        },
+        {
+          "joint": "robotiq_85_right_finger_tip_joint",
+          "effort_limit_nm": 50.0,
+          "velocity_limit_rad_s": 0.5
+        }
+      ],
+      "basis": "authored_urdf_inertias_and_limits_not_measured_hardware"
+    },
+    "combined_mass_total_kg": 150.92086427304,
+    "limitations": [
+      "hollow_structure_and_actuator_mass_distribution_unknown",
+      "nominal_total_mass_does_not_establish_per_link_distribution",
+      "source_effort_limits_not_manufacturer_verified_drive_torques",
+      "PD_gains_and_payload_lever_are_simulation_assumptions",
+      "tool_source_inertias_added_separately_to_bare_arm_mass",
+      "ideal_fixed_mount_without_adapter_geometry_or_hardware_fit_validation",
+      "not_physical_feasibility_or_policy_ranking_evidence",
+      "source_package_names_GP12_Default_without_exact_SKU_or_revision",
+      "primary_flyer_conflicts_06VX12_protection_labels_with_25VX12_footer",
+      "source_U_upper_2.6179_rad_retained_despite_current_flyer_155_degrees",
+      "older_130kg_claims_lack_verified_primary_SKU_revision_mapping"
+    ],
+    "generator_sha256": "sha256:c47337afe83b6eaba25cc0b243891777267890859122aa011f55248ecb049f2e",
+    "model_digest": "sha256:3e590726042b829ae031c99547a133280bc8e47e493207965da23e8674c26e04"
+  },
+  "generator_module_sha256": "sha256:df0b6c4e7277d4e79b087115852afca8f8ad426e616e0e277cbb4f82e0300469",
+  "generated_files": [
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/CMakeLists.txt",
+      "sha256": "sha256:ed8525ad4a2ac4b7ec498d15db00e45e3bc30db8b6186680e819d48e836c4988",
+      "size_bytes": 334
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/config/joint_names_gp12.yaml",
+      "sha256": "sha256:cef5431deee190e69e59d2254fbfda41cdf421112097d254ff2d5f825f8f29d3",
+      "size_bytes": 103
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/launch/load_gp12.launch",
+      "sha256": "sha256:a3ad4ebcfead808f00edd6f1979fd6714c726a3cca45f933103d24988b110629",
+      "size_bytes": 134
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/launch/robot_interface_streaming_gp12.launch",
+      "sha256": "sha256:4297ed5093fa23fb08e46d8385d8f4a25567724535cff1cd2dd99f965482fad5",
+      "size_bytes": 605
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/launch/robot_state_visualize_gp12.launch",
+      "sha256": "sha256:7fd2e4995b38903aeb244635eddfb5a08f547ec7d1f32ba0cab04a93e28056f3",
+      "size_bytes": 889
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/launch/test_gp12.launch",
+      "sha256": "sha256:87b085fca2898ef69ec7eb637362330375c1cfa8b53571b803990d07f3a9a0af",
+      "size_bytes": 438
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/collision/gp12_base_link.stl",
+      "sha256": "sha256:e0a78c19d9495df7430a4a3fc03232c3ebb4857536eb961bb55de47af998d2c2",
+      "size_bytes": 25084
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/collision/gp12_link_1_s.stl",
+      "sha256": "sha256:6fafcaa7eb5420543501970315192cda044344b73aa8aa19357709a013a3c2b7",
+      "size_bytes": 41284
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/collision/gp12_link_2_l.stl",
+      "sha256": "sha256:e9d64c8f2be0e95ce5143adbffb304710b1a3b07743b0178e1a88d0cbb38ec3e",
+      "size_bytes": 51284
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/collision/gp12_link_3_u.stl",
+      "sha256": "sha256:acc10b364ae85f196ffcf37faf1bf63f67fdb43f1405f1f5ca1f083fc3dde504",
+      "size_bytes": 48484
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/collision/gp12_link_4_r.stl",
+      "sha256": "sha256:32259cd02c1553c3edb1de14024aa16a77380065089d0bd0fb5c0345b5442e40",
+      "size_bytes": 81184
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/collision/gp12_link_5_b.stl",
+      "sha256": "sha256:c0a9e25712dbe9d9fbc76db0a1d971838b2b1078a92aead5d55e719b54129aac",
+      "size_bytes": 29384
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/collision/gp12_link_6_t.stl",
+      "sha256": "sha256:9aa17885e44fa99ac91407573dd612991371f056c01973b2bc9099192b3532f7",
+      "size_bytes": 16684
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/visual/gp12_base_link.stl",
+      "sha256": "sha256:db524d029ddf112457a13a4bfb8ecb679c73e847136503068262b0f350fb2d18",
+      "size_bytes": 461584
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/visual/gp12_link_1_s.stl",
+      "sha256": "sha256:6aef34cffc9a0128eefc1f1efe94ab7e7dff40cb8da00f9334100990669dd6cd",
+      "size_bytes": 903284
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/visual/gp12_link_2_l.stl",
+      "sha256": "sha256:e4376c5b707348a34cf86acba0ee0233c1221dde98ccc0c13aa14d60cabc8eb8",
+      "size_bytes": 810984
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/visual/gp12_link_3_u.stl",
+      "sha256": "sha256:93e493803db8a3619a67703973a571dd7e3969219175b564e75dffefd0e174c1",
+      "size_bytes": 812384
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/visual/gp12_link_4_r.stl",
+      "sha256": "sha256:affa1d3ba9ed8805117fb9aa55072899951a9d350240357eb95317b6d093271f",
+      "size_bytes": 710384
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/visual/gp12_link_5_b.stl",
+      "sha256": "sha256:c947358839a57ac2aba29ba4bc908def4d03f50c6901f474fe1f1d95076f411b",
+      "size_bytes": 245784
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/meshes/visual/gp12_link_6_t.stl",
+      "sha256": "sha256:45848ec278f7d789cdcbebd578e02abe227ac76073a520cacc8f196bb06a1582",
+      "size_bytes": 56284
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/package.xml",
+      "sha256": "sha256:cca228bd9124052ee142499c0ba228a45607193712af01345e2e87a0bb14fbfe",
+      "size_bytes": 2006
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/test/launch_test.xml",
+      "sha256": "sha256:a71c7edbf4cccc57cf8452a86f3daa24e209956c0e7773c59f160ed51d580f52",
+      "size_bytes": 1488
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/urdf/gp12.xacro",
+      "sha256": "sha256:06a45ad1e199c631b7b9202b3d978091b563746f3b50f10b2bd60c28a9755c74",
+      "size_bytes": 353
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_gp12_support/urdf/gp12_macro.xacro",
+      "sha256": "sha256:74bde194c2e3448dbfe8c86539af8a4d21ff4503217c40a0da9349129f64535f",
+      "size_bytes": 5957
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_resources/CMakeLists.txt",
+      "sha256": "sha256:c65941d28b8da428365e45e793b3bdfa6aa03eaf108ac779fd574e7377f01836",
+      "size_bytes": 190
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_resources/package.xml",
+      "sha256": "sha256:bf191795822fef539ba1d78b10f16a31ca7f6dc23c8634c8b6921a29760763db",
+      "size_bytes": 1158
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_resources/urdf/common_colors.xacro",
+      "sha256": "sha256:d0279d6f47bd08b39649ad483fe38c8f6f53520d9ef852af7bf02ce8c5e90a12",
+      "size_bytes": 384
+    },
+    {
+      "path": "expanded_source/arm/source/motoman_resources/urdf/common_materials.xacro",
+      "sha256": "sha256:29c8eb800569c237730fdc356676ac4775d8ad6145c36f8a2f0994e71690fa67",
+      "size_bytes": 891
+    },
+    {
+      "path": "expanded_source/arm/source-bundle.json",
+      "sha256": "sha256:1627f3202b4471439d53c07dfe11d6976b1c5ef284de07d04a5ba2704346a721",
+      "size_bytes": 8551
+    },
+    {
+      "path": "expanded_source/assembly.urdf.urdf",
+      "sha256": "sha256:c4c7f951f9011cf6c683f712652674766ad14fdc2fd34abee62257b6c67676a1",
+      "size_bytes": 12881
+    },
+    {
+      "path": "expanded_source/assembly.urdf.xacro",
+      "sha256": "sha256:64fc9cda9a887156259511054d70622d6d5161480bae0d827528d1d6607f62c8",
+      "size_bytes": 954
+    },
+    {
+      "path": "expanded_source/tool/source/LICENSE",
+      "sha256": "sha256:a47544ef0ad645c587e46348dc10e68b89c3e74732bd124c005cfcd8ede3b3b8",
+      "size_bytes": 1524
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_finger.stl",
+      "sha256": "sha256:f39a50be121122fc1c53c588a762ad1da8a0f64d39bc6f299cbe9b0597e7257b",
+      "size_bytes": 19684
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_finger_tip.stl",
+      "sha256": "sha256:9d90031cd99106a8be63609f8ff78580638d91cc4167bf66c09198329f2e65cf",
+      "size_bytes": 11284
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_inner_knuckle.stl",
+      "sha256": "sha256:f250a3fea49be4d1bb2383d9980172c59fc44031193ef2293ca540f756f6c1e6",
+      "size_bytes": 17984
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/left_knuckle.stl",
+      "sha256": "sha256:b7ec787f57a7db5b2b14e64ffbedaac28739e38f14aac8afa8b575bac941feb7",
+      "size_bytes": 4384
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_finger.stl",
+      "sha256": "sha256:1d018fa2f0b50aca5941778d78810b211b1abfc8637c7953451d76d4833ba6f8",
+      "size_bytes": 19684
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_finger_tip.stl",
+      "sha256": "sha256:126f1559f2f7dca62449a6ca926c609fbdaa93ca66df805ff7c069bb206e3d10",
+      "size_bytes": 11284
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_inner_knuckle.stl",
+      "sha256": "sha256:c936d951ede875b91c180bd41d45b22ae23f8a39d9c3e09e29066453a8e863ef",
+      "size_bytes": 17784
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/right_knuckle.stl",
+      "sha256": "sha256:d151fb38f59748f1e6e627312e2ede96f2c98ba267bf722091665b20c78e7a8d",
+      "size_bytes": 4384
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/robotiq_base.stl",
+      "sha256": "sha256:ede5cd7d7846c051b88645f33d6bbb5ed9b36bbef404a19a46557639bfab7060",
+      "size_bytes": 20084
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/collision/2f_85/ur_to_robotiq_adapter.stl",
+      "sha256": "sha256:e5b4eaba7f75c4071c9c0213281af4798098c971891808d87e948383cd2b9aa9",
+      "size_bytes": 48884
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_finger.dae",
+      "sha256": "sha256:5fb9e5659c735e48eb55269da431cf61b3b7a6745922c1932a7adefb1db86dc3",
+      "size_bytes": 191399
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_finger_tip.dae",
+      "sha256": "sha256:785ec7a83b4fc6357c211a39bb117833b1cfd4e9bccbef2efc7f35aeb2fdb92e",
+      "size_bytes": 174578
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_inner_knuckle.dae",
+      "sha256": "sha256:2df009ef28868c90a4904370f5f4995c74ec84e0b8ca1371044e0ea669edcd71",
+      "size_bytes": 110219
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/left_knuckle.dae",
+      "sha256": "sha256:1b82214363d9548f3562be70e25cd23217a304c72ccd37bc1551cf1a3a64029d",
+      "size_bytes": 78865
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_finger.dae",
+      "sha256": "sha256:3b2245b5537eb596d7f8a4c64b12e3aedea46e365fc589019184d3b4200e664f",
+      "size_bytes": 190861
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_finger_tip.dae",
+      "sha256": "sha256:568371d25ddbcee8e432c0610bdcc7afcd1393d48d973eed92168e353eb4edf5",
+      "size_bytes": 173460
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_inner_knuckle.dae",
+      "sha256": "sha256:4cc6de99e177773ba755805b58b67537c3af24b2fd8f3a1bf4bbced87d6240a5",
+      "size_bytes": 111109
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/right_knuckle.dae",
+      "sha256": "sha256:532b6f6f8794883ff34995701036ca392461f26127757f92003db127693bc57c",
+      "size_bytes": 79122
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/robotiq_base.dae",
+      "sha256": "sha256:761a79d586a48d367d60f146ca77ef7d2821ad790f7b1b1c93b061ac59799267",
+      "size_bytes": 2159533
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/meshes/visual/2f_85/ur_to_robotiq_adapter.dae",
+      "sha256": "sha256:ed326c745df2942d2efb8dd902ecfafa84c692d360a7c03ce9276ad491614ac4",
+      "size_bytes": 188335
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/package.xml",
+      "sha256": "sha256:5395e79f5aa69af743f6dcec774107b6470ecd3bd87ab35f0556e1783ebe640f",
+      "size_bytes": 1236
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/urdf/2f_85.ros2_control.xacro",
+      "sha256": "sha256:024b33f6c1efe70aea47d8b26eabed8a9f8dd87a24aa523613ce5e76fc40cfce",
+      "size_bytes": 4788
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/urdf/robotiq_2f_85_macro.urdf.xacro",
+      "sha256": "sha256:2c35d677d09dc4c1c88608cf119749d34c9321206b49a16717b5b24a6a870700",
+      "size_bytes": 13883
+    },
+    {
+      "path": "expanded_source/tool/source/robotiq_description/urdf/ur_to_robotiq_adapter.urdf.xacro",
+      "sha256": "sha256:31b584b9d013d816fb0bd98df0dcda6bfa7d45305563cd51169ca8d3c8eb66b3",
+      "size_bytes": 1377
+    },
+    {
+      "path": "expanded_source/tool/source-bundle.json",
+      "sha256": "sha256:a4c5ddb4c4edfe0f1b6ab1e588f812c0902bfa98d3f5744399f10bbdab2101df",
+      "size_bytes": 7849
+    },
+    {
+      "path": "robot.urdf",
+      "sha256": "sha256:3696732c53ea01cd42dd2b0b80ebb483229807b22811f97c01cd64556c78be49",
+      "size_bytes": 15236
+    },
+    {
+      "path": "simulation-source.urdf",
+      "sha256": "sha256:3448aa0e8475c2298200caa9781addd3324f0b2709cc31367a72ca1ab4087fc8",
+      "size_bytes": 13089
+    }
+  ],
+  "configuration_digest": "sha256:38d7c480985b7c2e6ad2485e9fc4bd1befef1b567bd11cd80990bd960094d436"
+}

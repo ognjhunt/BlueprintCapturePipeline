@@ -504,6 +504,21 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-pipeline-intake.service",
     "blueprint-website-atlas-preview.service",
     "blueprint-website-atlas-preview.timer",
+    "blueprint-website-atlas-provider-poll.service",
+    "blueprint-website-atlas-provider-poll.timer",
+    "blueprint-website-atlas-provider-poll.path",
+)
+#: Triggers a deploy never quiesces. The Atlas provider poll only reads
+#: operations World Labs is already running for us and records what the next
+#: preview tick would; it uploads, reserves, submits and settles nothing and
+#: never advances a job, so it cannot spend while release identities move, and
+#: a finished operation is not left waiting out a 30-40 minute deploy. A run
+#: that overlaps the release switch keeps the release it started in. Each
+#: deploy still installs these units and restarts the triggers (never a running
+#: poll) with the other no-spend watchers; an owner hold still stops them.
+DEPLOY_EXEMPT_TRIGGER_UNITS = (
+    "blueprint-website-atlas-provider-poll.timer",
+    "blueprint-website-atlas-provider-poll.path",
 )
 #: Watchers whose execution surface is provably no-spend and may be armed on a
 #: fresh host without widening provider authority.  The paid dispatcher is
@@ -1864,6 +1879,7 @@ def _prepare_capture_transfer_from_source(source: Path, source_commit: str) -> d
 
 
 def _verify_capture_transfer_runtime(*, release: Path, unit_text: str, account: str) -> dict[str, Any] | None:
+    from blueprint_pipeline.capture_upload_runtime import SCANNER_CONTROLS_TIMEOUT_SECONDS
     configuration = _capture_transfer_configuration(unit_text)
     if configuration is None:
         return None
@@ -1871,7 +1887,8 @@ def _verify_capture_transfer_runtime(*, release: Path, unit_text: str, account: 
         result = subprocess.run(
             ["/usr/sbin/runuser", "--user", account, "--", sys.executable,
              "-m", "blueprint_pipeline.capture_upload_runtime"],
-            input=json.dumps(configuration), text=True, check=False, capture_output=True, timeout=150,
+            input=json.dumps(configuration), text=True, check=False, capture_output=True,
+            timeout=SCANNER_CONTROLS_TIMEOUT_SECONDS,
             cwd=release, env={"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LC_ALL": "C",
                               "PYTHONPATH": str(release / "src"), "PYTHONDONTWRITEBYTECODE": "1"},
         )
@@ -2818,16 +2835,19 @@ def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
     if not estimate["basis"].startswith(prefix):
         return None
     previous = Path(runtime_root) / "scene-configuration" / estimate["basis"][len(prefix):]
+    directory = Path(state_root) / "deploy-vendor-reuse"
+    planning_started = time.monotonic()
     plan = prepare_vendor_reuse(toolchain_root=previous, site_packages_root=site_packages_root,
                                blender_root=blender_root,
-                               staging_device=previous.parent.stat().st_dev)
+                               staging_device=previous.parent.stat().st_dev,
+                               previous_plans=directory)
     if plan is None:
         return None
+    planning_seconds = round(time.monotonic() - planning_started, 1)
     files = json.loads((previous / SCENE_CONFIGURATION_TOOLCHAIN_MANIFEST).read_text())["files"]
     unshared = sum(int(row["size_bytes"]) for row in files) - plan["shared_bytes"]
     if unshared < 0:
         raise ControlPlaneDeployError("deploy_vendor_reuse_size_invalid")
-    directory = Path(state_root) / "deploy-vendor-reuse"
     directory.mkdir(parents=True, exist_ok=True, mode=0o750)
     path = directory / (plan["digest"][7:] + ".json")
     payload = (json.dumps(plan, sort_keys=True) + "\n").encode()
@@ -2845,7 +2865,10 @@ def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
     estimate["bytes"] = (math.ceil(unshared * SCENE_CONFIGURATION_STAGING_HEADROOM)
                          + RELEASE_ESTIMATE_BLOCK_BYTES * len(files) + RELEASE_ESTIMATE_OVERHEAD_BYTES)
     estimate["vendor_reuse"] = {"path": str(path), "digest": plan["digest"],
-                               "shared_bytes": plan["shared_bytes"], "file_count": len(plan["files"])}
+                               "shared_bytes": plan["shared_bytes"], "file_count": len(plan["files"]),
+                               "source_files_hashed": plan["source_files_hashed"],
+                               "source_bytes_hashed": plan["source_bytes_hashed"],
+                               "planning_seconds": planning_seconds}
     return path
 
 
@@ -3982,6 +4005,13 @@ _SCENE_RUNTIME_INSTALL_SECONDS = 900
 # The service-owned state directory cannot be an ancestor of root-admitted proof.
 _SCENE_SOURCE_ATTESTATIONS = _SCENE_RUNTIME_BOOT_ROOT / "source-attestations"
 _SCENE_SOURCE_GH = Path("/usr/bin/gh")
+_SCENE_SOURCE_ATTESTATION_WAIT_SECONDS = 3600.0
+_SCENE_SOURCE_ATTESTATION_POLL_SECONDS = 30.0
+_SCENE_SOURCE_ATTESTATION_CI_CHECK_POLLS = 4
+# This host reads GitHub unauthenticated: 60 requests an hour, measured 2026-10-31,
+# shared with the delivery and the installer that follow the wait. A poll every 30
+# seconds would spend them in half an hour and fail the proof it was waiting for.
+_SCENE_SOURCE_ATTESTATION_RATE_RESERVE = 15
 
 
 def _scene_source_snappy(raw: bytes, *, deadline: float, cap: int) -> bytes:
@@ -4050,6 +4080,86 @@ def _scene_source_selector_bytes(source_commit: str) -> bytes:
     return (json.dumps({'schema_version':'blueprint.source_commit_selector.v1',
         'repository':'ognjhunt/BlueprintCapturePipeline', 'source_commit':source_commit},
         sort_keys=True, separators=(',', ':'), ensure_ascii=False)+'\n').encode()
+
+
+def _scene_source_public_read(url: str, *, deadline: float, cap: int) -> tuple[int, Any, Any]:
+    """One bounded unauthenticated GET; any failure only means "not yet"."""
+    request = urllib.request.Request(url, headers={'Accept':'application/vnd.github+json',
+        'X-GitHub-Api-Version':'2022-11-28', 'User-Agent':'Blueprint-source-admission'})
+    try:
+        opener = _source_response_opener(deadline, error="deploy_scene_retirement_runtime_unproven")
+        with opener.open(request, timeout=30) as response:
+            body = response.read(cap + 1)
+            return response.status, json.loads(body) if len(body) <= cap else None, response.headers
+    except urllib.error.HTTPError as exc:
+        return exc.code, None, exc.headers
+    except (OSError, ValueError, http.client.HTTPException):
+        return 0, None, {}
+
+
+def _scene_source_poll_pause(headers: Any) -> float:
+    """Spread the requests left this hour, keeping a reserve for the proof itself."""
+    try:
+        remaining = int(headers['x-ratelimit-remaining'])
+        reset_in = float(headers['x-ratelimit-reset']) - time.time()
+    except (KeyError, TypeError, ValueError):
+        return _SCENE_SOURCE_ATTESTATION_POLL_SECONDS
+    budget = remaining - _SCENE_SOURCE_ATTESTATION_RATE_RESERVE
+    pause = reset_in + 1 if budget <= 0 else reset_in / budget
+    return max(_SCENE_SOURCE_ATTESTATION_POLL_SECONDS, pause)
+
+
+def _scene_source_ci_finished_without_proof(document: Any, source_commit: str) -> bool:
+    """A failed or cancelled main run will not attest unless someone reruns it."""
+    rows = document.get('workflow_runs') if type(document) is dict else None
+    runs = [row for row in rows if type(row) is dict and row.get('path') == '.github/workflows/ci.yml'
+            and row.get('head_sha') == source_commit] if type(rows) is list else []
+    return bool(runs) and all(row.get('status') == 'completed' and row.get('conclusion') != 'success' for row in runs)
+
+
+def _scene_source_attestation_wait_failure(reason: str) -> ControlPlaneDeployError:
+    failure = ControlPlaneDeployError("deploy_scene_retirement_runtime_unproven")
+    setattr(failure, "runtime_diagnostic", {"phase": "await_attestation", "reason": reason})
+    return failure
+
+
+def _await_scene_source_attestation(source_commit: str, *, max_seconds: float) -> dict[str, Any]:
+    """Wait until CI's attestation for this commit is listed, or fail with nothing paused.
+
+    This grants nothing. A listing is untrusted public data: the installer still
+    runs only after _prepare_scene_retirement_runtime verifies the signed proof.
+    The wait lets a deploy start at merge, with its build overlapping main's CI.
+    """
+    started = time.monotonic()
+    def receipt(status: str, polls: int) -> dict[str, Any]:
+        return {"status": status, "polls": polls, "wait_seconds": round(time.monotonic() - started, 3)}
+    if max_seconds <= 0:
+        return receipt("not_requested", 0)
+    selector = hashlib.sha256(_scene_source_selector_bytes(source_commit)).hexdigest()
+    root = _SCENE_SOURCE_ATTESTATIONS / source_commit
+    if all((root/name).exists() for name in ('source-sha256-manifest.json','source-provenance.sigstore.json')):
+        return receipt("proof_already_held", 0)
+    repository = 'https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline'
+    deadline = started + max_seconds
+    polls = 0
+    while True:
+        polls += 1
+        status, document, headers = _scene_source_public_read(
+            f'{repository}/attestations/sha256:{selector}?per_page=1',
+            deadline=min(deadline, time.monotonic() + 60), cap=48*1024*1024)
+        if status == 200 and type(document) is dict and document.get('attestations'):
+            return receipt("listed", polls)
+        if polls % _SCENE_SOURCE_ATTESTATION_CI_CHECK_POLLS == 1:
+            _, runs, run_headers = _scene_source_public_read(
+                f'{repository}/actions/runs?head_sha={source_commit}&event=push&per_page=10',
+                deadline=min(deadline, time.monotonic() + 60), cap=1024*1024)
+            headers = run_headers or headers
+            if _scene_source_ci_finished_without_proof(runs, source_commit):
+                raise _scene_source_attestation_wait_failure("ci_finished_without_attestation")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise _scene_source_attestation_wait_failure("deadline")
+        time.sleep(min(_scene_source_poll_pause(headers), remaining))
 
 
 def _scene_source_delivery(source_commit: str, *, deadline: float) -> None:
@@ -4892,6 +5002,7 @@ def deploy_control_plane_commit(
     door_holds_dir: str | Path = DEFAULT_DOOR_HOLDS_DIR,
     drain_units: Sequence[str] = (),
     drain_seconds: float = 0,
+    attestation_wait_seconds: float = 0,
 ) -> dict[str, Any]:
     """Move the mutable clone and the release link, then verify both.
 
@@ -5071,7 +5182,7 @@ def deploy_control_plane_commit(
     automation_unit_names = [
         {"unit": unit}
         for unit in DEFAULT_DEPLOYED_SYSTEMD_UNITS
-        if unit.endswith((".path", ".timer"))
+        if unit.endswith((".path", ".timer")) and unit not in DEPLOY_EXEMPT_TRIGGER_UNITS
     ]
     # Where a deploy's minutes go is otherwise invisible; the receipt records
     # each stage so a slow deploy is a measurement, not a feeling.
@@ -5175,6 +5286,14 @@ def deploy_control_plane_commit(
             )
             _observe_created_release_usage(disk_reservation, created_usage)
         _mark_stage("runtime_trees_provisioned")
+
+        # The build needs no attestation, so a deploy can start at merge and overlap
+        # main's CI. A commit that never gets one stops here, with nothing to restore.
+        # An unmerged canary has no main CI to wait for. Verification stays below.
+        attestation_wait = _await_scene_source_attestation(
+            source_commit, max_seconds=0 if canary else attestation_wait_seconds
+        )
+        _mark_stage("scene_source_attestation_listed")
 
         # The pause. Only the drained services' triggers stop while their
         # in-flight runs finish; then no new paid launch can start, then every
@@ -5364,7 +5483,7 @@ def deploy_control_plane_commit(
                 installed_systemd_units,
                 before=automation_unit_states_before,
                 arm_path_units=arm_path_units,
-                always_arm_units=DEFAULT_ALWAYS_ARM_PATH_UNITS,
+                always_arm_units=(*DEFAULT_ALWAYS_ARM_PATH_UNITS, *DEPLOY_EXEMPT_TRIGGER_UNITS),
                 always_arm_authority_gated_units=(
                     DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS
                 ),
@@ -5414,6 +5533,8 @@ def deploy_control_plane_commit(
         "capture_transfer_prerequisites": capture_transfer_prerequisites,
         "stage_timings_seconds": stage_timings,
         "trigger_pause_seconds": trigger_pause_seconds,
+        "attestation_wait_seconds": attestation_wait["wait_seconds"],
+        "attestation_wait": attestation_wait,
         "drained_units": drained_units,
         "source_commit": commit,
         "disk_reservation": disk_reservation_receipt,
@@ -5428,7 +5549,8 @@ def deploy_control_plane_commit(
         ],
         "release_path": release["release_path"],
         "release_provenance": installed_provenance,
-        "created_release_checkout": release["created_release_checkout"],
+        # The activating call always finds the checkout the build already made.
+        "created_release_checkout": staged_release["created_release_checkout"],
         "restarted_units": restarted,
         "agent_execution": agent_execution,
         "installed_systemd_units": installed_systemd_units,
@@ -5838,6 +5960,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Total time --drain-unit services may take to finish runs in flight.",
     )
     parser.add_argument(
+        "--attestation-wait-seconds",
+        type=float,
+        default=_SCENE_SOURCE_ATTESTATION_WAIT_SECONDS,
+        help=(
+            "After the build and before anything pauses, how long to wait for main's CI "
+            "to list this commit's source attestation. It is verified later regardless."
+        ),
+    )
+    parser.add_argument(
         "--arm-path-units",
         action="store_true",
         help=(
@@ -5898,6 +6029,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             break_glass_notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,
             drain_units=tuple(args.drain_unit or ()),
             drain_seconds=args.drain_seconds,
+            attestation_wait_seconds=args.attestation_wait_seconds,
             ),
             "break_glass_note": break_glass_note,
         }, path=args.receipt_out, notes_root=DEFAULT_BREAK_GLASS_NOTES_ROOT,
@@ -5918,8 +6050,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         diagnostic = getattr(exc, "runtime_diagnostic", None)
         if (str(exc) == "deploy_scene_retirement_runtime_unproven" and isinstance(diagnostic, dict)
                 and diagnostic.get("phase") in {"retained_installer", "authenticate_installer", "execute_installer", "verify_result",
-                    "signed_release", "build_sdk", "resume_initial_intent", "refresh", "prepare", "publish_installer"}
-                and diagnostic.get("reason") in {"deadline", "validation", "io", "unexpected"}):
+                    "signed_release", "build_sdk", "resume_initial_intent", "refresh", "prepare", "publish_installer",
+                    "await_attestation"}
+                and diagnostic.get("reason") in {"deadline", "validation", "io", "unexpected", "ci_finished_without_attestation"}):
             blocked["runtime_diagnostic"] = {key: diagnostic[key] for key in ("phase", "reason")}
         if str(exc).startswith("deploy_capture_transfer_"):
             capture_diagnostic = getattr(exc, "capture_upload_runtime_diagnostic", None)

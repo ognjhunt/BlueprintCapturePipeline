@@ -457,7 +457,7 @@
       },
       {
         "path": "scripted_robot_grasp_frames.py",
-        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+        "sha256": "sha256:9f3ed5b722aba7bbfd19952de6d1712683de88a0465bbe8b030326fcda9978e9"
       },
       {
         "path": "scripted_robot_industrial_robotiq_runtime.py",
@@ -485,7 +485,7 @@
       },
       {
         "path": "scripted_robot_grasp_frames.py",
-        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+        "sha256": "sha256:9f3ed5b722aba7bbfd19952de6d1712683de88a0465bbe8b030326fcda9978e9"
       }
     ],
     "schema_version": "blueprint_scripted_controller_source.v1"
@@ -505,7 +505,7 @@
       },
       {
         "path": "scripted_robot_grasp_frames.py",
-        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+        "sha256": "sha256:9f3ed5b722aba7bbfd19952de6d1712683de88a0465bbe8b030326fcda9978e9"
       },
       {
         "path": "scripted_robot_robotiq_runtime.py",
@@ -528,7 +528,7 @@
       },
       {
         "path": "scripted_robot_grasp_frames.py",
-        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+        "sha256": "sha256:9f3ed5b722aba7bbfd19952de6d1712683de88a0465bbe8b030326fcda9978e9"
       },
       {
         "path": "scripted_robot_yaskawa_robotiq_runtime.py",
@@ -549,7 +549,7 @@
       },
       {
         "path": "scripted_robot_grasp_frames.py",
-        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+        "sha256": "sha256:9f3ed5b722aba7bbfd19952de6d1712683de88a0465bbe8b030326fcda9978e9"
       },
       {
         "path": "scripted_robot_kuka_robotiq_runtime.py",
@@ -572,7 +572,7 @@
       },
       {
         "path": "scripted_robot_grasp_frames.py",
-        "sha256": "sha256:d0ae2f89fcb2218523dbbbb5f11beb812c8d2bd5e5dd1a892af97f8cee20347d"
+        "sha256": "sha256:9f3ed5b722aba7bbfd19952de6d1712683de88a0465bbe8b030326fcda9978e9"
       },
       {
         "path": "scripted_robot_public_arm_robotiq_runtime.py",

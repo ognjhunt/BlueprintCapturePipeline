@@ -858,15 +858,107 @@ def test_selected_staging_failure_reason_is_safe_and_preclaim(tmp_path, monkeypa
     assert result['status'] == 'capture_source_membership_unavailable_retryable'
     assert result['queue_disposition'] == 'retryable' and result['staging_reason'] == reason
     assert "secret" not in json.dumps(result)
-    if phase in {"generic", "unsafe_typed"}:
-        # Only an unrecognized failure is described: type and redacted text.
-        assert result['staging_error'] == {
-            'type': ('blueprint_pipeline.capture_delivery_staging.CaptureStagingError'
-                     if phase == "unsafe_typed" else 'builtins.RuntimeError'),
-            'message': 'private staging token=<redacted>'}
+    owner_error = 'blueprint_pipeline.capture_original_owner_observer.CaptureOwnerObservationError'
+    # An unrecognized failure, and the failure a summary code was raised from,
+    # are described: type and redacted text. A typed refusal is its own cause.
+    described = {
+        "owner": ('builtins.RuntimeError', 'private response token=<redacted>'),
+        "unsafe_typed_owner": (owner_error, 'private response token=<redacted>'),
+        "membership": ('builtins.RuntimeError', 'private source token=<redacted>'),
+        "birth": ('blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError',
+                  'private birth token=<redacted>'),
+        "unsafe_typed_birth_owner": (owner_error, 'private birth token=<redacted>'),
+        "generic": ('builtins.RuntimeError', 'private staging token=<redacted>'),
+        "unsafe_typed": ('blueprint_pipeline.capture_delivery_staging.CaptureStagingError',
+                         'private staging token=<redacted>'),
+    }.get(phase)
+    if described is not None:
+        assert result['staging_error'] == {'type': described[0], 'message': described[1]}
     else:
         assert 'staging_error' not in result and "private" not in json.dumps(result)
     assert not target.exists()
+
+
+@pytest.mark.parametrize("where", ["birth", "download"])
+def test_full_work_volume_is_a_named_capacity_refusal_with_its_cause(tmp_path, monkeypatch, where):
+    import errno
+    from blueprint_pipeline import capture_delivery_staging as staging
+    from blueprint_pipeline import capture_original_owner_observer as observer
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import website_scene_workspace_retention as retention
+
+    _, _, target, owner, selector, raw = _fixture(tmp_path, monkeypatch, prepare_parent=False)
+    member = json.loads(raw)
+    payload = {'bucket': owner['bucket'], 'scene_id': owner['scene_id'],
+               'capture_id': owner['capture_id'], 'raw_prefix_uri': owner['raw_prefix_uri'],
+               'source_finalize': {**member['source_finalize'], 'event_id': 'evt-1',
+                                   'event_source': 'storage'},
+               'source_membership_selector': selector}
+    monkeypatch.setattr(observer, 'load_original_owner_observation', lambda **_: owner)
+    monkeypatch.setattr(retention, 'retired_capture_status', lambda **_: None)
+    full = OSError(errno.ENOSPC, 'No space left on device')
+    if where == "birth":
+        # Birth summarizes every refusal as capture_original_birth_refused.
+        monkeypatch.setattr(staging, 'load_selected_capture_membership', lambda **_: (raw, member, []))
+
+        def refused(*_args, **_kwargs):
+            raise full
+        monkeypatch.setattr(staging, 'birth_capture_member', refused)
+    else:
+        # A write that is not admission-reserved fails with the bare OSError.
+        def unavailable(*_args, **_kwargs):
+            raise full
+        monkeypatch.setattr(listener, 'stage_handoff_capture', unavailable)
+    monkeypatch.setattr(listener, '_claim_job_lease', lambda *a, **kw: pytest.fail("claimed"))
+    result = listener.process_handoff_payload(
+        payload, storage_root=target.parents[4], provider='openai', storage_client=object(),
+        run_e2e=lambda **_: pytest.fail('ran'))
+    assert result['status'] == 'capture_source_membership_unavailable_retryable'
+    assert result['staging_reason'] == 'pubsub_handoff_staging_capacity_insufficient'
+    assert result['staging_error'] == {'type': 'builtins.OSError',
+                                       'message': '[Errno 28] No space left on device'}
+
+
+@pytest.mark.parametrize("raised,reason", [
+    ("busy", "capture_original_birth_refused"),
+    ("full", "pubsub_handoff_staging_capacity_insufficient"),
+])
+def test_preclaim_admission_refusal_keeps_its_cause(tmp_path, monkeypatch, caplog, raised, reason):
+    import errno
+    from contextlib import contextmanager
+    from blueprint_pipeline import pubsub_handoff_listener as listener
+    from blueprint_pipeline import task_evaluation_scene_retirement_generations as generations
+    from blueprint_pipeline.task_evaluation_scene_retirement_access import SceneRetirementAccessError
+
+    _, _, target, owner, selector, raw = _fixture(tmp_path, monkeypatch, prepare_parent=False)
+    member = json.loads(raw)
+    payload = {'bucket': owner['bucket'], 'scene_id': owner['scene_id'],
+               'capture_id': owner['capture_id'], 'raw_prefix_uri': owner['raw_prefix_uri'],
+               'source_finalize': {**member['source_finalize'], 'event_id': 'evt-1',
+                                   'event_source': 'storage'},
+               'source_membership_selector': selector}
+    error = (SceneRetirementAccessError('scene_retirement_generation_unavailable') if raised == "busy"
+             else OSError(errno.ENOSPC, 'No space left on device'))
+
+    @contextmanager
+    def refused(*_args, **_kwargs):
+        raise error
+        yield
+    monkeypatch.setattr(generations, '_capture_admission', refused)
+    monkeypatch.setattr(listener, '_claim_job_lease', lambda *a, **kw: pytest.fail("claimed"))
+    with caplog.at_level('WARNING'):
+        result = listener.process_handoff_payload(
+            payload, storage_root=target.parents[4], provider='openai', storage_client=object(),
+            run_e2e=lambda **_: pytest.fail('ran'))
+    assert result['status'] == 'capture_source_membership_unavailable_retryable'
+    assert result['blockers'] == ['capture_source_membership_unavailable']
+    assert result['staging_reason'] == reason
+    expected = ({'type': 'blueprint_pipeline.task_evaluation_scene_retirement_lifetime.SceneRetirementAccessError',
+                 'message': 'scene_retirement_generation_unavailable'} if raised == "busy"
+                else {'type': 'builtins.OSError', 'message': '[Errno 28] No space left on device'})
+    assert result['staging_error'] == expected
+    [record] = [row for row in caplog.records if row.getMessage() == 'pubsub_handoff.capture_admission_refused']
+    assert record.staging_reason == reason and record.staging_error == expected
 
 
 def test_unrecognized_staging_error_keeps_type_and_bounded_secret_free_message():

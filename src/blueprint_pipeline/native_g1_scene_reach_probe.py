@@ -24,6 +24,62 @@ from .scene_placement.validation import validate_stand_pose
 
 
 SCHEMA = "native_g1_scene_reach_probe.v1"
+STANCE_RULE = "closest_clear_stance_within_nominal_arm_span"
+LIMITATIONS = [
+    "floor clearance uses static USD obstacle boxes and the configured G1 footprint",
+    "arm span is a shoulder-to-target bound, not inverse kinematics or grasp proof",
+    "walking, leaning, crouching, contacts, camera visibility, and policy behavior are untested",
+]
+
+
+def _shoulder_distances(x: float, y: float, yaw: float, *, shoulder_z: float, start: Sequence[float],
+                        target: Sequence[float]) -> tuple[float, float, float, float]:
+    """From the nearer shoulder of a G1 standing at ``(x, y)`` facing ``yaw``: the horizontal and nominal
+    (shoulder-to-point) distances to the pick and to the place, as ``(pick_xy, place_xy, pick, place)``."""
+
+    lateral = UNITREE_G1_PROFILE.shoulder_lateral_offset_m
+    shoulders = (
+        (x - lateral * math.sin(yaw), y + lateral * math.cos(yaw)),
+        (x + lateral * math.sin(yaw), y - lateral * math.cos(yaw)),
+    )
+    pick_xy = min(math.dist(shoulder, start[:2]) for shoulder in shoulders)
+    place_xy = min(math.dist(shoulder, target[:2]) for shoulder in shoulders)
+    return (pick_xy, place_xy, math.hypot(pick_xy, shoulder_z - start[2]),
+            math.hypot(place_xy, shoulder_z - target[2]))
+
+
+def g1_stance_static_reach(stances: Sequence[dict[str, Any]], *, start: Sequence[float],
+                           target: Sequence[float]) -> tuple[int, dict[str, Any]]:
+    """The closest of ``stances`` from which the G1's nominal arm span covers both the pick and the place.
+
+    ``stances`` are clear floor stances, closest first, with the root at pelvis height
+    (``team_embodiment_stance.ground_stance``). Returns the chosen index and its record; with none in
+    span, the closest is kept and the record says body motion or a new stance is required. A static
+    shoulder-to-target bound only: it refuses nothing.
+    """
+
+    profile = UNITREE_G1_PROFILE
+    if not stances or len(start) < 3 or len(target) != 3 or not all(
+            math.isfinite(float(value)) for value in (*start[:3], *target)):
+        raise ValueError("g1_stance_reach_inputs_invalid")
+    rows = []
+    for stance in stances:
+        x, y, z = (float(value) for value in stance["position_world_m"])
+        qx, qy, qz, qw = (float(value) for value in stance["orientation_xyzw"])
+        yaw = math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
+        rows.append(_shoulder_distances(x, y, yaw, shoulder_z=z + profile.shoulder_above_root_m,
+                                        start=start, target=target))
+    index = next((i for i, row in enumerate(rows) if max(row[2:]) <= profile.arm_span_m), None)
+    within = index is not None
+    _, _, pick, place = rows[index if within else 0]
+    record = {"rule": STANCE_RULE, "claim_ceiling": "development_only_static_geometry",
+              "robot_profile_id": profile.robot_id, "nominal_arm_span_m": profile.arm_span_m,
+              "clear_stances_measured": len(rows), "chosen_rank": index if within else 0,
+              "pick_nominal_shoulder_distance_m": round(pick, 6),
+              "place_nominal_shoulder_distance_m": round(place, 6), "within_nominal_arm_span": within,
+              "interpretation": "nominal_static_reach_candidate" if within else "body_motion_or_new_stance_required",
+              "limitations": list(LIMITATIONS)}
+    return (index if within else 0), record
 
 
 def probe_g1_scene_static_reach(
@@ -104,17 +160,10 @@ def probe_g1_scene_static_reach(
             if not verdict.ok:
                 continue
             clear_count += 1
-            lateral = profile.shoulder_lateral_offset_m
-            shoulders = (
-                (x - lateral * math.sin(yaw), y + lateral * math.cos(yaw)),
-                (x + lateral * math.sin(yaw), y - lateral * math.cos(yaw)),
+            pick_xy, place_xy, pick, place = _shoulder_distances(
+                x, y, yaw, shoulder_z=shoulder_z, start=start, target=target_position
             )
-            pick_xy = min(math.dist(shoulder, start[:2]) for shoulder in shoulders)
-            place_xy = min(math.dist(shoulder, target_position[:2]) for shoulder in shoulders)
-            pair_distance = max(
-                math.hypot(pick_xy, shoulder_z - start[2]),
-                math.hypot(place_xy, shoulder_z - target_position[2]),
-            )
+            pair_distance = max(pick, place)
             for value, name in ((pick_xy, "pick"), (place_xy, "place"), (pair_distance, "pair")):
                 prior = {"pick": best_pick, "place": best_place, "pair": best_pair}[name]
                 if prior is None or value < prior[0]:
@@ -172,11 +221,7 @@ def probe_g1_scene_static_reach(
             if best_pair is not None and best_pair[0] <= profile.arm_span_m
             else "body_motion_or_new_stance_required"
         ),
-        "limitations": [
-            "floor clearance uses static USD obstacle boxes and the configured G1 footprint",
-            "arm span is a shoulder-to-target bound, not inverse kinematics or grasp proof",
-            "walking, leaning, crouching, contacts, camera visibility, and policy behavior are untested",
-        ],
+        "limitations": list(LIMITATIONS),
     }
     report["report_digest"] = canonical_digest(report, digest_field="report_digest")
     return report
