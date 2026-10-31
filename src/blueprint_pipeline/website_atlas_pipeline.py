@@ -462,6 +462,10 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
 
     output_root.mkdir(parents=True, exist_ok=True)
     source_digest = _sha256_file(source_video)
+    # Before anything new is admitted, report every closed Atlas attempt's outcome so a
+    # failed or refused hold World Labs never charged stops counting against the job.
+    from .atlas_spend_settlement import settle_closed_atlas_attempts_under
+    settle_closed_atlas_attempts_under(output_root, task_context=task_context)
     from .atlas_observed_room import SELECTION as ROOM_SELECTION, run_observed_room, retain_selection
     if (output_root / ROOM_SELECTION).is_file():
         return run_observed_room(output_root=output_root, source_digest=source_digest, task_context=task_context,
@@ -537,7 +541,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     # completed purchases and held unknown calls consume today's allowance.
     budget = (current["remaining_cost_usd"] - 2 * policy["maximum_review_cost_usd"]
               - final_output_cost(policy, admitted_final_outputs(output_root)))
-    if budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
+    # Size a new selection only; a retained one already spent its reviews, and
+    # holding them back again would stop a resumed job on money it already paid.
+    if not selection_path.exists() and budget < 2 * policy["pose_input_cost_usd"] + render_cost(policy, 2):
         raise ValueError("atlas_runtime_budget_insufficient")
     if selection_path.exists():
         selection = json.loads(selection_path.read_text())
@@ -654,7 +660,9 @@ def _run_atlas_pipeline(*, source_video: Path, output_root: Path, task_context, 
     count = len(inputs["frames"])
     target_count = len({key for group in review["coverage_requirements"] for key in group["required_frame_ids"]})
     planned_cost = round(count * policy["pose_input_cost_usd"] + render_cost(policy, target_count), 6)
-    if planned_cost > budget + 1e-9:
+    pose_bought = ((pose_root / "atlas_pose/submission.json").exists()
+                   or (pose_root / "atlas_posed_rgbd_result.json").exists())
+    if not pose_bought and planned_cost > budget + 1e-9:
         raise ValueError("atlas_runtime_budget_insufficient_for_pose_and_generation")
     pose_quote = {"schema_version": "website_atlas_pose_price_review.v1", "endpoint": "/api/v2/tasks:images2PosedRGBD",
         "maximum_cost_usd": round(count * policy["pose_input_cost_usd"], 6), "max_input_images": count,

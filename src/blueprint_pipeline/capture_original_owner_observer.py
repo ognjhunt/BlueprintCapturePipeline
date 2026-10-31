@@ -55,6 +55,7 @@ OWNER_OBSERVATION_REASON_CODES = frozenset({
     'capture_owner_request_too_large',
     'capture_owner_response_duplicate_key',
     'capture_owner_response_nonfinite',
+    'capture_owner_response_rate_limited',
     'capture_owner_response_unavailable',
     'capture_owner_rights_not_admitted',
     'capture_owner_shape_invalid',
@@ -347,6 +348,8 @@ def load_original_owner_observation(
             policy=pinned_api_policy(origin, max_response_bytes=MAX_RESPONSE_BYTES),
             max_response_bytes=MAX_RESPONSE_BYTES,
         )
+        if response.status == 429:
+            _refuse("capture_owner_response_rate_limited")
         if response.status != 200 or len(response.body) > MAX_RESPONSE_BYTES:
             _refuse("capture_owner_response_unavailable")
         value = json.loads(response.body.decode("utf-8", errors="strict"),
@@ -358,4 +361,9 @@ def load_original_owner_observation(
     except CaptureOwnerObservationError:
         raise
     except Exception as exc:
-        raise CaptureOwnerObservationError("capture_owner_response_unavailable") from exc
+        from .bounded_error import rate_limited
+
+        # The WebApp's shared Pipeline sync limit answers 429; name it rather
+        # than leave it indistinguishable from an outage. The cause is chained.
+        raise CaptureOwnerObservationError("capture_owner_response_rate_limited" if rate_limited(exc)
+                                           else "capture_owner_response_unavailable") from exc

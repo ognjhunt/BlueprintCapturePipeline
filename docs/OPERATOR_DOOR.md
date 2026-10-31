@@ -285,6 +285,15 @@ and archives to the same artifact store as the reclaim timer. See
    throwaway worktree with `--iteration --preserve-configured-controls-state`,
    receipt `deploy-receipts/iteration_<sha12>_door.json`.
 
+The deploy builds the commit's release checkout and runtime trees first, with
+every timer, path watcher and paid launch still live: those trees are the
+commit's own and nothing reads them until the release link moves. Only then
+does it drain (step 3), take the paid-launch gate and stop every watcher, for
+the steps that change what a running unit or a launch reads, the switch, the
+intake restart and the re-arm. The receipt's `trigger_pause_seconds` says how
+long drained triggers, all other watchers and new paid launches were held;
+`stage_timings_seconds` splits the whole deploy by stage.
+
 `--preserve-configured-controls-state` keeps the owner's configured-controls
 pause across the deploy; `deploy_control_plane_iteration.sh` and
 `deploy_control_plane_canary.sh` do not pass it, which is why the door does

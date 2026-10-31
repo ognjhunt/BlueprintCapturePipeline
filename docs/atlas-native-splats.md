@@ -111,8 +111,9 @@ creation. If a send is refused with 404 naming one of the attempt's own
 uploads, nothing was bought, so the same admitted purchase uploads again under
 a new idempotency key (`refresh_purged_uploads`, at most twice).
 
-The ledger still holds a reservation for a failed or refused attempt until it is
-settled; the WebApp has no `world_labs_atlas` settlement yet.
+A failed or refused attempt's reservation is released once the attempt settles
+(`atlas_spend_settlement`, a WebApp `world_labs_atlas` settlement at zero); a
+completed one settles at its reviewed price.
 
 The refined roots sit beside the draft (`<draft root>-refined*`), and the mesh
 root carries the adopted refined digest, so a new draft gets its own purchase

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 import secrets
 import stat
 from pathlib import Path
 
+from .bounded_error import (
+    _ERROR_REDACTIONS as _ERROR_REDACTIONS, _ERROR_SCAN_LIMIT as _ERROR_SCAN_LIMIT,
+    _ERROR_TYPE as _ERROR_TYPE, ERROR_TEXT_LIMIT, bounded_error, bounded_error_text, error_description,
+)
 from .common import PipelineError
 from .capture_original_owner_observer import CaptureOwnerObservationError, OWNER_OBSERVATION_REASON_CODES
 from .capture_delivery_membership import load_selected_capture_membership
@@ -33,62 +36,21 @@ class CaptureStagingError(PipelineError):
     """A bounded refusal reason, never source, owner or provider exception text."""
 
 
-_ERROR_TEXT_LIMIT = 200
-_ERROR_SCAN_LIMIT = 4096
-_ERROR_TYPE = re.compile(r'[A-Za-z_][A-Za-z0-9_.<>]{0,199}')
-# Applied in order. A URL keeps its scheme, host and path; its query or
-# fragment can sign or authorize it. A credential key may be quoted, as in
-# JSON or a printed dictionary. The last rule removes runs that mix
-# upper case, lower case and digits, as keys and tokens do, while hex
-# digests, generations and capture identifiers stay readable.
-_ERROR_REDACTIONS = (
-    (re.compile(r'(?i)\b([a-z][a-z0-9+.-]*://[^\s?#"\'<>]*)[?#][^\s"\'<>]+'), r'\1?<redacted>'),
-    (re.compile(r'(?is)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)'),
-     '<redacted>'),
-    (re.compile(r'(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+'), r'\1 <redacted>'),
-    (re.compile(r'(?i)\b((?:[a-z0-9]+[_-])*(?:token|key|secret|password|passwd|signature|sig'
-                r'|credentials?|authorization|cookie|session)["\']?)(\s*[:=]\s*)("[^"]*"|\'[^\']*\'|[^\s,;&)}]+)'),
-     r'\1\2<redacted>'),
-    (re.compile(r'[?&][^\s=&?]+=[^\s&]+'), '?<redacted>'),
-    (re.compile(r'\b(?:AIza[0-9A-Za-z_-]{20,}|ya29\.[0-9A-Za-z._-]+|eyJ[0-9A-Za-z_-]+\.[0-9A-Za-z._-]+'
-                r'|(?:sk|pk|rk|ghp|gho|ghs|ghu|ghr|glpat|xox[abprs])[-_][0-9A-Za-z_-]{8,})'), '<redacted>'),
-    (re.compile(r'(?<![A-Za-z0-9_+/=-])(?=[A-Za-z0-9_+/=-]*[a-z])(?=[A-Za-z0-9_+/=-]*[A-Z])'
-                r'(?=[A-Za-z0-9_+/=-]*[0-9])[A-Za-z0-9_+/=-]{24,}'), '<redacted>'),
-)
+# The bounded description moved to ``bounded_error`` for every job path; these
+# names stay so existing callers and retained imports keep working.
+staging_error_description = error_description
+bounded_staging_error = bounded_error
+_bounded_error_text = bounded_error_text
+_ERROR_TEXT_LIMIT = ERROR_TEXT_LIMIT
 
-
-def _bounded_error_text(value) -> str:
-    text = str(value)
-    if len(text) > _ERROR_SCAN_LIMIT:
-        # Never keep the fragment of a word the scan limit cut through.
-        text = text[:_ERROR_SCAN_LIMIT].rsplit(None, 1)[0]
-    text = ' '.join(re.sub(r'[\x00-\x1f\x7f]', ' ', text).split())
-    for pattern, replacement in _ERROR_REDACTIONS:
-        text = pattern.sub(replacement, text)
-    # Redaction precedes trimming, and both are idempotent, so a repeated
-    # bound returns the same text.
-    return text if len(text) <= _ERROR_TEXT_LIMIT else text[:_ERROR_TEXT_LIMIT - 3] + '...'
-
-
-def staging_error_description(error: BaseException) -> dict:
-    """The type and a redacted, trimmed message of an unrecognized staging failure.
-
-    A bounded refusal code says why staging stopped; an unrecognized exception
-    otherwise reaches the operator only as ``capture_staging_unavailable``.
-    """
-    kind = type(error)
-    name = f'{kind.__module__}.{kind.__qualname__}'
-    return {'type': name if _ERROR_TYPE.fullmatch(name) else 'unrepresentable',
-            'message': _bounded_error_text(error)}
-
-
-def bounded_staging_error(value) -> dict | None:
-    """Re-bound a native ``staging_error`` before another result repeats it."""
-    if (type(value) is not dict or set(value) != {'type', 'message'}
-            or type(value['type']) is not str or not _ERROR_TYPE.fullmatch(value['type'])
-            or type(value['message']) is not str):
-        return None
-    return {'type': value['type'], 'message': _bounded_error_text(value['message'])}
+# A recognized code raised from another failure summarizes it; the failure it
+# summarizes is kept beside the code.
+STAGING_SUMMARY_REASON_CODES = frozenset({
+    'capture_staging_owner_observation_unavailable',
+    'capture_staging_membership_unavailable',
+    'capture_original_birth_refused',
+    'capture_owner_response_unavailable',
+})
 
 
 def _local_matches(path: Path, row: dict) -> bool:
