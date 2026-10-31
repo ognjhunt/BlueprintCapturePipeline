@@ -375,6 +375,61 @@ def farthest_supported_destination(mesh: Any, start_min: Sequence[float], start_
     return None
 
 
+def footprint_at(start_min: Sequence[float], start_max: Sequence[float], centre: Sequence[float], *,
+                 up: int, up_sign: int = 1) -> tuple[np.ndarray, np.ndarray]:
+    """The start's footprint moved to ``centre``, its bottom (top when ``up_sign`` is -1) at ``centre[up]``."""
+    lower, upper = np.asarray(start_min, dtype=float).copy(), np.asarray(start_max, dtype=float).copy()
+    for axis in range(3):
+        if axis != up:
+            half_width = (start_max[axis] - start_min[axis]) / 2
+            lower[axis], upper[axis] = centre[axis] - half_width, centre[axis] + half_width
+    height = start_max[up] - start_min[up]
+    lower[up] = centre[up] - (height if up_sign == -1 else 0)
+    upper[up] = centre[up] + (height if up_sign == 1 else 0)
+    return lower, upper
+
+
+def nearest_supported_destination(mesh: Any, start_min: Sequence[float], start_max: Sequence[float],
+                                  centre: Sequence[float], region_min: Sequence[float], region_max: Sequence[float],
+                                  surface_min: Sequence[float], surface_max: Sequence[float], *, up: int,
+                                  meters_per_unit: float, up_sign: int = 1, placement_residual_m: float | None = None,
+                                  clearance: float) -> tuple[list[float], dict[str, Any]] | None:
+    """The supported footprint nearest a named place whose own centre has no contact.
+
+    A place at a surface's edge or corner puts the footprint's centre too near
+    the boundary. Candidates on the same grid as ``farthest_supported_destination``
+    overlap the place, keep the footprint inside the surface's bounds and clear
+    of the start, and are probed nearest ``centre`` first, at most
+    ``DESTINATION_MAX_PROBES`` times, by ``support_under`` against real triangles.
+    Returns ``(centre, support)`` in runtime units, or None when none is supported.
+    """
+    plan = [axis for axis in range(3) if axis != up]
+    half = (np.asarray(start_max, dtype=float) - np.asarray(start_min, dtype=float)) / 2
+    target = np.asarray(centre, dtype=float)
+    steps = []
+    for axis in plan:
+        low = max(float(region_min[axis]) - half[axis], float(surface_min[axis]) + half[axis])
+        high = min(float(region_max[axis]) + half[axis], float(surface_max[axis]) - half[axis])
+        if low > high:
+            return None
+        steps.append(np.linspace(low, high, DESTINATION_GRID_STEPS))
+    candidates = []
+    for first, second in ((a, b) for a in steps[0] for b in steps[1]):
+        candidate = target.copy()
+        candidate[plan[0]], candidate[plan[1]] = first, second
+        if destination_clear_of_start(start_min, start_max, candidate, up=up, clearance=clearance):
+            candidates.append(candidate)
+    candidates.sort(key=lambda candidate: math.dist(candidate[plan], target[plan]))
+    for candidate in candidates[:DESTINATION_MAX_PROBES]:
+        found = support_under(mesh, *footprint_at(start_min, start_max, candidate, up=up, up_sign=up_sign), up=up,
+                              meters_per_unit=meters_per_unit, up_sign=up_sign,
+                              placement_residual_m=placement_residual_m)
+        if found is not None:
+            candidate[up] = found["top_runtime_units"]
+            return candidate.tolist(), found
+    return None
+
+
 #: The unobserved lowest band of a built-in, floor-standing assembly (a toe
 #: kick and the bottom of a front panel) is at most this tall.
 FLOOR_GROUNDING_MAX_GAP_M = 0.35

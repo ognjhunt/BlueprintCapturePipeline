@@ -34,7 +34,8 @@ from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
 from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
 from .website_support_geometry import (DESTINATION_MARGIN_M, destination_clear_of_start, farthest_supported_destination,
-                                       ground_on_observed_floor, same_support_surface, support_under)
+                                       footprint_at, ground_on_observed_floor, nearest_supported_destination,
+                                       same_support_surface, support_under)
 
 
 class RegistrationRefusal(ValueError):
@@ -988,6 +989,10 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 distinct_support = interior["floor"]
                 contact_bound = True
         elif support is not None:
+            residual = (registration.get("task_region") or {}).get("trimmed_rmse_m")
+            clearance = math.hypot(*[(subject_max[axis] - subject_min[axis]) / 2
+                                     for axis in range(3) if axis != up]) + DESTINATION_MARGIN_M / mpu
+            whole_position, region_bounds = list(position), None
             region = removal_manifest.get("destination_region")
             if region is not None:
                 # The task named a place on this surface (capture-447ae4f4: "the other
@@ -1004,27 +1009,39 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                  "region_basis_quote": region.get("region_basis_quote"),
                                  "destination_region_basis": ("registered_region_boxes_on_destination_mask" if bounds is not None
                                                               else "region_unregistered_whole_destination_centre")}
+                region_record["destination_region_status"] = "unregistered"
                 if bounds is not None:
-                    region_low, region_high = _runtime_bounds(bounds, matrix)
+                    region_bounds = _runtime_bounds(bounds, matrix)
+                    region_low, region_high = region_bounds
                     position = [(region_low[i] + region_high[i]) / 2 for i in range(3)]
                     position[up] = (region_high if up_sign == 1 else region_low)[up]
                     region_record.update(source_frame_ids=bounds["source_frame_ids"], bounds_basis=bounds["basis"],
                                          estimated_bounds_world_m=dict(zip(("minimum", "maximum"), _runtime_bounds(
-                                             {"minimum": region_low, "maximum": region_high}, runtime_to_sim))))
+                                             {"minimum": region_low, "maximum": region_high}, runtime_to_sim))),
+                                         region_centre_world_m=(runtime_to_sim @ [*position, 1.0])[:3].tolist(),
+                                         destination_region_status="placed_at_region_centre")
             # Test the subject's footprint at the destination against real
             # triangles, not the destination mask's enclosing box.
-            destination_min, destination_max = np.asarray(subject_min).copy(), np.asarray(subject_max).copy()
-            for axis in range(3):
-                if axis != up:
-                    half_width = (subject_max[axis] - subject_min[axis]) / 2
-                    destination_min[axis], destination_max[axis] = position[axis] - half_width, position[axis] + half_width
-            height = subject_max[up] - subject_min[up]
-            destination_min[up] = position[up] - (height if up_sign == -1 else 0)
-            destination_max[up] = position[up] + (height if up_sign == 1 else 0)
             # The destination is placed by the same registration as the subject.
-            destination_support = support_under(collider, destination_min, destination_max, up=up,
-                meters_per_unit=mpu, up_sign=up_sign,
-                placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"))
+            destination_support = support_under(collider, *footprint_at(subject_min, subject_max, position, up=up,
+                up_sign=up_sign), up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual)
+            if destination_support is None and region_bounds is not None:
+                # A place at an edge or corner can leave the footprint's own centre
+                # unsupported. The region only refines the destination: take the
+                # supported spot nearest it, else the whole surface as without one.
+                near = nearest_supported_destination(collider, subject_min, subject_max, position, *region_bounds,
+                    low, high, up=up, meters_per_unit=mpu, up_sign=up_sign, placement_residual_m=residual,
+                    clearance=clearance)
+                if near is not None:
+                    position, destination_support = near
+                    region_record["destination_region_status"] = "nearest_supported_spot_near_region"
+                else:
+                    region_record.update(destination_region_status="unplaceable",
+                                         destination_region_reason="no_supported_footprint_near_region")
+                    position = whole_position
+                    destination_support = support_under(collider, *footprint_at(subject_min, subject_max, position,
+                        up=up, up_sign=up_sign), up=up, meters_per_unit=mpu, up_sign=up_sign,
+                        placement_residual_m=residual)
             if destination_support is None:
                 blockers.append("task_destination_surface_contact_required")
             else:
@@ -1036,13 +1053,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                 else:
                     # Grounded as the surface it already rests on, the region's centre
                     # can lie under the subject: the task would start complete.
-                    clearance = math.hypot(*[(subject_max[axis] - subject_min[axis]) / 2
-                                             for axis in range(3) if axis != up]) + DESTINATION_MARGIN_M / mpu
                     if not destination_clear_of_start(subject_min, subject_max, position, up=up, clearance=clearance):
                         stated = (runtime_to_sim @ [*position, 1.0])[:3].tolist()
                         moved = farthest_supported_destination(collider, subject_min, subject_max, low, high, support,
                             up=up, meters_per_unit=mpu, up_sign=up_sign, clearance=clearance,
-                            placement_residual_m=(registration.get("task_region") or {}).get("trimmed_rmse_m"))
+                            placement_residual_m=residual)
                         if moved is None:
                             blockers.append("task_destination_overlaps_start")
                         else:

@@ -350,3 +350,25 @@ def test_a_coarsely_triangulated_surface_keeps_its_supported_destinations():
     moved = farthest_supported_destination(plate(), start_min, start_max, [-1, -1, .6], [1, 1, .8], support,
                                            up=2, meters_per_unit=1, clearance=np.hypot(.1, .1) + .01)
     assert moved is not None and max(abs(moved[0][0]), abs(moved[0][1])) > .5
+
+
+def test_a_place_at_the_surface_edge_gets_the_nearest_supported_footprint():
+    """Codex review on #3149: "the far corner" centres the footprint over the edge."""
+    from blueprint_pipeline.website_support_geometry import destination_clear_of_start, nearest_supported_destination
+
+    table = bumpy_plate(-.6, .6, -.4, .4)
+    start_min, start_max = [-.15, -.1, .7], [.05, .1, .75]
+    clearance = np.hypot(.1, .1) + .01
+    corner = [.58, .38, .7]
+    assert support_under(table, [.48, .28, .7], [.68, .48, .75], up=2, meters_per_unit=1) is None
+    centre, found = nearest_supported_destination(table, start_min, start_max, corner, [.5, .3, .7], [.6, .4, .7],
+                                                  [-.6, -.4, .7], [.6, .4, .7], up=2, meters_per_unit=1,
+                                                  clearance=clearance)
+    # Pulled in just far enough for the whole footprint, still touching the named place.
+    assert .4 <= centre[0] <= .5 + 1e-9 and .2 <= centre[1] <= .3 + 1e-9
+    assert centre[2] == pytest.approx(.7, abs=.01)
+    assert found is not None and destination_clear_of_start(start_min, start_max, centre, up=2, clearance=clearance)
+    # A place past the surface leaves nothing to support it.
+    assert nearest_supported_destination(plate(-.6, -.2, -.4, .4), start_min, start_max, corner, [.5, .3, .7],
+                                         [.6, .4, .7], [-.6, -.4, .7], [.6, .4, .7], up=2, meters_per_unit=1,
+                                         clearance=clearance) is None

@@ -1201,3 +1201,44 @@ def test_without_a_region_the_existing_fixture_compiles_to_the_same_preparation(
     assert "destination_region" not in value and "destination_region" not in REMOVAL
     assert canonical_digest(_rounded({key: item for key, item in value.items() if key != "digest"})) == (
         "sha256:54f20485d07a2fbf87311e1c5791f8cefc7d1675ba41a0c8ac06ad9e76938d43")
+
+
+def _region_centre(region):
+    bounds = region["estimated_bounds_world_m"]
+    return [(bounds["minimum"][axis] + bounds["maximum"][axis]) / 2 for axis in (0, 1)]
+
+
+def test_a_region_at_the_surface_edge_moves_to_the_nearest_supported_spot(tmp_path):
+    # Codex review on #3149: a place at an edge leaves the footprint's own centre
+    # unsupported; that refinement must not stop the job.
+    whole = preparation.compile_website_scene_preparation(**_surface_arguments(tmp_path))
+    value = preparation.compile_website_scene_preparation(**_surface_arguments(
+        tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.0, 0.8, 0.05, 0.2]}]))
+    assert value["status"] == "intake_ready", value["blockers"]
+    region = value["destination_region"]
+    assert region["destination_region_status"] == "nearest_supported_spot_near_region"
+    position, target = value["destination"]["position_world_m"], _region_centre(region)
+    assert region["region_centre_world_m"][:2] == pytest.approx(target)
+    assert math.dist(position[:2], target) < math.dist(whole["destination"]["position_world_m"][:2], target)
+    half = [(value["subject"]["aabb_max_xyz"][axis] - value["subject"]["aabb_min_xyz"][axis]) / 2 for axis in (0, 1)]
+    bounds = region["estimated_bounds_world_m"]
+    assert all(bounds["minimum"][axis] - half[axis] <= position[axis] <= bounds["maximum"][axis] + half[axis]
+               for axis in (0, 1))
+    assert value["destination"]["basis"] == "registered_estimated_visible_bounds_and_collider_contact"
+
+
+def test_a_region_with_no_supported_spot_keeps_the_whole_surface_result(tmp_path):
+    args = _surface_arguments(tmp_path, region=[{"timestamp_seconds": 0.0, "box_xywh_normalized": [0.0, 0.8, 0.25, 0.2]}])
+    # The collider has no surface under the named end; the rest of the surface remains.
+    mesh = trimesh.load(args["base_scene"]["collision_mesh_path"], force="mesh", process=False)
+    mesh.update_faces(mesh.triangles_center[:, 0] >= 0.9)
+    mesh.export(args["base_scene"]["collision_mesh_path"])
+    args["base_scene"]["collision_mesh_digest"] = _sha256_file(Path(args["base_scene"]["collision_mesh_path"]))
+    whole = preparation.compile_website_scene_preparation(**{**args, "removal_manifest": REMOVAL})
+    value = preparation.compile_website_scene_preparation(**args)
+    assert value["status"] == whole["status"] == "intake_ready", value["blockers"]
+    assert value["destination"] == whole["destination"] and value["blockers"] == whole["blockers"] == []
+    region = value["destination_region"]
+    assert region["destination_region_status"] == "unplaceable"
+    assert region["destination_region_reason"] == "no_supported_footprint_near_region"
+    assert region["destination_region_basis"] == "registered_region_boxes_on_destination_mask"
