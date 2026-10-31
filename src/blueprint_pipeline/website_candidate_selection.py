@@ -56,6 +56,9 @@ def _partner(catalog_row: Mapping[str, Any] | None, published: Mapping[str, Any]
     # this exact configuration means none is named.
     if catalog_row is not None and not deployment.get("companies"):
         blockers.append("no_recorded_deployment_partner_for_configuration")
+    if blockers and blockers[0] in {"catalog_row_unavailable", "catalog_configuration_changed_since_plan"}:
+        # Never pair the evaluated configuration with another one's deployment details.
+        deployment = {}
     body = bodies.get(deployment.get("configuration_id")) or {}
     return {"configuration_id": deployment.get("configuration_id"),
             "policy_route_id": deployment.get("policy_route_id"),

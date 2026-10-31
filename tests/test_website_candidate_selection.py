@@ -1,6 +1,7 @@
 """After the published result, a deterministic rule chooses and names the deployment partners; no human input."""
 from __future__ import annotations
 
+import copy
 import json
 import random
 from types import SimpleNamespace
@@ -182,3 +183,21 @@ def test_selection_delivery_retries_until_acknowledged_and_resends_only_a_change
     (directory / "campaign-1.json").write_text(json.dumps(changed))
     assert selection.deliver_selections(queue_root=tmp_path, transport=received.append) == {"acknowledged": 1, "pending": 0}
     assert received == [value, changed]
+
+
+def test_a_changed_catalog_row_never_lends_its_deployment_details_to_the_winner():
+    """Codex review of #3122: the winner keeps its score; another configuration's partners are not attached."""
+    rows = [result_row("molmoact2_droid", succeeded=5, scored=10)]
+    plan, published = campaign(rows)
+    catalog = copy.deepcopy(load_default_catalog())
+    changed = next(row for row in catalog["candidates"] if row["candidate_id"] == "molmoact2_droid")
+    changed["configuration_digest"] = "sha256:" + "f" * 64
+    changed["deployment"] = {"configuration_id": "someone-else", "policy_route_id": "route",
+                             "companies": ["Other Co"], "relationship": "x", "evidence_url": "https://example.com"}
+    record = selection.select_candidate(publication=published, plan=plan, catalog=catalog,
+                                        catalog_basis="current_default_catalog", support=support_catalog())
+    chosen = record["chosen"]
+    assert chosen["candidate_id"] == "molmoact2_droid"
+    assert chosen["partner_blockers"][0] == "catalog_configuration_changed_since_plan"
+    assert chosen["configuration_id"] is None and chosen["deployment_companies"] == []
+    assert chosen["policy_route_id"] is None and chosen["related_teams"] == []
