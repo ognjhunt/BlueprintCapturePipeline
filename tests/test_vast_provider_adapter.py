@@ -9638,6 +9638,8 @@ def test_environment_machine_avoidlist_path_survives_across_run_roots(
     )
     monkeypatch.setenv("BLUEPRINT_VAST_MACHINE_AVOIDLIST_PATH", str(stable))
     secret = _configure_live_gates(tmp_path, monkeypatch)
+    # Every empty offer search waits a real minute before the next: 360 s of nothing.
+    monkeypatch.setattr("blueprint_pipeline.vast_provider_adapter.time.sleep", lambda *_: None)
 
     searched_payloads: list[dict] = []
 
