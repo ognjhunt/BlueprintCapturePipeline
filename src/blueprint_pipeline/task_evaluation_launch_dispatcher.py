@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from .task_evaluation_scene_retirement_access import scene_participant
 from .task_evaluation_scene_retirement_launch_births import create_launch_output
+from .task_evaluation_launch_dispatcher_ownership import holds_dispatcher_lock
 import argparse
 import contextlib
 import hashlib
@@ -57,10 +58,7 @@ from .paid_attempt_authority import (
     JOINT_AGENT_SAME_GOAL_SPEND_LINEAGE_SCHEMA,
     validate_bound_lane_prior_spend,
 )
-from .task_evaluation_immutable_input_resolver import (
-    STAGING_RECEIPT_ENV,
-    STAGING_SCHEMA_VERSION,
-)
+from .task_evaluation_immutable_input_resolver import STAGING_RECEIPT_ENV, STAGING_SCHEMA_VERSION
 from .task_evaluation_launch_context import is_identifier as _is_identifier
 from .task_evaluation_launch_dispatch_refill import require_refill_poll, run_claimed_launches
 from .task_evaluation_launch_context import validate_task_evaluation_run_context
@@ -1913,6 +1911,7 @@ def dispatch_launch_request(
 
 
 @scene_participant('queue_root', 'profile_dir', 'state_root')
+@holds_dispatcher_lock('queue_root')  # Whole batch: claims sit queued for serial dispatch.
 def process_launch_queue(
     *,
     queue_root: str | Path,
