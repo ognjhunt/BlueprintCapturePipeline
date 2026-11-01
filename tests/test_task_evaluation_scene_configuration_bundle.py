@@ -4343,6 +4343,76 @@ def test_provider_materializes_and_preflights_sealed_python_closure() -> None:
     assert "timeout" in vpa.SCENE_CONFIGURATION_REQUIRED_COMMANDS.split()
 
 
+@pytest.mark.parametrize("backend", ["artisan_v1", "astra_cad_blender_v1", None])
+def test_provider_entrypoint_materializes_the_wheelhouse_profile_the_release_sealed(
+    tmp_path, monkeypatch, backend
+) -> None:
+    """2026-11-01: an ARTISAN release seals ``artisan_source_validation``.
+
+    The release builder and the bundle check pick the provider wheelhouse
+    profile with ``declared_python_profile``. The entrypoint chose only between
+    ``astra_asset_authoring`` and ``base``, so capture-447ae4f4's ARTISAN bundle
+    (toolchain 7d27dc64, wheelhouse ``runtime_profile: artisan_source_validation``)
+    would have asked for ``base`` and stopped with
+    ``scene_configuration_python_wheelhouse_manifest_invalid`` before stage one,
+    on the CPU prestage or on the rented GPU.
+    """
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_artisan_runtime as artisan_runtime
+    from blueprint_pipeline import task_evaluation_scene_configuration_astra_runtime as astra_runtime
+
+    runtime = tmp_path / "provider_runtime"
+    toolchain = runtime / "toolchain"
+    package = toolchain / "components/content_agents_rigid_replacement/package"
+    package.mkdir(parents=True)
+    (toolchain / "components/artifixer3d_observed_object_removal/package/python_wheelhouse").mkdir(parents=True)
+    (toolchain / "task_evaluation_scene_configuration_toolchain.v1.json").write_text('{"files": []}\n')
+    if backend == "artisan_v1":
+        (package / artisan_runtime.MANIFEST).write_text("{}\n")
+        monkeypatch.setattr(artisan_runtime, "validate_artisan_runtime", lambda _package: {})
+    elif backend == "astra_cad_blender_v1":
+        manifest = {"schema_version": astra_runtime.SCHEMA_VERSION,
+                    "python_profile": astra_runtime.PYTHON_PROFILE,
+                    "authoring_backend": "astra_cad_blender_v1",
+                    "python_runtime": astra_runtime._python_contract(), "manifest_digest": ""}
+        manifest["manifest_digest"] = canonical_digest(manifest, digest_field="manifest_digest")
+        (package / astra_runtime.MANIFEST_NAME).write_text(json.dumps(manifest))
+    sealed_profile = astra_runtime.declared_python_profile(toolchain)
+
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    calls = tmp_path / "python_calls.log"
+    (stub / "python3").write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$*" >> "{calls}"\n'
+        'case "$*" in *task_evaluation_scene_configuration_python_runtime*) exit 86 ;; esac\n'
+        "cat >/dev/null\n"
+        "exit 0\n"
+    )
+    (stub / "python3").chmod(0o755)
+    output = tmp_path / "runtime_output"
+    script = Path(__file__).resolve().parents[1] / "scripts/run_task_evaluation_scene_configuration_provider.sh"
+    try:
+        with (tmp_path / "entrypoint.log").open("wb") as log:
+            completed = subprocess.run(
+                ["bash", str(script)],
+                env={"PATH": f"{stub}:/usr/bin:/bin",
+                     "BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT": str(runtime),
+                     "BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT": str(output)},
+                stdout=log, stderr=subprocess.STDOUT, check=False, timeout=60,
+            )
+    finally:
+        for path in [toolchain, *toolchain.rglob("*")]:
+            if path.is_dir():
+                path.chmod(0o755)
+    assert completed.returncode == 86
+    [materialize] = [line for line in calls.read_text().splitlines()
+                     if "task_evaluation_scene_configuration_python_runtime" in line]
+    assert materialize.split("--profile ", 1)[1].split()[0] == sealed_profile
+    assert sealed_profile == {"artisan_v1": "artisan_source_validation",
+                              "astra_cad_blender_v1": "astra_asset_authoring", None: "base"}[backend]
+
+
 def test_stage_budget_exceeds_the_budget_it_grants_its_child() -> None:
     """An inverted ladder kills work the inner tool was still allowed to do."""
 

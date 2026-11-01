@@ -30,6 +30,7 @@ from .task_evaluation_scene_configuration_diagnostic_mode import (
 from .task_evaluation_scene_configuration_runtime_budget import (
     MAX_EXTERNAL_SERVICE_SPEND_USD as MAX_EXTERNAL_SERVICE_SPEND_USD,
     MAX_HOURLY_RATE_USD,
+    MAX_OPENAI_REQUESTS,
     MAX_PROVIDER_COMPUTE_SPEND_USD,
     MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
@@ -359,7 +360,7 @@ def materialize_scene_configuration_paid_authority(
         and not isinstance(openai_max_requests, bool)
         and (
             (openai_cap == 0 and openai_max_requests == 0)
-            or (openai_cap > 0 and 1 <= openai_max_requests <= 100)
+            or (openai_cap > 0 and 1 <= openai_max_requests <= MAX_OPENAI_REQUESTS)
         )
         and 0 < compute_cap <= MAX_PROVIDER_COMPUTE_SPEND_USD
         and (

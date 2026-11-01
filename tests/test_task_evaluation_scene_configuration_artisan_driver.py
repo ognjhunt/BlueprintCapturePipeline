@@ -211,3 +211,34 @@ def test_explicit_candidate_passes_existing_rigid_static_boundary_and_rejects_ch
     with pytest.raises(AuthoringContractError, match="source_bytes_changed"):
         driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
     assert len(fixture.calls) == 1
+
+
+def test_confined_import_preflight_allows_cold_imports_of_the_sealed_runtime(stage_fixture, monkeypatch):
+    """The sealed runtime has no bytecode and is read-only, so imports compile cold.
+
+    The release builder measured these imports past 60 s on the 4-core control
+    plane under load, the host the CPU prestage runs stage 3 on. A 60 s check
+    would refuse a healthy runtime before the first model call.
+    """
+    from blueprint_pipeline import task_object_artisan_hooks as hooks
+    from blueprint_pipeline.asset_authoring_sandbox import SandboxedAssetRunner
+
+    seen = []
+
+    class Preflight:
+        def preflight(self):
+            pass
+
+        def __call__(self, argv, **kwargs):
+            seen.append((argv, kwargs))
+            return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hooks, "sandbox", lambda *_: Preflight())
+    driver.execute_artisan_component(environment=stage_fixture.environment, runner=stage_fixture.runner,
+                                     cost_gate_factory=stage_fixture.gate)
+    [(argv, kwargs)] = seen
+    assert "import sdk, cadquery" in argv[-1]
+    assert kwargs["timeout"] == driver.CONFINED_PREFLIGHT_TIMEOUT_SECONDS >= 300
+    # The landlock backend caps any sandboxed call at 900 s; stay inside it.
+    assert "min(float(timeout), 900)" in Path(SandboxedAssetRunner.__call__.__code__.co_filename).read_text()
+    assert driver.CONFINED_PREFLIGHT_TIMEOUT_SECONDS <= 900
