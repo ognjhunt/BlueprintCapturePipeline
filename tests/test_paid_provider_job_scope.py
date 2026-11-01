@@ -26,6 +26,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority impor
 
 NOW = datetime(2026, 10, 31, 22, 0, 0, tzinfo=timezone.utc)
 OTHER_JOB = "blueprint-task-evaluation-scene-config-20261031t215500z-"
+RATE = 0.8  # the scene-configuration lane's authorized maximum hourly rate
 
 
 def _instance(instance_id: str, name: str, *, protected: bool = True, cost: float = 0.6) -> dict:
@@ -153,6 +154,7 @@ def test_teardown_reconciliation_needs_no_headroom_but_a_post_teardown_guard() -
 
 def _receipt(**kwargs) -> dict:
     guard = kwargs.pop("guard", _guard())
+    kwargs.setdefault("added_burn_usd_per_hour", RATE)
     return scope.build_job_provider_zero_receipt(
         job_key="prep-1", live_inventory=kwargs.pop("live", _live(("101", OTHER_JOB + "a"))),
         guard=guard, guard_record={"path": "/g.json", "sha256": "sha256:" + "a" * 64},
@@ -228,7 +230,7 @@ def test_collector_keeps_the_classic_receipt_when_the_account_is_empty(tmp_path:
         return {"schema_version": "adp_paid_provider_zero.v1"}
 
     receipt = scope.collect_job_scoped_vast_provider_zero(
-        job_key="prep-1", guard_path=tmp_path / "missing.json",
+        job_key="prep-1", added_burn_usd_per_hour=RATE, guard_path=tmp_path / "missing.json",
         inventory_collector=lambda: _observed([]), global_receipt_collector=global_collector,
     )
     assert receipt == {"schema_version": "adp_paid_provider_zero.v1"}
@@ -239,7 +241,7 @@ def test_collector_issues_a_job_receipt_beside_another_jobs_instance(tmp_path: P
     guard_path = tmp_path / "latest.json"
     guard_path.write_text(json.dumps(_guard()))
     receipt = scope.collect_job_scoped_vast_provider_zero(
-        job_key="prep-1", guard_path=guard_path,
+        job_key="prep-1", added_burn_usd_per_hour=RATE, guard_path=guard_path,
         inventory_collector=lambda: _observed(_live(("101", OTHER_JOB + "a"))),
         global_receipt_collector=lambda **_: pytest.fail("account is not empty"),
         now=lambda: NOW,
@@ -252,10 +254,10 @@ def test_collector_issues_a_job_receipt_beside_another_jobs_instance(tmp_path: P
 def test_collector_refuses_an_unconfirmed_inventory_and_a_missing_guard(tmp_path: Path) -> None:
     with pytest.raises(scope.ProviderJobScopeError, match="inventory_query_failed"):
         scope.collect_job_scoped_vast_provider_zero(
-            job_key="prep-1", inventory_collector=lambda: dict(_observed([]), api_confirmed=False))
+            job_key="prep-1", added_burn_usd_per_hour=RATE, inventory_collector=lambda: dict(_observed([]), api_confirmed=False))
     with pytest.raises(scope.ProviderJobScopeError, match="spend_guard_unreadable"):
         scope.collect_job_scoped_vast_provider_zero(
-            job_key="prep-1", guard_path=tmp_path / "missing.json",
+            job_key="prep-1", added_burn_usd_per_hour=RATE, guard_path=tmp_path / "missing.json",
             inventory_collector=lambda: _observed(_live(("101", OTHER_JOB + "a"))))
 
 
@@ -296,3 +298,55 @@ def test_slot_count_is_configurable_only_within_the_fleet_budget(
     paths = slots.vast_launch_lock_paths(tmp_path / "vast_paid_launch.lock")
     assert len(paths) == expected
     assert paths[0].name == "vast_paid_launch.lock"
+
+
+def test_admission_counts_the_incoming_jobs_own_hourly_burn() -> None:
+    """Codex P1 on #3209: a fleet already at its hourly ceiling admitted one more.
+
+    $0.60/h live against a $0.60/h ceiling passed because the incoming job's
+    burn was never added. It is now, so the same reading refuses.
+    """
+
+    at_ceiling = _guard(max_burn=0.6)
+    with pytest.raises(scope.ProviderJobScopeError, match="job_scope_fleet_burn_headroom_exhausted"):
+        _receipt(guard=at_ceiling)
+    assert _receipt(guard=_guard(max_burn=1.4))["fleet"]["added_burn_usd_per_hour"] == RATE
+
+
+@pytest.mark.parametrize("rate", [None, 0, 0.0, -0.8, True, float("nan"), "0.8"])
+def test_admission_without_a_positive_incoming_rate_is_refused(tmp_path: Path, rate) -> None:
+    with pytest.raises(scope.ProviderJobScopeError, match="job_scope_incoming_hourly_rate_missing"):
+        _receipt(added_burn_usd_per_hour=rate)
+    with pytest.raises(scope.ProviderJobScopeError, match="job_scope_incoming_hourly_rate_missing"):
+        scope.collect_job_scoped_vast_provider_zero(
+            job_key="prep-1", added_burn_usd_per_hour=rate,
+            inventory_collector=lambda: pytest.fail("refused before any provider read"))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda r: r["fleet"].update(added_burn_usd_per_hour=0.0),
+        lambda r: r["fleet"].update(total_burn_per_hour_usd=9.5),
+        lambda r: r["fleet"].update(max_burn_usd_per_hour=None),
+        lambda r: r["fleet"].update(added_instances=0),
+    ],
+)
+def test_validation_rechecks_burn_headroom_from_the_sealed_fleet(mutate) -> None:
+    receipt = _receipt()
+    mutate(receipt)
+    with pytest.raises(scope.ProviderJobScopeError, match="job_scope_receipt_not_job_zero"):
+        scope.validate_job_provider_zero_receipt(_reseal(receipt))
+
+
+def test_paid_authority_refuses_a_job_receipt_that_budgeted_less_than_its_rate() -> None:
+    from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority import (
+        _require_job_zero_burn_covers,
+    )
+
+    receipt = _receipt(guard=_guard(max_burn=10.0), added_burn_usd_per_hour=0.5)
+    with pytest.raises(TaskEvaluationSceneConfigurationAuthorityError,
+                       match="burn_headroom_understated"):
+        _require_job_zero_burn_covers(receipt, 0.8)
+    _require_job_zero_burn_covers(_receipt(), 0.8)  # budgeted exactly the authority's rate
+    _require_job_zero_burn_covers({"schema_version": "adp_paid_provider_zero.v1"}, 0.8)

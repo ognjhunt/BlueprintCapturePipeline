@@ -107,6 +107,11 @@ def _number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def _positive_rate(value: Any) -> bool:
+    number = _number(value)
+    return number is not None and number > 0
+
+
 def _owned_by_job(
     *,
     instance_id: str,
@@ -337,6 +342,10 @@ def build_job_provider_zero_receipt(
 
     if not str(job_key or "").strip():
         raise ProviderJobScopeError(["job_scope_job_key_missing"])
+    if not _positive_rate(added_burn_usd_per_hour):
+        # An admission that budgets no burn for the job it admits would let a
+        # fleet already at its hourly ceiling start one more instance.
+        raise ProviderJobScopeError(["job_scope_incoming_hourly_rate_missing"])
     evaluation = evaluate_job_scope(
         guard=guard, now=observed_at, own_label_prefixes=own_label_prefixes,
         live_inventory=live_inventory, added_instances=added_instances,
@@ -416,6 +425,9 @@ def validate_job_provider_zero_receipt(value: Mapping[str, Any]) -> dict[str, An
     max_live = fleet.get("max_live_instances")
     live = fleet.get("live_instance_count")
     added = fleet.get("added_instances")
+    burn = _number(fleet.get("total_burn_per_hour_usd"))
+    max_burn = _number(fleet.get("max_burn_usd_per_hour"))
+    added_burn = fleet.get("added_burn_usd_per_hour")
     if (
         receipt.get("job_live_resource_count") != 0
         or receipt.get("job_provider_zero") is not True
@@ -431,6 +443,11 @@ def validate_job_provider_zero_receipt(value: Mapping[str, Any]) -> dict[str, An
         )
         or any(isinstance(item, bool) or not isinstance(item, int) for item in (max_live, live, added))
         or live + added > max_live
+        or added < 1
+        or not _positive_rate(added_burn)
+        or burn is None
+        or max_burn is None
+        or burn + float(added_burn) > max_burn
     ):
         raise ProviderJobScopeError(["job_scope_receipt_not_job_zero"])
     return receipt
@@ -439,6 +456,7 @@ def validate_job_provider_zero_receipt(value: Mapping[str, Any]) -> dict[str, An
 def collect_job_scoped_vast_provider_zero(
     *,
     job_key: str,
+    added_burn_usd_per_hour: float,
     own_label_prefixes: Sequence[str] = (),
     guard_path: str | Path | None = None,
     inventory_collector: Callable[[], Mapping[str, Any]] | None = None,
@@ -449,8 +467,13 @@ def collect_job_scoped_vast_provider_zero(
 
     Empty account: the classic ``adp_paid_provider_zero.v1`` receipt, exactly as
     before.  Otherwise: a job-scoped receipt if, and only if, everything live is
-    another job's owned, labeled work and the fleet budget has room.
+    another job's owned, labeled work and the fleet budget has room for this
+    job's own instance at ``added_burn_usd_per_hour`` (its authorized maximum
+    hourly rate).
     """
+
+    if not _positive_rate(added_burn_usd_per_hour):
+        raise ProviderJobScopeError(["job_scope_incoming_hourly_rate_missing"])
 
     if inventory_collector is None:
         from .gpu_render_providers import VastRenderProvider
@@ -482,6 +505,7 @@ def collect_job_scoped_vast_provider_zero(
     return build_job_provider_zero_receipt(
         job_key=job_key, live_inventory=resources, guard=guard, guard_record=record,
         observed_at=observed_at, own_label_prefixes=own_label_prefixes,
+        added_burn_usd_per_hour=float(added_burn_usd_per_hour),
     )
 
 
