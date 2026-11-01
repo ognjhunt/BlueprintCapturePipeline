@@ -793,3 +793,58 @@ def test_contained_settlement_fails_closed_when_its_run_evidence_changes(tmp_pat
     _write(run / "launch_started.json", {"launch_id": fx["launch_id"]})
     with pytest.raises(ValueError, match="terminal_settlement_orphan_recovery_evidence_invalid"):
         _reserve(fx["root"], fx["intent"], "source-a2", 1.0, now=300)
+
+
+def _stopped_before_allocator(fx, *, consumed=False):
+    """capture-447ae4f4 02:58Z: launch_started, no allocator, one-use authority unconsumed, then contained."""
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import canonical_digest as launch_digest
+    from blueprint_pipeline.task_evaluation_launch_reconciler import ORPHAN_RECOVERY_SCHEMA_VERSION
+
+    run = fx["launches"] / fx["launch_id"]
+    profile = {"profile_id": "scene-configuration-profile", "standing_launch_authorization": {"maximum_launches": 1}}
+    profile["profile_digest"] = launch_digest(profile, digest_field="profile_digest")
+    _write(run / "launch_profile.json", profile)
+    started = {"launch_id": fx["launch_id"], "started_at": "2026-11-01T02:58:40+00:00", "process_id": 1}
+    started["started_digest"] = launch_digest(started, digest_field="started_digest")
+    _write(run / "launch_started.json", started)
+    _write(run / "launch_request.json", {"launch_id": fx["launch_id"]})
+    standing = fx["launches"].resolve().parent / "standing-authorizations"
+    _write(standing / "scene-configuration-profile.json", {"profile_id": "scene-configuration-profile"})
+    if consumed:
+        _write(standing / "consumed" / "scene-configuration-profile" / (fx["launch_id"] + ".json"), {})
+    recovery = {"schema_version": ORPHAN_RECOVERY_SCHEMA_VERSION, "launch_id": fx["launch_id"],
+                "status": "provider_zero_confirmed", "provider_zero_confirmed": True,
+                "automatic_retry_performed": False, "allocator_invoked": False, "blockers": []}
+    _seal(recovery, "recovery_digest")
+    _write(run / "orphan_recovery_receipt.json", recovery)
+    _write(fx["queue"] / "blocked" / (fx["launch_id"] + "-85a78e1587b6746c.json"), {"launch_id": fx["launch_id"]})
+    return run, standing
+
+
+def test_run_stopped_before_its_allocator_releases_its_rows_in_full(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    _stopped_before_allocator(fx)
+    outcome = _settle(fx)
+    assert len([row for row in outcome["rows"] if row["status"] == "settled"]) == 5
+    for row_id in fx["rows"]:
+        attempt = json.loads((fx["directory"] / "attempts" / (row_id + ".json")).read_text())
+        receipt = validated_cancellation(fx["directory"], attempt)
+        assert receipt["settled_spend"] == settlement.retained_hold(receipt) == {
+            "basis": "launch_stopped_before_allocator", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+        assert receipt["execution_terminal"]["preallocation_evidence"]["basis"] == "standing_authorization_unconsumed"
+    assert _reserve(fx["root"], fx["intent"], "source-a2", 21.5, now=300)["status"] == "reserved"
+
+
+def test_a_consumed_authority_keeps_the_run_waiting(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    _stopped_before_allocator(fx, consumed=True)
+    assert _settle(fx)["skipped"][0]["reason"] == "launch_not_terminal"
+
+
+def test_stopped_settlement_fails_closed_when_consumption_appears_later(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    _, standing = _stopped_before_allocator(fx)
+    _settle(fx)
+    _write(standing / "consumed" / "scene-configuration-profile" / (fx["launch_id"] + ".json"), {})
+    with pytest.raises(ValueError, match="terminal_settlement_preallocation_evidence_invalid"):
+        _reserve(fx["root"], fx["intent"], "source-a2", 1.0, now=300)
