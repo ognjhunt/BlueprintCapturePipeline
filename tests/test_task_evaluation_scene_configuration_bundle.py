@@ -5663,3 +5663,31 @@ def test_provider_bundle_step_passes_the_activation_bound_toolchain_digest() -> 
     assert "--expected-toolchain-digest" not in module._step_argv(step, base)
     argv = module._step_argv(step, {**base, "expected_toolchain_digest": "sha256:" + "1" * 64})
     assert argv[argv.index("--expected-toolchain-digest") + 1] == "sha256:" + "1" * 64
+
+
+def test_receipt_reopen_reuses_a_sealed_bundle_digest_and_refuses_a_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import sealed_file_digest as sealed
+
+    receipt = _build(tmp_path, "sealed")
+    receipt_path = tmp_path / "sealed" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    bundle = Path(receipt["bundle_path"])
+    monkeypatch.setattr(sealed, "time_ns", lambda: bundle.stat().st_ctime_ns + 2 * sealed.STABLE_AGE_NS)
+    reads: list[int] = []
+    original = sealed._hash_stream
+    monkeypatch.setattr(sealed, "_hash_stream", lambda stream: reads.append(1) or original(stream))
+
+    for _ in range(3):
+        assert load_scene_configuration_provider_bundle_receipt(receipt_path)["bundle_sha256"] == (
+            receipt["bundle_sha256"]
+        )
+    assert len(reads) == 1
+
+    before = bundle.stat()
+    payload = bytearray(bundle.read_bytes())
+    payload[-30] ^= 0xFF  # inside the end record; size unchanged
+    bundle.write_bytes(bytes(payload))
+    os.utime(bundle, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="bundle_bytes_invalid"):
+        load_scene_configuration_provider_bundle_receipt(receipt_path)
