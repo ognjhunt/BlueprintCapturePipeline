@@ -809,6 +809,19 @@ def test_every_role_ttl_outlives_its_worker_units_start_timeout():
             assert ttl >= timeout, f"{role} TTL {ttl}s < {name} TimeoutStartSec {timeout}s"
 
 
+def test_the_launch_dispatcher_outlives_a_scene_configuration_allocator():
+    # The dispatcher gives its allocator child the profile's hard TTL + 300 s, and
+    # hashes and stages the bundle before it and publishes the result after it.
+    # A shorter unit timeout ends an admitted paid run and reaps its allocator.
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+        REQUIRED_PARENT_TTL_SECONDS,
+    )
+    unit = Path(__file__).resolve().parents[1] / "deploy" / "systemd" / (
+        "blueprint-task-evaluation-launch-dispatcher.service")
+    timeout = _start_timeout_seconds(unit.read_text(encoding="utf-8"))
+    assert timeout >= REQUIRED_PARENT_TTL_SECONDS + 300 + 3600
+
+
 def test_a_symlinked_lock_is_refused_and_its_target_untouched(tmp_path):
     # The ledger directory is group-writable, so a runtime account could plant a
     # symlink there; root must never open, chmod or lock through it.

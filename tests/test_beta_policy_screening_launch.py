@@ -141,6 +141,56 @@ def test_closed_allocator_refusal_is_the_only_free_release(tmp_path, monkeypatch
     assert result["no_allocation_proven"] and result["provider_allocation_performed"] is False
 
 
+def _refused_create(root: Path, *, watchdog: dict, http_status: int = 410) -> None:
+    """The allocator result a stale-offer create leaves: Vast refused it and nothing exists."""
+    run = root / "allocator" / "vast_provider_run"
+    run.mkdir(parents=True)
+    launch._write(run / "vast_provider_adapter_result.json", {
+        "status": "failed", "provider_create_attempted": True, "vast_instance_ids": [],
+        "vast_side_effects_may_have_occurred": False, "continuing_spend_from_this_run": False,
+        "create_failure_diagnosis": {"http_status_code": http_status, "definite_create_refusal": True,
+            "create_inventory_verified": True, "create_inventory_http_status_code": 200,
+            "create_produced_no_instance": True, "matching_attempt_instance_ids": [],
+            "attempted_labels": ["blueprint-native-task-policy-canary-beta-1"]},
+        "provider_attempt_classification": {"classification": "pre_execution_provider_null",
+                                            "scientific_attempt_consumed": False}})
+    launch._write(run / "vast_teardown_manifest.json",
+                  {"status": "completed", "vast_instance_ids": [], "continuing_spend_from_this_run": False})
+    launch._write(root / "allocator_result.json", {
+        "status": "blocked", "blockers": ["vast_instance_create_failed"],
+        "scientific_attempt_started": False, "candidate_policy_queried": False,
+        "continuing_spend_from_this_run": False, "all_staged_objects_absent": True,
+        "adapter_result_path": str(run / "vast_provider_adapter_result.json"),
+        "teardown_manifest_path": str(run / "vast_teardown_manifest.json"),
+        "provider_closeout": {"provider_zero_confirmed": True,
+                              "adapter_result": launch._record(run / "vast_provider_adapter_result.json"),
+                              "teardown_manifest": launch._record(run / "vast_teardown_manifest.json")},
+        "independent_watchdog_close": watchdog})
+
+
+def test_definite_create_refusal_without_instance_is_released_not_left_unresolved(tmp_path, monkeypatch):
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
+    _refused_create(tmp_path, watchdog={"status": "cancelled_no_allocation", "provider_mutations_performed": 0})
+    result = launch.reconcile_candidate(plan={}, candidate={}, attempt_dir=tmp_path, prepared={})
+    assert result == {"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
+                      "no_allocation_proven": True, "blockers": ["vast_instance_create_failed"]}
+
+
+@pytest.mark.parametrize("fault", ["watchdog_retained", "ambiguous_400", "receipt_changed"])
+def test_create_refusal_without_complete_absence_proof_stays_reserved(tmp_path, monkeypatch, fault):
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
+    watchdog = ({"status": "retained_until_hard_ttl", "provider_mutations_performed": 0,
+                 "reason": "provider_allocation_identity_ambiguous", "watchdog_retention_liveness_confirmed": True,
+                 "watchdog_armed_before_allocation": True, "instance_ids": []}
+                if fault == "watchdog_retained" else {"status": "cancelled_no_allocation", "provider_mutations_performed": 0})
+    _refused_create(tmp_path, watchdog=watchdog, http_status=400 if fault == "ambiguous_400" else 410)
+    if fault == "receipt_changed":
+        teardown = tmp_path / "allocator" / "vast_provider_run" / "vast_teardown_manifest.json"
+        teardown.write_text(teardown.read_text() + " ")
+    result = launch.reconcile_candidate(plan={}, candidate={}, attempt_dir=tmp_path, prepared={})
+    assert result["status"] == "reconciliation_required" and result["no_allocation_proven"] is False
+
+
 def test_current_source_refusal_never_spawns_and_stays_proven_unallocated(tmp_path, monkeypatch):
     from blueprint_pipeline import team_candidate_quick10_launch as native
     from blueprint_pipeline import beta_policy_screening_worker as service

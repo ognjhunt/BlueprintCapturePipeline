@@ -167,6 +167,9 @@ def prepared_source_queue(tmp_path, monkeypatch, *, revisions=1):
     profile = {"scene_id": context["scene_id"], "capture_root": str(capture)}
     monkeypatch.setattr(registry, "profile_for_capture", lambda path: profile if path == capture else None)
     planning_calls = []
+    # The deployed commit planning binds and preparation requires.
+    deployed = {"commit": "a" * 40}
+    monkeypatch.setattr(worker, "implementation_commit", lambda: deployed["commit"])
     def planning_inputs(**kwargs):
         planning_calls.append(deepcopy(kwargs))
         catalog, admitted, quotes = inputs()
@@ -176,6 +179,9 @@ def prepared_source_queue(tmp_path, monkeypatch, *, revisions=1):
             candidate_id = candidate["candidate_id"]
             if candidate["eligibility"]["enabled"] and candidate_id not in admitted["candidate_bindings"]:
                 admitted["candidate_bindings"][candidate_id], quotes[candidate_id] = admit_candidate(candidate)
+        for binding in admitted["candidate_bindings"].values():
+            binding["execution_spec"]["implementation_commit"] = deployed["commit"]
+            binding["admission_digest"] = canonical_digest(binding["execution_spec"])
         assert kwargs["catalog"] == catalog
         assert kwargs["profile"] == profile and kwargs["capture_root"] == capture
         facts = {**scene(), **kwargs["source"], "site_id": context["scene_id"], "scene_id": context["scene_id"]}
@@ -190,7 +196,8 @@ def prepared_source_queue(tmp_path, monkeypatch, *, revisions=1):
     from tests.test_beta_policy_screening_job_ceiling import ceiling_summary
     monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", lambda **_: ceiling_summary(40))
     return {"packet_queue": queue, "screening_queue": tmp_path / "screening", "requests": requests,
-            "results": results, "validated": validated, "planning_calls": planning_calls, "context": context}
+            "results": results, "validated": validated, "planning_calls": planning_calls, "context": context,
+            "deployed": deployed}
 
 
 def test_completed_scene_is_planned_and_durably_queued_once_across_timer_ticks(tmp_path, monkeypatch):
@@ -219,7 +226,7 @@ def test_completed_scene_is_planned_and_durably_queued_once_across_timer_ticks(t
                             "pi0_droid_jointpos_100k_polaris", "pi0_droid_jointpos_polaris"}
     assert plan["maximum_planned_cost_usd"] == "14.00" and plan["budget_usd"] == "15.00"
     deferred = next(row for row in plan["candidates"] if row["candidate_id"] == "pi0_fast_droid_jointpos_polaris")
-    assert deferred["status"] == "deferred" and deferred["blockers"] == ["site_screening_budget_insufficient"]
+    assert deferred["status"] == "waitlisted" and deferred["blockers"] == ["site_screening_budget_insufficient"]
     assert all(row["max_cost_usd"] == row["cost_quote"]["maximum_cost_usd"] == "2.00" for row in selected)
     assert all(row["blockers"] for row in plan["candidates"] if row["status"] != "selected")
     [publication] = coordinator.pending_publications(queue_root=world["screening_queue"])
@@ -378,3 +385,96 @@ def test_fresh_deploy_provisions_screening_sandbox_before_timer_can_start(tmp_pa
     repeated = deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
         units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
     assert repeated["created"] == []
+
+
+def test_the_timer_pass_returns_a_transient_scene_half_block_to_its_queue_and_names_a_refusal(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline.team_scene_packet_worker import request_key
+
+    world = prepared_source_queue(tmp_path, monkeypatch, revisions=2)
+    transient, refused = sorted(world["requests"], key=request_key)
+    packets = world["packet_queue"]
+    (packets / "status" / f"{request_key(transient)}.json").write_text(json.dumps(
+        {"status": "blocked", "blockers": ["team_scene_offer_publication_failed"]}))
+    (packets / "status" / f"{request_key(refused)}.json").write_text(json.dumps(
+        {"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}))
+    adopted = worker.enqueue_prepared_scenes(queue_root=world["screening_queue"], packet_queue_root=packets)
+    # Recorded before automatic retries existed, the WebApp outage is due at once; the path unit runs it again.
+    assert adopted["team_scene_packet_requeue"]["requeued"] == [
+        {"request_key": request_key(transient), "attempt": 1, "reason": "team_scene_offer_publication_failed"}]
+    assert (packets / "pending" / f"{request_key(transient)}.json").is_file()
+    # A deterministic refusal stays blocked, and the screening outcome says which.
+    [outcome] = adopted["sources"]
+    assert outcome["request_key"] == request_key(refused)
+    assert outcome["blockers"] == ["beta_screening_scene_packet_not_ready"]
+    assert outcome["scene_packet"] == {"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}
+    assert not world["planning_calls"]
+
+
+def test_deploy_before_preparation_replans_unprepared_candidates_once(tmp_path, monkeypatch):
+    """A new commit while nothing is reserved re-plans; spent candidates keep their result."""
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+
+    world = prepared_source_queue(tmp_path, monkeypatch)
+    root = world["screening_queue"]
+    kwargs = {"queue_root": root, "packet_queue_root": world["packet_queue"]}
+    [adopted] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    first = adopted["campaign_id"]
+    plan = json.loads((root / "plans" / f"{first}.json").read_text())
+    selected = [row["candidate_id"] for row in plan["candidates"] if row["status"] == "selected"]
+
+    class FirstCompletes:
+        def prepare_candidate(self, **_):
+            return {"sealed": "local"}
+
+        def launch_candidate(self, **_):
+            return {"status": "blocked", "provider_allocation_performed": True, "provider_zero_verified": True,
+                    "blockers": ["beta_screening_native_result_missing"]}
+
+    # One funded candidate allocates (its money is committed), then the code is deployed again.
+    coordinator.process_screening_queue(queue_root=root, executor=FirstCompletes(), require_publication_ack=False)
+    world["deployed"]["commit"] = "b" * 40
+    [replanned] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    second = replanned["campaign_id"]
+    assert replanned["status"] == "enqueued" and replanned["superseded_campaign_id"] == first and second != first
+    ledger = coordinator._ledger(root)
+    old = ledger["campaigns"][first]
+    assert old["superseded_by"] == second and ledger["campaigns"][second]["supersedes"] == first
+    assert old["candidates"][selected[0]]["status"] == "blocked"
+    assert {row["status"] for key, row in old["candidates"].items() if key in selected[1:]} == {"blocked"}
+    assert all(old["candidates"][key]["blockers"] == ["beta_screening_replanned_for_new_implementation"]
+               for key in selected[1:])
+    successor = json.loads((root / "plans" / f"{second}.json").read_text())
+    ids = {row["candidate_id"] for row in successor["candidates"]}
+    # The spent candidate is never planned again; the rest are, at the new commit.
+    assert selected[0] not in ids and set(selected[1:]) <= ids
+    assert {row["execution_spec"]["implementation_commit"] for row in successor["candidates"]
+            if row["status"] in {"selected", "waitlisted"}} == {"b" * 40}
+    # The site budget is shared: the committed money still counts.
+    assert ledger["campaigns"][second]["site_budget"]["spent_upper_bound_usd"] == "2"
+    for _ in range(2):
+        [replay] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+        assert replay["status"] == "already_enqueued" and replay["campaign_id"] == second
+    assert len(list((root / "plans").glob("*.json"))) == 2
+
+
+def test_deploy_never_replans_while_a_reservation_is_held(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+
+    world = prepared_source_queue(tmp_path, monkeypatch)
+    root = world["screening_queue"]
+    kwargs = {"queue_root": root, "packet_queue_root": world["packet_queue"]}
+    [adopted] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+
+    class Uncertain:
+        def prepare_candidate(self, **_):
+            return {"sealed": "local"}
+
+        def launch_candidate(self, **_):
+            raise RuntimeError("provider response lost")
+
+    coordinator.process_screening_queue(queue_root=root, executor=Uncertain(), require_publication_ack=False)
+    world["deployed"]["commit"] = "b" * 40
+    [replay] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+    assert replay["status"] == "already_enqueued" and replay["campaign_id"] == adopted["campaign_id"]
+    assert len(list((root / "plans").glob("*.json"))) == 1

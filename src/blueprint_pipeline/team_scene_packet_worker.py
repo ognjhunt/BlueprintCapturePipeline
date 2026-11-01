@@ -8,10 +8,12 @@ job's offer is republished with it. That took an operator running
 every scene, so no website scene reached a team without a person.
 
 Scene preparation now enqueues one small sealed request here once it has
-retained the scene's robot-free readiness receipt, unless that receipt is a
-decided failure no team can be admitted past
-(``task_evaluation_scene_preparation_completion``; that join never compiles),
-and this no-spend worker, woken by its path unit, does the rest on the CPU:
+tried to retain the scene's robot-free readiness receipt, unless that receipt
+is a decided failure no team can be admitted past
+(``task_evaluation_scene_preparation_completion``; that join never compiles).
+A receipt that could not be retained does not hold the compile, which never
+reads it; the team gate still refuses every team until one passes. This
+no-spend worker, woken by its path unit, does the rest on the CPU:
 
 - the capture is resolved under the agent-run partition, the root the executor
   admits, and must be the website capture whose retained task context the
@@ -39,15 +41,22 @@ Every attempt compiles into a new directory of its own. The derived row,
 written by rename, is the only pointer to it, so a reader never sees a partial
 half, and a failed or interrupted attempt's directory is removed unless a row
 names it. Every request ends in a status file: ``completed``, ``skipped`` with
-a reason, or ``blocked`` with typed blockers; ``--requeue-unfinished`` retries
-the rest once their cause is fixed. Nothing here allocates a provider, starts a
-run or spends: the offer publishes facts, never authority, and every rights,
-consent and spend gate after it is unchanged.
+a reason, or ``blocked`` with typed blockers. A block a later run can clear by
+itself (an interrupted or timed-out run, a failed offer post, a failed fetch,
+an operating-system error) goes back to pending automatically, at most
+``len(AUTOMATIC_RETRY_BACKOFF_SECONDS)`` times and each only after its wait;
+the status keeps the attempt count and cause under ``automatic_retry``. This
+worker's own pass and the screening timer's pass both do it
+(``requeue_transient_blocked``). A deterministic refusal stays blocked by name;
+``--requeue-unfinished`` retries the rest once their cause is fixed. Nothing
+here allocates a provider, starts a run or spends: the offer publishes facts,
+never authority, and every rights, consent and spend gate after it is unchanged.
 """
 
 from __future__ import annotations
 
 import argparse
+import builtins
 import fcntl
 import hashlib
 import json
@@ -58,6 +67,7 @@ import shutil
 import tempfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +95,13 @@ _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _ATTEMPT = re.compile(r"[0-9a-f]{16}-[0-9a-f]{8}")
 _CAPTURE_KEY = re.compile(r"[0-9a-f]{32}")
 Fetcher = Callable[[Mapping[str, Any]], bytes]
+# Blocks a later run can clear by itself: a run killed mid-compile (a unit timeout included), a WebApp outage on
+# the offer post, a failed object-store fetch. An operating-system error (``team_scene_packet_failed:<OSError>``)
+# is one too. Every other blocker is a deterministic refusal and stays blocked.
+TRANSIENT_BLOCKERS = frozenset({"team_scene_packet_interrupted", "team_scene_offer_publication_failed",
+                                "configured_controls_deferred_fetch_failed"})
+# The wait before each automatic retry, in order; once all are used the request stays blocked.
+AUTOMATIC_RETRY_BACKOFF_SECONDS = (300, 1800, 7200)
 
 
 class TeamScenePacketRequestRefused(ValueError):
@@ -149,14 +166,96 @@ def _queue(queue_root: str | Path) -> Path:
 
 
 @contextmanager
-def _locked(root: Path) -> Iterator[None]:
+def _locked(root: Path, *, wait: bool = True) -> Iterator[bool]:
+    """Hold the queue lock; with ``wait=False`` yield False at once when a run already holds it."""
+
     descriptor = os.open(root / ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def transient_cause(status: Mapping[str, Any]) -> str | None:
+    """The one blocker of a blocked status that a later run can clear by itself, or None."""
+
+    blockers = status.get("blockers")
+    if status.get("status") != "blocked" or not isinstance(blockers, list) or len(blockers) != 1:
+        return None
+    blocker = str(blockers[0])
+    if blocker in TRANSIENT_BLOCKERS:
+        return blocker
+    prefix = "team_scene_packet_failed:"
+    kind = getattr(builtins, blocker[len(prefix):], None) if blocker.startswith(prefix) else None
+    return blocker if isinstance(kind, type) and issubclass(kind, OSError) else None
+
+
+def _retry_attempts(retry: Mapping[str, Any]) -> int:
+    attempts = retry.get("attempts", 0)
+    # An unreadable count is treated as spent, so the bound always holds.
+    valid = isinstance(attempts, int) and not isinstance(attempts, bool) and attempts >= 0
+    return attempts if valid else len(AUTOMATIC_RETRY_BACKOFF_SECONDS)
+
+
+def _with_retry(status: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
+    """Name when a transient block may run again, or that its automatic retries are spent."""
+
+    cause = transient_cause(status)
+    if cause is None:
+        return dict(status)
+    retry = {key: value for key, value in dict(status.get("automatic_retry") or {}).items()
+             if key not in {"not_before", "exhausted"}}
+    attempts = _retry_attempts(retry)
+    retry.update(attempts=attempts, limit=len(AUTOMATIC_RETRY_BACKOFF_SECONDS), reason=cause)
+    if attempts < len(AUTOMATIC_RETRY_BACKOFF_SECONDS):
+        retry["not_before"] = (now + timedelta(seconds=AUTOMATIC_RETRY_BACKOFF_SECONDS[attempts])).isoformat(
+            timespec="seconds")
+    else:
+        retry["exhausted"] = True
+    return {**status, "automatic_retry": retry}
+
+
+def _due(retry: Mapping[str, Any], now: datetime) -> bool:
+    try:
+        not_before = datetime.fromisoformat(str(retry["not_before"]))
+    except (KeyError, ValueError):
+        return True  # A block recorded before automatic retries existed is due at once.
+    return not_before.tzinfo is None or not_before <= now
+
+
+def _requeue_due(root: Path, now: datetime) -> list[dict[str, Any]]:
+    """Return each due transient block to pending, counting the attempt first (the lock is held)."""
+
+    requeued: list[dict[str, Any]] = []
+    for path in sorted((root / "processed").glob("*.json")):
+        status = _read_json(root / "status" / path.name) or {}
+        cause = transient_cause(status)
+        target = root / "pending" / path.name
+        retry = dict(status.get("automatic_retry") or {})
+        attempts = _retry_attempts(retry)
+        if (cause is None or target.exists() or attempts >= len(AUTOMATIC_RETRY_BACKOFF_SECONDS)
+                or not _due(retry, now)):
+            continue
+        retry = {key: value for key, value in retry.items() if key != "not_before"}
+        retry.update(attempts=attempts + 1, limit=len(AUTOMATIC_RETRY_BACKOFF_SECONDS), reason=cause,
+                     requeued_at=now.isoformat(timespec="seconds"))
+        # Counted before the move, so an interruption between the two never adds an uncounted attempt.
+        _write_replace(root / "status" / path.name, {**status, "automatic_retry": retry})
+        os.replace(path, target)
+        requeued.append({"request_key": path.stem, "attempt": attempts + 1, "reason": cause})
+    return requeued
 
 
 def request_key(request: Mapping[str, Any]) -> str:
@@ -191,8 +290,8 @@ def enqueue_team_scene_request(*, intent: Mapping[str, Any], run_root: str | Pat
                                ) -> dict[str, Any]:
     """Queue the one request that compiles a completed website scene's team half.
 
-    Called by scene preparation completion after the robot-free readiness
-    receipt is retained. It writes one small sealed file and nothing else: no
+    Called by scene preparation completion once it has tried to retain the
+    robot-free readiness receipt. It writes one small sealed file and nothing else: no
     compile, no process, no provider. Only an I/O failure raises (the caller
     retries); everything else is a typed status the completion records.
     """
@@ -203,8 +302,8 @@ def enqueue_team_scene_request(*, intent: Mapping[str, Any], run_root: str | Pat
     task_id = str(intent["request"]["task"]["task_id"])
     if not task_id.startswith(WEBSITE_TASK_PREFIX):
         return {"status": "not_a_website_scene"}
-    if readiness.get("retained") is not True:
-        return {"status": "not_enqueued", "reason": "robot_free_readiness_not_retained"}
+    # A receipt that could not be retained (a refused score) does not hold the compile: the compile never
+    # reads it, and the probe lane that can still decide it is queued only from the compiled half.
     if readiness.get("status") == "failed":
         # A decided failure is sealed for this revision: no team can ever be admitted to it.
         return {"status": "not_enqueued", "reason": "robot_free_probe_failed"}
@@ -446,6 +545,10 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     status: dict[str, Any] = {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem,
                               "scenario_id": SCENARIO_ID, "provider_mutation_performed": False,
                               "paid_execution_requested": False}
+    # An automatically retried request keeps its attempt count, whatever this run ends in.
+    retry = (_read_json(root / "status" / claimed.name) or {}).get("automatic_retry")
+    if isinstance(retry, Mapping):
+        status["automatic_retry"] = dict(retry)
 
     def skipped(reason: str) -> dict[str, Any]:
         return {**status, "status": "skipped", "reason": reason, "blockers": []}
@@ -500,21 +603,23 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     return {**status, "status": "completed", "blockers": []}
 
 
-def _finish(root: Path, claimed: Path, status: Mapping[str, Any]) -> dict[str, Any]:
+def _finish(root: Path, claimed: Path, status: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
+    status = _with_retry(status, now=now)
     _write_replace(root / "status" / claimed.name, status)
     os.replace(claimed, root / "processed" / claimed.name)
-    return dict(status)
+    return status
 
 
-def _recover_interrupted(root: Path, claimed: Path) -> dict[str, Any]:
+def _recover_interrupted(root: Path, claimed: Path, *, now: datetime) -> dict[str, Any]:
     prior = _read_json(root / "status" / claimed.name) or {}
     _discard_unreferenced(prior.get("attempt_root"), prior.get("capture_root"))
-    kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root")
-            if key in prior}
+    kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
+                                        "automatic_retry") if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
                                    "scenario_id": SCENARIO_ID, "status": "blocked",
                                    "blockers": ["team_scene_packet_interrupted"],
-                                   "provider_mutation_performed": False, "paid_execution_requested": False})
+                                   "provider_mutation_performed": False, "paid_execution_requested": False},
+                   now=now)
 
 
 def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, fetcher: Fetcher | None = None,
@@ -527,7 +632,10 @@ def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, f
     results: list[dict[str, Any]] = []
     with _locked(root):
         # The lock is held for the whole run, so anything still processing was interrupted.
-        recovered = [_recover_interrupted(root, path) for path in sorted((root / "processing").glob("*.json"))]
+        now = _utc_now()
+        recovered = [_recover_interrupted(root, path, now=now)
+                     for path in sorted((root / "processing").glob("*.json"))]
+        retried = _requeue_due(root, now)
         for pending in sorted((root / "pending").glob("*.json"))[:max_messages]:
             claimed = root / "processing" / pending.name
             try:
@@ -535,10 +643,32 @@ def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, f
             except FileNotFoundError:
                 continue
             results.append(_finish(root, claimed, _process(root, claimed, fetcher=fetcher,
-                                                           offer_transport=offer_transport)))
+                                                           offer_transport=offer_transport), now=_utc_now()))
     return {"schema_version": RUN_SCHEMA, "status": "processed" if results or recovered else "idle",
             "processed_count": len(results), "results": results, "recovered": recovered,
-            "provider_mutation_performed": False, "paid_execution_requested": False}
+            "automatic_requeue": retried, "provider_mutation_performed": False, "paid_execution_requested": False}
+
+
+def requeue_transient_blocked(*, queue_root: str | Path) -> dict[str, Any]:
+    """Recover an interrupted run and return each due transient block to pending, for a timer's pass.
+
+    The worker runs only when something is pending, so a request its unit's
+    timeout left in ``processing/``, or a block waiting out its backoff, needs
+    a pass from outside. When a worker run holds the queue this does nothing:
+    that run recovers and requeues the same way.
+    """
+
+    root = _queue(queue_root)
+    with _locked(root, wait=False) as held:
+        if not held:
+            return {"schema_version": RUN_SCHEMA, "status": "busy", "requeued": [], "recovered": [],
+                    "provider_mutation_performed": False, "paid_execution_requested": False}
+        now = _utc_now()
+        recovered = [_recover_interrupted(root, path, now=now)["request_key"]
+                     for path in sorted((root / "processing").glob("*.json"))]
+        requeued = _requeue_due(root, now)
+    return {"schema_version": RUN_SCHEMA, "status": "requeued" if requeued else "idle", "requeued": requeued,
+            "recovered": recovered, "provider_mutation_performed": False, "paid_execution_requested": False}
 
 
 def requeue_unfinished(*, queue_root: str | Path) -> dict[str, Any]:
@@ -579,8 +709,10 @@ __all__ = [
     "PACKET_INPUT_FIELDS",
     "QUEUE_ROOT_ENV",
     "REQUEST_SCHEMA",
+    "AUTOMATIC_RETRY_BACKOFF_SECONDS",
     "SCENARIO_ID",
     "STATUS_SCHEMA",
+    "TRANSIENT_BLOCKERS",
     "TeamScenePacketRequestRefused",
     "capture_key",
     "configured_scene_bundle",
@@ -590,8 +722,10 @@ __all__ = [
     "registered_embodiment_models",
     "registered_embodiments",
     "request_key",
+    "requeue_transient_blocked",
     "requeue_unfinished",
     "resolve_capture_root",
+    "transient_cause",
     "validated_request",
 ]
 

@@ -51,11 +51,53 @@ def _scene_collision(plan: Mapping[str, Any], packet_dir: Path) -> tuple[Path, s
     return path, digest, [float(v) for v in pose["position_world_m"]]
 
 
+def _transformed_points(points: Any, matrix: Any, offset: list[float]) -> Any:
+    """``Gf.Matrix4d.Transform`` of every float point, plus ``offset``, as one array.
+
+    Bit for bit what ``[float(v) + offset[axis] for axis, v in enumerate(matrix.Transform(point))]`` gives
+    for each point (Python binds that call to the double overload): the row vector times the matrix
+    summed in double in the same order, ``GfProject`` by the fourth component, then the offset added.
+    A scene collision mesh holds millions of points, and the per-point Python loop took about a minute
+    per stance search.
+    """
+
+    import numpy as np
+
+    p = np.asarray(points, dtype=np.float32).reshape(-1, 3).astype(np.float64)
+    m = [[float(matrix[row][column]) for column in range(4)] for row in range(4)]
+    homogeneous = [p[:, 0] * m[0][column] + p[:, 1] * m[1][column] + p[:, 2] * m[2][column] + m[3][column]
+                   for column in range(4)]
+    w = homogeneous[3]
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        inverse = np.where(w != 0.0, 1.0 / np.where(w != 0.0, w, 1.0), 1.0)
+        projected = np.stack([inverse * homogeneous[axis] for axis in range(3)], axis=1)
+    return projected + np.asarray(offset[:3], dtype=np.float64)
+
+
+def _fan_triangles(counts: Any, indices: Any, first: int) -> Any:
+    """Each face's fan ``(i0, ik, ik+1)``, in face order, offset by ``first``; None for negative counts."""
+
+    import numpy as np
+
+    sizes = np.asarray(counts, dtype=np.int64).reshape(-1)
+    if (sizes < 0).any():
+        return None
+    order = np.asarray(indices, dtype=np.int64).reshape(-1)
+    starts = np.cumsum(sizes) - sizes
+    fans = np.maximum(sizes - 2, 0)
+    face = np.repeat(np.arange(len(sizes)), fans)
+    k = np.arange(int(fans.sum()), dtype=np.int64) - np.repeat(np.cumsum(fans) - fans, fans) + 1
+    corner = starts[face]
+    if len(corner) and int((corner + k + 1).max()) >= len(order):
+        raise IndexError("face vertex index out of range")
+    return np.stack([order[corner], order[corner + k], order[corner + k + 1]], axis=1) + first
+
+
 def _world_triangles(path: Path, offset: list[float]) -> tuple[Any, Any]:
     """Every collision mesh triangle in the scene's world frame (Z up, meters)."""
 
     import numpy as np
-    from pxr import Usd, UsdGeom
+    from pxr import Usd, UsdGeom, Vt
 
     stage = Usd.Stage.Open(str(path))
     if (UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z or (
@@ -63,8 +105,9 @@ def _world_triangles(path: Path, offset: list[float]) -> tuple[Any, Any]:
             and not math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.0))):
         raise TeamEmbodimentError(["team_embodiment_scene_collision_frame_unsupported"])
     cache = UsdGeom.XformCache()
-    vertices: list[list[float]] = []
-    faces: list[tuple[int, int, int]] = []
+    vertices: list[Any] = []
+    faces: list[Any] = []
+    first = 0
     for prim in stage.Traverse():
         if not prim.IsA(UsdGeom.Mesh):
             continue
@@ -73,16 +116,24 @@ def _world_triangles(path: Path, offset: list[float]) -> tuple[Any, Any]:
         indices = mesh.GetFaceVertexIndicesAttr().Get()
         if not points or not counts or not indices:
             continue
-        matrix, first, cursor = cache.GetLocalToWorldTransform(prim), len(vertices), 0
-        vertices.extend([float(v) + offset[axis] for axis, v in enumerate(matrix.Transform(point))]
-                        for point in points)
-        for count in counts:
-            faces.extend((first + indices[cursor], first + indices[cursor + k], first + indices[cursor + k + 1])
-                         for k in range(1, int(count) - 1))
-            cursor += int(count)
-    if not faces:
+        matrix = cache.GetLocalToWorldTransform(prim)
+        vertices.append(_transformed_points(points, matrix, offset) if isinstance(points, Vt.Vec3fArray)
+                        else np.asarray([[float(v) + offset[axis] for axis, v in enumerate(matrix.Transform(point))]
+                                         for point in points], dtype=float).reshape(-1, 3))
+        triangles = _fan_triangles(counts, indices, first)
+        if triangles is None:
+            # Negative face sizes are not valid USD; walk them exactly as authored.
+            rows, cursor = [], 0
+            for count in counts:
+                rows.extend((first + indices[cursor], first + indices[cursor + k], first + indices[cursor + k + 1])
+                            for k in range(1, int(count) - 1))
+                cursor += int(count)
+            triangles = np.asarray(rows, dtype=np.int64).reshape(-1, 3)
+        faces.append(triangles)
+        first += len(points)
+    if not faces or not sum(len(rows) for rows in faces):
         raise TeamEmbodimentError(["team_embodiment_scene_collision_unavailable"])
-    return np.asarray(vertices, dtype=float), np.asarray(faces, dtype=np.int64)
+    return np.concatenate(vertices).astype(float), np.concatenate(faces).astype(np.int64)
 
 
 def _strikes(points: Any, *, base: Any, yaw: float, root: float, footprint: list[float],

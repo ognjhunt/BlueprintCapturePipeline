@@ -91,8 +91,13 @@ RESULT_FILENAME = "task_evaluation_scene_configuration_provider_result.v1.json"
 DIAGNOSTIC_RUNNER = (
     "scripts/task_evaluation_scene_configuration_diagnostic_provider_runner.py"
 )
-_MAX_MEMBER_BYTES = 2 * 1024**3
-_MAX_TOTAL_BYTES = 8 * 1024**3
+#: Archive bounds. The provider toolchain now ships an unpacked CUDA Torch
+#: runtime (libtorch_cuda.so alone is 1.2 GiB), so on 2026-10-31 a real scene's
+#: stage passed the old 8 GiB total and its activation failed with
+#: scene_configuration_bundle_archive_limit_exceeded. The provider instance
+#: has 100 GB of disk for the archive, its expansion and the outputs.
+_MAX_MEMBER_BYTES = 4 * 1024**3
+_MAX_TOTAL_BYTES = 24 * 1024**3
 _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE = Path(
     "components/artifixer3d_observed_object_removal/package/python_wheelhouse"
 )
@@ -410,6 +415,13 @@ def _member_compress_type(path: Path) -> int:
     return zipfile.ZIP_STORED if path.suffix.lower() in _STORED_MEMBER_SUFFIXES else zipfile.ZIP_DEFLATED
 
 
+#: Deflate level for compressible members. Level 1 is several times faster than
+#: the default 6 for a modestly larger archive: on 2026-10-31 the activation
+#: worker, capped at two CPUs on a loaded host, wrote 3.5 GB of the bundle in
+#: thirteen minutes and was stopped before finishing it.
+_DEFLATE_LEVEL = 1
+
+
 def _zip_tree(source: Path, destination: Path) -> None:
     total = 0
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -432,6 +444,9 @@ def _zip_tree(source: Path, destination: Path) -> None:
                 path.relative_to(source).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
             )
             info.compress_type = _member_compress_type(path)
+            info.file_size = size  # members over 2 GiB need ZIP64 headers before they are written
+            if info.compress_type == zipfile.ZIP_DEFLATED:
+                info._compresslevel = _DEFLATE_LEVEL
             info.create_system = 3
             info.external_attr = (stat.S_IFREG | (0o755 if path.stat().st_mode & 0o111 else 0o444)) << 16
             with path.open("rb") as input_stream, archive.open(info, "w") as output_stream:

@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from .beta_policy_screening_result import (
-    ACTIVE_STATUSES, candidate_result_summary, campaign_status, money, screening_publication,
+    ACTIVE_STATUSES, QUEUED_STATUSES, candidate_result_summary, campaign_status, money, screening_publication,
 )
 from .decision_evidence_contracts import canonical_digest
 
@@ -41,6 +41,9 @@ SITE_LIMIT = Decimal("15")
 CAPACITY_RETRY_SECONDS = 60
 CAPACITY_WAIT_BLOCKER = "beta_screening_waiting_for_capacity"
 INFEASIBLE_BLOCKER = "candidate_infeasible_measured_geometry"
+# The plan's own reason: published reasons stay a subset of the plan's.
+WAITLIST_BLOCKER = "site_screening_budget_insufficient"
+BUDGET_EXHAUSTED_BLOCKER = "beta_screening_site_budget_exhausted"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _MONEY = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,6})?")
 _BLOCKER = re.compile(r"[a-z][a-z0-9_:.=-]{0,199}")
@@ -219,6 +222,129 @@ def enqueue_screening_campaign(plan: Mapping[str, Any], *, queue_root: str | Pat
     return {"campaign_id": campaign_id, "status": "enqueued", "plan_digest": value["plan_digest"]}
 
 
+COMMIT_CHANGED_BLOCKER = "beta_screening_implementation_commit_changed"
+REPLANNED_BLOCKER = "beta_screening_replanned_for_new_implementation"
+
+
+def _spent(row: Mapping[str, Any]) -> bool:
+    """A candidate that ran or may have allocated is never planned again automatically."""
+    attempts = [*row.get("attempt_history", []), *([row["attempt"]] if row.get("attempt") else [])]
+    return (row["status"] in {"completed", *ACTIVE_STATUSES}
+            or any(attempt["reservation_status"] != "released" or attempt.get("provider_allocation_observed")
+                   for attempt in attempts))
+
+
+def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementation_commit: str) -> list[str] | None:
+    state = ledger["campaigns"][plan["campaign_id"]]
+    rows = state["candidates"]
+    if state.get("superseded_by") or any(row["status"] in ACTIVE_STATUSES for row in rows.values()):
+        return None
+    if _amount(_budget(ledger, state["site_id"], campaign_id=plan["campaign_id"])["reserved_usd"]) > 0:
+        return None
+    stale = False
+    for candidate in plan["candidates"]:
+        row = rows[candidate["candidate_id"]]
+        frozen = (candidate.get("execution_spec") or {}).get("implementation_commit")
+        if (row["status"] in QUEUED_STATUSES and frozen not in (None, implementation_commit)
+                or row["status"] == "blocked" and COMMIT_CHANGED_BLOCKER in row.get("blockers", [])):
+            stale = True
+    if not stale:
+        return None
+    return [candidate["candidate_id"] for candidate in plan["candidates"]
+            if not _spent(rows[candidate["candidate_id"]])] or None
+
+
+def replan_scope(campaign_id: str, *, implementation_commit: str,
+                 queue_root: str | Path | None = None) -> list[str] | None:
+    """Candidates to plan again because the deployed code changed, or ``None``.
+
+    A plan freezes the commit its candidates were prepared against, and
+    preparation refuses another. When a deploy lands while some candidate is
+    still unprepared (queued, or refused for the changed commit) and the
+    campaign holds no reservation, every candidate that never ran or allocated
+    is planned again at the new commit. Spent candidates keep their result.
+    """
+    if not re.fullmatch(r"[0-9a-f]{40}", implementation_commit):
+        raise ScreeningCoordinatorError("beta_screening_implementation_commit_invalid")
+    root = _root(queue_root)
+    with _lock(root):
+        ledger = _ledger(root)
+        state = ledger["campaigns"].get(campaign_id)
+        if state is None:
+            return None
+        return _replan_scope(ledger, _plan(root, campaign_id, state["plan_digest"]), implementation_commit)
+
+
+def latest_campaign(campaign_id: str, *, queue_root: str | Path | None = None) -> str:
+    """Follow re-plans from a source's first campaign to the one that is current."""
+    root = _root(queue_root)
+    with _lock(root):
+        campaigns = _ledger(root)["campaigns"]
+        seen = {campaign_id}
+        while (successor := (campaigns.get(campaign_id) or {}).get("superseded_by")) is not None:
+            if successor in seen:
+                raise ScreeningCoordinatorError("beta_screening_supersession_cycle")
+            seen.add(successor)
+            campaign_id = successor
+    return campaign_id
+
+
+def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementation_commit: str,
+                       queue_root: str | Path | None = None) -> dict[str, Any]:
+    """Atomically enqueue a re-plan and close the old campaign's unprepared rows.
+
+    One ledger write does both, rechecking under the lock that the old campaign
+    holds no reservation and that the new plan covers only unspent candidates
+    of the same site and source. The site's budget is shared, so the new plan
+    can never spend what the old one committed.
+    """
+    from .beta_policy_screening_plan import validate_screening_plan
+
+    value = validate_screening_plan(plan)
+    successor = value["campaign_id"]
+    if not _ID.fullmatch(successor) or _amount(value["budget_usd"]) > SITE_LIMIT:
+        raise ScreeningCoordinatorError("beta_screening_campaign_scope_invalid")
+    root = _root(queue_root)
+    with _lock(root):
+        ledger = _ledger(root)
+        old = ledger["campaigns"].get(campaign_id)
+        if old is None:
+            raise ScreeningCoordinatorError("beta_screening_campaign_unknown")
+        if old.get("superseded_by") == successor:
+            existing = ledger["campaigns"].get(successor)
+            if existing is None or existing["plan_digest"] != value["plan_digest"]:
+                raise ScreeningCoordinatorError("beta_screening_campaign_identity_changed")
+            return {"campaign_id": successor, "status": "already_enqueued", "plan_digest": value["plan_digest"],
+                    "superseded_campaign_id": campaign_id}
+        previous = _plan(root, campaign_id, old["plan_digest"])
+        scope = _replan_scope(ledger, previous, implementation_commit)
+        if (scope is None or successor in ledger["campaigns"] or value["site_id"] != old["site_id"]
+                or value["source"] != previous["source"]
+                or not {row["candidate_id"] for row in value["candidates"]} <= set(scope)):
+            raise ScreeningCoordinatorError("beta_screening_replan_not_admitted")
+        path = root / "plans" / f"{successor}.json"
+        if path.exists():
+            if _read(path) != value:
+                raise ScreeningCoordinatorError("beta_screening_campaign_identity_changed")
+        else:
+            _write(path, value)
+        for row in old["candidates"].values():
+            if row["status"] in QUEUED_STATUSES:
+                row.update(status="blocked", blockers=[REPLANNED_BLOCKER])
+        old["superseded_by"] = successor
+        _changed(old)
+        timestamp = _now()
+        ledger["campaigns"][successor] = {
+            "plan_digest": value["plan_digest"], "site_id": value["site_id"],
+            "revision": 1, "created_at": timestamp, "updated_at": timestamp,
+            "published_revision": 0, "published_digest": None, "supersedes": campaign_id,
+            "candidates": {candidate["candidate_id"]: _initial_state(candidate) for candidate in value["candidates"]},
+        }
+        _save(root, ledger)
+    return {"campaign_id": successor, "status": "enqueued", "plan_digest": value["plan_digest"],
+            "superseded_campaign_id": campaign_id}
+
+
 def _initial_state(candidate: Mapping[str, Any]) -> dict[str, Any]:
     status = candidate["status"]
     blockers = candidate["blockers"]
@@ -226,6 +352,8 @@ def _initial_state(candidate: Mapping[str, Any]) -> dict[str, Any]:
         # The frozen plan keeps ``infeasible``; the published vocabulary has no
         # such state yet, so the site sees it unavailable with its measured reason.
         status, blockers = "unavailable", [INFEASIBLE_BLOCKER, *blockers]
+    if status == "waitlisted":
+        return {"status": "waitlisted", "blockers": [WAITLIST_BLOCKER]}
     return {"status": "pending" if status == "selected" else status,
             "blockers": _safe_blockers(blockers, "beta_screening_candidate_unavailable") if blockers else []}
 
@@ -314,7 +442,12 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
             blocker = "beta_screening_cost_bound_invalid"
         elif (_amount(site["committed_upper_bound_usd"]) + cap > SITE_LIMIT
               or _amount(campaign["committed_upper_bound_usd"]) + cap > _amount(plan["budget_usd"])):
-            blocker = "beta_screening_site_budget_exhausted"
+            # Another attempt holds the money it needs. That attempt may still
+            # release it before spend, so wait for the refill to decide.
+            row.update(status="waitlisted", blockers=[WAITLIST_BLOCKER])
+            _changed(state)
+            _save(root, ledger)
+            return None
         if blocker:
             row.update(status="deferred", blockers=[blocker])
             _changed(state)
@@ -325,6 +458,78 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         _changed(state)
         _save(root, ledger)
         return dict(attempt)
+
+
+def _refill_waitlist(root: Path) -> int:
+    """Fund waitlisted candidates from money released before spend.
+
+    Plan order decides who is funded first. A row is funded only if its whole
+    cap fits under both the site allowance and its plan's budget, after every
+    reservation, commitment and already pending (funded, unreserved) row. Once
+    the site holds no reservation and no pending row, nothing can release money
+    any more: every row that still does not fit closes as ``deferred``.
+    Returns the number of rows changed.
+    """
+    changed = 0
+    with _lock(root):
+        ledger = _ledger(root)
+        campaigns = ledger["campaigns"]
+        sites = sorted({state["site_id"] for state in campaigns.values()
+                        if any(row["status"] == "waitlisted" for row in state["candidates"].values())})
+        if not sites:
+            return 0
+        plans: dict[str, dict[str, Any]] = {}
+
+        def plan_for(campaign_id: str) -> dict[str, Any]:
+            if campaign_id not in plans:
+                plans[campaign_id] = _plan(root, campaign_id, campaigns[campaign_id]["plan_digest"])
+            return plans[campaign_id]
+
+        def pending_caps(campaign_id: str) -> Decimal:
+            rows = campaigns[campaign_id]["candidates"]
+            if not any(row["status"] == "pending" for row in rows.values()):
+                return Decimal(0)
+            return sum((_amount(candidate["max_cost_usd"]) for candidate in plan_for(campaign_id)["candidates"]
+                        if rows[candidate["candidate_id"]]["status"] == "pending"), Decimal(0))
+
+        for site_id in sites:
+            ids = sorted((key for key, state in campaigns.items() if state["site_id"] == site_id),
+                         key=lambda key: (campaigns[key]["created_at"], key))
+            site = _budget(ledger, site_id)
+            pending = {key: pending_caps(key) for key in ids}
+            site_used = _amount(site["committed_upper_bound_usd"]) + sum(pending.values(), Decimal(0))
+            in_flight = _amount(site["reserved_usd"]) > 0 or any(pending.values())
+            for campaign_id in ids:
+                state = campaigns[campaign_id]
+                if not any(row["status"] == "waitlisted" for row in state["candidates"].values()):
+                    continue
+                plan = plan_for(campaign_id)
+                campaign_used = (_amount(_budget(ledger, site_id, campaign_id=campaign_id)["committed_upper_bound_usd"])
+                                 + pending[campaign_id])
+                touched = False
+                for candidate in plan["candidates"]:
+                    row = state["candidates"][candidate["candidate_id"]]
+                    if row["status"] != "waitlisted":
+                        continue
+                    cap = _amount(candidate["max_cost_usd"])
+                    if not _quote_current(candidate):
+                        row.update(status="deferred", blockers=["beta_screening_cost_quote_expired"])
+                    elif site_used + cap <= SITE_LIMIT and campaign_used + cap <= _amount(plan["budget_usd"]):
+                        row.update(status="pending", blockers=[])
+                        site_used += cap
+                        campaign_used += cap
+                        in_flight = True
+                    elif not in_flight:
+                        row.update(status="deferred", blockers=[BUDGET_EXHAUSTED_BLOCKER])
+                    else:
+                        continue
+                    touched = True
+                    changed += 1
+                if touched:
+                    _changed(state)
+        if changed:
+            _save(root, ledger)
+    return changed
 
 
 def _update(root: Path, campaign_id: str, candidate_id: str, update) -> dict[str, Any]:
@@ -530,6 +735,10 @@ def process_screening_queue(
     root = _root(queue_root)
     try:
         with _lock(root, ".worker.lock", nonblocking=True):
+            # Money a candidate released before spend funds the next waitlisted
+            # one. A funded row is pending and still needs the website's
+            # acknowledgment of that revision before it is reserved.
+            _refill_waitlist(root)
             with _lock(root):
                 ledger = _ledger(root)
                 active = [key for key, state in ledger["campaigns"].items()
@@ -564,7 +773,11 @@ def process_screening_queue(
                     current_ledger = _ledger(root)
                     current_ledger["last_processed_campaign"] = campaign_id
                     _save(root, current_ledger)
-            return {"status": "processed", "campaign_ids": processed, "launches_started": launches}
+            # Close or fund the waitlist after this pass's refusals as well, so
+            # the publication that follows already says what happens next.
+            refilled = _refill_waitlist(root)
+            return {"status": "processed", "campaign_ids": processed, "launches_started": launches,
+                    "waitlist_changes": refilled}
     except BlockingIOError:
         return {"status": "worker_busy", "campaign_ids": [], "launches_started": 0}
 
@@ -626,4 +839,5 @@ def acknowledge_publication(
 
 
 __all__ = ["enqueue_screening_campaign", "process_screening_queue", "pending_publications",
-           "acknowledge_publication", "ScreeningCoordinatorError"]
+           "acknowledge_publication", "latest_campaign", "replan_scope", "supersede_campaign",
+           "ScreeningCoordinatorError"]

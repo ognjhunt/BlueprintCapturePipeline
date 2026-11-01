@@ -23,6 +23,13 @@ _SCENE_LIFECYCLE_VALUES, _SCENE_LIFECYCLE_SECONDS = 2_000_000, 30.0
 # A representative connected source fixture resolves 35,566 bounded facts. Keep a
 # finite margin without enlarging the independent five-second observer budget.
 _SCENE_LIFECYCLE_FACTS = 40_000
+# A launch dispatcher observes its request, profile and public catalog and then
+# verifies every profile input before its first native write, all under one
+# allowance. Five seconds cannot hold that on the CPU-throttled control plane:
+# capture-447ae4f4's launch (540 catalog profiles, 384 profile inputs) was
+# refused at its first write on 2026-10-31. It gets the scene lifecycle's
+# finite allowance; its value limit is the publisher's own.
+_LAUNCH_ADMISSION_SECONDS = _SCENE_LIFECYCLE_SECONDS
 
 
 class ReferenceCollectionBudgetError(ValueError):
@@ -58,6 +65,18 @@ class ReferenceCollectionBudget:
         budget._initialize_validated(monotonic=monotonic, duration=float(time_budget_seconds),
                                      values_limit=_SCENE_LIFECYCLE_VALUES,
                                      facts_limit=_SCENE_LIFECYCLE_FACTS)
+        return budget
+
+    @classmethod
+    def _for_launch_admission(cls, *, monotonic: Callable[[], float] = time.monotonic,
+                              values_limit: int = 10_000):
+        """Initialize one exact fresh launch-admission budget; never enlarge a used object."""
+        if (cls is not ReferenceCollectionBudget or not callable(monotonic)
+                or type(values_limit) is not int or not 1 <= values_limit <= MAX_VALUES):
+            raise ReferenceCollectionBudgetError("reference_budget_parameters_invalid")
+        budget = object.__new__(ReferenceCollectionBudget)
+        budget._initialize_validated(monotonic=monotonic, duration=_LAUNCH_ADMISSION_SECONDS,
+                                     values_limit=values_limit)
         return budget
 
     def _initialize_validated(self, *, monotonic, duration, values_limit, facts_limit=MAX_FACTS):

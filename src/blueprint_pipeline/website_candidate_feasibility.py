@@ -120,6 +120,16 @@ def own_station(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
             "orientation_xyzw": list(own["station"]["orientation_xyzw"])}
 
 
+def own_station_reached_by_own_arm(candidate: Mapping[str, Any]) -> bool:
+    """Whether a fixed body's own station was chosen because its own arm reaches the task from there
+    (``team_scene_packet._own_arm_stations``), so its run binds it there whatever its declared reach."""
+    own = candidate.get("own_station") or {}
+    reach = own.get("reach") or {}
+    return (own_station(candidate) is not None
+            and reach.get("rule") == "closest_clear_stance_own_arm_reaches_every_phase"
+            and (reach.get("own_arm") or {}).get("status") == "passed")
+
+
 def own_stance(candidate: Mapping[str, Any]) -> dict[str, Any] | None:
     """A free base's own floor stance on this scene (``team_embodiment_stance.ground_stance``); else ``None``."""
     own = candidate.get("own_station") or {}

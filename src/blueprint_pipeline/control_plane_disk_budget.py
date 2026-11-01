@@ -66,8 +66,10 @@ DEFAULT_TTL_SECONDS = 2 * 60 * 60
 # recycled pid.  A job holds its reservation for at most its unit's
 # TimeoutStartSec, so each role's entry must outlive that timeout (pinned by a
 # test against deploy/systemd), or the ledger deletes a running job's
-# reservation as stale.  The canary and launch dispatchers hold theirs through a
-# paid run under a 5 h start timeout.
+# reservation as stale.  The canary dispatcher holds its reservations through a
+# paid run under a 5 h start timeout and the launch dispatcher under 9 h (a
+# scene configuration's 7.5 h hard TTL plus staging and publication);
+# activation builds a scene bundle in 4 h.
 ROLE_TTL_SECONDS: Mapping[str, int] = {
     "embodiment_preparation": 6 * 3600,
     "g1_checkpoint_cache": 4 * 3600,
@@ -76,8 +78,9 @@ ROLE_TTL_SECONDS: Mapping[str, int] = {
     "semantic_pretraining": 12 * 3600,
     "stage_replay": 6 * 3600,
     "policy_canary_dispatch": 6 * 3600,
-    "launch_dispatch": 6 * 3600,
-    "scene_configuration_output": 6 * 3600,
+    "launch_dispatch": 10 * 3600,
+    "launch_activation": 6 * 3600,
+    "scene_configuration_output": 10 * 3600,
     "policy_canary_output": 6 * 3600,
     "control_plane_deploy": 4 * 3600,
     "evidence_offload": 4 * 3600,

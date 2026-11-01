@@ -594,6 +594,84 @@
           },
           {
             "additionalProperties": false,
+            "description": "Runnable but not funded by the plan's budget yet; frozen like a selected row so released money can fund it.",
+            "properties": {
+              "admission_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "blockers": {
+                "items": {
+                  "const": "site_screening_budget_insufficient"
+                },
+                "maxItems": 1,
+                "minItems": 1,
+                "type": "array"
+              },
+              "candidate_id": {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+                "type": "string"
+              },
+              "configuration_digest": {
+                "pattern": "^sha256:[0-9a-f]{64}$",
+                "type": "string"
+              },
+              "cost_quote": {
+                "$ref": "#/$defs/quote"
+              },
+              "display_name": {
+                "maxLength": 200,
+                "minLength": 1,
+                "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+                "type": "string"
+              },
+              "episode_count": {
+                "maximum": 10,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "execution_evidence_kind": {
+                "enum": [
+                  "scripted_simulator_state_baseline",
+                  "learned_policy"
+                ]
+              },
+              "execution_spec": {
+                "$ref": "#/$defs/execution"
+              },
+              "max_cost_usd": {
+                "pattern": "^(?:0|[1-9][0-9]{0,8})\\.[0-9]{2}$",
+                "type": "string"
+              },
+              "scenario_cells": {
+                "items": {
+                  "$ref": "#/$defs/cell"
+                },
+                "maxItems": 10,
+                "minItems": 1,
+                "type": "array"
+              },
+              "status": {
+                "const": "waitlisted"
+              }
+            },
+            "required": [
+              "candidate_id",
+              "display_name",
+              "configuration_digest",
+              "status",
+              "blockers",
+              "admission_digest",
+              "execution_spec",
+              "cost_quote",
+              "max_cost_usd",
+              "episode_count",
+              "scenario_cells"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
             "properties": {
               "blockers": {
                 "items": {

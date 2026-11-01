@@ -38,6 +38,11 @@ QUOTE_SCHEMA_VERSION = "beta_policy_screening_cost_quote.v1"
 # use of its own result, which is published as a simulation estimate.
 CLAIM_CEILING = "diagnostic_policy_execution"
 SITE_BUDGET_USD = Decimal("15.00")
+# A runnable candidate the budget cannot fund yet. Plans built before the
+# waitlist list such rows as ``deferred`` with the same reason and no
+# execution fields; those stay valid and are never funded.
+WAITLISTED = "waitlisted"
+WAITLIST_BLOCKER = "site_screening_budget_insufficient"
 DEFAULT_EPISODES = 10
 # One dollar ceiling per website job (owner decision 2026-10-30, WebApp #1168).
 # A plan sized to it records the read it was sized from.
@@ -401,6 +406,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     scripted baselines, which are reference only and never chosen (a site's few
     funded slots must not all go to them). Capabilities may name measured
     ``candidate_infeasible`` refusals, which stay listed as ``infeasible``.
+    Runnable candidates the budget cannot fund yet are ``waitlisted``, in the
+    same order, for money a selected candidate releases before spend.
     """
     catalog = validate_catalog(catalog)
     scene = _scene(scene)
@@ -478,14 +485,23 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             row.update(status="deferred", blockers=["cost_quote_below_resource_bound"])
             candidates.append(row)
             continue
-        if maximum > remaining:
-            row.update(status="deferred", blockers=["site_screening_budget_insufficient"])
+        frozen = {"admission_digest": binding["admission_digest"],
+                  "execution_spec": deepcopy(binding["execution_spec"]), "cost_quote": quote,
+                  "max_cost_usd": quote["maximum_cost_usd"], "episode_count": episodes_per_candidate,
+                  "scenario_cells": g1_cells(cells) if spec["backend"] == G1_BACKEND else deepcopy(cells)}
+        if maximum > budget:
+            # More than this plan could ever fund, even with nothing else selected.
+            row.update(status="deferred", blockers=[WAITLIST_BLOCKER])
             candidates.append(row)
             continue
-        row.update(status="selected", admission_digest=binding["admission_digest"],
-                   execution_spec=deepcopy(binding["execution_spec"]), cost_quote=quote,
-                   max_cost_usd=quote["maximum_cost_usd"], episode_count=episodes_per_candidate,
-                   scenario_cells=g1_cells(cells) if spec["backend"] == G1_BACKEND else deepcopy(cells))
+        if maximum > remaining:
+            # Runnable but unfunded for now. It is frozen like a selected row,
+            # so the coordinator can fund it from money a selected candidate
+            # releases before spend, within the same site and plan budget.
+            row.update(status=WAITLISTED, blockers=[WAITLIST_BLOCKER], **frozen)
+            candidates.append(row)
+            continue
+        row.update(status="selected", **frozen)
         remaining -= maximum
         candidates.append(row)
     plan = {
@@ -604,12 +620,13 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         if (not isinstance(row["blockers"], list) or len(row["blockers"]) > 100
                 or any(not isinstance(reason, str) or not 1 <= len(reason) <= 300 for reason in row["blockers"])):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_blockers_invalid")
-        if row["status"] == "selected":
+        if row["status"] in {"selected", WAITLISTED}:
             if set(row) - evidence_fields != {"candidate_id", "display_name", "configuration_digest", "status", "blockers", "admission_digest",
                             "execution_spec", "cost_quote", "max_cost_usd", "episode_count", "scenario_cells"}:
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_fields_invalid")
             expected_cells = g1_cells(cells) if row.get("execution_spec", {}).get("backend") == G1_BACKEND else cells
-            if row["blockers"] or row.get("episode_count") != len(cells) or row.get("scenario_cells") != expected_cells:
+            if (row["blockers"] != ([] if row["status"] == "selected" else [WAITLIST_BLOCKER])
+                    or row.get("episode_count") != len(cells) or row.get("scenario_cells") != expected_cells):
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_cells_invalid")
             _digest(row["configuration_digest"], "beta_screening_configuration_invalid")
             spec = validate_execution_descriptor(row.get("execution_spec", {}), candidate_id=row["candidate_id"],
@@ -626,7 +643,11 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 raise BetaPolicyScreeningPlanError("beta_screening_cost_mismatch")
             if money(row["max_cost_usd"]) < execution_cost_floor(spec):
                 raise BetaPolicyScreeningPlanError("beta_screening_cost_below_resource_bound")
-            committed += money(row["max_cost_usd"])
+            if row["status"] == "selected":
+                committed += money(row["max_cost_usd"])
+            elif money(row["max_cost_usd"]) > budget:
+                # A waitlisted row could never be funded within this plan.
+                raise BetaPolicyScreeningPlanError("beta_screening_plan_budget_invalid")
         elif row["status"] not in {"unavailable", "deferred", "infeasible"} or not row["blockers"]:
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_status_invalid")
         elif set(row) - evidence_fields != {"candidate_id", "display_name", "configuration_digest", "status", "blockers"}:
@@ -743,7 +764,8 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
 
 __all__ = ["PLAN_SCHEMA_VERSION", "QUOTE_SCHEMA_VERSION", "EXECUTION_SCHEMA_VERSION", "CLAIM_CEILING",
            "SITE_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
-           "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "BetaPolicyScreeningPlanError",
-           "build_job_ceiling_screening_plan", "build_screening_plan", "execution_cost_floor", "job_ceiling_record",
-           "money", "screening_cells", "validate_cost_quote", "validate_execution_descriptor",
+           "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "WAITLISTED", "WAITLIST_BLOCKER",
+           "BetaPolicyScreeningPlanError", "build_job_ceiling_screening_plan", "build_screening_plan",
+           "execution_cost_floor", "job_ceiling_record", "money", "screening_cells", "validate_cost_quote",
+           "validate_execution_descriptor",
            "validate_screening_plan"]

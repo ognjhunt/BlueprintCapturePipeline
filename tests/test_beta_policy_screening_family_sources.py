@@ -121,6 +121,8 @@ def source_world(tmp_path, monkeypatch, count):
     from blueprint_pipeline import beta_policy_screening_job_ceiling as job_ceiling
     from tests.test_beta_policy_screening_job_ceiling import ceiling_summary
     monkeypatch.setattr(job_ceiling, 'read_job_ceiling_summary', lambda **_: ceiling_summary(40))
+    # The deployed commit is the one the planner fixture binds: a replay never re-plans.
+    monkeypatch.setattr(worker, 'implementation_commit', lambda: 'a' * 40)
     return world
 
 

@@ -1015,3 +1015,22 @@ def test_a_fixed_body_bound_to_its_own_station_stands_there_in_every_cell(tmp_pa
         team_embodiment_binding(declared, scene_plan=plan, station=far, **inputs)
     with pytest.raises(TeamEmbodimentError, match="team_embodiment_own_station_invalid"):
         team_embodiment_binding(declared, scene_plan=plan, station={"position_world_m": [0.0, 0.0]}, **inputs)
+
+
+def test_a_station_the_bodys_own_arm_reached_from_is_bound_whatever_its_declared_reach(tmp_path) -> None:
+    model = write_robot_usd(tmp_path / "acme_arm.usda")
+    declared = validate_embodiment_manifest(manifest(model, reach_m=0.2))
+    inputs = {"model_record": verify_model_file(declared, model), "structure": read_model_structure(model)}
+    plan = station_plan()
+    base = plan["robot"]["base_pose_world"]
+    station = {"position_world_m": [base["position_world_m"][0] + 1.0, *base["position_world_m"][1:]],
+               "orientation_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    # A declared 20 cm misses the task from there; the arm's own model reached it, so the run stands there.
+    with pytest.raises(TeamEmbodimentError, match="team_embodiment_station_out_of_reach"):
+        team_embodiment_binding(declared, scene_plan=plan, station=station, **inputs)
+    sealed = team_embodiment_binding(declared, scene_plan=plan, station=station, station_reached_by_own_arm=True,
+                                     **inputs)
+    assert apply_team_embodiment(plan, sealed)["robot"]["base_pose_world"] == station
+    # Only the declared-reach veto is lifted, and only for an own station.
+    with pytest.raises(TeamEmbodimentError, match="team_embodiment_own_station_invalid"):
+        team_embodiment_binding(declared, scene_plan=plan, station_reached_by_own_arm=True, **inputs)

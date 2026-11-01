@@ -456,6 +456,376 @@ def test_door_still_refuses_a_commit_nobody_pushed(door_clone: dict[str, object]
     assert outcome["rc"] == 2 and outcome["code"] == "commit_not_found"
 
 
+PARKED_OLDER_ID = "20260923T115900Z-deploy-0000aaaa"
+
+
+@pytest.fixture()
+def parked_env(door_clone: dict[str, object], tmp_path: Path) -> dict[str, str]:
+    """The real door-deploy.sh, parked_settle.py and git. Only the deploy tool is a stub."""
+    stubs = tmp_path / "parked-stubs"
+    stubs.mkdir()
+    _write_stub(stubs / "systemctl", SYSTEMCTL_STUB)
+    _write_stub(tmp_path / "venv-python", PYTHON_STUB)
+    _write_stub(stubs / "python3", '#!/bin/bash\n'
+                'if [[ "$*" == *"/operator_door/deploy_staging.py"* ]]; then\n'
+                '  [ -z "${FAKE_STAGING_REFUSED:-}" ] || exit 1\n'
+                '  echo "$STUB_DIR/work-staging"; exit 0\n'
+                'fi\n'
+                f'exec "{sys.executable}" "$@"\n')
+    (tmp_path / "parked").mkdir()
+    (tmp_path / "state" / "deploy-receipts").mkdir(parents=True)
+    return {
+        **os.environ,
+        "PATH": f"{stubs}:{os.environ['PATH']}",
+        "STUB_LOG": str(tmp_path / "parked-calls.log"),
+        "STUB_DIR": str(tmp_path),
+        "DOOR_REQUEST_ID": DEPLOY_ID,
+        "DOOR_RESULTS_DIR": str(door_clone["results"]),
+        "DOOR_SOURCE_CLONE": str(door_clone["clone"]),
+        "DOOR_REFERENCE_REPO": str(tmp_path / "no-reference"),
+        "DOOR_UPSTREAM_URL": str(door_clone["upstream"]),
+        "DOOR_VENV_PYTHON": str(tmp_path / "venv-python"),
+        "DOOR_STATE_ROOT": str(tmp_path / "state"),
+        "DOOR_WAIT_FOR_IDLE": "0",
+        "DOOR_PARKED": "1",
+        "DOOR_PARKED_DIR": str(tmp_path / "parked"),
+        "DOOR_ACTIVE_RELEASE_LINK": str(tmp_path / "active"),
+    }
+
+
+def _park_for_script(values: dict[str, str], request_id: str, commit: str, *, active_at_park: str = "") -> None:
+    path = Path(values["DOOR_PARKED_DIR"]) / f"{request_id}.json"
+    path.write_text(json.dumps({"schema": "blueprint_operator_door_parked_deploy.v1", "id": request_id,
+                                "commit": commit, "wait_for_idle": False, "parked_at_epoch": 1.0,
+                                "active_release_at_park": active_at_park}), encoding="utf-8")
+    path.chmod(0o644)
+
+
+def _activate_for_script(values: dict[str, str], commit: str, *, proven: bool) -> None:
+    link = Path(values["DOOR_ACTIVE_RELEASE_LINK"])
+    link.unlink(missing_ok=True)
+    link.symlink_to(Path(values["STUB_DIR"]) / "releases" / commit)
+    if proven:
+        receipt = Path(values["DOOR_STATE_ROOT"]) / "deploy-receipts" / f"iteration_{commit[:12]}_door.json"
+        receipt.write_text(json.dumps({"status": "deployed", "source_commit": commit}), encoding="utf-8")
+
+
+def _run_parked(values: dict[str, str], commit: str, request_id: str = DEPLOY_ID) -> tuple[int, dict, list[str]]:
+    done = subprocess.run(["/bin/bash", str(DOOR / "door-deploy.sh")], capture_output=True, text=True, check=False,
+                          timeout=120, env={**values, "DOOR_COMMIT": commit, "DOOR_REQUEST_ID": request_id})
+    path = Path(values["DOOR_RESULTS_DIR"]) / f"{request_id}.outcome.json"
+    outcome = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    log = Path(values["STUB_LOG"])
+    return done.returncode, outcome, log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+
+def _first_commit(door_clone: dict[str, object]) -> str:
+    return _real_git("rev-parse", f"{door_clone['merged']}~1", cwd=door_clone["upstream"])
+
+
+def _older_parked_outcome(values: dict[str, str]) -> dict:
+    path = Path(values["DOOR_RESULTS_DIR"]) / f"{PARKED_OLDER_ID}.outcome.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _parked_names(values: dict[str, str]) -> list[str]:
+    return sorted(path.stem for path in Path(values["DOOR_PARKED_DIR"]).glob("*.json"))
+
+
+def test_a_parked_deploy_runs_the_commit_containing_the_others_whichever_asked(parked_env, door_clone) -> None:
+    first, newest = _first_commit(door_clone), str(door_clone["merged"])
+    _activate_for_script(parked_env, first, proven=True)
+    _park_for_script(parked_env, PARKED_OLDER_ID, newest, active_at_park=first)
+    _park_for_script(parked_env, DEPLOY_ID, first, active_at_park=first)
+    # The newest request names what already runs, so it settles alone and the next one deploys.
+    rc, outcome, calls = _run_parked(parked_env, first)
+    assert rc == 0 and outcome["status"] == "superseded"
+    assert not any(call.startswith("venv-python") for call in calls)
+
+    rc, outcome, calls = _run_parked(parked_env, newest, PARKED_OLDER_ID)
+
+    assert rc == 0 and outcome["status"] == "deployed" and outcome["commit"] == newest
+    tool = _tool_call(calls)
+    assert f"--source-commit {newest}" in tool
+    assert tool.endswith(f"iteration_{newest[:12]}_door.json")
+    assert _parked_names(parked_env) == []
+
+
+def _second_on_main(door_clone) -> str:
+    """A commit that contains the fixture's merged commit, and one on main that does not."""
+    upstream = door_clone["upstream"]
+    _real_git("commit", "--quiet", "--allow-empty", "-m", "third", cwd=upstream)
+    return _real_git("rev-parse", "HEAD", cwd=upstream)
+
+
+def test_a_request_a_deploy_covers_ends_only_after_a_receipt_proves_that_deploy(parked_env, door_clone) -> None:
+    first, second = _first_commit(door_clone), str(door_clone["merged"])
+    third = _second_on_main(door_clone)
+    _activate_for_script(parked_env, first, proven=True)
+    _park_for_script(parked_env, PARKED_OLDER_ID, second, active_at_park=first)
+    _park_for_script(parked_env, DEPLOY_ID, third, active_at_park=first)
+
+    rc, outcome, calls = _run_parked(parked_env, third)
+
+    assert rc == 0 and outcome["status"] == "deployed" and outcome["commit"] == third
+    assert f"--source-commit {third}" in _tool_call(calls)
+    assert _parked_names(parked_env) == [PARKED_OLDER_ID]
+    older = Path(parked_env["DOOR_RESULTS_DIR"]) / f"{PARKED_OLDER_ID}.outcome.json"
+    assert not older.exists()
+
+    _activate_for_script(parked_env, third, proven=True)
+    rc, outcome, calls = _run_parked(parked_env, second, PARKED_OLDER_ID)
+    assert rc == 0 and outcome["status"] == "superseded" and outcome["superseded_by_commit"] == third
+    assert _parked_names(parked_env) == []
+
+
+def test_when_the_newest_commit_fails_the_older_ones_keep_their_own_try(parked_env, door_clone) -> None:
+    first, second = _first_commit(door_clone), str(door_clone["merged"])
+    third = _second_on_main(door_clone)
+    _activate_for_script(parked_env, first, proven=True)
+    _park_for_script(parked_env, PARKED_OLDER_ID, second, active_at_park=first)
+    _park_for_script(parked_env, DEPLOY_ID, third, active_at_park=first)
+
+    rc, outcome, _ = _run_parked({**parked_env, "FAKE_TOOL_RC": "2"}, third)
+
+    assert rc == 2 and outcome["status"] == "failed" and outcome["code"] == "deploy_tool_exit_2"
+    assert _parked_names(parked_env) == [PARKED_OLDER_ID]
+    assert not (Path(parked_env["DOOR_RESULTS_DIR"]) / f"{PARKED_OLDER_ID}.outcome.json").exists()
+
+    Path(parked_env["STUB_LOG"]).unlink()
+    rc, outcome, calls = _run_parked(parked_env, second, PARKED_OLDER_ID)
+
+    assert rc == 0 and outcome["status"] == "deployed" and outcome["commit"] == second
+    assert f"--source-commit {second}" in _tool_call(calls)
+    assert _parked_names(parked_env) == []
+
+
+def _side_commit_merged_after(door_clone, base: str) -> tuple[str, str, str]:
+    """base - second - third - merge(side), with side branching from base."""
+    upstream = door_clone["upstream"]
+    third = _second_on_main(door_clone)
+    _real_git("switch", "--quiet", "-c", "side", base, cwd=upstream)
+    _real_git("commit", "--quiet", "--allow-empty", "-m", "side", cwd=upstream)
+    side = _real_git("rev-parse", "HEAD", cwd=upstream)
+    _real_git("switch", "--quiet", "main", cwd=upstream)
+    _real_git("merge", "--quiet", "--no-ff", "-m", "merge side", "side", cwd=upstream)
+    return third, side, _real_git("rev-parse", "main", cwd=upstream)
+
+
+def _outcome_of(values: dict[str, str], request_id: str) -> dict:
+    path = Path(values["DOOR_RESULTS_DIR"]) / f"{request_id}.outcome.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def test_a_red_commit_someone_else_named_fails_that_request_and_the_starter_gets_its_try(parked_env, door_clone) -> None:
+    """The request that started has the good, older commit, and the door still tries the newest first."""
+    first, second = _first_commit(door_clone), str(door_clone["merged"])
+    third = _second_on_main(door_clone)
+    _activate_for_script(parked_env, first, proven=True)
+    _park_for_script(parked_env, PARKED_OLDER_ID, third, active_at_park=first)
+    _park_for_script(parked_env, DEPLOY_ID, second, active_at_park=first)
+
+    rc, outcome, calls = _run_parked({**parked_env, "FAKE_TOOL_RC": "2"}, second)
+
+    assert rc == 2 and outcome == {}, "this request is not the one that failed"
+    assert f"--source-commit {third}" in _tool_call(calls)
+    older = _outcome_of(parked_env, PARKED_OLDER_ID)
+    assert older["status"] == "failed" and older["code"] == "deploy_tool_exit_2"
+    assert _parked_names(parked_env) == [DEPLOY_ID]
+    log = Path(parked_env["DOOR_RESULTS_DIR"])
+    assert f"deploying {third} for request {PARKED_OLDER_ID}" in (log / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
+    assert "phase=tool_start" in (log / f"{PARKED_OLDER_ID}.log").read_text(encoding="utf-8")
+
+    Path(parked_env["STUB_LOG"]).unlink()
+    rc, outcome, calls = _run_parked(parked_env, second)
+
+    assert rc == 0 and outcome["status"] == "deployed" and outcome["commit"] == second
+    assert f"--source-commit {second}" in _tool_call(calls)
+    assert _parked_names(parked_env) == []
+
+
+def test_a_good_commit_someone_else_named_succeeds_for_it_and_covers_the_starter(parked_env, door_clone) -> None:
+    first, second = _first_commit(door_clone), str(door_clone["merged"])
+    third = _second_on_main(door_clone)
+    _activate_for_script(parked_env, first, proven=True)
+    _park_for_script(parked_env, PARKED_OLDER_ID, third, active_at_park=first)
+    _park_for_script(parked_env, DEPLOY_ID, second, active_at_park=first)
+
+    rc, outcome, _ = _run_parked(parked_env, second)
+
+    assert rc == 0 and outcome == {}
+    assert _outcome_of(parked_env, PARKED_OLDER_ID)["status"] == "deployed"
+    assert _outcome_of(parked_env, PARKED_OLDER_ID)["commit"] == third
+    assert _parked_names(parked_env) == [DEPLOY_ID]
+
+    _activate_for_script(parked_env, third, proven=True)
+    rc, outcome, _ = _run_parked(parked_env, second)
+
+    assert rc == 0 and outcome["status"] == "superseded" and outcome["superseded_by_commit"] == third
+
+
+def _side_commit_merged_after(door_clone, base: str) -> tuple[str, str, str]:
+    """base - second - third - merge(side), with side branching from base."""
+    upstream = door_clone["upstream"]
+    third = _second_on_main(door_clone)
+    _real_git("switch", "--quiet", "-c", "side", base, cwd=upstream)
+    _real_git("commit", "--quiet", "--allow-empty", "-m", "side", cwd=upstream)
+    side = _real_git("rev-parse", "HEAD", cwd=upstream)
+    _real_git("switch", "--quiet", "main", cwd=upstream)
+    _real_git("merge", "--quiet", "--no-ff", "-m", "merge side", "side", cwd=upstream)
+    return third, side, _real_git("rev-parse", "main", cwd=upstream)
+
+
+def test_a_request_the_deploy_leaves_out_hears_so_on_the_next_wake_up(parked_env, door_clone) -> None:
+    """Side is on main but not in what runs, and third is ahead of what runs without it."""
+    first, second = _first_commit(door_clone), str(door_clone["merged"])
+    third, side, _ = _side_commit_merged_after(door_clone, first)
+    _activate_for_script(parked_env, second, proven=True)
+    _park_for_script(parked_env, PARKED_OLDER_ID, third, active_at_park=first)
+    _park_for_script(parked_env, DEPLOY_ID, side, active_at_park=first)
+
+    rc, outcome, calls = _run_parked(parked_env, side)
+
+    assert f"--source-commit {third}" in _tool_call(calls)
+    assert rc == 0 and outcome == {}
+    assert _outcome_of(parked_env, PARKED_OLDER_ID)["status"] == "deployed"
+
+    _activate_for_script(parked_env, third, proven=True)
+    rc, outcome, _ = _run_parked(parked_env, side)
+
+    assert outcome["status"] == "failed" and outcome["code"] == "parked_commit_not_contained"
+    assert outcome["active_release"] == third
+    assert rc == 0  # the unit did its job; the request's own outcome carries the refusal
+
+
+def test_a_merged_branch_tip_goes_out_inside_the_merge_that_contains_it(parked_env, door_clone) -> None:
+    first, second = _first_commit(door_clone), str(door_clone["merged"])
+    _, side, merge = _side_commit_merged_after(door_clone, first)
+    _activate_for_script(parked_env, second, proven=True)
+    _park_for_script(parked_env, PARKED_OLDER_ID, merge, active_at_park=first)
+    _park_for_script(parked_env, DEPLOY_ID, side, active_at_park=first)
+
+    rc, outcome, calls = _run_parked(parked_env, side)
+
+    assert rc == 0 and f"--source-commit {merge}" in _tool_call(calls)
+    assert _outcome_of(parked_env, PARKED_OLDER_ID)["commit"] == merge
+    assert _parked_names(parked_env) == [DEPLOY_ID]
+
+
+def test_a_refused_staging_guard_keeps_every_request_parked(parked_env, door_clone) -> None:
+    newest = str(door_clone["merged"])
+    _activate_for_script(parked_env, _first_commit(door_clone), proven=True)
+    _park_for_script(parked_env, DEPLOY_ID, newest)
+
+    rc, outcome, calls = _run_parked({**parked_env, "FAKE_STAGING_REFUSED": "1"}, newest)
+
+    assert rc == 0 and outcome == {}
+    assert not any(call.startswith("venv-python") for call in calls)
+    assert _parked_names(parked_env) == [DEPLOY_ID]
+
+
+def test_a_record_stays_until_its_outcome_exists(parked_env, door_clone) -> None:
+    first, newest = _first_commit(door_clone), str(door_clone["merged"])
+    _activate_for_script(parked_env, first, proven=True)
+    _park_for_script(parked_env, DEPLOY_ID, newest, active_at_park=first)
+    (Path(parked_env["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.outcome.json").mkdir()
+
+    done = subprocess.run(["/bin/bash", str(DOOR / "door-deploy.sh")], capture_output=True, text=True, check=False,
+                          timeout=120, env={**parked_env, "DOOR_COMMIT": newest})
+
+    assert done.returncode != 0
+    assert _parked_names(parked_env) == [DEPLOY_ID]
+
+
+def test_a_parked_commit_a_proven_release_already_runs_starts_no_tool(parked_env, door_clone) -> None:
+    newest = str(door_clone["merged"])
+    _activate_for_script(parked_env, newest, proven=True)
+    _park_for_script(parked_env, DEPLOY_ID, newest)
+
+    rc, outcome, calls = _run_parked(parked_env, newest)
+
+    assert rc == 0 and outcome["status"] == "superseded"
+    assert not any(call.startswith("venv-python") for call in calls)
+    assert _parked_names(parked_env) == []
+
+
+def test_a_rollback_parked_during_a_deploy_exits_as_a_refusal_the_client_sees(parked_env, door_clone) -> None:
+    first, newest = _first_commit(door_clone), str(door_clone["merged"])
+    _activate_for_script(parked_env, newest, proven=True)
+    _park_for_script(parked_env, DEPLOY_ID, first, active_at_park=newest)
+
+    rc, outcome, calls = _run_parked(parked_env, first)
+
+    assert outcome["status"] == "failed" and outcome["code"] == "parked_rollback_refused"
+    assert rc == 0  # the unit did its job; the request's own outcome carries the refusal
+    assert not any(call.startswith("venv-python") for call in calls)
+
+
+def test_another_deploys_lock_keeps_everything_parked_with_no_outcome(parked_env, door_clone) -> None:
+    import fcntl
+
+    newest = str(door_clone["merged"])
+    _activate_for_script(parked_env, _first_commit(door_clone), proven=True)
+    _park_for_script(parked_env, DEPLOY_ID, newest)
+    lock = os.open(Path(parked_env["DOOR_STATE_ROOT"]) / "control-plane-deploy.lock", os.O_RDWR | os.O_CREAT)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        rc, outcome, calls = _run_parked(parked_env, newest)
+    finally:
+        os.close(lock)
+
+    assert rc == 0 and outcome == {}
+    assert not any(call.startswith("venv-python") for call in calls)
+    assert _parked_names(parked_env) == [DEPLOY_ID]
+
+
+def test_a_failed_fetch_keeps_every_request_parked_and_writes_no_outcome(parked_env, door_clone) -> None:
+    """Nothing about a request made the fetch fail, so an outage must not use up the queue."""
+    newest = str(door_clone["merged"])
+    _activate_for_script(parked_env, _first_commit(door_clone), proven=True)
+    _park_for_script(parked_env, PARKED_OLDER_ID, newest)
+    _park_for_script(parked_env, DEPLOY_ID, newest)
+    parked_env["DOOR_UPSTREAM_URL"] = str(Path(parked_env["STUB_DIR"]) / "no-such-upstream")
+
+    rc, outcome, calls = _run_parked(parked_env, newest)
+
+    assert rc == 0 and outcome == {}
+    assert not any(call.startswith("venv-python") for call in calls)
+    assert _parked_names(parked_env) == sorted([PARKED_OLDER_ID, DEPLOY_ID])
+
+
+def test_a_direct_deploy_whose_fetch_fails_still_refuses(parked_env, door_clone) -> None:
+    newest = str(door_clone["merged"])
+    del parked_env["DOOR_PARKED"], parked_env["DOOR_PARKED_DIR"]
+    parked_env["DOOR_UPSTREAM_URL"] = str(Path(parked_env["STUB_DIR"]) / "no-such-upstream")
+
+    rc, outcome, _ = _run_parked(parked_env, newest)
+
+    assert rc == 2 and outcome["code"] == "fetch_failed"
+
+
+def test_a_settle_that_cannot_decide_is_reported_and_starts_no_tool(parked_env, door_clone) -> None:
+    newest = str(door_clone["merged"])
+    _park_for_script(parked_env, DEPLOY_ID, newest)
+    del parked_env["DOOR_ACTIVE_RELEASE_LINK"]
+
+    rc, outcome, calls = _run_parked(parked_env, newest)
+
+    assert rc == 2 and outcome["code"] == "parked_settle_failed"
+    assert not any(call.startswith("venv-python") for call in calls)
+
+
+def test_a_deploy_requested_directly_keeps_the_power_to_roll_back(parked_env, door_clone) -> None:
+    first, newest = _first_commit(door_clone), str(door_clone["merged"])
+    _activate_for_script(parked_env, newest, proven=True)
+    del parked_env["DOOR_PARKED"], parked_env["DOOR_PARKED_DIR"]
+
+    rc, outcome, calls = _run_parked(parked_env, first)
+
+    assert rc == 0 and outcome["status"] == "deployed" and outcome["commit"] == first
+    assert f"--source-commit {first}" in _tool_call(calls)
+
+
 def test_github_upstream_without_a_deploy_key_is_refused(env: dict[str, str]) -> None:
     Path(env["DOOR_GITHUB_KEY"]).unlink()
     rc, outcome, calls = _run("door-deploy.sh", env, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0")

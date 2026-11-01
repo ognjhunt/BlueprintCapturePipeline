@@ -1075,7 +1075,8 @@ def run_scene_configuration_vast(
     With ``cpu_prestage_stage_limit`` the CPU stages up to that limit execute
     on this host first, from the same bundle and authority; their completed
     checkpoints travel as a digest-bound capsule and the paid run starts at
-    the first GPU stage. A prefix that fails never rents a GPU.
+    the first GPU stage. A prefix that fails never rents a GPU, and one whose
+    disk admission alone does not fit is skipped (``cpu_prestage_decision``).
     """
 
     job = Path(job_dir).expanduser().resolve()
@@ -1260,6 +1261,8 @@ def run_scene_configuration_vast(
         phase="before_allocation_and_staging",
         disk_usage_provider=disk_usage_provider,
     )
+    if output_admission.cpu_prestage_decision is not None:
+        cpu_prestage_stage_limit = None  # admitted only without it: every stage on the GPU
     if preallocation_disk_capacity["status"] != "ready":
         return _seal_live_terminal_result(
             job,

@@ -97,9 +97,15 @@ def _json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _safe_infos(zipped: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+def _source_bundle_budget() -> int:
+    # The source bundle is bounded by its builder, not by the checkpoint capsule.
+    from .task_evaluation_scene_configuration_bundle import _MAX_TOTAL_BYTES
+    return _MAX_TOTAL_BYTES
+
+
+def _safe_infos(zipped: zipfile.ZipFile, *, budget: int = MAX_CAPSULE_BYTES) -> list[zipfile.ZipInfo]:
     infos = zipped.infolist()
-    _require(len(infos) <= 200_000 and sum(i.file_size for i in infos) <= MAX_CAPSULE_BYTES,
+    _require(len(infos) <= 200_000 and sum(i.file_size for i in infos) <= budget,
              "archive_budget_exceeded")
     _require(len({i.filename for i in infos}) == len(infos), "archive_duplicate_member")
     for info in infos:
@@ -109,11 +115,12 @@ def _safe_infos(zipped: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
     return infos
 
 
-def _extract(archive: Path, root: Path, *, allowed: Callable[[str], bool] | None = None) -> list[str]:
+def _extract(archive: Path, root: Path, *, allowed: Callable[[str], bool] | None = None,
+             budget: int = MAX_CAPSULE_BYTES) -> list[str]:
     root.mkdir(parents=True, exist_ok=True)
     extracted: list[str] = []
     with zipfile.ZipFile(archive) as zipped:
-        for info in _safe_infos(zipped):
+        for info in _safe_infos(zipped, budget=budget):
             if allowed is not None and not allowed(info.filename):
                 continue
             zipped.extract(info, root)
@@ -320,7 +327,7 @@ def prepare_stage_prefix_before_gpu(
         if name.endswith("API_KEY_FILE") and value:
             _require(not Path(str(value)).resolve().is_relative_to(work), "secret_inside_work_dir")
     with zipfile.ZipFile(bundle) as zipped:
-        source_unpacked_bytes = sum(row.file_size for row in _safe_infos(zipped))
+        source_unpacked_bytes = sum(row.file_size for row in _safe_infos(zipped, budget=_source_bundle_budget()))
     peak_bytes = 3 * source_unpacked_bytes + 512 * 1024**2
     root = work / BUNDLE_DIRNAME
     runtime = root / "provider_runtime"
@@ -362,7 +369,7 @@ def prepare_stage_prefix_before_gpu(
             # neither shrink nor hide this prefix's footprint; the clear makes it
             # fresh whatever unrelated content the work dir also holds.
             reservation.bind_workspace(work, fresh=True)
-            _extract(bundle, root)
+            _extract(bundle, root, budget=_source_bundle_budget())
             _require((root / ENTRYPOINT).is_file(), "entrypoint_missing")
             output.mkdir(mode=0o750)
             log_path = job / "cpu_prestage_entrypoint.log"

@@ -1119,7 +1119,7 @@ def default_activation_preparer(
         str(receipt_path),
     ]
     completed = subprocess.run(  # nosec B603 - fixed argv, no shell
-        command, capture_output=True, text=True, check=False, timeout=3600
+        command, capture_output=True, text=True, check=False, timeout=4 * 3600
     )
     if receipt_path.is_symlink() or not receipt_path.is_file():
         raise TaskEvaluationLaunchActivationWorkerError(

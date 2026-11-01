@@ -5406,6 +5406,13 @@ def test_zip_tree_stores_already_compressed_members_and_deflates_the_rest(tmp_pa
         assert archive.read("wheelhouse/torch-2.0-py3-none-any.whl") == b"\x00\x01" * 4096
         assert archive.getinfo("runtime.sh").external_attr >> 16 & 0o777 == 0o755
         assert archive.testzip() is None
+        # Compressible members are deflated at the fast level: the 2026-10-31
+        # activation was stopped at one hour while still writing its bundle.
+        import zlib as _zlib
+        manifest = (stage / "manifest.json").read_bytes()
+        fast = _zlib.compressobj(bundle_module._DEFLATE_LEVEL, _zlib.DEFLATED, -15)
+        assert bundle_module._DEFLATE_LEVEL == 1
+        assert archive.getinfo("manifest.json").compress_size == len(fast.compress(manifest) + fast.flush())
     again = tmp_path / "again.zip"
     bundle_module._zip_tree(stage, again)
     assert again.read_bytes() == destination.read_bytes()  # still deterministic
@@ -5504,3 +5511,47 @@ def test_agents_api_project_guard_refuses_before_paid_allocation(tmp_path, monke
     with pytest.raises(scene_vast.TaskEvaluationSceneConfigurationVastError,
                        match="agents_api_project_guard_invalid"):
         scene_vast._provider_runtime_inputs(authority, receipt)
+
+
+def test_bundle_archive_bounds_fit_the_provider_disk_and_still_refuse_past_them(tmp_path, monkeypatch):
+    """2026-10-31: a real stage carrying the CUDA Torch runtime passed the old 8 GiB total."""
+    import re as _re
+    from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle_module
+    from blueprint_pipeline.task_evaluation_scene_configuration_bundle_evidence import (
+        TaskEvaluationSceneConfigurationBundleError,
+    )
+
+    vast = (Path(bundle_module.__file__).with_name("task_evaluation_scene_configuration_vast.py")).read_text()
+    [disk_gb] = {int(value) for value in _re.findall(r"disk_gb=(\d+)", vast)}
+    assert bundle_module._MAX_TOTAL_BYTES > 8 * 1024**3
+    assert bundle_module._MAX_MEMBER_BYTES > 2 * 1024**3
+    # The archive and its expansion both land on the instance before any output.
+    assert 2 * bundle_module._MAX_TOTAL_BYTES < disk_gb * 10**9 * 0.6
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "a.bin").write_bytes(b"a" * 64)
+    (stage / "b.bin").write_bytes(b"b" * 64)
+    monkeypatch.setattr(bundle_module, "_MAX_TOTAL_BYTES", 100)
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="archive_limit_exceeded"):
+        bundle_module._zip_tree(stage, tmp_path / "over_total.zip")
+    monkeypatch.setattr(bundle_module, "_MAX_TOTAL_BYTES", 1000)
+    monkeypatch.setattr(bundle_module, "_MAX_MEMBER_BYTES", 32)
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="archive_limit_exceeded"):
+        bundle_module._zip_tree(stage, tmp_path / "over_member.zip")
+
+
+def test_zip_tree_writes_members_past_the_zip64_limit(tmp_path, monkeypatch):
+    """A member over 2 GiB needs ZIP64 headers before it is written, or closing it raises."""
+    import zipfile as _zipfile
+    from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle_module
+
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    payload = bytes(range(256)) * 16
+    (stage / "libbig.so").write_bytes(payload)
+    monkeypatch.setattr(_zipfile, "ZIP64_LIMIT", 1024)
+    destination = tmp_path / "bundle.zip"
+    bundle_module._zip_tree(stage, destination)
+    with _zipfile.ZipFile(destination) as archive:
+        assert archive.read("libbig.so") == payload

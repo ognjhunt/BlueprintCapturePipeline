@@ -132,7 +132,7 @@ def g1_plan(*, maximum="4.00"):
 def test_four_candidates_have_individual_budget_outcomes_and_explicit_frozen_resets():
     plan = g1_plan()
     assert len(plan["candidates"]) == 4
-    assert [r["status"] for r in plan["candidates"]] == ["selected"] * 3 + ["deferred"]
+    assert [r["status"] for r in plan["candidates"]] == ["selected"] * 3 + ["waitlisted"]
     assert plan["maximum_planned_cost_usd"] == "12.00"
     assert plan["candidates"][-1]["blockers"] == ["site_screening_budget_insufficient"]
     for row in plan["candidates"][:3]:

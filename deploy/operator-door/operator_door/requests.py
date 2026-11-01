@@ -580,7 +580,7 @@ def load_request_file(path: Path) -> dict[str, Any]:
         os.close(fd)
     try:
         document = json.loads(data)
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as error:
         raise RequestRefused("spool_file_not_json") from error
     if not isinstance(document, dict):
         raise RequestRefused("spool_file_not_object")
