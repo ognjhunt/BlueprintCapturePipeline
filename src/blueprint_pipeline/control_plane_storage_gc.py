@@ -163,6 +163,7 @@ DEFAULT_SCRATCH_MINIMUM_AGE_SECONDS = 72 * 60 * 60
 #: outputs and receipts while the bundle is reaped; nothing else in the
 #: workspace is touched.
 WORKSPACE_BUNDLE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_ROOTS"
+SETTLED_ACTIVATION_BUNDLE_ROOTS_ENV = "BLUEPRINT_CONTROL_PLANE_GC_SETTLED_ACTIVATION_BUNDLE_ROOTS"
 WORKSPACE_BUNDLE_MINIMUM_AGE_ENV = "BLUEPRINT_CONTROL_PLANE_GC_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS"
 WORKSPACE_BUNDLE_SCHEMA_VERSION = "control_plane_workspace_bundle_manifest.v1"
 WORKSPACE_BUNDLE_RECEIPT_SCHEMA_VERSION = "control_plane_workspace_bundle_receipt.v1"
@@ -1291,6 +1292,7 @@ def run_storage_gc(
     scratch_minimum_age_seconds: int = DEFAULT_SCRATCH_MINIMUM_AGE_SECONDS,
     workspace_bundle_roots: Sequence[str | Path] = (),
     workspace_bundle_minimum_age_seconds: int = DEFAULT_WORKSPACE_BUNDLE_MINIMUM_AGE_SECONDS,
+    settled_activation_bundle_roots: Sequence[str | Path] = (),
     scene_workspace_roots: Sequence[str | Path] = (),
     scene_intent_root: str | Path | None = None,
     scene_binding_root: str | Path | None = None,
@@ -1533,6 +1535,21 @@ def run_storage_gc(
             return apply_workspace_bundle_manifest(bundles, ack=WORKSPACE_BUNDLE_ACK, now=clock) if apply else bundles
 
         _isolated(report, "workspace_bundles", bundle_phase)
+    settled_present, absent = _existing(settled_activation_bundle_roots)
+    report["skipped_roots"].extend(absent)
+    if settled_present and scene_intent_root:
+        def settled_bundle_phase() -> Any:
+            # Settled attempts only; their receipts and evidence stay pinned.
+            from .control_plane_settled_activation_bundles import (
+                ACK as SETTLED_ACK, apply_settled_activation_bundle_manifest,
+                build_settled_activation_bundle_manifest,
+            )
+            plan = build_settled_activation_bundle_manifest(
+                activation_roots=settled_present, intent_root=scene_intent_root,
+                queue_roots=queue_roots, now=clock)
+            return apply_settled_activation_bundle_manifest(plan, ack=SETTLED_ACK, now=clock) if apply else plan
+
+        _isolated(report, "settled_activation_bundles", settled_bundle_phase)
     replay_present, absent = _existing(replay_parent_roots)
     report["skipped_roots"].extend(absent)
     if replay_present:
@@ -1807,6 +1824,7 @@ def _run_main(argv: list[str]) -> int:
                         help="explicit lane parent to observe; always report-only, including with --apply")
     parser.add_argument("--replay-parent-root", action="append", default=None)
     parser.add_argument("--workspace-bundle-root", action="append", default=None)
+    parser.add_argument("--settled-activation-bundle-root", action="append", default=None)
     parser.add_argument(
         "--workspace-bundle-minimum-age-seconds",
         type=int,
@@ -1876,6 +1894,8 @@ def _run_main(argv: list[str]) -> int:
         running_commit=args.running_commit or "",
         scratch_roots=args.scratch_root or _split_env(SCRATCH_ROOTS_ENV),
         workspace_bundle_roots=args.workspace_bundle_root or _split_env(WORKSPACE_BUNDLE_ROOTS_ENV),
+        settled_activation_bundle_roots=(args.settled_activation_bundle_root
+                                         or _split_env(SETTLED_ACTIVATION_BUNDLE_ROOTS_ENV)),
         workspace_bundle_minimum_age_seconds=args.workspace_bundle_minimum_age_seconds,
         scratch_minimum_age_seconds=args.scratch_minimum_age_seconds,
         # Without this the run always used DEFAULT_DERIVED_MINIMUM_AGE_SECONDS (6h) and

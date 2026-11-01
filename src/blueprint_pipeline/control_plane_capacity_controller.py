@@ -179,7 +179,7 @@ def _reclaim_outlook(
 
     reclaim_phases = (
         "derived_directories", "content_store", "scratch_directories",
-        "workspace_bundles", "result_artifact_offload", "evidence_offload",
+        "workspace_bundles", "settled_activation_bundles", "result_artifact_offload", "evidence_offload",
         "replay_caches", "scene_workspaces", "result_residue_offload",
     )
     sources = dict.fromkeys(reclaim_phases)
@@ -205,7 +205,7 @@ def _reclaim_outlook(
     if (not isinstance(skipped_roots, list) or not isinstance(phase_errors, list)
             or skipped_roots or phase_errors):
         return outlook, [], False
-    enabled = [name for name in reclaim_phases[:4] if name in phases]
+    enabled = [name for name in reclaim_phases[:5] if name in phases]
     if opt_in.get("evidence_offload") is True:
         if "result_artifact_offload" in phases:
             enabled.append("result_artifact_offload")
