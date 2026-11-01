@@ -39,6 +39,11 @@ ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 # missing when the namespace is built only means this run builds a single-use
 # archive, never a failure.
 ReadWritePaths=-/var/lib/blueprint/task-evaluation-inputs/scene-configuration-toolchain-archives
+# Named explicitly: the default resolution requires the inputs volume itself to
+# be writable, which ProtectSystem=strict keeps read-only here. If the root is
+# missing or read-only at build time, prepare_toolchain_archive falls back to
+# a single-use archive.
+Environment=BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_ARCHIVE_CACHE_ROOT=/var/lib/blueprint/task-evaluation-inputs/scene-configuration-toolchain-archives
 TasksMax=512
 LimitNOFILE=8192
 MemoryMax=8G

@@ -476,3 +476,15 @@ def test_stat_only_skips_wheel_hashes_but_never_ships_a_changed_wheel(
     # Miss: the archive hashes the wheel against the inventory and refuses it.
     with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="source_mismatch"):
         _bundle(tmp_path, "miss", toolchain=toolchain, commit=A, cache=tmp_path / "empty-cache")
+
+
+def test_the_activation_unit_names_a_writable_archive_cache_and_stat_only_validation() -> None:
+    """The unit is ProtectSystem=strict: only an explicitly named, writable root is ever reused."""
+    unit = (Path(__file__).resolve().parents[1]
+            / "deploy/systemd/blueprint-task-evaluation-launch-activation.service").read_text()
+    root = archive_module.DEFAULT_CACHE_PARENT / archive_module.DEFAULT_CACHE_NAME
+    assert f"Environment={archive_module.CACHE_ROOT_ENV}={root}\n" in unit
+    assert f"ReadWritePaths=-{root}\n" in unit
+    assert f"install -d -o blueprint -g blueprint -m 0750 {root}'" in unit
+    # Owner decision 2026-11-01.
+    assert "Environment=BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION=1\n" in unit
