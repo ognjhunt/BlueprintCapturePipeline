@@ -29,9 +29,13 @@ SOURCE_FIELDS = (
     "task_context_digest", "scene_revision_digest",
 )
 CANDIDATE_STATUSES = frozenset({
-    "pending", "preparing", "launching", "running", "reconciliation_required",
+    "pending", "waitlisted", "preparing", "launching", "running", "reconciliation_required",
     "completed", "blocked", "unavailable", "deferred",
 })
+# ``waitlisted``: runnable, waiting for site budget a funded candidate may
+# release before spend. Not terminal: it becomes ``pending`` when funded, or
+# ``deferred`` once nothing at the site can release money any more.
+QUEUED_STATUSES = frozenset({"pending", "waitlisted"})
 ACTIVE_STATUSES = frozenset({"preparing", "launching", "running", "reconciliation_required"})
 TERMINAL_STATUSES = frozenset({"completed", "blocked", "unavailable", "deferred"})
 
@@ -112,7 +116,7 @@ def campaign_status(candidates: Mapping[str, Mapping[str, Any]]) -> str:
         return "reconciliation_required"
     if any(status in ACTIVE_STATUSES for status in statuses):
         return "running"
-    if "pending" in statuses:
+    if QUEUED_STATUSES & set(statuses):
         return "queued"
     return "completed" if "completed" in statuses else "blocked"
 
