@@ -158,9 +158,20 @@ def test_postcreate_adapter_exception_preserves_instance_identity_and_watchdog(
         lambda **_kwargs: ({"OPENAI_API_KEY_FILE": "/owner-only-key"} if website_prefix else {}, None),
     )
 
+    excluded_jobs = []
+
+    def excluded(*, job_dir):
+        excluded_jobs.append(Path(job_dir))
+        return {140607}
+
+    monkeypatch.setattr(scene_vast, "scene_configuration_excluded_machine_ids", excluded)
+
     def adapter(**kwargs):
         events.append("gpu_allocation")
         assert events == ["api_preparation", "gpu_allocation"]
+        # Machines sibling launches proved bad are excluded from this rental.
+        assert kwargs["excluded_machine_ids"] == {140607}
+        assert excluded_jobs == [(tmp_path / "job").resolve()]
         if website_prefix:
             assert kwargs["runtime_secret_file_paths"] == {}
             assert kwargs["provider_runtime_environment"][cpu.PREFIX_SHA_ENV].startswith("sha256:")

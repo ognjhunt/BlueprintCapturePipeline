@@ -1757,6 +1757,8 @@ SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "libpango-1.0-0": (),
     "libcairo2": (),
     "libasound2t64": (),
+    # The packaged Blender 5.0's system X libraries (its ELF NEEDED; it ships the rest).
+    "libx11-6": (), "libxrender1": (), "libxi6": (),
 }
 #: Provided by the ``/isaac-sim/python.sh`` shim the onstart writes onto PATH,
 #: not by apt, so it is named separately rather than assumed.
@@ -1887,6 +1889,8 @@ def _machine_avoidlist_reason(blockers: Sequence[str]) -> str | None:
         return "vast_provider_bootstrap_input_download_transport_timeout"
     if "provider_instance_exited_before_bundle_terminal_marker" in observed:
         return "vast_provider_bundle_instance_exited_before_terminal_marker"
+    if "provider_remote_blocker:asset_sandbox_unavailable" in observed:
+        return "vast_host_asset_sandbox_unavailable"
     startup_blockers = {
         "vast_heartbeat_blocked",
         "vast_heartbeat_instance_exited",
