@@ -482,7 +482,8 @@ def test_the_activation_unit_names_a_writable_archive_cache_and_stat_only_valida
     """The unit is ProtectSystem=strict: only an explicitly named, writable root is ever reused."""
     unit = (Path(__file__).resolve().parents[1]
             / "deploy/systemd/blueprint-task-evaluation-launch-activation.service").read_text()
-    root = archive_module.DEFAULT_CACHE_PARENT / archive_module.DEFAULT_CACHE_NAME
+    # Literal: an autouse fixture points DEFAULT_CACHE_PARENT at a temporary directory.
+    root = "/var/lib/blueprint/task-evaluation-inputs/scene-configuration-toolchain-archives"
     assert f"Environment={archive_module.CACHE_ROOT_ENV}={root}\n" in unit
     assert f"ReadWritePaths=-{root}\n" in unit
     assert f"install -d -o blueprint -g blueprint -m 0750 {root}'" in unit
