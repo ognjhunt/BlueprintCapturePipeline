@@ -43,6 +43,8 @@ _BETA_TRIGGERS = frozenset((
     "blueprint-pubsub-handoff-listener.timer", "blueprint-team-scene-packet.path",
     "blueprint-rigid-robot-free-probe-runner.path", "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-beta-policy-screening.timer",
+    # Its leases and provider-zero receipts gate release succession and completion.
+    "blueprint-task-evaluation-launch-reconciler.timer",
 ))
 
 

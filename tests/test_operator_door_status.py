@@ -336,3 +336,14 @@ def test_status_includes_bounded_notifier_binding(host_tree: dict[str, Path]) ->
     status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={})
     assert status["notifier_binding"]["unit"] == "blueprint-pipeline-control-plane.service"
     assert status["notifier_binding"]["status"] == "unknown"
+
+
+def test_an_inactive_launch_reconciler_timer_is_a_required_trigger() -> None:
+    """Leases and provider-zero receipts it files gate succession and completion."""
+    from operator_door.config import DoorConfig as _Config
+    from operator_door.status import _unit_health
+
+    timer = "blueprint-task-evaluation-launch-reconciler.timer"
+    assert timer in _Config.__dataclass_fields__["controller_units"].default
+    health = _unit_health([{"Id": timer, "ActiveState": "inactive"}], [])
+    assert health["current"] == [{"unit": timer, "state": "required_trigger_inactive", "invocation_id": None}]
