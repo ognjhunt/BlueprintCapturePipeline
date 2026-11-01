@@ -22,6 +22,10 @@ laptop too. Standard library only.
     python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
         --expires-at 2026-11-07T10:30:00Z --authorization-reference "<owner approval>" --wait   # plan only
     python3 scripts/operator_door.py extend-scene-execution-window ... --apply --ack extend-scene-execution-window --wait
+    python3 scripts/operator_door.py extend-scene-execution-budget <intent_id> --owner-user-id U --owner-organization-id O \
+        --approved-by U --approval-evidence "<owner approval>" --max-total-spend-usd 25 --max-paid-attempts 16 --wait   # preview
+    python3 scripts/operator_door.py extend-scene-execution-budget ... --apply --apply-ack sha256:<preview apply_ack> \
+        --ack extend-scene-execution-budget --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
 nothing is configured in the VM and no header is sent. Elsewhere the token
@@ -75,6 +79,7 @@ ATTESTED_SEARCH_RUNS = 30
 # Unauthenticated, the API allows 60 requests an hour for everyone on this address.
 ATTESTED_JOB_READS = 8
 SCENE_WINDOW_ACK = "extend-scene-execution-window"
+SCENE_BUDGET_ACK = "extend-scene-execution-budget"
 MAX_SCENE_WINDOW_SECONDS = 7 * 86400
 
 
@@ -719,6 +724,32 @@ def _scene_window_body(args: argparse.Namespace, *, now: float | None = None) ->
             "authorization_reference": reference, "ack": SCENE_WINDOW_ACK, "apply": bool(args.apply)}
 
 
+def _scene_budget_body(args: argparse.Namespace) -> dict[str, Any]:
+    """A preview unless --apply; apply repeats the preview's apply_ack and the fixed --ack."""
+    if re.fullmatch(r"scene-[0-9a-f]{64}", args.intent_id) is None:
+        raise DoorError(2, "scene_budget_intent_id_invalid")
+    for name in ("owner_user_id", "owner_organization_id", "approved_by"):
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}", getattr(args, name)) is None:
+            raise DoorError(2, f"scene_budget_{name}_invalid")
+    evidence = args.approval_evidence
+    if evidence != evidence.strip() or not 1 <= len(evidence) <= 500 or not evidence.isprintable():
+        raise DoorError(2, "scene_budget_approval_evidence_invalid")
+    if not 0 < args.max_total_spend_usd <= 1000 or not 1 <= args.max_paid_attempts <= 1000:
+        raise DoorError(2, "scene_budget_limits_invalid")
+    if args.apply and (args.ack != SCENE_BUDGET_ACK
+                       or re.fullmatch(r"sha256:[0-9a-f]{64}", args.apply_ack or "") is None):
+        raise DoorError(2, f"scene_budget_apply_requires --apply-ack <preview apply_ack> --ack {SCENE_BUDGET_ACK}")
+    if not args.apply and (args.apply_ack or args.ack not in (None, SCENE_BUDGET_ACK)):
+        raise DoorError(2, "scene_budget_preview_takes_no_apply_ack")
+    spend = args.max_total_spend_usd
+    return {"kind": "extend-scene-execution-budget", "intent_id": args.intent_id,
+            "owner_user_id": args.owner_user_id, "owner_organization_id": args.owner_organization_id,
+            "approved_by": args.approved_by, "approval_evidence": evidence,
+            "max_total_spend_usd": int(spend) if float(spend).is_integer() else spend,
+            "max_paid_attempts": args.max_paid_attempts, "apply": bool(args.apply),
+            "apply_ack": args.apply_ack if args.apply else "", "ack": SCENE_BUDGET_ACK}
+
+
 def _hold_duration(value: str) -> int:
     match = re.fullmatch(r"([0-9]+)([hms])", value)
     if match is None:
@@ -837,6 +868,20 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     window.add_argument("--apply", action="store_true", help="record it; without this only a plan is made")
     window.add_argument("--ack", help=f"required with --apply: {SCENE_WINDOW_ACK}")
     _add_wait(window, 600)
+    budget = commands.add_parser(
+        "extend-scene-execution-budget",
+        help="preview an owner-approved spend/attempt ceiling grant for one scene intent; --apply records it",
+    )
+    budget.add_argument("intent_id", help="scene-<64 hex>, the sealed intent")
+    for flag in ("--owner-user-id", "--owner-organization-id", "--approved-by"):
+        budget.add_argument(flag, required=True)
+    budget.add_argument("--approval-evidence", required=True, help="names the owner's approval (<= 500 chars)")
+    budget.add_argument("--max-total-spend-usd", required=True, type=float, help="the new cumulative spend ceiling")
+    budget.add_argument("--max-paid-attempts", required=True, type=int, help="the new cumulative attempt ceiling")
+    budget.add_argument("--apply", action="store_true", help="record it; without this only a preview is made")
+    budget.add_argument("--apply-ack", help="with --apply: the preview's apply_ack digest")
+    budget.add_argument("--ack", help=f"required with --apply: {SCENE_BUDGET_ACK}")
+    _add_wait(budget, 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
     resume = commands.add_parser(
@@ -974,6 +1019,8 @@ def run(args: argparse.Namespace) -> int:
         return _submit({"kind": "legacy-owner-census"}, args)
     elif command == "extend-scene-execution-window":
         return _submit(_scene_window_body(args), args)
+    elif command == "extend-scene-execution-budget":
+        return _submit(_scene_budget_body(args), args)
     elif command == "public-embodiment-preparation":
         request = _embodiment_preparation_request(args.request_file)
         if not args.operation_key:

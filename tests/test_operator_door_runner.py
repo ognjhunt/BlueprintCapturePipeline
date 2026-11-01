@@ -1641,3 +1641,39 @@ def test_a_parked_override_skips_the_recheck_wait(config: DoorConfig) -> None:
     runner = FakeRunner()
     process_spool(config, runner=runner)
     assert _launch_env(_deploy_launches(runner)[0])["DOOR_ACTIVATION_HOLD_OVERRIDE"] == "money"
+
+
+def test_scene_budget_grant_runs_the_release_module_without_network_or_secrets(config: DoorConfig) -> None:
+    body = {"kind": "extend-scene-execution-budget", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner chose +$5 $(touch x)", "max_total_spend_usd": 25,
+            "max_paid_attempts": 16, "apply": True, "apply_ack": "sha256:" + "c" * 64,
+            "ack": "extend-scene-execution-budget"}
+    request_id = _spooled(config, body)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    label = hashlib.sha256(body["intent_id"].encode()).hexdigest()[:12]
+    unit = f"blueprint-operator-door-scene-budget-{label}-{request_id[-8:]}.service"
+    assert call[1] == f"--unit={unit}" and "--property=RuntimeMaxSec=5min" in call
+    for sandbox in ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "ProtectHome=yes",
+                    "UMask=0077", "PrivateNetwork=yes"):
+        assert f"--property={sandbox}" in call, sandbox
+    hidden = next(value for value in call if value.startswith("--property=InaccessiblePaths="))
+    assert "-/etc/blueprint/provider-secrets" in hidden and "-/etc/blueprint-operator-door" in hidden
+    assert "--setenv=DOOR_REQUESTED_BY=cloud" in call and "--setenv=DOOR_SERVICE_USER=blueprint" in call
+    assert f"--setenv=DOOR_SCENE_BUDGET_REQUEST={json.dumps(body, sort_keys=True)}" in call
+    assert call[-1] == "/opt/blueprint/operator-door/door-extend-scene-execution-budget.sh"
+    assert not any(row[:2] == ["systemctl", "list-units"] for row in runner.calls)
+
+
+def test_scene_budget_caller_name_is_rechecked_before_launch(config: DoorConfig) -> None:
+    body = {"kind": "extend-scene-execution-budget", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner approval", "max_total_spend_usd": 25, "max_paid_attempts": 16,
+            "apply": False, "apply_ack": "", "ack": "extend-scene-execution-budget"}
+    request_id = enqueue(config, validate_request(body), requested_by="bad caller")
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert not [row for row in runner.calls if row[0] == "systemd-run"]
+    assert _result(config, request_id)["code"] == "scene_budget_caller_invalid"
