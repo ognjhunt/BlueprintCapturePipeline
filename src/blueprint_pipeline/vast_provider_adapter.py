@@ -38,6 +38,7 @@ from .vast_api_transport import (
 )
 
 from .vast_instance_inventory import instance_inventory_valid, active_instance_rows
+from .vast_bundle_member_policy import vendored_toolchain_runtime_member as _vendored_toolchain_runtime_member
 from .vast_provider_log_observations import (
     _log_result_saw_container_missing,
     _log_result_container_vanished_after_output,
@@ -2949,7 +2950,7 @@ def _blueprint_bundle_preflight(
                                 blockers.append("articulated_native_bundle_asset_format_ambiguous")
                     zip_testzip_result = archive.testzip()
                     for member in zip_entries:
-                        if member.endswith(".json"):
+                        if member.endswith(".json") and not _vendored_toolchain_runtime_member(member):
                             try:
                                 json.loads(archive.read(member).decode("utf-8", errors="replace"))
                             except Exception as exc:
