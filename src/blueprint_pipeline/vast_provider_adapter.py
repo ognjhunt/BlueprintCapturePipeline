@@ -1757,6 +1757,8 @@ SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "libpango-1.0-0": (),
     "libcairo2": (),
     "libasound2t64": (),
+    # The packaged Blender 5.0's system X libraries (its ELF NEEDED; it ships the rest).
+    "libx11-6": (), "libxrender1": (), "libxi6": (),
 }
 #: Provided by the ``/isaac-sim/python.sh`` shim the onstart writes onto PATH,
 #: not by apt, so it is named separately rather than assumed.

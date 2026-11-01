@@ -171,3 +171,18 @@ def test_unreadable_shared_list_is_reported_and_excludes_nothing(tmp_path, capsy
     job.mkdir(parents=True)
     assert scene_configuration_excluded_machine_ids(job_dir=job) == set()
     assert "scene_configuration_machine_avoidlist_unavailable:ValueError" in capsys.readouterr().err
+
+
+def test_onstart_installs_the_packaged_blender_system_libraries():
+    """ARTISAN's Blender ships its own libraries except these X ones.
+
+    ``readelf -d`` of the sealed toolchain's ``runtime/blender/blender``
+    (d63579c5) lists libX11.so.6, libXrender.so.1, libXfixes.so.3, libXi.so.6
+    and libxkbcommon.so.0 beyond glibc and libstdc++, with RUNPATH $ORIGIN/lib
+    for everything else. The Isaac image has to supply them; naming them keeps
+    that from depending on what other packages happen to pull in.
+    """
+
+    blender_packages = {"libx11-6", "libxrender1", "libxfixes3", "libxi6", "libxkbcommon0"}
+    assert blender_packages <= set(adapter.SCENE_CONFIGURATION_PROVISIONED_COMMANDS)
+    assert all(adapter.SCENE_CONFIGURATION_PROVISIONED_COMMANDS[name] == () for name in blender_packages)
