@@ -151,9 +151,10 @@ def _relative_file(root: Path, value: Any, *, code: str) -> Path:
     return path
 
 
-def _validate_toolchain(
+def _read_toolchain_manifest(
     *, root: Path, expected_source_commit: str
-) -> tuple[dict[str, Any], dict[str, Path]]:
+) -> tuple[dict[str, Any], Path]:
+    """The sealed manifest of a read-only published toolchain, bytes unread."""
     if root.is_symlink() or not root.is_dir() or root.stat().st_mode & 0o222:
         raise TaskEvaluationSceneConfigurationStageProducerError(
             "scene_configuration_toolchain_root_invalid"
@@ -179,6 +180,17 @@ def _validate_toolchain(
         raise TaskEvaluationSceneConfigurationStageProducerError(
             "scene_configuration_toolchain_manifest_invalid"
         )
+    return manifest, manifest_path
+
+
+def _validate_toolchain(
+    *, root: Path, expected_source_commit: str
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    manifest, manifest_path = _read_toolchain_manifest(
+        root=root, expected_source_commit=expected_source_commit
+    )
+    stages = manifest["stages"]
+    files = manifest["files"]
     inventory: dict[str, tuple[str, int, bool]] = {}
     for row in files:
         if not isinstance(row, Mapping):
@@ -304,6 +316,22 @@ def _validate_toolchain(
                 f"scene_configuration_toolchain_stage_invalid:{adapter_id}"
             )
     return manifest, entrypoints
+
+
+def read_scene_configuration_toolchain_manifest(
+    *, root: str | Path, expected_source_commit: str
+) -> dict[str, Any]:
+    """Check the published manifest's seal and release binding, not its bytes.
+
+    For callers that only bind ``toolchain_digest`` and hand the tree to a later
+    step that validates every byte against it (the provider bundle builder).
+    """
+
+    manifest, _path = _read_toolchain_manifest(
+        root=Path(root).expanduser().resolve(),
+        expected_source_commit=expected_source_commit,
+    )
+    return manifest
 
 
 def validate_scene_configuration_toolchain(
