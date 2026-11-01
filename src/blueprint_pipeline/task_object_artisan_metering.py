@@ -2,6 +2,12 @@
 
 Unknown charges retain the whole remaining reservation and refuse another call
 until official reconciliation. Resume retains this file and its request count.
+
+The SDK's own retries stay off so no request escapes metering. A call whose
+transport raises is settled here instead: a 4xx is a rejected request and is
+priced $0; anything else is priced at that request's upper bound when it has
+one, else it stays unknown. Retryable failures are then retried with the SDK's
+own policy, each attempt metered as its own call.
 """
 from __future__ import annotations
 
@@ -90,9 +96,75 @@ class Meter:
                 raise RuntimeError("artisan_reported_cost_exceeded_stage_authority")
 
 
+    def failed(self, identity, error, *, bound_usd=None):
+        """Settle a call whose transport raised before returning usage.
+
+        Returns whether the row is now priced, so the caller may retry.
+        """
+        status = getattr(error, "status_code", None)
+        status = status if isinstance(status, int) and not isinstance(status, bool) else None
+        bounded = (isinstance(bound_usd, (int, float)) and not isinstance(bound_usd, bool)
+                   and math.isfinite(bound_usd) and bound_usd >= 0)
+        request_id = getattr(error, "request_id", None)
+        failure = {"error_type": type(error).__name__, "http_status": status,
+                   "request_id": request_id if isinstance(request_id, str) else None}
+        with self.path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            data = self.read()
+            row = next(c for c in data["calls"] if c["id"] == identity)
+            if row["status"] != "in_flight":
+                raise RuntimeError("artisan_meter_call_already_settled")
+            if status is not None and 400 <= status < 500:
+                # Rejected before any model work (invalid, unauthorized, rate limited).
+                row.update(status="priced", cost_usd=0.0, cost_origin="upstream_rejected_request", failure=failure)
+            elif bounded:
+                # May have run: count the most this request could have cost.
+                row.update(status="priced", cost_usd=float(bound_usd), cost_origin="request_upper_bound_no_usage",
+                           failure=failure)
+            else:
+                row.update(status="reconciliation_required", cost_usd=None, cost_origin="no_usage_returned",
+                           failure=failure)
+            self._write(data)
+            return row["status"] == "priced"
+
+
+def _retryable(error) -> bool:
+    """The SDK's retry rule: timeouts, conflicts, rate limits, 5xx, lost connections."""
+    import openai
+
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status in (408, 409, 429) or status >= 500
+    return isinstance(error, openai.APIConnectionError)
+
+
+def _retry_delay(error, attempt: int) -> float:
+    """The SDK's schedule: a Retry-After of at most 60 s, else 0.5 s doubling to 8 s."""
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None) or {}
+    try:
+        seconds = float(headers.get("retry-after"))
+    except (TypeError, ValueError):
+        seconds = math.nan
+    return seconds if math.isfinite(seconds) and 0 < seconds <= 60 else min(0.5 * 2 ** attempt, 8.0)
+
+
+def _next_attempt(meter: Meter, identity, error, bound, attempt: int) -> float:
+    """Settle a raised call; the delay before retrying it, or re-raise."""
+    import openai
+
+    settled = identity is None or meter.failed(identity, error, bound_usd=bound)
+    delay = _retry_delay(error, attempt)
+    if (not settled or not _retryable(error) or attempt >= openai.DEFAULT_MAX_RETRIES
+            or time.time() + delay >= meter.deadline):
+        raise error
+    return delay
+
+
 def install_metering(meter: Meter):
     from pipeline.cost import calculate_cost, pricing_for_provider_model
     from pipeline.llm.openai_codec import extract_usage
+    import openai
     from openai.resources.responses.responses import AsyncResponses, Responses
     # Both normal text calls and maintenance/compaction use these official
     # resources. Force upstream HTTP transport so no request escapes metering.
@@ -114,7 +186,9 @@ def install_metering(meter: Meter):
         output = math.floor(remaining * 1_000_000 / output_rate)
         if output < 1:
             raise RuntimeError("artisan_shared_stage_authority_exhausted")
-        return {**kwargs, "max_output_tokens": min(output, kwargs.get("max_output_tokens") or 32768)}
+        output = min(output, kwargs.get("max_output_tokens") or 32768)
+        bound = (tokens * input_rate + output * output_rate) / 1_000_000
+        return {**kwargs, "max_output_tokens": output}, bound
 
     for cls in (AsyncResponses, Responses):
         for name in ("create", "compact"):
@@ -122,13 +196,21 @@ def install_metering(meter: Meter):
             if cls is AsyncResponses:
                 def wrap(original, name):
                     async def call(self, *args, **kwargs):
+                        import asyncio
                         model = kwargs.get("model")
                         self._client.max_retries = 0
-                        if name == "create":
-                            count = await self.input_tokens.count(**{k: v for k, v in kwargs.items() if k in count_keys})
-                            kwargs = bounded_output(kwargs, count)
-                        identity = meter.before(name, model)
-                        response = await original(self, *args, **kwargs)
+                        for attempt in range(1 + openai.DEFAULT_MAX_RETRIES):
+                            identity = bound = None
+                            try:
+                                request = kwargs
+                                if name == "create":
+                                    count = await self.input_tokens.count(**{k: v for k, v in kwargs.items() if k in count_keys})
+                                    request, bound = bounded_output(kwargs, count)
+                                identity = meter.before(name, model)
+                                response = await original(self, *args, **request)
+                                break
+                            except Exception as error:
+                                await asyncio.sleep(_next_attempt(meter, identity, error, bound, attempt))
                         usage = extract_usage(response)
                         rates = pricing_for_provider_model("openai", model)
                         cost = calculate_cost(usage, rates).total_cost if usage and rates else None
@@ -140,11 +222,18 @@ def install_metering(meter: Meter):
                     def call(self, *args, **kwargs):
                         model = kwargs.get("model")
                         self._client.max_retries = 0
-                        if name == "create":
-                            count = self.input_tokens.count(**{k: v for k, v in kwargs.items() if k in count_keys})
-                            kwargs = bounded_output(kwargs, count)
-                        identity = meter.before(name, model)
-                        response = original(self, *args, **kwargs)
+                        for attempt in range(1 + openai.DEFAULT_MAX_RETRIES):
+                            identity = bound = None
+                            try:
+                                request = kwargs
+                                if name == "create":
+                                    count = self.input_tokens.count(**{k: v for k, v in kwargs.items() if k in count_keys})
+                                    request, bound = bounded_output(kwargs, count)
+                                identity = meter.before(name, model)
+                                response = original(self, *args, **request)
+                                break
+                            except Exception as error:
+                                time.sleep(_next_attempt(meter, identity, error, bound, attempt))
                         usage = extract_usage(response)
                         rates = pricing_for_provider_model("openai", model)
                         cost = calculate_cost(usage, rates).total_cost if usage and rates else None
