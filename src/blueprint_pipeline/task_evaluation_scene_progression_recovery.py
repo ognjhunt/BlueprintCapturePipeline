@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from .decision_evidence_contracts import canonical_digest
+from .record_tree_index import Rule, find_records
 from .task_evaluation_public_scene_attempt_factory import record
 from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
 from .task_evaluation_scene_progression_state import require, safe_path
@@ -27,6 +28,8 @@ def failure_kind(value):
 
 
 PRODUCER_ARTIFACT_SUFFIXES = ("allocator_result", "provider_adapter_result")
+OWNERSHIP_RECORD_RULES = (Rule(suffix=".lease.json"), Rule(parent="pending_teardowns", suffix=".json"),
+                          Rule(parent="pending-teardowns", suffix=".json"))
 
 
 def retain_failure(*, attempt, link, child_queue_root, output_root, now):
@@ -101,11 +104,10 @@ def reconcile_ownership(*, attempt, failure_path, config, output_root, now, exec
     required = [safe_path(config[key]) for key in ("child_execution_root", "launch_execution_root")]
     require(all(any(path == root or path.is_relative_to(root) for root in roots) for path in required),
             "ownership_scope_incomplete")
-    paths = set()
-    for root in roots:
-        paths.update(root.rglob("*.lease.json"))
-        paths.update(root.glob("**/pending_teardowns/*.json"))
-        paths.update(root.glob("**/pending-teardowns/*.json"))
+    # Same records as rglob("*.lease.json") plus **/pending{_,-}teardowns/*.json
+    # under every root, found in one walk; unchanged directories are not reread
+    # when a pass reconciles several attempts. Every record is still read fresh.
+    paths = set(find_records(roots, OWNERSHIP_RECORD_RULES))
     require(len(paths) <= 20000, "ownership_scan_bound_exceeded")
     rows, active, unresolved = [], 0, 0
     for path in sorted(paths):

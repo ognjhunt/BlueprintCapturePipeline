@@ -950,16 +950,18 @@ def test_scene_attempt_recovery_ownership_records_stay(tmp_path) -> None:
 
 
 def test_residue_mirrors_the_recovery_scan_globs() -> None:
-    """The recovery module inlines its globs; if they change, the residue rules must follow."""
+    """If the recovery scan's record rules change, the residue rules must follow."""
 
     import inspect
 
     from blueprint_pipeline import task_evaluation_scene_progression_recovery as recovery
+    from blueprint_pipeline.record_tree_index import Rule
 
-    source = inspect.getsource(recovery.reconcile_ownership)
-    assert 'rglob("*' + residue.OWNERSHIP_RECORD_SUFFIX + '")' in source
-    for directory in residue.OWNERSHIP_RECORD_DIRECTORIES:
-        assert f'glob("**/{directory}/*.json")' in source
+    assert "find_records(roots, OWNERSHIP_RECORD_RULES)" in inspect.getsource(recovery.reconcile_ownership)
+    assert set(recovery.OWNERSHIP_RECORD_RULES) == {
+        Rule(suffix=residue.OWNERSHIP_RECORD_SUFFIX),
+        *(Rule(parent=directory, suffix=".json") for directory in residue.OWNERSHIP_RECORD_DIRECTORIES),
+    }
     assert residue.OWNERSHIP_RECORD_DIRECTORIES == frozenset({"pending_teardowns", "pending-teardowns"})
 
 
