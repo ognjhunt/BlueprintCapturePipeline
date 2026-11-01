@@ -92,6 +92,78 @@ def _anthropic_cpu_authoring_archive(read, names, *, run_id, cap, max_requests):
                                                   rel_tol=0, abs_tol=1e-8))
 
 
+#: What ARTISAN writes under ``stages/stage-3/producer/`` before its model cost
+#: gate (``official_openai_cost`` reservation, then ``artisan.toml`` and the
+#: usage ledger). Anything else keeps the allowance.
+_ARTISAN_PRE_GATE_FILES = frozenset({
+    "dependency_results.v1.json", "stage_production_input.v1.json", "artisan_component.lock",
+    "artisan_stage_deadline.v1.json", "stage_producer.log",
+    "artisan_runtime/blueprint_request.v1.json", "artisan_runtime/bridge_context.v1.json",
+    "artisan_runtime/runtime_code_access.json", "artisan_runtime/sandbox_preflight.sandbox_preflight.json",
+})
+#: The sandboxed preflight's own scratch root: no model call runs there.
+_ARTISAN_PREFLIGHT_SCRATCH = "artisan_runtime/sandbox_preflight/"
+_ARTISAN_PRE_GATE_REFUSALS = (
+    # ARTISAN's own sandbox preflight (capture-447ae4f4, 2026-11-01).
+    ("    preflight_runner.preflight()\n",
+     "blueprint_pipeline.asset_authoring_sandbox.AssetSandboxError: asset_sandbox_unavailable\n"),
+    # Its confined import check, which also precedes the cost gate.
+    ("artisan_confined_runtime_preflight_failed",),
+)
+#: The runner's checks before stage 1 (#3228, #3230): no stage, no model call.
+_EARLY_ISOLATION_REFUSALS = (
+    "scene_configuration_provider_failed:AssetSandboxError:asset_sandbox_unavailable",
+    "scene_configuration_provider_failed:RuntimeError:artisan_sandboxed_interpreter_unavailable:",
+    "scene_configuration_provider_failed:RuntimeError:artisan_blender_runtime_unavailable:",
+)
+
+
+def _artisan_refused_before_model_gate(names, read, result, request):
+    """ARTISAN stopped before its model cost gate: in stage 3, or before stage 1."""
+
+    from .task_evaluation_scene_configuration_output_archive import EXCLUDED_PARTS
+    exclusions = json.loads(read("provider_output_zip_exclusions.json"))
+    _require(exclusions == {
+        "schema_version": "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1",
+        "excluded_directory_names": sorted(EXCLUDED_PARTS)})
+    provider = _sealed(json.loads(read("task_evaluation_scene_configuration_provider_result.v1.json")),
+                       "result_digest")
+    _require(provider.get("status") == "blocked"
+             and provider.get("run_id") == result["run_id"] == request["run_id"]
+             and provider.get("source_commit") == result["source_commit"] == request["expected_production_commit"])
+    blockers = provider.get("blockers") or []
+    _require(len(blockers) == 1 and "provider_result_blocker:" + blockers[0] in result.get("blockers", []))
+    if not any(name.startswith("stages/") for name in names):
+        _require(provider.get("first_stage_started") is False
+                 and blockers[0].startswith(_EARLY_ISOLATION_REFUSALS))
+        return
+    prefix = "stages/stage-3/producer/"
+    _require(provider.get("first_stage_started") is True and blockers[0] == (
+        "scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:"
+        "scene_configuration_stage_producer_failed:content_agents_rigid_replacement:1"))
+    stage3 = {name[len(prefix):] for name in names if name.startswith("stages/stage-3/")
+              and name.startswith(prefix)}
+    _require(all(name.startswith("stages/stage-3/producer/") for name in names if name.startswith("stages/stage-3/"))
+             and not any(name.startswith("stages/stage-") and not name.startswith(
+                 ("stages/stage-1/", "stages/stage-2/", "stages/stage-3/")) for name in names))
+    _require({"dependency_results.v1.json", "stage_production_input.v1.json", "stage_producer.log"} <= stage3
+             and all(name in _ARTISAN_PRE_GATE_FILES or name.startswith(_ARTISAN_PREFLIGHT_SCRATCH)
+                     for name in stage3))
+    stage_input = json.loads(read(prefix + "stage_production_input.v1.json"))
+    _require(stage_input.get("run_id") == result["run_id"]
+             and stage_input.get("source_commit") == result["source_commit"]
+             and stage_input["configuration"].get("authoring_backend") == "artisan_v1"
+             and stage_input["configuration"].get("source_observation_kind") == "website_capture_frames")
+    dependencies = json.loads(read(prefix + "dependency_results.v1.json"))
+    _require([row.get("stage_id") for row in dependencies] == ["stage-1", "stage-2"])
+    for row in dependencies:
+        _sealed(row, "stage_result_digest")
+        _require(row.get("status") == "completed" and row.get("execution_class") == "no_spend"
+                 and row.get("paid_execution_requested") is False and row.get("provider_mutations_performed") == 0)
+    log = read(prefix + "stage_producer.log").decode("utf-8")
+    _require(any(all(part in log for part in refusal) for refusal in _ARTISAN_PRE_GATE_REFUSALS))
+
+
 def authoring_never_entered(result, request):
     """Recognize initial credential/disclosure refusals, never a later failure.
 
@@ -115,6 +187,13 @@ resumed authoring, or any later stage keeps the hold.
         with zipfile.ZipFile(path) as archive:
             names = archive.namelist()
             _require(len(names) == len(set(names)))
+            if _artisan_run(archive, names):
+                def read_artisan(name):
+                    _require(archive.getinfo(name).file_size <= 2 * 1024**2)
+                    return archive.read(name)
+
+                _artisan_refused_before_model_gate(names, read_artisan, result, request)
+                return True
             prefix = "stages/stage-3/producer/"
             initial = {prefix + name for name in (
                 "dependency_results.v1.json", "stage_production_input.v1.json")}
@@ -168,6 +247,24 @@ resumed authoring, or any later stage keeps the hold.
         return True
     except (OSError, ValueError, KeyError, TypeError, AttributeError, zipfile.BadZipFile):
         return False
+
+
+def _artisan_run(archive, names):
+    """Whether this archive is an ARTISAN run (its stage-3 input, or an early ARTISAN check)."""
+
+    name = "stages/stage-3/producer/stage_production_input.v1.json"
+    if name in names:
+        _require(archive.getinfo(name).file_size <= 2 * 1024**2)
+        configuration = json.loads(archive.read(name)).get("configuration") or {}
+        return configuration.get("authoring_backend") == "artisan_v1"
+    if any(item.startswith("stages/") for item in names):
+        return False
+    result = "task_evaluation_scene_configuration_provider_result.v1.json"
+    if result not in names:
+        return False
+    _require(archive.getinfo(result).file_size <= 2 * 1024**2)
+    blockers = json.loads(archive.read(result)).get("blockers") or []
+    return len(blockers) == 1 and str(blockers[0]).startswith(_EARLY_ISOLATION_REFUSALS)
 
 
 def prestage_before_first_stage(result, request):
