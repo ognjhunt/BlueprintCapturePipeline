@@ -595,9 +595,21 @@ def _validated_provider_zero(value: Mapping[str, Any]) -> dict[str, Any]:
 def default_provider_zero_collector() -> dict[str, Any]:
     """Observe live authenticated Vast inventory through the production seam."""
 
-    from .adp_task_evaluation_abstention import collect_vast_provider_zero_receipt
+    from .adp_task_evaluation_abstention import (
+        TaskEvaluationAbstentionError,
+        collect_vast_provider_zero_receipt,
+    )
 
-    return collect_vast_provider_zero_receipt()
+    try:
+        return collect_vast_provider_zero_receipt()
+    except TaskEvaluationAbstentionError as exc:
+        # The collector raises a ValueError when the account is not empty or
+        # the inventory query fails. Left alone it escaped the per-row handler
+        # in process_scene_configuration_activations and aborted the whole tick
+        # for every waiting preparation; it is one row's wait, not a crash.
+        raise SceneConfigurationActivationAutomationError(
+            "scene_configuration_activation_provider_not_zero:" + str(exc)
+        ) from exc
 
 
 # ---------------------------------------------------------------- publication
