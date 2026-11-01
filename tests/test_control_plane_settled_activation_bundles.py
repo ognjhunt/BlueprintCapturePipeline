@@ -144,3 +144,29 @@ def test_the_gc_unit_reclaims_settled_bundles_under_launch_activations():
     assert "/var/lib/blueprint/task-evaluation-inputs/launch-activations" in next(
         line for line in unit.splitlines() if line.startswith("ReadWritePaths=/var/lib/blueprint/task-evaluation-inputs/prepared-references"))
     assert "Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT=" in unit
+
+
+def test_a_long_activation_id_is_found_through_its_bounded_launch_id(layout):
+    from blueprint_pipeline.task_evaluation_scene_configuration_activation_identity import _bounded_launch_id
+    activations, intents, queues = layout
+    activation_id = "website-" + "a" * 190 + "-activation-auto"
+    launch_id = _bounded_launch_id(activation_id)
+    assert launch_id != activation_id + "-launch"  # shortened with a digest
+    bundle = _activation(activations, activation_id)
+    _attempt(intents, "scene-configuration-long", launch_id, settled=True)
+
+    plan = _plan(activations, intents, queues)
+    assert [row["activation_id"] for row in plan["candidates"]] == [activation_id]
+    result = reaper.apply_settled_activation_bundle_manifest(plan, ack=reaper.ACK)
+    assert result["removed_count"] == 1 and result["candidate_bytes"] == len(b"zip-bytes")
+    assert not (bundle / reaper.BUNDLE_RELATIVE.name).exists()
+
+
+def test_the_phase_is_summarised_and_counted_as_reclaim():
+    import inspect
+
+    from blueprint_pipeline import control_plane_capacity_controller as capacity
+    from blueprint_pipeline.control_plane_storage_gc_reasons import PHASES
+    assert "settled_activation_bundles" in PHASES
+    source = inspect.getsource(capacity._reclaim_outlook)
+    assert '"settled_activation_bundles"' in source

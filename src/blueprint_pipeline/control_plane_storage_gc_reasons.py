@@ -227,6 +227,7 @@ PHASES = (
     "evidence_offload",
     "scratch_directories",
     "workspace_bundles",
+    "settled_activation_bundles",
     "replay_caches",
     "scene_workspaces", "lane_scratch", "registered_experiments",
 )

@@ -78,9 +78,29 @@ def _settled_launches(intent_root: Path) -> list[dict[str, Any]]:
                 continue
             if not launch_id.endswith(LAUNCH_SUFFIX) or "/" in launch_id or launch_id.startswith("."):
                 continue
-            rows.append({"activation_id": launch_id[: -len(LAUNCH_SUFFIX)], "attempt_id": value["attempt_id"],
+            rows.append({"launch_id": launch_id, "attempt_id": value["attempt_id"],
                          "settlement": _file_record(path)})
     return rows
+
+
+def _activation_index(root: Path) -> dict[str, str]:
+    """Launch id -> activation directory, through the same bounding the launch used.
+
+    A long activation id is shortened with a digest before ``-launch`` is
+    appended, so stripping the suffix cannot recover the directory name.
+    """
+
+    from .task_evaluation_scene_configuration_activation_identity import _bounded_launch_id
+
+    index: dict[str, str] = {}
+    for directory in root.iterdir():
+        if directory.name.startswith(".") or directory.is_symlink() or not directory.is_dir():
+            continue
+        try:
+            index[_bounded_launch_id(directory.name)] = directory.name
+        except Exception:  # noqa: BLE001 - a name the launch grammar refuses never launched
+            continue
+    return index
 
 
 def _bundle(activation_root: Path, activation_id: str) -> Path | None:
@@ -109,16 +129,18 @@ def build_settled_activation_bundle_manifest(
     candidates: list[dict[str, Any]] = []
     retained = {"no_bundle": 0, "queue_referenced": 0}
     roots = [Path(root) for root in activation_roots if Path(root).is_dir() and not Path(root).is_symlink()]
+    indexes = {root: _activation_index(root) for root in roots}
     for row in settled:
         for root in roots:
-            zip_path = _bundle(root, row["activation_id"])
+            activation_id = indexes[root].get(row["launch_id"])
+            zip_path = _bundle(root, activation_id) if activation_id else None
             if zip_path is None:
                 continue
-            if row["activation_id"] in queue_text:
+            if activation_id in queue_text or row["launch_id"] in queue_text:
                 retained["queue_referenced"] += 1
                 break
-            candidates.append({**row, "root": str(root), "bundle_path": str(zip_path),
-                               "size_bytes": zip_path.stat().st_size})
+            candidates.append({**row, "activation_id": activation_id, "root": str(root),
+                               "bundle_path": str(zip_path), "size_bytes": zip_path.stat().st_size})
             break
         else:
             retained["no_bundle"] += 1
@@ -153,14 +175,14 @@ def apply_settled_activation_bundle_manifest(
         or manifest.get("manifest_digest") != canonical_digest(dict(manifest), digest_field="manifest_digest")
     ):
         raise SettledActivationBundleError("settled_activation_bundle_apply_not_authorized")
-    settled = {row["activation_id"]: row for row in _settled_launches(Path(str(manifest["intent_root"])))}
+    settled = {row["launch_id"]: row for row in _settled_launches(Path(str(manifest["intent_root"])))}
     queue_text = queue_reference_text(manifest.get("queue_roots") or ())
     removed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for row in manifest.get("candidates") or []:
         activation_id = str(row.get("activation_id") or "")
         zip_path = _bundle(Path(str(row.get("root") or "")), activation_id) if activation_id else None
-        current = settled.get(activation_id)
+        current = settled.get(str(row.get("launch_id") or ""))
         if (
             zip_path is None
             or str(zip_path) != row.get("bundle_path")
@@ -170,7 +192,7 @@ def apply_settled_activation_bundle_manifest(
         ):
             skipped.append({"activation_id": activation_id, "reason": "candidate_changed"})
             continue
-        if activation_id in queue_text:
+        if activation_id in queue_text or str(row.get("launch_id")) in queue_text:
             skipped.append({"activation_id": activation_id, "reason": "queue_referenced"})
             continue
         receipt_sha = None
@@ -205,6 +227,8 @@ def apply_settled_activation_bundle_manifest(
         "status": "applied",
         "source_manifest_digest": manifest["manifest_digest"],
         "candidate_count": manifest["candidate_count"],
+        "candidate_bytes": manifest["candidate_bytes"],
+        "retained_counts": manifest["retained_counts"],
         "removed_count": len(removed),
         "removed_bytes": sum(int(row["size_bytes"]) for row in removed),
         "removed": removed,
