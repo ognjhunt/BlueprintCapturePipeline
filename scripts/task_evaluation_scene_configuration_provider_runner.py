@@ -296,7 +296,8 @@ def _require_asset_isolation(*, runtime: Path, output: Path) -> None:
     print("BLUEPRINT_SCENE_CONFIGURATION_SANDBOXED_INTERPRETER_PREFLIGHT_PASSED", flush=True)
 
 
-ARTISAN_BLENDER = "toolchain/components/content_agents_rigid_replacement/package/runtime/blender/blender"
+ARTISAN_PACKAGE = "toolchain/components/content_agents_rigid_replacement/package"
+ARTISAN_BLENDER = ARTISAN_PACKAGE + "/runtime/blender/blender"
 
 
 def _require_artisan_blender(*, runtime: Path, output: Path) -> None:
@@ -324,6 +325,39 @@ def _require_artisan_blender(*, runtime: Path, output: Path) -> None:
         detail = (completed.stderr or completed.stdout).strip().splitlines()[-1:] or [""]
         raise RuntimeError(f"artisan_blender_runtime_unavailable:{completed.returncode}:{detail[0][-200:]}")
     print("BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_BLENDER_STARTUP_PASSED", flush=True)
+
+
+def _require_artisan_controller(*, runtime: Path, output: Path) -> None:
+    """ARTISAN's inference controller must start here, as stage 3 will start it.
+
+    Stage 3 runs the controller with this interpreter and a scrubbed
+    environment, after stages 1-2 and its own setup. A loader path or package
+    the image lacks would otherwise surface only then. This uses the stage's
+    own environment builder and imports nothing that reads a credential or
+    calls a model. Image-level, not a machine fault: not avoidlisted.
+    """
+
+    import subprocess
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_artisan_driver as driver
+    from blueprint_pipeline.asset_python_runtime import sandboxed_interpreter
+
+    home = output / "artisan_controller_preflight"
+    home.mkdir(mode=0o750, exist_ok=True)
+    interpreter = sandboxed_interpreter()
+    environment = driver.controller_environment(
+        os.environ, driver.package_import_roots(runtime / ARTISAN_PACKAGE), interpreter["library_environment"])
+    try:
+        completed = subprocess.run(
+            [str(interpreter["executable"]), "-S", "-c", driver.CONTROLLER_IMPORT_PROBE],
+            cwd=home, env=environment, capture_output=True, text=True,
+            timeout=driver.CONFINED_PREFLIGHT_TIMEOUT_SECONDS, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"artisan_controller_runtime_unavailable:{type(exc).__name__}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"artisan_controller_runtime_unavailable:{completed.returncode}:{detail[0][-200:]}")
+    print("BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_CONTROLLER_PREFLIGHT_PASSED", flush=True)
 
 
 def main() -> int:
@@ -404,6 +438,7 @@ def main() -> int:
                 stages_root, envelope, configurations, parent_deadline_epoch, stage_limit=stage_limit):
             _require_asset_isolation(runtime=runtime, output=output)
             _require_artisan_blender(runtime=runtime, output=output)
+            _require_artisan_controller(runtime=runtime, output=output)
         chain = _portable_stage_chain(
             execute_scene_configuration_stage_chain(
                 envelope=envelope,

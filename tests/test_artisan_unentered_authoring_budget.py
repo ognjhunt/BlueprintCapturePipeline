@@ -44,6 +44,10 @@ def evidence(tmp_path, *, shape="sandbox"):
         refusal = ("scene_configuration_provider_failed:RuntimeError:artisan_sandboxed_interpreter_unavailable:"
                    "126:ASSET_KERNEL_SANDBOX_FAILED:[Errno 13] Permission denied: '/isaac-sim/kit/python'")
         first_stage_started = False
+    elif shape == "early_controller":
+        refusal = ("scene_configuration_provider_failed:RuntimeError:artisan_controller_runtime_unavailable:127:"
+                   "python3: error while loading shared libraries: libpython3.12.so.1.0: cannot open shared object file")
+        first_stage_started = False
     else:
         first_stage_started = True
         files.update({
@@ -81,7 +85,7 @@ def archive(files, result):
     return seal(result)
 
 
-@pytest.mark.parametrize("shape", ["sandbox", "confined_import", "early"])
+@pytest.mark.parametrize("shape", ["sandbox", "confined_import", "early", "early_controller"])
 def test_artisan_refusal_before_the_model_gate_proves_unentered_authoring(tmp_path, shape):
     request, files, result = evidence(tmp_path, shape=shape)
     assert budget.authoring_never_entered(archive(files, result), request)
