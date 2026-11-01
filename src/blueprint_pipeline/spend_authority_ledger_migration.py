@@ -105,27 +105,44 @@ def _default_search_bases(root: Path) -> list[Path]:
 
 
 def _search_candidates(base: Path) -> list[Path]:
-    """Every path within ``_SEARCH_DEPTH`` of ``base`` that holds a ledger subdirectory.
+    """Every directory within ``_SEARCH_DEPTH`` of ``base`` that holds a ledger subdirectory.
 
     The same candidates ``_is_ledger`` would accept from ``base.glob("*")``,
     ``base.glob("*/*")`` and ``base.glob("*/*/*")``, without resolving and
     stat-ing every entry of the tree: the base is the data root's parent
     (``/var/lib/blueprint``), whose depth-three entries number in the tens of
     thousands, and this runs in the ExecStartPre of units that start every
-    minute (20-40 s per run on 2026-10-31). A non-ledger path is excluded by
-    ``_is_ledger`` either way, so only paths with a ``consumed`` or
-    ``authorizations`` child are listed here.
+    minute (20-40 s per run on 2026-10-31).
+
+    Only the directories *above* a candidate are listed, exactly as those globs
+    list them; a candidate itself is tested by stat-ing its known children. A
+    legacy root that grants search but not read permission (mode 0111) is
+    therefore still found, as it was before: listing it would fail, and missing
+    it would leave its spent authorizations looking unspent. Files are skipped
+    from the directory entry's type without a stat, and descent follows a
+    symlinked directory just as the glob wildcards do.
     """
     found: list[Path] = []
-    for depth in range(1, _SEARCH_DEPTH + 1):
-        for name in _LEDGER_SUBDIRECTORIES:
-            pattern = "/".join(["*"] * depth + [name])
+    level = [base]
+    for _depth in range(_SEARCH_DEPTH):
+        children: list[Path] = []
+        for directory in level:
             try:
-                found.extend(path.parent for path in base.glob(pattern))
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        try:
+                            if entry.is_dir():
+                                children.append(Path(entry.path))
+                        except OSError:
+                            continue
             except OSError:
                 # An unreadable branch of the search space is not evidence of a
                 # ledger; a ledger we can see but not read is handled below.
                 continue
+        for candidate in children:
+            if any(os.path.isdir(candidate / name) for name in _LEDGER_SUBDIRECTORIES):
+                found.append(candidate)
+        level = children
     return found
 
 
