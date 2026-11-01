@@ -608,12 +608,16 @@ def _validated_provider_zero(value: Mapping[str, Any]) -> dict[str, Any]:
     return zero
 
 
-def default_provider_zero_collector(*, job_key: str | None = None) -> dict[str, Any]:
+def default_provider_zero_collector(
+    *, job_key: str | None = None, maximum_hourly_rate_usd: float | None = None
+) -> dict[str, Any]:
     """Observe live authenticated Vast inventory through the production seam.
 
     With ``BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE=job`` an account that is not empty
     can still yield a job-scoped receipt for ``job_key`` (the preparation id),
-    so one website job no longer waits for every other job to finish.
+    so one website job no longer waits for every other job to finish. The
+    job's ``maximum_hourly_rate_usd`` is admitted against the fleet's hourly
+    ceiling; without it the job-scoped receipt is refused.
     """
 
     from .paid_provider_job_scope import (
@@ -624,7 +628,10 @@ def default_provider_zero_collector(*, job_key: str | None = None) -> dict[str, 
 
     if job_key and provider_zero_scope() == SCOPE_JOB:
         try:
-            return collect_job_scoped_vast_provider_zero(job_key=job_key)
+            return collect_job_scoped_vast_provider_zero(
+                job_key=job_key,
+                added_burn_usd_per_hour=maximum_hourly_rate_usd,  # type: ignore[arg-type]
+            )
         except ProviderJobScopeError as exc:
             raise SceneConfigurationActivationAutomationError(
                 "scene_configuration_activation_provider_not_zero:" + ";".join(exc.blockers[:8])
@@ -888,7 +895,10 @@ def advance_scene_configuration_activation(
         # Only the production seam knows how to scope to a job; injected
         # collectors keep their zero-argument contract.
         zero = _validated_provider_zero(
-            provider_zero_collector(job_key=preparation_id)
+            provider_zero_collector(
+                job_key=preparation_id,
+                maximum_hourly_rate_usd=(request.get("spend") or {}).get("maximum_hourly_rate_usd"),
+            )
             if provider_zero_collector is default_provider_zero_collector
             else provider_zero_collector()
         )

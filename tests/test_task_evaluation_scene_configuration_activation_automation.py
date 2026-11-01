@@ -1232,7 +1232,7 @@ def _job_zero(observed_at: datetime) -> dict:
     return scope.build_job_provider_zero_receipt(
         job_key=PREPARATION_ID, live_inventory=[{"instance_id": "101", "name": other}],
         guard=guard, guard_record={"path": "/guard.json", "sha256": "sha256:" + "b" * 64},
-        observed_at=observed_at,
+        observed_at=observed_at, added_burn_usd_per_hour=0.8,
     )
 
 
@@ -1263,3 +1263,35 @@ def test_activation_refuses_a_resealed_job_zero_that_owns_a_live_resource(tmp_pa
     ):
         _advance(tmp_path, result_path, intent_root, zero=zero)
     assert not (tmp_path / "activations" / "pending").exists()
+
+
+def test_default_collector_admits_the_job_at_its_own_maximum_hourly_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preparation's spend.maximum_hourly_rate_usd reaches the fleet check."""
+
+    from blueprint_pipeline import paid_provider_job_scope as scope
+
+    seen = {}
+
+    def collect(*, job_key, added_burn_usd_per_hour):
+        seen.update(job_key=job_key, rate=added_burn_usd_per_hour)
+        return _job_zero(NOW - timedelta(seconds=20))
+
+    monkeypatch.setenv("BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE", "job")
+    monkeypatch.setattr(scope, "collect_job_scoped_vast_provider_zero", collect)
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    observed = automation.advance_scene_configuration_activation(
+        preparation_result_path=result_path,
+        preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations",
+        progression_root=tmp_path / "progression",
+        intent_root=intent_root,
+        configured_controls_intent_root=_controls_intent_root(tmp_path),
+        lineage_publisher_factory=lambda: _publisher("scene-configuration-activation-lineage"),
+        release_window_publisher_factory=lambda: _publisher("coordinator-release-windows"),
+        now=NOW,
+    )
+    assert observed["status"] == "scene_configuration_activation_queued"
+    assert seen == {"job_key": PREPARATION_ID, "rate": 0.8}

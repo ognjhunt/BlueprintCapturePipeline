@@ -170,6 +170,29 @@ def _provider_zero(path: Path) -> dict[str, Any]:
     return value
 
 
+def _require_job_zero_burn_covers(zero: Mapping[str, Any], max_hourly_rate_usd: Any) -> None:
+    """A job-scoped admission must have budgeted the burn this authority allows.
+
+    Otherwise the fleet's hourly ceiling was checked against less than the
+    instance this authority can start. Account-wide receipts are unaffected.
+    """
+
+    if zero.get("schema_version") != JOB_PROVIDER_ZERO_SCHEMA_VERSION:
+        return
+    fleet = zero.get("fleet") if isinstance(zero.get("fleet"), Mapping) else {}
+    budgeted = fleet.get("added_burn_usd_per_hour")
+    if (
+        isinstance(max_hourly_rate_usd, bool)
+        or not isinstance(max_hourly_rate_usd, (int, float))
+        or isinstance(budgeted, bool)
+        or not isinstance(budgeted, (int, float))
+        or float(budgeted) < float(max_hourly_rate_usd)
+    ):
+        raise TaskEvaluationSceneConfigurationAuthorityError(
+            "scene_configuration_provider_zero_burn_headroom_understated"
+        )
+
+
 def _budget_valid(*, rate: Any, cap: Any, ttl: Any) -> bool:
     if (
         isinstance(rate, bool)
@@ -265,6 +288,7 @@ def materialize_scene_configuration_paid_authority(
     project, project_record = validate_project_spend_reconciliation(project_path)
     zero_path = Path(initial_provider_zero_path).expanduser().resolve()
     zero = _provider_zero(zero_path)
+    _require_job_zero_burn_covers(zero, max_hourly_rate_usd)
     authorized_time = _aware(
         authorized_on, code="scene_configuration_authorized_on_invalid"
     )
