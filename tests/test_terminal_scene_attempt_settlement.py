@@ -716,3 +716,80 @@ def test_bound_unentered_model_failure_releases_only_its_model_allowance(tmp_pat
             _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)
     else:
         assert _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)["status"] == "reserved"
+
+
+def _contain_before_run(fx, **changes):
+    """What the launch reconciler leaves for a pre-run lease it closed with provider zero."""
+    from blueprint_pipeline.task_evaluation_launch_reconciler import ORPHAN_RECOVERY_SCHEMA_VERSION
+
+    run = fx["launches"] / fx["launch_id"]
+    recovery = {"schema_version": ORPHAN_RECOVERY_SCHEMA_VERSION, "launch_id": fx["launch_id"],
+                "request_digest": "sha256:" + "9" * 64, "observed_at": "2026-11-01T01:03:06+00:00",
+                "status": "provider_zero_confirmed", "lease_age_seconds": 10423.2, "hard_ttl_seconds": 900,
+                "required_providers": ["vast"], "provider_zero_confirmed": True,
+                "automatic_retry_performed": False, "allocator_invoked": False, "blockers": []}
+    recovery.update(changes)
+    _seal(recovery, "recovery_digest")
+    _write(run / "reconciliations" / (recovery["recovery_digest"][7:] + ".json"), recovery)
+    _write(run / "orphan_recovery_receipt.json", recovery)
+    _write(fx["queue"] / "blocked" / (fx["launch_id"] + "-965ee3e6947fc67b.json"), {"launch_id": fx["launch_id"]})
+    return run
+
+
+def test_launch_contained_before_any_run_releases_its_rows_in_full(tmp_path: Path) -> None:
+    """capture-447ae4f4, 2026-11-01: a $0 pre-run lease the reconciler closed kept its $20 hold."""
+    fx = _fixture(tmp_path, launch_status=None)
+    _contain_before_run(fx)
+    outcome = _settle(fx)
+    assert len([row for row in outcome["rows"] if row["status"] == "settled"]) == 5
+    for row_id, phase in fx["rows"].items():
+        attempt = json.loads((fx["directory"] / "attempts" / (row_id + ".json")).read_text())
+        receipt = validated_cancellation(fx["directory"], attempt)
+        assert receipt["settled_spend"] == settlement.retained_hold(receipt) == {
+            "basis": "launch_contained_before_run", "retained_spend_usd": 0.0, "counts_as_attempt": False}, phase
+        assert receipt["execution_terminal"]["launch_never_queued"] is False
+        assert receipt["execution_terminal"]["orphan_recovery_receipt"]["path"].endswith(
+            fx["launch_id"] + "/orphan_recovery_receipt.json")
+    # Only the retired source row's 4.5 stays held under the $26 cap.
+    assert _reserve(fx["root"], fx["intent"], "source-a2", 21.5, now=300)["status"] == "reserved"
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve(fx["root"], fx["intent"], "source-a3", 0.01, now=301)
+
+
+@pytest.mark.parametrize("change", [
+    {"status": "recovery_pending", "provider_zero_confirmed": False},
+    {"allocator_invoked": True},
+    {"blockers": ["provider_zero_report_stale"]},
+    {"launch_id": "website-other-activation-auto-launch"},
+    {"schema_version": "task_evaluation_launch_orphan_recovery.v0"},
+])
+def test_contained_launch_waits_without_a_valid_provider_zero_receipt(tmp_path: Path, change) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    _contain_before_run(fx, **change)
+    outcome = _settle(fx)
+    assert [row["attempt_id"] for row in outcome["rows"]] == ["source-a1"]
+    assert outcome["skipped"][0]["reason"] == "launch_not_terminal"
+
+
+@pytest.mark.parametrize("dispatcher_entry", ["launch_started.json", "launch_request.json", "scene"])
+def test_a_run_the_dispatcher_started_keeps_waiting_despite_an_orphan_receipt(tmp_path: Path, dispatcher_entry) -> None:
+    """The reconciler also writes an orphan receipt after a started run goes silent."""
+    fx = _fixture(tmp_path, launch_status=None)
+    run = _contain_before_run(fx)
+    _write(run / dispatcher_entry / "x.json" if "." not in dispatcher_entry else run / dispatcher_entry, {})
+    assert _settle(fx)["skipped"][0]["reason"] == "launch_not_terminal"
+
+
+def test_contained_launch_still_queued_waits(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None, queue_pending=True)
+    _contain_before_run(fx)
+    assert _settle(fx)["skipped"][0]["reason"] == "launch_not_terminal"
+
+
+def test_contained_settlement_fails_closed_when_its_run_evidence_changes(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    run = _contain_before_run(fx)
+    _settle(fx)
+    _write(run / "launch_started.json", {"launch_id": fx["launch_id"]})
+    with pytest.raises(ValueError, match="terminal_settlement_orphan_recovery_evidence_invalid"):
+        _reserve(fx["root"], fx["intent"], "source-a2", 1.0, now=300)
