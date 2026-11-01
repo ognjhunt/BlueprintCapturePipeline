@@ -319,9 +319,15 @@ def build_scene_configuration_python_wheelhouse(
 
 
 def validate_scene_configuration_python_wheelhouse(
-    *, root: str | Path, profile: str = DEFAULT_RUNTIME_PROFILE
+    *, root: str | Path, profile: str = DEFAULT_RUNTIME_PROFILE, verify_bytes: bool = True
 ) -> dict[str, Any]:
-    """Reopen every sealed wheel byte before it can enter a provider bundle."""
+    """Reopen every sealed wheel byte before it can enter a provider bundle.
+
+    ``verify_bytes=False`` keeps every manifest, profile, inventory, size and
+    completeness check and skips only each wheel's sha256. It is for the bundle
+    builder's stat-only mode, where this manifest was hashed against the
+    toolchain inventory and every wheel is hashed by the toolchain archive.
+    """
 
     roots = runtime_profile_roots(profile)
     wheelhouse = Path(root).expanduser().resolve()
@@ -371,8 +377,11 @@ def validate_scene_configuration_python_wheelhouse(
             or path.is_symlink()
             or not path.is_file()
             or path.stat().st_size != row.get("size_bytes")
-            or "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-            != row.get("sha256")
+            or (
+                verify_bytes
+                and "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+                != row.get("sha256")
+            )
         ):
             raise ValueError(
                 "scene_configuration_python_wheelhouse_inventory_invalid"

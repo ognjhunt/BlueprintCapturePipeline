@@ -540,6 +540,21 @@ def _zip_bundle(
             release_toolchain_archive(toolchain_archive)
 
 
+#: Owner decision, default off: check the host toolchain's manifests,
+#: inventory, sizes and modes, but hash only its ``.json`` manifests. Every
+#: shipped toolchain byte is hashed against the inventory by the archive: as it
+#: is built on a cache miss, and as its fragment is spliced on a hit.
+STAT_ONLY_HOST_VALIDATION_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION"
+)
+
+
+def _stat_only_host_validation(explicit: bool | None) -> bool:
+    if explicit is not None:
+        return explicit
+    return os.environ.get(STAT_ONLY_HOST_VALIDATION_ENV, "").strip() == "1"
+
+
 def _remove_self_created_stage_tree(stage: Path) -> None:
     """Remove only the builder-owned tree, including its sealed read-only files."""
 
@@ -679,6 +694,7 @@ def build_scene_configuration_provider_bundle(
     scene_owner_attempt_path: str | Path | None = None,
     expected_toolchain_digest: str | None = None,
     toolchain_archive_cache_root: str | Path | None = None,
+    stat_only_toolchain_host_validation: bool | None = None,
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
@@ -783,9 +799,19 @@ def build_scene_configuration_provider_bundle(
         if diagnostic_mode_requested or production_semantic_reuse
         else construction_source_commit
     )
+    stat_only = _stat_only_host_validation(stat_only_toolchain_host_validation)
+    # Owner-gated (default off). Every shipped toolchain byte comes from the
+    # archive, which hashes each member against this same inventory: as it is
+    # read on a cache miss, and as the cached fragment is spliced on a hit. The
+    # provider validates every byte again. With the flag on, the host tree's
+    # bytes, wheels included, are hashed only where the archive reads them;
+    # its .json manifests are still hashed here.
     toolchain_manifest = validate_scene_configuration_toolchain(
-        root=toolchain, expected_source_commit=toolchain_source_commit
+        root=toolchain,
+        expected_source_commit=toolchain_source_commit,
+        verify_bytes=not stat_only,
     )
+    toolchain_host_validation = "stat_only_archive_verified" if stat_only else "full_bytes"
     if (
         expected_toolchain_digest is not None
         and toolchain_manifest["toolchain_digest"] != expected_toolchain_digest
@@ -804,6 +830,7 @@ def build_scene_configuration_provider_bundle(
             raise ValueError("scene_configuration_astra_runtime_not_sealed")
         provider_python_runtime = validate_scene_configuration_python_wheelhouse(
             root=toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE, profile=python_profile,
+            verify_bytes=not stat_only,
         )
     except (OSError, ValueError) as exc:
         raise TaskEvaluationSceneConfigurationBundleError(
@@ -1377,6 +1404,7 @@ def build_scene_configuration_provider_bundle(
         "bundle_sha256": _sha256(bundle),
         "bundle_size_bytes": bundle.stat().st_size,
         "toolchain_archive": toolchain_archive_receipt,
+        "toolchain_host_validation": toolchain_host_validation,
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")

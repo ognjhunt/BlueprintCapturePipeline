@@ -18,6 +18,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers im
     validate_scene_configuration_toolchain,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
+    TaskEvaluationSceneConfigurationBundleError,
     build_scene_configuration_provider_bundle,
     load_scene_configuration_provider_bundle_receipt,
 )
@@ -171,6 +172,50 @@ def test_changed_toolchain_content_builds_a_new_archive_and_bounds_the_cache(tmp
     assert keys[-1]["archive_key"].removeprefix("sha256:") in retained
 
 
+def test_a_prepared_archive_survives_eviction_by_concurrent_activations(tmp_path: Path) -> None:
+    """Retention may unlink a prepared entry before its splice; the pinned bytes still ship."""
+    cache = tmp_path / "cache"
+    roots = [_published_toolchain(tmp_path / "plain", A),
+             _published_toolchain(tmp_path / "bytecode", A, bundled_bytecode=True),
+             _published_toolchain(tmp_path / "empty", A, empty_file=True)]
+
+    def prepare(root: Path) -> archive_module.ToolchainArchive:
+        manifest = validate_scene_configuration_toolchain(root=root, expected_source_commit=A)
+        return archive_module.prepare_toolchain_archive(
+            toolchain_root=root, manifest=manifest,
+            compress_type_for=lambda path: zipfile.ZIP_DEFLATED, deflate_level=1,
+            stored_suffixes=(), scratch_root=tmp_path, cache_root=cache)
+
+    first, *others = [prepare(root) for root in roots]
+    assert not first.root.exists()  # evicted by the two later builds
+    with zipfile.ZipFile(tmp_path / "spliced.zip", "w") as output:
+        archive_module.splice_toolchain_archive(output, first)
+    for archive in (first, *others):
+        archive_module.release_toolchain_archive(archive)
+    assert first.handle.closed
+    with zipfile.ZipFile(tmp_path / "spliced.zip") as spliced:
+        assert spliced.testzip() is None
+        assert len(spliced.infolist()) == len(first.index["members"])
+
+
+def test_a_failed_single_use_build_leaves_nothing_behind(tmp_path: Path) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    manifest = validate_scene_configuration_toolchain(root=toolchain, expected_source_commit=A)
+    tampered = json.loads(json.dumps(manifest))
+    tampered["files"][0]["sha256"] = "sha256:" + "0" * 64
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    with pytest.raises(archive_module.TaskEvaluationSceneConfigurationToolchainArchiveError,
+                       match="source_mismatch"):
+        archive_module.prepare_toolchain_archive(
+            toolchain_root=toolchain, manifest=tampered,
+            compress_type_for=lambda path: zipfile.ZIP_DEFLATED, deflate_level=1,
+            stored_suffixes=(), scratch_root=scratch, cache_root=None,
+        )
+    assert list(scratch.iterdir()) == []
+
+
 def test_a_corrupted_cached_archive_is_rebuilt_not_shipped(tmp_path: Path) -> None:
     toolchain = _published_toolchain(tmp_path / "release-a", A)
     cache = tmp_path / "cache"
@@ -246,3 +291,201 @@ def test_cache_root_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert archive_module.resolve_cache_root() == (tmp_path / "explicit").resolve()
     assert archive_module.resolve_cache_root(tmp_path / "flag") == (tmp_path / "flag").resolve()
     assert os.environ[archive_module.CACHE_ROOT_ENV]
+
+
+def _count_host_hashes(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_builtin_producers as producers,
+    )
+    from blueprint_pipeline import task_evaluation_scene_configuration_component_package as package
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_python_wheelhouse as wheelhouse,
+    )
+
+    hashed: list[Path] = []
+    for module in (producers, package):
+        original = module._sha256
+        monkeypatch.setattr(
+            module, "_sha256",
+            lambda path, _original=original: hashed.append(Path(path)) or _original(path),
+        )
+
+    class _CountedHashlib:
+        """The wheelhouse hashes each wheel's bytes with ``hashlib.sha256``."""
+
+        def sha256(self, data: bytes = b""):
+            hashed.append(Path("<wheel>.whl"))
+            return hashlib.sha256(data)
+
+    monkeypatch.setattr(wheelhouse, "hashlib", _CountedHashlib())
+    return hashed
+
+
+def _tamper_wheel_same_size(toolchain: Path) -> Path:
+    wheel = next(path for path in sorted(toolchain.rglob("*.whl")) if path.is_file())
+    payload = wheel.read_bytes()
+    wheel.chmod(0o644)
+    wheel.write_bytes(payload[:-1] + (b"X" if payload[-1:] != b"X" else b"Y"))
+    wheel.chmod(0o444)
+    return wheel
+
+
+def _tamper_same_size(toolchain: Path) -> Path:
+    victim = next(path for path in sorted(toolchain.rglob("run")) if path.is_file())
+    payload = victim.read_bytes()
+    victim.chmod(0o755)
+    victim.write_bytes(payload[:-2] + b"0\n")  # same size, different bytes
+    victim.chmod(0o555)
+    return victim
+
+
+def test_stat_only_host_validation_is_off_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    hashed = _count_host_hashes(monkeypatch)
+
+    receipt = _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)
+
+    assert receipt["toolchain_archive"]["reused"] is True
+    assert receipt["toolchain_host_validation"] == "full_bytes"
+    assert hashed
+
+
+def test_stat_only_hashes_host_bytes_only_where_the_archive_reads_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    clean = _bundle(tmp_path, "full", toolchain=toolchain, commit=A, cache=tmp_path / "full-cache")
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    hashed = _count_host_hashes(monkeypatch)
+    cache = tmp_path / "cache"
+
+    miss = _bundle(tmp_path, "miss", toolchain=toolchain, commit=A, cache=cache)
+    hit = _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)
+    uncached = _bundle(tmp_path, "uncached", toolchain=toolchain, commit=A, cache=None)
+
+    # Only the manifests the builder reads to decide what the receipt claims.
+    assert hashed and all(path.suffix == ".json" for path in hashed)
+    assert [row["toolchain_archive"]["reused"] for row in (miss, hit, uncached)] == [False, True, False]
+    assert {row["toolchain_host_validation"] for row in (miss, hit, uncached)} == {
+        "stat_only_archive_verified"
+    }
+    assert miss["bundle_sha256"] == hit["bundle_sha256"] == uncached["bundle_sha256"] == clean["bundle_sha256"]
+
+
+def test_stat_only_never_ships_a_host_byte_that_differs_from_the_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    clean = _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    _tamper_same_size(toolchain)
+
+    # Hit: the shipped members come from the archive, so the bundle is unchanged.
+    assert _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)["bundle_sha256"] == (
+        clean["bundle_sha256"]
+    )
+    # Miss: the archive hashes every host byte against the inventory as it
+    # compresses it, and refuses.
+    for name, miss_cache in (("miss", tmp_path / "empty-cache"), ("uncached", None)):
+        with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="source_mismatch"):
+            _bundle(tmp_path, name, toolchain=toolchain, commit=A, cache=miss_cache)
+    assert not any((tmp_path / "empty-cache").iterdir())
+
+
+def test_stat_only_still_hashes_the_manifests_the_builder_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    manifest = next(
+        path for path in sorted(toolchain.rglob("*.json"))
+        if path.is_file() and path.name != f"{TOOLCHAIN_SCHEMA_VERSION}.json"
+    )
+    payload = manifest.read_bytes()
+    manifest.chmod(0o644)
+    manifest.write_bytes(payload[:-1] + (b" " if payload[-1:] != b" " else b"\n"))
+    manifest.chmod(0o444)
+
+    with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError, match="toolchain_file_invalid"):
+        _bundle(tmp_path, "tampered-manifest", toolchain=toolchain, commit=A, cache=cache)
+
+
+def test_stat_only_still_refuses_a_structurally_changed_toolchain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    victim = next(path for path in sorted(toolchain.rglob("run")) if path.is_file())
+    victim.chmod(0o755)
+    with victim.open("ab") as stream:
+        stream.write(b"#\n")  # size changes
+    victim.chmod(0o555)
+
+    with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError, match="toolchain_file_invalid"):
+        _bundle(tmp_path, "resized", toolchain=toolchain, commit=A, cache=cache)
+
+
+def test_an_archive_pruned_after_the_hit_check_is_rebuilt_from_verified_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    warm = _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    _tamper_same_size(toolchain)
+    entry = cache / warm["toolchain_archive"]["archive_key"].removeprefix("sha256:")
+    original = archive_module.prepare_toolchain_archive
+
+    def pruned_then_prepare(**kwargs):
+        archive_module._remove_entry(entry)  # a concurrent activation pruned it
+        return original(**kwargs)
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle_module
+    monkeypatch.setattr(bundle_module, "prepare_toolchain_archive", pruned_then_prepare)
+
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="source_mismatch"):
+        _bundle(tmp_path, "raced", toolchain=toolchain, commit=A, cache=cache)
+
+
+def test_stat_only_skips_wheel_hashes_but_never_ships_a_changed_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    clean = _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    _tamper_wheel_same_size(toolchain)
+
+    # Flag off: the host wheel bytes are hashed and the changed wheel refused.
+    with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError,
+                       match="toolchain_file_invalid:.*python_wheelhouse/wheels/"):
+        _bundle(tmp_path, "full", toolchain=toolchain, commit=A, cache=cache)
+
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    hashed = _count_host_hashes(monkeypatch)
+    # Hit: no wheel is hashed on the host, and the wheel that ships is the archive's.
+    hit = _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)
+    assert not any(path.suffix == ".whl" for path in hashed)
+    assert hit["bundle_sha256"] == clean["bundle_sha256"]
+    # Miss: the archive hashes the wheel against the inventory and refuses it.
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="source_mismatch"):
+        _bundle(tmp_path, "miss", toolchain=toolchain, commit=A, cache=tmp_path / "empty-cache")
+
+
+def test_the_activation_unit_names_a_writable_archive_cache_and_stat_only_validation() -> None:
+    """The unit is ProtectSystem=strict: only an explicitly named, writable root is ever reused."""
+    unit = (Path(__file__).resolve().parents[1]
+            / "deploy/systemd/blueprint-task-evaluation-launch-activation.service").read_text()
+    # Literal: an autouse fixture points DEFAULT_CACHE_PARENT at a temporary directory.
+    root = "/var/lib/blueprint/task-evaluation-inputs/scene-configuration-toolchain-archives"
+    assert f"Environment={archive_module.CACHE_ROOT_ENV}={root}\n" in unit
+    assert f"ReadWritePaths=-{root}\n" in unit
+    assert f"install -d -o blueprint -g blueprint -m 0750 {root}'" in unit
+    # Owner decision 2026-11-01.
+    assert "Environment=BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION=1\n" in unit

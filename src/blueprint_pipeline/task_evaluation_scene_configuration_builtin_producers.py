@@ -184,7 +184,7 @@ def _read_toolchain_manifest(
 
 
 def _validate_toolchain(
-    *, root: Path, expected_source_commit: str
+    *, root: Path, expected_source_commit: str, verify_bytes: bool = True
 ) -> tuple[dict[str, Any], dict[str, Path]]:
     manifest, manifest_path = _read_toolchain_manifest(
         root=root, expected_source_commit=expected_source_commit
@@ -239,7 +239,10 @@ def _validate_toolchain(
         if (
             expected is None
             or info.st_size != expected[1]
-            or _sha256(Path(entry.path)) != expected[0]
+            # Manifests are hashed even when bytes are not: the bundle builder
+            # reads them from this tree to decide what the receipt claims.
+            or ((verify_bytes or relative.endswith(".json"))
+                and _sha256(Path(entry.path)) != expected[0])
             or bool(info.st_mode & 0o111) != expected[2]
             or info.st_mode & 0o222
         ):
@@ -295,6 +298,7 @@ def _validate_toolchain(
             package = validate_scene_configuration_component_package(
                 root=package_manifest.parent,
                 expected_adapter_id=str(adapter_id),
+                verify_bytes=verify_bytes,
             )
         except TaskEvaluationSceneConfigurationComponentPackageError as exc:
             raise TaskEvaluationSceneConfigurationStageProducerError(
@@ -335,13 +339,21 @@ def read_scene_configuration_toolchain_manifest(
 
 
 def validate_scene_configuration_toolchain(
-    *, root: str | Path, expected_source_commit: str
+    *, root: str | Path, expected_source_commit: str, verify_bytes: bool = True
 ) -> dict[str, Any]:
-    """Validate every toolchain byte without constructing executable handlers."""
+    """Validate every toolchain byte without constructing executable handlers.
+
+    ``verify_bytes=False`` keeps every manifest, stage, inventory, size, mode
+    and completeness check and skips the per-file sha256 of every file except
+    ``.json`` manifests, which callers read to make decisions. It is for the
+    bundle builder, whose shipped toolchain bytes come from an archive hashed
+    against this same inventory.
+    """
 
     manifest, _entrypoints = _validate_toolchain(
         root=Path(root).expanduser().resolve(),
         expected_source_commit=expected_source_commit,
+        verify_bytes=verify_bytes,
     )
     return manifest
 
