@@ -30,6 +30,7 @@ from .task_evaluation_launch_dispatcher import (
     canonical_digest,
 )
 from .task_evaluation_launch_dispatcher_ownership import unowned_processing_names
+from .task_evaluation_launch_preallocation import preallocation_stop_evidence
 from .task_evaluation_launch_evidence_contracts import (
     CONFIGURATION_COMPLETE_OFFERING_STATUSES as CONFIGURATION_COMPLETE_OFFERING_STATUSES,  # noqa: PLC0414 - compatibility reexport
 )
@@ -910,11 +911,16 @@ def reconcile_launches(
                 if isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0
                 else fallback_stale_seconds
             )
-            if request_path.name in unowned and not _dispatcher_run_evidence(run_root):
-                # No live dispatcher owns this lease, and its dispatcher never
-                # made the run directory, let alone launch_started, so it never
-                # reached the allocator. It still waits out a dispatcher pass and
-                # still needs the same provider-zero proof below.
+            if request_path.name in unowned and (
+                not _dispatcher_run_evidence(run_root)
+                or preallocation_stop_evidence(run_root=run_root, launch_id=launch_id, state_root=state)
+                is not None
+            ):
+                # No live dispatcher owns this lease, and it never reached the
+                # allocator: its dispatcher never made the run directory, or the
+                # run's one-use standing authorization was never consumed, which
+                # every live allocator call requires first. It still waits out a
+                # dispatcher pass and still needs the same provider-zero proof below.
                 ttl_seconds = min(ttl_seconds, PRE_RUN_STALE_SECONDS)
             lease_age = (
                 (observed_at - started_at).total_seconds()
