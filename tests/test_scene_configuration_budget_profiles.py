@@ -119,6 +119,49 @@ def test_quote_can_reserve_only_when_the_owner_cap_covers_it(tmp_path):
     assert result["attempt_digest"] == canonical_digest(result, digest_field="attempt_digest")
 
 
+def test_artisan_quote_lets_its_dollar_cap_bind_not_a_call_count() -> None:
+    """2026-11-01, capture-447ae4f4: ARTISAN was issued 32 OpenAI requests.
+
+    Its agents are built for up to 150 coding and 150 review turns per
+    invocation and five repair rounds, each turn a billed call, and the meter
+    refuses the next call once the count is spent. 32 would stop it mid-coding
+    with most of its $15 unspent. The quote now issues the validator maximum for
+    ARTISAN and changes nothing else: no dollar cap, TTL or retry cap moves.
+    """
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import (
+        DEFAULT_OPENAI_REQUESTS, MAX_OPENAI_REQUESTS,
+    )
+
+    assert (DEFAULT_OPENAI_REQUESTS, MAX_OPENAI_REQUESTS) == (32, 100)
+    schema = json.loads((ROOT / "docs/schemas/task_evaluation_launch_preparation_request.v1.schema.json").read_text())
+
+    def openai_request_maxima(node, inside_openai=False):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key == "maximum_requests" and inside_openai and isinstance(value, dict):
+                    yield value["maximum"]
+                yield from openai_request_maxima(value, inside_openai or key == "openai")
+        elif isinstance(node, list):
+            for value in node:
+                yield from openai_request_maxima(value, inside_openai)
+
+    # The preparation schema (and the WebApp contract) admit exactly this ceiling.
+    assert set(openai_request_maxima(schema)) == {MAX_OPENAI_REQUESTS}
+    website = dict(authoring_max_cost_usd=15.0, requires_artifixer=False, maximum_total_spend_usd=20.0)
+    artisan = spend_block("artisan_v1", **website)
+    assert artisan["external_service_caps"]["openai"]["maximum_requests"] == MAX_OPENAI_REQUESTS
+    # Everything else is exactly what a 32-request quote would carry.
+    assert artisan["external_service_caps"]["openai"]["maximum_cost_usd"] == 15.0
+    assert artisan["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == 15.0
+    assert artisan["hard_cap_usd"] == 20.0 and artisan["provider_compute_spend_cap_usd"] == 5.0
+    assert artisan["retry_cap"] == 0
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import REQUIRED_PARENT_TTL_SECONDS
+    assert artisan["hard_ttl_seconds"] == REQUIRED_PARENT_TTL_SECONDS == 27_000
+    for backend, cap in (("astra_cad_blender_v1", 7.0), ("content_agents", None)):
+        assert spend_block(backend, authoring_max_cost_usd=cap)["external_service_caps"]["openai"][
+            "maximum_requests"] == DEFAULT_OPENAI_REQUESTS
+
+
 @pytest.mark.parametrize("compute_cap", [6, 5])
 @pytest.mark.parametrize("backend,author_cap", [("content_agents", 0.24), ("astra_cad_blender_v1", 5),
                                                ("astra_cad_blender_v1", 15), ("astra_cad_blender_v1", 25),
@@ -153,13 +196,15 @@ def test_paid_authority_materialization_and_reopen_use_the_bound_backend(tmp_pat
         container_image=module.SCENE_CONFIGURATION_PROVIDER_IMAGE, resource_name="adp-fixture-astra-budget-20260910",
         max_hourly_rate_usd=quote["maximum_hourly_rate_usd"], hard_cap_usd=quote["hard_cap_usd"], hard_ttl_seconds=REQUIRED_PARENT_TTL_SECONDS,
         output_path=tmp_path / "authority.json", provider_compute_spend_cap_usd=compute_cap,
-        openai_max_cost_usd=external["maximum_cost_usd"], openai_max_requests=32,
+        openai_max_cost_usd=external["maximum_cost_usd"], openai_max_requests=external["maximum_requests"],
         openai_artifixer_semantic_teacher_max_cost_usd=4.8, openai_artifixer_visual_review_max_cost_usd=0.96,
         openai_content_agents_max_cost_usd=author_cap)
     result = module.materialize_scene_configuration_paid_authority(**args)
     assert module.validate_scene_configuration_paid_authority(result, bundle_receipt=receipt) == result
     assert result["hard_attempt_spend_cap_usd"] == quote["hard_cap_usd"]
     assert result["maximum_paid_attempts"] == 1 and result["retry_cap"] == 0
+    assert result["external_service_spend_caps"]["openai"]["maximum_requests"] == (
+        100 if backend == "artisan_v1" else 32)
     # A tighter ceiling never admits underfunded lifetime, extra compute or a
     # component sum above the total. Reopening independently checks each bound.
     for overrides in ({"provider_compute_spend_cap_usd": 0},
