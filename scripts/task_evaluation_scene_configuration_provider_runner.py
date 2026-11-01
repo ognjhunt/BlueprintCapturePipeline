@@ -276,6 +276,36 @@ def _require_asset_isolation(*, runtime: Path, output: Path) -> None:
     print("BLUEPRINT_SCENE_CONFIGURATION_ASSET_ISOLATION_PREFLIGHT_PASSED", flush=True)
 
 
+ARTISAN_BLENDER = "toolchain/components/content_agents_rigid_replacement/package/runtime/blender/blender"
+
+
+def _require_artisan_blender(*, runtime: Path, output: Path) -> None:
+    """The packaged Blender must start on this image before any stage spends.
+
+    ARTISAN starts Blender only inside its own stage, after stages 1-2 and
+    its own setup. The toolchain build proved ``blender --version`` only on
+    the control-plane host, so a library the provider image lacks would
+    surface late. This is image-level, not a machine fault, so it is not
+    avoidlisted.
+    """
+
+    import subprocess
+
+    home = output / "artisan_blender_startup_preflight"
+    home.mkdir(mode=0o750, exist_ok=True)
+    try:
+        completed = subprocess.run(
+            [str(runtime / ARTISAN_BLENDER), "--background", "--factory-startup", "--version"],
+            capture_output=True, text=True, timeout=180, check=False,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(home)})
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"artisan_blender_runtime_unavailable:{type(exc).__name__}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"artisan_blender_runtime_unavailable:{completed.returncode}:{detail[0][-200:]}")
+    print("BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_BLENDER_STARTUP_PASSED", flush=True)
+
+
 def main() -> int:
     runtime = Path(
         os.environ.get(
@@ -353,6 +383,7 @@ def main() -> int:
         if _artisan_stage_scheduled(envelope, configurations, stage_limit) and not completed_astra_prefix(
                 stages_root, envelope, configurations, parent_deadline_epoch, stage_limit=stage_limit):
             _require_asset_isolation(runtime=runtime, output=output)
+            _require_artisan_blender(runtime=runtime, output=output)
         chain = _portable_stage_chain(
             execute_scene_configuration_stage_chain(
                 envelope=envelope,

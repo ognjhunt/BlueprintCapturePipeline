@@ -33,10 +33,19 @@ def _runner():
     return module
 
 
+def _fake_blender(runtime: Path, *, script: str = 'echo "Blender 5.0.0"') -> Path:
+    blender = runtime / "toolchain/components/content_agents_rigid_replacement/package/runtime/blender/blender"
+    blender.parent.mkdir(parents=True, exist_ok=True)
+    blender.write_text("#!/bin/sh\n" + script + "\n")
+    blender.chmod(0o755)
+    return blender
+
+
 def _prepare_runner(tmp_path, monkeypatch, *, backend="artisan_v1"):
     runner = _runner()
     runtime, output = tmp_path / "runtime", tmp_path / "output"
     runtime.mkdir()
+    _fake_blender(runtime)
     result_path = output / "result.json"
     monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_RUNTIME_ROOT", str(runtime))
     monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_OUTPUT_ROOT", str(output))
@@ -84,7 +93,22 @@ def test_isolated_host_reaches_the_stage_chain(tmp_path, monkeypatch, capsys):
     assert runner.main() == 2  # the fixture chain stops itself
     assert len(chain_calls) == 1
     assert probes == [(tmp_path / "output/asset_isolation_host_preflight").resolve()]
-    assert "BLUEPRINT_SCENE_CONFIGURATION_ASSET_ISOLATION_PREFLIGHT_PASSED" in capsys.readouterr().out
+    logged = capsys.readouterr().out
+    assert "BLUEPRINT_SCENE_CONFIGURATION_ASSET_ISOLATION_PREFLIGHT_PASSED" in logged
+    assert "BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_BLENDER_STARTUP_PASSED" in logged
+
+
+def test_blender_that_cannot_start_on_the_image_blocks_before_stage_one(tmp_path, monkeypatch, capsys):
+    runner, result_path, chain_calls = _prepare_runner(tmp_path, monkeypatch)
+    _fake_blender(tmp_path / "runtime", script=(
+        'echo "blender: error while loading shared libraries: libXi.so.6: cannot open shared object file" >&2; exit 127'))
+    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: None)
+    assert runner.main() == 2
+    assert chain_calls == []
+    blocker = json.loads(result_path.read_text(encoding="utf-8"))["blockers"][0]
+    assert "artisan_blender_runtime_unavailable:127:" in blocker and "libXi.so.6" in blocker
+    # An image-level fault is not a machine fault: nothing to avoidlist.
+    assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(("backend", "stage_limit"), [("astra_cad_blender_v1", None), ("artisan_v1", "stage-1")])
