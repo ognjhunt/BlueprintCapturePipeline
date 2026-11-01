@@ -44,6 +44,20 @@ Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS=launch_preparation=/var/li
 # before adopting retained work. The key is file-backed and the service has no
 # provider mutation authority; paid dispatch remains a separate held unit.
 Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
+# A Website job (scene-preparation intent) stages its scene-configuration
+# activation and submits its paid launch request from this tick
+# (task_evaluation_scene_configuration_activation_automation), not from the
+# configured-controls unit, which now skips Website jobs. These are the same
+# state root, activation queue, profile and standing-authorization directories,
+# WebApp submit secret and endpoint that unit passes. Provider zero, lookahead,
+# release window, standing authorization and spend cap gate the request; the
+# launch dispatcher still owns allocation and its paid-launch lock.
+Environment=BLUEPRINT_TASK_EVALUATION_CONFIGURED_CONTROLS_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-activations
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_PROFILE_DIR=/etc/blueprint/task-evaluation-launch-profiles
+Environment=BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR=/var/lib/blueprint/pipeline-control-plane/standing-authorizations
+Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_SECRET_FILE=/etc/blueprint/provider-secrets/blueprint_task_evaluation_launch_submit_secret
+Environment=BLUEPRINT_TASK_EVALUATION_WEBAPP_SUBMISSION_URL=https://tryblueprint.io/api/internal/task-evaluation-launch-submissions
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-configuration-release.env
 EnvironmentFile=-/etc/blueprint/task-evaluation-scene-progression.env
