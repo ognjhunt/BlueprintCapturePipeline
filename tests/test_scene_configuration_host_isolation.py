@@ -64,6 +64,8 @@ def _prepare_runner(tmp_path, monkeypatch, *, backend="artisan_v1"):
     interpreter_runs = []
 
     def interpreter(self, argv, **kwargs):
+        # The runner that runs the interpreter must have selected its own backend.
+        assert getattr(self, "_fixture_preflighted", False), "interpreter run on a runner that was never preflighted"
         interpreter_runs.append((list(argv), self.library_environment, list(self.library_executables)))
         return types.SimpleNamespace(returncode=0, stdout="", stderr="")
 
@@ -101,10 +103,16 @@ def test_host_without_isolation_blocks_before_stage_one_with_avoidlist_marker(tm
 def test_isolated_host_reaches_the_stage_chain(tmp_path, monkeypatch, capsys):
     runner, _result_path, chain_calls = _prepare_runner(tmp_path, monkeypatch)
     probes = []
-    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: probes.append(self.write_root))
+
+    def preflight(self):
+        probes.append(self.write_root)
+        self._fixture_preflighted = True
+
+    monkeypatch.setattr(SandboxedAssetRunner, "preflight", preflight)
     assert runner.main() == 2  # the fixture chain stops itself
     assert len(chain_calls) == 1
-    assert probes == [(tmp_path / "output/asset_isolation_host_preflight").resolve()]
+    # The kernel check, then the interpreter runner's own backend selection.
+    assert probes == [(tmp_path / "output/asset_isolation_host_preflight").resolve()] * 2
     logged = capsys.readouterr().out
     assert "BLUEPRINT_SCENE_CONFIGURATION_ASSET_ISOLATION_PREFLIGHT_PASSED" in logged
     assert "BLUEPRINT_SCENE_CONFIGURATION_SANDBOXED_INTERPRETER_PREFLIGHT_PASSED" in logged
@@ -136,7 +144,7 @@ def test_blender_that_cannot_start_on_the_image_blocks_before_stage_one(tmp_path
     runner, result_path, chain_calls = _prepare_runner(tmp_path, monkeypatch)
     _fake_blender(tmp_path / "runtime", script=(
         'echo "blender: error while loading shared libraries: libXi.so.6: cannot open shared object file" >&2; exit 127'))
-    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: None)
+    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: setattr(self, "_fixture_preflighted", True))
     assert runner.main() == 2
     assert chain_calls == []
     blocker = json.loads(result_path.read_text(encoding="utf-8"))["blockers"][0]

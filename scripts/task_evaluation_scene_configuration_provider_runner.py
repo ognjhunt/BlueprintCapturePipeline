@@ -285,6 +285,9 @@ def _require_asset_isolation(*, runtime: Path, output: Path) -> None:
     runner = SandboxedAssetRunner(read_roots=[runtime, *interpreter["roots"]], write_root=probe,
                                   library_environment=interpreter["library_environment"],
                                   library_executables=[interpreter["executable"]])
+    # Each runner selects its own backend; without this, a host that needs the
+    # Landlock fallback would retry the refused namespace launcher.
+    runner.preflight()
     started = runner([str(interpreter["executable"]), "-S", "-c", "import json"], cwd=probe,
                      timeout=120, check=False)
     if started.returncode != 0:
