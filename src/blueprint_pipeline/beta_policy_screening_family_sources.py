@@ -115,6 +115,7 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                         candidate_ids = [key for key in (candidate_ids or replan) if key in set(replan)]
                     plan = plan_within_job_ceiling(catalog, planning['scene'], campaign_id=campaign_id,
                         queue_root=root, context=context, capture_root=Path(profile['capture_root']),
+                        superseding=superseded,
                         capabilities=planning['capabilities'], cost_quotes=planning['cost_quotes'],
                         candidate_ids=candidate_ids, priority=planning.get('candidate_priority'))
                     retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)

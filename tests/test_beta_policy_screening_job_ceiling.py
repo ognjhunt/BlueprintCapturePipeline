@@ -71,10 +71,54 @@ def test_nine_dollars_left_funds_fewer_and_defers_the_rest_for_the_job_ceiling(t
     assert len(selected) == 4
     rest = [row for row in value["candidates"] if row["status"] != "selected"]
     assert len(rest) == 36
-    assert all(row["status"] == "deferred" and row["blockers"] == [JOB_CEILING_DEFERRED] for row in rest)
+    # Each could still be funded within the $9 from money a selected candidate
+    # releases before spend, so it waits; the ceiling is named as the reason.
+    assert all(row["status"] == "waitlisted" and row["blockers"] == [JOB_CEILING_DEFERRED] for row in rest)
     coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
     [publication] = coordinator.pending_publications(queue_root=tmp_path)
     assert sum(row["status"] == "pending" for row in publication["candidates"]) == 4
+    assert {tuple(row["blockers"]) for row in publication["candidates"] if row["status"] == "waitlisted"} == {
+        (JOB_CEILING_DEFERRED,)}
+
+
+def test_waitlist_refills_only_within_the_ceiling_sized_budget(tmp_path, monkeypatch):
+    # The planner fixture prices on a fixed clock; its quotes are current for this run.
+    monkeypatch.setattr(coordinator, "_quote_current", lambda candidate: True)
+    value = ceiling_plan(9, count=8)
+    selected = [row["candidate_id"] for row in value["candidates"] if row["status"] == "selected"]
+    assert len(selected) == 4 and value["budget_usd"] == "9.00"
+    coordinator.enqueue_screening_campaign(value, queue_root=tmp_path)
+
+    class FirstRefusedRestComplete:
+        def prepare_candidate(self, *, candidate, **_):
+            if candidate["candidate_id"] == selected[0]:
+                raise ValueError("beta_screening_static_preflight_blocked:no_offer")
+            return {"sealed": "local"}
+
+        def launch_candidate(self, **_):
+            return {"status": "blocked", "provider_allocation_performed": True, "provider_zero_verified": True}
+
+    for _ in range(3):
+        coordinator.process_screening_queue(queue_root=tmp_path, executor=FirstRefusedRestComplete(),
+                                            require_publication_ack=False, max_launches=10)
+    [publication] = coordinator.pending_publications(queue_root=tmp_path)
+    # The refused candidate's $2 funds one waitlisted row: $8 spent of the job's $9, never more.
+    assert publication["budget"]["spent_upper_bound_usd"] == "8"
+    statuses = [row["status"] for row in publication["candidates"]]
+    assert statuses.count("waitlisted") == 0 and statuses.count("blocked") == 5
+    assert {tuple(row["blockers"]) for row in publication["candidates"] if row["status"] == "deferred"} == {
+        ("beta_screening_site_budget_exhausted",)}
+
+
+def test_a_replan_does_not_count_the_rows_it_replaces_against_the_ceiling(tmp_path):
+    catalog, capabilities, quotes = inputs(4, "2.00")
+    earlier = build_screening_plan(catalog, scene(), campaign_id="campaign0", capabilities=capabilities,
+                                   cost_quotes=quotes, now=NOW)
+    coordinator.enqueue_screening_campaign(earlier, queue_root=tmp_path)
+    assert job_ceiling.local_screening_holds(tmp_path, site_id=SITE, published_usd=Decimal(0)) == Decimal("8.00")
+    # Re-planning campaign0 closes its pending rows in the same write; they must not shrink the new plan.
+    assert job_ceiling.local_screening_holds(tmp_path, site_id=SITE, published_usd=Decimal(0),
+                                             superseding="campaign0") == Decimal(0)
 
 
 @pytest.mark.parametrize("remaining,budget", [(1.99, "1.99"), (0.004, "0.00"), (0, "0.00")])

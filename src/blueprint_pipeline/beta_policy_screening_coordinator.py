@@ -353,7 +353,8 @@ def _initial_state(candidate: Mapping[str, Any]) -> dict[str, Any]:
         # such state yet, so the site sees it unavailable with its measured reason.
         status, blockers = "unavailable", [INFEASIBLE_BLOCKER, *blockers]
     if status == "waitlisted":
-        return {"status": "waitlisted", "blockers": [WAITLIST_BLOCKER]}
+        # The plan's reason: the site allowance, or the website job's ceiling.
+        return {"status": "waitlisted", "blockers": _safe_blockers(blockers, WAITLIST_BLOCKER)}
     return {"status": "pending" if status == "selected" else status,
             "blockers": _safe_blockers(blockers, "beta_screening_candidate_unavailable") if blockers else []}
 

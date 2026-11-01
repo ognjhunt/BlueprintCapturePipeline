@@ -161,7 +161,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     plan = plan_within_job_ceiling(catalog, inputs["scene"], campaign_id=campaign_id,
                         queue_root=root, context=context, capture_root=capture,
                         capabilities=inputs["capabilities"], cost_quotes=inputs["cost_quotes"],
-                        priority=inputs.get("candidate_priority"), candidate_ids=replan)
+                        priority=inputs.get("candidate_priority"), candidate_ids=replan, superseding=superseded)
                     retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
                     if superseded is None:
                         outcome.update(enqueue_screening_campaign(plan, queue_root=root))

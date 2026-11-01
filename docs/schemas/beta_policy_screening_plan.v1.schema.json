@@ -602,7 +602,10 @@
               },
               "blockers": {
                 "items": {
-                  "const": "site_screening_budget_insufficient"
+                  "enum": [
+                    "site_screening_budget_insufficient",
+                    "website_job_ceiling_insufficient"
+                  ]
                 },
                 "maxItems": 1,
                 "minItems": 1,

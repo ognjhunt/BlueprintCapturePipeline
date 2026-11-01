@@ -625,7 +625,10 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                             "execution_spec", "cost_quote", "max_cost_usd", "episode_count", "scenario_cells"}:
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_fields_invalid")
             expected_cells = g1_cells(cells) if row.get("execution_spec", {}).get("backend") == G1_BACKEND else cells
-            if (row["blockers"] != ([] if row["status"] == "selected" else [WAITLIST_BLOCKER])
+            # A plan sized to its website job's ceiling names the ceiling as what waitlisted it.
+            waitlist_reasons = ([[WAITLIST_BLOCKER], [JOB_CEILING_DEFERRED]]
+                                if plan.get("budget_basis") == JOB_CEILING_BASIS else [[WAITLIST_BLOCKER]])
+            if ((row["blockers"] != [] if row["status"] == "selected" else row["blockers"] not in waitlist_reasons)
                     or row.get("episode_count") != len(cells) or row.get("scenario_cells") != expected_cells):
                 raise BetaPolicyScreeningPlanError("beta_screening_selected_cells_invalid")
             _digest(row["configuration_digest"], "beta_screening_configuration_invalid")
@@ -750,11 +753,15 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
     plan = build_screening_plan(catalog, scene, budget_usd=f"{budget:.2f}" if budget > 0 else budget_usd, **options)
     if budget < requested:
         for row in plan["candidates"]:
-            if (row["status"] == "selected" and budget == 0
-                    or row["status"] == "deferred" and row["blockers"] == ["site_screening_budget_insufficient"]):
+            if (row["status"] in {"selected", WAITLISTED} and budget == 0
+                    or row["status"] == "deferred" and row["blockers"] == [WAITLIST_BLOCKER]):
                 for key in set(row) - {"candidate_id", "display_name", "configuration_digest", "execution_evidence_kind"}:
                     del row[key]
                 row.update(status="deferred", blockers=[JOB_CEILING_DEFERRED])
+            elif row["status"] == WAITLISTED:
+                # Still fundable within the ceiling-sized budget from money a
+                # selected candidate releases; the ceiling is what holds it back.
+                row["blockers"] = [JOB_CEILING_DEFERRED]
     planned = sum((money(row["max_cost_usd"]) for row in plan["candidates"] if row["status"] == "selected"), Decimal(0))
     plan.update(budget_usd=f"{budget:.2f}", maximum_planned_cost_usd=f"{planned:.2f}",
                 budget_basis=JOB_CEILING_BASIS, website_job_ceiling=job_ceiling)

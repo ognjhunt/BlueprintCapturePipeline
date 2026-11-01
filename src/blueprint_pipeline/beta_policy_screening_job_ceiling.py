@@ -51,12 +51,16 @@ def read_job_ceiling_summary(*, context: Mapping[str, Any], capture_root: str | 
     return dict(summary)
 
 
-def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd: Decimal) -> Decimal:
+def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd: Decimal,
+                          superseding: str | None = None) -> Decimal:
     """Screening this queue holds for the site that the WebApp's figure misses.
 
     The WebApp counts screening from the last publication it accepted, so it
     cannot see reservations made since, nor any campaign's selected candidates
-    not reserved yet (each campaign up to its own plan budget).
+    not reserved yet (each campaign up to its own plan budget). A campaign
+    being re-planned (``superseding``) is skipped for those unreserved rows:
+    the re-plan closes them in the same write that enqueues the new plan, so
+    counting them would charge the job twice. What it committed still counts.
     """
     from .beta_policy_screening_coordinator import _amount, _budget, _ledger, _lock, _plan, _root
     from .beta_policy_screening_plan import money
@@ -68,7 +72,7 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
         holds = max(Decimal(0), committed - published_usd)
         for campaign_id, state in ledger["campaigns"].items():
             pending = {key for key, row in state["candidates"].items() if row["status"] == "pending"}
-            if state["site_id"] != site_id or not pending:
+            if state["site_id"] != site_id or not pending or campaign_id == superseding:
                 continue
             plan = _plan(root, campaign_id, state["plan_digest"])
             unreserved = sum((money(row["max_cost_usd"]) for row in plan["candidates"]
@@ -79,8 +83,12 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
 
 
 def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any], *, queue_root: str | Path,
-                            context: Mapping[str, Any], capture_root: str | Path, **options: Any) -> dict[str, Any]:
-    """Read the job's ceiling once, then build the new plan within it."""
+                            context: Mapping[str, Any], capture_root: str | Path, superseding: str | None = None,
+                            **options: Any) -> dict[str, Any]:
+    """Read the job's ceiling once, then build the new plan within it.
+
+    ``superseding`` names the campaign a re-plan after a deploy replaces.
+    """
     from .beta_policy_screening_plan import BetaPolicyScreeningPlanError, build_job_ceiling_screening_plan
     from .beta_policy_screening_plan import job_ceiling_record
 
@@ -92,7 +100,8 @@ def plan_within_job_ceiling(catalog: Mapping[str, Any], scene: Mapping[str, Any]
     published = summary.get("screening_cost_usd")
     published = (Decimal(str(published)) if isinstance(published, (int, float)) and not isinstance(published, bool)
                  and math.isfinite(published) and published >= 0 else Decimal(0))
-    holds = local_screening_holds(queue_root, site_id=scene["site_id"], published_usd=published)
+    holds = local_screening_holds(queue_root, site_id=scene["site_id"], published_usd=published,
+                                  superseding=superseding)
     try:
         record = job_ceiling_record(summary, local_holds_usd=holds, read_at=read_at)
     except BetaPolicyScreeningPlanError:
