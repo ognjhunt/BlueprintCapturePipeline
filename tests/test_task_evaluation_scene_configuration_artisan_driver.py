@@ -242,3 +242,26 @@ def test_confined_import_preflight_allows_cold_imports_of_the_sealed_runtime(sta
     # The landlock backend caps any sandboxed call at 900 s; stay inside it.
     assert "min(float(timeout), 900)" in Path(SandboxedAssetRunner.__call__.__code__.co_filename).read_text()
     assert driver.CONFINED_PREFLIGHT_TIMEOUT_SECONDS <= 900
+
+
+def test_sandbox_can_read_and_load_the_interpreter_it_runs(stage_fixture, monkeypatch):
+    """capture-447ae4f4: Kit's Python sits in a tree only its group may read.
+
+    The Landlock launcher clears every capability, so ARTISAN must make that
+    runtime readable first (as the Astra backend does) and hand the sandbox
+    the interpreter's loader path; otherwise its preflight fails with
+    Permission denied: '/isaac-sim/kit/python'.
+    """
+    import sys
+    from blueprint_pipeline import asset_runtime_permissions
+    prepared = []
+    monkeypatch.setattr(asset_runtime_permissions, "prepare_runtime_code_access",
+                        lambda roots: prepared.append([str(p) for p in roots]) or {"status": "ready", "changed_count": 0})
+    fixture = stage_fixture
+    driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
+    context = json.loads((fixture.output / "artisan_runtime/bridge_context.v1.json").read_text())["sandbox"]
+    base = str(Path(sys.base_prefix).resolve())
+    assert base in context["read_roots"] and prepared == [context["read_roots"]]
+    assert context["library_executables"] == [str(Path(sys.executable).resolve())]
+    assert isinstance(context["library_environment"], dict)
+    assert json.loads((fixture.output / "artisan_runtime/runtime_code_access.json").read_text())["status"] == "ready"

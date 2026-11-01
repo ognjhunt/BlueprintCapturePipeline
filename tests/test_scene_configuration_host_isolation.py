@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -60,6 +61,19 @@ def _prepare_runner(tmp_path, monkeypatch, *, backend="artisan_v1"):
             {"stage_id": stage, "materialized_path": str(tmp_path / f"{stage}.json")}
             for stage in ("stage-1", "stage-3")]})
     chain_calls = []
+    interpreter_runs = []
+
+    def interpreter(self, argv, **kwargs):
+        # The runner that runs the interpreter must have selected its own backend.
+        assert getattr(self, "_fixture_preflighted", False), "interpreter run on a runner that was never preflighted"
+        interpreter_runs.append((list(argv), self.library_environment, list(self.library_executables)))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    from blueprint_pipeline import asset_runtime_permissions
+    monkeypatch.setattr(SandboxedAssetRunner, "__call__", interpreter)
+    monkeypatch.setattr(asset_runtime_permissions, "prepare_runtime_code_access",
+                        lambda roots: interpreter_runs.append(("prepared", [str(p) for p in roots])) or {"status": "ready"})
+    runner.interpreter_runs = interpreter_runs
 
     def stages(**kwargs):
         chain_calls.append(kwargs)
@@ -89,20 +103,48 @@ def test_host_without_isolation_blocks_before_stage_one_with_avoidlist_marker(tm
 def test_isolated_host_reaches_the_stage_chain(tmp_path, monkeypatch, capsys):
     runner, _result_path, chain_calls = _prepare_runner(tmp_path, monkeypatch)
     probes = []
-    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: probes.append(self.write_root))
+
+    def preflight(self):
+        probes.append(self.write_root)
+        self._fixture_preflighted = True
+
+    monkeypatch.setattr(SandboxedAssetRunner, "preflight", preflight)
     assert runner.main() == 2  # the fixture chain stops itself
     assert len(chain_calls) == 1
-    assert probes == [(tmp_path / "output/asset_isolation_host_preflight").resolve()]
+    # The kernel check, then the interpreter runner's own backend selection.
+    assert probes == [(tmp_path / "output/asset_isolation_host_preflight").resolve()] * 2
     logged = capsys.readouterr().out
     assert "BLUEPRINT_SCENE_CONFIGURATION_ASSET_ISOLATION_PREFLIGHT_PASSED" in logged
+    assert "BLUEPRINT_SCENE_CONFIGURATION_SANDBOXED_INTERPRETER_PREFLIGHT_PASSED" in logged
     assert "BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_BLENDER_STARTUP_PASSED" in logged
+    # The interpreter ARTISAN runs is made readable, then run inside the sandbox.
+    import sys as _sys
+    prepared, (argv, _env, executables) = runner.interpreter_runs
+    assert prepared[0] == "prepared" and str(Path(_sys.base_prefix).resolve()) in prepared[1]
+    assert argv[:3] == [str(Path(_sys.executable).resolve()), "-S", "-c"]
+    assert executables == [Path(_sys.executable).resolve()]
+
+
+def test_an_interpreter_the_sandbox_cannot_run_blocks_before_stage_one(tmp_path, monkeypatch, capsys):
+    """capture-447ae4f4: the kernel check passed, then ARTISAN's own failed on /isaac-sim/kit/python."""
+
+    runner, result_path, chain_calls = _prepare_runner(tmp_path, monkeypatch)
+    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: None)
+    monkeypatch.setattr(SandboxedAssetRunner, "__call__", lambda self, argv, **kwargs: types.SimpleNamespace(
+        returncode=126, stdout="", stderr="ASSET_KERNEL_SANDBOX_FAILED:[Errno 13] Permission denied: '/isaac-sim/kit/python'\n"))
+    assert runner.main() == 2
+    assert chain_calls == []
+    blocker = json.loads(result_path.read_text(encoding="utf-8"))["blockers"][0]
+    assert "artisan_sandboxed_interpreter_unavailable:126:" in blocker and "/isaac-sim/kit/python" in blocker
+    # An image or setup fault, not a machine without isolation: nothing to avoidlist.
+    assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED" not in capsys.readouterr().out
 
 
 def test_blender_that_cannot_start_on_the_image_blocks_before_stage_one(tmp_path, monkeypatch, capsys):
     runner, result_path, chain_calls = _prepare_runner(tmp_path, monkeypatch)
     _fake_blender(tmp_path / "runtime", script=(
         'echo "blender: error while loading shared libraries: libXi.so.6: cannot open shared object file" >&2; exit 127'))
-    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: None)
+    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: setattr(self, "_fixture_preflighted", True))
     assert runner.main() == 2
     assert chain_calls == []
     blocker = json.loads(result_path.read_text(encoding="utf-8"))["blockers"][0]

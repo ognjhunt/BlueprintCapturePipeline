@@ -264,6 +264,8 @@ def _require_asset_isolation(*, runtime: Path, output: Path) -> None:
     """
 
     from blueprint_pipeline.asset_authoring_sandbox import AssetSandboxError, SandboxedAssetRunner
+    from blueprint_pipeline.asset_python_runtime import sandboxed_interpreter
+    from blueprint_pipeline.asset_runtime_permissions import prepare_runtime_code_access
 
     probe = output / "asset_isolation_host_preflight"
     probe.mkdir(mode=0o750, exist_ok=True)
@@ -274,6 +276,24 @@ def _require_asset_isolation(*, runtime: Path, output: Path) -> None:
             print("BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:asset_sandbox_unavailable", flush=True)
         raise
     print("BLUEPRINT_SCENE_CONFIGURATION_ASSET_ISOLATION_PREFLIGHT_PASSED", flush=True)
+    # The kernel boundary works; now ask what ARTISAN asks, with its real
+    # interpreter. On the Isaac image that interpreter lives in a tree only its
+    # group may read (capture-447ae4f4 passed the check above and then failed
+    # ARTISAN's own with Permission denied: '/isaac-sim/kit/python').
+    interpreter = sandboxed_interpreter()
+    prepare_runtime_code_access(interpreter["roots"])
+    runner = SandboxedAssetRunner(read_roots=[runtime, *interpreter["roots"]], write_root=probe,
+                                  library_environment=interpreter["library_environment"],
+                                  library_executables=[interpreter["executable"]])
+    # Each runner selects its own backend; without this, a host that needs the
+    # Landlock fallback would retry the refused namespace launcher.
+    runner.preflight()
+    started = runner([str(interpreter["executable"]), "-S", "-c", "import json"], cwd=probe,
+                     timeout=120, check=False)
+    if started.returncode != 0:
+        detail = (started.stderr or started.stdout or "").strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"artisan_sandboxed_interpreter_unavailable:{started.returncode}:{detail[0][-200:]}")
+    print("BLUEPRINT_SCENE_CONFIGURATION_SANDBOXED_INTERPRETER_PREFLIGHT_PASSED", flush=True)
 
 
 ARTISAN_BLENDER = "toolchain/components/content_agents_rigid_replacement/package/runtime/blender/blender"

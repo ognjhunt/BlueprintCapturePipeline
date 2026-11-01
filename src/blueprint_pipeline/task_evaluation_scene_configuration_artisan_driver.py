@@ -162,7 +162,9 @@ def _execute(values, output, runner, cost_gate_factory):
     workspace.mkdir(exist_ok=True)
     blender = package / "runtime/blender/blender"
     import_roots = [str(bridge), str(source), str(libraries)]
-    read_roots = [*import_roots, str(Path(sys.base_prefix).resolve()), str(blender.parent)]
+    from .asset_python_runtime import sandboxed_interpreter
+    interpreter = sandboxed_interpreter()
+    read_roots = [*import_roots, *map(str, interpreter["roots"]), str(blender.parent)]
     # Credentials must be outside every root visible to generated code.
     key_path = Path(scope["api_key_file"]).resolve()
     system_reads = ("/usr", "/bin", "/lib", "/lib64", "/etc/fonts", "/etc/ld.so.cache", "/etc/localtime", "/proc/self")
@@ -181,13 +183,20 @@ def _execute(values, output, runner, cost_gate_factory):
         "sandbox": {"write_root": str(generated_workspace), "read_roots": read_roots, "import_roots": import_roots,
                     "trusted_asset_roots": [str(source / "sdk/assets")],
                     "write_paths": [str(generated_workspace / name) for name in ("assets", "inputs", "blender", "renders", "tmp", "xdg", "cache", "blueprint_sandbox_ipc")],
-                    "blender": str(blender)}}
+                    "blender": str(blender),
+                    "library_environment": interpreter["library_environment"],
+                    "library_executables": [str(interpreter["executable"])]}}
     context_path = runtime / "bridge_context.v1.json"
     if context_path.exists():
         require(read_json(context_path) == context, "artisan_authority_or_workspace_changed_on_resume")
     else:
         write_json(context_path, context)
+    from .asset_runtime_permissions import prepare_runtime_code_access
     from .task_object_artisan_hooks import sandbox
+    # Trusted setup before any generated code: the capability-free sandbox
+    # must be able to read the interpreter and runtime it is asked to run.
+    write_json(runtime / "runtime_code_access.json",
+               prepare_runtime_code_access([Path(p) for p in read_roots]))
     preflight = runtime / "sandbox_preflight"
     preflight.mkdir(exist_ok=True)
     preflight_runner = sandbox({**context["sandbox"], "write_root": str(preflight), "write_paths": None})
