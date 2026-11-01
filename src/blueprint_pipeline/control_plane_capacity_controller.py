@@ -60,6 +60,7 @@ from .control_plane_disk_budget import DEFAULT_RESERVATION_ROOT
 from .control_plane_disk_usage import (
     SURVEY_SCHEMA_VERSION, is_orphan_scratch_root, sanitize_public_survey, survey_usage,
 )
+from . import control_plane_stall_alarm as stall_alarm
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "control_plane_capacity_report.v1"
@@ -112,6 +113,8 @@ PAGE_ALERT_CODES = frozenset({
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
     "reclaim_ineffective",
     "orphan_scratch_large",
+    # A live job that stopped moving (control_plane_stall_alarm); the disk level is unchanged.
+    *stall_alarm.PAGE_CODES,
 })
 
 
@@ -693,6 +696,9 @@ _SUMMARY_ALERT_KEYS = (
     "largest_bytes",
     "top_retained_reasons",
     "hours_until_floor", "decline_bytes_per_hour", "window_seconds",
+    # Stall pages: identifiers and codes only, never paths or owner fields.
+    "target", "targets", "label", "phase", "blockers", "age_seconds", "age_is_lower_bound",
+    "threshold_seconds", "bound_seconds",
 )
 
 
@@ -729,6 +735,9 @@ def capacity_summary(report: Mapping[str, Any], *, max_bytes: int = SUMMARY_MAX_
         ),
         "reclaim_outlook": report.get("reclaim_outlook"),
     }
+    if isinstance(report.get("stall"), Mapping):
+        summary["stall"] = {key: report["stall"][key] for key in ("observed_at_epoch", "thresholds_seconds", "checks")
+                            if key in report["stall"]}
 
     def size() -> int:
         return len(json.dumps(summary, indent=2, sort_keys=True)) + 1
@@ -805,6 +814,18 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
 
     if actionable_alerts(report) - actionable_alerts(previous):
         return True
+
+    def stalled_targets(value: Mapping[str, Any]) -> set[tuple[str, str]]:
+        return {
+            (str(row.get("code")), str(target))
+            for row in value.get("alerts") or []
+            if isinstance(row, Mapping) and row.get("code") in stall_alarm.PAGE_CODES
+            for target in row.get("targets") or []
+        }
+
+    # A newly stalled job pages at once; a persisting one repeats hourly below.
+    if stalled_targets(report) - stalled_targets(previous):
+        return True
     last = previous.get("last_alert_epoch")
     return (has_page or level == "critical") and (
         not isinstance(last, (int, float)) or now - float(last) >= ALERT_REPEAT_SECONDS
@@ -813,7 +834,9 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
 
 def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 10.0) -> None:
     page_alerts = [a for a in report.get("alerts") or [] if a.get("severity") == "page"]
-    urgent = page_alerts or list(report.get("alerts") or [])
+    stalls = [line for a in page_alerts if (line := stall_alarm.describe(a))]
+    page_alerts = [a for a in page_alerts if a.get("code") not in stall_alarm.PAGE_CODES]
+    urgent = page_alerts or [a for a in report.get("alerts") or [] if a.get("code") not in stall_alarm.PAGE_CODES]
     first = urgent[0] if urgent else {}
     summary = f"{first.get('mount') or 'control plane'}: {first.get('code') or report.get('level')}"
     if first.get("code") == "floor_within_three_days":
@@ -832,11 +855,14 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
     )
     if ineffective and ineffective.get("top_retained_reasons"):
         summary += "; retained: " + ", ".join(ineffective["top_retained_reasons"])
+    if stalls:
+        # A stalled job leads: the disk pages may have been repeating for days.
+        summary = "; ".join([*stalls, *([summary] if page_alerts else [])])
     payload = {
         "schema_version": "control_plane_capacity_alert.v1",
         "level": report.get("level"),
-        "severity": "page" if page_alerts else "warn",
-        "page": bool(page_alerts),
+        "severity": "page" if page_alerts or stalls else "warn",
+        "page": bool(page_alerts or stalls),
         "fingerprint": alert_fingerprint(report),
         "runbook": "docs/runbooks/control-plane-capacity.md",
         "summary": summary[:200],
@@ -851,14 +877,18 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
             }
             for row in report.get("mounts") or []
         ],
-        "text": "control-plane capacity "
+        "text": ("control-plane stall: " + "; ".join(stalls) + " | " if stalls else "")
+        + "control-plane capacity "
         + str(report.get("level"))
         + ": "
         + "; ".join(f"{a.get('mount')} {a.get('code')}"
                     + (f" {float(a.get('hours_until_floor') or 0):.1f}h"
                        if a.get("code") == "floor_within_hours" else "")
-                    for a in report.get("alerts") or []),
+                    for a in report.get("alerts") or []
+                    if a.get("code") not in stall_alarm.PAGE_CODES),
     }
+    if stalls:
+        payload["stall_runbook"] = "docs/runbooks/control-plane-capacity.md#stalled-jobs"
     request = urllib.request.Request(
         url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST"
     )
@@ -996,9 +1026,12 @@ def run_controller(
     release_retirement_summary_path: Path = DEFAULT_RELEASE_RETIREMENT_SUMMARY,
     break_glass_notes_root: Path = DEFAULT_BREAK_GLASS_NOTES_ROOT,
     storage_gc_summary_path: Path = DEFAULT_STORAGE_GC_SUMMARY,
+    stall_check: Callable[[float], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One tick. By default, survey when stale or forced. Pass ``survey=None``
-    only to reuse an existing report without scanning."""
+    only to reuse an existing report without scanning. ``stall_check`` (the
+    service passes ``control_plane_stall_alarm.observe_stalls``) adds its
+    pages to this tick's alerts; it reads job state and never changes it."""
 
     observed = time.time() if now is None else float(now)
     previous = _read_json(report_root / "latest.json")
@@ -1081,6 +1114,14 @@ def run_controller(
     if unreported_count or any(a["code"] == "break_glass_notes_unreadable" for a in report["alerts"]):
         if report["level"] == "ok":
             report["level"] = "warning"
+    if stall_check is not None:
+        try:
+            stall = dict(stall_check(observed))
+        except Exception:  # noqa: BLE001 - a stall check must never stop measurement
+            stall = {"status": "failed", "alerts": [{"code": stall_alarm.INCOMPLETE_CODE,
+                                                     "reason": "stall_check_failed"}]}
+        report["alerts"].extend(row for row in stall.pop("alerts", []) if isinstance(row, Mapping))
+        report["stall"] = stall
     if not webhook_url:
         report["alerts"].append({"code": "operator_alert_route_unconfigured"})
         if report["level"] == "ok":
@@ -1184,6 +1225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="survey disk usage now, whatever the age of the last survey")
     args = parser.parse_args(argv)
     mounts = args.mount or [item for item in str(os.getenv(MOUNTS_ENV) or "").split(":") if item] or list(DEFAULT_MOUNTS)
+    stall_config = stall_alarm.config_from_environment()
     report = run_controller(
         mounts=mounts,
         report_root=Path(args.report_root),
@@ -1199,6 +1241,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         survey=survey_usage,
         survey_interval_seconds=_env_int(SURVEY_INTERVAL_ENV, DEFAULT_SURVEY_INTERVAL_SECONDS),
         force_survey=args.survey,
+        stall_check=None if stall_config is None else (
+            lambda now: stall_alarm.observe_stalls(stall_config, now=now)),
     )
     if args.print_report:
         print(json.dumps(report, indent=2, sort_keys=True))

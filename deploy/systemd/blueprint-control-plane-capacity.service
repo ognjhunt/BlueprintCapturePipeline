@@ -44,6 +44,12 @@ Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_ROLE_TARGETS=launch_preparation=/var/lib/blueprint/task-evaluation-inputs/prepared-references,episode_compilation=/var/lib/blueprint/task-evaluation-inputs/compiled-episodes,launch_activation=/var/lib/blueprint/task-evaluation-inputs/launch-activations,launch_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_dispatch=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries,handoff_staging=/var/lib/blueprint/pubsub-handoffs,scene_configuration_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs,policy_canary_output=/var/lib/blueprint/pipeline-control-plane/task-evaluation-policy-canaries
 Environment=BLUEPRINT_CAPACITY_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/capacity
 Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
+# The stall alarm (control_plane_stall_alarm) only reads these roots, the launch
+# dispatcher lock and `systemctl show`; it pages on this unit's webhook. Turn it
+# off with BLUEPRINT_STALL_ALARM=0 in the environment file.
+Environment=BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launches
+Environment=BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs
 Environment=DIGITALOCEAN_API_TOKEN_FILE=/etc/blueprint/provider-secrets/digitalocean_api_token
 Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key
 Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true

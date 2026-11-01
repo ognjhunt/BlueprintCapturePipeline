@@ -120,6 +120,44 @@ automatically:
   counts it as orphan scratch, and that pages. The volume then carries each
   build's peak, so check its headroom first.
 
+## Stalled jobs
+
+The same tick runs `control_plane_stall_alarm` and pages on the same webhook
+when a live job stops moving. The disk level is unchanged; the page's summary
+leads with the stall, and `stall_runbook` points here. Each code names the
+oldest offender (`target`, and `label` for a scene's submission id), how long it
+has been stuck and how many there are (`count`, `targets`).
+
+- `scene_progression_stalled`: a scene intent's status, phase and blockers have
+  not changed for 90 minutes while it names blockers, or for 8 hours while it
+  is handed off (`awaiting_execution` or `running` with no blockers). Completed,
+  `needs_input`, revoked or expired rows never page, nor do intended holds:
+  pauses, privacy, rights and money approvals (`*_paused`, consent, rights,
+  `scene_intake_spend_cap_exhausted`, `scene_intake_attempt_cap_exhausted`).
+  Read the intent's `progression.json` and the last `progression-events/`, then
+  the scene-progression journal.
+- `launch_lease_stuck`: a request in `task-evaluation-launches/processing/`
+  that no live dispatcher owns is 30 minutes past the bound the launch
+  reconciler gives it (15 minutes before the allocator starts, otherwise the
+  run's `hard_ttl_seconds`). The reconciler should have closed it: check that
+  `blueprint-task-evaluation-launch-reconciler.timer` is active and read its
+  latest report.
+- `trigger_inactive_unheld`: a `.timer` or `.path` the deploy tool always arms
+  (`DEFAULT_ALWAYS_ARM_*`, minus the configured-controls pair a deploy may
+  preserve) is loaded and has been inactive for an hour with no hold record in
+  `/var/lib/blueprint-operator-door/requests/holds/`. Start it through the
+  door, or place an owned hold if it is off on purpose.
+
+A persisting stall repeats hourly; a newly stuck target posts at once.
+`stall_check_incomplete` (warn) means a check could not look, for example an
+unreadable root or a failed `systemctl show`. The `stall` section of
+`capacity/summary.json` lists what each check examined and why rows were
+skipped. Thresholds are minutes in the environment file:
+`BLUEPRINT_STALL_PROGRESSION_MINUTES`, `BLUEPRINT_STALL_HANDOFF_MINUTES`,
+`BLUEPRINT_STALL_LAUNCH_GRACE_MINUTES` and `BLUEPRINT_STALL_TRIGGER_MINUTES`;
+`BLUEPRINT_STALL_ALARM=0` turns the alarm off. It never changes a queue, a
+progression, a provider or a unit.
+
 ## Owner's Phase 0 checklist
 
 1. Review the current `status` and `usage` evidence; approve a root-disk resize
