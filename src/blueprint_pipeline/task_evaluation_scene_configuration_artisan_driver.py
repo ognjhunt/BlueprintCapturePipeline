@@ -27,6 +27,75 @@ DEPENDENCIES = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"
 OUTPUT = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
 RESULT = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
 PACKAGE = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
+# The confined import check before inference is a correctness check, not a
+# speed gate. The sealed ARTISAN runtime ships no bytecode and its tree is
+# read-only, so every import compiles from source; the release builder
+# measured these cold imports past 60 s on the 4-core control plane under
+# load (2026-10-13), the host the CPU prestage runs this stage on.
+CONFINED_PREFLIGHT_TIMEOUT_SECONDS = 300
+#: What the inference controller inherits from the stage: its search path and
+#: proxy/CA trust. Ambient provider credentials and configuration stay out.
+CONTROLLER_ENVIRONMENT = ("PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                          "http_proxy", "https_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE")
+#: What the controller imports before it reads its credential or calls a model.
+CONTROLLER_IMPORT_PROBE = "import ssl, openai, blueprint_pipeline.task_object_artisan_bridge"
+
+
+def package_import_roots(package):
+    """The sealed ARTISAN package's import roots, in controller order."""
+    package = Path(package)
+    return [str(package / "bridge"), str(package / "artisan_source"), str(package / "runtime/site_packages")]
+
+
+def controller_environment(values, import_roots, library_environment):
+    """The controller's environment: this interpreter needs its loader path.
+
+    The controller runs ``sys.executable``. Kit's Python on the Isaac image
+    finds ``libpython`` through the launcher's ``LD_LIBRARY_PATH``, not ELF
+    RUNPATH (``asset_python_runtime``); the content-agents driver keeps that
+    path for its children too. Without it the controller cannot start.
+    """
+    environment = {name: values[name] for name in CONTROLLER_ENVIRONMENT if name in values}
+    environment.update(library_environment)
+    environment.update(PYTHONPATH=os.pathsep.join(import_roots), PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1")
+    return environment
+
+
+def _bypasses_read_only_modes():
+    """Root writes past the toolchain's read-only modes; an unprivileged UID cannot."""
+    return os.geteuid() == 0
+
+
+def private_blender(package, runtime):
+    """The Blender this stage runs: a private hard-link tree when running as root.
+
+    Upstream review renders start Blender from the controller, outside the
+    sandbox. Blender's embedded Python ignores ``PYTHON*`` variables, so it
+    writes bytecode beside its scripts. As container root (the GPU host) those
+    writes land in the sealed toolchain and fail stage 5's byte-for-byte
+    revalidation; elsewhere the read-only modes refuse them. Python replaces
+    cache files atomically, so writes in the private tree never reach a shared
+    inode. The output archive omits ``packaged_blender``.
+    """
+    source, parent = Path(package) / "runtime/blender", Path(runtime) / "packaged_blender"
+    if not _bypasses_read_only_modes():
+        return source / "blender"
+    tree = parent / "tree"
+    if not tree.is_dir():
+        parent.mkdir(exist_ok=True)
+        for stale in parent.glob("staging-*"):
+            shutil.rmtree(stale)
+        staging = parent / f"staging-{os.getpid()}"
+        for directory, _names, files in os.walk(source):
+            target = staging / Path(directory).relative_to(source)
+            target.mkdir(parents=True, exist_ok=True)
+            for name in files:
+                try:
+                    os.link(Path(directory) / name, target / name)
+                except OSError:
+                    shutil.copy2(Path(directory) / name, target / name)
+        staging.rename(tree)
+    return tree / "blender"
 
 
 def _component_result(stage_input, request, paths):
@@ -151,12 +220,14 @@ def _execute(values, output, runner, cost_gate_factory):
     deadline = min(float(values[STAGE_DEADLINE_EPOCH_ENV]),
                    float(values.get(PARENT_DEADLINE_EPOCH_ENV) or values[STAGE_DEADLINE_EPOCH_ENV])) - 600
     scope = scene_configuration_openai_stage_scope(values, stage="content_agents")
-    source, libraries, bridge = package / "artisan_source", package / "runtime/site_packages", package / "bridge"
+    source = package / "artisan_source"
     workspace = runtime / "workspace"
     workspace.mkdir(exist_ok=True)
-    blender = package / "runtime/blender/blender"
-    import_roots = [str(bridge), str(source), str(libraries)]
-    read_roots = [*import_roots, str(Path(sys.base_prefix).resolve()), str(blender.parent)]
+    blender = private_blender(package, runtime)
+    import_roots = package_import_roots(package)
+    from .asset_python_runtime import sandboxed_interpreter
+    interpreter = sandboxed_interpreter()
+    read_roots = [*import_roots, *map(str, interpreter["roots"]), str(blender.parent)]
     # Credentials must be outside every root visible to generated code.
     key_path = Path(scope["api_key_file"]).resolve()
     system_reads = ("/usr", "/bin", "/lib", "/lib64", "/etc/fonts", "/etc/ld.so.cache", "/etc/localtime", "/proc/self")
@@ -175,20 +246,28 @@ def _execute(values, output, runner, cost_gate_factory):
         "sandbox": {"write_root": str(generated_workspace), "read_roots": read_roots, "import_roots": import_roots,
                     "trusted_asset_roots": [str(source / "sdk/assets")],
                     "write_paths": [str(generated_workspace / name) for name in ("assets", "inputs", "blender", "renders", "tmp", "xdg", "cache", "blueprint_sandbox_ipc")],
-                    "blender": str(blender)}}
+                    "blender": str(blender),
+                    "library_environment": interpreter["library_environment"],
+                    "library_executables": [str(interpreter["executable"])]}}
     context_path = runtime / "bridge_context.v1.json"
     if context_path.exists():
         require(read_json(context_path) == context, "artisan_authority_or_workspace_changed_on_resume")
     else:
         write_json(context_path, context)
+    from .asset_runtime_permissions import prepare_runtime_code_access
     from .task_object_artisan_hooks import sandbox
+    # Trusted setup before any generated code: the capability-free sandbox
+    # must be able to read the interpreter and runtime it is asked to run.
+    write_json(runtime / "runtime_code_access.json",
+               prepare_runtime_code_access([Path(p) for p in read_roots]))
     preflight = runtime / "sandbox_preflight"
     preflight.mkdir(exist_ok=True)
     preflight_runner = sandbox({**context["sandbox"], "write_root": str(preflight), "write_paths": None})
     preflight_runner.preflight()
     preflight_result = preflight_runner([str(Path(sys.executable).resolve()), "-S", "-c",
         "import sdk, cadquery, mujoco, coacd, fcl; s=cadquery.Workplane('XY').box(0.1,0.1,0.1); assert s.val().isValid()"],
-        cwd=preflight, env={"PYTHONPATH": os.pathsep.join(import_roots)}, timeout=60, check=False)
+        cwd=preflight, env={"PYTHONPATH": os.pathsep.join(import_roots)},
+        timeout=CONFINED_PREFLIGHT_TIMEOUT_SECONDS, check=False)
     require(preflight_result.returncode == 0, "artisan_confined_runtime_preflight_failed")
     prompt_path = runtime / "prompt.txt"
     prompt = artisan_prompt(request)
@@ -222,10 +301,8 @@ def _execute(values, output, runner, cost_gate_factory):
             gate.reserve()
         # Inference controller gets only its scoped key path, proxy/CA trust and
         # explicit runtime paths. Ambient provider credentials/config are excluded.
-        child_env = {name: values[name] for name in ("PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
-                     "http_proxy", "https_proxy", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE") if name in values}
-        child_env.update(PYTHONPATH=os.pathsep.join(import_roots), PYTHONNOUSERSITE="1", PYTHONDONTWRITEBYTECODE="1",
-                         BLUEPRINT_ARTISAN_BRIDGE_CONTEXT_FILE=str(context_path), ARTISAN_CONFIG=str(runtime / "artisan.toml"))
+        child_env = controller_environment(values, import_roots, interpreter["library_environment"])
+        child_env.update(BLUEPRINT_ARTISAN_BRIDGE_CONTEXT_FILE=str(context_path), ARTISAN_CONFIG=str(runtime / "artisan.toml"))
         config_text = '[artisan]\nrender_device = "cpu"\ncpu_threads = 1\n' + ''.join(
             key + ' = ' + json.dumps(value) + '\n' for key, value in context["model_configuration"].items())
         (runtime / "artisan.toml").write_text(config_text)

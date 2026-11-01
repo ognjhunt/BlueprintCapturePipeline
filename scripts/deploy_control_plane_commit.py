@@ -433,6 +433,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.service",
     "blueprint-agent-stage-replay.timer",
+    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-dispatcher.path",
     "blueprint-task-evaluation-launch-preparation.service",
@@ -579,6 +580,9 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # its timer makes admitted website runs progress after deployment/reboot.
     "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.timer",
+    # Wakes the same no-network offline replay oneshot as its timer, so it
+    # carries the timer's authority rather than the no-spend watcher category.
+    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-episode-compilation.timer",
@@ -593,6 +597,12 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-completed-replay-cache-gc.timer",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.timer",
+    # Launch liveness and post-teardown provider-zero bookkeeping. It never
+    # launches, retries or tears down a provider; it moves leases a dispatcher
+    # no longer owns, files the provider-zero receipt that completion and
+    # release succession join on, and projects launch progress to the WebApp.
+    # Left to "prior state", one stop kept it off across every later deploy.
+    "blueprint-task-evaluation-launch-reconciler.timer",
     # Advances only preview jobs that intake recorded for routed uploads
     # (BLUEPRINT_WEBSITE_ATLAS_ROUTING, off by default): with routing off there
     # are none. Every paid call still needs that upload's WebApp grant and cap.

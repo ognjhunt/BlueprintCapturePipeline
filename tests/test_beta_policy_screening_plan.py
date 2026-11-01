@@ -120,8 +120,15 @@ def test_aggregate_budget_defers_candidates_instead_of_multiplying_allowance():
     assert sum(row["status"] == "selected" for row in value["candidates"]) == 7
     assert value["maximum_planned_cost_usd"] == "14.00"
     assert all(row["blockers"] == ["site_screening_budget_insufficient"] for row in value["candidates"][7:])
+    # Unfunded runnable rows wait, frozen, for money a selected row releases before spend.
+    assert all(row["status"] == "waitlisted" and row["max_cost_usd"] == "2.00" for row in value["candidates"][7:])
     with pytest.raises(BetaPolicyScreeningPlanError, match="site_budget_exceeded"):
         plan(budget_usd="15.01")
+    # A smaller plan budget defers what it could never fund and waitlists the rest.
+    small = plan(40, "2.00", budget_usd="3.00")
+    assert [row["status"] for row in small["candidates"][:3]] == ["selected", "waitlisted", "waitlisted"]
+    tight = plan(40, "2.00", budget_usd="1.50")
+    assert {row["status"] for row in tight["candidates"] if row["blockers"] == ["site_screening_budget_insufficient"]} == {"deferred"}
 
 
 def test_full_length_native_candidate_id_can_have_a_bound_quote_identifier():

@@ -43,6 +43,8 @@ _BETA_TRIGGERS = frozenset((
     "blueprint-pubsub-handoff-listener.timer", "blueprint-team-scene-packet.path",
     "blueprint-rigid-robot-free-probe-runner.path", "blueprint-rigid-robot-free-probe-runner.timer",
     "blueprint-beta-policy-screening.timer",
+    # Its leases and provider-zero receipts gate release succession and completion.
+    "blueprint-task-evaluation-launch-reconciler.timer",
 ))
 
 
@@ -341,6 +343,17 @@ def _door_requests(config: DoorConfig) -> dict[str, int]:
     return {state: len(list((spool / state).glob("*.json"))) for state in ("pending", "processing", "parked")}
 
 
+def _deploy_activation_hold(config: DoorConfig) -> dict[str, Any] | None:
+    """Why parked deploys wait, as door-deploy.sh last saw it; None when nothing holds them."""
+
+    try:
+        document = json.loads((Path(config.spool_root) / "parked" / ".activation-hold").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    keys = ("active_release", "first_held_at_epoch", "cap_at_epoch", "recheck_after_epoch", "live")
+    return {key: document.get(key) for key in keys} if isinstance(document, dict) else None
+
+
 def _holds(config: DoorConfig) -> list[dict[str, Any]]:
     now = time.time()
     records = hold_records.active(Path(config.spool_root) / "holds")
@@ -386,6 +399,8 @@ def build_status(config: DoorConfig, host: HostInfo, *, caller: dict[str, Any]) 
         "capacity": _section(lambda: _capacity(config), "capacity_unavailable"),
         "load": _section(host.load, "load_unavailable"),
         "door_requests": _section(lambda: _door_requests(config), "door_requests_unavailable"),
+        "deploy_activation_hold": _section(lambda: _deploy_activation_hold(config),
+                                           "deploy_activation_hold_unavailable"),
         "holds": _section(lambda: _holds(config), "holds_unavailable"),
         "break_glass": _section(lambda: _break_glass(config), "break_glass_unavailable"),
     }
