@@ -572,3 +572,18 @@ def test_an_invalid_served_row_is_never_carried_forward(
     assert admission["live_enabled"] is False
     assert "scene_execution_owner_store_missing" in admission["blockers"]
 
+
+
+def test_receipt_reports_where_the_pass_spent_its_time(tmp_path: Path) -> None:
+    """The guard logs this so the next slow catalog pass names its phase."""
+    for index in range(3):
+        _profile(tmp_path, f"profile-{index}")
+    receipt = reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=tmp_path / "catalog.json")
+    timing = receipt["pass_timing_seconds"]
+    assert set(timing) == {"profile_parse", "immutable_inputs", "profile_validation", "input_residency",
+                           "profiles", "distinct_inputs"}
+    assert timing["profiles"] == 3
+    assert all(isinstance(timing[name], float) and timing[name] >= 0 for name in
+               ("profile_parse", "immutable_inputs", "profile_validation", "input_residency"))
+    second = reconcile_public_catalog(profile_dir=tmp_path / "profiles", catalog_path=tmp_path / "catalog.json")
+    assert second["status"] == "consistent" and "pass_timing_seconds" in second
