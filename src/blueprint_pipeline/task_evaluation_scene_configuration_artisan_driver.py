@@ -27,6 +27,12 @@ DEPENDENCIES = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_DEPENDENCIES"
 OUTPUT = "BLUEPRINT_SCENE_CONFIGURATION_STAGE_OUTPUT_ROOT"
 RESULT = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_RESULT"
 PACKAGE = "BLUEPRINT_SCENE_CONFIGURATION_COMPONENT_ROOT"
+# The confined import check before inference is a correctness check, not a
+# speed gate. The sealed ARTISAN runtime ships no bytecode and its tree is
+# read-only, so every import compiles from source; the release builder
+# measured these cold imports past 60 s on the 4-core control plane under
+# load (2026-10-13), the host the CPU prestage runs this stage on.
+CONFINED_PREFLIGHT_TIMEOUT_SECONDS = 300
 
 
 def _component_result(stage_input, request, paths):
@@ -188,7 +194,8 @@ def _execute(values, output, runner, cost_gate_factory):
     preflight_runner.preflight()
     preflight_result = preflight_runner([str(Path(sys.executable).resolve()), "-S", "-c",
         "import sdk, cadquery, mujoco, coacd, fcl; s=cadquery.Workplane('XY').box(0.1,0.1,0.1); assert s.val().isValid()"],
-        cwd=preflight, env={"PYTHONPATH": os.pathsep.join(import_roots)}, timeout=60, check=False)
+        cwd=preflight, env={"PYTHONPATH": os.pathsep.join(import_roots)},
+        timeout=CONFINED_PREFLIGHT_TIMEOUT_SECONDS, check=False)
     require(preflight_result.returncode == 0, "artisan_confined_runtime_preflight_failed")
     prompt_path = runtime / "prompt.txt"
     prompt = artisan_prompt(request)
