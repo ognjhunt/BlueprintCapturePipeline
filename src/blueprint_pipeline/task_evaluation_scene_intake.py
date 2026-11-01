@@ -139,6 +139,44 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
 
 
 @scene_participant('queue_root')
+def _committed_holds(root: Path, directory: Path, intent: Mapping[str, Any],
+                     rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Decimal, int]:
+    """Live attempt rows, then the settled exposure and attempt count the caps already carry.
+
+    A settled row is not a refund: it keeps the hold its evidence cannot
+    prove unspent and, for the retired source attempt, its place in the
+    paid-attempt count (2026-09-13 audit). Never-started cancellations
+    release everything.
+    """
+    from .task_evaluation_retained_controls_evidence import validated_cancellation
+    from .task_evaluation_terminal_scene_attempt_settlement import budget_retained_hold
+    from .website_preparation_revision import shared_reserved_budget
+    settled_exposure, settled_attempts = shared_reserved_budget(root, directory, intent)
+    live_rows = []
+    for row in rows:
+        cancellation = validated_cancellation(directory, row)
+        if cancellation is None:
+            live_rows.append(row)
+        elif cancellation.get("schema_version") == TERMINAL_SETTLEMENT_SCHEMA:
+            hold = budget_retained_hold(cancellation)
+            settled_exposure += Decimal(str(hold["retained_spend_usd"]))
+            settled_attempts += 1 if hold["counts_as_attempt"] else 0
+    return live_rows, settled_exposure, settled_attempts
+
+
+def committed_spend_usd(directory: str | Path, intent: Mapping[str, Any]) -> Decimal:
+    """What an intent's holds already commit against its spend cap, as reservation counts them.
+
+    Read without the intake lock, to size a new attempt before it is built;
+    reservation recounts under the lock, so a race can only refuse, never
+    overspend.
+    """
+    directory = Path(directory)
+    rows = [_read(path, "attempt_digest") for path in (directory / "attempts").glob("*.json")]
+    live, settled, _ = _committed_holds(directory.parent, directory, intent, rows)
+    return sum((Decimal(str(row["maximum_spend_usd"])) for row in live), settled)
+
+
 def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id: str,
                           source_commit: str, runtime_digest: str, input_digest: str,
                           provider: str, maximum_spend_usd: float,
@@ -256,23 +294,7 @@ def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id:
         if visual_review_authority is not None:
             _require(not any((row.get('visual_review_correction') or {}).get('authority_digest')
                 == visual_review_authority['authority_digest'] for row in rows), 'visual_review_correction_already_reserved')
-        # A settled row is not a refund: it keeps the hold its evidence cannot
-        # prove unspent and, for the retired source attempt, its place in the
-        # paid-attempt count (2026-09-13 audit). Never-started cancellations
-        # release everything.
-        from .task_evaluation_terminal_scene_attempt_settlement import budget_retained_hold
-        from .website_preparation_revision import shared_reserved_budget
-        settled_exposure, settled_attempts = shared_reserved_budget(root, directory, intent)
-        live_rows = []
-        for row in rows:
-            cancellation = validated_cancellation(directory, row)
-            if cancellation is None:
-                live_rows.append(row)
-            elif cancellation.get("schema_version") == TERMINAL_SETTLEMENT_SCHEMA:
-                hold = budget_retained_hold(cancellation)
-                settled_exposure += Decimal(str(hold["retained_spend_usd"]))
-                settled_attempts += 1 if hold["counts_as_attempt"] else 0
-        rows = live_rows
+        rows, settled_exposure, settled_attempts = _committed_holds(root, directory, intent, rows)
         # The owner-approved single visual correction is an explicit additional
         # review, never an extra GPU attempt. All ordinary attempts keep their
         # original count limit; every hold still counts toward the spend cap.
