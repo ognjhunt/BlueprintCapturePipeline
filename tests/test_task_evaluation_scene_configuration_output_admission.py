@@ -353,7 +353,10 @@ def _harness(
         real_load = scene_vast.load_scene_configuration_provider_bundle_receipt
 
         def load(path, **_kwargs):  # type: ignore[no-untyped-def]
-            return {**real_load(path), "bundle_size_bytes": bundle_size_bytes}
+            # A synthetic size with the fixture's tiny toolchain fragment is not a
+            # bundle that exists; size it as a whole bundle, as these tests model.
+            real = {key: value for key, value in real_load(path).items() if key != "toolchain_archive"}
+            return {**real, "bundle_size_bytes": bundle_size_bytes}
 
         monkeypatch.setattr(
             scene_vast, "load_scene_configuration_provider_bundle_receipt", load
