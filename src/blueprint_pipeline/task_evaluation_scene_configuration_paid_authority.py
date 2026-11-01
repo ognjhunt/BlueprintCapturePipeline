@@ -39,6 +39,11 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     REQUIRED_PARENT_TTL_SECONDS,
     diagnostic_parent_runtime_budget_blockers,
 )
+from .paid_provider_job_scope import (
+    JOB_PROVIDER_ZERO_SCHEMA_VERSION,
+    ProviderJobScopeError,
+    validate_job_provider_zero_receipt,
+)
 from .vast_evidence_contracts import valid_vast_provider_zero_api_call
 
 
@@ -135,6 +140,16 @@ def _aware(value: Any, *, code: str) -> datetime:
 
 def _provider_zero(path: Path) -> dict[str, Any]:
     value = _read(path, code="scene_configuration_provider_zero_invalid")
+    if value.get("schema_version") == JOB_PROVIDER_ZERO_SCHEMA_VERSION:
+        # Job-scoped zero (see paid_provider_job_scope): this job owns nothing
+        # live, everything live is another job's owned work, and the fleet
+        # budget had room. Re-validated here rather than trusted.
+        try:
+            return validate_job_provider_zero_receipt(value)
+        except ProviderJobScopeError as exc:
+            raise TaskEvaluationSceneConfigurationAuthorityError(
+                "scene_configuration_provider_zero_invalid"
+            ) from exc
     if (
         value.get("schema_version") != "adp_paid_provider_zero.v1"
         or value.get("provider") != "vast"

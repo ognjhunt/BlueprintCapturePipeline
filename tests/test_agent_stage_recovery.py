@@ -217,3 +217,35 @@ def test_offline_worker_refuses_configured_secret_outside_canonical_directory(tm
     with pytest.raises(replay.AgentExecutionError, match="configured_secret_accessible"):
         replay.require_secret_isolation(SimpleNamespace(credential_file="/missing", webhook_secret_file=None,
                                                         webapp_sync_token_file=str(key)))
+
+
+def test_new_replay_request_wakes_the_offline_worker_once(tmp_path, monkeypatch):
+    """The worker is path-triggered: a new request rewrites the watched wake file."""
+    wake = tmp_path / "stage-replay.wake"
+    monkeypatch.setenv(replay.WAKE_PATH_ENV, str(wake))
+    monkeypatch.setattr(replay, "_job", lambda _: (None, {"job": 1}))
+    tools = replay.StageReplayTools(journal=AgentJournal(tmp_path / "journal"), bindings=(binding(tmp_path),), source_commit="a" * 40)
+    tool = tools.tools()[0]
+    context = ToolContext("run", "task", digest({"context": 1}), digest({"operation": 1}), digest({"authority": 1}), time.time() + 60)
+    with pytest.raises(OperationPending):
+        tool.invoke({"replay_id": "retained_failure"}, context)
+    request_path, _ = tools._paths(context)
+    assert request_path.exists()  # written before the wake, so the woken worker sees it
+    assert json.loads(wake.read_text())["request"] == request_path.name
+    wake.unlink()
+    with pytest.raises(OperationPending):
+        tool.invoke({"replay_id": "retained_failure"}, context)
+    assert not wake.exists(), "an existing request must not re-wake the worker"
+
+
+def test_replay_wake_is_best_effort(tmp_path, monkeypatch):
+    monkeypatch.delenv(replay.WAKE_PATH_ENV, raising=False)
+    assert replay.signal_replay_wake("x.json") is False
+    monkeypatch.setenv(replay.WAKE_PATH_ENV, str(tmp_path / "missing-dir" / "stage-replay.wake"))
+    assert replay.signal_replay_wake("x.json") is False  # the fallback timer still finds the request
+    monkeypatch.setattr(replay, "_job", lambda _: (None, {"job": 1}))
+    tools = replay.StageReplayTools(journal=AgentJournal(tmp_path / "journal"), bindings=(binding(tmp_path),), source_commit="a" * 40)
+    context = ToolContext("run", "task", digest({"context": 1}), digest({"operation": 1}), digest({"authority": 1}), time.time() + 60)
+    with pytest.raises(OperationPending):
+        tools.tools()[0].invoke({"replay_id": "retained_failure"}, context)
+    assert tools._paths(context)[0].exists()

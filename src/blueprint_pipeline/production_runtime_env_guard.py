@@ -520,9 +520,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{name}={seconds}s" for name, seconds in report["check_durations_seconds"].items()
         )
         reused = report["control_plane_entrypoints"].get("verdict_reused", False)
+        catalog_timing = report["launch_profile_catalog"].get("pass_timing_seconds") or {}
+        catalog_detail = "".join(
+            f" catalog_{name}={value}{'s' if isinstance(value, float) else ''}"
+            for name, value in catalog_timing.items()
+        )
         print(
             "[production-runtime-env-guard] status=ready "
-            f"import_verdict_reused={str(reused).lower()} {durations}"
+            f"import_verdict_reused={str(reused).lower()} {durations}{catalog_detail}"
         )
     return 0 if report["status"] == "ready" else 1
 

@@ -26,6 +26,28 @@ from .journal import AgentJournal
 from .operations import OperationPending, ToolRefused
 
 
+#: A fixed file the agent worker rewrites after it writes a new replay request.
+#: ``blueprint-agent-stage-replay.path`` watches it (the request directory sits
+#: under the configured ``state_root``, which a unit file cannot read), so the
+#: offline worker runs when there is work instead of polling every few seconds.
+#: Unset means no wake signal; the fallback timer still finds every request.
+WAKE_PATH_ENV = "BLUEPRINT_AGENT_STAGE_REPLAY_WAKE"
+
+
+def signal_replay_wake(request_name: str) -> bool:
+    """Best-effort wake for the offline worker; never fails the request it follows."""
+    target = os.environ.get(WAKE_PATH_ENV, "").strip()
+    if not target:
+        return False
+    try:
+        # PathChanged= fires on close-after-write; the content is only a hint.
+        Path(target).write_text(json.dumps({"request": request_name, "at": time.time()}) + "\n",
+                                encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 class StageReplayBinding(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     replay_id: str = Field(pattern=IDENTIFIER)
@@ -138,6 +160,7 @@ class StageReplayTools:
                 raise AgentExecutionError("agent_replay_request_identity_conflict")
         else:
             write_json(request_path, request)
+            signal_replay_wake(request_path.name)
         reconciled = self._reconcile(arguments, context)
         if reconciled.status == "completed":
             return reconciled.output

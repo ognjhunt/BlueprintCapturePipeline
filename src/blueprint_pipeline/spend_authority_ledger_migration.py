@@ -104,6 +104,31 @@ def _default_search_bases(root: Path) -> list[Path]:
     return [root.parent] if root.parent != root else []
 
 
+def _search_candidates(base: Path) -> list[Path]:
+    """Every path within ``_SEARCH_DEPTH`` of ``base`` that holds a ledger subdirectory.
+
+    The same candidates ``_is_ledger`` would accept from ``base.glob("*")``,
+    ``base.glob("*/*")`` and ``base.glob("*/*/*")``, without resolving and
+    stat-ing every entry of the tree: the base is the data root's parent
+    (``/var/lib/blueprint``), whose depth-three entries number in the tens of
+    thousands, and this runs in the ExecStartPre of units that start every
+    minute (20-40 s per run on 2026-10-31). A non-ledger path is excluded by
+    ``_is_ledger`` either way, so only paths with a ``consumed`` or
+    ``authorizations`` child are listed here.
+    """
+    found: list[Path] = []
+    for depth in range(1, _SEARCH_DEPTH + 1):
+        for name in _LEDGER_SUBDIRECTORIES:
+            pattern = "/".join(["*"] * depth + [name])
+            try:
+                found.extend(path.parent for path in base.glob(pattern))
+            except OSError:
+                # An unreadable branch of the search space is not evidence of a
+                # ledger; a ledger we can see but not read is handled below.
+                continue
+    return found
+
+
 def discover_legacy_ledgers(
     *,
     search_bases: Sequence[Path] | None = None,
@@ -131,14 +156,7 @@ def discover_legacy_ledgers(
     for base in bases:
         if not base.is_dir():
             continue
-        for depth in range(1, _SEARCH_DEPTH + 1):
-            pattern = "/".join(["*"] * depth)
-            try:
-                candidates.extend(base.glob(pattern))
-            except OSError:
-                # An unreadable branch of the search space is not evidence of a
-                # ledger; a ledger we can see but not read is handled below.
-                continue
+        candidates.extend(_search_candidates(base))
 
     discovered: list[Path] = []
     seen: set[Path] = set()

@@ -20,7 +20,6 @@ import os
 import re
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,6 +60,7 @@ from .paid_attempt_authority import (
 )
 from .task_evaluation_immutable_input_resolver import STAGING_RECEIPT_ENV, STAGING_SCHEMA_VERSION
 from .task_evaluation_launch_context import is_identifier as _is_identifier
+from .task_evaluation_launch_dispatch_refill import require_refill_poll, run_claimed_launches
 from .task_evaluation_launch_context import validate_task_evaluation_run_context
 from .task_evaluation_launch_evidence_contracts import LAUNCH_RECEIPT_DIGEST_CANONICALIZATION
 from .task_evaluation_launch_terminal_evidence import (terminal_evidence as _build_terminal_evidence)
@@ -1923,11 +1923,13 @@ def process_launch_queue(
     max_messages: int = 1,
     max_concurrency: int = 1,
     allocator_runner: Callable[[Sequence[str]], int] | None = None,
+    refill_poll_seconds: float | None = None,
 ) -> dict[str, Any]:
     if not isinstance(max_concurrency, int) or isinstance(max_concurrency, bool):
         raise TaskEvaluationLaunchError("launch_dispatch_concurrency_invalid")
     if max_concurrency < 1 or max_concurrency > MAX_DISPATCH_CONCURRENCY:
         raise TaskEvaluationLaunchError("launch_dispatch_concurrency_out_of_bounds")
+    require_refill_poll(refill_poll_seconds)
     queue = Path(queue_root).expanduser().resolve()
     pending = queue / "pending"
     processing = queue / "processing"
@@ -2056,13 +2058,10 @@ def process_launch_queue(
         os.replace(claimed, destination_dir / claimed.name)
         return receipt
 
-    if max_concurrency == 1:
-        processed = [dispatch_claimed(claimed) for claimed in claimed_requests]
-    else:
-        with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
-            # executor.map preserves the stable pending-file order in the
-            # queue receipt while the independently claimed launches overlap.
-            processed = list(executor.map(dispatch_claimed, claimed_requests))
+    processed = run_claimed_launches(  # an armed one-launch window never refills
+        initial=claimed_requests, dispatch=dispatch_claimed, claim=claim, max_concurrency=max_concurrency,
+        pending_sources=list if execute and armed else (lambda: owner_launch_sources(sorted(pending.glob(
+            "*.json")), Path(profile_dir).expanduser().resolve())), max_messages=max(0, max_messages), refill_poll_seconds=refill_poll_seconds)
     return {
         "schema_version": QUEUE_RUN_SCHEMA_VERSION,
         "status": "completed"
@@ -2085,6 +2084,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--max-messages", type=int, default=1)
     parser.add_argument("--max-concurrency", type=int, default=1)
+    parser.add_argument("--refill-poll-seconds", type=float, default=None)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--execute-launch-id")
     parser.add_argument("--public-catalog")
@@ -2097,7 +2097,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         execute_launch_id=args.execute_launch_id,
         public_catalog_path=args.public_catalog,
         max_messages=args.max_messages,
-        max_concurrency=args.max_concurrency,
+        max_concurrency=args.max_concurrency, refill_poll_seconds=args.refill_poll_seconds,
     )
     print(json.dumps(result, sort_keys=True))
     # Blocked launches are normal queue outcomes; nonzero means dispatch failed.
