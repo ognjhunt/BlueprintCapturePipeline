@@ -52,6 +52,8 @@ def test_a_statically_linked_interpreter_needs_no_loader_path(tmp_path, monkeypa
     base = tmp_path / "python"
     (base / "lib").mkdir(parents=True)
     monkeypatch.setattr(sys, "base_prefix", str(base))
+    # Whether the test host's own Python maps a libpython must not decide this.
+    monkeypatch.setattr(runtime, "_loaded_libpython_directories", lambda *_args, **_kwargs: [])
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
     value = runtime.sandboxed_interpreter()
     assert value["roots"] == [base.resolve()] and value["library_environment"] == {}
