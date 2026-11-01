@@ -966,14 +966,9 @@ def _build_scene_configuration_context(
             "launch_activation_scene_configuration_context_invalid"
         )
     try:
-        # Only the manifest's seal and release binding are checked here. The
-        # provider_bundle step validates every toolchain byte against this same
-        # digest (``--expected-toolchain-digest``) before anything ships; hashing
-        # the ~10.8 GB tree here too cost 7.8 minutes per activation (2026-10-31).
+        # Seal and release only; provider_bundle hashes every byte against this digest.
         toolchain_manifest = read_scene_configuration_toolchain_manifest(
-            root=toolchain_root.resolve(strict=True),
-            expected_source_commit=source_commit,
-        )
+            root=toolchain_root.resolve(strict=True), expected_source_commit=source_commit)
     except (OSError, ValueError) as exc:
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_scene_configuration_toolchain_invalid"
