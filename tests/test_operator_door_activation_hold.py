@@ -89,7 +89,6 @@ def test_the_override_lets_the_deploy_go(roots) -> None:
     (roots["parked"] / hold.HOLD_FILE).write_text("{}", encoding="utf-8")
     code, reason = _decide(roots, held={claim.stat().st_ino}, override="privacy")
     assert code == hold.EXIT_DEPLOY and reason == "activation_hold_overridden:privacy"
-    assert not (roots["parked"] / hold.HOLD_FILE).exists()
 
 
 def test_the_cap_lets_the_deploy_go(roots) -> None:
@@ -101,6 +100,57 @@ def test_the_cap_lets_the_deploy_go(roots) -> None:
     assert _decide(roots, held=held, now=start + hold.CAP_SECONDS - 60)[0] == hold.EXIT_HOLD
     code, reason = _decide(roots, held=held, now=start + hold.CAP_SECONDS)
     assert code == hold.EXIT_DEPLOY and reason.startswith("activation_hold_cap_reached:")
+
+
+def test_a_late_retry_after_the_cap_still_deploys(roots) -> None:
+    """Codex #3206: a retry long after deploys_by must not buy a second 285 min hold."""
+    claim = _envelope(roots["queue"] / "processing" / "act-1-abc.json")
+    held = {claim.stat().st_ino}
+    start = time.time() - hold.CAP_SECONDS - 3 * 3600
+    assert _decide(roots, held=held, now=start)[0] == hold.EXIT_HOLD
+    code, reason = _decide(roots, held=held, now=start + hold.CAP_SECONDS + 3 * 3600)
+    assert code == hold.EXIT_DEPLOY and reason.startswith("activation_hold_cap_reached:")
+
+
+def test_a_deploy_after_a_capped_one_failed_keeps_the_spent_cap(roots) -> None:
+    """Codex #3206: the capped deploy failed before switching; the next one goes too."""
+    claim = _envelope(roots["queue"] / "processing" / "act-1-abc.json")
+    held = {claim.stat().st_ino}
+    start = time.time() - hold.CAP_SECONDS - 600
+    _decide(roots, held=held, now=start)
+    assert _decide(roots, held=held, now=start + hold.CAP_SECONDS)[0] == hold.EXIT_DEPLOY
+    # Still the same release (the deploy never switched), and the same activation.
+    assert _decide(roots, held=held, now=start + hold.CAP_SECONDS + 300)[0] == hold.EXIT_DEPLOY
+    record = json.loads((roots["parked"] / hold.HOLD_FILE).read_text(encoding="utf-8"))
+    assert record["first_held_at_epoch"] == start and record["recheck_after_epoch"] <= time.time()
+
+
+def test_pending_work_becoming_the_running_claim_is_the_same_hold(roots) -> None:
+    pending = _envelope(roots["queue"] / "pending" / "act-1-abc.json")
+    start = time.time() - 3600
+    _decide(roots, held=set(), now=start)
+    claim = pending.rename(roots["queue"] / "processing" / pending.name)
+    _decide(roots, held={claim.stat().st_ino}, now=start + 1800)
+    record = json.loads((roots["parked"] / hold.HOLD_FILE).read_text(encoding="utf-8"))
+    assert record["first_held_at_epoch"] == start
+
+
+def test_new_work_that_shares_nothing_with_the_old_hold_starts_its_own(roots) -> None:
+    claim = _envelope(roots["queue"] / "processing" / "act-1-abc.json")
+    start = time.time() - hold.CAP_SECONDS - 60
+    _decide(roots, held={claim.stat().st_ino}, now=start)
+    claim.unlink()
+    _envelope(roots["queue"] / "pending" / "act-2-abc.json", activation_id="act-2")
+    now = time.time()
+    assert _decide(roots, held=set(), now=now)[0] == hold.EXIT_HOLD
+    record = json.loads((roots["parked"] / hold.HOLD_FILE).read_text(encoding="utf-8"))
+    assert record["first_held_at_epoch"] == now
+
+
+def test_a_check_with_nothing_live_ends_the_hold(roots) -> None:
+    claim = _envelope(roots["queue"] / "processing" / "act-1-abc.json")
+    _decide(roots, held={claim.stat().st_ino})
+    assert _decide(roots, held=set())[0] == hold.EXIT_DEPLOY
     assert not (roots["parked"] / hold.HOLD_FILE).exists()
 
 
@@ -266,3 +316,29 @@ def test_no_retry_times_when_the_deploy_goes(roots) -> None:
                        parked_dir=roots["parked"], override="", now=time.time(), held=set(),
                        times=times)[0] == hold.EXIT_DEPLOY
     assert times == {}
+
+
+def test_old_results_cannot_crowd_out_a_recent_one(roots) -> None:
+    """Codex #3206: more than MAX_SCAN historical results, all sorting before the new one."""
+    old = time.time() - 30 * 86400
+    for index in range(hold.MAX_SCAN + 88):
+        path = roots["queue"] / "results" / f"a-{index:04d}.json"
+        path.write_text("{}", encoding="utf-8")
+        os.utime(path, (old, old))
+    recent = _materialized(roots)
+    recent.rename(roots["queue"] / "results" / "z-recent.json")
+    code, reason = _decide(roots, held=set())
+    assert code == hold.EXIT_HOLD and reason.endswith("awaiting_launch_submission:act-1")
+
+
+def test_the_scan_bound_keeps_the_newest_files(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(hold, "MAX_SCAN", 2)
+    for index, age in enumerate((300, 100, 200)):
+        path = tmp_path / f"r{index}.json"
+        path.write_text("{}", encoding="utf-8")
+        moment = time.time() - age
+        os.utime(path, (moment, moment))
+    (tmp_path / "skip.txt").write_text("", encoding="utf-8")
+    (tmp_path / "link.json").symlink_to(tmp_path / "r0.json")
+    assert [path.name for path in hold._json_files(tmp_path)] == ["r1.json", "r2.json"]
+    assert [path.name for path in hold._json_files(tmp_path, modified_since=time.time() - 150)] == ["r1.json"]

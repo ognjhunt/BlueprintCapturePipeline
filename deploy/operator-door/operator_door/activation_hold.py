@@ -128,11 +128,32 @@ def _bound_request(envelope: dict[str, Any] | None, active: str) -> dict[str, An
     return None
 
 
-def _json_files(directory: Path) -> Iterable[Path]:
+def _json_files(directory: Path, *, modified_since: float | None = None) -> Iterable[Path]:
+    """Regular ``*.json`` files, newest first, at most ``MAX_SCAN`` of them.
+
+    The bound applies after the cheap filters (a regular file, modified since
+    ``modified_since``), so old records cannot crowd a recent one out of the scan.
+    """
+
+    found: list[tuple[float, str, Path]] = []
     try:
-        return sorted(directory.glob("*.json"))[:MAX_SCAN]
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".json"):
+                    continue
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                if modified_since is not None and info.st_mtime < modified_since:
+                    continue
+                found.append((info.st_mtime, entry.name, Path(entry.path)))
     except OSError:
         return []
+    found.sort(key=lambda row: (-row[0], row[1]))
+    return [path for _, _, path in found[:MAX_SCAN]]
 
 
 def live_activations(
@@ -163,12 +184,7 @@ def live_activations(
             live.append({"activation_id": request.get("activation_id"), "state": "processing"})
         else:
             notes.append(f"stuck_claim_without_lock:{path.name}")
-    for path in _json_files(queue_root / "results"):
-        try:
-            if now - path.lstat().st_mtime > SUBMIT_WINDOW_SECONDS:
-                continue
-        except OSError:
-            continue
+    for path in _json_files(queue_root / "results", modified_since=now - SUBMIT_WINDOW_SECONDS):
         result = _read_json(path)
         if (not result or result.get("status") != MATERIALIZED_STATUS or result.get("lane") != LANE
                 or result.get("source_commit") != active):
@@ -223,11 +239,10 @@ def decide(
     """
 
     if override:
-        _clear_hold(parked_dir)
+        # The record stays: if this deploy fails before switching, a later one keeps the same cap.
         return EXIT_DEPLOY, f"activation_hold_overridden:{override}"
     if not active:
         # Unknown stays unknown: no release to protect is proven, so this holds nothing.
-        _clear_hold(parked_dir)
         return EXIT_DEPLOY, "activation_hold_active_release_unknown"
     live, notes = live_activations(queue_root=queue_root, progression_root=progression_root,
                                    active=active, now=now, held=held, pending_claimable=pending_claimable)
@@ -237,23 +252,45 @@ def decide(
         _clear_hold(parked_dir)
         return EXIT_DEPLOY, "no_live_scene_configuration_activation"
     previous = _read_json(parked_dir / HOLD_FILE) if parked_dir is not None else None
-    first = (previous or {}).get("first_held_at_epoch")
-    if (not isinstance(first, (int, float)) or isinstance(first, bool) or (previous or {}).get("schema") != HOLD_SCHEMA
-            or (previous or {}).get("active_release") != active or not 0 <= now - first <= CAP_SECONDS + 3600):
-        first = now
+    first = _episode_start(previous, active=active, live=live, now=now)
     names = ",".join(sorted(f"{row['state']}:{row['activation_id']}" for row in live))
-    if now - first >= CAP_SECONDS:
-        _clear_hold(parked_dir)
+    capped = now - first >= CAP_SECONDS
+    if parked_dir is not None:
+        # Kept past the cap, so a retry, or a deploy after a capped one failed before
+        # switching, still finds the cap spent instead of starting a new hold.
+        _write_hold(parked_dir, {
+            "schema": HOLD_SCHEMA, "active_release": active, "first_held_at_epoch": first,
+            "cap_at_epoch": first + CAP_SECONDS, "last_checked_at_epoch": now,
+            "recheck_after_epoch": now if capped else now + RECHECK_SECONDS,
+            "live": live, "activation_ids": sorted({str(row["activation_id"]) for row in live}),
+        })
+    if capped:
         return EXIT_DEPLOY, f"activation_hold_cap_reached:{names}"
     if times is not None:
         times.update(retry_after_epoch=now + RECHECK_SECONDS, cap_at_epoch=first + CAP_SECONDS)
-    if parked_dir is not None:
-        _write_hold(parked_dir, {
-            "schema": HOLD_SCHEMA, "active_release": active, "first_held_at_epoch": first,
-            "cap_at_epoch": first + CAP_SECONDS, "recheck_after_epoch": now + RECHECK_SECONDS,
-            "live": live,
-        })
     return EXIT_HOLD, f"scene_configuration_activation_live:{names}"
+
+
+def _episode_start(previous: dict[str, Any] | None, *, active: str, live: list[dict[str, Any]],
+                   now: float) -> float:
+    """When the hold on this work began.
+
+    One hold lasts while the same release runs and the work it waits for continues:
+    some activation it saw is still live (a pending one becoming the running one
+    counts). Its age alone never restarts it, so a late retry cannot buy a second
+    cap. Only work that shares nothing with it, or a new release, starts a new hold;
+    a check that finds nothing live ends it.
+    """
+
+    if not previous or previous.get("schema") != HOLD_SCHEMA or previous.get("active_release") != active:
+        return now
+    first, seen = previous.get("first_held_at_epoch"), previous.get("activation_ids")
+    if (isinstance(first, bool) or not isinstance(first, (int, float)) or not math.isfinite(first)
+            or first > now or not isinstance(seen, list)):
+        return now
+    if not {str(row["activation_id"]) for row in live} & {str(item) for item in seen}:
+        return now
+    return float(first)
 
 
 def _iso(epoch: float) -> str:
