@@ -435,7 +435,9 @@ def _website_preallocation_failure(tmp_path, monkeypatch, *, allocated=False,
 
 
 @pytest.mark.parametrize("teardown_status", ["not_required_provider_adapter_never_invoked",
-                                           "not_required_prelaunch_inventory_guard_blocked"])
+                                           "not_required_prelaunch_inventory_guard_blocked",
+                                           # capture-447ae4f4 02:05Z: bundle preflight refused before any offer search
+                                           "not_required_blueprint_bundle_preflight_blocked"])
 def test_proven_no_allocation_releases_only_gpu_and_provider_authoring_budget(tmp_path, monkeypatch, teardown_status):
     fx, receipt, _, _ = _website_preallocation_failure(tmp_path, monkeypatch, teardown_status=teardown_status)
     assert receipt["settled_spend"]["retained_spend_usd"] == 16.76
@@ -716,3 +718,135 @@ def test_bound_unentered_model_failure_releases_only_its_model_allowance(tmp_pat
             _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)
     else:
         assert _reserve(fx["root"], fx["intent"], "scene-configuration-successor", 17, now=300)["status"] == "reserved"
+
+
+def _contain_before_run(fx, **changes):
+    """What the launch reconciler leaves for a pre-run lease it closed with provider zero."""
+    from blueprint_pipeline.task_evaluation_launch_reconciler import ORPHAN_RECOVERY_SCHEMA_VERSION
+
+    run = fx["launches"] / fx["launch_id"]
+    recovery = {"schema_version": ORPHAN_RECOVERY_SCHEMA_VERSION, "launch_id": fx["launch_id"],
+                "request_digest": "sha256:" + "9" * 64, "observed_at": "2026-11-01T01:03:06+00:00",
+                "status": "provider_zero_confirmed", "lease_age_seconds": 10423.2, "hard_ttl_seconds": 900,
+                "required_providers": ["vast"], "provider_zero_confirmed": True,
+                "automatic_retry_performed": False, "allocator_invoked": False, "blockers": []}
+    recovery.update(changes)
+    _seal(recovery, "recovery_digest")
+    _write(run / "reconciliations" / (recovery["recovery_digest"][7:] + ".json"), recovery)
+    _write(run / "orphan_recovery_receipt.json", recovery)
+    _write(fx["queue"] / "blocked" / (fx["launch_id"] + "-965ee3e6947fc67b.json"), {"launch_id": fx["launch_id"]})
+    return run
+
+
+def test_launch_contained_before_any_run_releases_its_rows_in_full(tmp_path: Path) -> None:
+    """capture-447ae4f4, 2026-11-01: a $0 pre-run lease the reconciler closed kept its $20 hold."""
+    fx = _fixture(tmp_path, launch_status=None)
+    _contain_before_run(fx)
+    outcome = _settle(fx)
+    assert len([row for row in outcome["rows"] if row["status"] == "settled"]) == 5
+    for row_id, phase in fx["rows"].items():
+        attempt = json.loads((fx["directory"] / "attempts" / (row_id + ".json")).read_text())
+        receipt = validated_cancellation(fx["directory"], attempt)
+        assert receipt["settled_spend"] == settlement.retained_hold(receipt) == {
+            "basis": "launch_contained_before_run", "retained_spend_usd": 0.0, "counts_as_attempt": False}, phase
+        assert receipt["execution_terminal"]["launch_never_queued"] is False
+        assert receipt["execution_terminal"]["orphan_recovery_receipt"]["path"].endswith(
+            fx["launch_id"] + "/orphan_recovery_receipt.json")
+    # Only the retired source row's 4.5 stays held under the $26 cap.
+    assert _reserve(fx["root"], fx["intent"], "source-a2", 21.5, now=300)["status"] == "reserved"
+    with pytest.raises(SceneIntakeError, match="spend_cap_exhausted"):
+        _reserve(fx["root"], fx["intent"], "source-a3", 0.01, now=301)
+
+
+@pytest.mark.parametrize("change", [
+    {"status": "recovery_pending", "provider_zero_confirmed": False},
+    {"allocator_invoked": True},
+    {"blockers": ["provider_zero_report_stale"]},
+    {"launch_id": "website-other-activation-auto-launch"},
+    {"schema_version": "task_evaluation_launch_orphan_recovery.v0"},
+])
+def test_contained_launch_waits_without_a_valid_provider_zero_receipt(tmp_path: Path, change) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    _contain_before_run(fx, **change)
+    outcome = _settle(fx)
+    assert [row["attempt_id"] for row in outcome["rows"]] == ["source-a1"]
+    assert outcome["skipped"][0]["reason"] == "launch_not_terminal"
+
+
+@pytest.mark.parametrize("dispatcher_entry", ["launch_started.json", "launch_request.json", "scene"])
+def test_a_run_the_dispatcher_started_keeps_waiting_despite_an_orphan_receipt(tmp_path: Path, dispatcher_entry) -> None:
+    """The reconciler also writes an orphan receipt after a started run goes silent."""
+    fx = _fixture(tmp_path, launch_status=None)
+    run = _contain_before_run(fx)
+    _write(run / dispatcher_entry / "x.json" if "." not in dispatcher_entry else run / dispatcher_entry, {})
+    assert _settle(fx)["skipped"][0]["reason"] == "launch_not_terminal"
+
+
+def test_contained_launch_still_queued_waits(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None, queue_pending=True)
+    _contain_before_run(fx)
+    assert _settle(fx)["skipped"][0]["reason"] == "launch_not_terminal"
+
+
+def test_contained_settlement_fails_closed_when_its_run_evidence_changes(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    run = _contain_before_run(fx)
+    _settle(fx)
+    _write(run / "launch_started.json", {"launch_id": fx["launch_id"]})
+    with pytest.raises(ValueError, match="terminal_settlement_orphan_recovery_evidence_invalid"):
+        _reserve(fx["root"], fx["intent"], "source-a2", 1.0, now=300)
+
+
+def _stopped_before_allocator(fx, *, consumed=False):
+    """capture-447ae4f4 02:58Z: launch_started, no allocator, one-use authority unconsumed, then contained."""
+    from blueprint_pipeline.task_evaluation_launch_dispatcher import canonical_digest as launch_digest
+    from blueprint_pipeline.task_evaluation_launch_reconciler import ORPHAN_RECOVERY_SCHEMA_VERSION
+
+    run = fx["launches"] / fx["launch_id"]
+    profile = {"profile_id": "scene-configuration-profile", "standing_launch_authorization": {"maximum_launches": 1}}
+    profile["profile_digest"] = launch_digest(profile, digest_field="profile_digest")
+    _write(run / "launch_profile.json", profile)
+    started = {"launch_id": fx["launch_id"], "started_at": "2026-11-01T02:58:40+00:00", "process_id": 1}
+    started["started_digest"] = launch_digest(started, digest_field="started_digest")
+    _write(run / "launch_started.json", started)
+    _write(run / "launch_request.json", {"launch_id": fx["launch_id"]})
+    standing = fx["launches"].resolve().parent / "standing-authorizations"
+    _write(standing / "scene-configuration-profile.json", {"profile_id": "scene-configuration-profile"})
+    if consumed:
+        _write(standing / "consumed" / "scene-configuration-profile" / (fx["launch_id"] + ".json"), {})
+    recovery = {"schema_version": ORPHAN_RECOVERY_SCHEMA_VERSION, "launch_id": fx["launch_id"],
+                "status": "provider_zero_confirmed", "provider_zero_confirmed": True,
+                "automatic_retry_performed": False, "allocator_invoked": False, "blockers": []}
+    _seal(recovery, "recovery_digest")
+    _write(run / "orphan_recovery_receipt.json", recovery)
+    _write(fx["queue"] / "blocked" / (fx["launch_id"] + "-85a78e1587b6746c.json"), {"launch_id": fx["launch_id"]})
+    return run, standing
+
+
+def test_run_stopped_before_its_allocator_releases_its_rows_in_full(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    _stopped_before_allocator(fx)
+    outcome = _settle(fx)
+    assert len([row for row in outcome["rows"] if row["status"] == "settled"]) == 5
+    for row_id in fx["rows"]:
+        attempt = json.loads((fx["directory"] / "attempts" / (row_id + ".json")).read_text())
+        receipt = validated_cancellation(fx["directory"], attempt)
+        assert receipt["settled_spend"] == settlement.retained_hold(receipt) == {
+            "basis": "launch_stopped_before_allocator", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+        assert receipt["execution_terminal"]["preallocation_evidence"]["basis"] == "standing_authorization_unconsumed"
+    assert _reserve(fx["root"], fx["intent"], "source-a2", 21.5, now=300)["status"] == "reserved"
+
+
+def test_a_consumed_authority_keeps_the_run_waiting(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    _stopped_before_allocator(fx, consumed=True)
+    assert _settle(fx)["skipped"][0]["reason"] == "launch_not_terminal"
+
+
+def test_stopped_settlement_fails_closed_when_consumption_appears_later(tmp_path: Path) -> None:
+    fx = _fixture(tmp_path, launch_status=None)
+    _, standing = _stopped_before_allocator(fx)
+    _settle(fx)
+    _write(standing / "consumed" / "scene-configuration-profile" / (fx["launch_id"] + ".json"), {})
+    with pytest.raises(ValueError, match="terminal_settlement_preallocation_evidence_invalid"):
+        _reserve(fx["root"], fx["intent"], "source-a2", 1.0, now=300)

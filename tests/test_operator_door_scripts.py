@@ -21,6 +21,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -305,7 +306,8 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
 @pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh", "door-hold-expire.sh",
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
                                     "door-lane-scratch.sh", "door-provider-output-resume.sh",
-                                    "door-extend-scene-execution-window.sh", "install.sh"])
+                                    "door-extend-scene-execution-window.sh", "door-extend-scene-execution-budget.sh",
+                                    "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
 
@@ -377,8 +379,8 @@ def test_deploy_log_times_every_step_before_the_tool_starts(env: dict[str, str])
     log = (Path(env["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
     phases = re.findall(r"^\[\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\] phase=(\w+)$", log, re.MULTILINE)
     assert phases == [
-        "staging_guard_start", "staging_guard_done", "fetch_main_start", "fetch_main_done",
-        "prepare_source_done", "require_on_main_done", "tool_worktree_done", "tool_start",
+        "staging_guard_start", "staging_guard_done", "activation_hold_start", "activation_hold_done",
+        "fetch_main_start", "fetch_main_done", "prepare_source_done", "require_on_main_done", "tool_worktree_done", "tool_start",
     ]
 
 
@@ -1350,3 +1352,186 @@ def test_scene_window_rechecks_its_inputs(window_env, overrides, code):
 def test_scene_window_script_is_installed_with_the_door():
     installer = (DOOR / "install.sh").read_text(encoding="utf-8")
     assert '"$source_dir"/door-extend-scene-execution-window.sh' in installer
+
+
+# ------------------------------------------------- scene-configuration activation hold
+
+LIVE_RELEASE = "c" * 40
+
+
+def _live_activation(values: dict[str, str], commit: str = LIVE_RELEASE) -> None:
+    """A pending scene-configuration activation bound to ``commit``, and that release running."""
+    root = Path(values["STUB_DIR"])
+    pending = Path(values["DOOR_STATE_ROOT"]) / "task-evaluation-launch-activations" / "pending"
+    pending.mkdir(parents=True, exist_ok=True)
+    (pending / "act-1-abc.json").write_text(json.dumps({"request": {
+        "activation_id": "act-1", "lane": "task_evaluation_scene_configuration",
+        "expected_production_commit": commit}}), encoding="utf-8")
+    link = Path(values.get("DOOR_ACTIVE_RELEASE_LINK") or root / "active")
+    if not link.is_symlink():
+        link.symlink_to(root / "releases" / commit)
+
+
+def _hold_env(env: dict[str, str]) -> dict[str, str]:
+    root = Path(env["STUB_DIR"])
+    (root / "parked").mkdir(exist_ok=True)
+    return {**env, "DOOR_ACTIVATION_HOLD_PARKED_DIR": str(root / "parked"),
+            "DOOR_ACTIVE_RELEASE_LINK": str(root / "active")}
+
+
+def test_a_direct_deploy_during_a_live_activation_parks_itself_before_fetching(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+
+    rc, outcome, calls = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="1")
+
+    assert rc == 0 and outcome == {}  # the deploy that settles it writes its outcome
+    assert not any(call.startswith(("venv-python", "git")) for call in calls)
+    record = json.loads((Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]) / f"{DEPLOY_ID}.json").read_text(encoding="utf-8"))
+    assert record["commit"] == SHA and record["wait_for_idle"] is True
+    assert record["active_release_at_park"] == LIVE_RELEASE and "deploying_commit" not in record
+    log = (Path(values["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
+    assert "staying parked: scene_configuration_activation_live:pending:act-1" in log
+    hold_file = json.loads((Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]) / ".activation-hold").read_text(encoding="utf-8"))
+    assert hold_file["live"] == [{"activation_id": "act-1", "state": "pending"}]
+
+
+def test_an_override_deploys_during_a_live_activation(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+
+    rc, outcome, calls = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0",
+                              DOOR_ACTIVATION_HOLD_OVERRIDE="money")
+
+    assert rc == 0 and outcome["status"] == "deployed"
+    assert any(call.startswith("venv-python") for call in calls)
+    assert not list(Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]).glob("*.json"))
+
+
+def test_an_activation_bound_to_another_release_does_not_hold_the_deploy(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values, commit="d" * 40)
+    (Path(values["STUB_DIR"]) / "active").unlink()
+    (Path(values["STUB_DIR"]) / "active").symlink_to(Path(values["STUB_DIR"]) / "releases" / LIVE_RELEASE)
+
+    rc, outcome, _ = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0")
+
+    assert rc == 0 and outcome["status"] == "deployed"
+
+
+def test_a_canonical_deploy_during_a_live_activation_is_refused_not_parked(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+    provenance = Path(values["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.release-provenance.json"
+    provenance.write_bytes(b'{"schema": "fixture"}')
+    provenance.chmod(0o600)
+
+    rc, outcome, calls = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0",
+                              DOOR_RELEASE_PROVENANCE_FILE=str(provenance),
+                              DOOR_RELEASE_PROVENANCE_SHA256=hashlib.sha256(provenance.read_bytes()).hexdigest())
+
+    assert rc == 2 and outcome["status"] == "refused" and outcome["code"] == "scene_configuration_activation_live"
+    assert outcome["activation_hold"] == "scene_configuration_activation_live:pending:act-1"
+    # When to try again (the next recheck), and when the cap lets the same release's deploy go.
+    now = time.time()
+    retry, cap = int(outcome["retry_after_epoch"]), int(outcome["deploys_by_epoch"])
+    assert now < retry <= now + 5 * 60 + 5 and now + 284 * 60 < cap <= now + 285 * 60 + 5
+    assert outcome["retry_after"].endswith("+00:00") and outcome["deploys_by"].endswith("+00:00")
+    assert not any(call.startswith("venv-python") for call in calls)
+    assert not list(Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]).glob("*.json"))
+
+
+def test_a_parked_deploy_stays_parked_unmarked_while_an_activation_is_live(parked_env, door_clone) -> None:
+    newest = str(door_clone["merged"])
+    first = _first_commit(door_clone)
+    _activate_for_script(parked_env, first, proven=True)
+    _park_for_script(parked_env, DEPLOY_ID, newest, active_at_park=first)
+    _live_activation(parked_env, commit=first)
+
+    rc, outcome, calls = _run_parked(parked_env, newest)
+
+    assert rc == 0 and outcome == {}
+    assert not any(call.startswith("venv-python") for call in calls)
+    assert _parked_names(parked_env) == [DEPLOY_ID]
+    record = json.loads((Path(parked_env["DOOR_PARKED_DIR"]) / f"{DEPLOY_ID}.json").read_text(encoding="utf-8"))
+    assert "deploying_commit" not in record  # so the next wake-up does not call it interrupted
+
+
+def test_pending_work_behind_a_held_activation_path_unit_does_not_hold_the_deploy(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+    holds = Path(values["STUB_DIR"]) / "holds"  # beside parked/, as in the door's spool
+    holds.mkdir()
+    (holds / "blueprint-task-evaluation-launch-activation.path.json").write_text(
+        json.dumps({"status": "active"}), encoding="utf-8")
+
+    rc, outcome, _ = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0")
+
+    assert rc == 0 and outcome["status"] == "deployed"
+
+
+def test_a_free_form_override_reason_deploys_and_is_logged(env: dict[str, str]) -> None:
+    values = _hold_env(env)
+    _live_activation(values)
+
+    rc, outcome, _ = _run("door-deploy.sh", values, DOOR_REQUEST_ID=DEPLOY_ID, DOOR_WAIT_FOR_IDLE="0",
+                          DOOR_ACTIVATION_HOLD_OVERRIDE="fixes_live_activation")
+
+    assert rc == 0 and outcome["status"] == "deployed"
+    log = (Path(values["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
+    assert "activation_hold_overridden:fixes_live_activation" in log
+
+
+# --- extend-scene-execution-budget ---------------------------------------------------------------
+
+BUDGET_ID = "20261101T150000Z-extend-scene-execution-budget-0000abcd"
+
+
+@pytest.fixture()
+def budget_env(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "budget-python", '''#!/bin/bash
+{ printf 'budget %s\\n' "$*"; echo "intake-root ${BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT:-unset}"; } >> "$STUB_LOG"
+printf '%s\\n' "${FAKE_BUDGET:-}"
+exit "${FAKE_TOOL_RC:-0}"
+''')
+    return {**env, "DOOR_VENV_PYTHON": str(tmp_path / "budget-python"), "DOOR_CONTROL_PLANE_REPO": str(repository),
+            "DOOR_SERVICE_USER": "blueprint", "DOOR_REQUESTED_BY": "cloud-scene-runs",
+            "DOOR_SCENE_BUDGET_REQUEST": json.dumps({"kind": "extend-scene-execution-budget",
+                                                     "approval_evidence": "approval $(touch pwned)"})}
+
+
+@pytest.mark.parametrize(("report", "rc", "status", "code"), [
+    ({"door_outcome": "planned"}, 0, "planned", None),
+    ({"door_outcome": "extended"}, 0, "extended", None),
+    ({"door_outcome": "refused", "code": "budget_apply_ack_mismatch"}, 2, "refused", "budget_apply_ack_mismatch"),
+    ({"door_outcome": "already_covered"}, 0, "failed", "scene_budget_failed"),
+])
+def test_scene_budget_runs_the_release_module_as_the_service_user(budget_env, tmp_path, report, rc, status, code):
+    done, outcome, calls = _run("door-extend-scene-execution-budget.sh", budget_env, DOOR_REQUEST_ID=BUDGET_ID,
+                                FAKE_BUDGET=json.dumps(report), FAKE_TOOL_RC=str(rc))
+    expected_rc = 1 if status == "failed" else rc
+    assert (done, outcome["status"], outcome["code"], outcome["exit_code"]) == (expected_rc, status, code, expected_rc)
+    assert calls[0] == "setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --"
+    assert calls[2].startswith("budget -m blueprint_pipeline.task_evaluation_scene_execution_budget_door --request-json ")
+    assert calls[2].endswith(f"--door-caller cloud-scene-runs --door-request-id {BUDGET_ID}")
+    assert not (tmp_path / "pwned").exists()
+    result = Path(budget_env["DOOR_RESULTS_DIR"]) / f"{BUDGET_ID}.scene-budget.json"
+    assert json.loads(result.read_text()) == report and outcome["result"] == str(result)
+
+
+@pytest.mark.parametrize(("overrides", "code"), [
+    ({"DOOR_SERVICE_USER": "root"}, "scene_budget_user_invalid"),
+    ({"DOOR_REQUESTED_BY": "../root"}, "scene_budget_caller_invalid"),
+])
+def test_scene_budget_rechecks_its_inputs(budget_env, overrides, code):
+    rc, outcome, calls = _run("door-extend-scene-execution-budget.sh", budget_env, DOOR_REQUEST_ID=BUDGET_ID,
+                              **overrides)
+    assert rc == 2 and outcome["code"] == code and not calls
+
+
+def test_scene_budget_script_is_installed_with_the_door():
+    installer = (DOOR / "install.sh").read_text(encoding="utf-8")
+    assert '"$source_dir"/door-extend-scene-execution-budget.sh' in installer

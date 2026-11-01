@@ -106,6 +106,7 @@ WORKER_UNITS=(
   blueprint-capture-reconstruction-dispatcher.path
   blueprint-capture-reconstruction-dispatcher.timer
   blueprint-agent-stage-replay.timer
+  blueprint-agent-stage-replay.path
   blueprint-completed-replay-cache-gc.timer
   blueprint-scene-object-discovery.path
   blueprint-team-scene-packet.path

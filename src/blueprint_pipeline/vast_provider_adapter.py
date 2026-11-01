@@ -38,6 +38,7 @@ from .vast_api_transport import (
 )
 
 from .vast_instance_inventory import instance_inventory_valid, active_instance_rows
+from .vast_bundle_member_policy import vendored_toolchain_runtime_member as _vendored_toolchain_runtime_member
 from .vast_provider_log_observations import (
     _log_result_saw_container_missing,
     _log_result_container_vanished_after_output,
@@ -1756,6 +1757,8 @@ SCENE_CONFIGURATION_PROVISIONED_COMMANDS: dict[str, tuple[str, ...]] = {
     "libpango-1.0-0": (),
     "libcairo2": (),
     "libasound2t64": (),
+    # The packaged Blender 5.0's system X libraries (its ELF NEEDED; it ships the rest).
+    "libx11-6": (), "libxrender1": (), "libxi6": (),
 }
 #: Provided by the ``/isaac-sim/python.sh`` shim the onstart writes onto PATH,
 #: not by apt, so it is named separately rather than assumed.
@@ -1886,6 +1889,8 @@ def _machine_avoidlist_reason(blockers: Sequence[str]) -> str | None:
         return "vast_provider_bootstrap_input_download_transport_timeout"
     if "provider_instance_exited_before_bundle_terminal_marker" in observed:
         return "vast_provider_bundle_instance_exited_before_terminal_marker"
+    if "provider_remote_blocker:asset_sandbox_unavailable" in observed:
+        return "vast_host_asset_sandbox_unavailable"
     startup_blockers = {
         "vast_heartbeat_blocked",
         "vast_heartbeat_instance_exited",
@@ -2949,7 +2954,7 @@ def _blueprint_bundle_preflight(
                                 blockers.append("articulated_native_bundle_asset_format_ambiguous")
                     zip_testzip_result = archive.testzip()
                     for member in zip_entries:
-                        if member.endswith(".json"):
+                        if member.endswith(".json") and not _vendored_toolchain_runtime_member(member):
                             try:
                                 json.loads(archive.read(member).decode("utf-8", errors="replace"))
                             except Exception as exc:

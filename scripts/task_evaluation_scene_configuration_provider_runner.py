@@ -241,6 +241,125 @@ def _configure_production_semantic_reuse(
     return reuse_root
 
 
+def _artisan_stage_scheduled(envelope, configurations, stage_limit) -> bool:
+    """Whether this run (or its ``stage_limit`` prefix) reaches an ARTISAN stage."""
+
+    for stage in envelope.get("recipe", {}).get("stage_sequence", []):
+        if configurations[str(stage["stage_id"])][0].get("authoring_backend") == "artisan_v1":
+            return True
+        if str(stage["stage_id"]) == stage_limit:
+            return False
+    return False
+
+
+def _require_asset_isolation(*, runtime: Path, output: Path) -> None:
+    """Prove the host can isolate generated CAD programs before stage 1.
+
+    ARTISAN runs its candidate programs only under OS isolation (namespaces,
+    else Landlock + seccomp), and refuses at its own stage when the host has
+    neither. Whether a Vast host has them depends on its kernel and container
+    runtime, which offer selection cannot see: two September runs paid for
+    stages 1-2 before failing there. Asking the same question here fails such
+    a host in seconds, and the typed marker lets the parent avoidlist it.
+    """
+
+    from blueprint_pipeline.asset_authoring_sandbox import AssetSandboxError, SandboxedAssetRunner
+    from blueprint_pipeline.asset_python_runtime import sandboxed_interpreter
+    from blueprint_pipeline.asset_runtime_permissions import prepare_runtime_code_access
+
+    probe = output / "asset_isolation_host_preflight"
+    probe.mkdir(mode=0o750, exist_ok=True)
+    try:
+        SandboxedAssetRunner(read_roots=[runtime], write_root=probe).preflight()
+    except AssetSandboxError as exc:
+        if str(exc) == "asset_sandbox_unavailable":
+            print("BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:asset_sandbox_unavailable", flush=True)
+        raise
+    print("BLUEPRINT_SCENE_CONFIGURATION_ASSET_ISOLATION_PREFLIGHT_PASSED", flush=True)
+    # The kernel boundary works; now ask what ARTISAN asks, with its real
+    # interpreter. On the Isaac image that interpreter lives in a tree only its
+    # group may read (capture-447ae4f4 passed the check above and then failed
+    # ARTISAN's own with Permission denied: '/isaac-sim/kit/python').
+    interpreter = sandboxed_interpreter()
+    prepare_runtime_code_access(interpreter["roots"])
+    runner = SandboxedAssetRunner(read_roots=[runtime, *interpreter["roots"]], write_root=probe,
+                                  library_environment=interpreter["library_environment"],
+                                  library_executables=[interpreter["executable"]])
+    # Each runner selects its own backend; without this, a host that needs the
+    # Landlock fallback would retry the refused namespace launcher.
+    runner.preflight()
+    started = runner([str(interpreter["executable"]), "-S", "-c", "import json"], cwd=probe,
+                     timeout=120, check=False)
+    if started.returncode != 0:
+        detail = (started.stderr or started.stdout or "").strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"artisan_sandboxed_interpreter_unavailable:{started.returncode}:{detail[0][-200:]}")
+    print("BLUEPRINT_SCENE_CONFIGURATION_SANDBOXED_INTERPRETER_PREFLIGHT_PASSED", flush=True)
+
+
+ARTISAN_PACKAGE = "toolchain/components/content_agents_rigid_replacement/package"
+ARTISAN_BLENDER = ARTISAN_PACKAGE + "/runtime/blender/blender"
+
+
+def _require_artisan_blender(*, runtime: Path, output: Path) -> None:
+    """The packaged Blender must start on this image before any stage spends.
+
+    ARTISAN starts Blender only inside its own stage, after stages 1-2 and
+    its own setup. The toolchain build proved ``blender --version`` only on
+    the control-plane host, so a library the provider image lacks would
+    surface late. This is image-level, not a machine fault, so it is not
+    avoidlisted.
+    """
+
+    import subprocess
+
+    home = output / "artisan_blender_startup_preflight"
+    home.mkdir(mode=0o750, exist_ok=True)
+    try:
+        completed = subprocess.run(
+            [str(runtime / ARTISAN_BLENDER), "--background", "--factory-startup", "--version"],
+            capture_output=True, text=True, timeout=180, check=False,
+            env={"PATH": "/usr/bin:/bin", "HOME": str(home)})
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"artisan_blender_runtime_unavailable:{type(exc).__name__}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"artisan_blender_runtime_unavailable:{completed.returncode}:{detail[0][-200:]}")
+    print("BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_BLENDER_STARTUP_PASSED", flush=True)
+
+
+def _require_artisan_controller(*, runtime: Path, output: Path) -> None:
+    """ARTISAN's inference controller must start here, as stage 3 will start it.
+
+    Stage 3 runs the controller with this interpreter and a scrubbed
+    environment, after stages 1-2 and its own setup. A loader path or package
+    the image lacks would otherwise surface only then. This uses the stage's
+    own environment builder and imports nothing that reads a credential or
+    calls a model. Image-level, not a machine fault: not avoidlisted.
+    """
+
+    import subprocess
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_artisan_driver as driver
+    from blueprint_pipeline.asset_python_runtime import sandboxed_interpreter
+
+    home = output / "artisan_controller_preflight"
+    home.mkdir(mode=0o750, exist_ok=True)
+    interpreter = sandboxed_interpreter()
+    environment = driver.controller_environment(
+        os.environ, driver.package_import_roots(runtime / ARTISAN_PACKAGE), interpreter["library_environment"])
+    try:
+        completed = subprocess.run(
+            [str(interpreter["executable"]), "-S", "-c", driver.CONTROLLER_IMPORT_PROBE],
+            cwd=home, env=environment, capture_output=True, text=True,
+            timeout=driver.CONFINED_PREFLIGHT_TIMEOUT_SECONDS, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"artisan_controller_runtime_unavailable:{type(exc).__name__}") from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip().splitlines()[-1:] or [""]
+        raise RuntimeError(f"artisan_controller_runtime_unavailable:{completed.returncode}:{detail[0][-200:]}")
+    print("BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_CONTROLLER_PREFLIGHT_PASSED", flush=True)
+
+
 def main() -> int:
     runtime = Path(
         os.environ.get(
@@ -315,6 +434,11 @@ def main() -> int:
             if not os.environ.get("BLUEPRINT_BLENDER_RUNTIME_ROOT", "").strip():
                 os.environ["BLUEPRINT_BLENDER_RUNTIME_ROOT"] = str(output / "astra_runtime_preflight/packaged_blender")
             print("BLUEPRINT_SCENE_CONFIGURATION_ASTRA_RUNTIME_PREFLIGHT_PASSED", flush=True)
+        if _artisan_stage_scheduled(envelope, configurations, stage_limit) and not completed_astra_prefix(
+                stages_root, envelope, configurations, parent_deadline_epoch, stage_limit=stage_limit):
+            _require_asset_isolation(runtime=runtime, output=output)
+            _require_artisan_blender(runtime=runtime, output=output)
+            _require_artisan_controller(runtime=runtime, output=output)
         chain = _portable_stage_chain(
             execute_scene_configuration_stage_chain(
                 envelope=envelope,

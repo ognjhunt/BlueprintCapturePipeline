@@ -138,9 +138,13 @@ def test_site_budget_is_shared_across_scene_revisions_and_uncertain_launches(tmp
     assert backend.launches == 1
     assert publication(tmp_path)["status"] == "reconciliation_required"
     assert publication(tmp_path)["budget"]["reserved_usd"] == "8"
-    assert publication(tmp_path, "campaign-2")["candidates"][0]["blockers"] == ["beta_screening_site_budget_exhausted"]
+    # The uncertain launch may still release its reservation: campaign 2 waits, it is not closed.
+    second_row = publication(tmp_path, "campaign-2")["candidates"][0]
+    assert second_row["status"] == "waitlisted" and second_row["blockers"] == ["site_screening_budget_insufficient"]
+    assert publication(tmp_path, "campaign-2")["status"] == "queued"
     coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
     assert backend.launches == 1 and backend.reconciliations == 1
+    assert publication(tmp_path, "campaign-2")["candidates"][0]["status"] == "waitlisted"
 
 
 def test_no_allocation_requires_explicit_proof_to_release(tmp_path):

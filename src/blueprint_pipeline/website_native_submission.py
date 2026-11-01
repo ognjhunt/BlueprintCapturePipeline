@@ -6,6 +6,7 @@ object provenance. It never reconstructs, removes an object again, or allocates.
 from __future__ import annotations
 
 from .task_evaluation_scene_retirement_access import scene_participant
+from decimal import Decimal
 import math
 from pathlib import Path
 
@@ -106,7 +107,16 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     intent, preparation, context, rights, construction, paths = verified_submission_inputs(task)
     owner_task = intent["request"]["task"]
     from .task_evaluation_scene_execution_budget_evidence import effective_execution_budget
-    authorized = effective_execution_budget(Path(task["scene_intent_authority"]["path"]).parent, intent)
+    directory = Path(task["scene_intent_authority"]["path"]).parent
+    authorized = effective_execution_budget(directory, intent)
+    # Size this attempt within what the intent's existing holds leave, the
+    # sum reservation will check. Built from the whole ceiling, a retry after
+    # a settled $5 GPU hold under a $25 grant asked for $21 and was refused
+    # (capture-447ae4f4, 2026-11-01). Only compute shrinks; authoring stays.
+    from .task_evaluation_scene_intake import committed_spend_usd
+    remaining = Decimal(str(authorized["max_total_spend_usd"])) - committed_spend_usd(directory, intent)
+    if remaining <= 0:
+        raise ValueError("website_native_construction_budget_exceeds_authority")
     authoring = construction["configurations"][2]
     articulated = owner_task["strategy"] == "articulated_open_close"
     try:
@@ -118,7 +128,7 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                 else MAX_ASTRA_AUTHORING_SPEND_USD),
             requires_artifixer=False,
             authoring_provider=authoring.get("authoring_model_provider", "openai"),
-            maximum_total_spend_usd=authorized["max_total_spend_usd"])
+            maximum_total_spend_usd=float(remaining))
     except ValueError as exc:
         if str(exc) == "scene_configuration_compute_budget_missing":
             raise ValueError("website_native_construction_budget_exceeds_authority") from None

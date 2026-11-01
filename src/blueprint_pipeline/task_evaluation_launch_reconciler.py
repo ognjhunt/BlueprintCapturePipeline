@@ -29,6 +29,8 @@ from .task_evaluation_launch_dispatcher import (
     TaskEvaluationLaunchError,
     canonical_digest,
 )
+from .task_evaluation_launch_dispatcher_ownership import unowned_processing_names
+from .task_evaluation_launch_preallocation import preallocation_stop_evidence
 from .task_evaluation_launch_evidence_contracts import (
     CONFIGURATION_COMPLETE_OFFERING_STATUSES as CONFIGURATION_COMPLETE_OFFERING_STATUSES,  # noqa: PLC0414 - compatibility reexport
 )
@@ -386,6 +388,45 @@ def _release_scene_cache_after_zero(*, run_root: Path, receipt: Mapping[str, Any
                 "evidence_removed": False}
 
 
+def _job_scoped_terminal_zero(
+    *,
+    guard: Mapping[str, Any],
+    teardown: Mapping[str, Any],
+    required_providers: Sequence[str],
+    max_guard_age_seconds: int,
+    observed_at: datetime,
+) -> dict[str, Any] | None:
+    """Close one run while other jobs are live (opt-in job scope only).
+
+    The run's own instances come from its digest-checked teardown manifest. A
+    manifest that allocated but names no instance cannot be attributed, so it
+    keeps the account-wide rule.
+    """
+
+    from .paid_provider_job_scope import SCOPE_JOB, evaluate_job_scope, provider_zero_scope
+
+    if provider_zero_scope() != SCOPE_JOB:
+        return None
+    try:
+        manifest = _read(Path(str(teardown["path"])))
+    except (KeyError, OSError, json.JSONDecodeError, TaskEvaluationLaunchError):
+        return None
+    if _file_digest(Path(str(teardown["path"]))) != teardown.get("digest"):
+        return None
+    own_ids = manifest.get("vast_instance_ids")
+    if not isinstance(own_ids, list) or (
+        teardown.get("provider_resource_allocated") is not False and not own_ids
+    ):
+        return None
+    generated_at = _timestamp(teardown.get("generated_at"))
+    return evaluate_job_scope(
+        guard=guard, now=observed_at, own_instance_ids=own_ids,
+        required_providers=required_providers, max_guard_age_seconds=max_guard_age_seconds,
+        not_before=generated_at, not_before_subject="teardown",
+        added_instances=0, added_burn_usd_per_hour=0.0,
+    )
+
+
 def _reconcile_terminal_provider_zero(
     *,
     run_root: Path,
@@ -479,6 +520,7 @@ def _reconcile_terminal_provider_zero(
         blockers.append("terminal_provider_zero_control_missing")
     teardown, teardown_blockers = _terminal_teardown_evidence(receipt=receipt)
     blockers.extend(teardown_blockers)
+    job_scope: dict[str, Any] | None = None
     if not blockers and teardown is not None:
         provider_zero, guard_blockers = (
             _guard_provider_zero(
@@ -492,6 +534,15 @@ def _reconcile_terminal_provider_zero(
             if guard_error is None
             else (False, [guard_error])
         )
+        if not provider_zero and guard_error is None:
+            job_scope = _job_scoped_terminal_zero(
+                guard=guard, teardown=teardown, required_providers=required_providers,
+                max_guard_age_seconds=max_guard_age_seconds, observed_at=observed_at,
+            )
+            if job_scope is not None and job_scope["verified"]:
+                provider_zero, guard_blockers = True, []
+            elif job_scope is not None:
+                guard_blockers = guard_blockers + list(job_scope["blockers"])
         blockers.extend(guard_blockers)
     else:
         provider_zero = False
@@ -543,6 +594,16 @@ def _reconcile_terminal_provider_zero(
         ),
         "blockers": [],
     }
+    if job_scope is not None and job_scope["verified"]:
+        # Other jobs were still live: this proves *this run* stopped spending
+        # (its instances are gone; everything live is another job's owned,
+        # labeled work; the guard post-dates teardown). It never claims the
+        # account was empty.
+        closure.update({
+            "provider_zero_scope": "job",
+            "global_provider_zero_claimed": False,
+            "job_scope": job_scope,
+        })
     closure["provider_zero_receipt_digest"] = canonical_digest(
         closure, digest_field="provider_zero_receipt_digest"
     )
@@ -753,6 +814,36 @@ def _index_terminal_results(
     return rows
 
 
+#: How long a processing lease that no live dispatcher owns, and that the
+#: dispatcher never started a run for, waits before the provider-zero proof:
+#: one dispatcher pass, not the 4 h unknown-run fallback.
+PRE_RUN_STALE_SECONDS = 900
+
+#: What this reconciler itself writes into a run directory. Everything else
+#: there, the directory itself included, is the dispatcher's.
+_RECONCILER_RUN_ENTRIES = frozenset({"reconciliations", "orphan_recovery_receipt.json"})
+
+
+def _dispatcher_run_evidence(run_root: Path) -> bool:
+    """Whether the dispatcher made this run directory or wrote anything into it.
+
+    ``create_launch_output`` (with its scene enrolment) makes the directory, the
+    dispatcher's run records follow, and ``launch_started.json`` comes before
+    the allocator. A failed provider-zero pass leaves ``reconciliations/``,
+    which must not make a pre-run lease look like a run.
+    """
+    try:
+        with os.scandir(run_root) as iterator:
+            entries = {entry.name for entry in iterator}
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True  # Unreadable is not proof of absence: keep the existing wait.
+    # The reconciler never leaves an empty run directory; only the dispatcher's
+    # create_launch_output does.
+    return not entries or not entries <= _RECONCILER_RUN_ENTRIES
+
+
 def reconcile_launches(
     *,
     queue_root: str | Path,
@@ -790,6 +881,8 @@ def reconcile_launches(
     rows: list[dict[str, Any]] = []
     processing = queue / "processing"
     processing.mkdir(parents=True, exist_ok=True)
+    # Listed under the dispatchers' lock, then released before any other work.
+    unowned = unowned_processing_names(queue)
     for request_path in sorted(processing.glob("*.json")):
         try:
             request = _read(request_path)
@@ -818,6 +911,17 @@ def reconcile_launches(
                 if isinstance(ttl, int) and not isinstance(ttl, bool) and ttl > 0
                 else fallback_stale_seconds
             )
+            if request_path.name in unowned and (
+                not _dispatcher_run_evidence(run_root)
+                or preallocation_stop_evidence(run_root=run_root, launch_id=launch_id, state_root=state)
+                is not None
+            ):
+                # No live dispatcher owns this lease, and it never reached the
+                # allocator: its dispatcher never made the run directory, or the
+                # run's one-use standing authorization was never consumed, which
+                # every live allocator call requires first. It still waits out a
+                # dispatcher pass and still needs the same provider-zero proof below.
+                ttl_seconds = min(ttl_seconds, PRE_RUN_STALE_SECONDS)
             lease_age = (
                 (observed_at - started_at).total_seconds()
                 if started_at is not None

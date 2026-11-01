@@ -65,6 +65,15 @@ MIN_ASTRA_AUTHORING_SPEND_USD = 5.0
 # 2026-09-28: a website task's first part cost ~$3 (about ten calls) and the
 # second was refused at the former stage cap before six more parts were tried.
 MAX_ASTRA_AUTHORING_SPEND_USD = 25.0
+# OpenAI request counts. Every paid-authority and launch-preparation validator
+# admits 1..MAX_OPENAI_REQUESTS (the WebApp contract and the preparation
+# schema agree). Astra and the legacy stages keep 32. ARTISAN's own agents
+# are built for up to 150 coding and 150 review turns per invocation and five
+# repair rounds, each turn one billed call, and its meter refuses the next
+# call once the count is spent: 32 would stop it mid-coding with most of the
+# dollar allocation unspent. Its frozen dollar cap stays the binding limit.
+DEFAULT_OPENAI_REQUESTS = 32
+MAX_OPENAI_REQUESTS = 100
 
 
 @dataclass(frozen=True)
