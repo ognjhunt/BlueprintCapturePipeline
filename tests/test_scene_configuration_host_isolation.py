@@ -80,6 +80,10 @@ def _prepare_runner(tmp_path, monkeypatch, *, backend="artisan_v1"):
         raise RuntimeError("test_stops_before_stage_execution")
 
     monkeypatch.setattr(runner, "execute_scene_configuration_stage_chain", stages)
+    # The sealed package is not in this fixture; the controller check imports
+    # only the standard library unless a test asks for more.
+    from blueprint_pipeline import task_evaluation_scene_configuration_artisan_driver as driver
+    monkeypatch.setattr(driver, "CONTROLLER_IMPORT_PROBE", "import ssl")
     return runner, result_path, chain_calls
 
 
@@ -117,6 +121,7 @@ def test_isolated_host_reaches_the_stage_chain(tmp_path, monkeypatch, capsys):
     assert "BLUEPRINT_SCENE_CONFIGURATION_ASSET_ISOLATION_PREFLIGHT_PASSED" in logged
     assert "BLUEPRINT_SCENE_CONFIGURATION_SANDBOXED_INTERPRETER_PREFLIGHT_PASSED" in logged
     assert "BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_BLENDER_STARTUP_PASSED" in logged
+    assert "BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_CONTROLLER_PREFLIGHT_PASSED" in logged
     # The interpreter ARTISAN runs is made readable, then run inside the sandbox.
     import sys as _sys
     prepared, (argv, _env, executables) = runner.interpreter_runs
@@ -151,6 +156,40 @@ def test_blender_that_cannot_start_on_the_image_blocks_before_stage_one(tmp_path
     assert "artisan_blender_runtime_unavailable:127:" in blocker and "libXi.so.6" in blocker
     # An image-level fault is not a machine fault: nothing to avoidlist.
     assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED" not in capsys.readouterr().out
+
+
+def test_controller_that_cannot_start_blocks_before_stage_one(tmp_path, monkeypatch, capsys):
+    runner, result_path, chain_calls = _prepare_runner(tmp_path, monkeypatch)
+    from blueprint_pipeline import task_evaluation_scene_configuration_artisan_driver as driver
+    monkeypatch.setattr(driver, "CONTROLLER_IMPORT_PROBE", "import artisan_controller_dependency_absent")
+    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: setattr(self, "_fixture_preflighted", True))
+    assert runner.main() == 2
+    assert chain_calls == []
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["first_stage_started"] is False
+    blocker = result["blockers"][0]
+    assert "artisan_controller_runtime_unavailable:1:" in blocker and "artisan_controller_dependency_absent" in blocker
+    # Image-level, like Blender: nothing to avoidlist.
+    assert "BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED" not in capsys.readouterr().out
+
+
+def test_controller_check_starts_the_interpreter_as_stage_three_does(tmp_path, monkeypatch, capsys):
+    """Same builder, same loader path and import roots as the stage-3 controller."""
+    runner, _result_path, chain_calls = _prepare_runner(tmp_path, monkeypatch)
+    from blueprint_pipeline import asset_python_runtime
+    from blueprint_pipeline import task_evaluation_scene_configuration_artisan_driver as driver
+    real = asset_python_runtime.sandboxed_interpreter()
+    loader = str(tmp_path / "kit-python-lib")
+    monkeypatch.setattr(asset_python_runtime, "sandboxed_interpreter",
+                        lambda: {**real, "library_environment": {"LD_LIBRARY_PATH": loader}})
+    bridge = str(tmp_path / "runtime" / runner.ARTISAN_PACKAGE / "bridge")
+    monkeypatch.setattr(driver, "CONTROLLER_IMPORT_PROBE", "import os, sys; sys.exit(0 if ("
+                        f"os.environ['LD_LIBRARY_PATH'] == {loader!r} and "
+                        f"os.environ['PYTHONPATH'].split(os.pathsep)[0] == {bridge!r}) else 9)")
+    monkeypatch.setattr(SandboxedAssetRunner, "preflight", lambda self: setattr(self, "_fixture_preflighted", True))
+    assert runner.main() == 2  # the fixture chain stops itself
+    assert len(chain_calls) == 1
+    assert "BLUEPRINT_SCENE_CONFIGURATION_ARTISAN_CONTROLLER_PREFLIGHT_PASSED" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(("backend", "stage_limit"), [("astra_cad_blender_v1", None), ("artisan_v1", "stage-1")])

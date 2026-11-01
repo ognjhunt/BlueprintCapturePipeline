@@ -110,11 +110,13 @@ _ARTISAN_PRE_GATE_REFUSALS = (
     # Its confined import check, which also precedes the cost gate.
     ("artisan_confined_runtime_preflight_failed",),
 )
-#: The runner's checks before stage 1 (#3228, #3230): no stage, no model call.
+#: The runner's checks before stage 1 (#3228, #3230 and the controller
+#: import check): no stage, no credential read, no model call.
 _EARLY_ISOLATION_REFUSALS = (
     "scene_configuration_provider_failed:AssetSandboxError:asset_sandbox_unavailable",
     "scene_configuration_provider_failed:RuntimeError:artisan_sandboxed_interpreter_unavailable:",
     "scene_configuration_provider_failed:RuntimeError:artisan_blender_runtime_unavailable:",
+    "scene_configuration_provider_failed:RuntimeError:artisan_controller_runtime_unavailable:",
 )
 
 
