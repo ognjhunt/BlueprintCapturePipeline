@@ -803,7 +803,8 @@ def build_scene_configuration_provider_bundle(
     # archive, which hashes each member against this same inventory: as it is
     # read on a cache miss, and as the cached fragment is spliced on a hit. The
     # provider validates every byte again. With the flag on, the host tree's
-    # bytes are hashed only where the archive reads them.
+    # bytes, wheels included, are hashed only where the archive reads them;
+    # its .json manifests are still hashed here.
     toolchain_manifest = validate_scene_configuration_toolchain(
         root=toolchain,
         expected_source_commit=toolchain_source_commit,
@@ -821,6 +822,7 @@ def build_scene_configuration_provider_bundle(
             raise ValueError("scene_configuration_astra_runtime_not_sealed")
         provider_python_runtime = validate_scene_configuration_python_wheelhouse(
             root=toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE, profile=python_profile,
+            verify_bytes=not stat_only,
         )
     except (OSError, ValueError) as exc:
         raise TaskEvaluationSceneConfigurationBundleError(

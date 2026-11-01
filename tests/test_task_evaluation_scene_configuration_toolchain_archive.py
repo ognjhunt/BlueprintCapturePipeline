@@ -254,6 +254,9 @@ def _count_host_hashes(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
         task_evaluation_scene_configuration_builtin_producers as producers,
     )
     from blueprint_pipeline import task_evaluation_scene_configuration_component_package as package
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_python_wheelhouse as wheelhouse,
+    )
 
     hashed: list[Path] = []
     for module in (producers, package):
@@ -262,7 +265,25 @@ def _count_host_hashes(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
             module, "_sha256",
             lambda path, _original=original: hashed.append(Path(path)) or _original(path),
         )
+
+    class _CountedHashlib:
+        """The wheelhouse hashes each wheel's bytes with ``hashlib.sha256``."""
+
+        def sha256(self, data: bytes = b""):
+            hashed.append(Path("<wheel>.whl"))
+            return hashlib.sha256(data)
+
+    monkeypatch.setattr(wheelhouse, "hashlib", _CountedHashlib())
     return hashed
+
+
+def _tamper_wheel_same_size(toolchain: Path) -> Path:
+    wheel = next(path for path in sorted(toolchain.rglob("*.whl")) if path.is_file())
+    payload = wheel.read_bytes()
+    wheel.chmod(0o644)
+    wheel.write_bytes(payload[:-1] + (b"X" if payload[-1:] != b"X" else b"Y"))
+    wheel.chmod(0o444)
+    return wheel
 
 
 def _tamper_same_size(toolchain: Path) -> Path:
@@ -387,3 +408,27 @@ def test_an_archive_pruned_after_the_hit_check_is_rebuilt_from_verified_bytes(
 
     with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="source_mismatch"):
         _bundle(tmp_path, "raced", toolchain=toolchain, commit=A, cache=cache)
+
+
+def test_stat_only_skips_wheel_hashes_but_never_ships_a_changed_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    clean = _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    _tamper_wheel_same_size(toolchain)
+
+    # Flag off: the host wheel bytes are hashed and the changed wheel refused.
+    with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError,
+                       match="toolchain_file_invalid:.*python_wheelhouse/wheels/"):
+        _bundle(tmp_path, "full", toolchain=toolchain, commit=A, cache=cache)
+
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    hashed = _count_host_hashes(monkeypatch)
+    # Hit: no wheel is hashed on the host, and the wheel that ships is the archive's.
+    hit = _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)
+    assert not any(path.suffix == ".whl" for path in hashed)
+    assert hit["bundle_sha256"] == clean["bundle_sha256"]
+    # Miss: the archive hashes the wheel against the inventory and refuses it.
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="source_mismatch"):
+        _bundle(tmp_path, "miss", toolchain=toolchain, commit=A, cache=tmp_path / "empty-cache")
