@@ -433,6 +433,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.service",
     "blueprint-agent-stage-replay.timer",
+    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-launch-dispatcher.path",
     "blueprint-task-evaluation-launch-preparation.service",
@@ -579,6 +580,9 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # its timer makes admitted website runs progress after deployment/reboot.
     "blueprint-agent-run-dispatcher.timer",
     "blueprint-agent-stage-replay.timer",
+    # Wakes the same no-network offline replay oneshot as its timer, so it
+    # carries the timer's authority rather than the no-spend watcher category.
+    "blueprint-agent-stage-replay.path",
     "blueprint-task-evaluation-scene-progression.timer",
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-episode-compilation.timer",
