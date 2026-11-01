@@ -138,7 +138,6 @@ def stage_scene_intent(*, value: Mapping[str, Any], queue_root: str | Path,
                   "provider_mutation_performed_inside_http_request": False}, "receipt_digest")
 
 
-@scene_participant('queue_root')
 def _committed_holds(root: Path, directory: Path, intent: Mapping[str, Any],
                      rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Decimal, int]:
     """Live attempt rows, then the settled exposure and attempt count the caps already carry.
@@ -177,6 +176,7 @@ def committed_spend_usd(directory: str | Path, intent: Mapping[str, Any]) -> Dec
     return sum((Decimal(str(row["maximum_spend_usd"])) for row in live), settled)
 
 
+@scene_participant('queue_root')
 def reserve_scene_attempt(*, queue_root: str | Path, intent_id: str, attempt_id: str,
                           source_commit: str, runtime_digest: str, input_digest: str,
                           provider: str, maximum_spend_usd: float,
