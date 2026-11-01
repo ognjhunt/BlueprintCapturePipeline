@@ -105,8 +105,15 @@ trap 'kill "$ticker_pid" 2>/dev/null || true' EXIT
 
 PYTHON_WHEELHOUSE="$RUNTIME_ROOT/toolchain/components/artifixer3d_observed_object_removal/package/python_wheelhouse"
 PYTHON_RUNTIME="$OUTPUT_ROOT/.venv/provider_python_runtime"
+# Select the wheelhouse profile the release sealed, in the same order as
+# ``declared_python_profile`` (task_evaluation_scene_configuration_astra_runtime):
+# an ARTISAN package first, then Astra, else base. The materializer refuses any
+# other profile, so a mismatch blocks the run before its first stage.
+AUTHORING_PACKAGE="$RUNTIME_ROOT/toolchain/components/content_agents_rigid_replacement/package"
 PYTHON_RUNTIME_PROFILE="base"
-if [ -f "$RUNTIME_ROOT/toolchain/components/content_agents_rigid_replacement/package/astra_runtime_manifest.v1.json" ]; then
+if [ -f "$AUTHORING_PACKAGE/artisan_runtime_manifest.v1.json" ]; then
+  PYTHON_RUNTIME_PROFILE="artisan_source_validation"
+elif [ -f "$AUTHORING_PACKAGE/astra_runtime_manifest.v1.json" ]; then
   PYTHON_RUNTIME_PROFILE="astra_asset_authoring"
 fi
 mkdir -p "$(dirname "$PYTHON_RUNTIME")"
