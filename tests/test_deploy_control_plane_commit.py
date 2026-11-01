@@ -920,6 +920,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-completed-replay-cache-gc.timer",
         "blueprint-control-plane-capacity.timer",
         "blueprint-control-plane-preflight.timer",
+        "blueprint-task-evaluation-launch-reconciler.timer",
         "blueprint-website-atlas-preview.timer",
     )
     assert deploy.DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS == (

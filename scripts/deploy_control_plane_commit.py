@@ -597,6 +597,12 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-completed-replay-cache-gc.timer",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.timer",
+    # Launch liveness and post-teardown provider-zero bookkeeping. It never
+    # launches, retries or tears down a provider; it moves leases a dispatcher
+    # no longer owns, files the provider-zero receipt that completion and
+    # release succession join on, and projects launch progress to the WebApp.
+    # Left to "prior state", one stop kept it off across every later deploy.
+    "blueprint-task-evaluation-launch-reconciler.timer",
     # Advances only preview jobs that intake recorded for routed uploads
     # (BLUEPRINT_WEBSITE_ATLAS_ROUTING, off by default): with routing off there
     # are none. Every paid call still needs that upload's WebApp grant and cap.
