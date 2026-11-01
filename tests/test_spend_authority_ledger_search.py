@@ -99,3 +99,29 @@ def test_search_is_faster_on_a_wide_data_root(tmp_path):
     assert new == old == [(base / "spend-authority-home" / ".blueprint-spend-authority").resolve()]
     print(f"\nlegacy-ledger search over 26,481 entries: old {old_seconds:.3f}s, new {new_seconds:.3f}s")
     assert new_seconds < old_seconds
+
+
+@pytest.mark.parametrize("depth", [1, 2, 3])
+def test_a_searchable_but_unlistable_legacy_root_is_still_found(tmp_path, monkeypatch, depth):
+    """Mode 0111 (search, no read): its spent authorizations must still be adopted.
+
+    Listing the ledger root fails, but stat-ing its known children does not, and
+    the pre-change search found such a root from its parent's listing. Simulated
+    by refusing ``scandir`` on the root, because root-run tests bypass mode bits.
+    """
+    base = tmp_path / "var-lib-blueprint"
+    ledger = base.joinpath(*[f"level-{n}" for n in range(depth - 1)], ".blueprint-spend-authority")
+    (ledger / "consumed").mkdir(parents=True)
+    (ledger / "consumed" / "authz.json").write_text("{}")
+    root = base / "spend-authority"
+    root.mkdir()
+    real = os.scandir
+
+    def unlistable(path=".", *args):
+        if os.fspath(path) == str(ledger):
+            raise PermissionError(13, "Permission denied", os.fspath(path))
+        return real(path, *args)
+
+    monkeypatch.setattr(os, "scandir", unlistable)
+    assert old_discover(base, root) == [ledger.resolve()]
+    assert migration.discover_legacy_ledgers(search_bases=[base], root=root) == [ledger.resolve()]
