@@ -18,6 +18,7 @@ from blueprint_pipeline.task_evaluation_scene_configuration_builtin_producers im
     validate_scene_configuration_toolchain,
 )
 from blueprint_pipeline.task_evaluation_scene_configuration_bundle import (
+    TaskEvaluationSceneConfigurationBundleError,
     build_scene_configuration_provider_bundle,
     load_scene_configuration_provider_bundle_receipt,
 )
@@ -246,3 +247,105 @@ def test_cache_root_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert archive_module.resolve_cache_root() == (tmp_path / "explicit").resolve()
     assert archive_module.resolve_cache_root(tmp_path / "flag") == (tmp_path / "flag").resolve()
     assert os.environ[archive_module.CACHE_ROOT_ENV]
+
+
+def _count_host_hashes(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_builtin_producers as producers,
+    )
+    from blueprint_pipeline import task_evaluation_scene_configuration_component_package as package
+
+    hashed: list[Path] = []
+    for module in (producers, package):
+        original = module._sha256
+        monkeypatch.setattr(
+            module, "_sha256",
+            lambda path, _original=original: hashed.append(Path(path)) or _original(path),
+        )
+    return hashed
+
+
+def _tamper_same_size(toolchain: Path) -> Path:
+    victim = next(path for path in sorted(toolchain.rglob("run")) if path.is_file())
+    payload = victim.read_bytes()
+    victim.chmod(0o755)
+    victim.write_bytes(payload[:-2] + b"0\n")  # same size, different bytes
+    victim.chmod(0o555)
+    return victim
+
+
+def test_stat_only_host_validation_is_off_by_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    hashed = _count_host_hashes(monkeypatch)
+
+    receipt = _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)
+
+    assert receipt["toolchain_archive"]["reused"] is True
+    assert receipt["toolchain_host_validation"] == "full_bytes"
+    assert hashed
+
+
+def test_stat_only_on_a_hit_ships_only_archive_verified_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    clean = _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_ON_ARCHIVE_HIT", "1")
+    hashed = _count_host_hashes(monkeypatch)
+
+    hit = _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)
+    assert hashed == []
+    assert hit["toolchain_host_validation"] == "stat_only_archive_hit"
+    assert hit["bundle_sha256"] == clean["bundle_sha256"]
+
+    # A host byte changed after publication cannot reach the bundle: the shipped
+    # members come from the archive verified against the published inventory.
+    _tamper_same_size(toolchain)
+    tampered_host = _bundle(tmp_path, "tampered-host", toolchain=toolchain, commit=A, cache=cache)
+    assert tampered_host["bundle_sha256"] == clean["bundle_sha256"]
+
+    # Without a usable archive the host bytes are hashed in full and refused.
+    with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError, match="toolchain_file_invalid"):
+        _bundle(tmp_path, "miss", toolchain=toolchain, commit=A, cache=tmp_path / "empty-cache")
+
+
+def test_stat_only_still_refuses_a_structurally_changed_toolchain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_ON_ARCHIVE_HIT", "1")
+    victim = next(path for path in sorted(toolchain.rglob("run")) if path.is_file())
+    victim.chmod(0o755)
+    with victim.open("ab") as stream:
+        stream.write(b"#\n")  # size changes
+    victim.chmod(0o555)
+
+    with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError, match="toolchain_file_invalid"):
+        _bundle(tmp_path, "resized", toolchain=toolchain, commit=A, cache=cache)
+
+
+def test_an_archive_pruned_after_the_hit_check_is_rebuilt_from_verified_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    warm = _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_ON_ARCHIVE_HIT", "1")
+    _tamper_same_size(toolchain)
+    entry = cache / warm["toolchain_archive"]["archive_key"].removeprefix("sha256:")
+    original = archive_module.prepare_toolchain_archive
+
+    def pruned_then_prepare(**kwargs):
+        archive_module._remove_entry(entry)  # a concurrent activation pruned it
+        return original(**kwargs)
+
+    from blueprint_pipeline import task_evaluation_scene_configuration_bundle as bundle_module
+    monkeypatch.setattr(bundle_module, "prepare_toolchain_archive", pruned_then_prepare)
+
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="source_mismatch"):
+        _bundle(tmp_path, "raced", toolchain=toolchain, commit=A, cache=cache)

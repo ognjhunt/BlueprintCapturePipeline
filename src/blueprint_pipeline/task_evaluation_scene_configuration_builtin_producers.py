@@ -152,7 +152,7 @@ def _relative_file(root: Path, value: Any, *, code: str) -> Path:
 
 
 def _validate_toolchain(
-    *, root: Path, expected_source_commit: str
+    *, root: Path, expected_source_commit: str, verify_bytes: bool = True
 ) -> tuple[dict[str, Any], dict[str, Path]]:
     if root.is_symlink() or not root.is_dir() or root.stat().st_mode & 0o222:
         raise TaskEvaluationSceneConfigurationStageProducerError(
@@ -227,7 +227,7 @@ def _validate_toolchain(
         if (
             expected is None
             or info.st_size != expected[1]
-            or _sha256(Path(entry.path)) != expected[0]
+            or (verify_bytes and _sha256(Path(entry.path)) != expected[0])
             or bool(info.st_mode & 0o111) != expected[2]
             or info.st_mode & 0o222
         ):
@@ -283,6 +283,7 @@ def _validate_toolchain(
             package = validate_scene_configuration_component_package(
                 root=package_manifest.parent,
                 expected_adapter_id=str(adapter_id),
+                verify_bytes=verify_bytes,
             )
         except TaskEvaluationSceneConfigurationComponentPackageError as exc:
             raise TaskEvaluationSceneConfigurationStageProducerError(
@@ -307,13 +308,20 @@ def _validate_toolchain(
 
 
 def validate_scene_configuration_toolchain(
-    *, root: str | Path, expected_source_commit: str
+    *, root: str | Path, expected_source_commit: str, verify_bytes: bool = True
 ) -> dict[str, Any]:
-    """Validate every toolchain byte without constructing executable handlers."""
+    """Validate every toolchain byte without constructing executable handlers.
+
+    ``verify_bytes=False`` keeps every manifest, stage, inventory, size, mode
+    and completeness check and skips only the per-file sha256. It is for the
+    bundle builder when the bytes it ships come from an archive already
+    verified against this same inventory.
+    """
 
     manifest, _entrypoints = _validate_toolchain(
         root=Path(root).expanduser().resolve(),
         expected_source_commit=expected_source_commit,
+        verify_bytes=verify_bytes,
     )
     return manifest
 
