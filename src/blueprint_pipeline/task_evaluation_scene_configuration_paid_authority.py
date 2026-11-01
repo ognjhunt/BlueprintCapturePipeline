@@ -30,6 +30,7 @@ from .task_evaluation_scene_configuration_diagnostic_mode import (
 from .task_evaluation_scene_configuration_runtime_budget import (
     MAX_EXTERNAL_SERVICE_SPEND_USD as MAX_EXTERNAL_SERVICE_SPEND_USD,
     MAX_HOURLY_RATE_USD,
+    MAX_OPENAI_REQUESTS,
     MAX_PROVIDER_COMPUTE_SPEND_USD,
     MIN_ARTIFIXER_SEMANTIC_TEACHER_SPEND_USD,
     MIN_ARTIFIXER_VISUAL_REVIEW_SPEND_USD,
@@ -38,6 +39,11 @@ from .task_evaluation_scene_configuration_runtime_budget import (
     scene_configuration_budget_profile,
     REQUIRED_PARENT_TTL_SECONDS,
     diagnostic_parent_runtime_budget_blockers,
+)
+from .paid_provider_job_scope import (
+    JOB_PROVIDER_ZERO_SCHEMA_VERSION,
+    ProviderJobScopeError,
+    validate_job_provider_zero_receipt,
 )
 from .vast_evidence_contracts import valid_vast_provider_zero_api_call
 
@@ -135,6 +141,16 @@ def _aware(value: Any, *, code: str) -> datetime:
 
 def _provider_zero(path: Path) -> dict[str, Any]:
     value = _read(path, code="scene_configuration_provider_zero_invalid")
+    if value.get("schema_version") == JOB_PROVIDER_ZERO_SCHEMA_VERSION:
+        # Job-scoped zero (see paid_provider_job_scope): this job owns nothing
+        # live, everything live is another job's owned work, and the fleet
+        # budget had room. Re-validated here rather than trusted.
+        try:
+            return validate_job_provider_zero_receipt(value)
+        except ProviderJobScopeError as exc:
+            raise TaskEvaluationSceneConfigurationAuthorityError(
+                "scene_configuration_provider_zero_invalid"
+            ) from exc
     if (
         value.get("schema_version") != "adp_paid_provider_zero.v1"
         or value.get("provider") != "vast"
@@ -152,6 +168,29 @@ def _provider_zero(path: Path) -> dict[str, Any]:
             "scene_configuration_provider_zero_invalid"
         )
     return value
+
+
+def _require_job_zero_burn_covers(zero: Mapping[str, Any], max_hourly_rate_usd: Any) -> None:
+    """A job-scoped admission must have budgeted the burn this authority allows.
+
+    Otherwise the fleet's hourly ceiling was checked against less than the
+    instance this authority can start. Account-wide receipts are unaffected.
+    """
+
+    if zero.get("schema_version") != JOB_PROVIDER_ZERO_SCHEMA_VERSION:
+        return
+    fleet = zero.get("fleet") if isinstance(zero.get("fleet"), Mapping) else {}
+    budgeted = fleet.get("added_burn_usd_per_hour")
+    if (
+        isinstance(max_hourly_rate_usd, bool)
+        or not isinstance(max_hourly_rate_usd, (int, float))
+        or isinstance(budgeted, bool)
+        or not isinstance(budgeted, (int, float))
+        or float(budgeted) < float(max_hourly_rate_usd)
+    ):
+        raise TaskEvaluationSceneConfigurationAuthorityError(
+            "scene_configuration_provider_zero_burn_headroom_understated"
+        )
 
 
 def _budget_valid(*, rate: Any, cap: Any, ttl: Any) -> bool:
@@ -249,6 +288,7 @@ def materialize_scene_configuration_paid_authority(
     project, project_record = validate_project_spend_reconciliation(project_path)
     zero_path = Path(initial_provider_zero_path).expanduser().resolve()
     zero = _provider_zero(zero_path)
+    _require_job_zero_burn_covers(zero, max_hourly_rate_usd)
     authorized_time = _aware(
         authorized_on, code="scene_configuration_authorized_on_invalid"
     )
@@ -344,7 +384,7 @@ def materialize_scene_configuration_paid_authority(
         and not isinstance(openai_max_requests, bool)
         and (
             (openai_cap == 0 and openai_max_requests == 0)
-            or (openai_cap > 0 and 1 <= openai_max_requests <= 100)
+            or (openai_cap > 0 and 1 <= openai_max_requests <= MAX_OPENAI_REQUESTS)
         )
         and 0 < compute_cap <= MAX_PROVIDER_COMPUTE_SPEND_USD
         and (

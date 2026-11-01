@@ -388,3 +388,25 @@ def test_retired_capture_execution_does_not_require_aws_or_prevent_adoption():
     assert report["paid_execution_available"] is False
     assert report["completed_evidence_adoption_available"] is True
     assert report["reason"] == "aws_provider_integration_removed"
+
+
+def test_ready_line_names_the_catalog_phases(monkeypatch, capsys):
+    from blueprint_pipeline import production_runtime_env_guard as guard_module
+
+    report = {
+        "status": "ready",
+        "check_durations_seconds": {"spend_authority_ledger": 0.2, "launch_profile_catalog": 22.1},
+        "control_plane_entrypoints": {"verdict_reused": True},
+        "launch_profile_catalog": {"status": "consistent", "pass_timing_seconds": {
+            "profile_parse": 1.5, "immutable_inputs": 9.25, "profile_validation": 10.0,
+            "input_residency": 1.25, "profiles": 539, "distinct_inputs": 3784}},
+    }
+    monkeypatch.setattr(guard_module, "build_production_runtime_env_guard", lambda: report)
+    assert guard_module.main([]) == 0
+    line = capsys.readouterr().out.strip()
+    assert line == (
+        "[production-runtime-env-guard] status=ready import_verdict_reused=true "
+        "spend_authority_ledger=0.2s launch_profile_catalog=22.1s catalog_profile_parse=1.5s "
+        "catalog_immutable_inputs=9.25s catalog_profile_validation=10.0s catalog_input_residency=1.25s "
+        "catalog_profiles=539 catalog_distinct_inputs=3784"
+    )

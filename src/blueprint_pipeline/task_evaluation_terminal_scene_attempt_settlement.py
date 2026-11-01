@@ -20,9 +20,10 @@ ran its preparation and a terminal scene-configuration launch may have paid for
 image edits or a GPU. Each receipt therefore carries ``settled_spend``: the hold
 the row keeps against the owner's cap (its full reservation while no billing
 reconciliation is bound), and whether it still counts as an executed attempt.
-Only rows proven never started -- a launch that was never queued, or a controls
-row downstream of a launch that blocked before controls eligibility -- release
-in full. ``retained_hold`` derives the same block for receipts sealed before the
+Only rows proven never started -- a launch that was never queued, a launch the
+reconciler closed before the dispatcher started any run, or a controls row
+downstream of a launch that blocked before controls eligibility -- release in
+full. ``retained_hold`` derives the same block for receipts sealed before the
 field existed.
 """
 
@@ -55,6 +56,8 @@ SETTLED_SPEND_BASES = {
     "terminal_launch_unreconciled",     # a terminal launch may have paid: full hold until a reconciliation is bound
     "downstream_of_blocked_launch",     # controls rows behind a launch that blocked before controls eligibility
     "launch_never_queued",              # nothing ever started for this row
+    "launch_contained_before_run",      # queued, but closed with provider zero before any run existed
+    "launch_stopped_before_allocator",  # run started, one-use authority never consumed, closed with provider zero
 }
 PREPARATION_ONLY_BASIS = "preparation_only_no_execution_authority_issued"
 # What ``_release_successor`` records under that basis, apart from an optional
@@ -163,6 +166,27 @@ def validate_terminal_settlement(*, receipt: Mapping[str, Any], attempt: Mapping
             "launch_not_terminal",
         )
         _require(execution.get("launch_status") in (None, launch.get("status")), "launch_status_changed")
+    elif execution.get("launch_stopped_before_allocator") is True:
+        orphan_ref = execution.get("orphan_recovery_receipt") or {}
+        orphan_path = Path(str(orphan_ref.get("path") or ""))
+        _require(execution.get("launch_never_queued") is False
+                 and orphan_path.name == "orphan_recovery_receipt.json"
+                 and orphan_path.parent.name == launch_id, "orphan_recovery_binding_invalid")
+        _require(_file(orphan_path) == orphan_ref and _orphan_receipt_valid(orphan_path, launch_id),
+                 "orphan_recovery_receipt_changed")
+        from .task_evaluation_launch_preallocation import preallocation_evidence_still_holds
+        _require(preallocation_evidence_still_holds(execution.get("preallocation_evidence") or {},
+                                                    run_root=orphan_path.parent),
+                 "preallocation_evidence_invalid")
+    elif execution.get("launch_contained_before_run") is True:
+        orphan_ref = execution.get("orphan_recovery_receipt") or {}
+        orphan_path = Path(str(orphan_ref.get("path") or ""))
+        _require(execution.get("launch_never_queued") is False
+                 and orphan_path.name == "orphan_recovery_receipt.json"
+                 and orphan_path.parent.name == launch_id, "orphan_recovery_binding_invalid")
+        _require(_file(orphan_path) == orphan_ref, "orphan_recovery_receipt_changed")
+        _require(_contained_before_run(run_root=orphan_path.parent, launch_id=launch_id) == orphan_ref,
+                 "orphan_recovery_evidence_invalid")
     else:
         _require(execution.get("launch_never_queued") is True, "execution_evidence_missing")
 
@@ -175,6 +199,10 @@ def _derive_settled_spend(*, maximum_spend_usd: Any, dependency: Mapping[str, An
         return {"basis": "retired_source_unreconciled", "retained_spend_usd": cap, "counts_as_attempt": True}
     if (execution or {}).get("launch_never_queued") is True:
         return {"basis": "launch_never_queued", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+    if (execution or {}).get("launch_contained_before_run") is True:
+        return {"basis": "launch_contained_before_run", "retained_spend_usd": 0.0, "counts_as_attempt": False}
+    if (execution or {}).get("launch_stopped_before_allocator") is True:
+        return {"basis": "launch_stopped_before_allocator", "retained_spend_usd": 0.0, "counts_as_attempt": False}
     if phase != "scene_configuration" and launch_status == "blocked":
         return {"basis": "downstream_of_blocked_launch", "retained_spend_usd": 0.0, "counts_as_attempt": False}
     return {"basis": "terminal_launch_unreconciled", "retained_spend_usd": cap, "counts_as_attempt": False}
@@ -276,7 +304,9 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 or result.get("continuing_spend_from_this_run") is not False
                 or teardown.get("schema_version") != "vast_teardown_manifest.v1"
                 or teardown.get("status") not in {"not_required_provider_adapter_never_invoked",
-                                                  "not_required_prelaunch_inventory_guard_blocked"}
+                                                  "not_required_prelaunch_inventory_guard_blocked",
+                                                  # Bundle preflight refused before any offer search.
+                                                  "not_required_blueprint_bundle_preflight_blocked"}
                 or teardown.get("vast_instance_ids") != []
                 or teardown.get("continuing_spend_from_this_run") is not False):
             return hold
@@ -313,20 +343,85 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
         return hold
 
 
+def _contained_before_run(*, run_root: Path, launch_id: str) -> dict[str, Any] | None:
+    """The orphan receipt of a launch the reconciler closed before any run existed, else None.
+
+    The reconciler writes ``orphan_recovery_receipt.json`` only after fresh
+    provider-zero evidence, and moves the request to ``blocked/``. It also
+    writes one for a run that started and then went silent, so the receipt
+    alone proves nothing: the run directory must hold only the reconciler's own
+    records. The dispatcher creates that directory before any allocator call
+    (``create_launch_output``, then ``launch_started.json``).
+    """
+    from .task_evaluation_launch_reconciler import _dispatcher_run_evidence
+
+    path = run_root / "orphan_recovery_receipt.json"
+    if _dispatcher_run_evidence(run_root) or not _orphan_receipt_valid(path, launch_id):
+        return None
+    return _file(path)
+
+
+def _orphan_receipt_valid(path: Path, launch_id: str) -> bool:
+    """A sealed provider-zero orphan receipt for this launch that invoked nothing itself."""
+    from .task_evaluation_launch_reconciler import ORPHAN_RECOVERY_SCHEMA_VERSION
+
+    if path.is_symlink() or not path.is_file():
+        return False
+    try:
+        receipt = _read(path)
+    except (OSError, ValueError):
+        return False
+    return (receipt.get("schema_version") == ORPHAN_RECOVERY_SCHEMA_VERSION
+            and receipt.get("recovery_digest") == canonical_digest(receipt, digest_field="recovery_digest")
+            and receipt.get("launch_id") == launch_id
+            and receipt.get("status") == "provider_zero_confirmed"
+            and receipt.get("provider_zero_confirmed") is True
+            and receipt.get("allocator_invoked") is False
+            and receipt.get("automatic_retry_performed") is False
+            and receipt.get("blockers") == [])
+
+
+def _stopped_before_allocator(*, run_root: Path, launch_id: str, launch_execution_root: Path) -> dict[str, Any] | None:
+    """Provider-zero closure of a run that never consumed the one-use authority its live allocator needs."""
+    from .task_evaluation_launch_preallocation import preallocation_stop_evidence
+
+    path = run_root / "orphan_recovery_receipt.json"
+    if not _orphan_receipt_valid(path, launch_id):
+        return None
+    evidence = preallocation_stop_evidence(run_root=run_root, launch_id=launch_id,
+                                           state_root=launch_execution_root)
+    if evidence is None:
+        return None
+    return {"orphan_recovery_receipt": _file(path), "preallocation_evidence": evidence}
+
+
 def _launch_state(*, launch_id: str, launch_execution_root: Path, launch_queue_root: Path) -> dict[str, Any] | None:
     """Terminal evidence for a dependent row, or None while a launch may still spend."""
-    receipt_path = launch_execution_root / launch_id / "launch_receipt.json"
+    run_root = launch_execution_root / launch_id
+    receipt_path = run_root / "launch_receipt.json"
     if receipt_path.is_file():
         launch = _read(receipt_path)
         if launch.get("launch_id") != launch_id or launch.get("status") not in TERMINAL_LAUNCH_STATUSES:
             return None
         return {"launch_id": launch_id, "launch_receipt": _file(receipt_path), "launch_never_queued": False,
                 "launch_status": str(launch.get("status"))}
-    if (launch_execution_root / launch_id).exists():
-        return None  # A launch directory without a terminal receipt is still running or unreconciled.
+    contained = stopped = None
+    if run_root.exists():
+        contained = _contained_before_run(run_root=run_root, launch_id=launch_id)
+        if contained is None:
+            stopped = _stopped_before_allocator(run_root=run_root, launch_id=launch_id,
+                                                launch_execution_root=launch_execution_root)
+        if contained is None and stopped is None:
+            return None  # A launch directory without a terminal receipt is still running or unreconciled.
     for state in ("pending", "processing"):
         if any(path.name.startswith(launch_id) for path in (launch_queue_root / state).glob("*.json")):
             return None
+    if contained is not None:
+        return {"launch_id": launch_id, "launch_receipt": None, "launch_never_queued": False,
+                "launch_contained_before_run": True, "orphan_recovery_receipt": contained}
+    if stopped is not None:
+        return {"launch_id": launch_id, "launch_receipt": None, "launch_never_queued": False,
+                "launch_stopped_before_allocator": True, **stopped}
     return {"launch_id": launch_id, "launch_receipt": None, "launch_never_queued": True}
 
 

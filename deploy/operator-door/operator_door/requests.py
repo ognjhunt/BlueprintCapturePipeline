@@ -27,6 +27,10 @@ as the service user: promotion, the gated cleanup, the absence proof and, with
 one owner-approved time-only extension of a sealed scene intent (at most 7 days)
 through the active release, then tells the WebApp. Spend caps, attempts,
 providers, task and rights are not request fields and cannot change.
+``extend-scene-execution-budget`` (``operate``) previews, or with ``apply`` and the
+preview's digest records, one owner-approved execution budget grant (the spend
+and attempt ceilings) for a sealed scene intent through the active release. It
+names the approving owner and the evidence; it refunds and settles nothing.
 """
 
 from __future__ import annotations
@@ -83,6 +87,8 @@ _SCOPES = {
     "install-native-g1-policies": "operate",
     # One owner-approved, time-only extension of a sealed scene intent's window.
     "extend-scene-execution-window": "operate",
+    # One owner-approved spend/attempt ceiling grant for a sealed scene intent.
+    "extend-scene-execution-budget": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -91,12 +97,18 @@ if DISPATCHER_HOLD_ONLY:
     # approved receipt-bound single-handoff dispatch and bounded existing Atlas
     # job status/requeue; the legacy inspect mode stays refused. The owner also
     # approved (2026-10-31) the time-only scene intent window extension: it
-    # writes one sealed record, starts no compute and moves no money.
+    # writes one sealed record, starts no compute and moves no money. The
+    # owner approved (2026-11-01) the scene budget grant the same way: a
+    # preview, then an apply bound to that preview's digest, appending one
+    # owner-approved ceiling record; it starts no compute itself.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
-                           "extend-scene-execution-window"}}
+                           "extend-scene-execution-window", "extend-scene-execution-budget"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
+# A short logged reason to deploy past a live activation; the same pattern as
+# activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
+ACTIVATION_HOLD_OVERRIDE = re.compile(r"[a-z0-9][a-z0-9_:.-]{0,63}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]")
@@ -114,6 +126,9 @@ _CANARY_RUN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _INTENT_ID = re.compile(r"scene-[0-9a-f]{64}\Z")
 _UTC_SECOND = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 SCENE_WINDOW_ACK = "extend-scene-execution-window"
+SCENE_BUDGET_ACK = "extend-scene-execution-budget"
+# An owner's user or organization id, as the sealed intent records it.
+_OWNER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}\Z")
 # Timers that protect money or cleanup are never paused through the door.
 _SAFETY_CRITICAL = re.compile(
     r"spend-guard|watchdog|teardown|reaper|provider-zero|"
@@ -264,13 +279,20 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("owner_consent_options_invalid")
         return {"kind": kind, "consent_id": consent_id, "expected_sha256": digest, "expected_size_bytes": size}
     if kind == "deploy":
-        _only(body, ("kind", "commit", "wait_for_idle",
+        _only(body, ("kind", "commit", "wait_for_idle", "activation_hold_override",
                      "release_provenance_json", "release_provenance_sha256"))
         wait = body.get("wait_for_idle", True)
         if not isinstance(wait, bool):
             raise RequestRefused("wait_for_idle_invalid")
         commit = _commit(body)
+        # Deploy now even while a scene-configuration activation is live, saying why
+        # (for example fixes_live_activation, money, privacy, rights) so the log shows it.
+        override = body.get("activation_hold_override")
+        if override is not None and (not isinstance(override, str)
+                                     or ACTIVATION_HOLD_OVERRIDE.fullmatch(override) is None):
+            raise RequestRefused("activation_hold_override_invalid")
         return {"kind": kind, "commit": commit, "wait_for_idle": wait,
+                **({"activation_hold_override": override} if override else {}),
                 **_release_provenance(body, commit)}
     if kind == "unit":
         if body.get("action") == "repair-notifier-binding":
@@ -443,6 +465,30 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("scene_window_authorization_reference_invalid")
         if body["ack"] != SCENE_WINDOW_ACK:
             raise RequestRefused("scene_window_unacknowledged")
+        return {key: body[key] for key in sorted(fields)}
+    if kind == "extend-scene-execution-budget":
+        fields = {"kind", "intent_id", "owner_user_id", "owner_organization_id", "approved_by",
+                  "approval_evidence", "max_total_spend_usd", "max_paid_attempts", "apply", "apply_ack", "ack"}
+        spend, count = body.get("max_total_spend_usd"), body.get("max_paid_attempts")
+        if (set(body) != fields or not isinstance(body.get("intent_id"), str)
+                or not _INTENT_ID.fullmatch(body["intent_id"])
+                or not all(isinstance(body.get(key), str) and _OWNER_ID.fullmatch(body[key])
+                           for key in ("owner_user_id", "owner_organization_id", "approved_by"))
+                or type(body.get("apply")) is not bool):
+            raise RequestRefused("scene_budget_fields_invalid")
+        if (not isinstance(spend, (int, float)) or isinstance(spend, bool) or spend != spend
+                or not 0 < spend <= 1000 or type(count) is not int or not 1 <= count <= 1000):
+            raise RequestRefused("scene_budget_limits_invalid")
+        evidence = body.get("approval_evidence")
+        if (not isinstance(evidence, str) or evidence != evidence.strip()
+                or not 1 <= len(evidence) <= 500 or not evidence.isprintable()):
+            raise RequestRefused("scene_budget_approval_evidence_invalid")
+        if body["apply"] != bool(isinstance(body.get("apply_ack"), str) and _LEASE_DIGEST.fullmatch(body["apply_ack"])):
+            raise RequestRefused("scene_budget_apply_ack_invalid")
+        if not body["apply"] and body.get("apply_ack") != "":
+            raise RequestRefused("scene_budget_apply_ack_invalid")
+        if body["ack"] != SCENE_BUDGET_ACK:
+            raise RequestRefused("scene_budget_unacknowledged")
         return {key: body[key] for key in sorted(fields)}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))

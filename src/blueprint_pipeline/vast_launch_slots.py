@@ -33,20 +33,49 @@ def _string(value: Any) -> str:
 #: after every run, which is where the reconciler already looks for it.
 DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES = 3
 MAX_CONCURRENT_PAID_LAUNCHES_ENV = "BLUEPRINT_VAST_MAX_CONCURRENT_PAID_LAUNCHES"
+#: The fleet budget's live-instance ceiling (gpu_spend_guard
+#: ``--max-live-instances``). Slots above the default are only honoured inside it.
+FLEET_MAX_LIVE_INSTANCES_ENV = "BLUEPRINT_GPU_FLEET_MAX_LIVE_INSTANCES"
+#: Compiled upper bound no environment can exceed, matching the production
+#: fleet budget of 10 live instances.
+HARD_MAX_CONCURRENT_PAID_LAUNCHES = 10
+
+
+def _positive_int(raw: str) -> int | None:
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 1 else None
+
+
+def _slot_ceiling() -> int:
+    """How far the environment may raise the slot count.
+
+    Raising past the compiled default needs the fleet budget's live-instance
+    ceiling in the same environment: concurrent launches are then bounded by
+    the same number the spend guard enforces, never by the slot setting alone.
+    Without it (or with an unreadable value) the historical ceiling stands.
+    """
+
+    fleet = _positive_int(_string(os.environ.get(FLEET_MAX_LIVE_INSTANCES_ENV)))
+    if fleet is None:
+        return DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES
+    return max(1, min(fleet, HARD_MAX_CONCURRENT_PAID_LAUNCHES))
 
 
 def _max_concurrent_paid_launches() -> int:
     raw = _string(os.environ.get(MAX_CONCURRENT_PAID_LAUNCHES_ENV))
     if not raw:
-        return DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES
-    # Never widen past the compiled policy from an environment variable, and
-    # never fall below one: an env typo must not silently authorize more
-    # concurrent spend, nor deadlock every lane.
-    return max(1, min(value, DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES))
+        return min(DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES, _slot_ceiling())
+    value = _positive_int(raw)
+    if value is None:
+        # An env typo must not silently authorize more concurrent spend, nor
+        # deadlock every lane.
+        return min(DEFAULT_MAX_CONCURRENT_PAID_LAUNCHES, _slot_ceiling())
+    # Never widen past the fleet budget's live-instance ceiling (or the
+    # compiled hard ceiling), and never fall below one.
+    return max(1, min(value, _slot_ceiling()))
 
 
 def vast_launch_lock_paths(lock_path: Path | None = None) -> list[Path]:

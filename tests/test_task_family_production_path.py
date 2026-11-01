@@ -262,6 +262,10 @@ def test_actual_family_capture_to_native_screening_publication(
     source_inputs = json.loads(Path(profile["family_scene_inputs_path"]).read_text())
     assert source_inputs["source"]["scene_revision_digest"] == status["result_reference"]["digest"]
     queue = tmp_path / "screening"
+    # The job's one dollar ceiling (WebApp #1168) leaves more than the site allowance.
+    from blueprint_pipeline import beta_policy_screening_job_ceiling as job_ceiling
+    from tests.test_beta_policy_screening_job_ceiling import ceiling_summary
+    monkeypatch.setattr(job_ceiling, "read_job_ceiling_summary", lambda **_: ceiling_summary(40))
     adopted = enqueue_registered_family_scenes(queue_root=queue)
     assert len(adopted["sources"]) == 1 and adopted["sources"][0]["status"] != "blocked", adopted
     plans = list((queue / "plans").glob("*.json"))
