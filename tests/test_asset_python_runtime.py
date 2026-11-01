@@ -8,20 +8,44 @@ from blueprint_pipeline import asset_python_runtime as runtime
 from blueprint_pipeline import task_object_artisan_hooks as hooks
 
 
-def test_interpreter_prefix_and_its_libpython_directory_are_admitted(tmp_path, monkeypatch):
+def test_interpreter_prefix_and_the_launcher_library_path_are_admitted(tmp_path, monkeypatch):
+    """capture-447ae4f4: libpython was on the launcher path but not under the prefix.
+
+    Keeping only entries under ``sys.base_prefix`` left the sandbox with no
+    loader path, and the probe failed with ``libpython3.12.so.1.0: cannot open
+    shared object file``. The whole launcher path goes back, as for Astra.
+    """
     base = tmp_path / "isaac-sim/kit/python"
-    (base / "lib").mkdir(parents=True)
+    base.mkdir(parents=True)
     version = f"{sys.version_info.major}.{sys.version_info.minor}"
-    (base / "lib" / f"libpython{version}.so.1.0").write_text("fixture")
-    elsewhere = tmp_path / "isaac-sim/kit/plugins"
-    elsewhere.mkdir(parents=True)
+    libs = tmp_path / "isaac-sim/kit"
+    (libs / f"libpython{version}.so.1.0").write_text("fixture")
+    plugins = tmp_path / "isaac-sim/kit/plugins"
+    plugins.mkdir(parents=True)
     monkeypatch.setattr(sys, "base_prefix", str(base))
-    monkeypatch.setenv("LD_LIBRARY_PATH", f"{base / 'lib'}:{elsewhere}:relative/path")
+    monkeypatch.setattr(runtime, "_loaded_libpython_directories", lambda *_args, **_kwargs: [])
+    monkeypatch.setenv("LD_LIBRARY_PATH", f"{plugins}:relative/path:{tmp_path / 'missing'}")
     value = runtime.sandboxed_interpreter()
-    assert value["roots"] == [base.resolve(), (base / "lib").resolve()]
-    # Only the interpreter's own libraries; a wider launcher path is not admitted.
-    assert value["library_environment"] == {"LD_LIBRARY_PATH": str((base / "lib").resolve())}
+    # base.parent holds libpython here; the launcher's plugin directory comes back too.
+    assert value["roots"] == [base.resolve(), plugins.resolve(), libs.resolve()]
+    assert value["library_environment"] == {"LD_LIBRARY_PATH": f"{plugins.resolve()}:{libs.resolve()}"}
     assert value["executable"] == Path(sys.executable).resolve()
+
+
+def test_the_libpython_this_process_loaded_is_found_from_its_memory_map(tmp_path, monkeypatch):
+    version = f"{sys.version_info.major}.{sys.version_info.minor}"
+    libs = tmp_path / "opt/kit/libs"
+    libs.mkdir(parents=True)
+    libpython = libs / f"libpython{version}.so.1.0"
+    libpython.write_text("fixture")
+    maps = tmp_path / "maps"
+    maps.write_text(
+        "7f00-7f01 r--p 00000000 08:01 1 /usr/lib/x86_64-linux-gnu/libc.so.6\n"
+        f"7f02-7f03 r-xp 00001000 08:01 2 {libpython}\n"
+        "7f04-7f05 rw-p 00000000 00:00 0 \n"
+        "7f06-7f07 r--p 00000000 08:01 3 [vdso]\n")
+    assert runtime._loaded_libpython_directories(version, maps) == [libs.resolve()]
+    assert runtime._loaded_libpython_directories(version, tmp_path / "absent") == []
 
 
 def test_a_statically_linked_interpreter_needs_no_loader_path(tmp_path, monkeypatch):
