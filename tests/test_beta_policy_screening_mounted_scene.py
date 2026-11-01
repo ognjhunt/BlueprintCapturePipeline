@@ -77,15 +77,20 @@ def test_installed_articulated_scene_plans_and_passes_real_sealed_bundle_preflig
     by_id = {row["candidate_id"]: row for row in plan["candidates"]}
     selected = [row for row in plan["candidates"] if row["status"] == "selected"]
     assert {row["candidate_id"] for row in selected} == {
-        "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid", "groot_n17_droid"}
+        "cosmos3_edge_policy_droid", "groot_n17_droid", "pi05_droid"}
+    # No GPU the screening lane may rent meets Cosmos Nano's 80 GB floor, so it is
+    # listed infeasible with that reason and never funded; its slot goes on in plan order.
+    assert by_id["cosmos3_nano_policy_droid"]["status"] == "infeasible"
+    assert by_id["cosmos3_nano_policy_droid"]["blockers"] == ["screening_gpu_memory_floor_unrentable"]
+    assert "cost_quote" not in by_id["cosmos3_nano_policy_droid"]
     assert plan["maximum_planned_cost_usd"] == "12.00" and plan["budget_usd"] == "15.00"
     assert all(row["max_cost_usd"] == row["cost_quote"]["maximum_cost_usd"] == "4.00" for row in selected)
     # The fourth compatible $4 candidate exceeds the remaining $3. Preserve
     # that individual reason and preflight a candidate the planner selected.
     # It is waitlisted, frozen with its quote, for money a selected candidate releases.
-    assert by_id["pi05_droid"]["status"] == "waitlisted"
-    assert by_id["pi05_droid"]["blockers"] == ["site_screening_budget_insufficient"]
-    assert by_id["pi05_droid"]["cost_quote"]["maximum_cost_usd"] == "4.00"
+    assert by_id["pi0_droid_jointpos_100k_polaris"]["status"] == "waitlisted"
+    assert by_id["pi0_droid_jointpos_100k_polaris"]["blockers"] == ["site_screening_budget_insufficient"]
+    assert by_id["pi0_droid_jointpos_100k_polaris"]["cost_quote"]["maximum_cost_usd"] == "4.00"
     assert by_id["molmoact2_droid"]["status"] == "unavailable"
     assert by_id["molmoact2_droid"]["blockers"] == ["task_kind_not_supported_by_candidate"]
     assert all(row["blockers"] for row in plan["candidates"] if row["status"] != "selected")
