@@ -97,11 +97,14 @@ if DISPATCHER_HOLD_ONLY:
     # approved receipt-bound single-handoff dispatch and bounded existing Atlas
     # job status/requeue; the legacy inspect mode stays refused. The owner also
     # approved (2026-10-31) the time-only scene intent window extension: it
-    # writes one sealed record, starts no compute and moves no money.
+    # writes one sealed record, starts no compute and moves no money. The
+    # owner approved (2026-11-01) the scene budget grant the same way: a
+    # preview, then an apply bound to that preview's digest, appending one
+    # owner-approved ceiling record; it starts no compute itself.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
-                           "extend-scene-execution-window"}}
+                           "extend-scene-execution-window", "extend-scene-execution-budget"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
