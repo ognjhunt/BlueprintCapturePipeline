@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import subprocess
 import time
 from typing import Callable
 
@@ -325,7 +326,9 @@ def _website_configuration_launch(*, observed, config, release, launcher):
             preparation_result_path=queue / "results" / observed["result_filename"],
             preparation_queue_root=queue, intent_root=config["activation_intent_root"],
             running_commit=release["source_commit"])
-    except (RuntimeError, ValueError, OSError, KeyError, TypeError) as exc:
+    except (RuntimeError, ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        # SubprocessError covers the WebApp submitter's TimeoutExpired: one slow
+        # submission blocks this row, never the other intents in the pass.
         code = str(exc)[:500]
         if not code or not code[0].islower():
             code = "scene_configuration_launch_step_failed:" + type(exc).__name__

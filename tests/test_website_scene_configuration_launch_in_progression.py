@@ -12,6 +12,7 @@ standing-authorization and spend gate stays inside the automation.
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
@@ -217,6 +218,13 @@ def test_a_failing_launch_step_is_reported_and_never_stops_the_tick(
         observed={"result_filename": result_path.name}, config=tick.config,
         release={"source_commit": COMMIT}, launcher=unavailable)
     assert row == {"status": "blocked", "blockers": ["scene_configuration_launch_step_failed:OSError"]}
+
+    def slow_submitter(**_kwargs):
+        raise subprocess.TimeoutExpired(cmd=["npx", "tsx", "submit"], timeout=120)
+    row = progression._website_configuration_launch(
+        observed={"result_filename": result_path.name}, config=tick.config,
+        release={"source_commit": COMMIT}, launcher=slow_submitter)
+    assert row == {"status": "blocked", "blockers": ["scene_configuration_launch_step_failed:TimeoutExpired"]}
 
 
 def _website_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, queue: Path) -> dict:
