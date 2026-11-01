@@ -2448,6 +2448,23 @@ def _validate_policy_canary_provider_manifest(
     return validate_policy_canary_provider_manifest(payload)
 
 
+_TOOLCHAIN_COMPONENTS_PREFIX = "provider_runtime/toolchain/components/"
+
+
+def _vendored_toolchain_runtime_member(member: str) -> bool:
+    """A third-party file inside a toolchain component's vendored runtime tree.
+
+    Those bytes (Blender's USD ``plugInfo.json`` files carry ``#`` comments,
+    site-packages ship fixtures) are not Blueprint JSON: the component's own
+    inventory pins every byte, and the provider runtime verifies it there. The
+    component's manifests at ``package/`` itself are still parsed.
+    """
+    if not member.startswith(_TOOLCHAIN_COMPONENTS_PREFIX):
+        return False
+    parts = member[len(_TOOLCHAIN_COMPONENTS_PREFIX):].split("/")
+    return len(parts) > 4 and parts[1] == "package" and parts[2] == "runtime"
+
+
 def _blueprint_bundle_preflight(
     *,
     job_dir: Path,
@@ -2949,7 +2966,7 @@ def _blueprint_bundle_preflight(
                                 blockers.append("articulated_native_bundle_asset_format_ambiguous")
                     zip_testzip_result = archive.testzip()
                     for member in zip_entries:
-                        if member.endswith(".json"):
+                        if member.endswith(".json") and not _vendored_toolchain_runtime_member(member):
                             try:
                                 json.loads(archive.read(member).decode("utf-8", errors="replace"))
                             except Exception as exc:
