@@ -790,7 +790,11 @@ def alert_due(previous: Mapping[str, Any] | None, report: Mapping[str, Any], *, 
     level = report.get("level")
     has_page = any(row.get("severity") == "page" for row in report.get("alerts") or []
                    if isinstance(row, Mapping))
-    if level == "ok" and not has_page:
+    # A stall check that cannot look is delivered (once, as a new alert below)
+    # even on a healthy host; otherwise the alarm could be silently off.
+    stall_blind = any(row.get("code") == stall_alarm.INCOMPLETE_CODE for row in report.get("alerts") or []
+                      if isinstance(row, Mapping))
+    if level == "ok" and not has_page and not stall_blind:
         return False
     if previous is None or previous.get("level") != level:
         return True
@@ -1026,7 +1030,7 @@ def run_controller(
     release_retirement_summary_path: Path = DEFAULT_RELEASE_RETIREMENT_SUMMARY,
     break_glass_notes_root: Path = DEFAULT_BREAK_GLASS_NOTES_ROOT,
     storage_gc_summary_path: Path = DEFAULT_STORAGE_GC_SUMMARY,
-    stall_check: Callable[[float], Mapping[str, Any]] | None = None,
+    stall_check: Callable[[float, Mapping[str, Any] | None], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One tick. By default, survey when stale or forced. Pass ``survey=None``
     only to reuse an existing report without scanning. ``stall_check`` (the
@@ -1116,7 +1120,8 @@ def run_controller(
             report["level"] = "warning"
     if stall_check is not None:
         try:
-            stall = dict(stall_check(observed))
+            prior_stall = (previous or {}).get("stall")
+            stall = dict(stall_check(observed, prior_stall if isinstance(prior_stall, Mapping) else None))
         except Exception:  # noqa: BLE001 - a stall check must never stop measurement
             stall = {"status": "failed", "alerts": [{"code": stall_alarm.INCOMPLETE_CODE,
                                                      "reason": "stall_check_failed"}]}
@@ -1242,7 +1247,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         survey_interval_seconds=_env_int(SURVEY_INTERVAL_ENV, DEFAULT_SURVEY_INTERVAL_SECONDS),
         force_survey=args.survey,
         stall_check=None if stall_config is None else (
-            lambda now: stall_alarm.observe_stalls(stall_config, now=now)),
+            lambda now, prior: stall_alarm.observe_stalls(stall_config, now=now, previous=prior)),
     )
     if args.print_report:
         print(json.dumps(report, indent=2, sort_keys=True))

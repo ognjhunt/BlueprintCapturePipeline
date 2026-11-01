@@ -423,7 +423,7 @@ def _tick(tmp_path: Path, now: float, alerts: list[dict], posted: list, **kwargs
         release_retirement_summary_path=tmp_path / "absent-retirement",
         break_glass_notes_root=tmp_path / "absent-notes",
         storage_gc_summary_path=tmp_path / "absent-gc",
-        stall_check=lambda observed: {"schema_version": stall.SCHEMA_VERSION, "observed_at_epoch": observed,
+        stall_check=lambda observed, _prior: {"schema_version": stall.SCHEMA_VERSION, "observed_at_epoch": observed,
                                       "checks": {"scene_progression": {"status": "observed"}},
                                       "alerts": [dict(row) for row in alerts]},
         **kwargs,
@@ -480,7 +480,7 @@ def test_the_webhook_payload_leads_with_the_stall(monkeypatch) -> None:
 
 
 def test_a_failing_stall_check_never_stops_the_capacity_tick(tmp_path: Path) -> None:
-    def broken(_observed):
+    def broken(_observed, _prior):
         raise RuntimeError("boom")
 
     report = cap.run_controller(
@@ -504,3 +504,72 @@ def test_the_door_readable_summary_carries_the_stall_and_passes_the_secret_scan(
     assert summary["stall"]["checks"]["scene_progression"]["status"] == "observed"
     raw = (tmp_path / "capacity" / "summary.json").read_bytes()
     assert scan_bytes(raw) is None and b"scene_progression_stalled" in raw
+
+
+def test_a_churning_stall_reaches_its_threshold_across_ticks(tmp_path: Path) -> None:
+    """Codex P1: minute-spaced state-only events cap one walk at ~64 min of history."""
+
+    start = NOW - 6 * 3600
+    code = ["scene_whole_chain_capacity_insufficient"]
+
+    def chain(until: float) -> list:
+        return [(start + index * MINUTE, "blocked", "preparation", code)
+                for index in range(int((until - start) // MINUTE))]
+
+    # The intent's files as an early tick saw them, and as a later tick sees them.
+    first_tick = start + 100 * MINUTE
+    _intent(tmp_path / "early" / "intents", chain(first_tick), state_churn=True)
+    _intent(tmp_path / "late" / "intents", chain(NOW), state_churn=True)
+    memory: dict = {}
+    _section, alerts = stall.check_scene_progressions(_config(tmp_path / "early"), now=first_tick,
+                                                      budget=_budget(), memory_out=memory)
+    assert not [a for a in alerts if a["code"] == "scene_progression_stalled"]
+    assert memory[INTENT]["exact"] is False
+    remembered_since = memory[INTENT]["since"]
+    # Without the memory, the later walk alone sees about 64 minutes and never pages.
+    _section, alone = stall.check_scene_progressions(_config(tmp_path / "late"), now=NOW, budget=_budget())
+    assert not [a for a in alone if a["code"] == "scene_progression_stalled"]
+    # With it, the earlier start carries over and the stall pages.
+    later: dict = {}
+    _section, alerts = stall.check_scene_progressions(_config(tmp_path / "late"), now=NOW, budget=_budget(),
+                                                      remembered=memory, memory_out=later)
+    [page] = [a for a in alerts if a["code"] == "scene_progression_stalled"]
+    assert page["age_seconds"] == round(NOW - remembered_since) and page["age_seconds"] > 90 * 60
+    assert page["age_is_lower_bound"] is True and later[INTENT]["since"] == remembered_since
+
+
+def test_a_changed_signature_does_not_inherit_an_older_start(tmp_path: Path) -> None:
+    events = [(NOW - 3 * 3600, "blocked", "preparation", ["preparation_failed"]),
+              (NOW - 10 * MINUTE, "blocked", "preparation", ["other_blocker"])]
+    _intent(tmp_path / "intents", events)
+    stale = {INTENT: {"signature": ["blocked", "preparation", ["other_blocker"]], "since": NOW - 5 * 3600,
+                      "exact": True}}
+    memory: dict = {}
+    _section, alerts = stall.check_scene_progressions(_config(tmp_path), now=NOW, budget=_budget(),
+                                                      remembered=stale, memory_out=memory)
+    # The walk found where this signature began, so the remembered start is ignored.
+    assert not [a for a in alerts if a["code"] == "scene_progression_stalled"]
+    assert memory[INTENT] == {"signature": ["blocked", "preparation", ["other_blocker"]],
+                              "since": NOW - 10 * MINUTE, "exact": True}
+
+
+def test_observe_stalls_carries_its_memory_between_ticks(tmp_path: Path) -> None:
+    events = [(NOW - 2 * 3600, "blocked", "preparation", ["preparation_failed"])]
+    _intent(tmp_path / "intents", events)
+    first = stall.observe_stalls(_config(tmp_path), now=NOW, unit_reader=lambda _units: {})
+    assert first["memory"]["scene_progression"][INTENT]["since"] == NOW - 2 * 3600
+    second = stall.observe_stalls(_config(tmp_path), now=NOW + 600, previous=first, unit_reader=lambda _units: {})
+    assert second["memory"]["scene_progression"][INTENT]["since"] == NOW - 2 * 3600
+
+
+def test_a_blind_stall_check_is_delivered_on_a_healthy_host(tmp_path: Path) -> None:
+    """Codex P2: an incomplete check on an ``ok`` host used to be dropped by ``alert_due``."""
+
+    posted: list = []
+    blind = [{"code": stall.INCOMPLETE_CODE, "reason": "scene_intent_root_unreadable"}]
+    report = _tick(tmp_path, NOW, blind, posted)
+    assert report["level"] == "ok" and report["alert_posted"] is True and len(posted) == 1
+    # Persisting, it is not re-sent every tick.
+    assert _tick(tmp_path, NOW + 600, blind, posted)["alert_posted"] is False
+    # A healthy tick with nothing to say still posts nothing.
+    assert _tick(tmp_path, NOW + 1200, [], posted)["alert_posted"] is False

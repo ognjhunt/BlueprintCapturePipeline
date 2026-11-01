@@ -326,7 +326,31 @@ def _unchanged_since(directory: Path, progression: Mapping[str, Any], *, budget:
         since = observed
 
 
-def check_scene_progressions(config: StallConfig, *, now: float, budget: _Budget) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _remembered_since(prior: Any, signature: list[Any], since: float, exact: bool) -> tuple[float, bool]:
+    """Carry an earlier start of this same signature across ticks.
+
+    The backwards event walk is bounded, so a row whose state churns every
+    minute (a capacity wait rewrites ``next_check_epoch`` each tick) shows only
+    about 64 minutes of history. A walk that found where the signature began is
+    exact and wins; a lower bound is replaced by an earlier remembered start of
+    the same signature, so a long stall still reaches its threshold.
+    """
+
+    if exact or not isinstance(prior, Mapping) or prior.get("signature") != signature:
+        return since, exact
+    remembered = _number(prior.get("since"))
+    if remembered is None or remembered >= since:
+        return since, exact
+    return remembered, prior.get("exact") is True
+
+
+def check_scene_progressions(
+    config: StallConfig, *, now: float, budget: _Budget,
+    remembered: Mapping[str, Any] | None = None, memory_out: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """``remembered`` is the previous tick's ``memory_out``; watched rows are written to ``memory_out``."""
+
+    remembered = remembered if isinstance(remembered, Mapping) else {}
     root = config.scene_intent_root
     section: dict[str, Any] = {"status": "not_configured"}
     if root is None:
@@ -401,6 +425,10 @@ def check_scene_progressions(config: StallConfig, *, now: float, budget: _Budget
             since, exact = accepted, True
         else:
             since, exact = _unchanged_since(directory, progression, budget=budget)
+            signature = [status, phase, list(blockers)]
+            since, exact = _remembered_since(remembered.get(name), signature, since, exact)
+            if memory_out is not None:
+                memory_out[name] = {"signature": signature, "since": since, "exact": exact}
         threshold = (config.handoff_seconds if not blockers and status in HANDOFF_STATUSES
                      else config.progression_seconds)
         age = now - since
@@ -621,17 +649,26 @@ def observe_stalls(
     config: StallConfig,
     *,
     now: float | None = None,
+    previous: Mapping[str, Any] | None = None,
     unit_reader: Callable[[Sequence[str]], Mapping[str, Mapping[str, str]]] = read_unit_states,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
-    """All three checks; ``alerts`` are capacity-report alert rows (severity added there)."""
+    """All three checks; ``alerts`` are capacity-report alert rows (severity added there).
+
+    ``previous`` is the last tick's result; its ``memory`` keeps each watched
+    row's unchanged-since time across the bounded event walk.
+    """
 
     observed = time.time() if now is None else float(now)
+    prior_memory = (previous or {}).get("memory") if isinstance(previous, Mapping) else None
+    remembered = prior_memory.get("scene_progression") if isinstance(prior_memory, Mapping) else None
+    progression_memory: dict[str, Any] = {}
     budget = _Budget(deadline=monotonic() + DEADLINE_SECONDS, events=MAX_EVENT_READS, clock=monotonic)
     alerts: list[dict[str, Any]] = [_incomplete(error) for error in config.config_errors]
     checks: dict[str, Any] = {}
     for name, run in (
-        ("scene_progression", lambda: check_scene_progressions(config, now=observed, budget=budget)),
+        ("scene_progression", lambda: check_scene_progressions(
+            config, now=observed, budget=budget, remembered=remembered, memory_out=progression_memory)),
         ("launch_leases", lambda: check_launch_leases(config, now=observed, budget=budget)),
         ("triggers", lambda: check_triggers(config, unit_reader=unit_reader, monotonic=monotonic)),
     ):
@@ -652,6 +689,7 @@ def observe_stalls(
             "trigger": config.trigger_seconds,
         },
         "checks": checks,
+        "memory": {"scene_progression": progression_memory},
         "alerts": alerts,
     }
 
