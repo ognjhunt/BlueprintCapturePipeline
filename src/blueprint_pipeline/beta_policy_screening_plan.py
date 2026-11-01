@@ -476,6 +476,11 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                   "execution_spec": deepcopy(binding["execution_spec"]), "cost_quote": quote,
                   "max_cost_usd": quote["maximum_cost_usd"], "episode_count": episodes_per_candidate,
                   "scenario_cells": g1_cells(cells) if spec["backend"] == G1_BACKEND else deepcopy(cells)}
+        if maximum > budget:
+            # More than this plan could ever fund, even with nothing else selected.
+            row.update(status="deferred", blockers=[WAITLIST_BLOCKER])
+            candidates.append(row)
+            continue
         if maximum > remaining:
             # Runnable but unfunded for now. It is frozen like a selected row,
             # so the coordinator can fund it from money a selected candidate
