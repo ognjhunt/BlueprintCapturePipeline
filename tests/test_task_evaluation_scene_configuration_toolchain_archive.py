@@ -171,6 +171,50 @@ def test_changed_toolchain_content_builds_a_new_archive_and_bounds_the_cache(tmp
     assert keys[-1]["archive_key"].removeprefix("sha256:") in retained
 
 
+def test_a_prepared_archive_survives_eviction_by_concurrent_activations(tmp_path: Path) -> None:
+    """Retention may unlink a prepared entry before its splice; the pinned bytes still ship."""
+    cache = tmp_path / "cache"
+    roots = [_published_toolchain(tmp_path / "plain", A),
+             _published_toolchain(tmp_path / "bytecode", A, bundled_bytecode=True),
+             _published_toolchain(tmp_path / "empty", A, empty_file=True)]
+
+    def prepare(root: Path) -> archive_module.ToolchainArchive:
+        manifest = validate_scene_configuration_toolchain(root=root, expected_source_commit=A)
+        return archive_module.prepare_toolchain_archive(
+            toolchain_root=root, manifest=manifest,
+            compress_type_for=lambda path: zipfile.ZIP_DEFLATED, deflate_level=1,
+            stored_suffixes=(), scratch_root=tmp_path, cache_root=cache)
+
+    first, *others = [prepare(root) for root in roots]
+    assert not first.root.exists()  # evicted by the two later builds
+    with zipfile.ZipFile(tmp_path / "spliced.zip", "w") as output:
+        archive_module.splice_toolchain_archive(output, first)
+    for archive in (first, *others):
+        archive_module.release_toolchain_archive(archive)
+    assert first.handle.closed
+    with zipfile.ZipFile(tmp_path / "spliced.zip") as spliced:
+        assert spliced.testzip() is None
+        assert len(spliced.infolist()) == len(first.index["members"])
+
+
+def test_a_failed_single_use_build_leaves_nothing_behind(tmp_path: Path) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    manifest = validate_scene_configuration_toolchain(root=toolchain, expected_source_commit=A)
+    tampered = json.loads(json.dumps(manifest))
+    tampered["files"][0]["sha256"] = "sha256:" + "0" * 64
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+
+    with pytest.raises(archive_module.TaskEvaluationSceneConfigurationToolchainArchiveError,
+                       match="source_mismatch"):
+        archive_module.prepare_toolchain_archive(
+            toolchain_root=toolchain, manifest=tampered,
+            compress_type_for=lambda path: zipfile.ZIP_DEFLATED, deflate_level=1,
+            stored_suffixes=(), scratch_root=scratch, cache_root=None,
+        )
+    assert list(scratch.iterdir()) == []
+
+
 def test_a_corrupted_cached_archive_is_rebuilt_not_shipped(tmp_path: Path) -> None:
     toolchain = _published_toolchain(tmp_path / "release-a", A)
     cache = tmp_path / "cache"

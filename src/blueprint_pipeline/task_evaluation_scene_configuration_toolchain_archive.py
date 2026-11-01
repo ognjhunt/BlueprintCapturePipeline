@@ -33,7 +33,8 @@ import shutil
 import stat
 import zipfile
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -66,6 +67,9 @@ class ToolchainArchive:
     index: Mapping[str, Any]
     reused: bool
     persistent: bool
+    # The fragment, held open from preparation until release: another
+    # activation's retention can unlink the entry, never these bytes.
+    handle: BinaryIO | None = field(default=None, compare=False, repr=False)
 
     @property
     def fragment(self) -> Path:
@@ -319,6 +323,19 @@ def _load_index(directory: Path, *, key: str, manifest: Mapping[str, Any]) -> di
         return None
 
 
+def _pin(directory: Path, index: Mapping[str, Any]) -> BinaryIO | None:
+    """Open the fragment that matches ``index``; ``None`` when it is gone, writable or resized."""
+
+    try:
+        stream = _open_regular_read_only(directory / FRAGMENT_NAME)
+    except (OSError, TaskEvaluationSceneConfigurationToolchainArchiveError):
+        return None
+    if os.fstat(stream.fileno()).st_size != index["fragment_size_bytes"]:
+        stream.close()
+        return None
+    return stream
+
+
 def prepare_toolchain_archive(
     *,
     toolchain_root: str | Path,
@@ -348,19 +365,32 @@ def prepare_toolchain_archive(
             cache = None
     if cache is None:
         directory = scratch_root / f".toolchain-archive-{secrets.token_hex(8)}"
-        index = _build_entry(
-            toolchain_root=root, manifest=manifest, key=key, directory=directory,
-            compress_type_for=compress_type_for, deflate_level=deflate_level,
-        )
-        return ToolchainArchive(root=directory, index=index, reused=False, persistent=False)
+        try:
+            index = _build_entry(
+                toolchain_root=root, manifest=manifest, key=key, directory=directory,
+                compress_type_for=compress_type_for, deflate_level=deflate_level,
+            )
+            handle = _pin(directory, index)
+            if handle is None:
+                raise TaskEvaluationSceneConfigurationToolchainArchiveError(
+                    "scene_configuration_toolchain_archive_unpinned"
+                )
+        except BaseException:
+            # Nothing returns a handle to release it, so never leave gigabytes behind.
+            _remove_entry(directory)
+            raise
+        return ToolchainArchive(root=directory, index=index, reused=False, persistent=False,
+                                handle=handle)
     entry = cache / key.removeprefix("sha256:")
     index = _load_index(entry, key=key, manifest=manifest)
-    if index is not None:
+    handle = _pin(entry, index) if index is not None else None
+    if handle is not None:
         try:
             os.utime(entry)  # recency for retention
         except OSError:
             pass
-        return ToolchainArchive(root=entry, index=index, reused=True, persistent=True)
+        return ToolchainArchive(root=entry, index=index, reused=True, persistent=True,
+                                handle=handle)
     _remove_entry(entry)
     staging = cache / f".building-{secrets.token_hex(8)}"
     try:
@@ -373,15 +403,22 @@ def prepare_toolchain_archive(
         except OSError:
             # A concurrent activation published the same key first.
             existing = _load_index(entry, key=key, manifest=manifest)
-            if existing is None:
+            handle = _pin(entry, existing) if existing is not None else None
+            if handle is None:
                 raise
             _remove_entry(staging)
-            return ToolchainArchive(root=entry, index=existing, reused=True, persistent=True)
+            return ToolchainArchive(root=entry, index=existing, reused=True, persistent=True,
+                                    handle=handle)
     except BaseException:
         _remove_entry(staging)
         raise
+    handle = _pin(entry, index)
+    if handle is None:
+        raise TaskEvaluationSceneConfigurationToolchainArchiveError(
+            "scene_configuration_toolchain_archive_unpinned"
+        )
     _prune(cache, keep=entry)
-    return ToolchainArchive(root=entry, index=index, reused=False, persistent=True)
+    return ToolchainArchive(root=entry, index=index, reused=False, persistent=True, handle=handle)
 
 
 def _prune(cache: Path, *, keep: Path) -> None:
@@ -403,17 +440,34 @@ def _prune(cache: Path, *, keep: Path) -> None:
             continue
 
 
+def _close(archive: ToolchainArchive) -> None:
+    if archive.handle is not None and not archive.handle.closed:
+        archive.handle.close()
+
+
 def discard_toolchain_archive(archive: ToolchainArchive) -> None:
     """Remove an archive whose bytes failed verification."""
 
+    _close(archive)
     _remove_entry(archive.root)
 
 
 def release_toolchain_archive(archive: ToolchainArchive) -> None:
-    """Remove a single-use archive; persistent cache entries stay."""
+    """Close the pinned fragment; remove a single-use archive. Cache entries stay."""
 
+    _close(archive)
     if not archive.persistent:
         _remove_entry(archive.root)
+
+
+@contextmanager
+def _fragment_stream(toolchain: ToolchainArchive):
+    if toolchain.handle is not None:
+        toolchain.handle.seek(0)
+        yield toolchain.handle
+    else:
+        with toolchain.fragment.open("rb") as stream:
+            yield stream
 
 
 def splice_toolchain_archive(
@@ -435,7 +489,7 @@ def splice_toolchain_archive(
     output.seek(base)
     index = toolchain.index
     digest = hashlib.sha256()
-    with toolchain.fragment.open("rb") as fragment:
+    with _fragment_stream(toolchain) as fragment:
         remaining = int(index["entries_size_bytes"])
         while remaining:
             chunk = fragment.read(min(_CHUNK, remaining))
