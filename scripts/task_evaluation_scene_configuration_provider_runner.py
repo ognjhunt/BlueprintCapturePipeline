@@ -241,6 +241,41 @@ def _configure_production_semantic_reuse(
     return reuse_root
 
 
+def _artisan_stage_scheduled(envelope, configurations, stage_limit) -> bool:
+    """Whether this run (or its ``stage_limit`` prefix) reaches an ARTISAN stage."""
+
+    for stage in envelope.get("recipe", {}).get("stage_sequence", []):
+        if configurations[str(stage["stage_id"])][0].get("authoring_backend") == "artisan_v1":
+            return True
+        if str(stage["stage_id"]) == stage_limit:
+            return False
+    return False
+
+
+def _require_asset_isolation(*, runtime: Path, output: Path) -> None:
+    """Prove the host can isolate generated CAD programs before stage 1.
+
+    ARTISAN runs its candidate programs only under OS isolation (namespaces,
+    else Landlock + seccomp), and refuses at its own stage when the host has
+    neither. Whether a Vast host has them depends on its kernel and container
+    runtime, which offer selection cannot see: two September runs paid for
+    stages 1-2 before failing there. Asking the same question here fails such
+    a host in seconds, and the typed marker lets the parent avoidlist it.
+    """
+
+    from blueprint_pipeline.asset_authoring_sandbox import AssetSandboxError, SandboxedAssetRunner
+
+    probe = output / "asset_isolation_host_preflight"
+    probe.mkdir(mode=0o750, exist_ok=True)
+    try:
+        SandboxedAssetRunner(read_roots=[runtime], write_root=probe).preflight()
+    except AssetSandboxError as exc:
+        if str(exc) == "asset_sandbox_unavailable":
+            print("BLUEPRINT_VAST_PROVIDER_BUNDLE_BLOCKED:asset_sandbox_unavailable", flush=True)
+        raise
+    print("BLUEPRINT_SCENE_CONFIGURATION_ASSET_ISOLATION_PREFLIGHT_PASSED", flush=True)
+
+
 def main() -> int:
     runtime = Path(
         os.environ.get(
@@ -315,6 +350,9 @@ def main() -> int:
             if not os.environ.get("BLUEPRINT_BLENDER_RUNTIME_ROOT", "").strip():
                 os.environ["BLUEPRINT_BLENDER_RUNTIME_ROOT"] = str(output / "astra_runtime_preflight/packaged_blender")
             print("BLUEPRINT_SCENE_CONFIGURATION_ASTRA_RUNTIME_PREFLIGHT_PASSED", flush=True)
+        if _artisan_stage_scheduled(envelope, configurations, stage_limit) and not completed_astra_prefix(
+                stages_root, envelope, configurations, parent_deadline_epoch, stage_limit=stage_limit):
+            _require_asset_isolation(runtime=runtime, output=output)
         chain = _portable_stage_chain(
             execute_scene_configuration_stage_chain(
                 envelope=envelope,

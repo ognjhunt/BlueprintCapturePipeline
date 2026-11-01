@@ -124,6 +124,7 @@ from .vast_independent_watchdog_control import (
     close_independent_vast_watchdog,
     close_independent_vast_watchdog_without_allocation,
 )
+from .provider_machine_avoidlist import scene_configuration_excluded_machine_ids
 from .vast_provider_adapter import run_vast_provider_adapter
 from .vast_evidence_contracts import SCENE_CONFIGURATION_DIAGNOSTIC_RESULT_SCHEMA_VERSION
 from .vast_provider_transfer_upload import EXPECTED_PROVIDER_UPLOAD_BYTES_ENV
@@ -1591,6 +1592,7 @@ def run_scene_configuration_vast(
                 preferred_gpu_keywords=("RTX 4090", "L40S", "RTX A6000"),
                 prefer_isaac_rt=True,
                 allowed_machine_ids=allowed_machine_ids,
+                excluded_machine_ids=scene_configuration_excluded_machine_ids(job_dir=job),
                 allowed_active_instance_ids=(),
                 vast_launch_lock_file=job.parent
                 / "scene_configuration_paid_launch.lock",
