@@ -56,8 +56,9 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
     """Screening this queue holds for the site that the WebApp's figure misses.
 
     The WebApp counts screening from the last publication it accepted, so it
-    cannot see reservations made since, nor any campaign's selected candidates
-    not reserved yet (each campaign up to its own plan budget). A campaign
+    cannot see reservations made since, nor what any campaign can still reserve:
+    its selected candidates and the waitlisted ones released money can fund,
+    each campaign up to its own plan budget. A campaign
     being re-planned (``superseding``) is skipped for those unreserved rows:
     the re-plan closes them in the same write that enqueues the new plan, so
     counting them would charge the job twice. What it committed still counts.
@@ -71,12 +72,14 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
         committed = _amount(_budget(ledger, site_id)["committed_upper_bound_usd"])
         holds = max(Decimal(0), committed - published_usd)
         for campaign_id, state in ledger["campaigns"].items():
-            pending = {key for key, row in state["candidates"].items() if row["status"] == "pending"}
-            if state["site_id"] != site_id or not pending or campaign_id == superseding:
+            # Waitlisted rows count too: money a selected row releases before
+            # spend can fund them, up to what the plan's budget still allows.
+            unfunded = {key for key, row in state["candidates"].items() if row["status"] in {"pending", "waitlisted"}}
+            if state["site_id"] != site_id or not unfunded or campaign_id == superseding:
                 continue
             plan = _plan(root, campaign_id, state["plan_digest"])
             unreserved = sum((money(row["max_cost_usd"]) for row in plan["candidates"]
-                              if row["candidate_id"] in pending), Decimal(0))
+                              if row["candidate_id"] in unfunded), Decimal(0))
             reserved = _amount(_budget(ledger, site_id, campaign_id=campaign_id)["committed_upper_bound_usd"])
             holds += min(unreserved, max(Decimal(0), money(plan["budget_usd"]) - reserved))
     return holds

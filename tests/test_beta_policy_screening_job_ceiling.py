@@ -110,6 +110,20 @@ def test_waitlist_refills_only_within_the_ceiling_sized_budget(tmp_path, monkeyp
         ("beta_screening_site_budget_exhausted",)}
 
 
+def test_a_campaigns_waitlist_counts_against_the_ceiling_for_later_plans(tmp_path):
+    # $3 left: one $2 row is selected, the rest wait within the $3 plan budget.
+    earlier = ceiling_plan(3, count=4, campaign_id="campaign0")
+    assert [row["status"] for row in earlier["candidates"]].count("selected") == 1
+    coordinator.enqueue_screening_campaign(earlier, queue_root=tmp_path)
+    # If its selected row is refused before spend, the refill can fund a waitlisted
+    # one: the campaign can still spend its whole $3, so a later plan must not get it.
+    assert job_ceiling.local_screening_holds(tmp_path, site_id=SITE, published_usd=Decimal(0)) == Decimal("3.00")
+    later = ceiling_plan(3, count=4, campaign_id="campaign1",
+                         holds=job_ceiling.local_screening_holds(tmp_path, site_id=SITE, published_usd=Decimal(0)))
+    assert later["budget_usd"] == "0.00"
+    assert all(row["status"] == "deferred" for row in later["candidates"])
+
+
 def test_a_replan_does_not_count_the_rows_it_replaces_against_the_ceiling(tmp_path):
     catalog, capabilities, quotes = inputs(4, "2.00")
     earlier = build_screening_plan(catalog, scene(), campaign_id="campaign0", capabilities=capabilities,
