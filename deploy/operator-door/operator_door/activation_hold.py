@@ -22,7 +22,9 @@ runner cannot do this itself: it has no capabilities and these files are the
 
 Exit codes:
     0  deploy now (nothing live, override given, cap reached, or unknown)
-    5  an activation is live; stay parked (the hold file says until when to recheck)
+    5  an activation is live; stay parked (the hold file says until when to recheck).
+       A second stdout line then says when to retry and when the cap lets it go:
+       ``<retry ISO> <retry epoch> <cap ISO> <cap epoch>``, for a deploy that cannot park.
 
 ``activation_hold.py park`` turns a direct deploy into a parked one, writing the
 record the runner would have written (exit 0), or exits 6 when it cannot.
@@ -30,7 +32,9 @@ record the runner would have written (exit 0), or exits 6 when it cannot.
 
 from __future__ import annotations
 
+import datetime
 import json
+import math
 import os
 import re
 import stat
@@ -210,8 +214,13 @@ def _clear_hold(parked_dir: Path | None) -> None:
 def decide(
     *, queue_root: Path, progression_root: Path, active: str, parked_dir: Path | None,
     override: str, now: float, held: set[int], pending_claimable: bool = True,
+    times: dict[str, float] | None = None,
 ) -> tuple[int, str]:
-    """Whether to deploy now, and the reason. Writes or clears the hold file."""
+    """Whether to deploy now, and the reason. Writes or clears the hold file.
+
+    On a hold, ``times`` (when given) gets ``retry_after_epoch``, the next recheck,
+    and ``cap_at_epoch``, after which the same release's hold always lets it go.
+    """
 
     if override:
         _clear_hold(parked_dir)
@@ -236,6 +245,8 @@ def decide(
     if now - first >= CAP_SECONDS:
         _clear_hold(parked_dir)
         return EXIT_DEPLOY, f"activation_hold_cap_reached:{names}"
+    if times is not None:
+        times.update(retry_after_epoch=now + RECHECK_SECONDS, cap_at_epoch=first + CAP_SECONDS)
     if parked_dir is not None:
         _write_hold(parked_dir, {
             "schema": HOLD_SCHEMA, "active_release": active, "first_held_at_epoch": first,
@@ -243,6 +254,17 @@ def decide(
             "live": live,
         })
     return EXIT_HOLD, f"scene_configuration_activation_live:{names}"
+
+
+def _iso(epoch: float) -> str:
+    return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).isoformat(timespec="seconds")
+
+
+def retry_line(times: dict[str, float]) -> str:
+    """``<retry ISO> <retry epoch> <cap ISO> <cap epoch>``, read by door-deploy.sh."""
+
+    retry, cap = math.ceil(times["retry_after_epoch"]), math.ceil(times["cap_at_epoch"])
+    return f"{_iso(retry)} {retry} {_iso(cap)} {cap}"
 
 
 def park(*, parked_dir: Path, request_id: str, commit: str, wait_for_idle: bool, active: str,
@@ -278,6 +300,7 @@ def main(argv: list[str]) -> int:
     parked = os.environ.get("DOOR_ACTIVATION_HOLD_PARKED_DIR", "")
     # The door's spool keeps parked/ and holds/ side by side.
     holds_dir = Path(parked).parent / "holds" if parked else None
+    times: dict[str, float] = {}
     code, reason = decide(
         queue_root=state / "task-evaluation-launch-activations",
         progression_root=state / "task-evaluation-configured-controls",
@@ -285,8 +308,11 @@ def main(argv: list[str]) -> int:
         parked_dir=Path(parked) if parked else None,
         override=override, now=time.time(), held=locked_inodes(),
         pending_claimable=not activation_path_held(holds_dir),
+        times=times,
     )
     print(reason)
+    if code == EXIT_HOLD and times:
+        print(retry_line(times))
     return code
 
 

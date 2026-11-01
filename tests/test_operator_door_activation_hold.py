@@ -240,3 +240,29 @@ def test_only_an_active_hold_stops_the_path_unit(tmp_path: Path, status: str) ->
     assert hold.activation_path_held(tmp_path / "holds") is False
     assert hold.activation_path_held(tmp_path / "missing") is False
     assert hold.activation_path_held(None) is False
+
+
+def test_a_hold_reports_when_to_retry_and_when_the_cap_lets_it_go(roots) -> None:
+    _envelope(roots["queue"] / "pending" / "act-1-abc.json")
+    start = 1_800_000_000.0
+    times: dict[str, float] = {}
+    assert hold.decide(queue_root=roots["queue"], progression_root=roots["progression"], active=ACTIVE,
+                       parked_dir=roots["parked"], override="", now=start, held=set(),
+                       times=times)[0] == hold.EXIT_HOLD
+    assert times == {"retry_after_epoch": start + hold.RECHECK_SECONDS, "cap_at_epoch": start + hold.CAP_SECONDS}
+    # A later retry keeps the first hold's cap, so retrying never pushes the cap back.
+    later: dict[str, float] = {}
+    hold.decide(queue_root=roots["queue"], progression_root=roots["progression"], active=ACTIVE,
+                parked_dir=roots["parked"], override="", now=start + 600, held=set(), times=later)
+    assert later["cap_at_epoch"] == start + hold.CAP_SECONDS
+    assert hold.retry_line(times) == (
+        "2027-01-15T08:05:00+00:00 1800000300 2027-01-15T12:45:00+00:00 1800017100")
+
+
+def test_no_retry_times_when_the_deploy_goes(roots) -> None:
+    times: dict[str, float] = {}
+    assert _decide(roots, held=set())[0] == hold.EXIT_DEPLOY
+    assert hold.decide(queue_root=roots["queue"], progression_root=roots["progression"], active=ACTIVE,
+                       parked_dir=roots["parked"], override="", now=time.time(), held=set(),
+                       times=times)[0] == hold.EXIT_DEPLOY
+    assert times == {}

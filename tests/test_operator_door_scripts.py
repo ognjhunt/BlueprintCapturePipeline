@@ -21,6 +21,7 @@ import re
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1428,7 +1429,13 @@ def test_a_canonical_deploy_during_a_live_activation_is_refused_not_parked(env: 
                               DOOR_RELEASE_PROVENANCE_FILE=str(provenance),
                               DOOR_RELEASE_PROVENANCE_SHA256=hashlib.sha256(provenance.read_bytes()).hexdigest())
 
-    assert rc == 2 and outcome["code"] == "scene_configuration_activation_live"
+    assert rc == 2 and outcome["status"] == "refused" and outcome["code"] == "scene_configuration_activation_live"
+    assert outcome["activation_hold"] == "scene_configuration_activation_live:pending:act-1"
+    # When to try again (the next recheck), and when the cap lets the same release's deploy go.
+    now = time.time()
+    retry, cap = int(outcome["retry_after_epoch"]), int(outcome["deploys_by_epoch"])
+    assert now < retry <= now + 5 * 60 + 5 and now + 284 * 60 < cap <= now + 285 * 60 + 5
+    assert outcome["retry_after"].endswith("+00:00") and outcome["deploys_by"].endswith("+00:00")
     assert not any(call.startswith("venv-python") for call in calls)
     assert not list(Path(values["DOOR_ACTIVATION_HOLD_PARKED_DIR"]).glob("*.json"))
 
