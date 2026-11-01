@@ -68,7 +68,6 @@ from .task_evaluation_scene_configuration_builtin_producers import (
 from .task_evaluation_scene_configuration_toolchain_archive import (
     TaskEvaluationSceneConfigurationToolchainArchiveError,
     ToolchainArchive,
-    cached_toolchain_archive_available,
     discard_toolchain_archive,
     member_info,
     prepare_toolchain_archive,
@@ -541,17 +540,19 @@ def _zip_bundle(
             release_toolchain_archive(toolchain_archive)
 
 
-#: Owner decision, default off: on a toolchain archive cache hit, check the
-#: host toolchain's manifest, inventory, sizes and modes but not its bytes.
-STAT_ONLY_ON_ARCHIVE_HIT_ENV = (
-    "BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_ON_ARCHIVE_HIT"
+#: Owner decision, default off: check the host toolchain's manifests,
+#: inventory, sizes and modes, but hash only its ``.json`` manifests. Every
+#: shipped toolchain byte is hashed against the inventory by the archive: as it
+#: is built on a cache miss, and as its fragment is spliced on a hit.
+STAT_ONLY_HOST_VALIDATION_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION"
 )
 
 
-def _stat_only_on_archive_hit(explicit: bool | None) -> bool:
+def _stat_only_host_validation(explicit: bool | None) -> bool:
     if explicit is not None:
         return explicit
-    return os.environ.get(STAT_ONLY_ON_ARCHIVE_HIT_ENV, "").strip() == "1"
+    return os.environ.get(STAT_ONLY_HOST_VALIDATION_ENV, "").strip() == "1"
 
 
 def _remove_self_created_stage_tree(stage: Path) -> None:
@@ -692,7 +693,7 @@ def build_scene_configuration_provider_bundle(
     partial_astra_successor_selection: str | Path | None = None,
     scene_owner_attempt_path: str | Path | None = None,
     toolchain_archive_cache_root: str | Path | None = None,
-    stat_only_toolchain_validation_on_archive_hit: bool | None = None,
+    stat_only_toolchain_host_validation: bool | None = None,
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
@@ -797,30 +798,18 @@ def build_scene_configuration_provider_bundle(
         if diagnostic_mode_requested or production_semantic_reuse
         else construction_source_commit
     )
-    toolchain_host_validation = "full_bytes"
-    if _stat_only_on_archive_hit(stat_only_toolchain_validation_on_archive_hit):
-        # Owner-gated (default off). Every shipped toolchain byte comes from a
-        # cached archive whose fragment is hashed in full as it is spliced and
-        # whose members were hashed against this same inventory when it was
-        # built; the provider validates every byte again. Hashing the host
-        # tree as well protects nothing that ships.
-        stat_manifest = validate_scene_configuration_toolchain(
-            root=toolchain,
-            expected_source_commit=toolchain_source_commit,
-            verify_bytes=False,
-        )
-        if cached_toolchain_archive_available(
-            manifest=stat_manifest,
-            deflate_level=_DEFLATE_LEVEL,
-            stored_suffixes=_STORED_MEMBER_SUFFIXES,
-            cache_root=toolchain_archive_cache_root,
-        ):
-            toolchain_manifest = stat_manifest
-            toolchain_host_validation = "stat_only_archive_hit"
-    if toolchain_host_validation == "full_bytes":
-        toolchain_manifest = validate_scene_configuration_toolchain(
-            root=toolchain, expected_source_commit=toolchain_source_commit
-        )
+    stat_only = _stat_only_host_validation(stat_only_toolchain_host_validation)
+    # Owner-gated (default off). Every shipped toolchain byte comes from the
+    # archive, which hashes each member against this same inventory: as it is
+    # read on a cache miss, and as the cached fragment is spliced on a hit. The
+    # provider validates every byte again. With the flag on, the host tree's
+    # bytes are hashed only where the archive reads them.
+    toolchain_manifest = validate_scene_configuration_toolchain(
+        root=toolchain,
+        expected_source_commit=toolchain_source_commit,
+        verify_bytes=not stat_only,
+    )
+    toolchain_host_validation = "stat_only_archive_verified" if stat_only else "full_bytes"
     try:
         from .task_evaluation_scene_configuration_astra_runtime import declared_python_profile
         python_profile = declared_python_profile(toolchain)

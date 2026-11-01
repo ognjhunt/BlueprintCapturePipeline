@@ -287,29 +287,67 @@ def test_stat_only_host_validation_is_off_by_default(tmp_path: Path, monkeypatch
     assert hashed
 
 
-def test_stat_only_on_a_hit_ships_only_archive_verified_bytes(
+def test_stat_only_hashes_host_bytes_only_where_the_archive_reads_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    clean = _bundle(tmp_path, "full", toolchain=toolchain, commit=A, cache=tmp_path / "full-cache")
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    hashed = _count_host_hashes(monkeypatch)
+    cache = tmp_path / "cache"
+
+    miss = _bundle(tmp_path, "miss", toolchain=toolchain, commit=A, cache=cache)
+    hit = _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)
+    uncached = _bundle(tmp_path, "uncached", toolchain=toolchain, commit=A, cache=None)
+
+    # Only the manifests the builder reads to decide what the receipt claims.
+    assert hashed and all(path.suffix == ".json" for path in hashed)
+    assert [row["toolchain_archive"]["reused"] for row in (miss, hit, uncached)] == [False, True, False]
+    assert {row["toolchain_host_validation"] for row in (miss, hit, uncached)} == {
+        "stat_only_archive_verified"
+    }
+    assert miss["bundle_sha256"] == hit["bundle_sha256"] == uncached["bundle_sha256"] == clean["bundle_sha256"]
+
+
+def test_stat_only_never_ships_a_host_byte_that_differs_from_the_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     toolchain = _published_toolchain(tmp_path / "release-a", A)
     cache = tmp_path / "cache"
     clean = _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
-    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_ON_ARCHIVE_HIT", "1")
-    hashed = _count_host_hashes(monkeypatch)
-
-    hit = _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)
-    assert hashed == []
-    assert hit["toolchain_host_validation"] == "stat_only_archive_hit"
-    assert hit["bundle_sha256"] == clean["bundle_sha256"]
-
-    # A host byte changed after publication cannot reach the bundle: the shipped
-    # members come from the archive verified against the published inventory.
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
     _tamper_same_size(toolchain)
-    tampered_host = _bundle(tmp_path, "tampered-host", toolchain=toolchain, commit=A, cache=cache)
-    assert tampered_host["bundle_sha256"] == clean["bundle_sha256"]
 
-    # Without a usable archive the host bytes are hashed in full and refused.
+    # Hit: the shipped members come from the archive, so the bundle is unchanged.
+    assert _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)["bundle_sha256"] == (
+        clean["bundle_sha256"]
+    )
+    # Miss: the archive hashes every host byte against the inventory as it
+    # compresses it, and refuses.
+    for name, miss_cache in (("miss", tmp_path / "empty-cache"), ("uncached", None)):
+        with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="source_mismatch"):
+            _bundle(tmp_path, name, toolchain=toolchain, commit=A, cache=miss_cache)
+    assert not any((tmp_path / "empty-cache").iterdir())
+
+
+def test_stat_only_still_hashes_the_manifests_the_builder_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    manifest = next(
+        path for path in sorted(toolchain.rglob("*.json"))
+        if path.is_file() and path.name != f"{TOOLCHAIN_SCHEMA_VERSION}.json"
+    )
+    payload = manifest.read_bytes()
+    manifest.chmod(0o644)
+    manifest.write_bytes(payload[:-1] + (b" " if payload[-1:] != b" " else b"\n"))
+    manifest.chmod(0o444)
+
     with pytest.raises(TaskEvaluationSceneConfigurationStageProducerError, match="toolchain_file_invalid"):
-        _bundle(tmp_path, "miss", toolchain=toolchain, commit=A, cache=tmp_path / "empty-cache")
+        _bundle(tmp_path, "tampered-manifest", toolchain=toolchain, commit=A, cache=cache)
 
 
 def test_stat_only_still_refuses_a_structurally_changed_toolchain(
@@ -318,7 +356,7 @@ def test_stat_only_still_refuses_a_structurally_changed_toolchain(
     toolchain = _published_toolchain(tmp_path / "release-a", A)
     cache = tmp_path / "cache"
     _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
-    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_ON_ARCHIVE_HIT", "1")
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
     victim = next(path for path in sorted(toolchain.rglob("run")) if path.is_file())
     victim.chmod(0o755)
     with victim.open("ab") as stream:
@@ -335,7 +373,7 @@ def test_an_archive_pruned_after_the_hit_check_is_rebuilt_from_verified_bytes(
     toolchain = _published_toolchain(tmp_path / "release-a", A)
     cache = tmp_path / "cache"
     warm = _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
-    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_ON_ARCHIVE_HIT", "1")
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
     _tamper_same_size(toolchain)
     entry = cache / warm["toolchain_archive"]["archive_key"].removeprefix("sha256:")
     original = archive_module.prepare_toolchain_archive

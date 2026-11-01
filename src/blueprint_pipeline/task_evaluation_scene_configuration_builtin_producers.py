@@ -227,7 +227,10 @@ def _validate_toolchain(
         if (
             expected is None
             or info.st_size != expected[1]
-            or (verify_bytes and _sha256(Path(entry.path)) != expected[0])
+            # Manifests are hashed even when bytes are not: the bundle builder
+            # reads them from this tree to decide what the receipt claims.
+            or ((verify_bytes or relative.endswith(".json"))
+                and _sha256(Path(entry.path)) != expected[0])
             or bool(info.st_mode & 0o111) != expected[2]
             or info.st_mode & 0o222
         ):
@@ -313,9 +316,10 @@ def validate_scene_configuration_toolchain(
     """Validate every toolchain byte without constructing executable handlers.
 
     ``verify_bytes=False`` keeps every manifest, stage, inventory, size, mode
-    and completeness check and skips only the per-file sha256. It is for the
-    bundle builder when the bytes it ships come from an archive already
-    verified against this same inventory.
+    and completeness check and skips the per-file sha256 of every file except
+    ``.json`` manifests, which callers read to make decisions. It is for the
+    bundle builder, whose shipped toolchain bytes come from an archive hashed
+    against this same inventory.
     """
 
     manifest, _entrypoints = _validate_toolchain(

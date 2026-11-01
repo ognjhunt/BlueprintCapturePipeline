@@ -403,22 +403,6 @@ def _prune(cache: Path, *, keep: Path) -> None:
             continue
 
 
-def cached_toolchain_archive_available(
-    *,
-    manifest: Mapping[str, Any],
-    deflate_level: int,
-    stored_suffixes: Iterable[str],
-    cache_root: str | Path | None = None,
-) -> bool:
-    """Whether a sound cached archive lists exactly this inventory."""
-
-    cache = resolve_cache_root(cache_root)
-    if cache is None:
-        return False
-    key = archive_key(manifest, deflate_level=deflate_level, stored_suffixes=stored_suffixes)
-    return _load_index(cache / key.removeprefix("sha256:"), key=key, manifest=manifest) is not None
-
-
 def discard_toolchain_archive(archive: ToolchainArchive) -> None:
     """Remove an archive whose bytes failed verification."""
 
@@ -493,7 +477,6 @@ __all__ = [
     "TaskEvaluationSceneConfigurationToolchainArchiveError",
     "ToolchainArchive",
     "archive_key",
-    "cached_toolchain_archive_available",
     "discard_toolchain_archive",
     "member_info",
     "prepare_toolchain_archive",

@@ -105,8 +105,9 @@ def validate_scene_configuration_component_package(
     """Validate one exhaustive, digest-bound component package directory.
 
     ``verify_bytes=False`` keeps every manifest, inventory, size, mode and
-    completeness check and skips only the per-file sha256, for a caller whose
-    shipped bytes are verified against the same inventory elsewhere.
+    completeness check and skips the per-file sha256 of every file except
+    ``.json`` manifests, for a caller whose shipped bytes are verified against
+    the same inventory elsewhere.
     """
 
     package_root = Path(root).expanduser().resolve()
@@ -163,7 +164,8 @@ def validate_scene_configuration_component_package(
             relative in observed
             or not _DIGEST.fullmatch(str(row.get("sha256") or ""))
             or info.st_size != row.get("size_bytes")
-            or (verify_bytes and _sha256(path) != row.get("sha256"))
+            or ((verify_bytes or relative.endswith(".json"))
+                and _sha256(path) != row.get("sha256"))
             or bool(info.st_mode & 0o111) is not bool(row.get("executable"))
             or (require_read_only and info.st_mode & 0o222)
         ):
