@@ -38,6 +38,7 @@ from .vast_api_transport import (
 )
 
 from .vast_instance_inventory import instance_inventory_valid, active_instance_rows
+from .vast_bundle_member_policy import vendored_toolchain_runtime_member as _vendored_toolchain_runtime_member
 from .vast_provider_log_observations import (
     _log_result_saw_container_missing,
     _log_result_container_vanished_after_output,
@@ -2446,23 +2447,6 @@ def _validate_policy_canary_provider_manifest(
     from .policy_canary_session_bundle_identity import validate_policy_canary_provider_manifest
 
     return validate_policy_canary_provider_manifest(payload)
-
-
-_TOOLCHAIN_COMPONENTS_PREFIX = "provider_runtime/toolchain/components/"
-
-
-def _vendored_toolchain_runtime_member(member: str) -> bool:
-    """A third-party file inside a toolchain component's vendored runtime tree.
-
-    Those bytes (Blender's USD ``plugInfo.json`` files carry ``#`` comments,
-    site-packages ship fixtures) are not Blueprint JSON: the component's own
-    inventory pins every byte, and the provider runtime verifies it there. The
-    component's manifests at ``package/`` itself are still parsed.
-    """
-    if not member.startswith(_TOOLCHAIN_COMPONENTS_PREFIX):
-        return False
-    parts = member[len(_TOOLCHAIN_COMPONENTS_PREFIX):].split("/")
-    return len(parts) > 4 and parts[1] == "package" and parts[2] == "runtime"
 
 
 def _blueprint_bundle_preflight(
