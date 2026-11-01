@@ -692,6 +692,7 @@ def build_scene_configuration_provider_bundle(
     retained_candidate_selection_optional: bool = False,
     partial_astra_successor_selection: str | Path | None = None,
     scene_owner_attempt_path: str | Path | None = None,
+    expected_toolchain_digest: str | None = None,
     toolchain_archive_cache_root: str | Path | None = None,
     stat_only_toolchain_host_validation: bool | None = None,
 ) -> dict[str, Any]:
@@ -811,6 +812,13 @@ def build_scene_configuration_provider_bundle(
         verify_bytes=not stat_only,
     )
     toolchain_host_validation = "stat_only_archive_verified" if stat_only else "full_bytes"
+    if (
+        expected_toolchain_digest is not None
+        and toolchain_manifest["toolchain_digest"] != expected_toolchain_digest
+    ):
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_toolchain_binding_mismatch"
+        )
     try:
         from .task_evaluation_scene_configuration_astra_runtime import declared_python_profile
         python_profile = declared_python_profile(toolchain)
@@ -1445,6 +1453,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--partial-astra-successor-selection")
     parser.add_argument("--scene-owner-attempt")
     parser.add_argument(
+        "--expected-toolchain-digest",
+        default=None,
+        help="Refuse unless the fully validated toolchain has this digest.",
+    )
+    parser.add_argument(
         "--toolchain-archive-cache-root",
         default=None,
         help="Content-addressed toolchain archive cache (default: "
@@ -1479,6 +1492,7 @@ def main(argv: list[str] | None = None) -> int:
         retained_candidate_selection_optional=retained_selection_optional,
         partial_astra_successor_selection=args.partial_astra_successor_selection,
         scene_owner_attempt_path=args.scene_owner_attempt,
+        expected_toolchain_digest=args.expected_toolchain_digest,
         toolchain_archive_cache_root=args.toolchain_archive_cache_root,
     )
     print(canonical_json(receipt))

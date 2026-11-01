@@ -659,6 +659,7 @@ def _scene_configuration_steps() -> tuple[LaneStep, ...]:
             repeated_argv=(
                 ("--partial-astra-successor-selection", "partial_astra_successor_selection"),
                 ("--scene-owner-attempt", "scene_owner_attempt"),
+                ("--expected-toolchain-digest", "expected_toolchain_digest"),
                 (
                     "--production-semantic-reuse-checkpoint-root",
                     "production_semantic_reuse_checkpoint_root",
