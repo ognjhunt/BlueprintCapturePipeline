@@ -1168,3 +1168,130 @@ def test_controller_registers_each_release_without_replacing_active_registry(tmp
     with pytest.raises(automation.SceneConfigurationActivationAutomationError):
         _provision(tmp_path, commit=COMMIT_NEXT, reference="changed authority", release_scoped=True)
     assert load(COMMIT_NEXT) == current
+
+
+def test_a_live_account_blocks_one_row_instead_of_aborting_the_tick(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production collector raises a ValueError while anything is live.
+
+    It used to escape process_scene_configuration_activations, which catches
+    only SceneConfigurationActivationAutomationError, so one live instance on
+    the account aborted the whole tick for every waiting preparation.
+    """
+
+    from blueprint_pipeline import adp_task_evaluation_abstention as abstention
+
+    def live_account():
+        raise abstention.TaskEvaluationAbstentionError("provider_zero_not_observed")
+
+    monkeypatch.delenv("BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE", raising=False)
+    monkeypatch.setattr(abstention, "collect_vast_provider_zero_receipt", live_account)
+    intent_root, _intent_value = _intent(tmp_path)
+    _preparation(tmp_path)
+    rows = automation.process_scene_configuration_activations(
+        preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations",
+        progression_root=tmp_path / "progression",
+        intent_root=intent_root,
+        configured_controls_intent_root=_controls_intent_root(tmp_path),
+        profile_dir=tmp_path / "profiles",
+        standing_authorization_dir=tmp_path / "standing",
+        submitter=lambda request: pytest.fail("a live account never launches"),
+        lineage_publisher_factory=lambda: pytest.fail("nothing is published"),
+        release_window_publisher_factory=lambda: pytest.fail("nothing is published"),
+        now=NOW,
+    )
+    assert len(rows) == 1
+    assert rows[0]["preparation_id"].startswith(PREPARATION_ID)
+    assert rows[0]["status"] == "blocked"
+    assert rows[0]["blockers"] == [
+        "scene_configuration_activation_provider_not_zero:provider_zero_not_observed"
+    ]
+    assert not (tmp_path / "activations" / "pending").exists()
+
+
+def _job_zero(observed_at: datetime) -> dict:
+    """A sealed job-scoped receipt: one other job's owned instance is live."""
+
+    from blueprint_pipeline import paid_provider_job_scope as scope
+
+    other = "blueprint-task-evaluation-scene-config-20260905t025500z-a"
+    guard = {
+        "schema_version": "gpu_spend_guard.v1",
+        "generated_at": (observed_at - timedelta(seconds=30)).isoformat(),
+        "status": "passed", "blockers": [], "reap_mode": True,
+        "inventory_results": [{"provider": "vast", "status": "succeeded"}],
+        "live_instance_count": 1, "total_burn_per_hour_usd": 0.6,
+        "fleet_budget": {"status": "passed", "max_live_instances": 10,
+                         "max_burn_usd_per_hour": 10.0, "daily_spend_usd": 5.0,
+                         "max_daily_spend_usd": 100.0},
+        "instances": [{"id": "101", "name": other, "live": True, "protected": True}],
+        "reap_candidate_ids": [], "reap_results": [],
+    }
+    return scope.build_job_provider_zero_receipt(
+        job_key=PREPARATION_ID, live_inventory=[{"instance_id": "101", "name": other}],
+        guard=guard, guard_record={"path": "/guard.json", "sha256": "sha256:" + "b" * 64},
+        observed_at=observed_at, added_burn_usd_per_hour=0.8,
+    )
+
+
+def test_activation_stages_beside_another_jobs_owned_instance_with_a_job_zero(tmp_path: Path) -> None:
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    observed, lineage_publisher, _w = _advance(
+        tmp_path, result_path, intent_root, zero=_job_zero(NOW - timedelta(seconds=20))
+    )
+    assert observed["status"] == "scene_configuration_activation_queued"
+    assert observed["provider_zero_digest"].startswith("sha256:")
+    published = [json.loads(body) for body in lineage_publisher.published.values()]
+    zero = next(item for item in published if "provider_zero_digest" in item)
+    assert zero["schema_version"] == "adp_paid_provider_job_zero.v1"
+    assert zero["provider_zero"] is False and zero["job_provider_zero"] is True
+    assert zero["provider_zero_digest"] == observed["provider_zero_digest"]
+
+
+def test_activation_refuses_a_resealed_job_zero_that_owns_a_live_resource(tmp_path: Path) -> None:
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    zero = _job_zero(NOW - timedelta(seconds=20))
+    zero["job_live_resource_count"] = 1
+    zero = _sealed(zero, "provider_zero_digest")
+    with pytest.raises(
+        automation.SceneConfigurationActivationAutomationError,
+        match="scene_configuration_activation_provider_not_zero",
+    ):
+        _advance(tmp_path, result_path, intent_root, zero=zero)
+    assert not (tmp_path / "activations" / "pending").exists()
+
+
+def test_default_collector_admits_the_job_at_its_own_maximum_hourly_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The preparation's spend.maximum_hourly_rate_usd reaches the fleet check."""
+
+    from blueprint_pipeline import paid_provider_job_scope as scope
+
+    seen = {}
+
+    def collect(*, job_key, added_burn_usd_per_hour):
+        seen.update(job_key=job_key, rate=added_burn_usd_per_hour)
+        return _job_zero(NOW - timedelta(seconds=20))
+
+    monkeypatch.setenv("BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE", "job")
+    monkeypatch.setattr(scope, "collect_job_scoped_vast_provider_zero", collect)
+    intent_root, _intent_value = _intent(tmp_path)
+    result_path = _preparation(tmp_path)
+    observed = automation.advance_scene_configuration_activation(
+        preparation_result_path=result_path,
+        preparation_queue_root=tmp_path / "preparations",
+        activation_queue_root=tmp_path / "activations",
+        progression_root=tmp_path / "progression",
+        intent_root=intent_root,
+        configured_controls_intent_root=_controls_intent_root(tmp_path),
+        lineage_publisher_factory=lambda: _publisher("scene-configuration-activation-lineage"),
+        release_window_publisher_factory=lambda: _publisher("coordinator-release-windows"),
+        now=NOW,
+    )
+    assert observed["status"] == "scene_configuration_activation_queued"
+    assert seen == {"job_key": PREPARATION_ID, "rate": 0.8}

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import sys
 from typing import Any
 
 from .common import write_json
@@ -15,6 +16,9 @@ from .common import write_json
 
 CONTENT_AGENTS_MACHINE_AVOIDLIST_FILENAME = "adp-content-agents-vast-machine-avoidlist.json"
 SIMREADY_ISAAC_MACHINE_AVOIDLIST_FILENAME = "adp009b-simready-isaac-vast-machine-avoidlist.json"
+SCENE_CONFIGURATION_MACHINE_AVOIDLIST_FILENAME = (
+    "task-evaluation-scene-configuration-vast-machine-avoidlist.json"
+)
 
 
 def load_machine_avoidlist(path: str | Path) -> dict[str, Any]:
@@ -197,6 +201,29 @@ def simready_isaac_machine_avoidlist_path(
     )
 
 
+def scene_configuration_excluded_machine_ids(*, job_dir: str | Path) -> set[int]:
+    """Machines an earlier scene-configuration launch proved bad, for this one.
+
+    Each launch's adapter keeps its avoidlist in its own job directory, so the
+    next launch could rent the same broken host again. This merges those lists
+    into the lane's shared one and returns its machine ids. It only narrows
+    offer selection: an unreadable list is reported and excludes nothing.
+    """
+
+    try:
+        shared = _lane_machine_avoidlist_path(
+            job_dir=job_dir,
+            explicit_path=None,
+            job_dir_name="scene-configuration-job",
+            shared_filename=SCENE_CONFIGURATION_MACHINE_AVOIDLIST_FILENAME,
+            retained_filename="vast_machine_avoidlist.json",
+        )
+        return set() if shared is None or not shared.is_file() else avoidlist_machine_ids(shared)
+    except (OSError, ValueError) as exc:
+        print(f"scene_configuration_machine_avoidlist_unavailable:{type(exc).__name__}", file=sys.stderr)
+        return set()
+
+
 def stage_machine_avoidlist_for_attempt(
     *, source_path: str | Path | None, destination_path: str | Path
 ) -> Path | None:
@@ -227,11 +254,13 @@ def stage_machine_avoidlist_for_attempt(
 
 __all__ = [
     "CONTENT_AGENTS_MACHINE_AVOIDLIST_FILENAME",
+    "SCENE_CONFIGURATION_MACHINE_AVOIDLIST_FILENAME",
     "SIMREADY_ISAAC_MACHINE_AVOIDLIST_FILENAME",
     "avoidlist_machine_ids",
     "content_agents_machine_avoidlist_path",
     "load_machine_avoidlist",
     "machine_avoidlist_ids",
+    "scene_configuration_excluded_machine_ids",
     "simready_isaac_machine_avoidlist_path",
     "stage_machine_avoidlist_for_attempt",
 ]

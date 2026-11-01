@@ -32,6 +32,7 @@ TasksMax=128
 CPUQuota=100%
 Environment=BLUEPRINT_AGENT_EXECUTION_CONFIG=/etc/blueprint/agent-execution.json
 Environment=BLUEPRINT_ALLOW_LIVE_AGENTS_SDK_OPERATORS=1
+Environment=BLUEPRINT_AGENT_STAGE_REPLAY_WAKE=/var/lib/blueprint/pipeline-control-plane/agent-execution/stage-replay.wake
 Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
 WorkingDirectory=/opt/blueprint/task-evaluation-control-plane
 ExecStart=!/usr/bin/python3 -I -S /usr/lib/blueprint/scene-retirement-runtime/continuous_bootstrap.py --continuous-module blueprint_pipeline.agent_execution.production --

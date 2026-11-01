@@ -1,10 +1,12 @@
 """Hermetic stage orchestration with real final USD; no framework/live proof."""
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
 import time
+import zipfile
 
 import pytest
 
@@ -211,3 +213,133 @@ def test_explicit_candidate_passes_existing_rigid_static_boundary_and_rejects_ch
     with pytest.raises(AuthoringContractError, match="source_bytes_changed"):
         driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
     assert len(fixture.calls) == 1
+
+
+def test_confined_import_preflight_allows_cold_imports_of_the_sealed_runtime(stage_fixture, monkeypatch):
+    """The sealed runtime has no bytecode and is read-only, so imports compile cold.
+
+    The release builder measured these imports past 60 s on the 4-core control
+    plane under load, the host the CPU prestage runs stage 3 on. A 60 s check
+    would refuse a healthy runtime before the first model call.
+    """
+    from blueprint_pipeline import task_object_artisan_hooks as hooks
+    from blueprint_pipeline.asset_authoring_sandbox import SandboxedAssetRunner
+
+    seen = []
+
+    class Preflight:
+        def preflight(self):
+            pass
+
+        def __call__(self, argv, **kwargs):
+            seen.append((argv, kwargs))
+            return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(hooks, "sandbox", lambda *_: Preflight())
+    driver.execute_artisan_component(environment=stage_fixture.environment, runner=stage_fixture.runner,
+                                     cost_gate_factory=stage_fixture.gate)
+    [(argv, kwargs)] = seen
+    assert "import sdk, cadquery" in argv[-1]
+    assert kwargs["timeout"] == driver.CONFINED_PREFLIGHT_TIMEOUT_SECONDS >= 300
+    # The landlock backend caps any sandboxed call at 900 s; stay inside it.
+    assert "min(float(timeout), 900)" in Path(SandboxedAssetRunner.__call__.__code__.co_filename).read_text()
+    assert driver.CONFINED_PREFLIGHT_TIMEOUT_SECONDS <= 900
+
+
+def test_sandbox_can_read_and_load_the_interpreter_it_runs(stage_fixture, monkeypatch):
+    """capture-447ae4f4: Kit's Python sits in a tree only its group may read.
+
+    The Landlock launcher clears every capability, so ARTISAN must make that
+    runtime readable first (as the Astra backend does) and hand the sandbox
+    the interpreter's loader path; otherwise its preflight fails with
+    Permission denied: '/isaac-sim/kit/python'.
+    """
+    import sys
+    from blueprint_pipeline import asset_runtime_permissions
+    prepared = []
+    monkeypatch.setattr(asset_runtime_permissions, "prepare_runtime_code_access",
+                        lambda roots: prepared.append([str(p) for p in roots]) or {"status": "ready", "changed_count": 0})
+    fixture = stage_fixture
+    driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
+    context = json.loads((fixture.output / "artisan_runtime/bridge_context.v1.json").read_text())["sandbox"]
+    base = str(Path(sys.base_prefix).resolve())
+    assert base in context["read_roots"] and prepared == [context["read_roots"]]
+    assert context["library_executables"] == [str(Path(sys.executable).resolve())]
+    assert isinstance(context["library_environment"], dict)
+    assert json.loads((fixture.output / "artisan_runtime/runtime_code_access.json").read_text())["status"] == "ready"
+
+
+def test_controller_keeps_the_interpreter_loader_path(stage_fixture, monkeypatch):
+    """Kit's Python finds libpython only through its launcher's library path.
+
+    The controller runs this interpreter with a scrubbed environment. Without
+    that path it would exit 127 before its first import (lookahead of
+    capture-447ae4f4's next GPU run, 2026-11-01).
+    """
+    from blueprint_pipeline import asset_python_runtime
+    real = asset_python_runtime.sandboxed_interpreter()
+    monkeypatch.setattr(asset_python_runtime, "sandboxed_interpreter",
+                        lambda: {**real, "library_environment": {"LD_LIBRARY_PATH": "/isaac-sim/kit/python/lib"}})
+    fixture = stage_fixture
+    fixture.environment.update(HTTPS_PROXY="http://proxy.invalid:3128", AWS_SECRET_ACCESS_KEY="ambient-never-inherited")
+    driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
+    [(argv, kwargs)] = fixture.calls
+    environment = kwargs["env"]
+    assert argv[:4] == [str(Path(real["executable"])), "-S", "-m", "blueprint_pipeline.task_object_artisan_bridge"]
+    assert environment["LD_LIBRARY_PATH"] == "/isaac-sim/kit/python/lib"
+    assert environment["PYTHONPATH"].split(os.pathsep) == driver.package_import_roots(fixture.package.resolve())
+    assert environment["HTTPS_PROXY"] == "http://proxy.invalid:3128"
+    assert "AWS_SECRET_ACCESS_KEY" not in environment
+
+
+def _sealed_blender(package):
+    sealed = package / "runtime/blender"
+    (sealed / "5.0/scripts/startup").mkdir(parents=True)
+    (sealed / "5.0/scripts/startup/bl_ui.py").write_text("x = 1\n")
+    (sealed / "blender").write_text("#!/bin/sh\n")
+    for path in sealed.rglob("*"):
+        path.chmod(0o555 if path.is_dir() or path.name == "blender" else 0o444)
+    sealed.chmod(0o555)
+    return sealed
+
+
+def test_root_stage_runs_a_private_blender_and_leaves_the_sealed_tree_untouched(stage_fixture, monkeypatch, tmp_path):
+    """Root writes past read-only modes; Blender's own bytecode must not reach the toolchain.
+
+    Upstream review renders run Blender from the controller, outside the
+    sandbox, and Blender's Python ignores PYTHONDONTWRITEBYTECODE. On the GPU
+    host (container root) a ``__pycache__`` in the sealed tree would fail stage
+    5's byte-for-byte toolchain revalidation.
+    """
+    monkeypatch.setattr(driver, "_bypasses_read_only_modes", lambda: True)
+    fixture = stage_fixture
+    sealed = _sealed_blender(fixture.package)
+    before = sorted(str(p.relative_to(sealed)) for p in sealed.rglob("*"))
+    driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
+    context = json.loads((fixture.output / "artisan_runtime/bridge_context.v1.json").read_text())["sandbox"]
+    private = Path(context["blender"])
+    assert private == fixture.output.resolve() / "artisan_runtime/packaged_blender/tree/blender"
+    assert str(private.parent) in context["read_roots"] and str(sealed.resolve()) not in context["read_roots"]
+    # Linked, not copied: no second 1.8 GB tree on the GPU host's disk.
+    assert private.stat().st_ino == (sealed / "blender").stat().st_ino
+    cache = private.parent / "5.0/scripts/startup/__pycache__"
+    cache.mkdir()
+    (cache / "bl_ui.cpython-311.pyc").write_bytes(b"blender-wrote-this")
+    assert sorted(str(p.relative_to(sealed)) for p in sealed.rglob("*")) == before
+    # The output archive leaves the tree behind.
+    from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import write_output_archive
+    write_output_archive(fixture.output, tmp_path / "output.zip")
+    with zipfile.ZipFile(tmp_path / "output.zip") as archive:
+        assert not any("packaged_blender" in name for name in archive.namelist())
+        assert any(name.endswith("bridge_context.v1.json") for name in archive.namelist())
+
+
+def test_unprivileged_stage_runs_the_sealed_blender(stage_fixture, monkeypatch):
+    """Where read-only modes hold (the control-plane prestage), nothing is linked."""
+    monkeypatch.setattr(driver, "_bypasses_read_only_modes", lambda: False)
+    fixture = stage_fixture
+    sealed = _sealed_blender(fixture.package)
+    driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner, cost_gate_factory=fixture.gate)
+    context = json.loads((fixture.output / "artisan_runtime/bridge_context.v1.json").read_text())["sandbox"]
+    assert context["blender"] == str(sealed.resolve() / "blender")
+    assert not (fixture.output / "artisan_runtime/packaged_blender").exists()
