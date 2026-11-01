@@ -97,6 +97,9 @@ if DISPATCHER_HOLD_ONLY:
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
                            "extend-scene-execution-window"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
+# A short logged reason to deploy past a live activation; the same pattern as
+# activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
+ACTIVATION_HOLD_OVERRIDE = re.compile(r"[a-z0-9][a-z0-9_:.-]{0,63}")
 # The grammar the Pub/Sub listener accepts for a scene id and a GCS bucket.
 _SCENE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _BUCKET = re.compile(r"[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]")
@@ -264,13 +267,20 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("owner_consent_options_invalid")
         return {"kind": kind, "consent_id": consent_id, "expected_sha256": digest, "expected_size_bytes": size}
     if kind == "deploy":
-        _only(body, ("kind", "commit", "wait_for_idle",
+        _only(body, ("kind", "commit", "wait_for_idle", "activation_hold_override",
                      "release_provenance_json", "release_provenance_sha256"))
         wait = body.get("wait_for_idle", True)
         if not isinstance(wait, bool):
             raise RequestRefused("wait_for_idle_invalid")
         commit = _commit(body)
+        # Deploy now even while a scene-configuration activation is live, saying why
+        # (for example fixes_live_activation, money, privacy, rights) so the log shows it.
+        override = body.get("activation_hold_override")
+        if override is not None and (not isinstance(override, str)
+                                     or ACTIVATION_HOLD_OVERRIDE.fullmatch(override) is None):
+            raise RequestRefused("activation_hold_override_invalid")
         return {"kind": kind, "commit": commit, "wait_for_idle": wait,
+                **({"activation_hold_override": override} if override else {}),
                 **_release_provenance(body, commit)}
     if kind == "unit":
         if body.get("action") == "repair-notifier-binding":
