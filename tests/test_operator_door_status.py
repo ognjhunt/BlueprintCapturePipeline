@@ -3,6 +3,7 @@
 # Covers (for impacted-test selection):
 #   deploy/operator-door/operator_door/hostinfo.py
 #   deploy/operator-door/operator_door/status.py
+#   src/blueprint_pipeline/control_plane_capacity_controller.py
 
 from __future__ import annotations
 
@@ -70,6 +71,11 @@ CAPACITY_SUMMARY = {
         "unclassified_roots": [{"root": "/var/lib/blueprint/x", "allocated_bytes": 2 * 1024**3}],
     },
     "volume_resize": None,
+    "reclaim_outlook": {"observed_at_epoch": 900.0, "reclaimable_bytes": 0, "volume_growth": "not_configured"},
+    "stall": {"observed_at_epoch": 1_000.0, "thresholds_seconds": {"trigger": 3600.0},
+              "checks": {"launch_activations": {"status": "observed", "processing": 0, "stuck": 0}}},
+    "provider_spend": {"observed_at_epoch": 1_000.0, "lines": {"openai_24h_usd": 75.0},
+                       "providers": {"openai": {"status": "observed", "month_to_date_usd": 27.9}}},
     # Not a summary key: the door must never pass it through.
     "project_spend": {"spend_usd": 3.0},
 }
@@ -286,8 +292,23 @@ def test_status_reports_capacity_usage(host_tree: dict[str, Path]) -> None:
     status = build_status(_config(host_tree), _host(host_tree, FakeRunner({})), caller={"name": "cloud"})
     assert status["capacity"]["level"] == "warning"
     assert status["capacity"]["usage"]["top_owners"][0]["owner"] == "scene:site-capture-1"
+    # The controller writes these three for the door (B-08 spend, D-01 stall, the reclaim outlook).
+    assert status["capacity"]["provider_spend"]["providers"]["openai"]["month_to_date_usd"] == 27.9
+    assert status["capacity"]["stall"]["checks"]["launch_activations"]["stuck"] == 0
+    assert status["capacity"]["reclaim_outlook"]["volume_growth"] == "not_configured"
     assert "project_spend" not in status["capacity"]
     assert set(status["disk"])
+
+
+def test_every_section_the_capacity_controller_writes_reaches_door_status() -> None:
+    from blueprint_pipeline.control_plane_capacity_controller import capacity_summary
+    from operator_door.status import _CAPACITY_KEYS
+
+    report = {"level": "ok", "alerts": [], "mounts": [], "usage": {"status": "complete"},
+              "volume_resize": {"status": "not_needed"}, "reclaim_outlook": {"reclaimable_bytes": 0},
+              "stall": {"observed_at_epoch": 1.0, "checks": {}},
+              "provider_spend": {"observed_at_epoch": 1.0, "lines": {}, "providers": {}}}
+    assert set(capacity_summary(report)) <= set(_CAPACITY_KEYS)
 
 
 def test_status_capacity_section_fails_soft(host_tree: dict[str, Path]) -> None:
