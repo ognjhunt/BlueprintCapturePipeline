@@ -306,7 +306,8 @@ def test_deploy_refuses_a_malformed_request_id_before_touching_any_path(env: dic
 @pytest.mark.parametrize("script", ["door-common.sh", "door-deploy.sh", "door-upgrade.sh", "door-hold-expire.sh",
                                     "door-retire-scene-workspace.sh", "door-restore-scene-workspace.sh",
                                     "door-lane-scratch.sh", "door-provider-output-resume.sh",
-                                    "door-extend-scene-execution-window.sh", "install.sh"])
+                                    "door-extend-scene-execution-window.sh", "door-extend-scene-execution-budget.sh",
+                                    "install.sh"])
 def test_scripts_parse(script: str) -> None:
     assert subprocess.run(["/bin/bash", "-n", str(DOOR / script)], check=False).returncode == 0
 
@@ -1479,3 +1480,58 @@ def test_a_free_form_override_reason_deploys_and_is_logged(env: dict[str, str]) 
     assert rc == 0 and outcome["status"] == "deployed"
     log = (Path(values["DOOR_RESULTS_DIR"]) / f"{DEPLOY_ID}.log").read_text(encoding="utf-8")
     assert "activation_hold_overridden:fixes_live_activation" in log
+
+
+# --- extend-scene-execution-budget ---------------------------------------------------------------
+
+BUDGET_ID = "20261101T150000Z-extend-scene-execution-budget-0000abcd"
+
+
+@pytest.fixture()
+def budget_env(env: dict[str, str], tmp_path: Path) -> dict[str, str]:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_stub(tmp_path / "stubs" / "setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "budget-python", '''#!/bin/bash
+{ printf 'budget %s\\n' "$*"; echo "intake-root ${BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT:-unset}"; } >> "$STUB_LOG"
+printf '%s\\n' "${FAKE_BUDGET:-}"
+exit "${FAKE_TOOL_RC:-0}"
+''')
+    return {**env, "DOOR_VENV_PYTHON": str(tmp_path / "budget-python"), "DOOR_CONTROL_PLANE_REPO": str(repository),
+            "DOOR_SERVICE_USER": "blueprint", "DOOR_REQUESTED_BY": "cloud-scene-runs",
+            "DOOR_SCENE_BUDGET_REQUEST": json.dumps({"kind": "extend-scene-execution-budget",
+                                                     "approval_evidence": "approval $(touch pwned)"})}
+
+
+@pytest.mark.parametrize(("report", "rc", "status", "code"), [
+    ({"door_outcome": "planned"}, 0, "planned", None),
+    ({"door_outcome": "extended"}, 0, "extended", None),
+    ({"door_outcome": "refused", "code": "budget_apply_ack_mismatch"}, 2, "refused", "budget_apply_ack_mismatch"),
+    ({"door_outcome": "already_covered"}, 0, "failed", "scene_budget_failed"),
+])
+def test_scene_budget_runs_the_release_module_as_the_service_user(budget_env, tmp_path, report, rc, status, code):
+    done, outcome, calls = _run("door-extend-scene-execution-budget.sh", budget_env, DOOR_REQUEST_ID=BUDGET_ID,
+                                FAKE_BUDGET=json.dumps(report), FAKE_TOOL_RC=str(rc))
+    expected_rc = 1 if status == "failed" else rc
+    assert (done, outcome["status"], outcome["code"], outcome["exit_code"]) == (expected_rc, status, code, expected_rc)
+    assert calls[0] == "setpriv --reuid=blueprint --regid=blueprint --init-groups --inh-caps=-all --"
+    assert calls[2].startswith("budget -m blueprint_pipeline.task_evaluation_scene_execution_budget_door --request-json ")
+    assert calls[2].endswith(f"--door-caller cloud-scene-runs --door-request-id {BUDGET_ID}")
+    assert not (tmp_path / "pwned").exists()
+    result = Path(budget_env["DOOR_RESULTS_DIR"]) / f"{BUDGET_ID}.scene-budget.json"
+    assert json.loads(result.read_text()) == report and outcome["result"] == str(result)
+
+
+@pytest.mark.parametrize(("overrides", "code"), [
+    ({"DOOR_SERVICE_USER": "root"}, "scene_budget_user_invalid"),
+    ({"DOOR_REQUESTED_BY": "../root"}, "scene_budget_caller_invalid"),
+])
+def test_scene_budget_rechecks_its_inputs(budget_env, overrides, code):
+    rc, outcome, calls = _run("door-extend-scene-execution-budget.sh", budget_env, DOOR_REQUEST_ID=BUDGET_ID,
+                              **overrides)
+    assert rc == 2 and outcome["code"] == code and not calls
+
+
+def test_scene_budget_script_is_installed_with_the_door():
+    installer = (DOOR / "install.sh").read_text(encoding="utf-8")
+    assert '"$source_dir"/door-extend-scene-execution-budget.sh' in installer

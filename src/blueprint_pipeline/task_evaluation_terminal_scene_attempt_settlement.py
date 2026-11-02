@@ -304,7 +304,9 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 or result.get("continuing_spend_from_this_run") is not False
                 or teardown.get("schema_version") != "vast_teardown_manifest.v1"
                 or teardown.get("status") not in {"not_required_provider_adapter_never_invoked",
-                                                  "not_required_prelaunch_inventory_guard_blocked"}
+                                                  "not_required_prelaunch_inventory_guard_blocked",
+                                                  # Bundle preflight refused before any offer search.
+                                                  "not_required_blueprint_bundle_preflight_blocked"}
                 or teardown.get("vast_instance_ids") != []
                 or teardown.get("continuing_spend_from_this_run") is not False):
             return hold

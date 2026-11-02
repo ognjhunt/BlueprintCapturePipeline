@@ -144,7 +144,9 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     No catalog declaration alone grants a runtime capability. ``priority`` is
     the job's retained intake ranking; it orders the plan and removes nothing.
     A candidate is infeasible only when its registered fixed reach measurably
-    misses this reconstructed scene's station (``website_candidate_feasibility``).
+    misses this reconstructed scene's station (``website_candidate_feasibility``),
+    or when no GPU the screening lane may rent meets its declared memory floor
+    (``beta_policy_screening_gpu``); a disabled candidate keeps its own reason.
     """
     from .beta_policy_candidate_catalog import validate_catalog, load_catalog
     from .beta_policy_screening_plan import validate_execution_descriptor
@@ -246,10 +248,18 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     credentials = []
     # Credential presence is intentionally not guessed from a public endpoint.
     # Hosted policies need a separately configured private delivery lane.
+    from .beta_policy_screening_g1 import CANDIDATES as G1_LANE_CANDIDATES
+    from .beta_policy_screening_gpu import gpu_infeasible_blockers
     for configured in catalog["candidates"]:
         key = configured["candidate_id"]
         if key in infeasible:
             continue  # The plan shows its measured reason; nothing is prepared or quoted.
+        # Every candidate but G1's (its own lane, fixed floor) rents on the policy canary session lane.
+        unrentable = ([] if key in G1_LANE_CANDIDATES or configured["eligibility"]["enabled"] is not True
+                      else gpu_infeasible_blockers(configured["runtime"]))
+        if unrentable:
+            infeasible[key] = unrentable  # Listed with its reason, never funded: the budget goes on in plan order.
+            continue
         try:
             from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES
             g1 = key in G1_CANDIDATES

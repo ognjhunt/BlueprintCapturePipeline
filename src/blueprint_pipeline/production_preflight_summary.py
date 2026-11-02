@@ -120,9 +120,12 @@ def build_safe_summary(report: Mapping[str, Any], *, raw_report_bytes: bytes) ->
         raise PreflightSummaryError("preflight_report_timestamp_invalid") from None
     try:
         decoded = json.loads(raw_report_bytes)
+        # JSON has no tuples: the chain's (path, ignore_errors) pairs come back
+        # as lists, so compare both sides as the JSON they serialize to.
+        same_document = json.dumps(decoded, sort_keys=True) == json.dumps(report, sort_keys=True)
     except (ValueError, TypeError, UnicodeError):
         raise PreflightSummaryError("preflight_report_bytes_invalid") from None
-    if decoded != report:
+    if not same_document:
         raise PreflightSummaryError("preflight_report_bytes_mismatch")
     units = report.get("units")
     if not isinstance(units, Mapping) or len(units) > 128 or not isinstance(report.get("host_findings"), list):

@@ -14,8 +14,14 @@ from pathlib import Path
 from .task_object_authoring_contracts import AuthoringContractError, require, file_record, read_json, verified_file, source_joint_constraints
 
 
+#: ARTISAN's ``Phase.DONE`` value, which the bridge writes to the terminal record.
+#: Comparing with the enum name ("DONE") refused capture-447ae4f4's first
+#: finished, registered tray (2026-11-02) as ``artisan_not_done_and_registered``.
+UPSTREAM_DONE_PHASE = "done"
+
+
 def upstream_exports(terminal: dict, workspace: Path) -> dict:
-    require(terminal.get("phase") == "DONE" and terminal.get("registered") is True
+    require(terminal.get("phase") == UPSTREAM_DONE_PHASE and terminal.get("registered") is True
             and bool(terminal.get("canonical_record_id")) and terminal.get("returncode") == 0,
             "artisan_not_done_and_registered")
     paths = {key: Path(value) for key, value in terminal["paths"].items()}

@@ -2736,6 +2736,7 @@ def test_deploy_holds_paid_slot_through_restart_and_runtime_probe(
                 "BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT": "/runtime/toolchain",
                 "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_RELEASE_WINDOW_PREFIX": "s3://blueprint-production-inputs/coordinator-release-windows/",
                 "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX": "s3://blueprint-production-inputs/task-evaluation-activations",
+                "BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD": "25",
             },
         },
     )

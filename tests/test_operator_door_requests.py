@@ -604,3 +604,39 @@ def test_scene_window_extension_refuses_anything_else(change: dict, code: str) -
     body.pop("ack")
     with pytest.raises(RequestRefused):
         validate_request(body)
+
+
+def _budget_body(**changes):
+    body = {"kind": "extend-scene-execution-budget", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner chose +$5 in session X", "max_total_spend_usd": 25,
+            "max_paid_attempts": 16, "apply": False, "apply_ack": "", "ack": "extend-scene-execution-budget"}
+    body.update(changes)
+    return body
+
+
+def test_scene_budget_preview_and_apply_are_accepted_with_their_acknowledgements():
+    from operator_door.requests import validate_request
+    assert validate_request(_budget_body()) == _budget_body()
+    applied = _budget_body(apply=True, apply_ack="sha256:" + "c" * 64)
+    assert validate_request(applied) == applied
+
+
+@pytest.mark.parametrize(("changes", "code"), [
+    ({"apply": True}, "scene_budget_apply_ack_invalid"),
+    ({"apply_ack": "sha256:" + "c" * 64}, "scene_budget_apply_ack_invalid"),
+    ({"ack": "yes"}, "scene_budget_unacknowledged"),
+    ({"max_total_spend_usd": 0}, "scene_budget_limits_invalid"),
+    ({"max_total_spend_usd": 5000}, "scene_budget_limits_invalid"),
+    ({"max_total_spend_usd": True}, "scene_budget_limits_invalid"),
+    ({"max_paid_attempts": 1.5}, "scene_budget_limits_invalid"),
+    ({"approval_evidence": " padded "}, "scene_budget_approval_evidence_invalid"),
+    ({"approval_evidence": "x" * 501}, "scene_budget_approval_evidence_invalid"),
+    ({"owner_user_id": "a b"}, "scene_budget_fields_invalid"),
+    ({"intent_id": "scene-zz"}, "scene_budget_fields_invalid"),
+    ({"extra": 1}, "scene_budget_fields_invalid"),
+])
+def test_scene_budget_requests_are_refused_unless_exact(changes, code):
+    from operator_door.requests import RequestRefused, validate_request
+    with pytest.raises(RequestRefused, match=code):
+        validate_request(_budget_body(**changes))

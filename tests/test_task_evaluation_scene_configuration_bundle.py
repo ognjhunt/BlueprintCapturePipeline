@@ -5625,3 +5625,69 @@ def test_zip_tree_writes_members_past_the_zip64_limit(tmp_path, monkeypatch):
     bundle_module._zip_tree(stage, destination)
     with _zipfile.ZipFile(destination) as archive:
         assert archive.read("libbig.so") == payload
+
+
+def test_bundle_refuses_a_toolchain_other_than_the_activation_bound(tmp_path: Path) -> None:
+    # The activation worker binds only the sealed manifest digest; the bundle
+    # step's full-byte validation must then prove exactly that toolchain.
+    first = _build(tmp_path, "unbound")
+    commit = "a" * 40
+    common = {
+        "construction_envelope_path": tmp_path / "source" / "envelope.json",
+        "toolchain_root": tmp_path / "toolchain",
+        "repository_root": tmp_path / "repo",
+        "expected_source_commit": commit,
+    }
+    bound = build_scene_configuration_provider_bundle(
+        **common, output_root=tmp_path / "bound",
+        expected_toolchain_digest=first["toolchain_digest"],
+    )
+    assert bound["bundle_sha256"] == first["bundle_sha256"]
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError,
+                       match="toolchain_binding_mismatch"):
+        build_scene_configuration_provider_bundle(
+            **common, output_root=tmp_path / "mismatch",
+            expected_toolchain_digest="sha256:" + "0" * 64,
+        )
+    assert not (tmp_path / "mismatch").exists()
+
+
+def test_provider_bundle_step_passes_the_activation_bound_toolchain_digest() -> None:
+    from scripts import prepare_paid_lane_launch as module
+
+    step = next(step for step in module._scene_configuration_steps() if step.step_id == "provider_bundle")
+    base = {
+        "python": "python", "construction_envelope": "e", "toolchain_root": "t",
+        "repository_root": "r", "set_root": "s", "source_commit": "a" * 40,
+    }
+    assert "--expected-toolchain-digest" not in module._step_argv(step, base)
+    argv = module._step_argv(step, {**base, "expected_toolchain_digest": "sha256:" + "1" * 64})
+    assert argv[argv.index("--expected-toolchain-digest") + 1] == "sha256:" + "1" * 64
+
+
+def test_receipt_reopen_reuses_a_sealed_bundle_digest_and_refuses_a_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from blueprint_pipeline import sealed_file_digest as sealed
+
+    receipt = _build(tmp_path, "sealed")
+    receipt_path = tmp_path / "sealed" / f"{BUNDLE_SCHEMA_VERSION}.receipt.json"
+    bundle = Path(receipt["bundle_path"])
+    monkeypatch.setattr(sealed, "time_ns", lambda: bundle.stat().st_ctime_ns + 2 * sealed.STABLE_AGE_NS)
+    reads: list[int] = []
+    original = sealed._hash_stream
+    monkeypatch.setattr(sealed, "_hash_stream", lambda stream: reads.append(1) or original(stream))
+
+    for _ in range(3):
+        assert load_scene_configuration_provider_bundle_receipt(receipt_path)["bundle_sha256"] == (
+            receipt["bundle_sha256"]
+        )
+    assert len(reads) == 1
+
+    before = bundle.stat()
+    payload = bytearray(bundle.read_bytes())
+    payload[-30] ^= 0xFF  # inside the end record; size unchanged
+    bundle.write_bytes(bytes(payload))
+    os.utime(bundle, ns=(before.st_atime_ns, before.st_mtime_ns))
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="bundle_bytes_invalid"):
+        load_scene_configuration_provider_bundle_receipt(receipt_path)

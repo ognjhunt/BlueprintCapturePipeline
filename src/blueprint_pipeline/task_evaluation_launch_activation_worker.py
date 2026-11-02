@@ -82,7 +82,7 @@ from .task_evaluation_shared_mutation_window import (
 )
 from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_ROOT_ENV as SCENE_CONFIGURATION_TOOLCHAIN_ROOT_ENV,
-    validate_scene_configuration_toolchain,
+    read_scene_configuration_toolchain_manifest,
 )
 from .task_evaluation_scene_construction_queue import (
     ENVELOPE_SCHEMA_VERSION as SCENE_CONSTRUCTION_ENVELOPE_SCHEMA_VERSION,
@@ -966,10 +966,9 @@ def _build_scene_configuration_context(
             "launch_activation_scene_configuration_context_invalid"
         )
     try:
-        toolchain_manifest = validate_scene_configuration_toolchain(
-            root=toolchain_root.resolve(strict=True),
-            expected_source_commit=source_commit,
-        )
+        # Seal and release only; provider_bundle hashes every byte against this digest.
+        toolchain_manifest = read_scene_configuration_toolchain_manifest(
+            root=toolchain_root.resolve(strict=True), expected_source_commit=source_commit)
     except (OSError, ValueError) as exc:
         raise TaskEvaluationLaunchActivationWorkerError(
             "launch_activation_scene_configuration_toolchain_invalid"
@@ -984,6 +983,7 @@ def _build_scene_configuration_context(
         "source_commit": source_commit,
         "construction_envelope": str(construction_envelope),
         "toolchain_root": str(toolchain_root.resolve()),
+        "expected_toolchain_digest": toolchain_manifest["toolchain_digest"],
         "destination_prefix": destination_prefix.rstrip("/")
         + "/"
         + preparation_request["publication"]["input_namespace"]
@@ -1054,23 +1054,13 @@ def _build_scene_configuration_context(
     }
     _owner_attempt(operations, "config", activation_request, preparation_request, activation_root)
     if operations.get("scene_owner_attempt"):
-        from .task_evaluation_partial_astra_transport import (
-            PartialAstraTransportError,
-            select_partial_astra_source,
-        )
+        from .task_evaluation_artisan_continuation import StageThreeContinuationError, select_stage_three_continuation
         try:
-            selection = select_partial_astra_source(
-                owner_attempt_path=operations["scene_owner_attempt"], envelope=construction_value,
-                output_root=activation_root / "partial_astra_successor",
-                activation_request=activation_request if created_storage_pins is not None else None,
-                activation_root=activation_root,
-                on_pin_created=created_storage_pins.append if created_storage_pins is not None else None)
-        except PartialAstraTransportError as exc:
-            # This typed error contains a fixed predicate code, never artifact
-            # contents. Preserve it in the activation receipt for saved-input replay.
+            select_stage_three_continuation(operations, envelope=construction_value, activation_root=activation_root,
+                activation_request=activation_request, created_storage_pins=created_storage_pins)
+        except StageThreeContinuationError as exc:
+            # A fixed predicate code, never artifact contents; kept for saved-input replay.
             raise TaskEvaluationLaunchActivationWorkerError(str(exc)) from exc
-        if selection is not None:
-            operations["partial_astra_successor_selection"] = str(selection)
     return {
         "schema_version": (
             "task_evaluation_scene_configuration_launch_preparation_context.v1"

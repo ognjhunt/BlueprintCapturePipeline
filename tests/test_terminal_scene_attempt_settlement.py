@@ -435,7 +435,9 @@ def _website_preallocation_failure(tmp_path, monkeypatch, *, allocated=False,
 
 
 @pytest.mark.parametrize("teardown_status", ["not_required_provider_adapter_never_invoked",
-                                           "not_required_prelaunch_inventory_guard_blocked"])
+                                           "not_required_prelaunch_inventory_guard_blocked",
+                                           # capture-447ae4f4 02:05Z: bundle preflight refused before any offer search
+                                           "not_required_blueprint_bundle_preflight_blocked"])
 def test_proven_no_allocation_releases_only_gpu_and_provider_authoring_budget(tmp_path, monkeypatch, teardown_status):
     fx, receipt, _, _ = _website_preallocation_failure(tmp_path, monkeypatch, teardown_status=teardown_status)
     assert receipt["settled_spend"]["retained_spend_usd"] == 16.76

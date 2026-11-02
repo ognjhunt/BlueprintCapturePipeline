@@ -85,7 +85,11 @@ def test_compiled_pick_place_reaches_canonical_gpu_screening_with_its_scored_pro
     plan = build_screening_plan(catalog, planning["scene"], capabilities=planning["capabilities"],
         cost_quotes=planning["cost_quotes"], campaign_id="rigid-campaign")
     candidates = [row for row in plan["candidates"] if row["status"] == "selected"]
-    assert {row["candidate_id"] for row in candidates} == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid", "cosmos3_nano_policy_droid", "molmoact2_droid"}
+    assert {row["candidate_id"] for row in candidates} == {"pi05_droid", "groot_n17_droid", "cosmos3_edge_policy_droid",
+                                                          "molmoact2_droid", "pi0_droid_jointpos_100k_polaris"}
+    # The screening lane cannot rent Cosmos Nano's 80 GB floor: listed with that reason, its budget spent next in order.
+    nano = next(row for row in plan["candidates"] if row["candidate_id"] == "cosmos3_nano_policy_droid")
+    assert (nano["status"], nano["blockers"]) == ("infeasible", ["screening_gpu_memory_floor_unrentable"])
     assert plan["maximum_planned_cost_usd"] == "15.00"
     spawned = []
 

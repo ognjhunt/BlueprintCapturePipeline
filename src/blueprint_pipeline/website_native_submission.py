@@ -6,6 +6,7 @@ object provenance. It never reconstructs, removes an object again, or allocates.
 from __future__ import annotations
 
 from .task_evaluation_scene_retirement_access import scene_participant
+from decimal import Decimal
 import math
 from pathlib import Path
 
@@ -22,6 +23,11 @@ from .task_evaluation_scene_configuration_submission_inputs import (
     Staging, checked_file, read, release_inputs, require, sha, slug,
 )
 from .website_native_background import prepare_construction_stages, construction_rights_admission, PREFIX
+
+
+#: An attempt that reuses a finished ARTISAN run makes no model call; it keeps
+#: the smallest allocation the ARTISAN budget profile admits.
+MINIMUM_ARTISAN_ALLOCATION_USD = 0.01
 
 
 def _validate_development_opening_criterion(success, hypothesis):
@@ -102,23 +108,49 @@ def validate_website_publication(*, root, manifest, request):
 def materialize_website_submission(*, task, deploy_receipt_path, release_provenance_path,
                                   release_environment_path, runtime_publication_root,
                                   expected_production_commit, namespace_timestamp,
-                                  release_admission_mode, staging_root):
+                                  release_admission_mode, staging_root, attempt_id=None):
     intent, preparation, context, rights, construction, paths = verified_submission_inputs(task)
     owner_task = intent["request"]["task"]
     from .task_evaluation_scene_execution_budget_evidence import effective_execution_budget
-    authorized = effective_execution_budget(Path(task["scene_intent_authority"]["path"]).parent, intent)
+    directory = Path(task["scene_intent_authority"]["path"]).parent
+    authorized = effective_execution_budget(directory, intent)
+    # Size this attempt within what the intent's existing holds leave, the
+    # sum reservation will check. Built from the whole ceiling, a retry after
+    # a settled $5 GPU hold under a $25 grant asked for $21 and was refused
+    # (capture-447ae4f4, 2026-11-01). Only compute shrinks; authoring stays.
+    from .task_evaluation_scene_intake import committed_spend_usd
+    remaining = Decimal(str(authorized["max_total_spend_usd"])) - committed_spend_usd(directory, intent)
+    if remaining <= 0:
+        raise ValueError("website_native_construction_budget_exceeds_authority")
     authoring = construction["configurations"][2]
     articulated = owner_task["strategy"] == "articulated_open_close"
+    artisan_allocation = None
+    if authoring.get("authoring_backend") == ARTISAN_BACKEND:
+        # The frozen cap is cumulative across resumes. A successor that will
+        # continue a source can spend only what the source left, so it
+        # reserves only that (capture-447ae4f4, 2026-11-02: a $30 reservation
+        # for $11.24 of possible spend did not fit the owner's $60).
+        from .task_evaluation_artisan_continuation import factory_carried_spend
+        artisan_allocation = frozen_authoring_cap(authoring)
+        carried = factory_carried_spend(intent_digest=intent["intent_digest"], configuration=authoring,
+                                        intent_root=directory.parent)
+        remainder = (math.floor((artisan_allocation - carried["cost_usd"]) * 100) / 100
+                     if carried is not None else 0)
+        if carried is not None and carried.get("completed"):
+            # The source finished upstream; this attempt only exports it.
+            artisan_allocation = MINIMUM_ARTISAN_ALLOCATION_USD
+        elif remainder > 0:
+            artisan_allocation = remainder
     try:
         spend = records.spend_block(authoring.get("authoring_backend", "content_agents"),
-            authoring_max_cost_usd=(frozen_authoring_cap(authoring)
+            authoring_max_cost_usd=(artisan_allocation
                 if authoring.get("authoring_backend") == ARTISAN_BACKEND
                 else None if not articulated else 7.0
                 if authoring.get("authoring_model_provider") == "anthropic"
                 else MAX_ASTRA_AUTHORING_SPEND_USD),
             requires_artifixer=False,
             authoring_provider=authoring.get("authoring_model_provider", "openai"),
-            maximum_total_spend_usd=authorized["max_total_spend_usd"])
+            maximum_total_spend_usd=float(remaining))
     except ValueError as exc:
         if str(exc) == "scene_configuration_compute_budget_missing":
             raise ValueError("website_native_construction_budget_exceeds_authority") from None
@@ -131,8 +163,12 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         provenance_path=Path(release_provenance_path), publication_root=Path(runtime_publication_root),
         commit=commit, release_admission_mode=release_admission_mode)
     team = "website-" + intent["intent_digest"][7:31]
-    namespace = slug(f"{team}-{commit}-{namespace_timestamp.lower()}")
-    run_id = slug(f"{team}-{commit[:8]}-{namespace_timestamp.lower()}")
+    # A capacity successor under the same release rebuilt this request byte for
+    # byte and found its predecessor's queue envelope (capture-447ae4f4,
+    # 2026-11-02). The attempt names the run, as the public factory already does.
+    attempt = "" if attempt_id is None else "-" + slug(attempt_id.removeprefix("source-")[:12])
+    namespace = slug(f"{team}-{commit}-{namespace_timestamp.lower()}{attempt}")
+    run_id = slug(f"{team}-{commit[:8]}-{namespace_timestamp.lower()}{attempt}")
     stage = Staging(Path(staging_root), namespace)
     manifest_ref = stage.copy(paths["preparation"], "website/preparation.json")
     stage.copy(paths["task_context"], "website/task_context.json")

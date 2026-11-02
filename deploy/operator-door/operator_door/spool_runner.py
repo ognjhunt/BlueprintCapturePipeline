@@ -303,6 +303,22 @@ def _scene_window_properties(config: DoorConfig, _request: dict[str, Any]) -> tu
             "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane " + str(Path(config.spool_root) / "results"))
 
 
+def _scene_budget_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
+    return {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
+            "DOOR_SERVICE_USER": "blueprint",
+            "DOOR_SCENE_BUDGET_REQUEST": json.dumps(request, sort_keys=True, allow_nan=False)}
+
+
+def _scene_budget_properties(config: DoorConfig, _request: dict[str, Any]) -> tuple[str, ...]:
+    """Writes one grant under the scene intents and its result; no network, every secret hidden."""
+    return ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "PrivateDevices=yes",
+            "ProtectHome=yes", "ProtectKernelTunables=yes", "ProtectControlGroups=yes", "UMask=0077",
+            "PrivateNetwork=yes",
+            "CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE",
+            "InaccessiblePaths=" + " ".join("-" + path for path in config.hidden_paths),
+            "ReadWritePaths=/var/lib/blueprint/pipeline-control-plane " + str(Path(config.spool_root) / "results"))
+
+
 def _output_resume_environment(config: DoorConfig, request: dict[str, Any]) -> dict[str, str]:
     values = {"DOOR_VENV_PYTHON": config.venv_python, "DOOR_CONTROL_PLANE_REPO": config.active_release_link,
               "DOOR_CANARY_ROOT": _canary_root(config), "DOOR_RUN": request["run"],
@@ -418,6 +434,11 @@ _LAUNCHES: dict[str, _LaunchSpec] = {
         "blueprint-operator-door-scene-window", "door-extend-scene-execution-window.sh", "5min",
         lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
         _scene_window_environment, _scene_window_properties),
+    # Named by a hash of the intent id; the caller text never reaches a unit name.
+    "extend-scene-execution-budget": _LaunchSpec(
+        "blueprint-operator-door-scene-budget", "door-extend-scene-execution-budget.sh", "5min",
+        lambda request: hashlib.sha256(request["intent_id"].encode("utf-8")).hexdigest()[:12],
+        _scene_budget_environment, _scene_budget_properties),
     "lane-scratch": _LaunchSpec("blueprint-operator-door-scratch", "door-lane-scratch.sh", "2min",
                                 lambda request: hashlib.sha256((request["lane"] + "/" + request.get("name", ""))
                                                                 .encode("utf-8")).hexdigest()[:12],
@@ -541,10 +562,11 @@ def _script_env(config: DoorConfig, request_id: str, request: dict[str, Any],
         **_stage_release_provenance(config, request_id, request),
         **(extra or {}),
     }
-    if request["kind"] == "extend-scene-execution-window":
+    if request["kind"] in {"extend-scene-execution-window", "extend-scene-execution-budget"}:
         # The authenticated token name, recorded in the extension as who asked.
         if not isinstance(requested_by, str) or _CALLER.fullmatch(requested_by) is None:
-            raise RequestRefused("scene_window_caller_invalid")
+            raise RequestRefused("scene_window_caller_invalid" if request["kind"].endswith("window")
+                                 else "scene_budget_caller_invalid")
         values["DOOR_REQUESTED_BY"] = requested_by
     return [f"--setenv={key}={value}" for key, value in values.items()]
 

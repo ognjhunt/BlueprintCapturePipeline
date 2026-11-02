@@ -189,6 +189,8 @@ STORAGE_ROOTS: tuple[StorageRoot, ...] = (
                 "starts); carries nothing, so losing it only waits for the next timer poll"),
     # --- reproducible derived inputs
     StorageRoot(f"{_INPUTS}/prepared-references", "cache", "blueprint", "materialized references and content store"),
+    StorageRoot(f"{_INPUTS}/scene-configuration-toolchain-archives", "cache", "blueprint",
+                "content-addressed provider toolchain archives; rebuilt from the published toolchain"),
     StorageRoot(f"{_INPUTS}/sam31-preparations", "cache", "blueprint", "reproducible SAM preparation artifacts"),
     StorageRoot(f"{_INPUTS}/compiled-episodes", "cache", "blueprint", "compiled episodes and adapter member store"),
     StorageRoot(f"{_INPUTS}/particlefield-runtime-assets", "cache", "blueprint",

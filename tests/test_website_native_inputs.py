@@ -418,3 +418,39 @@ def test_construction_without_a_support_under_the_subject_is_a_named_refusal(tmp
     with pytest.raises(ValueError, match="^website_native_construction_support_missing$"):
         prepare_construction_stages(runtime_inputs_path=tmp_path / "native/runtime_inputs.json",
                                     preparation_path=preparation_path)
+
+
+def test_the_owner_deployed_artisan_cap_raises_a_frozen_website_stage_three(tmp_path, monkeypatch):
+    """capture-447ae4f4, 2026-11-02: the owner raised the per-object cap to $25; the
+    retry still froze $15 because stage 3 is reused from the first preparation."""
+    from blueprint_pipeline import website_owner_authoring_cap as owner_cap
+    release = tmp_path / "task-evaluation-scene-configuration-release.env"
+    release.write_text("BLUEPRINT_TASK_EVALUATION_SCENE_CONFIGURATION_TOOLCHAIN_ROOT=/x\n"
+                       "BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD=25\n")
+    monkeypatch.setattr(owner_cap, "RELEASE_ENVIRONMENT_FILE", release)
+    envelope, configs = packet(tmp_path / "raised", authoring_backend="artisan_v1")
+    assert configs["stage-3"]["authoring_budget"]["maximum_cost_usd"] == 25.0
+    validate_website_native_inputs(envelope=envelope, configurations=configs, require_render_inputs=False)
+    # A lower deployed value never lowers a frozen cap; no file changes nothing.
+    release.write_text("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD=5\n")
+    assert packet(tmp_path / "lower", authoring_backend="artisan_v1")[1]["stage-3"]["authoring_budget"][
+        "maximum_cost_usd"] == 15.0
+    release.unlink()
+    assert packet(tmp_path / "absent", authoring_backend="artisan_v1")[1]["stage-3"]["authoring_budget"][
+        "maximum_cost_usd"] == 15.0
+
+
+def test_only_a_raised_cumulative_artisan_cap_passes_the_stage_three_rederivation():
+    from blueprint_pipeline.website_owner_authoring_cap import same_except_owner_cap, with_owner_artisan_cap
+    derived = {"authoring_backend": "artisan_v1", "replacement_identity": {"id": "tray"},
+               "authoring_budget": {"schema_version": "task_object_authoring_budget.v1", "mode": "finite_cap",
+                                    "maximum_cost_usd": 15.0,
+                                    "scope": "whole_authoring_stage_cumulative_including_resume"}}
+    raised = with_owner_artisan_cap(derived, 25.0)
+    assert raised["authoring_budget"]["maximum_cost_usd"] == 25.0 and same_except_owner_cap(raised, derived)
+    assert with_owner_artisan_cap(derived, 10.0) == derived and same_except_owner_cap(derived, derived)
+    assert not same_except_owner_cap(derived, raised)  # never lowered
+    assert not same_except_owner_cap({**raised, "replacement_identity": {"id": "other"}}, derived)
+    astra = {**derived, "authoring_backend": "astra_cad_blender_v1"}
+    assert with_owner_artisan_cap(astra, 25.0) == astra
+    assert not same_except_owner_cap({**astra, "authoring_budget": raised["authoring_budget"]}, astra)

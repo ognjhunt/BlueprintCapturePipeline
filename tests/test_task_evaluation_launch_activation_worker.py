@@ -1086,6 +1086,11 @@ def test_activation_builds_robot_neutral_scene_configuration_context(
     assert context["reference_bindings"][
         "raw_interiorgs_bytes_authorized_for_provider"
     ] is False
+    # The worker binds the sealed manifest's digest without re-hashing the
+    # ~10.8 GB tree; provider_bundle validates every byte against this digest.
+    assert context["operations"]["expected_toolchain_digest"] == (
+        context["reference_bindings"]["toolchain_digest"]
+    )
     decision = {
         "schema_version": "task_evaluation_scene_configuration_disclosure_decision.v1",
         "render_execution_site": "provider_gpu",
@@ -1140,6 +1145,86 @@ def test_activation_builds_robot_neutral_scene_configuration_context(
     assert provider_context["reference_bindings"][
         "provider_disclosure_decision_digest"
     ] == decision["decision_digest"]
+
+
+def test_scene_configuration_context_binds_the_manifest_without_hashing_the_toolchain(
+    tmp_path: Path,
+) -> None:
+    """provider_bundle validates every byte against the bound digest instead."""
+
+    from blueprint_pipeline import (
+        task_evaluation_scene_configuration_builtin_producers as producers,
+    )
+
+    preparation = test_configuration_request()
+    activation = activation_request(lane="task_evaluation_scene_configuration")
+    activation["team_namespace"] = preparation["team_namespace"]
+    activation["expected_production_commit"] = preparation["expected_production_commit"]
+    envelope = tmp_path / "construction-envelope.json"
+    envelope.write_text('{"schema_version":"fixture.v1"}\n', encoding="utf-8")
+    envelope.chmod(0o440)
+    toolchain = scene_configuration_toolchain(
+        tmp_path / "toolchain", preparation["expected_production_commit"]
+    )
+    manifest = producers.validate_scene_configuration_toolchain(
+        root=toolchain, expected_source_commit=preparation["expected_production_commit"]
+    )
+    project = tmp_path / "project-spend.json"
+    project.write_text("{}\n", encoding="utf-8")
+    provider_zero = tmp_path / "provider-zero.json"
+    provider_zero.write_text("{}\n", encoding="utf-8")
+    victim = next(path for path in sorted(toolchain.rglob("run")) if path.is_file())
+    victim.chmod(0o755)
+    victim.write_text("#!/bin/sh\nexit 0\n")
+    victim.chmod(0o555)
+    hashed: list[Path] = []
+    original_sha256 = producers._sha256
+    producers._sha256 = lambda path: hashed.append(path) or original_sha256(path)
+    try:
+        context = worker._build_scene_configuration_context(
+            activation_request=activation,
+            preparation_request=preparation,
+            construction_input={
+                "kind": "task_evaluation_scene_configuration",
+                "construction_envelope_path": str(envelope),
+                "construction_envelope_digest": "sha256:" + "e" * 64,
+                "recipe_digest": "sha256:" + "f" * 64,
+                "source_commit": preparation["expected_production_commit"],
+            },
+            activation_materialized={
+                "lineage.project_spend_reconciliation": project,
+                "lineage.initial_provider_zero": provider_zero,
+            },
+            activation_root=tmp_path / "activation",
+            repository_root=tmp_path,
+            toolchain_root=toolchain,
+            destination_prefix="s3://blueprint-production-inputs/activated",
+            profile_dir=tmp_path / "profiles",
+            webapp_catalog=tmp_path / "catalog.json",
+            standing_authorization_dir=tmp_path / "authorizations",
+            service_account=SERVICE_ACCOUNT,
+            service_group=SERVICE_ACCOUNT,
+            configured_controls_autostart_intent_root=(
+                _configured_controls_intent_root(tmp_path, preparation)
+            ),
+        )
+    finally:
+        producers._sha256 = original_sha256
+    assert hashed == []
+    assert context["reference_bindings"]["toolchain_digest"] == manifest["toolchain_digest"]
+    assert context["operations"]["expected_toolchain_digest"] == manifest["toolchain_digest"]
+    # The byte check still happens, in provider_bundle, before anything ships.
+    with pytest.raises(producers.TaskEvaluationSceneConfigurationStageProducerError,
+                       match="toolchain_file_invalid"):
+        producers.validate_scene_configuration_toolchain(
+            root=toolchain, expected_source_commit=preparation["expected_production_commit"]
+        )
+    # The seal and release binding are still checked here.
+    with pytest.raises(producers.TaskEvaluationSceneConfigurationStageProducerError,
+                       match="toolchain_manifest_invalid"):
+        producers.read_scene_configuration_toolchain_manifest(
+            root=toolchain, expected_source_commit="b" * 40
+        )
 
 
 def _bytes_digest(payload: bytes) -> str:

@@ -30,7 +30,10 @@ def context() -> dict:
 def sandbox(context_value: dict) -> SandboxedAssetRunner:
     return SandboxedAssetRunner(read_roots=[Path(p) for p in context_value["read_roots"]],
         write_root=Path(context_value["write_root"]),
-        write_paths=None if context_value.get("write_paths") is None else [Path(p) for p in context_value["write_paths"]])
+        write_paths=None if context_value.get("write_paths") is None else [Path(p) for p in context_value["write_paths"]],
+        # The interpreter's own loader path (Kit's Python finds libpython through it).
+        library_environment=context_value.get("library_environment") or {},
+        library_executables=[Path(p) for p in context_value.get("library_executables") or []])
 
 
 def prepare_workspace(root: Path) -> None:

@@ -33,6 +33,7 @@ from blueprint_pipeline.public_scene_artifixer3d_bundle import (
     VGG16_WEIGHTS_SOURCE_URL,
 )
 from blueprint_pipeline.service_account_reader import ServiceAccountReader
+from blueprint_pipeline.task_object_authoring_backend import ARTISAN_BUDGET_ENV
 from blueprint_pipeline.immutable_file_digest import immutable_file_digest_cache
 from blueprint_pipeline.provision_phase_clock import mark_phase, phase_clock
 from blueprint_pipeline.provision_staging_sweep import (  # the provision CLI's startup sweep
@@ -70,6 +71,15 @@ DEFAULT_ACTIVATION_DESTINATION_PREFIX = (
 )
 Readback = Callable[[Path], bytes]
 
+
+#: Owner decision (2026-11-02, session_01VxbcMNBnpNS4uksXRTqbBj): $25 per
+#: ARTISAN object, cumulative across resumes. capture-447ae4f4's tray took
+#: $13.76 metered to design and build and ran out in review at the $15 code
+#: default. The deploy installs it with this release's other scene bindings, so
+#: the cap every new configuration freezes is reviewed and versioned, not a
+#: host-local edit. The checked-in quote contract still documents the $15 code
+#: default.
+ARTISAN_AUTHORING_MAX_COST_USD = "25"
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -369,6 +379,8 @@ def provision_scene_configuration_release(
             "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX": (
                 DEFAULT_ACTIVATION_DESTINATION_PREFIX
             ),
+            # The per-object ARTISAN cap new configurations freeze.
+            ARTISAN_BUDGET_ENV: ARTISAN_AUTHORING_MAX_COST_USD,
         },
         "scene_specific_artifacts_built": False,
         "provider_mutation_performed": False,

@@ -201,6 +201,8 @@ def test_release_provisioner_builds_scene_neutral_runtime_and_all_components(
         "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_DESTINATION_PREFIX": (
             "s3://blueprint/task-evaluation/production-inputs/task-evaluation-activations"
         ),
+        # Owner decision 2026-11-02: the per-object ARTISAN cap is deploy-managed.
+        "BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD": "25",
     }
     # Exercise the consumer too: new bindings must survive the real installer.
     from scripts import deploy_control_plane_commit as deployment
