@@ -62,6 +62,7 @@ from .control_plane_disk_usage import (
 )
 from . import control_plane_stall_alarm as stall_alarm
 from . import provider_spend_alerts as provider_spend
+from . import website_preparation_delivery_index as preparation_delivery
 from .decision_evidence_contracts import canonical_digest
 
 SCHEMA_VERSION = "control_plane_capacity_report.v1"
@@ -130,6 +131,9 @@ PAGE_ALERT_CODES = frozenset({
     "storage_class_over_budget",
     # Vast stops every instance once its balance runs out.
     "provider_credit_insufficient",
+    # A live website preparation status callback undelivered for over an hour (D-05);
+    # parked callbacks only warn. The disk level is unchanged.
+    *preparation_delivery.PAGE_CODES,
     # OpenAI, World Labs or Google Cloud spend crossed its line (B-08); the disk level is unchanged.
     *provider_spend.PAGE_CODES,
     # A live job that stopped moving (control_plane_stall_alarm); the disk level is unchanged.
@@ -767,6 +771,8 @@ _SUMMARY_ALERT_KEYS = (
     "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
     "allocated_bytes", "attributed_fraction", "severity", "reason", "status", "alert_count", "count",
     "largest_bytes", "credit_usd", "required_usd",
+    # Preparation status callbacks: the live count is ``count``; parked ones only warn.
+    "parked_count",
     # Provider spend pages: amounts, the line and the window; never keys or paths.
     "spend_usd", "threshold_usd", "limit_usd", "window", "http_status",
     "top_retained_reasons",
@@ -939,6 +945,10 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
         summary = (f"control plane: {first.get('storage_class')} holds at least "
                    f"{float(first.get('allocated_bytes') or 0) / GIB:.1f} GiB, over its "
                    f"{float(first.get('budget_bytes') or 0) / GIB:.0f} GiB budget")
+    elif first.get("code") == preparation_delivery.STALLED_CODE:
+        summary = (f"website preparation status: a callback undelivered for "
+                   f"{float(first.get('age_seconds') or 0) / 3600:.1f}h "
+                   f"({first.get('count')} live, {first.get('parked_count') or 0} parked)")
     ineffective = next(
         (row for row in page_alerts if row.get("code") == "reclaim_ineffective"), None
     )
@@ -1120,13 +1130,16 @@ def run_controller(
     storage_gc_summary_path: Path = DEFAULT_STORAGE_GC_SUMMARY,
     stall_check: Callable[[float, Mapping[str, Any] | None], Mapping[str, Any]] | None = None,
     spend_check: Callable[[float], Mapping[str, Any]] | None = None,
+    delivery_check: Callable[[float], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """One tick. By default, survey when stale or forced. Pass ``survey=None``
     only to reuse an existing report without scanning. ``stall_check`` (the
     service passes ``control_plane_stall_alarm.observe_stalls``) adds its
     pages to this tick's alerts; it reads job state and never changes it.
     ``spend_check`` (``provider_spend_alerts``) adds provider spend pages the
-    same way; it only reads, and nothing admits or refuses work on it."""
+    same way; it only reads, and nothing admits or refuses work on it.
+    ``delivery_check`` (``website_preparation_delivery_index``) reads the
+    listener's preparation status delivery metrics the same way."""
 
     observed = time.time() if now is None else float(now)
     previous = _read_json(report_root / "latest.json")
@@ -1191,6 +1204,17 @@ def run_controller(
         report["alerts"].extend(rows)
         _raise_level(report, [str(row.get("code") or "") for row in rows])
         report["provider_spend"] = spend
+    if delivery_check is not None:
+        # The same rule: a live status callback over an hour old pages, a parked one warns.
+        try:
+            delivery = dict(delivery_check(observed))
+        except Exception:  # noqa: BLE001 - never stop measurement
+            delivery = {"status": "failed", "alerts": [{"code": preparation_delivery.METRICS_UNREADABLE_CODE,
+                                                        "reason": "delivery_check_failed"}]}
+        rows = [dict(row) for row in delivery.pop("alerts", None) or [] if isinstance(row, Mapping)]
+        report["alerts"].extend(rows)
+        _raise_level(report, [str(row.get("code") or "") for row in rows])
+        report["preparation_delivery"] = delivery
     if survey is _DEFAULT_SURVEY:
         survey = survey_usage
     usage, usage_error = _refresh_usage(
@@ -1358,6 +1382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         stall_check=None if stall_config is None else (
             lambda now, prior: stall_alarm.observe_stalls(stall_config, now=now, previous=prior)),
         spend_check=provider_spend.configured_spend_check(),
+        delivery_check=preparation_delivery.configured_delivery_check(),
     )
     if args.print_report:
         print(json.dumps(report, indent=2, sort_keys=True))

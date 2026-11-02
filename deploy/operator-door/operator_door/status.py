@@ -275,7 +275,9 @@ def _handoff_delivery(config: DoorConfig) -> dict[str, Any]:
         raise ValueError("delivery_metrics_schema_invalid")
     keys = ("observed_at_epoch", "attempted", "delivered", "unavailable", "due_backlog",
             "oldest_due_age_seconds", "hint_count_scanned", "hint_scan_limit_reached", "invalid_hint_count",
-            "overloaded", "repair_scanned", "successful_delivery_lag_seconds")
+            "overloaded", "repair_scanned", "successful_delivery_lag_seconds",
+            # D-05: live callbacks (due or waiting out a retry) and parked ones, counted apart.
+            "live_count", "oldest_live_age_seconds", "parked_count", "oldest_parked_age_seconds")
     safe: dict[str, Any] = {"schema_version": document["schema_version"]}
     for key in keys:
         value = document.get(key)

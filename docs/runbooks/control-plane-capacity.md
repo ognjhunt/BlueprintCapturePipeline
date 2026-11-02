@@ -174,6 +174,28 @@ skipped. Thresholds are minutes in the environment file:
 `BLUEPRINT_STALL_ALARM=0` turns the alarm off. It never changes a queue, a
 progression, a provider or a unit.
 
+## Preparation status callbacks
+
+The same tick reads the listener's
+`/var/lib/blueprint/pubsub-handoffs/.website_preparation_delivery_metrics.json`
+(also `preparation_delivery` in `door status`). It only reads.
+
+- `preparation_delivery_stalled` (page): a live callback, due now or waiting
+  out a retry, has been undelivered for over an hour (`age_seconds`, `count`,
+  with `parked_count` for context). Read the capture's
+  `website_preparation_status_delivery.json`: `last_error_type` and
+  `last_unavailable_reason` name the failed check, and a
+  `delivery_attempt_count` of 0 means the status read fails before the WebApp.
+- `preparation_delivery_parked` (warn): callbacks whose status read failed on
+  every attempt for a day (`parked_reason`
+  `preparation_status_persistently_unavailable`). They keep their record, are
+  retried every 6 hours and leave the due backlog. One successful read, or a
+  newer revision of the job, makes them live again.
+- `preparation_delivery_metrics_unreadable` (warn): the metrics file is
+  unreadable, incomplete or more than an hour old (`reason`). The ages of a
+  silent listener's last metrics grow with the silence, so a live callback
+  still pages.
+
 ## Owner's Phase 0 checklist
 
 1. Review the current `status` and `usage` evidence; approve a root-disk resize

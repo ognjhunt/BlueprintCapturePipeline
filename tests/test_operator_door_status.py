@@ -255,6 +255,23 @@ def test_status_survives_a_failing_section(host_tree: dict[str, Path]) -> None:
     assert status["active_release"]["commit"] == "a" * 40
 
 
+def test_preparation_delivery_shows_live_and_parked_callbacks(host_tree: dict[str, Path]) -> None:
+    # D-05: parked callbacks leave the due backlog and are counted on their own.
+    metrics = host_tree["base"] / "handoffs" / ".website_preparation_delivery_metrics.json"
+    metrics.parent.mkdir()
+    metrics.write_text(json.dumps({
+        "schema_version": "website_preparation_delivery_metrics.v1", "observed_at_epoch": 1_000.0,
+        "due_backlog": 0, "oldest_due_age_seconds": 0.0, "overloaded": False, "live_count": 1,
+        "oldest_live_age_seconds": 4_000.0, "parked_count": 7, "oldest_parked_age_seconds": 408_000.0,
+        "capture_relative_path": "never/projected"}), encoding="utf-8")
+    config = DoorConfig(**{**_config(host_tree).__dict__, "handoff_delivery_metrics": str(metrics)})
+    status = build_status(config, _host(host_tree, FakeRunner({})), caller={})
+    assert status["preparation_delivery"] == {
+        "schema_version": "website_preparation_delivery_metrics.v1", "observed_at_epoch": 1_000.0,
+        "due_backlog": 0, "oldest_due_age_seconds": 0.0, "overloaded": False, "live_count": 1,
+        "oldest_live_age_seconds": 4_000.0, "parked_count": 7, "oldest_parked_age_seconds": 408_000.0}
+
+
 def test_a_receipt_with_credential_shaped_content_names_the_refusal(host_tree: dict[str, Path]) -> None:
     receipt = host_tree["state"] / "deploy-receipts" / "iteration_dddddddddddd.json"
     receipt.write_text(json.dumps({"status": "deployed", "api_key": "abcdefghijklmnop12"}), encoding="utf-8")
