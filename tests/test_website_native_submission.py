@@ -514,6 +514,50 @@ def test_artisan_owner_ceiling_bounds_compute_before_any_staging(tmp_path, monke
     assert authority_path.read_bytes() == authority_bytes
 
 
+@pytest.mark.parametrize("carried,allocation", [(None, 15.0), (5.0, 10.0), (13.761, 1.23)])
+def test_a_continuation_reserves_only_what_its_source_left(tmp_path, monkeypatch, carried, allocation):
+    """capture-447ae4f4, 2026-11-02: the cumulative cap was $25 and the source had
+    spent $13.76, so the successor could spend $11.24, yet it reserved $30 and
+    did not fit the owner's $60. It now reserves the remainder plus compute."""
+    from blueprint_pipeline import task_evaluation_artisan_continuation as continuation
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_configuration import _stage_three_refusal
+    monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")
+    monkeypatch.setenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", "15")
+    seen = []
+    def factory(**kwargs):
+        seen.append(kwargs)
+        return None if carried is None else {"cost_usd": carried, "call_count": 3, "largest_call_usd": 1.0}
+    monkeypatch.setattr(continuation, "factory_carried_spend", factory)
+    kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20,
+                             authoring_backend="artisan_v1")
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"]
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    spend = request["spend"]
+    assert seen[0]["intent_digest"] == accepted["intent_digest"]
+    assert spend["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] == allocation
+    from blueprint_pipeline.task_evaluation_scene_configuration_runtime_budget import MAX_PROVIDER_COMPUTE_SPEND_USD
+    assert spend["hard_cap_usd"] == pytest.approx(min(20, MAX_PROVIDER_COMPUTE_SPEND_USD + allocation))
+    configuration = json.loads((root / "configuration/stage_3.json").read_text())
+    assert configuration["authoring_budget"]["maximum_cost_usd"] == 15  # the cumulative cap is unchanged
+    # The cap binding admits a smaller allocation (later checks need a full envelope).
+    assert _stage_three_refusal(configuration, {"request": request}) != "artisan_framework_or_budget_binding"
+
+
+def test_a_request_may_not_allocate_more_than_the_cumulative_cap(tmp_path, monkeypatch):
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_configuration import _stage_three_refusal
+    monkeypatch.setenv("BLUEPRINT_TASK_OBJECT_AUTHORING_BACKEND", "artisan_v1")
+    monkeypatch.setenv("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD", "15")
+    kwargs, _ = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20,
+                      authoring_backend="artisan_v1")
+    materialize_website_submission(**kwargs)
+    root = kwargs["staging_root"]
+    request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+    configuration = json.loads((root / "configuration/stage_3.json").read_text())
+    request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"] = 15.01
+    assert _stage_three_refusal(configuration, {"request": request}) == "artisan_framework_or_budget_binding"
+
+
 def test_owner_grant_admits_the_articulated_quote_above_the_consented_ceiling(tmp_path, monkeypatch):
     """$20 consent plus an owner-approved $35 grant admits the one $31 build."""
     from blueprint_pipeline.task_evaluation_scene_execution_budget import ACK, extend_scene_execution_budget
