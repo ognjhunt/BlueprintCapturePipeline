@@ -336,6 +336,32 @@ def _settle_retired_rows(*, directory, state, config, retired=None, evidence=Non
     state["terminal_settlements"] = summary
 
 
+def _settle_ended_authority(*, directory, intent, state, config, now):
+    """Settle the current attempt's holds once authority ended; accounting only, never a gate.
+
+    The authority gate and a terminal outcome both stop progression before any
+    successor retires the current attempt, so its rows would stay held for good.
+    Settles only a terminal launch that proves it never allocated anything.
+    """
+    try:
+        if not ((directory / "revoked.json").exists() or now >= intake.effective_execution_expiry(directory, intent)):
+            return
+        from .task_evaluation_terminal_scene_attempt_settlement import settle_ended_authority_attempt
+        outcome = settle_ended_authority_attempt(directory=directory, intent=intent, state=state, config=config, now=now)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        # Recorded as its stable code only, so an unchanged refusal does not rewrite progression.
+        outcome = {"status": "not_settled", "reason": str(exc).split(":", 1)[0][:120]}
+    if outcome is None or outcome.get("status") == "waiting_for_ownership_reconciliation":
+        return
+    summary = dict(state.get("terminal_settlements") or {})
+    if outcome.get("status") == "not_settled":
+        summary["ended_authority"] = outcome
+    else:
+        summary["ended_authority"] = {"status": outcome["status"], "retired_attempt_id": outcome["retired_attempt_id"],
+                                      "settled_rows": sum(row["status"] == "settled" for row in outcome["rows"])}
+    state["terminal_settlements"] = summary
+
+
 def _release_successor(*, directory, intent, state, config, release, now):
     from .task_evaluation_scene_progression_recovery import reconcile_ownership
     previous_id = state["attempt_id"]
@@ -550,6 +576,8 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         return progress
     if state.get("release_predecessors") or state.get("recovery_predecessors"):
         _settle_retired_rows(directory=directory, state=state, config=config)
+    # Before the read-only joins, the outcome return and the authority gate, all of which end the pass.
+    _settle_ended_authority(directory=directory, intent=intent, state=state, config=config, now=now)
     # Spec E: once activation has been issued, join any retained downstream
     # terminal receipts (policy result, authenticated Website readback,
     # provider-zero closure) back into the persistent owner status. This is a

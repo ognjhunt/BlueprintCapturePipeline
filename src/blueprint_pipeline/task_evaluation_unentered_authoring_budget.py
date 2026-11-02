@@ -1,15 +1,21 @@
-"""Release only model allowances proven unentered by retained terminal evidence.
+"""Release only model allowances proven unentered, or spent, by retained terminal evidence.
 
 Native billing stays at its full authorized allowance. These early refusal
 contracts precede the first model gate; an ordinary failure, a partial authoring
 directory, or an incomplete archive is not evidence of zero model spending.
+
+``artisan_proven_authoring_spend`` (B-04) covers ARTISAN runs past the gate: a
+completed official cost gate that agrees with the usage meter proves what the
+authoring stage spent, so the allowance it did not spend can be released.
 """
 from __future__ import annotations
 
+from datetime import datetime
 import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import zipfile
 
 from .decision_evidence_contracts import canonical_digest
@@ -415,4 +421,234 @@ def prestage_authoring_cap_upper_bound(result, request):
                 _require("AssetAuthoringError" in log)
         return cap
     except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError, zipfile.BadZipFile):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# B-04: a terminal ARTISAN attempt keeps its proven authoring spend, not its cap.
+
+#: Recorded with every proof, so each settled figure names the rule that produced it.
+PROVEN_AUTHORING_SPEND_POLICY = "artisan_proven_authoring_spend.v1"
+_ARTISAN_RUNTIME = "stages/stage-3/producer/artisan_runtime/"
+_COST_GATE = _ARTISAN_RUNTIME + "official_openai_cost/"
+_GATE_RESERVATION = "openai_official_cost_run_reservation.v1.json"
+_GATE_COMPLETION = "openai_official_cost_run_completion.v1.json"
+_GATE_ATTESTATION = "openai_cost_scope_attestation_content_agents.json"
+#: The driver's failure snapshots: one directory per failed controller run, numbered in order.
+_GATE_FAILURE_SNAPSHOT = re.compile(r"attempts/(0|[1-9][0-9]{0,3})/("
+                                    + re.escape(_GATE_RESERVATION) + "|" + re.escape(_GATE_COMPLETION) + ")")
+_CONTINUATION_ROOT = _ARTISAN_RUNTIME + "continuation/"
+_CONTINUATION_ADOPTION = _CONTINUATION_ROOT + "source/adoption.v1.json"
+_CONTINUATION_SOURCE_USAGE = _CONTINUATION_ROOT + "source/blueprint_usage.json"
+_ARTISAN_STAGE_FAILURE = ("scene_configuration_provider_failed:TaskEvaluationSceneConfigurationStageProducerError:"
+                          "scene_configuration_stage_producer_failed:content_agents_rigid_replacement:1")
+#: Float noise only. An official figure above the meter by more is a disagreement.
+_AGREEMENT_TOLERANCE_USD = 1e-6
+
+
+def _usd(value):
+    _require(isinstance(value, (int, float)) and not isinstance(value, bool)
+             and math.isfinite(value) and value >= 0)
+    return float(value)
+
+
+def artisan_proven_authoring_spend(result, request):
+    """What a terminal ARTISAN stage provably spent through its model cost gate, else ``None``.
+
+    The owner approved settling failed attempts at their proven cost
+    (2026-11-02, B-04): capture-447ae4f4 held about $58 against about $18
+    spent, because every attempt that entered ARTISAN kept its whole authoring
+    allowance. Proof comes from the digest-bound output archive only:
+
+    - the official cost gate reserved before any model call, for this run, this
+      stage input, this candidate and this authority, at most the signed
+      ``content_agents`` allowance;
+    - every controller run under that reservation left a completion or failure
+      snapshot, and the latest one binds the ARTISAN terminal record whose usage
+      is exactly the retained meter, so no metered call follows it;
+    - every metered call is priced (a call that raised is priced at its own
+      upper bound) under the gate's own cap;
+    - the official spend observed since the reservation's baseline is no more
+      than the meter's total. The Costs endpoint lags, so the official figure
+      may fall short of the meter; above it, something spent unmetered.
+
+    The proven spend is the larger of the two figures. Anything missing,
+    malformed, disagreeing, or past stage 3 returns ``None`` and the caller
+    keeps the full allowance. A continuation meters only its own increment:
+    the spend it carries stays settled under its source attempt, so it is
+    recorded here and never counted (``task_evaluation_artisan_continuation``).
+    """
+    try:
+        _sealed(result, "result_digest")
+        _require(result.get("status") == "blocked" and result.get("retry_cap") == 0
+                 and result.get("api_pretraining") is None and result.get("cpu_prestage") is None)
+        allowance = _usd(request["spend"]["external_service_caps"]["openai"]["stage_max_cost_usd"]["content_agents"])
+        _require(allowance > 0)
+        path = Path(result["provider_runtime_output_zip_path"])
+        _require(not path.is_symlink() and path.is_file())
+        with path.open("rb") as stream:
+            archive_digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+        _require(archive_digest == result["provider_runtime_output_zip_sha256"])
+        records = {}
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            _require(len(names) == len(set(names)))
+
+            def read(name):
+                _require(archive.getinfo(name).file_size <= 2 * 1024**2)
+                data = archive.read(name)
+                records[name] = "sha256:" + hashlib.sha256(data).hexdigest()
+                return data
+
+            def read_json(name):
+                value = json.loads(read(name))
+                _require(isinstance(value, dict))
+                return value
+
+            from .task_evaluation_scene_configuration_output_archive import EXCLUDED_PARTS
+            _require(json.loads(read("provider_output_zip_exclusions.json")) == {
+                "schema_version": "task_evaluation_scene_configuration_provider_output_zip_exclusions.v1",
+                "excluded_directory_names": sorted(EXCLUDED_PARTS)})
+            provider = _sealed(read_json("task_evaluation_scene_configuration_provider_result.v1.json"),
+                               "result_digest")
+            _require(provider.get("status") == "blocked" and provider.get("first_stage_started") is True
+                     and provider.get("run_id") == result["run_id"] == request["run_id"]
+                     and provider.get("source_commit") == result["source_commit"]
+                     == request["expected_production_commit"]
+                     and provider.get("blockers") == [_ARTISAN_STAGE_FAILURE]
+                     and "provider_result_blocker:" + _ARTISAN_STAGE_FAILURE in result.get("blockers", []))
+            # Stage 3 failed and nothing after it ran under this attempt's allowances.
+            _require(not any(name.startswith("stages/stage-") and not name.startswith(
+                ("stages/stage-1/", "stages/stage-2/", "stages/stage-3/producer/")) for name in names))
+            prefix = "stages/stage-3/producer/"
+            stage_input_bytes = read(prefix + "stage_production_input.v1.json")
+            stage_input = json.loads(stage_input_bytes)
+            _require(stage_input.get("run_id") == result["run_id"]
+                     and stage_input.get("source_commit") == result["source_commit"]
+                     and stage_input["configuration"].get("authoring_backend") == "artisan_v1"
+                     and stage_input["configuration"].get("source_observation_kind") == "website_capture_frames")
+            dependencies = json.loads(read(prefix + "dependency_results.v1.json"))
+            _require([row.get("stage_id") for row in dependencies] == ["stage-1", "stage-2"])
+            for row in dependencies:
+                _sealed(row, "stage_result_digest")
+                _require(row.get("status") == "completed" and row.get("execution_class") == "no_spend"
+                         and row.get("paid_execution_requested") is False
+                         and row.get("provider_mutations_performed") == 0)
+            issued = _sealed(read_json(_ARTISAN_RUNTIME + "blueprint_request.v1.json"), "request_digest")
+            _require(issued.get("run_id") == request["run_id"] and issued.get("backend") == "artisan_v1")
+            context = read_json(_ARTISAN_RUNTIME + "bridge_context.v1.json")
+
+            main, snapshots = set(), {}
+            for name in names:
+                if not name.startswith(_COST_GATE):
+                    continue
+                relative = name[len(_COST_GATE):]
+                if relative in (_GATE_RESERVATION, _GATE_COMPLETION, _GATE_ATTESTATION):
+                    main.add(relative)
+                    continue
+                match = _GATE_FAILURE_SNAPSHOT.fullmatch(relative)
+                _require(match is not None)
+                snapshots.setdefault(int(match[1]), set()).add(match[2])
+            _require(_GATE_RESERVATION in main and sorted(snapshots) == list(range(len(snapshots)))
+                     and all(files == {_GATE_RESERVATION, _GATE_COMPLETION} for files in snapshots.values()))
+            reservation_bytes = read(_COST_GATE + _GATE_RESERVATION)
+            reservation = _sealed(json.loads(reservation_bytes), "reservation_receipt_digest")
+            held = reservation["provider_reservation"]
+            cap = _usd(reservation["maximum_cost_usd"])
+            baseline = _usd(held["baseline_cost_snapshot"]["total_cost_usd"])
+            identity = {"lane_id": "task_evaluation_scene_configuration_content_agents",
+                        "run_id": request["run_id"],
+                        "request_digest": "sha256:" + hashlib.sha256(stage_input_bytes).hexdigest(),
+                        "candidate_digest": issued["source_candidate"]["digest"],
+                        "authorization_receipt_digest": result["authority_digest"]}
+            _require(reservation.get("schema_version") == "openai_official_cost_run_reservation.v1"
+                     and reservation.get("status") == "reserved_before_openai_call"
+                     and all(reservation.get(key) == value for key, value in identity.items())
+                     and 0 < cap <= allowance
+                     and held.get("candidate_id") == request["run_id"]
+                     and held.get("reserved_max_cost_usd") == cap)
+            completions = [_COST_GATE + _GATE_COMPLETION] if _GATE_COMPLETION in main else []
+            for index in sorted(snapshots):
+                # One original reservation governs every run; each failure snapshot copies it.
+                _require(read(f"{_COST_GATE}attempts/{index}/{_GATE_RESERVATION}") == reservation_bytes)
+                completions.append(f"{_COST_GATE}attempts/{index}/{_GATE_COMPLETION}")
+            _require(completions)  # A reservation without a snapshot: the gate never completed.
+            observed, ordered = [], []
+            for name in completions:
+                completion = _sealed(read_json(name), "completion_receipt_digest")
+                snapshot = completion["official_completion_snapshot"]
+                cost = _usd(completion["provider_observed_cost_usd"])
+                completed_at = datetime.fromisoformat(completion["completed_at"])
+                _require(completion.get("schema_version") == "openai_official_cost_run_completion.v1"
+                         and completion.get("status") == "official_cost_reporting_pending"
+                         and all(completion.get(key) == value for key, value in identity.items())
+                         and completion.get("reservation_receipt_digest") == reservation["reservation_receipt_digest"]
+                         and completion.get("cost_reservation_digest") == held["cost_reservation_digest"]
+                         and snapshot.get("project_id") == held.get("project_id")
+                         and snapshot.get("api_key_id") == held.get("api_key_id")
+                         and completed_at.tzinfo is not None
+                         and math.isclose(cost, round(_usd(snapshot["total_cost_usd"]) - baseline, 8),
+                                          rel_tol=0, abs_tol=1e-8))
+                observed.append(cost)
+                ordered.append((completed_at, completion))
+            ordered.sort(key=lambda pair: pair[0])
+            _require(len(ordered) == 1 or ordered[-1][0] > ordered[-2][0])
+            latest = ordered[-1][1]
+
+            usage = read_json(_ARTISAN_RUNTIME + "blueprint_usage.json")
+            terminal = read_json(_ARTISAN_RUNTIME + "terminal.v1.json")
+            calls = usage.get("calls")
+            _require(usage.get("schema_version") == "artisan_upstream_usage.v1"
+                     and usage.get("maximum_cost_usd") == context.get("maximum_cost_usd") == cap
+                     and usage.get("maximum_requests") == context.get("maximum_requests")
+                     and usage.get("deadline_epoch") == context.get("deadline_epoch")
+                     and str(context.get("usage_file")).endswith("/" + _ARTISAN_RUNTIME + "blueprint_usage.json")
+                     and isinstance(calls, list) and len(calls) <= usage["maximum_requests"]
+                     # The latest snapshot binds the record its run wrote last, and that
+                     # record's usage is the retained meter: no call was metered after it.
+                     and terminal.get("schema_version") == "blueprint_artisan_terminal.v1"
+                     and latest.get("runtime_result_digest") == canonical_digest(terminal)
+                     and terminal.get("usage") == usage)
+            identities, costs = set(), []
+            for call in calls:
+                _require(isinstance(call, dict) and call.get("status") == "priced"
+                         and isinstance(call.get("id"), str))
+                identities.add(call["id"])
+                costs.append(_usd(call["cost_usd"]))
+            _require(len(identities) == len(calls))
+            metered = math.fsum(costs)
+            official = max(observed)
+            _require(official <= metered + _AGREEMENT_TOLERANCE_USD)
+            proven = max(official, metered)
+            _require(proven <= cap + _AGREEMENT_TOLERANCE_USD)
+
+            continuation = None
+            if _CONTINUATION_ADOPTION in names:
+                adoption = read_json(_CONTINUATION_ADOPTION)
+                carried_calls = read_json(_CONTINUATION_SOURCE_USAGE).get("calls")
+                _require(adoption.get("schema_version") == "task_evaluation_artisan_continuation_record.v1"
+                         and adoption.get("record_digest") == canonical_digest(adoption, digest_field="record_digest")
+                         and adoption.get("successor_run_id") == request["run_id"]
+                         and adoption.get("successor_request_digest") == issued["request_digest"]
+                         # The meter and the gate received only the increment.
+                         and adoption.get("increment_usd") == cap
+                         and adoption.get("carried_spend_settled_under_source_attempt") is True
+                         and adoption.get("new_spend_authorized") is False
+                         and isinstance(carried_calls, list)
+                         and not identities & {row.get("id") for row in carried_calls})
+                continuation = {"source_run_id": adoption["source_run_id"],
+                                "carried_cost_usd": _usd(adoption["carried_cost_usd"]),
+                                "carried_spend_settled_under_source_attempt": True,
+                                "carried_spend_counted_here": False}
+            else:
+                _require(not any(name.startswith(_CONTINUATION_ROOT) for name in names))
+        return {"policy_version": PROVEN_AUTHORING_SPEND_POLICY,
+                "output_archive": {"path": str(path), "sha256": archive_digest},
+                "records": [{"name": name, "sha256": digest} for name, digest in sorted(records.items())],
+                "authoring_allowance_usd": allowance, "gate_maximum_cost_usd": cap,
+                "official_observed_cost_usd": official, "official_cost_final": False,
+                "metered_cost_usd": metered, "metered_call_count": len(calls),
+                "proven_authoring_spend_usd": proven, "continuation": continuation}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, UnicodeError,
+            zipfile.BadZipFile):
         return None
