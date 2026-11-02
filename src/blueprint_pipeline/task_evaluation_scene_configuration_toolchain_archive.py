@@ -21,6 +21,13 @@ byte against its manifest before running. The archive is built only from source
 bytes hashed against the inventory as they are read. A reused archive is hashed
 in full as it is spliced, and a mismatch discards it and rebuilds it. A hit and
 a miss give byte-identical bundles.
+
+Only the large third-party trees are cached (``CACHED_TREES``). Every other
+toolchain file, the release layer, is staged fresh into each bundle, hashed
+against the same manifest. capture-447ae4f4, 2026-11-01: five small files in
+the toolchain record the release commit (each component package seal and two
+source receipts), so a key over the whole inventory changed on every release
+and every activation rebuilt the 6 GB archive (about 26 minutes).
 """
 
 from __future__ import annotations
@@ -40,7 +47,7 @@ from typing import Any, BinaryIO
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 
-SCHEMA_VERSION = "task_evaluation_scene_configuration_toolchain_archive.v1"
+SCHEMA_VERSION = "task_evaluation_scene_configuration_toolchain_archive.v2"
 CACHE_ROOT_ENV = "BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_ARCHIVE_CACHE_ROOT"
 #: Host-wide default, used only where the control-plane inputs volume exists.
 DEFAULT_CACHE_PARENT = Path("/var/lib/blueprint/task-evaluation-inputs")
@@ -53,6 +60,18 @@ INDEX_NAME = f"{SCHEMA_VERSION}.json"
 RETAINED_ENTRIES = 2
 _CHUNK = 1024 * 1024
 _DATE_TIME = (1980, 1, 1, 0, 0, 0)
+#: Third-party trees inside each ``components/<adapter>/package`` that hold
+#: nearly every toolchain byte and change only with their own sources: Blender
+#: and the Python runtime, the pinned upstream sources, the wheelhouse and the
+#: Torch home. Anything else, including any file a builder later stamps with
+#: the release, stays out of the cache by default.
+CACHED_TREES = (
+    "artifixer_source/",
+    "artisan_source/",
+    "blueprint_runtime/torch_home/",
+    "python_wheelhouse/",
+    "runtime/",
+)
 
 
 class TaskEvaluationSceneConfigurationToolchainArchiveError(ValueError):
@@ -86,6 +105,28 @@ class ToolchainArchive:
             "reused": self.reused,
             "persistent_cache": self.persistent,
         }
+
+
+def cached_toolchain_member(relative_path: str) -> bool:
+    """Whether a toolchain file belongs to the cached third-party trees."""
+
+    parts = str(relative_path).split("/")
+    if len(parts) < 4 or parts[0] != "components" or parts[2] != "package":
+        return False
+    within = "/".join(parts[3:])
+    return any(within.startswith(tree) for tree in CACHED_TREES)
+
+
+def split_toolchain_manifest(
+    manifest: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The manifest restricted to cached trees, and the release-layer rows."""
+
+    cached: list[dict[str, Any]] = []
+    release: list[dict[str, Any]] = []
+    for row in manifest["files"]:
+        (cached if cached_toolchain_member(str(row["relative_path"])) else release).append(row)
+    return {**manifest, "files": cached}, sorted(release, key=lambda row: str(row["relative_path"]))
 
 
 def _inventory(manifest: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -233,12 +274,33 @@ def _file_sha256(path: Path) -> str:
     return "sha256:" + digest.hexdigest()
 
 
-def _toolchain_directories(toolchain_root: Path) -> list[str]:
-    names = []
+def _toolchain_directories(toolchain_root: Path, manifest: Mapping[str, Any]) -> list[str]:
+    """Toolchain directories this archive owns.
+
+    Those are the ancestors of its members and every directory that holds no
+    file outside it. A directory holding only release-layer files comes from
+    the bundle's own staged copy of that layer, so a cached index never lists
+    another release's directories.
+    """
+
+    archived = {row["relative_path"] for row in _inventory(manifest)}
+    ancestors: set[str] = set()
+    elsewhere: set[str] = set()
+    directories: list[str] = []
     for path in toolchain_root.rglob("*"):
-        if path.is_dir() and not path.is_symlink():
-            names.append(ARCHIVE_PREFIX + path.relative_to(toolchain_root).as_posix() + "/")
-    return sorted(names)
+        if path.is_symlink():
+            continue
+        relative = path.relative_to(toolchain_root).as_posix()
+        if path.is_dir():
+            directories.append(relative)
+            continue
+        parents = {parent.as_posix() for parent in Path(relative).parents if parent.as_posix() != "."}
+        (ancestors if relative in archived else elsewhere).update(parents)
+    return sorted(
+        ARCHIVE_PREFIX + name + "/"
+        for name in directories
+        if name in ancestors or name not in elsewhere
+    )
 
 
 def _build_entry(
@@ -266,7 +328,7 @@ def _build_entry(
         "archive_key": key,
         "archive_prefix": ARCHIVE_PREFIX,
         "members": members,
-        "directories": _toolchain_directories(toolchain_root),
+        "directories": _toolchain_directories(toolchain_root, manifest),
         "entries_size_bytes": entries_size,
         "fragment_size_bytes": fragment.stat().st_size,
         "fragment_sha256": _file_sha256(fragment),
@@ -525,6 +587,9 @@ def splice_toolchain_archive(
 
 
 __all__ = [
+    "CACHED_TREES",
+    "cached_toolchain_member",
+    "split_toolchain_manifest",
     "ARCHIVE_PREFIX",
     "CACHE_ROOT_ENV",
     "SCHEMA_VERSION",
