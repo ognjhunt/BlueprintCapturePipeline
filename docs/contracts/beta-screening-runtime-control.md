@@ -88,11 +88,17 @@ pin checks, actual worker load/query/cell callbacks, both beta Vast branches,
 partial retention and signal cleanup. External API/SSH/engine boundaries are
 mocked; these tests do not establish a production stop or teardown receipt.
 
-The integrated Pipeline build must include the recovery lane's active-monitor
-registry and signed WebApp transport (`827728188`, with pure contracts
-`111f396ca` and follow-up `53f253e26`) together with these worker/provider seams.
+These worker/provider seams depend on the allocator invocation
+(`allocator_invocation.py`), its active-monitor registry
+(`beta_policy_screening_control.py`), the signed WebApp transport
+(`beta_policy_screening_control_transport.py`) and the shared pure contracts
+(`beta_policy_screening_control_contracts.py`); they ship together.
+
+Native G1 screening runs under the same invocation, monitor and signed
+create-time admission. Its provider bundle has no GPU-local relay, so a G1
+stop ends the allocator, and with it the instance, rather than a single cell.
+
 Deployments and real revoke/startup/between-cell/expiry/controller-loss tests
-remain pending, under the parent release owner. Production access remains
-blocked by the uncorrected proxy denial. This change establishes no new engine,
-robot/task readiness, independent site fidelity measurements, finalist spending
-approval or unattended production acceptance.
+remain pending. This change establishes no new engine, robot/task readiness,
+independent site fidelity measurements, finalist spending approval or
+unattended production acceptance.
