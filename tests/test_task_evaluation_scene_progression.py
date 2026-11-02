@@ -371,3 +371,32 @@ def test_team_evaluation_does_not_rebuild_prepared_scene(context, monkeypatch):
     assert result['results'][0]['status'] == 'awaiting_execution'
     assert before == list(path.parent.joinpath('attempts').glob('*.json'))
     assert not Path(json.loads(config.read_text())['factory_output_root']).exists()
+
+
+def test_catch_all_refusal_records_its_outcome_and_a_sealed_one_stops_new_execution(context, monkeypatch):
+    """C-04: a refusal raised mid-pass gets the same outcome an emitted one would."""
+    from blueprint_pipeline import task_evaluation_scene_intake as intake
+    from blueprint_pipeline import task_evaluation_scene_outcome as outcome
+    config = configuration(context, monkeypatch)
+    directory = context[0]["intent_path"].parent
+    intent = json.loads((directory / "intent.json").read_text())
+
+    def refuse(code):
+        def source(*args, **kwargs):
+            raise ValueError(code)
+        return source
+
+    monkeypatch.setattr(engine, "_source", refuse("scene_intake_spend_cap_exhausted"))
+    waiting = engine.process_scene_intents(config_path=config)["results"][0]
+    assert (waiting["status"], waiting["blockers"]) == ("blocked", ["scene_intake_spend_cap_exhausted"])
+    assert outcome.read_outcome(directory, intent)["kind"] == "awaiting_spend_approval"
+    assert outcome.terminal_outcome(directory, intent) is None
+    monkeypatch.setattr(engine, "_source", refuse("scene_progression_retry_cap_exhausted"))
+    ended = engine.process_scene_intents(config_path=config)["results"][0]
+    assert ended["blockers"] == ["scene_progression_retry_cap_exhausted"]
+    sealed = outcome.terminal_outcome(directory, intent)
+    assert (sealed["kind"], sealed["reason_code"]) == ("setup_repair", "retry_cap_exhausted")
+    monkeypatch.setattr(engine, "_source", lambda *a, **kw: pytest.fail("a terminal outcome stops new execution"))
+    assert engine.process_scene_intents(config_path=config)["results"][0] == ended
+    status = intake.scene_intent_status(queue_root=directory.parent, intent_id=directory.name)
+    assert status["status"] == "blocked" and status["outcome"] == sealed

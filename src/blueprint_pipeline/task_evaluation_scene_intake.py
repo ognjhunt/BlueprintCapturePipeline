@@ -418,11 +418,19 @@ def scene_intent_status(*, queue_root: str | Path, intent_id: str,
                 blockers = [*blockers, authority_blocker]
         else:
             status, blockers = ("revoked" if authority_blocker.endswith("revoked") else "expired"), [authority_blocker]
+    # C-04: the job's one outcome, only once it has one (the WebApp's status
+    # schema is strict, so an absent field stays absent). Completed has none.
+    from .task_evaluation_scene_outcome import SceneOutcomeError, status_outcome
+    try:
+        outcome = status_outcome(directory, intent, status=status, blockers=blockers, now=moment)
+    except SceneOutcomeError:
+        raise SceneIntakeError("scene_intake_outcome_invalid") from None
     return _seal({"schema_version": "task_evaluation_scene_intent_status.v1", "intent_id": intent_id,
         "intent_digest": intent["intent_digest"], "request_digest": canonical_digest(intent["request"]),
         "owner": intent["request"]["owner"], "status": status, "phase": phase, "blockers": blockers,
         "attempts": attempts, "result_reference": result_reference,
         **({"result_run_id": result_run_id} if result_run_id is not None else {}),
+        **({"outcome": outcome} if outcome is not None else {}),
         "effective_execution_budget": effective_execution_budget(directory, intent),
         "provider_mutation_performed_by_status_read": False}, "status_digest")
 
