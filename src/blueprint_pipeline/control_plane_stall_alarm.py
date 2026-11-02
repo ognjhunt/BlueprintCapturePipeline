@@ -298,8 +298,15 @@ def _execution_expired(directory: Path, intent: Mapping[str, Any], *, now: float
         return None
 
 
-def _unchanged_since(directory: Path, progression: Mapping[str, Any], *, budget: _Budget) -> tuple[float, bool]:
-    """When the current status, phase and blockers began; ``exact`` is False for a lower bound."""
+def _unchanged_since(directory: Path, progression: Mapping[str, Any], *, budget: _Budget,
+                     max_reads: int = MAX_EVENTS_PER_INTENT,
+                     transparent: Callable[[Mapping[str, Any]], bool] | None = None) -> tuple[float, bool]:
+    """When the current status, phase and blockers began; ``exact`` is False for a lower bound.
+
+    ``max_reads`` bounds this walk. ``transparent`` names events to step over
+    without ending the run (the scene outcome's mid-pass notes); this alarm
+    passes neither.
+    """
 
     signature = _signature(progression)
     since = float(progression["updated_at_epoch"])
@@ -310,7 +317,7 @@ def _unchanged_since(directory: Path, progression: Mapping[str, Any], *, budget:
         sequence -= 1
         if sequence < 1:
             return since, True
-        if reads >= MAX_EVENTS_PER_INTENT or budget.events <= 0 or budget.expired():
+        if reads >= max_reads or budget.events <= 0 or budget.expired():
             return since, False
         reads += 1
         budget.events -= 1
@@ -322,6 +329,8 @@ def _unchanged_since(directory: Path, progression: Mapping[str, Any], *, budget:
         if event.get("sequence") != sequence or observed is None:
             return since, False
         if _signature(event) != signature:
+            if transparent is not None and transparent(event):
+                continue
             return since, True
         since = observed
 
