@@ -275,6 +275,68 @@ def _source_state(archive: zipfile.ZipFile, *, source_run_id: str) -> dict[str, 
             "configuration": configuration}
 
 
+def factory_carried_spend(*, intent_digest: str, configuration: Mapping[str, Any], intent_root: Path,
+                          launch_root: Path | None = None) -> dict[str, Any] | None:
+    """The spend a successor will carry if activation continues this intent's newest resumable ARTISAN source.
+
+    The factory sizes the attempt's authoring allocation at the cumulative cap
+    minus this spend, so the attempt reserves only what it can spend. It grants
+    nothing: the driver meters new spend against the attempt's own
+    allocation whatever activation selects, and selection still proves the
+    full lineage. Any doubt returns ``None`` and the attempt reserves the
+    whole cap, as before.
+    """
+
+    try:
+        if configuration.get("authoring_backend") != ARTISAN_BACKEND:
+            return None
+        cap = frozen_cap(configuration)
+        launches = transport._safe(launch_root or os.getenv("BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT")
+                                   or Path(intent_root).parent / "task-evaluation-launch-runs")
+        sources = []
+        for index, source in enumerate(launches.iterdir()):
+            if index >= transport.MAX_SCAN:
+                break
+            zero = source / "post_teardown_provider_zero_receipt.json"
+            if not (source.is_dir() and not source.is_symlink() and zero.is_file() and not zero.is_symlink()):
+                continue
+            try:
+                profile = transport._read(source / "launch_profile.json")
+                if (profile.get("scene_attempt_binding") or {}).get("intent_digest") == intent_digest:
+                    sources.append((zero.stat().st_mtime_ns, source))
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        for _, source in sorted(sources, reverse=True)[:transport.MAX_CANDIDATES]:
+            try:
+                zero = transport._read(source / "post_teardown_provider_zero_receipt.json",
+                                       "provider_zero_receipt_digest")
+                _require(zero.get("status") == "provider_zero_confirmed" and zero.get("provider_zero_verified") is True
+                         and zero.get("continuing_spend_from_this_run") is False, "source_not_closed")
+                result = transport._read(
+                    source / "allocator/scene-configuration-job/task_evaluation_scene_configuration_vast_result.v1.json",
+                    "result_digest")
+                archive_path = transport._safe(result["provider_runtime_output_zip_path"])
+                _require(archive_path.is_file() and archive_path.stat().st_size <= transport.MAX_ARCHIVE_BYTES
+                         and transport._file(archive_path)["sha256"] == result["provider_runtime_output_zip_sha256"],
+                         "source_archive_invalid")
+                with zipfile.ZipFile(archive_path) as archive:
+                    if PREFIX + "terminal.v1.json" not in set(archive.namelist()):
+                        continue  # stopped before ARTISAN ran: nothing to continue
+                    state = _source_state(archive, source_run_id=result["run_id"])
+                _require(semantic_configuration(state["configuration"]) == semantic_configuration(configuration),
+                         "configuration_semantics_changed")
+                spend = state["spend"]
+                # Selection's own admission rule: room for one call as large as the source made.
+                if not cap - spend["cost_usd"] >= spend["largest_call_usd"] > 0:
+                    return None
+                return dict(spend)
+            except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
+                continue
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return None
+
+
 def select_artisan_continuation_source(*, owner_attempt_path, envelope, output_root,
                                        intent_root=None, launch_root=None, activation_request=None,
                                        activation_root=None, pins_root=None, on_pin_created=None):

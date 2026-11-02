@@ -226,6 +226,46 @@ def test_a_source_that_cannot_restore_is_rejected_before_any_gpu(source, monkeyp
     assert not any((source["tmp"] / "selected").rglob("retained_runtime.zip"))
 
 
+def _factory(source, cap=25.0, digest=None):
+    args = source["args"](cap)
+    intent = json.loads((args["intent_root"] / "scene-owner/intent.json").read_text())
+    return continuation.factory_carried_spend(
+        intent_digest=digest or intent["intent_digest"], configuration=configuration(cap),
+        intent_root=args["intent_root"], launch_root=args["launch_root"])
+
+
+def test_the_factory_reads_the_spend_selection_will_carry(source):
+    # capture-447ae4f4 (2026-11-02): a $30 reservation for $11.24 of possible spend.
+    source["build"]()
+    carried = _factory(source)
+    assert carried["cost_usd"] == 13.76 and carried["largest_call_usd"] == 2.5
+    assert _factory(source, cap=15.0) is None  # selection would refuse: no room for one source-sized call
+    assert _factory(source, digest="sha256:" + "0" * 64) is None  # another intent's launches
+
+
+@pytest.mark.parametrize("change", ["completed", "no_upstream_run", "configuration"])
+def test_the_factory_reserves_the_whole_cap_without_a_resumable_source(source, change):
+    if change == "completed":
+        source["build"](extra={continuation.CANDIDATES_PREFIX + "0/replacement_asset.usdz": "x"})
+    elif change == "no_upstream_run":
+        source["build"](omit=("terminal.v1.json",))
+    else:
+        source["build"]()
+    if change == "configuration":
+        args = source["args"]()
+        intent = json.loads((args["intent_root"] / "scene-owner/intent.json").read_text())
+        changed = {**configuration(25.0), "task_id": "another-task"}
+        assert continuation.factory_carried_spend(intent_digest=intent["intent_digest"], configuration=changed,
+            intent_root=args["intent_root"], launch_root=args["launch_root"]) is None
+        return
+    assert _factory(source) is None
+
+
+def test_the_factory_never_raises(source, tmp_path):
+    assert continuation.factory_carried_spend(intent_digest="sha256:" + "0" * 64, configuration=configuration(25.0),
+        intent_root=tmp_path / "missing", launch_root=tmp_path / "missing-launches") is None
+
+
 @pytest.mark.parametrize("cap", [16.0, 15.0, 13.76, 5.0])
 def test_a_cap_without_room_for_one_source_sized_call_selects_nothing(source, cap):
     source["build"]()
