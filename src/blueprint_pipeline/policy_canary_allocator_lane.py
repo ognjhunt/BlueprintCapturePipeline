@@ -206,9 +206,10 @@ def run_policy_canary_allocator_lane(
     elif beta_credential:
         blockers.append("beta_screening_credential_file_unexpected")
     execution_deadline = getattr(args, "team_candidate_execution_deadline_epoch", None)
-    if execution_deadline is not None and not team:
+    beta = (authority or {}).get("run_kind") == BETA_RUN_KIND
+    if execution_deadline is not None and not (team or beta):
         blockers.append("team_evaluation_execution_deadline_unexpected")
-    if team:
+    if team or beta:
         _deadline, window_blockers = team_execution_deadline(authority, execution_deadline)
         blockers.extend(window_blockers)
     if team or beta_remote:
@@ -286,6 +287,9 @@ def run_policy_canary_allocator_lane(
             "provider_mutations_performed": 0,
         }
     elif team or beta_remote:
+        if args.execute:
+            from .allocator_invocation import before_provider_create
+            before_provider_create(authority=authority, bundle=prepared_bundle)
         result = run_team_candidate_session_vast(
             job_dir=args.adp_job_dir, prepared_bundle=prepared_bundle, session_authority=authority,
             paid_resource_admission_grant=grant, execute=args.execute, credential_file=credential_file,
@@ -297,12 +301,16 @@ def run_policy_canary_allocator_lane(
                                           if name in os.environ},
         )
     else:
+        if args.execute:
+            from .allocator_invocation import before_provider_create
+            before_provider_create(authority=authority, bundle=prepared_bundle)
         result = run_native_task_arena_policy_canary_session_vast(
             job_dir=args.adp_job_dir,
             prepared_bundle=prepared_bundle,
             session_authority=authority,
             paid_resource_admission_grant=grant,
             execute=args.execute,
+            execution_deadline_epoch=execution_deadline,
             machine_avoidlist_path=args.adp_machine_avoidlist,
             max_hourly_rate_usd=args.adp_max_hourly_rate_usd,
             hard_cap_usd=args.adp_max_spend_usd,
