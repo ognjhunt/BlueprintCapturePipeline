@@ -24,6 +24,14 @@ SANDBOX_LOG = (
     '  File "/workspace/.../asset_authoring_sandbox.py", line 78, in preflight\n'
     "    raise AssetSandboxError('asset_sandbox_unavailable')\n"
     "blueprint_pipeline.asset_authoring_sandbox.AssetSandboxError: asset_sandbox_unavailable\n")
+# capture-447ae4f4, 2026-11-02: a continued source's workspace failed to restore.
+RESTORE_LOG = (
+    '  File "/workspace/.../task_evaluation_scene_configuration_artisan_driver.py", line 192, in _execute\n'
+    "    continuation = _restore_continuation(envelope, runtime, request)\n"
+    '  File "/workspace/.../task_evaluation_artisan_continuation.py", line 65, in _require\n'
+    "    raise ArtisanContinuationError(\"artisan_continuation_\" + reason)\n"
+    "blueprint_pipeline.task_evaluation_artisan_continuation.ArtisanContinuationError: "
+    "artisan_continuation_restored_inventory_mismatch\n")
 
 
 def seal(value, field="result_digest"):
@@ -67,6 +75,11 @@ def evidence(tmp_path, *, shape="sandbox"):
             PREFIX + "stage_producer.log": SANDBOX_LOG if shape == "sandbox" else
             "ValueError: artisan_confined_runtime_preflight_failed\n",
         })
+        if shape == "restore":
+            # The restore stops before artisan_runtime/ exists, as on the GPU.
+            for name in [name for name in files if name.startswith(PREFIX + "artisan_runtime/")]:
+                del files[name]
+            files[PREFIX + "stage_producer.log"] = RESTORE_LOG
     files["task_evaluation_scene_configuration_provider_result.v1.json"] = seal({
         **identity, "status": "blocked", "first_stage_started": first_stage_started, "blockers": [refusal]})
     result = {**identity, "status": "blocked", "retry_cap": 0, "provider_mutations_performed": 1,
@@ -85,7 +98,7 @@ def archive(files, result):
     return seal(result)
 
 
-@pytest.mark.parametrize("shape", ["sandbox", "confined_import", "early", "early_controller"])
+@pytest.mark.parametrize("shape", ["sandbox", "confined_import", "early", "early_controller", "restore"])
 def test_artisan_refusal_before_the_model_gate_proves_unentered_authoring(tmp_path, shape):
     request, files, result = evidence(tmp_path, shape=shape)
     assert budget.authoring_never_entered(archive(files, result), request)
@@ -93,9 +106,10 @@ def test_artisan_refusal_before_the_model_gate_proves_unentered_authoring(tmp_pa
 
 @pytest.mark.parametrize("mutation", ["cost_gate_reserved", "usage_ledger", "artisan_config", "terminal",
                                       "later_stage", "wrong_blocker", "log_without_refusal", "dependency_paid",
-                                      "wrong_run", "archive_changed", "early_stage_started"])
+                                      "wrong_run", "archive_changed", "early_stage_started",
+                                      "restored_workspace"])
 def test_anything_past_the_gate_or_ambiguous_keeps_the_allowance(tmp_path, mutation):
-    shape = "early" if mutation == "early_stage_started" else "sandbox"
+    shape = {"early_stage_started": "early", "restored_workspace": "restore"}.get(mutation, "sandbox")
     request, files, result = evidence(tmp_path, shape=shape)
     if mutation == "cost_gate_reserved":
         files[PREFIX + "artisan_runtime/official_openai_cost/reservation.json"] = {}
@@ -120,6 +134,9 @@ def test_anything_past_the_gate_or_ambiguous_keeps_the_allowance(tmp_path, mutat
         seal(row, "stage_result_digest")
     elif mutation == "wrong_run":
         files[PREFIX + "stage_production_input.v1.json"]["run_id"] = "other"
+    elif mutation == "restored_workspace":
+        # A restore that succeeded leaves the source's workspace behind.
+        files[PREFIX + "artisan_runtime/workspace/data/cache/runs/pl_1/pipeline_state.json"] = {}
     elif mutation == "early_stage_started":
         provider = files["task_evaluation_scene_configuration_provider_result.v1.json"]
         provider["first_stage_started"] = True

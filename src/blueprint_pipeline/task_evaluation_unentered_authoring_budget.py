@@ -109,6 +109,10 @@ _ARTISAN_PRE_GATE_REFUSALS = (
      "blueprint_pipeline.asset_authoring_sandbox.AssetSandboxError: asset_sandbox_unavailable\n"),
     # Its confined import check, which also precedes the cost gate.
     ("artisan_confined_runtime_preflight_failed",),
+    # Restoring a continued source's workspace, the driver's first step
+    # (capture-447ae4f4, 2026-11-02). A restore that succeeded leaves its
+    # workspace in artisan_runtime/, which the file list above refuses.
+    ("    continuation = _restore_continuation(envelope, runtime, request)\n", ": artisan_continuation_"),
 )
 #: The runner's checks before stage 1 (#3228, #3230 and the controller
 #: import check): no stage, no credential read, no model call.
