@@ -1,9 +1,15 @@
 [Unit]
-Description=Look ahead at the production task-evaluation chain every fifteen minutes
+Description=Look ahead at the production task-evaluation chain every thirty minutes
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=15min
+# A run takes about 13 minutes (2026-11-02), so a fifteen-minute cadence kept
+# the preflight running 87% of the time. The operator door serves its summary
+# only while it is at most an hour old, stamped when a run starts; spacing runs
+# from their starts bounds that age at this interval plus the randomized delay
+# plus the unit's TimeoutStartSec (30 + 2 + 20 = 52 minutes), whatever a run
+# takes. Spacing from completion would add a whole run to that bound.
+OnUnitActiveSec=30min
 RandomizedDelaySec=2min
 Persistent=true
 Unit=blueprint-control-plane-preflight.service

@@ -73,6 +73,11 @@ def _entry_path(root: Path, name: str, key) -> Path:
     return root / f"{name}-{token}.json"
 
 
+def entry_path(*, name: str, key, root: Path | None = None) -> Path:
+    """The file ``store`` writes and ``lookup`` reads for this verdict, so a caller can vet it first."""
+    return _entry_path(root or verdict_root(), name, key)
+
+
 def _module_digest(path: Path) -> str | None:
     try:
         observed = path.stat()

@@ -45,6 +45,12 @@ RUNPOD_BILLING_URL = "https://rest.runpod.io/v1/billing"
 DIGITALOCEAN_API_URL = "https://api.digitalocean.com/v2"
 MAX_PAGES = 100
 AWS_BILLING_UNAVAILABLE_REASON = "aws_billing_unavailable_paid_api_collection_removed"
+#: The longest a caller may ask an existing export to stand in for a refresh.
+#: The spend guard and the paid-spend admission lock both refuse billing
+#: evidence older than 24 hours; an hour keeps any interval far inside that.
+MAX_MIN_REFRESH_INTERVAL_SECONDS = 3600
+#: The spend guard refuses a larger export, so a larger one is never retained.
+MAX_EXPORT_BYTES = 1024 * 1024
 # DigitalOcean documents its current invoice preview as a daily artifact.  A
 # strict 24-hour wall-clock cutoff therefore races that provider cadence: the
 # same official response becomes inadmissible in the interval between crossing
@@ -567,6 +573,97 @@ def reconcile_provider_billing(
     }
 
 
+def _euid() -> int:
+    return os.geteuid()
+
+
+def retained_fresh_export(
+    billing_export_path: str | Path,
+    *,
+    now: datetime,
+    min_refresh_interval_seconds: float,
+    required_providers: Sequence[str] = (),
+) -> dict[str, Any] | None:
+    """The current export, when a refresh inside the interval would only repeat it.
+
+    ``blueprint-gpu-spend-guard.service`` wants and orders after this unit, so
+    every guard start -- its own one-minute timer and every unit that wants the
+    guard -- ran a full refresh first: 31 runs and 1,279 s of CPU in one hour on
+    2026-11-02, each up to 920 MB, against a designed ten-minute cadence. The
+    dependency stays, because it is what guarantees a refresh attempt before the
+    guard reads older evidence; the run itself now ends here while the export
+    this account wrote is still younger than the interval.
+
+    Age is the export's own ``generated_at``, the time the guard judges, so an
+    export bound to an older source (a retained GCP report) is never treated as
+    fresh. Anything but a regular, readable, well-formed export owned by this
+    account, not group- or world-writable, covering every required provider and
+    generated within the interval returns ``None``: refresh.
+    """
+
+    try:
+        interval = min(float(min_refresh_interval_seconds), MAX_MIN_REFRESH_INTERVAL_SECONDS)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(interval) or interval <= 0:
+        return None
+    path = Path(billing_export_path).expanduser()
+    try:
+        observed = path.lstat()
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_size > MAX_EXPORT_BYTES
+            or observed.st_uid != _euid()
+            or stat.S_IMODE(observed.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            return None
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino):
+                return None
+            raw = stream.read(MAX_EXPORT_BYTES + 1)
+    except OSError:
+        return None
+    if len(raw) > MAX_EXPORT_BYTES:
+        return None
+    try:
+        export = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if (
+        not isinstance(export, dict)
+        or export.get("schema_version") != BILLING_EXPORT_SCHEMA_VERSION
+        or export.get("scope") != BILLING_SCOPE
+        or export.get("currency") != "USD"
+    ):
+        return None
+    totals = export.get("provider_totals_usd")
+    if not isinstance(totals, dict) or not totals or not set(totals).issubset(PROVIDERS):
+        return None
+    for value in totals.values():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        if not math.isfinite(value) or value < 0:
+            return None
+    if not {str(provider).strip() for provider in required_providers}.issubset(totals):
+        return None
+    try:
+        generated_at = _parse_time(export.get("generated_at"), field="billing_export_generated_at")
+    except ProviderBillingReconciliationError:
+        return None
+    age = (now.astimezone(timezone.utc) - generated_at).total_seconds()
+    if not 0 <= age < interval:
+        return None
+    return {
+        "billing_export_path": str(path),
+        "billing_export_generated_at": generated_at.isoformat(),
+        "billing_export_age_seconds": round(age, 3),
+        "billing_export_digest": _digest_bytes(raw),
+        "min_refresh_interval_seconds": interval,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--secrets-dir", required=True)
@@ -591,7 +688,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             "unspecified providers are optional; AWS is unavailable"
         ),
     )
+    parser.add_argument(
+        "--min-refresh-interval-seconds",
+        type=float,
+        default=0.0,
+        help=(
+            "exit without any provider request while this account's current export "
+            f"is younger than this (capped at {MAX_MIN_REFRESH_INTERVAL_SECONDS} s); "
+            "0, the default, refreshes on every run"
+        ),
+    )
     args = parser.parse_args(argv)
+    retained = retained_fresh_export(
+        args.billing_export,
+        now=datetime.now(timezone.utc),
+        min_refresh_interval_seconds=args.min_refresh_interval_seconds,
+        required_providers=args.require_provider,
+    )
+    if retained is not None:
+        print(
+            json.dumps(
+                {
+                    "schema_version": "blueprint.provider_billing_reconciliation_run.v1",
+                    "status": "fresh_export_retained",
+                    **retained,
+                    "provider_requests_added": 0,
+                    "provider_mutation_performed": False,
+                    "raw_secret_values_recorded": False,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
     from blueprint_pipeline.cloud_vm_render_providers import GCPRenderProvider
 
     try:

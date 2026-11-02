@@ -1,8 +1,14 @@
 # Provider billing audit retention
 
 This is the ADP-009D day-28 disk-safety procedure for the official billing
-evidence used by paid-resource admission. The billing reconciler runs every ten
-minutes. Provider APIs commonly return identical cumulative response bytes, but
+evidence used by paid-resource admission. The billing reconciler refreshes
+about every ten minutes. `blueprint-gpu-spend-guard.service` wants it before
+every guard start, so it is started every minute or two, but a run whose own
+export is younger than `BLUEPRINT_PROVIDER_BILLING_MIN_REFRESH_SECONDS` (600)
+prints `"status": "fresh_export_retained"` and exits without a provider
+request. The guard and the admission lock accept an export up to 24 hours old.
+Set the variable to `0` in `/etc/blueprint/pipeline-control-plane.env` to refresh
+on every start. Provider APIs commonly return identical cumulative response bytes, but
 historically each refresh wrote another full copy under
 `gpu_spend_guard/billing-audit/<timestamp>/`.
 

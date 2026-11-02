@@ -405,8 +405,50 @@ def test_ready_line_names_the_catalog_phases(monkeypatch, capsys):
     assert guard_module.main([]) == 0
     line = capsys.readouterr().out.strip()
     assert line == (
-        "[production-runtime-env-guard] status=ready import_verdict_reused=true "
+        "[production-runtime-env-guard] status=ready import_verdict_reused=true reused_phases=none "
         "spend_authority_ledger=0.2s launch_profile_catalog=22.1s catalog_profile_parse=1.5s "
         "catalog_immutable_inputs=9.25s catalog_profile_validation=10.0s catalog_input_residency=1.25s "
         "catalog_profiles=539 catalog_distinct_inputs=3784"
+    )
+
+
+def test_ready_line_names_the_reused_phases_and_why_a_pass_ran(monkeypatch, capsys):
+    from blueprint_pipeline import production_runtime_env_guard as guard_module
+
+    stored_timing = {"profile_parse": 13.5, "profiles": 551}
+    reused = {
+        "status": "ready",
+        "check_durations_seconds": {"catalog_phase_verdict": 0.31, "launch_profile_catalog": 0.0,
+                                    "launch_input_residency": 0.0},
+        "control_plane_entrypoints": {"verdict_reused": True},
+        "launch_profile_catalog": {"status": "consistent", "verdict_reused": True,
+                                   "pass_timing_seconds": stored_timing},
+        "launch_input_residency": {"status": "ready", "verdict_reused": True},
+        "catalog_phase_verdict": {"reused": True, "miss_reason": None, "recorded": False},
+    }
+    monkeypatch.setattr(guard_module, "build_production_runtime_env_guard", lambda: reused)
+    assert guard_module.main([]) == 0
+    # The stored pass's timings are not this start's, so they are not printed.
+    assert capsys.readouterr().out.strip() == (
+        "[production-runtime-env-guard] status=ready import_verdict_reused=true "
+        "reused_phases=launch_profile_catalog,launch_input_residency "
+        "catalog_phase_verdict=0.31s launch_profile_catalog=0.0s launch_input_residency=0.0s"
+    )
+
+    ran = {
+        **reused,
+        "check_durations_seconds": {"catalog_phase_verdict": 0.02, "launch_profile_catalog": 17.9},
+        "launch_profile_catalog": {"status": "repaired", "verdict_reused": False,
+                                   "pass_timing_seconds": stored_timing},
+        "launch_input_residency": {"status": "ready", "verdict_reused": False},
+        "catalog_phase_verdict": {"reused": False, "miss_reason": "path_changed:/srv/a b.json",
+                                  "recorded": False, "not_recorded_reason": "catalog_repaired"},
+    }
+    monkeypatch.setattr(guard_module, "build_production_runtime_env_guard", lambda: ran)
+    assert guard_module.main([]) == 0
+    assert capsys.readouterr().out.strip() == (
+        "[production-runtime-env-guard] status=ready import_verdict_reused=true reused_phases=none "
+        "phase_verdict_miss=path_changed:/srv/a_b.json phase_verdict_stored=no:catalog_repaired "
+        "catalog_phase_verdict=0.02s launch_profile_catalog=17.9s "
+        "catalog_profile_parse=13.5s catalog_profiles=551"
     )
