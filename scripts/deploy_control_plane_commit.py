@@ -2836,9 +2836,54 @@ def _scene_configuration_staging_estimate(runtime_root: str | Path, commit: str)
     }
 
 
+def _cache_linked_toolchain_bytes(files, *, runtime_root, staging_root) -> dict[str, int]:
+    """Toolchain files the ArtiFixer builder hard-links from the governed model cache.
+
+    The builder links the sealed VGG16 weights (0444) into its component and
+    copies only on ``EXDEV``; any other link failure stops the deploy. So when
+    the cached weights are a sealed regular file on the staging filesystem,
+    their bytes are never written by this deploy. ``{}`` when anything differs.
+    """
+    from blueprint_pipeline.public_scene_artifixer3d_bundle import (
+        RUNTIME_VGG16_WEIGHTS, VGG16_WEIGHTS_FILENAME, VGG16_WEIGHTS_SIZE_BYTES,
+    )
+
+    relative = ("components/artifixer3d_observed_object_removal/package/blueprint_runtime/"
+                + RUNTIME_VGG16_WEIGHTS)
+    cached = Path(runtime_root) / "public-model-cache" / VGG16_WEIGHTS_FILENAME
+    try:
+        info, staging = cached.lstat(), Path(staging_root).stat()
+    except OSError:
+        return {}
+    row = next((row for row in files if row.get("relative_path") == relative), None)
+    if (row is None or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o444
+            or info.st_size != VGG16_WEIGHTS_SIZE_BYTES or int(row["size_bytes"]) != info.st_size
+            or info.st_dev != staging.st_dev):
+        return {}
+    return {relative: info.st_size}
+
+
+def _toolchain_directory_count(files) -> int:
+    directories = set()
+    for row in files:
+        parent = Path(str(row["relative_path"])).parent
+        while parent != Path(".") and parent not in directories:
+            directories.add(parent)
+            parent = parent.parent
+    return len(directories)
+
+
 def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
                              site_packages_root, blender_root):
-    """Only discount bytes the target builder is required to hard-link."""
+    """Only discount bytes the target builder is required to hard-link.
+
+    The vendor plan's files and the cache-linked model weights are links, not
+    writes; a link costs a directory entry, not a block. So the reservation is
+    the bytes still written (with the same headroom), a block for each written
+    file and each directory of the tree, and the usual overhead. On 2026-11-02
+    the full-file-count estimate held 1.16 GB per deploy for about 30 MiB
+    actually written (13.7 MB of new file bytes plus directories).
+    """
     from blueprint_pipeline.artisan_vendor_reuse import prepare_vendor_reuse
 
     prefix = "published_toolchain:"
@@ -2858,6 +2903,15 @@ def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
     unshared = sum(int(row["size_bytes"]) for row in files) - plan["shared_bytes"]
     if unshared < 0:
         raise ControlPlaneDeployError("deploy_vendor_reuse_size_invalid")
+    shared_paths = {row["published_path"] for row in plan["files"]}
+    cache_linked = _cache_linked_toolchain_bytes(files, runtime_root=runtime_root,
+                                                 staging_root=plan["staging_root"])
+    written = [row for row in files
+               if row["relative_path"] not in shared_paths and row["relative_path"] not in cache_linked]
+    written_bytes = sum(int(row["size_bytes"]) for row in written)
+    if written_bytes > unshared:
+        raise ControlPlaneDeployError("deploy_vendor_reuse_size_invalid")
+    directory_count = _toolchain_directory_count(files)
     directory.mkdir(parents=True, exist_ok=True, mode=0o750)
     path = directory / (plan["digest"][7:] + ".json")
     payload = (json.dumps(plan, sort_keys=True) + "\n").encode()
@@ -2872,13 +2926,17 @@ def _bind_artisan_vendor_reuse(estimate, *, runtime_root, state_root,
             raise ControlPlaneDeployError("deploy_vendor_reuse_plan_changed") from None
     estimate["full_copy_bytes"] = estimate["bytes"]
     estimate["target_root"] = plan["staging_root"]
-    estimate["bytes"] = (math.ceil(unshared * SCENE_CONFIGURATION_STAGING_HEADROOM)
-                         + RELEASE_ESTIMATE_BLOCK_BYTES * len(files) + RELEASE_ESTIMATE_OVERHEAD_BYTES)
+    estimate["bytes"] = (math.ceil(written_bytes * SCENE_CONFIGURATION_STAGING_HEADROOM)
+                         + RELEASE_ESTIMATE_BLOCK_BYTES * (len(written) + directory_count)
+                         + RELEASE_ESTIMATE_OVERHEAD_BYTES)
     estimate["vendor_reuse"] = {"path": str(path), "digest": plan["digest"],
                                "shared_bytes": plan["shared_bytes"], "file_count": len(plan["files"]),
                                "source_files_hashed": plan["source_files_hashed"],
                                "source_bytes_hashed": plan["source_bytes_hashed"],
-                               "planning_seconds": planning_seconds}
+                               "planning_seconds": planning_seconds,
+                               "cache_linked_bytes": sum(cache_linked.values()),
+                               "written_bytes": written_bytes, "written_file_count": len(written),
+                               "directory_count": directory_count}
     return path
 
 
