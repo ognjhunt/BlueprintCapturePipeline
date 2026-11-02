@@ -92,6 +92,9 @@ def source_archive(path, *, source_request, terminal_phase="P5_review", calls=CA
         runs + "pipeline_state.json": json.dumps({"phase": terminal_phase}),
         runs + "workspace/candidate/object.usd": "#usda 1.0",
         runs + "workspace/blueprint_sandbox_ipc/1.request.json": "{}",
+        # Sorts before "workspace/" as a string and after it as a path, as on
+        # capture-447ae4f4's real source (2026-11-02).
+        runs + "workspace.sandbox_preflight.json": "{}",
         continuation.STAGE_INPUT: json.dumps({"configuration": source_request["configuration"]}),
         **(extra or {}),
     }
