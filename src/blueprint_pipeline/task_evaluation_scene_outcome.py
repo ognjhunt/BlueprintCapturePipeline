@@ -1,18 +1,17 @@
 """Every website job ends in exactly one terminal state with a plain reason (C-04).
 
 Scene progression re-runs every intent that is not ``completed`` on every pass,
-so a job that could never finish was retried forever and the website could only
-guess that it had ended. ``decide_outcome`` maps one progression row (status,
-phase, blockers) and how long it has been unchanged to one outcome from a single
-registry:
+so the website could only guess whether a job had ended, and why.
+``decide_outcome`` maps one progression row (status, phase, blockers) to one
+outcome from a single registry:
 
 ``setup_repair``
-    Blueprint has to fix something. Not terminal while a code fix can still clear
-    it (``pipeline_fault``: an unknown blocker, a failed publication). Terminal
-    when a sealed stage failed, a non-extendable retry or recovery allowance ran
-    out, the execution window expired (Blueprint sponsors it, so it is never the
-    site's fault), or the row has not changed for 24 hours (``stalled``, the
-    WebApp's stuck bound).
+    Blueprint has to fix something. Not terminal while a code fix and deploy
+    can still re-drive the job: an unknown blocker (``pipeline_fault``), a
+    failed scene configuration, a blocked policy canary, a failed publication.
+    Terminal when a non-extendable retry or recovery allowance ran out, or the
+    execution window expired (``authority_expired``: Blueprint sponsors the
+    window, so it is never the site's fault).
 ``awaiting_spend_approval``
     A spend or attempt cap or the job's dollar ceiling waits for the owner's money
     approval. Not terminal.
@@ -26,10 +25,10 @@ registry:
 
 Transient, self-retrying rows (work in flight, a capacity wait, a receipt still
 pending) have no outcome; neither does ``completed``, which also supersedes any
-outcome on the status read. The 24-hour rule ends transient rows and
-``pipeline_fault`` rows; a person's wait (money, the site) and an operator's
-hold are bounded by the execution window instead, which ends as
-``authority_expired``.
+outcome on the status read. The execution window is the give-up timer: once the
+owner's authority has expired or been revoked, anything not already terminal
+ends as ``authority_expired`` or ``authority_revoked``, even when a read-only
+join answers before the driver's authority gate.
 
 ``settle_outcome`` records the decision at ``<intent>/outcome.json`` after every
 progression write. A terminal outcome is written once and never rewritten; a
@@ -42,38 +41,33 @@ import json
 import math
 import os
 import stat
-import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from .control_plane_stall_alarm import OPERATOR_HOLD_PHASES, _Budget, _unchanged_since
 from .decision_evidence_contracts import cross_runtime_canonical_digest
 from .validation_file_digests import note_consulted
 
 SCHEMA_VERSION = "task_evaluation_scene_intent_outcome.v1"
 FILENAME = "outcome.json"
-STALL_SECONDS = 24 * 60 * 60
 
 KINDS = ("setup_repair", "awaiting_spend_approval", "awaiting_site", "withdrawn", "held")
-REASON_CATEGORIES = ("blueprint_fault", "stalled", "authority_expired", "spend_approval", "site_action",
+REASON_CATEGORIES = ("blueprint_fault", "authority_expired", "spend_approval", "site_action",
                      "privacy_rights", "capability_limit")
 
 #: The closed reason vocabulary: reason_code -> (kind, terminal, reason_category).
 REASONS: dict[str, tuple[str, bool, str]] = {
-    # (b) A Blueprint fault a code fix can clear; the 24-hour rule ends it.
+    # (b) Blueprint faults a code fix and deploy can still re-drive.
     "pipeline_fault": ("setup_repair", False, "blueprint_fault"),
-    # Sealed Blueprint failures.
-    "scene_configuration_failed": ("setup_repair", True, "blueprint_fault"),
-    "policy_canary_blocked": ("setup_repair", True, "blueprint_fault"),
+    "scene_configuration_failed": ("setup_repair", False, "blueprint_fault"),
+    "policy_canary_blocked": ("setup_repair", False, "blueprint_fault"),
+    # Non-extendable allowances that ran out.
     "retry_cap_exhausted": ("setup_repair", True, "blueprint_fault"),
     "submission_retry_cap_exhausted": ("setup_repair", True, "blueprint_fault"),
     "capacity_recovery_cap_exhausted": ("setup_repair", True, "blueprint_fault"),
     "market_miss_recovery_cap_exhausted": ("setup_repair", True, "blueprint_fault"),
-    # (g) The execution window is Blueprint's sponsorship.
+    # (g) The execution window is Blueprint's sponsorship, and the give-up timer.
     "authority_expired": ("setup_repair", True, "authority_expired"),
-    # The give-up rule.
-    "stalled": ("setup_repair", True, "stalled"),
     # (c) Money: only the owner's budget extension or ceiling raise continues these.
     "spend_cap_reached": ("awaiting_spend_approval", False, "spend_approval"),
     "attempt_cap_reached": ("awaiting_spend_approval", False, "spend_approval"),
@@ -146,34 +140,31 @@ BLOCKER_REASONS: dict[str, str] = {
     "website_task_family_unknown": "task_family_unsupported",
 }
 
-#: Phases of a ``blocked`` row that are sealed Blueprint failures: the
-#: configuration launch failed in a way no recovery takes (scene progression)
-#: and the policy canary's terminal blocked results (the terminal reconciler).
+#: Phases of a ``blocked`` row with their own reason: the configuration launch
+#: failed in a way no recovery takes (scene progression), and the policy canary's
+#: blocked results (the terminal reconciler). A failed publication
+#: (``scene_publication``) stays ``pipeline_fault``.
 PHASE_REASONS = {
     "scene_configuration_failed": "scene_configuration_failed",
     "policy_canary_blocked": "policy_canary_blocked",
     "policy_canary_preprovider_blocked": "policy_canary_blocked",
 }
-#: Statuses only the status read projects (no attempt was reserved).
+#: Statuses only the status read projects (no attempt was reserved), and the same
+#: endings when the driver finds the authority over.
 STATUS_REASONS = {"revoked": "authority_revoked", "expired": "authority_expired"}
 #: ``blocked`` phases that retry themselves: the configuration capacity wait.
 TRANSIENT_PHASES = frozenset({"configuration_capacity"})
 #: Statuses that stop and wait; an unclassified blocker there is a Blueprint fault.
 STOPPED_STATUSES = frozenset({"blocked", "needs_input"})
-#: Operator pauses, which the execution window bounds (scene progression).
-OPERATOR_HOLD_BLOCKERS = frozenset({"scene_intent_paused", "scene_submission_paused"})
 #: The notes ``_advance_intent`` writes before work it finishes in the same pass.
-#: A row never rests on one, so they never clear a decision and the give-up
-#: clock steps over them: a failure retried every pass is unchanged.
+#: A row never rests on one, so a note never changes the outcome: a failure
+#: retried every pass keeps one decision instead of flapping.
 PROGRESS_MARKER_PHASES = frozenset({"source_preparation", "factory", "publication", "submission", "activation"})
 
 _DECISION_FIELDS = ("kind", "terminal", "reason_category", "reason_code")
 _RECORD_FIELDS = frozenset({"schema_version", "intent_id", "intent_digest", *_DECISION_FIELDS,
                             "decided_at_epoch", "outcome_digest"})
 _KIND_RANK = {"withdrawn": 0, "held": 1, "awaiting_spend_approval": 3, "awaiting_site": 4}
-#: load_progression refuses a longer event chain.
-_WALK_EVENTS = 10_000
-_WALK_SECONDS = 30.0
 _MAX_RECORD_BYTES = 64 * 1024
 
 
@@ -199,7 +190,7 @@ def _classify(status: str, phase: str | None, blockers: Iterable[Any] | None) ->
     if status == "blocked" and phase in PHASE_REASONS:
         reasons.add(PHASE_REASONS[phase])
     if reasons:
-        # Privacy and rights first, then capability, then sealed failures.
+        # Privacy and rights first, then capability, spent allowances and expiry.
         return min(reasons, key=_precedence)
     if status in STOPPED_STATUSES and phase not in TRANSIENT_PHASES:
         return "pipeline_fault"
@@ -211,24 +202,17 @@ def _decision(reason: str) -> dict[str, Any]:
     return {"kind": kind, "terminal": terminal, "reason_category": category, "reason_code": reason}
 
 
-def stall_clock_applies(status: str, phase: str | None, blockers: Iterable[Any] | None) -> bool:
-    """Whether the 24-hour rule can end this row: no ending yet, no person's wait, no operator hold."""
-    if status == "completed" or phase in OPERATOR_HOLD_PHASES or _codes(blockers) & OPERATOR_HOLD_BLOCKERS:
-        return False
-    return _classify(status, phase, blockers) in {None, "pipeline_fault"}
-
-
 def decide_outcome(status: str, phase: str | None, blockers: Iterable[Any] | None,
-                   unchanged_since_epoch: float | None, now: float) -> dict[str, Any] | None:
+                   authority_ended: str | None = None) -> dict[str, Any] | None:
     """``None`` or ``{kind, terminal, reason_category, reason_code}`` for one progression row.
 
-    ``unchanged_since_epoch`` is when the row's status, phase and blockers began
-    (``None`` when unknown, which never gives up).
+    ``authority_ended`` is ``"revoked"`` or ``"expired"`` once the owner's execution
+    authority is over: a row without a terminal ending of its own then ends with it.
     """
     reason = _classify(status, phase, blockers)
-    if (unchanged_since_epoch is not None and now - unchanged_since_epoch >= STALL_SECONDS
-            and stall_clock_applies(status, phase, blockers)):
-        reason = "stalled"
+    if (authority_ended is not None and status != "completed"
+            and (reason is None or REASONS[reason][1] is False)):
+        reason = STATUS_REASONS[authority_ended]
     return None if reason is None else _decision(reason)
 
 
@@ -236,21 +220,13 @@ def is_progress_marker(status: str | None, phase: str | None, blockers: Iterable
     return status == "preparing" and phase in PROGRESS_MARKER_PHASES and not list(blockers or ())
 
 
-def _marker_event(event: Mapping[str, Any]) -> bool:
-    return is_progress_marker(event.get("status"), event.get("phase"), event.get("blockers"))
-
-
-def unchanged_since(directory: str | Path, progress: Mapping[str, Any]) -> float:
-    """When the row's current status, phase and blockers began, stepping over mid-pass notes.
-
-    The stall alarm's own walk. If the walk stops early, the time it reached is
-    later than the true start: a stall it reports is real, and one it misses is
-    found on a later pass.
-    """
-    budget = _Budget(deadline=time.monotonic() + _WALK_SECONDS, events=_WALK_EVENTS, clock=time.monotonic)
-    since, _exact = _unchanged_since(Path(directory), progress, budget=budget, max_reads=_WALK_EVENTS,
-                                     transparent=_marker_event)
-    return since
+def authority_ended(directory: str | Path, intent: Mapping[str, Any], now: float) -> str | None:
+    """``"revoked"``, ``"expired"`` or ``None``: the driver's own authority gate."""
+    from .task_evaluation_scene_execution_window_evidence import effective_execution_expiry
+    directory = Path(directory)
+    if (directory / "revoked.json").exists():
+        return "revoked"
+    return "expired" if now >= effective_execution_expiry(directory, intent) else None
 
 
 def _finite(value: Any) -> bool:
@@ -368,11 +344,10 @@ def settle_outcome(directory: str | Path, intent: Mapping[str, Any], progress: M
     if progress is None or (existing is not None and existing["terminal"] is True):
         return existing
     status, phase, blockers = progress["status"], progress.get("phase"), progress.get("blockers") or []
-    since = unchanged_since(directory, progress) if stall_clock_applies(status, phase, blockers) else None
-    decision = decide_outcome(status, phase, blockers, since, now)
-    if is_progress_marker(status, phase, blockers) and (decision is None or decision["terminal"] is not True):
-        return existing  # a mid-pass note only ever ends a row, never clears or replaces a decision
-    return record_outcome(directory, intent, decision, now=now)
+    if is_progress_marker(status, phase, blockers):
+        return existing
+    ended = authority_ended(directory, intent, now) if status != "completed" else None
+    return record_outcome(directory, intent, decide_outcome(status, phase, blockers, ended), now=now)
 
 
 def status_outcome(directory: str | Path, intent: Mapping[str, Any], *, status: str,
@@ -386,7 +361,7 @@ def status_outcome(directory: str | Path, intent: Mapping[str, Any], *, status: 
         return None
     retained = read_outcome(directory, intent)
     if status in STATUS_REASONS and (retained is None or retained["terminal"] is not True):
-        return outcome_record(directory, intent, decide_outcome(status, None, blockers, None, now), now=now)
+        return outcome_record(directory, intent, decide_outcome(status, None, blockers), now=now)
     return retained
 
 
@@ -394,23 +369,20 @@ __all__ = [
     "BLOCKER_REASONS",
     "FILENAME",
     "KINDS",
-    "OPERATOR_HOLD_BLOCKERS",
     "PHASE_REASONS",
     "PROGRESS_MARKER_PHASES",
     "REASONS",
     "REASON_CATEGORIES",
     "SCHEMA_VERSION",
-    "STALL_SECONDS",
     "STATUS_REASONS",
     "SceneOutcomeError",
+    "authority_ended",
     "decide_outcome",
     "is_progress_marker",
     "outcome_record",
     "read_outcome",
     "record_outcome",
     "settle_outcome",
-    "stall_clock_applies",
     "status_outcome",
     "terminal_outcome",
-    "unchanged_since",
 ]

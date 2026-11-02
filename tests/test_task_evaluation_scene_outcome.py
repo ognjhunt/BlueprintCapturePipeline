@@ -2,10 +2,12 @@
 
 Before this, only ``completed`` stopped the scene progression driver; every
 other row was re-run every minute forever and the website could only guess
-that a job had ended. These tests pin the one registry, the write-once
-``outcome.json``, the 24-hour give-up rule, the driver stopping new execution
-once an outcome is terminal (while its read-only joins keep closing out
-authorized runs), and the optional ``outcome`` on the intent status.
+whether a job had ended. These tests pin the one registry, the write-once
+``outcome.json``, the execution window as the only give-up timer (a long wait
+gets no terminal outcome; expiry ends it), Blueprint faults staying
+re-drivable, the driver stopping new execution once an outcome is terminal
+(while its read-only joins keep closing out authorized runs), and the optional
+``outcome`` on the intent status.
 """
 from __future__ import annotations
 
@@ -52,11 +54,6 @@ def test_registry_is_one_closed_vocabulary():
     assert set(outcome.KINDS) == {"setup_repair", "awaiting_spend_approval", "awaiting_site", "withdrawn", "held"}
     for code, (kind, terminal, category) in outcome.REASONS.items():
         assert kind in outcome.KINDS and category in outcome.REASON_CATEGORIES and type(terminal) is bool, code
-        # Privacy, rights and capability endings are final; a person's wait never is.
-        if kind in {"withdrawn", "held"}:
-            assert terminal is True, code
-        if kind in {"awaiting_spend_approval", "awaiting_site"}:
-            assert terminal is False, code
     assert set(outcome.BLOCKER_REASONS.values()) <= set(outcome.REASONS)
     assert set(outcome.PHASE_REASONS.values()) <= set(outcome.REASONS)
     assert set(outcome.STATUS_REASONS.values()) <= set(outcome.REASONS)
@@ -64,7 +61,30 @@ def test_registry_is_one_closed_vocabulary():
     assert {row[2] for row in outcome.REASONS.values()} == set(outcome.REASON_CATEGORIES)
 
 
-SEALED_CAPS = [
+def test_only_privacy_rights_capability_spent_allowances_and_expiry_end_a_job():
+    terminal = {code for code, (_kind, ended, _category) in outcome.REASONS.items() if ended}
+    assert terminal == {
+        # withdrawn: privacy, rights and consent
+        "authority_revoked", "consent_expired", "consent_withdrawn", "source_revoked",
+        # held: capability limits
+        "source_kind_unsupported", "policy_capability_unavailable", "task_family_unsupported",
+        "task_infeasible", "no_candidate",
+        # non-extendable allowances that ran out
+        "retry_cap_exhausted", "submission_retry_cap_exhausted", "capacity_recovery_cap_exhausted",
+        "market_miss_recovery_cap_exhausted",
+        # the execution window, the only give-up timer
+        "authority_expired",
+    }
+    for kind in ("withdrawn", "held"):
+        assert all(ended for (row_kind, ended, _category) in outcome.REASONS.values() if row_kind == kind)
+    for kind in ("awaiting_spend_approval", "awaiting_site"):
+        assert not any(ended for (row_kind, ended, _category) in outcome.REASONS.values() if row_kind == kind)
+    # A Blueprint fault stays fixable: a code fix and deploy can still re-drive it.
+    for reason in ("pipeline_fault", "scene_configuration_failed", "policy_canary_blocked"):
+        assert outcome.REASONS[reason] == ("setup_repair", False, "blueprint_fault")
+
+
+SPENT_ALLOWANCES = [
     ("scene_progression_retry_cap_exhausted", "retry_cap_exhausted"),
     ("scene_intake_retry_cap_exhausted", "retry_cap_exhausted"),
     ("retry_cap_exhausted", "retry_cap_exhausted"),
@@ -87,18 +107,23 @@ SEALED_CAPS = [
     ("awaiting_source", "source", ["website_prepared_source_pending"], None),
     ("awaiting_execution", "capacity", ["scene_whole_chain_capacity_insufficient"], None),
     ("awaiting_execution", "scene_configuration", [], None),
+    ("awaiting_execution", "selected_team_evaluation", [], None),
     ("running", "terminal_reconciliation", ["terminal_resource_closure_pending",
                                             "terminal_website_readback_pending"], None),
     ("blocked", "configuration_capacity", ["preallocation_capacity_not_recovered"], None),
     ("blocked", "configuration_capacity", ["provider_credit_insufficient"], None),
     ("awaiting_execution", "paused", ["scene_intent_paused"], None),
-    # (b) a Blueprint fault a code fix can clear: setup_repair, not terminal.
+    # (b) Blueprint faults a code fix and deploy can re-drive: setup_repair, not terminal.
     ("blocked", "preparation", ["scene_progression_factory_receipt_invalid"], "pipeline_fault"),
     ("blocked", "preparation", ["scene_progression_dependency_unavailable"], "pipeline_fault"),
     ("blocked", "source_preparation", ["preparation_failed"], "pipeline_fault"),
     ("blocked", "scene_publication", ["website_publication_profile_changed"], "pipeline_fault"),
     ("needs_input", "factory", ["fixture_unknown_input"], "pipeline_fault"),
     ("blocked", "preparation", [], "pipeline_fault"),
+    ("blocked", "scene_configuration_failed", ["configuration_launch_failed"], "scene_configuration_failed"),
+    ("blocked", "policy_canary_blocked", ["provider_capacity_unavailable"], "policy_canary_blocked"),
+    ("blocked", "policy_canary_preprovider_blocked", ["policy_canary_website_notification_pending"],
+     "policy_canary_blocked"),
     # (c) money or approval: awaiting_spend_approval, not terminal.
     ("blocked", "preparation", ["scene_intake_spend_cap_exhausted"], "spend_cap_reached"),
     ("blocked", "preparation", ["scene_intake_attempt_spend_exceeds_authorized_limit"], "spend_cap_reached"),
@@ -135,12 +160,8 @@ SEALED_CAPS = [
     ("expired", None, ["scene_intake_authority_expired"], "authority_expired"),
     ("blocked", "preparation", ["scene_configuration_submission_scene_owner_authority_expired"],
      "authority_expired"),
-    # Sealed Blueprint failures: setup_repair, terminal.
-    ("blocked", "scene_configuration_failed", ["configuration_launch_failed"], "scene_configuration_failed"),
-    ("blocked", "policy_canary_blocked", ["provider_capacity_unavailable"], "policy_canary_blocked"),
-    ("blocked", "policy_canary_preprovider_blocked", ["policy_canary_website_notification_pending"],
-     "policy_canary_blocked"),
-    *[("blocked", "preparation", [code], reason) for code, reason in SEALED_CAPS],
+    # Spent non-extendable allowances: setup_repair, terminal.
+    *[("blocked", "preparation", [code], reason) for code, reason in SPENT_ALLOWANCES],
     # completed never has an outcome, whatever else the row carries.
     ("completed", "policy_canary_complete", [], None),
     ("completed", "scene_prepared", ["scene_intake_authority_revoked"], None),
@@ -151,62 +172,52 @@ SEALED_CAPS = [
       "preallocation_capacity_recovery_withheld:measured"], "scene_configuration_failed"),
 ])
 def test_classification_table(status, phase, blockers, reason):
-    # The give-up clock is far below 24 hours here, so only the registry decides.
-    assert outcome.decide_outcome(status, phase, blockers, T0, T0 + 60) == _expected(reason)
+    assert outcome.decide_outcome(status, phase, blockers) == _expected(reason)
 
 
 def test_a_privacy_or_rights_ending_outranks_every_other_reason():
     blockers = ["scene_intake_spend_cap_exhausted", "scene_progression_retry_cap_exhausted",
                 "scene_intake_authority_revoked", "fixture_unknown"]
-    assert outcome.decide_outcome("blocked", "preparation", blockers, None, T0) == _expected("authority_revoked")
+    assert outcome.decide_outcome("blocked", "preparation", blockers) == _expected("authority_revoked")
     capability = ["scene_intake_spend_cap_exhausted", "source_kind_not_supported_by_progression"]
-    assert outcome.decide_outcome("needs_input", "source", capability, None, T0) == _expected(
-        "source_kind_unsupported")
-    sealed = ["scene_intake_spend_cap_exhausted", "scene_progression_retry_cap_exhausted"]
-    assert outcome.decide_outcome("blocked", "preparation", sealed, None, T0) == _expected("retry_cap_exhausted")
+    assert outcome.decide_outcome("needs_input", "source", capability) == _expected("source_kind_unsupported")
+    spent = ["scene_intake_spend_cap_exhausted", "scene_progression_retry_cap_exhausted"]
+    assert outcome.decide_outcome("blocked", "preparation", spent) == _expected("retry_cap_exhausted")
+    # Money waits for a person; a fault behind it waits for that person first.
+    money = ["scene_intake_spend_cap_exhausted"]
+    assert outcome.decide_outcome("blocked", "scene_configuration_failed", money) == _expected(
+        "spend_cap_reached")
 
 
-# --------------------------------------------------------------------- the 24-hour give-up rule
+# --------------------------------------------------------------------- the execution window
 
 @pytest.mark.parametrize("status,phase,blockers", [
-    ("blocked", "preparation", ["fixture_unknown_fault"]),
+    ("awaiting_source", "source", ["website_prepared_source_pending"]),
     ("running", "terminal_reconciliation", ["terminal_website_readback_pending"]),
-    ("awaiting_execution", "selected_team_evaluation", []),
     ("blocked", "configuration_capacity", ["preallocation_capacity_not_recovered"]),
-    ("needs_input", "factory", ["fixture_unknown_input"]),
-    ("preparing", "factory", []),
-])
-def test_a_row_unchanged_for_24_hours_ends_as_setup_repair_stalled(status, phase, blockers):
-    before = outcome.decide_outcome(status, phase, blockers, T0, T0 + DAY - 1)
-    assert before is None or before["terminal"] is False
-    assert outcome.decide_outcome(status, phase, blockers, T0, T0 + DAY) == _expected("stalled")
-    assert _expected("stalled") == {"kind": "setup_repair", "terminal": True,
-                                    "reason_category": "stalled", "reason_code": "stalled"}
-
-
-@pytest.mark.parametrize("status,phase,blockers", [
-    # A person's money or site action, and an operator's hold, wait for that
-    # person; the execution window (authority_expired) bounds them instead.
+    ("blocked", "preparation", ["fixture_unknown_fault"]),
+    ("blocked", "scene_configuration_failed", ["configuration_launch_failed"]),
+    ("blocked", "policy_canary_blocked", ["provider_capacity_unavailable"]),
     ("blocked", "preparation", ["scene_intake_spend_cap_exhausted"]),
     ("needs_input", "source", ["task_brief_missing"]),
     ("awaiting_execution", "paused", ["scene_intent_paused"]),
-    ("awaiting_execution", "publication_ready", ["scene_submission_paused"]),
-    ("awaiting_execution", "construction_prepared", []),
-    # Already ended, or completed: the clock has nothing to add.
+])
+@pytest.mark.parametrize("ended,reason", [("expired", "authority_expired"), ("revoked", "authority_revoked")])
+def test_the_execution_window_ends_whatever_the_registry_leaves_open(status, phase, blockers, ended, reason):
+    before = outcome.decide_outcome(status, phase, blockers)
+    assert before is None or before["terminal"] is False
+    assert outcome.decide_outcome(status, phase, blockers, ended) == _expected(reason)
+
+
+@pytest.mark.parametrize("status,phase,blockers", [
     ("needs_input", "source", ["source_kind_not_supported_by_progression"]),
-    ("blocked", "authority", ["scene_intake_authority_revoked"]),
+    ("blocked", "preparation", ["scene_progression_retry_cap_exhausted"]),
+    ("blocked", "preparation", ["consent_expired"]),
     ("completed", "policy_canary_complete", []),
 ])
-def test_the_give_up_clock_never_overrides_an_intended_wait_or_an_ending(status, phase, blockers):
-    assert outcome.decide_outcome(status, phase, blockers, T0, T0 + 30 * DAY) == outcome.decide_outcome(
-        status, phase, blockers, None, T0 + 30 * DAY)
-    assert outcome.decide_outcome(status, phase, blockers, None, T0) == outcome.decide_outcome(
-        status, phase, blockers, T0, T0 + 30 * DAY)
-
-
-def test_an_unknown_unchanged_since_never_gives_up():
-    assert outcome.decide_outcome("blocked", "preparation", ["fixture_unknown"], None, T0 + 400 * DAY) == _expected(
-        "pipeline_fault")
+def test_an_ending_of_its_own_or_completion_outlasts_the_window(status, phase, blockers):
+    assert outcome.decide_outcome(status, phase, blockers, "expired") == outcome.decide_outcome(
+        status, phase, blockers)
 
 
 # --------------------------------------------------------------------- outcome.json
@@ -222,7 +233,8 @@ def test_a_terminal_outcome_is_written_once_and_never_rewritten(tmp_path):
     assert set(held) == {"schema_version", "intent_id", "intent_digest", "kind", "terminal", "reason_category",
                          "reason_code", "decided_at_epoch", "outcome_digest"}
     before = path.read_bytes()
-    for later in (None, _expected("pipeline_fault"), _expected("stalled"), _expected("authority_revoked")):
+    for later in (None, _expected("pipeline_fault"), _expected("retry_cap_exhausted"),
+                  _expected("authority_revoked")):
         assert outcome.record_outcome(directory, intent, later, now=T0 + 99) == held
         assert path.read_bytes() == before
     assert outcome.terminal_outcome(directory, intent) == held
@@ -235,8 +247,8 @@ def test_a_non_terminal_outcome_follows_the_latest_decision(tmp_path):
     assert first["kind"] == "awaiting_spend_approval" and first["terminal"] is False
     # The same decision keeps when it was first made.
     assert outcome.record_outcome(directory, intent, _expected("spend_cap_reached"), now=T0 + 2) == first
-    replaced = outcome.record_outcome(directory, intent, _expected("pipeline_fault"), now=T0 + 3)
-    assert replaced["reason_code"] == "pipeline_fault" and replaced["decided_at_epoch"] == T0 + 3
+    replaced = outcome.record_outcome(directory, intent, _expected("scene_configuration_failed"), now=T0 + 3)
+    assert replaced["reason_code"] == "scene_configuration_failed" and replaced["decided_at_epoch"] == T0 + 3
     assert outcome.terminal_outcome(directory, intent) is None
     # A row that no longer waits on anything has no outcome.
     assert outcome.record_outcome(directory, intent, None, now=T0 + 4) is None
@@ -257,11 +269,11 @@ def test_a_tampered_or_foreign_outcome_is_refused(tmp_path):
     other_directory, other = _intent(tmp_path, submission_id="upload-2")
     assert other["intent_id"] != intent["intent_id"]
     assert outcome.read_outcome(directory, intent) is None
-    value = outcome.record_outcome(directory, intent, _expected("stalled"), now=T0)
+    value = outcome.record_outcome(directory, intent, _expected("source_kind_unsupported"), now=T0)
     path = directory / outcome.FILENAME
     os.chmod(path, 0o640)
     # Sealed again after the change, so only the closed vocabulary can refuse it.
-    for change in ({"terminal": False}, {"reason_code": "not_a_reason"}, {"kind": "held"},
+    for change in ({"terminal": False}, {"reason_code": "not_a_reason"}, {"kind": "setup_repair"},
                    {"reason_category": "blueprint_fault"}, {"decided_at_epoch": "yesterday"},
                    {"decided_at_epoch": True}, {"schema_version": "task_evaluation_scene_intent_outcome.v2"},
                    {"extra": 1}):
@@ -290,41 +302,6 @@ def test_a_tampered_or_foreign_outcome_is_refused(tmp_path):
         outcome.read_outcome(directory, intent)
 
 
-# --------------------------------------------------------------------- unchanged since
-
-def test_unchanged_since_steps_over_mid_pass_notes_and_reads_past_the_alarm_window(tmp_path):
-    directory, intent = _intent(tmp_path)
-    progress = advance(directory, intent, None, status="awaiting_source", phase="source",
-                       state={}, blockers=["website_prepared_source_pending"], now=T0)
-    # One pass a minute: a mid-pass note, then the same failure again.
-    for minute in range(1, 80):
-        progress = advance(directory, intent, progress, status="preparing", phase="factory",
-                           state={"tick": minute}, now=T0 + 100 + minute * 60)
-        progress = advance(directory, intent, progress, status="blocked", phase="preparation",
-                           state={"tick": minute}, blockers=["fixture_factory_failed"],
-                           now=T0 + 100 + minute * 60 + 1)
-    assert progress["event_sequence"] > 150  # beyond the stall alarm's own 64-event walk
-    assert outcome.unchanged_since(directory, progress) == T0 + 160 + 1
-    # A different resting state ends the run.
-    progress = advance(directory, intent, progress, status="running", phase="source_preparation",
-                       state={}, now=T0 + 9_000)
-    progress = advance(directory, intent, progress, status="blocked", phase="preparation",
-                       state={}, blockers=["fixture_factory_failed"], now=T0 + 9_060)
-    assert outcome.unchanged_since(directory, progress) == T0 + 9_060
-
-
-def test_the_stall_alarm_walk_is_unchanged_by_default(tmp_path):
-    from blueprint_pipeline import control_plane_stall_alarm as stall
-    directory, intent = _intent(tmp_path)
-    progress = advance(directory, intent, None, status="blocked", phase="preparation", state={},
-                       blockers=["fixture_factory_failed"], now=T0)
-    progress = advance(directory, intent, progress, status="preparing", phase="factory", state={}, now=T0 + 60)
-    progress = advance(directory, intent, progress, status="blocked", phase="preparation", state={},
-                       blockers=["fixture_factory_failed"], now=T0 + 61)
-    budget = stall._Budget(deadline=float("inf"), events=stall.MAX_EVENT_READS, clock=lambda: 0.0)
-    assert stall._unchanged_since(directory, progress, budget=budget) == (T0 + 61, True)
-
-
 def test_progress_markers_are_exactly_the_driver_s_mid_pass_notes():
     tree = ast.parse(inspect.getsource(engine._advance_intent))
     notes = set()
@@ -342,7 +319,7 @@ def test_progress_markers_are_exactly_the_driver_s_mid_pass_notes():
 
 # --------------------------------------------------------------------- settle (the driver hook)
 
-def test_settling_gives_up_on_a_failure_retried_every_pass_for_24_hours(tmp_path):
+def test_a_failure_retried_every_pass_keeps_one_decision_through_mid_pass_notes(tmp_path):
     directory, intent = _intent(tmp_path)
     progress = None
     for tick, now in enumerate((T0, T0 + 3_600, T0 + DAY)):
@@ -355,15 +332,8 @@ def test_settling_gives_up_on_a_failure_retried_every_pass_for_24_hours(tmp_path
         progress = advance(directory, intent, progress, status="blocked", phase="preparation",
                            state={"tick": tick}, blockers=["fixture_factory_failed"], now=now)
         settled = outcome.settle_outcome(directory, intent, progress, now=now)
-        if now < T0 + DAY:
-            assert settled["reason_code"] == "pipeline_fault" and settled["decided_at_epoch"] == T0
-    assert settled == outcome.terminal_outcome(directory, intent)
-    assert (settled["kind"], settled["reason_code"], settled["decided_at_epoch"]) == ("setup_repair", "stalled",
-                                                                                     T0 + DAY)
-    # The next pass's note leaves the ending alone.
-    progress = advance(directory, intent, progress, status="preparing", phase="factory", state={"tick": 9},
-                       now=T0 + DAY + 60)
-    assert outcome.settle_outcome(directory, intent, progress, now=T0 + DAY + 60) == settled
+        assert (settled["reason_code"], settled["terminal"], settled["decided_at_epoch"]) == (
+            "pipeline_fault", False, T0)
 
 
 def test_settling_clears_a_wait_once_the_row_moves_on_and_never_marks_completed(tmp_path):
@@ -378,7 +348,7 @@ def test_settling_clears_a_wait_once_the_row_moves_on_and_never_marks_completed(
     assert not (directory / outcome.FILENAME).exists()
     reference = {"uri": "s3://example/result.tar", "digest": "sha256:" + "f" * 64, "size_bytes": 1}
     progress = advance(directory, intent, progress, status="completed", phase="terminal", state={},
-                       result_reference=reference, now=T0 + 400 * DAY)
+                       result_reference=reference, now=T0 + 2 * DAY + 60)
     assert outcome.settle_outcome(directory, intent, progress, now=T0 + 400 * DAY) is None
     assert not (directory / outcome.FILENAME).exists()
 
@@ -411,54 +381,88 @@ def test_driver_writes_the_outcome_after_each_emit_and_stops_after_a_terminal_on
     assert again == first == load_progression(directory, intent)
 
 
-def _source_refused(**_kwargs):
-    return engine.SourceResolution("blocked", blockers=("fixture_source_refused",))
-
-
-@pytest.mark.parametrize("resolver,status,pending", [
-    (_awaiting_source, "awaiting_source", None),
-    (_source_refused, "blocked", "pipeline_fault"),
-])
-def test_driver_gives_up_on_a_row_unchanged_for_24_hours(tmp_path, resolver, status, pending):
+def test_a_failed_build_is_setup_repair_and_the_next_pass_still_re_drives_it(tmp_path):
     directory, intent = _intent(tmp_path)
-    waiting = _advance(directory, intent, now=T0 + 10, resolver=resolver)
-    assert waiting["status"] == status
+    progress = advance(directory, intent, None, status="blocked", phase="scene_configuration_failed",
+                       state={}, blockers=["configuration_launch_failed"], now=T0)
+    failed = outcome.settle_outcome(directory, intent, progress, now=T0)
+    assert (failed["kind"], failed["terminal"], failed["reason_code"]) == (
+        "setup_repair", False, "scene_configuration_failed")
+    calls = []
 
-    def pending_reason():
-        retained = outcome.read_outcome(directory, intent)
-        assert retained is None or retained["terminal"] is False
-        return retained and retained["reason_code"]
+    def fixed(**kwargs):
+        calls.append(kwargs)
+        return _awaiting_source()
 
-    assert pending_reason() == pending
-    _advance(directory, intent, now=T0 + 10 + DAY - 1, resolver=resolver)
-    assert pending_reason() == pending
-    stalled = _advance(directory, intent, now=T0 + 10 + DAY, resolver=resolver)
-    assert stalled == waiting  # the same row, now ended
-    ended = outcome.terminal_outcome(directory, intent)
-    assert (ended["kind"], ended["reason_code"], ended["terminal"]) == ("setup_repair", "stalled", True)
-    # Even past the execution window, nothing new runs and no authority event is added.
-    later = _advance(directory, intent, now=T0 + 30 * DAY, resolver=_no_new_execution)
-    assert later == waiting and outcome.terminal_outcome(directory, intent) == ended
+    # A deploy with the fix: the driver runs again and the job moves on.
+    progress = _advance(directory, intent, now=T0 + DAY, resolver=fixed)
+    assert len(calls) == 1 and progress["status"] == "awaiting_source"
+    assert outcome.read_outcome(directory, intent) is None
 
 
-def test_terminal_outcome_keeps_the_read_only_join_that_closes_an_authorized_run(tmp_path):
+def test_a_long_wait_gets_no_terminal_outcome_until_the_window_expires(tmp_path):
+    directory, intent = _intent(tmp_path, window=7 * DAY)
+    for now in (T0 + 10, T0 + 3 * DAY, T0 + 7 * DAY - 1):
+        waiting = _advance(directory, intent, now=now, resolver=_awaiting_source)
+        assert waiting["status"] == "awaiting_source" and outcome.read_outcome(directory, intent) is None
+    ended = _advance(directory, intent, now=T0 + 7 * DAY, resolver=_awaiting_source)
+    assert (ended["status"], ended["phase"], ended["blockers"]) == (
+        "blocked", "authority", ["scene_intake_authority_expired"])
+    expired = outcome.terminal_outcome(directory, intent)
+    assert (expired["kind"], expired["reason_code"], expired["decided_at_epoch"]) == (
+        "setup_repair", "authority_expired", T0 + 7 * DAY)
+    # Ended: nothing new runs on later passes.
+    assert _advance(directory, intent, now=T0 + 8 * DAY, resolver=_no_new_execution) == ended
+
+
+def test_the_window_ends_a_job_whose_join_answers_before_the_authority_gate(tmp_path):
+    """A pending terminal join returns before the authority gate on every pass."""
     from tests.test_task_evaluation_scene_terminal_reconciler import _env, _receipts
     env = _env(tmp_path)
-    projection = _receipts(env)
+    _receipts(env, include_closure=False)
     advance(env["directory"], env["intent"], None, status="awaiting_execution", phase="scene_configuration",
             state={"activation": {"provider_allocation_performed": False}, "attempt_id": "source-1"},
             now=env["now"])
-    stalled = outcome.record_outcome(env["directory"], env["intent"], _expected("stalled"), now=env["now"])
     config = dict(env["config"], factory_output_root=str(tmp_path / "factory-output"))
-    progress = _advance(env["directory"], env["intent"], config, now=env["now"] + 60,
-                        resolver=_no_new_execution, release=env["release"])
-    assert progress["status"] == "completed", progress
-    # Written once: the outcome stays, and the completed status supersedes it.
-    assert outcome.terminal_outcome(env["directory"], env["intent"]) == stalled
+
+    def drive(now):
+        return _advance(env["directory"], env["intent"], config, now=now, resolver=_no_new_execution,
+                        release=env["release"])
+
+    pending = drive(env["now"] + 60)
+    assert (pending["status"], pending["phase"]) == ("running", "terminal_reconciliation")
+    assert outcome.read_outcome(env["directory"], env["intent"]) is None
+    expiry = env["intent"]["request"]["execution"]["expires_at_epoch"]
+    assert drive(expiry + 60)["phase"] == "terminal_reconciliation"
+    expired = outcome.terminal_outcome(env["directory"], env["intent"])
+    assert (expired["reason_code"], expired["decided_at_epoch"]) == ("authority_expired", expiry)
+    # The authorized run still closes out read-only, and completed supersedes the ending.
+    projection = _receipts(env)
+    assert drive(expiry + 120)["status"] == "completed"
+    assert outcome.terminal_outcome(env["directory"], env["intent"]) == expired
     status = intake.scene_intent_status(queue_root=env["config"]["intent_root"], intent_id=env["intent_id"],
-                                        now=env["now"] + 60)
+                                        now=expiry + 180)
     assert status["status"] == "completed" and "outcome" not in status
     assert status["result_reference"]["digest"] == projection["projection_digest"]
+
+
+def test_a_blocked_policy_canary_is_setup_repair_until_the_window_ends_it(tmp_path):
+    from tests.test_task_evaluation_scene_terminal_reconciler import _blocked_projection, _env, _receipts
+    env = _env(tmp_path)
+    _receipts(env, projection=_blocked_projection())
+    advance(env["directory"], env["intent"], None, status="awaiting_execution", phase="scene_configuration",
+            state={"activation": {"provider_allocation_performed": False}, "attempt_id": "source-1"},
+            now=env["now"])
+    config = dict(env["config"], factory_output_root=str(tmp_path / "factory-output"))
+    blocked = _advance(env["directory"], env["intent"], config, now=env["now"] + 60, release=env["release"])
+    assert (blocked["status"], blocked["phase"]) == ("blocked", "policy_canary_blocked")
+    repair = outcome.read_outcome(env["directory"], env["intent"])
+    assert (repair["kind"], repair["terminal"], repair["reason_code"]) == (
+        "setup_repair", False, "policy_canary_blocked")
+    expiry = env["intent"]["request"]["execution"]["expires_at_epoch"]
+    _advance(env["directory"], env["intent"], config, now=expiry + 60, release=env["release"])
+    expired = outcome.terminal_outcome(env["directory"], env["intent"])
+    assert (expired["kind"], expired["reason_code"]) == ("setup_repair", "authority_expired")
 
 
 # --------------------------------------------------------------------- the status endpoint
@@ -506,15 +510,15 @@ def test_status_reports_the_ending_revocation_or_expiry_already_decided(tmp_path
 
 def test_status_keeps_the_first_ending_when_the_authority_ends_later(tmp_path):
     directory, intent = _intent(tmp_path)
-    advance(directory, intent, None, status="awaiting_source", phase="source", state={},
-            blockers=["website_prepared_source_pending"], now=T0)
-    stalled = outcome.settle_outcome(directory, intent, load_progression(directory, intent), now=T0 + DAY)
-    assert stalled["reason_code"] == "stalled"
+    advance(directory, intent, None, status="blocked", phase="preparation", state={},
+            blockers=["scene_progression_retry_cap_exhausted"], now=T0)
+    spent = outcome.settle_outcome(directory, intent, load_progression(directory, intent), now=T0)
+    assert spent["reason_code"] == "retry_cap_exhausted" and spent["terminal"] is True
     intake.revoke_scene_intent(queue_root=tmp_path, intent_id=intent["intent_id"],
                                intent_digest=intent["intent_digest"], owner=intent["request"]["owner"],
-                               now=T0 + DAY + 10)
-    status = intake.scene_intent_status(queue_root=tmp_path, intent_id=intent["intent_id"], now=T0 + DAY + 20)
-    assert status["status"] == "revoked" and status["outcome"] == stalled
+                               now=T0 + 10)
+    status = intake.scene_intent_status(queue_root=tmp_path, intent_id=intent["intent_id"], now=T0 + 20)
+    assert status["status"] == "revoked" and status["outcome"] == spent
 
 
 def test_status_refuses_a_corrupt_outcome(tmp_path):
@@ -524,6 +528,6 @@ def test_status_refuses_a_corrupt_outcome(tmp_path):
     value = outcome.settle_outcome(directory, intent, load_progression(directory, intent), now=T0)
     path = directory / outcome.FILENAME
     os.chmod(path, 0o640)
-    path.write_text(json.dumps({**value, "reason_code": "stalled"}))
+    path.write_text(json.dumps({**value, "reason_code": "scene_configuration_failed"}))
     with pytest.raises(intake.SceneIntakeError, match="scene_intake_outcome_invalid"):
         intake.scene_intent_status(queue_root=tmp_path, intent_id=intent["intent_id"], now=T0 + 1)
