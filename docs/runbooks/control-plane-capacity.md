@@ -142,6 +142,15 @@ has been stuck and how many there are (`count`, `targets`).
   run's `hard_ttl_seconds`). The reconciler should have closed it: check that
   `blueprint-task-evaluation-launch-reconciler.timer` is active and read its
   latest report.
+- `launch_activation_stuck`: a row in
+  `task-evaluation-launch-activations/processing/` that no process holds a lock
+  on (`/proc/locks`; the activation worker holds an exclusive `flock` on its row
+  from claim to terminal move) was claimed longer ago than the activation
+  role's 6-hour TTL. Its staging under
+  `task-evaluation-inputs/launch-activations/<activation>` stays
+  queue-referenced, so the reclaim timer keeps it (2026-10-31: `6e9f0cac` held
+  14 GB for two days). Check the activation journal; nothing moves the row
+  automatically.
 - `trigger_inactive_unheld`: a `.timer` or `.path` the deploy tool always arms
   (`DEFAULT_ALWAYS_ARM_*`, minus the configured-controls pair a deploy may
   preserve) is loaded and has been inactive for an hour with no hold record in
