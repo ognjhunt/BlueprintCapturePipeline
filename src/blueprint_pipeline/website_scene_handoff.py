@@ -61,6 +61,62 @@ def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy
             runtime.close()
 
 
+def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[str, Any], preparation_path: Path,
+                                native_root: Path, task_context: Mapping[str, Any], now: float,
+                                runtime_inputs: Mapping[str, Any] | None = None,
+                                base_scene: Mapping[str, Any] | None = None,
+                                source_geometry: Mapping[str, Any] | None = None,
+                                task_masks: Mapping[str, Any] | None = None) -> bool:
+    """The rigid native tail of a compiled preparation, CPU only: it buys nothing.
+
+    Runtime inputs (unless the caller already made them), the collision and
+    appearance stages, the construction inputs, the rights admission and the
+    capability verdict. The handoff and a renewal re-issue
+    (``website_preparation_renewal``) share it, so the inputs bound to a
+    preparation's digest cannot drift between them. Records into ``result``
+    and returns whether the preparation may be registered: intake ready,
+    appearance authored and no abstention.
+    """
+    if runtime_inputs is None:
+        runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base_scene,
+            source_geometry=source_geometry, task_masks=task_masks, output_root=native_root)
+    result["runtime_inputs"] = {"status": runtime_inputs["status"], "digest": runtime_inputs["digest"],
+                                "path": str(native_root / "runtime_inputs.json")}
+    from .website_native_background import prepare_collision_stage, prepare_appearance_stage, prepare_construction_stages
+    collision_stage = prepare_collision_stage(native_root / "runtime_inputs.json")
+    write_json(native_root / "collision_stage_inputs.json", collision_stage)
+    result["runtime_inputs"]["collision_stage_inputs_path"] = str(native_root / "collision_stage_inputs.json")
+    if runtime_inputs["appearance"]["status"] != "native_appearance_authored":
+        return False
+    appearance_stage = prepare_appearance_stage(native_root / "runtime_inputs.json")
+    write_json(native_root / "appearance_stage_inputs.json", appearance_stage)
+    result["runtime_inputs"]["appearance_stage_inputs_path"] = str(native_root / "appearance_stage_inputs.json")
+    construction = prepare_construction_stages(runtime_inputs_path=native_root / "runtime_inputs.json",
+                                                preparation_path=preparation_path)
+    if preparation["status"] == "intake_ready":
+        from .website_native_background import construction_rights_admission
+        from .website_object_observations import _record
+        rights = construction_rights_admission(preparation=preparation, task_context=task_context, now=now)
+        rights_path = native_root / "rights_admission.json"
+        write_json(rights_path, rights)
+        construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
+    write_json(native_root / "construction_inputs.json", construction)
+    result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
+    if (preparation["status"] == "intake_ready"
+            and preparation["intake_request"]["task"]["strategy"] == "pick_and_place"):
+        # Abstain before the owner is asked to pay when no enabled embodiment can carry the
+        # task; one the gate cannot model is unassessed and never refused.
+        from .website_rigid_feasibility import rigid_task_verdict
+        verdict = rigid_task_verdict(preparation=preparation, collision_path=Path(runtime_inputs["collision"]["path"]))
+        write_json(native_root / "capability_verdict.json", verdict)
+        result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
+            **({"risks": verdict["risks"]} if "risks" in verdict else {}),
+            "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
+        if verdict["status"] == "abstained":
+            result.update(status="needs_input", blockers=list(verdict["blockers"]))
+    return preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained"
+
+
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],
                                  capture_root: Path, now: float,
                                  allow_operation_coverage_review: bool = False,
@@ -299,53 +355,22 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 native_root = root
             else:
                 native_root = root / "native"
-                runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base,
-                    source_geometry=clean_plate["source_geometry"], task_masks=clean_plate["task_masks"],
-                    output_root=native_root)
-            result["runtime_inputs"] = {"status": runtime_inputs["status"], "digest": runtime_inputs["digest"],
-                                        "path": str(native_root / "runtime_inputs.json")}
-            from .website_native_background import prepare_collision_stage, prepare_appearance_stage, prepare_construction_stages
-            collision_stage = prepare_collision_stage(native_root / "runtime_inputs.json")
-            write_json(native_root / "collision_stage_inputs.json", collision_stage)
-            result["runtime_inputs"]["collision_stage_inputs_path"] = str(native_root / "collision_stage_inputs.json")
-            if runtime_inputs["appearance"]["status"] == "native_appearance_authored":
-                appearance_stage = prepare_appearance_stage(native_root / "runtime_inputs.json")
-                write_json(native_root / "appearance_stage_inputs.json", appearance_stage)
-                result["runtime_inputs"]["appearance_stage_inputs_path"] = str(native_root / "appearance_stage_inputs.json")
-                construction = prepare_construction_stages(runtime_inputs_path=native_root / "runtime_inputs.json",
-                                                            preparation_path=root / "preparation.json")
-                if preparation["status"] == "intake_ready":
-                    from .website_native_background import construction_rights_admission
-                    from .website_object_observations import _record
-                    rights = construction_rights_admission(preparation=preparation, task_context=context, now=now)
-                    rights_path = native_root / "rights_admission.json"
-                    write_json(rights_path, rights)
-                    construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
-                write_json(native_root / "construction_inputs.json", construction)
-                result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
-                if (preparation["status"] == "intake_ready"
-                        and preparation["intake_request"]["task"]["strategy"] == "pick_and_place"):
-                    # Abstain before the owner is asked to pay when no enabled embodiment can carry the
-                    # task; one the gate cannot model is unassessed and never refused.
-                    from .website_rigid_feasibility import rigid_task_verdict
-                    verdict = rigid_task_verdict(preparation=preparation, collision_path=Path(runtime_inputs["collision"]["path"]))
-                    write_json(native_root / "capability_verdict.json", verdict)
-                    result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
-                        **({"risks": verdict["risks"]} if "risks" in verdict else {}),
-                        "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
-                    if verdict["status"] == "abstained":
-                        result.update(status="needs_input", blockers=list(verdict["blockers"]))
-                if preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained":
-                    from .website_scene_dispatch import binding_root, register_website_preparation
-                    context_path = root / "task_context.json"
-                    write_json(context_path, context)
-                    result["source_registration"] = register_website_preparation(
-                        preparation_path=root / "preparation.json", runtime_inputs_path=native_root / "runtime_inputs.json",
-                        task_context_path=context_path, root=binding_root(), now=now)
-                    if authority.get("schema_version") == "website_scene_sponsorship.v1":
-                        from .website_task_context import enqueue_website_prepared_scene
-                        result["website_intake_outbox"] = enqueue_website_prepared_scene(
-                            task_context=context, request=preparation["intake_request"])
+                runtime_inputs = None
+            if prepare_rigid_native_inputs(result=result, preparation=preparation,
+                                           preparation_path=root / "preparation.json", native_root=native_root,
+                                           task_context=context, now=now, runtime_inputs=runtime_inputs,
+                                           base_scene=base, source_geometry=clean_plate["source_geometry"],
+                                           task_masks=clean_plate["task_masks"]):
+                from .website_scene_dispatch import binding_root, register_website_preparation
+                context_path = root / "task_context.json"
+                write_json(context_path, context)
+                result["source_registration"] = register_website_preparation(
+                    preparation_path=root / "preparation.json", runtime_inputs_path=native_root / "runtime_inputs.json",
+                    task_context_path=context_path, root=binding_root(), now=now)
+                if authority.get("schema_version") == "website_scene_sponsorship.v1":
+                    from .website_task_context import enqueue_website_prepared_scene
+                    result["website_intake_outbox"] = enqueue_website_prepared_scene(
+                        task_context=context, request=preparation["intake_request"])
         except (ValueError, KeyError, TypeError, OSError, ImportError) as exc:
             # Preserve finished CPU outputs when a later handoff is held.
             result.setdefault("runtime_inputs", {}).update(status="awaiting_inputs", blockers=[str(exc)])
