@@ -60,6 +60,30 @@ def _grasps(lower: np.ndarray, upper: np.ndarray) -> list[dict[str, Any]]:
     return rows
 
 
+def carry_station_search(preparation: Mapping[str, Any]) -> dict[str, Any]:
+    """The ``ground_stance`` arguments the verdict's stations come from, less the collision binding.
+
+    A mount level with the lower of the task's supports, facing the subject or, when the object ends
+    on another surface, the whole region from its start to its target; the closest
+    ``CARRY_STATIONS`` clear stances. The robot fit table (``website_robot_fit``) searches the same way.
+    """
+    from .robot_arm_path_clearance import CARRY_STATIONS
+    from .team_scene_packet import STATION_FOOTPRINT_HALF_EXTENT_M
+
+    task, destination = preparation["intake_request"]["task"], preparation["destination"]
+    lower = np.asarray(preparation["subject"]["aabb_min_xyz"], dtype=float)
+    upper = np.asarray(preparation["subject"]["aabb_max_xyz"], dtype=float)
+    half = (upper - lower) / 2.0
+    target = np.asarray(destination["position_world_m"], dtype=float) + [0.0, 0.0, half[2]]
+    supports = [task["support"]] + ([destination["support"]] if "support" in destination else [])
+    region_lower, region_upper = (np.minimum(lower, target - half), np.maximum(upper, target + half)) \
+        if "support" in destination else (lower, upper)
+    return {"offset": [0.0, 0.0, 0.0], "subject_center": ((region_lower + region_upper) / 2.0).tolist(),
+            "subject_minimum": region_lower.tolist(), "subject_maximum": region_upper.tolist(),
+            "footprint_half_extent_m": list(STATION_FOOTPRINT_HALF_EXTENT_M),
+            "root_world_z_m": min(float(row["aabb_max_xyz"][2]) for row in supports), "ranked": CARRY_STATIONS}
+
+
 def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
                        robot_profiles: Sequence[str] | None = None) -> dict[str, Any]:
     """The station and carry verdict for a prepared rigid pick-and-place, from CPU geometry only.
@@ -69,7 +93,6 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
     import hashlib
 
     from .robot_arm_path_clearance import (
-        CARRY_STATIONS,
         NOMINAL_SEED_RAD,
         REST_SEED_RAD,
         ROBOT_PROFILE_ARMS,
@@ -77,7 +100,6 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
     )
     from .team_embodiment import TeamEmbodimentError
     from .team_embodiment_stance import ground_stance
-    from .team_scene_packet import STATION_FOOTPRINT_HALF_EXTENT_M
 
     task = preparation["intake_request"]["task"]
     lower = np.asarray(preparation["subject"]["aabb_min_xyz"], dtype=float)
@@ -85,9 +107,6 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
     destination = preparation["destination"]
     start, half = (lower + upper) / 2.0, (upper - lower) / 2.0
     target = np.asarray(destination["position_world_m"], dtype=float) + [0.0, 0.0, half[2]]
-    supports = [task["support"]] + ([destination["support"]] if "support" in destination else [])
-    region_lower, region_upper = (np.minimum(lower, target - half), np.maximum(upper, target + half)) \
-        if "support" in destination else (lower, upper)
     collision = Path(collision_path)
     digest = "sha256:" + hashlib.sha256(collision.read_bytes()).hexdigest()
     profiles = sorted(enabled_robot_profiles() if robot_profiles is None else robot_profiles)
@@ -117,10 +136,8 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
         return settle("abstained", [] if profiles else ["robot_profile_none_enabled"], station=None, reach=None,
                       embodiments=[])
     try:
-        stations = ground_stance(collision_path=collision, collision_sha256=digest, offset=[0.0, 0.0, 0.0],
-            subject_center=((region_lower + region_upper) / 2.0).tolist(), subject_minimum=region_lower.tolist(),
-            subject_maximum=region_upper.tolist(), footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M),
-            root_world_z_m=min(float(row["aabb_max_xyz"][2]) for row in supports), ranked=CARRY_STATIONS)
+        stations = ground_stance(collision_path=collision, collision_sha256=digest,
+                                 **carry_station_search(preparation))
     except TeamEmbodimentError as exc:
         return settle("abstained", ["robot_station_" + item for item in exc.blockers], station=None, reach=None,
                       embodiments=[])
