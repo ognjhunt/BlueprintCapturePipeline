@@ -94,6 +94,25 @@ Cloud sessions reach the control-plane host through the operator door
 (`python3 scripts/operator_door.py`, see `docs/OPERATOR_DOOR.md`), never SSH.
 Setup lives in the WebApp checkout's `docs/runbooks/cloud-scene-runs.md`.
 
+## Beta Deploy Policy
+
+Decision D-08 (2026-11-02, delegated by the owner): every Pipeline deploy
+retires and rebuilds each in-flight website attempt, so deploys are batched.
+
+- Deploy `main` once a day, in the window that opens at 15:00 UTC.
+- Skip the window while an external job is in a paid stage. That is when
+  `door status` shows a held `paid_launch_locks` entry, a
+  `deploy_activation_hold`, or beta-screening candidates `launching` or
+  `running`. Deploy as soon as they clear.
+- Outside the window, deploy only a fix for money, privacy, rights or a stuck
+  paid stage, and name which in the request.
+- Before you deploy, read `door status` (`deploys.recent_receipts`) and
+  `door requests` for another operator's deploy, and record yours in the beta
+  tracker.
+
+Procedure: [`docs/runbooks/beta-operations.md`](docs/runbooks/beta-operations.md)
+section 6.
+
 ## Commands
 
 Paid resource allocation (the only supported launchers):

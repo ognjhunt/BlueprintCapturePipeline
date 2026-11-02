@@ -270,3 +270,46 @@ After the deploy:
   with `previous_release_attempt_not_terminal`.
 - Read the receipt `deploy-receipts/iteration_<sha12>_door.json` and
   `door status` (`active_release`).
+
+## 6. Deploy policy (D-08)
+
+Why: every deploy retires each in-flight website attempt and rebuilds it on the
+new release (section 5), and it pauses paid launches for about 7 minutes. So
+deploys are batched once a day and held while an external job is in a paid
+stage. The rule is in `AGENTS.md` ("Beta Deploy Policy").
+
+The window opens at 15:00 UTC (09:00 CST). Deploy what `main` holds then.
+
+Before you deploy:
+
+1. Read `door status`. Do not deploy while any of these hold:
+   - a `paid_launch_locks` entry with `held: true`;
+   - `deploy_activation_hold` is not null (the door holds the deploy itself
+     while a scene-configuration activation is live, section 5);
+   - `beta_screening.candidate_counts.launching` or `.running` is above 0.
+   Wait for them to clear, then deploy.
+2. Read `door requests` and `deploys.recent_receipts`. If another operator has a
+   deploy pending, processing, or finished in the last hour, do not stack a
+   second one: use theirs, or wait for it.
+3. List what ships: `git log --oneline <active release>..origin/main`. A fix for
+   a stopped production job needs its replay first (`AGENTS.md`, "Commands").
+4. Request it:
+
+   ```bash
+   python3 scripts/operator_door.py deploy <sha on origin/main> --wait
+   ```
+
+5. Record the deploy in
+   [`../launch-readiness/2026-11-beta-launch-tracker.md`](../launch-readiness/2026-11-beta-launch-tracker.md):
+   the commit, the time, and what it carried.
+
+Outside the window:
+
+- Deploy only a fix for money, privacy, rights, or a paid stage that is stuck.
+  Say which in the request.
+- `--activation-hold-override <reason>` is for the same cases only.
+- A rollback follows section 5.
+
+WebApp merges are separate. A WebApp merge to `main` deploys to Render through
+its CI-gated workflow, so treat every WebApp merge as a deploy, but it does not
+retire Pipeline attempts.
