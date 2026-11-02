@@ -39,6 +39,7 @@ from .task_evaluation_configured_controls_autostart import (
     validate_configured_controls_autostart_intent,
 )
 from .task_evaluation_launch_activation_disk import activation_reservation_terms
+from .task_evaluation_launch_activation_claim_recovery import retire_abandoned_activation_claims
 from .task_evaluation_launch_activation_contract import (
     launch_activation_intent_digest,
     validate_launch_activation_request,
@@ -1618,6 +1619,7 @@ def process_launch_activation_queue(
         release_window_prefix, prefix=release_window_prefix
     )
     root = ensure_launch_activation_queue_root(queue_root)
+    recovered = retire_abandoned_activation_claims(root, recovering_source_commit=observed_commit)
     prep_queue = Path(preparation_queue_root).resolve(strict=True)
     prep_inputs = Path(preparation_input_root).resolve(strict=True)
     activation_base = Path(activation_root)
@@ -1934,6 +1936,7 @@ def process_launch_activation_queue(
         "results": processed,
         "provider_mutation_performed": False,
         "paid_execution_requested": False,
+        **({"recovered_claims": recovered} if recovered else {}),
     }
 
 

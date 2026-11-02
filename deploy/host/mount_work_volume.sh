@@ -90,6 +90,7 @@ WORKER_UNITS=(
   blueprint-task-evaluation-episode-compilation-remote.path
   blueprint-task-evaluation-episode-compilation-remote.timer
   blueprint-task-evaluation-launch-activation.path
+  blueprint-task-evaluation-launch-activation.timer
   blueprint-task-evaluation-launch-dispatcher.path
   blueprint-task-evaluation-policy-canary-dispatcher.path
   blueprint-team-evaluation-runner.path
