@@ -254,6 +254,11 @@ CLI_PARAMETERS_DELIBERATELY_NOT_OFFERED: dict[str, str] = {
     "ctrl_world_provider_bundle.generated_at": "receipt timestamp defaults to now",
     "oscar_wam_provider_bundle.generated_at": "receipt timestamp defaults to now",
     "public_scene_simready_isaac_bundle.generated_at": "receipt timestamp defaults to now",
+    "task_evaluation_scene_configuration_bundle.stat_only_toolchain_host_validation": (
+        "owner-decided host setting, off by default: unset, the builder reads "
+        "BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION from the unit "
+        "environment, so a flag would be a second switch for it; the receipt records the mode"
+    ),
 }
 
 
