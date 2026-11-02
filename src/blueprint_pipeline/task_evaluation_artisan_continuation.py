@@ -494,7 +494,10 @@ def _inventory(root: Path) -> list[dict[str, Any]]:
                 digest.update(chunk)
         rows.append({"relative_path": path.relative_to(root).as_posix(), "sha256": "sha256:" + digest.hexdigest(),
                      "size_bytes": path.stat().st_size})
-    return rows
+    # Order by the path string, as the descriptor is compared. Paths order part
+    # by part, so "workspace.sandbox_preflight.json" follows "workspace/..."
+    # and identical bytes read as a mismatch (capture-447ae4f4, 2026-11-02).
+    return sorted(rows, key=lambda row: row["relative_path"])
 
 
 def verify_descriptor(descriptor: Mapping[str, Any], *, verified_lineage: Mapping[str, Any],
