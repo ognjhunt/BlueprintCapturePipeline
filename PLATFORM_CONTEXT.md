@@ -36,7 +36,9 @@ per-site budget. No job is refused by task kind.
 
 Fail closed only for:
 
-- **Privacy:** people in captures are screened, and consent is respected.
+- **Privacy:** the site's consent is respected, including its withdrawal.
+  Faces are blurred in the frames sent to World Labs; people in captures are
+  not otherwise screened or blurred.
 - **Rights:** capture permissions, revocation, and dataset or model licenses.
 - **Money:** spend stays inside its budget, and paid resources go through the
   canonical allocator.
