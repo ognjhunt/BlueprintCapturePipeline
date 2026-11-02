@@ -128,3 +128,32 @@ def test_low_credit_stops_real_render_launcher_before_create(tmp_path, monkeypat
     assert result["blockers"] == ["provider_credit_insufficient"]
     assert result["allocation_created"] is False
     assert calls == [("GET", "/users/current/")]
+
+
+def _controller(tmp_path, amount, **kwargs):
+    from collections import namedtuple
+    usage = namedtuple("Usage", "total used free")(100 * 1024**3, 10 * 1024**3, 90 * 1024**3)
+    return capacity.run_controller(
+        mounts=["/test"], report_root=tmp_path / "report", reservation_root=tmp_path / "ledger",
+        webhook_url="", volume=None, ack="", token="", disk_usage=lambda _: usage,
+        credit_collector=lambda: observation(amount), now=100, survey=None, **kwargs,
+    )
+
+
+def test_low_vast_credit_pages_with_its_balance(tmp_path):
+    # Vast stops every instance when the balance runs out (capture-447 lost an
+    # attempt that way); a warn-level alert was posted once and never repeated.
+    result = _controller(tmp_path, 8)
+    alert = next(a for a in result["alerts"] if a["code"] == "provider_credit_insufficient")
+    assert alert["severity"] == "page"
+    assert (alert["credit_usd"], alert["required_usd"]) == (8, credit.PAGE_CREDIT_USD + 1)
+    summary_alert = next(a for a in capacity.capacity_summary(result)["alerts"]
+                         if a["code"] == "provider_credit_insufficient")
+    assert (summary_alert["credit_usd"], summary_alert["severity"]) == (8, "page")
+
+
+def test_default_page_line_is_two_launch_allowances_plus_reserve(tmp_path):
+    assert credit.PAGE_CREDIT_USD == 10
+    assert _controller(tmp_path, 10.99)["provider_funding"]["blockers"] == ["provider_credit_insufficient"]
+    assert _controller(tmp_path, 11)["provider_funding"]["status"] == "admitted"
+    assert _controller(tmp_path, 11, credit_warning_usd=20)["provider_funding"]["status"] == "blocked"

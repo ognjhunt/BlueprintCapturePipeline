@@ -19,6 +19,10 @@ from .decision_evidence_contracts import canonical_digest
 ENABLED_ENV = "BLUEPRINT_VAST_CREDIT_GUARD_ENABLED"
 RESERVE_ENV = "BLUEPRINT_VAST_CREDIT_RESERVE_USD"
 WARNING_ENV = "BLUEPRINT_VAST_CREDIT_WARNING_USD"
+#: The capacity tick pages while the Vast balance cannot cover two more launches'
+#: $5 compute allowance on top of the reserve (owner decision D-09: page at twice
+#: what the next launch needs), so funding is topped up before a launch is refused.
+PAGE_CREDIT_USD = 10.0
 
 
 def _amount(value: Any) -> float | None:
