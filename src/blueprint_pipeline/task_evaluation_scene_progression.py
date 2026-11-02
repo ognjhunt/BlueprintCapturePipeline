@@ -441,13 +441,16 @@ def _recover_configuration_capacity(*, directory, intent, state, attempt, link_p
         credit = admission.get("authoring_authentication_admission") or admission.get("provider_credit_admission") or {}
         return {"status": "blocked", "phase": "configuration_capacity",
                 "blockers": credit.get("blockers") or ["preallocation_capacity_not_recovered"]}
-    # Funding/authentication refusals did not execute the model or simulator.
-    # Retain the first rejected request allowance and bound administrative recovery.
-    from .task_evaluation_scene_capacity_recovery import CREDIT_KIND
+    # Funding/authentication refusals, and disk refusals whose result proves
+    # nothing started, did not execute the model or simulator; max_retries
+    # counts executed work. Retain the first rejected request allowance and
+    # bound administrative recovery.
+    from .task_evaluation_scene_capacity_recovery import CREDIT_KIND, nothing_started
     from .task_evaluation_authoring_auth_recovery import KIND as AUTH_KIND
-    unstarted_credit = (attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
-                        and observed.get("kind") in {CREDIT_KIND, AUTH_KIND})
-    require(intent["request"]["execution"]["max_retries"] > 0 or unstarted_credit, "retry_cap_exhausted")
+    unstarted = (attempt.get("schema_version") == "task_evaluation_scene_preparation_attempt.v1"
+                 and (observed.get("kind") in {CREDIT_KIND, AUTH_KIND}
+                      or observed.get("kind") == KIND and nothing_started(observed["values"]["result"])))
+    require(intent["request"]["execution"]["max_retries"] > 0 or unstarted, "retry_cap_exhausted")
     successor_id = "source-" + canonical_digest({"prior_attempt_digest": attempt["attempt_digest"],
         "source_commit": release["source_commit"], "intent_digest": intent["intent_digest"],
         "failure_result_digest": observed["values"]["result"]["result_digest"], "kind": KIND})[7:31]

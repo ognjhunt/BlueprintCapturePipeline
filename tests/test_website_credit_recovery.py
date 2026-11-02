@@ -96,9 +96,8 @@ def test_closed_credit_failure_accepts_free_source_identity(tmp_path, monkeypatc
         observe(bad, config, refs)
 
 
-@pytest.mark.parametrize("previous_recoveries", [0, 6])
-def test_free_preparation_recovery_preserves_paid_ledger_and_own_retry_limit(tmp_path, monkeypatch, previous_recoveries):
-    from blueprint_pipeline import task_evaluation_scene_progression as engine
+def _free_recovery(tmp_path, monkeypatch, *, kind, result, previous_recoveries=0):
+    """A preparation attempt whose launch was refused before allocation, and the recovery call's arguments."""
     from blueprint_pipeline import task_evaluation_scene_progression_recovery as ownership
     from tests.test_terminal_scene_attempt_settlement import _website_preparation
     from blueprint_pipeline.task_evaluation_public_scene_attempt_factory import record
@@ -109,8 +108,8 @@ def test_free_preparation_recovery_preserves_paid_ledger_and_own_retry_limit(tmp
     state = {"attempt": record(source_path), "attempt_id": fx["source"]["attempt_id"],
         "factory": fx["factory"], "binding_digest": fx["source"]["input_digest"],
         "recovery_predecessors": [{"kind": recovery.KIND}] * previous_recoveries}
-    observed = {"recoverable": True, "kind": recovery.CREDIT_KIND, "result": record(fx["transition"]),
-                "values": {"result": {"result_digest": "sha256:" + "1" * 64}, "configuration_attempt": main}}
+    observed = {"recoverable": True, "kind": kind, "result": record(fx["transition"]),
+                "values": {"result": result, "configuration_attempt": main}}
     monkeypatch.setattr(recovery, "observe_failure", lambda **_: observed)
     monkeypatch.setattr(recovery, "capacity_admission", lambda *_: {"status": "admitted"})
     monkeypatch.setattr(recovery, "retain_failure", lambda **_: fx["transition"])
@@ -124,6 +123,15 @@ def test_free_preparation_recovery_preserves_paid_ledger_and_own_retry_limit(tmp
         config={"launch_execution_root": str(fx["launches"]), "launch_queue_root": str(fx["queue"])},
         release={"source_commit": fx["source"]["source_commit"], "runtime_digest": fx["source"]["runtime_digest"]},
         machinery={"maximum_preparation_spend_usd": 0}, output=tmp_path / "output", now=300)
+    return fx, state, args
+
+
+@pytest.mark.parametrize("previous_recoveries", [0, 6])
+def test_free_preparation_recovery_preserves_paid_ledger_and_own_retry_limit(tmp_path, monkeypatch, previous_recoveries):
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    fx, state, args = _free_recovery(tmp_path, monkeypatch, kind=recovery.CREDIT_KIND,
+        result={"result_digest": "sha256:" + "1" * 64}, previous_recoveries=previous_recoveries)
+    directory = fx["directory"]
     if previous_recoveries:
         with pytest.raises(ValueError, match="preallocation_capacity_recovery_cap_exhausted"):
             engine._recover_configuration_capacity(**args)
@@ -136,3 +144,35 @@ def test_free_preparation_recovery_preserves_paid_ledger_and_own_retry_limit(tmp
         assert len(list((directory / "attempts").glob("*.json"))) == 1
         assert state["recovery_predecessors"][0]["factory"] == fx["factory"]
         assert state["terminal_settlements"]["settled_rows"] == 1
+
+
+def _disk_refusal(**changes):
+    """The measured output admission's $0 refusal, as capture-447 recorded it on 2026-11-02."""
+    return {"schema_version": "task_evaluation_scene_configuration_vast_result.v1", "status": "blocked",
+            "blockers": [recovery.MEASURED_BLOCKER], "provider_mutations_performed": 0, "retry_cap": 0,
+            "continuing_spend_from_this_run": False, "result_digest": "sha256:" + "1" * 64, **changes}
+
+
+def test_unstarted_disk_refusal_resumes_without_retry_consent(tmp_path, monkeypatch):
+    # max_retries counts executed work. A launch the disk admission refused
+    # before allocation executed nothing, like a credit refusal, so it resumes
+    # under the bounded pre-allocation recovery ceiling instead.
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    fx, state, args = _free_recovery(tmp_path, monkeypatch, kind=recovery.KIND, result=_disk_refusal())
+    assert args["intent"]["request"]["execution"]["max_retries"] == 0
+    assert engine._recover_configuration_capacity(**args)["phase"] == "capacity_recovery_reserved"
+    new = json.loads(Path(state["attempt"]["path"]).read_text())
+    assert new["maximum_spend_usd"] == 0 and new["paid_authority_granted"] is False
+    assert state["recovery_predecessors"][-1]["kind"] == recovery.KIND
+
+
+@pytest.mark.parametrize("started", [
+    {"provider_mutations_performed": 1}, {"provider_mutations_performed": False},
+    {"continuing_spend_from_this_run": True}, {"vast_instance_ids": ["1"]},
+    {"api_pretraining": {"status": "completed"}}, {"provider_runtime_output_zip_path": "/out.zip"},
+])
+def test_disk_refusal_that_may_have_started_still_needs_retry_consent(tmp_path, monkeypatch, started):
+    from blueprint_pipeline import task_evaluation_scene_progression as engine
+    _fx, _state, args = _free_recovery(tmp_path, monkeypatch, kind=recovery.KIND, result=_disk_refusal(**started))
+    with pytest.raises(ValueError, match="retry_cap_exhausted"):
+        engine._recover_configuration_capacity(**args)
