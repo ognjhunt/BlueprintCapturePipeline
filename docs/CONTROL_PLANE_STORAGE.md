@@ -41,7 +41,7 @@ and never a host path.
 
 | Role | Declared ceiling | Its reservation holds | Where it refuses |
 |---|---|---|---|
-| `control_plane_deploy` | 2 GiB | the release's git-tree estimate: blob bytes × 1.25, plus 4 KiB per file, plus 256 MiB (the measured footprint if the tree cannot be listed); for a commit with no published scene-configuration toolchain, a second reservation (workload `scene_configuration_staging`) on the temporary directory's filesystem for the provision step's scratch copy: the newest published toolchain's file bytes × 1.05 plus 4 KiB per file (12 GiB when none is published), freed when provisioning ends | `deploy_control_plane_commit.py` before provenance or staging |
+| `control_plane_deploy` | 2 GiB | the release's git-tree estimate: blob bytes × 1.25, plus 4 KiB per file, plus 256 MiB (the measured footprint if the tree cannot be listed); for a commit with no published scene-configuration toolchain, a second reservation (workload `scene_configuration_staging`) on the temporary directory's filesystem for the provision step's scratch copy: the newest published toolchain's file bytes × 1.05 plus 4 KiB per file (12 GiB when none is published); with the ARTISAN vendor-reuse plan bound, only the bytes still written (not the plan's hard-linked SDK files, nor the sealed VGG16 weights the ArtiFixer builder links from `public-model-cache` on the same filesystem) × 1.05, plus 4 KiB per written file and per directory, plus 256 MiB (about 0.44 GB on 2026-11-02, from 1.16 GB); freed when provisioning ends | `deploy_control_plane_commit.py` before provenance or staging |
 | `launch_preparation` | 2 GiB | exact bytes of references the content store lacks, plus 256 MiB; the runtime-source layer separately on a miss | preparation worker, before any fetch |
 | `episode_compilation` | 2 GiB | exact bytes of runtime members the member store lacks, plus 256 MiB | compile worker, before the output directory exists |
 | `launch_activation` | 2 GiB | the measured footprint, never less than the reference bytes the request declares plus 256 MiB | activation worker |
@@ -504,7 +504,13 @@ controller warns with `usage_unclassified_root` for each unclassified root over
 20 GiB, and with
 `usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
 over used bytes, capped at 1) is under 0.9. Any of these warnings raises an `ok` report
-to `warning`. A survey exception keeps the last result and names the error
+to `warning`. It pages with `storage_class_over_budget` when the survey measures a
+storage class above its byte budget: `release` 15, `cache` 20, `work` 25 and
+`unclassified` 30 GiB by default, set as `release=15,cache=20` in
+`BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB` (`off` disables them; an invalid value warns
+with `class_budget_setting_invalid` and keeps the defaults). A survey is a lower
+bound, so a class it measures above budget is really above it; one below budget
+proves nothing. The budget only pages: it reclaims nothing. A survey exception keeps the last result and names the error
 (`usage_survey_failed:<type>`) without stopping the capacity tick. Failed and
 interrupted attempts do not retry on every ten-minute tick. A new non-usage
 warning still pages when a usage warning has already raised the report to

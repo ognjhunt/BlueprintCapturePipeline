@@ -375,6 +375,32 @@ def test_attempts_under_one_release_name_their_own_runs(tmp_path, monkeypatch):
     assert ids[0] != ids[1]
 
 
+def test_a_later_attempt_shares_the_earlier_attempts_scene_inputs(tmp_path, monkeypatch):
+    # capture 819be, 2026-11-02: 28 attempts of one scene each copied the same
+    # 0.44 GiB of USD inputs. A later attempt now links the earlier sealed copy.
+    from blueprint_pipeline import task_evaluation_scene_configuration_submission_inputs as staging
+    monkeypatch.setattr(staging, "REUSE_MIN_BYTES", 1)
+    kwargs, _ = setup(tmp_path, monkeypatch)
+    intent = tmp_path / "factory" / "scene-intent"
+    roots = {}
+    for attempt in ("source-c8a8269d6c9071eef84bb554", "source-6dbe031627c0ffd243cf8e34"):
+        root = intent / attempt / "materialized" / "submission"
+        earlier = tuple(found for name, found in roots.items() if name != attempt)
+        materialize_website_submission(**{**kwargs, "staging_root": root, "attempt_id": attempt,
+                                          "reuse_staging_roots": earlier})
+        roots[attempt] = root
+    first, second = roots.values()
+    staged = sorted(path.relative_to(first) for path in (first / "website/inputs").iterdir())
+    assert staged
+    for relative in staged:
+        a, b = first / relative, second / relative
+        assert a.read_bytes() == b.read_bytes()
+        assert a.stat().st_ino == b.stat().st_ino and not a.stat().st_mode & 0o222
+    # Both attempts remain complete, separately valid publications.
+    for root in (first, second):
+        _validated_inventory(root, SHA)
+
+
 @pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
 def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_path, monkeypatch, backend):
     if backend == "artisan_v1":

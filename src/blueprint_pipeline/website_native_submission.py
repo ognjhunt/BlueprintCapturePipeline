@@ -108,7 +108,8 @@ def validate_website_publication(*, root, manifest, request):
 def materialize_website_submission(*, task, deploy_receipt_path, release_provenance_path,
                                   release_environment_path, runtime_publication_root,
                                   expected_production_commit, namespace_timestamp,
-                                  release_admission_mode, staging_root, attempt_id=None):
+                                  release_admission_mode, staging_root, attempt_id=None,
+                                  reuse_staging_roots=None):
     intent, preparation, context, rights, construction, paths = verified_submission_inputs(task)
     owner_task = intent["request"]["task"]
     from .task_evaluation_scene_execution_budget_evidence import effective_execution_budget
@@ -169,7 +170,10 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
     attempt = "" if attempt_id is None else "-" + slug(attempt_id.removeprefix("source-")[:12])
     namespace = slug(f"{team}-{commit}-{namespace_timestamp.lower()}{attempt}")
     run_id = slug(f"{team}-{commit[:8]}-{namespace_timestamp.lower()}{attempt}")
-    stage = Staging(Path(staging_root), namespace)
+    # Earlier attempts of this intent hold the same multi-hundred-MB scene inputs
+    # (0.44 GiB per attempt, 28 attempts of one scene on 2026-11-02); share their
+    # verified read-only inodes instead of copying them again.
+    stage = Staging(Path(staging_root), namespace, reuse_roots=reuse_staging_roots)
     manifest_ref = stage.copy(paths["preparation"], "website/preparation.json")
     stage.copy(paths["task_context"], "website/task_context.json")
     stage.json("provenance/website_task_request.v1.json", task)

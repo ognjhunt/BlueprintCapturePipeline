@@ -276,6 +276,97 @@ def test_lease_bounds_mirror_the_launch_reconciler() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Launch activations
+# --------------------------------------------------------------------------- #
+
+# Shaped like the 2026-10-31 row that sat in processing/ for two days.
+ACTIVATION = "website-566f5be8f9c868d8c49215ca-6e9f0cac-20261031t173130z-activation-auto"
+
+
+def _activation(tmp_path: Path, activation_id: str = ACTIVATION) -> Path:
+    """Claim a row the way the worker does: written to pending/, renamed into processing/."""
+
+    queue = tmp_path / "activations"
+    for name in ("pending", "processing"):
+        (queue / name).mkdir(parents=True, exist_ok=True)
+    pending = queue / "pending" / f"{activation_id}-c2c3ab77.json"
+    pending.write_text(json.dumps({"request": {"activation_id": activation_id}}))
+    os.utime(pending, (NOW - 3 * 86400, NOW - 3 * 86400))
+    claimed = queue / "processing" / pending.name
+    os.replace(pending, claimed)
+    return claimed
+
+
+def _activations(tmp_path: Path, *, now: float, **kwargs):
+    return stall.check_launch_activations(_config(tmp_path, activation_queue_root=tmp_path / "activations"),
+                                          now=now, budget=_budget(), **kwargs)
+
+
+def test_an_activation_row_no_worker_holds_pages_after_the_activation_ttl(tmp_path: Path) -> None:
+    claimed = _activation(tmp_path)
+    claimed_at = claimed.stat().st_ctime
+    # Inside the TTL nothing pages, however old the envelope itself is.
+    section, alerts = _activations(tmp_path, now=claimed_at + stall.ACTIVATION_STALE_SECONDS - 60,
+                                   lock_reader=dict)
+    assert alerts == [] and section == {"status": "observed", "processing": 1, "unowned": 1, "stuck": 0,
+                                        "truncated": False}
+    section, [alert] = _activations(tmp_path, now=claimed_at + 2 * 86400, lock_reader=dict)
+    assert section["stuck"] == 1
+    assert alert["code"] == "launch_activation_stuck" and alert["target"] == ACTIVATION
+    assert alert["bound_seconds"] == stall.ACTIVATION_STALE_SECONDS == 6 * 3600
+    assert stall.describe(alert) == f"launch activation in processing/ 2.0d with no live worker: {ACTIVATION}"
+    assert "launch_activation_stuck" in cap.PAGE_ALERT_CODES
+
+
+def test_a_row_its_worker_still_locks_never_pages(tmp_path: Path) -> None:
+    claimed = _activation(tmp_path)
+    later = claimed.stat().st_ctime + 2 * 86400
+    with claimed.open("rb") as lease:
+        fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # the worker's own claim lock
+        section, alerts = _activations(tmp_path, now=later)  # the real /proc/locks
+    assert alerts == [] and section["unowned"] == 0
+    assert _activations(tmp_path, now=later)[0]["stuck"] == 1  # the worker is gone
+
+
+def test_reading_the_lock_table_takes_no_lock(tmp_path: Path) -> None:
+    claimed = _activation(tmp_path)
+    before = {path: (path.stat().st_mtime_ns, path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file()}
+    _activations(tmp_path, now=claimed.stat().st_ctime + 2 * 86400)
+    # A worker claiming right now can still take its exclusive lock.
+    with claimed.open("rb") as lease:
+        fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    after = {path: (path.stat().st_mtime_ns, path.read_bytes()) for path in tmp_path.rglob("*") if path.is_file()}
+    assert before == after and claimed.parent.name == "processing"
+
+
+def test_an_unreadable_lock_table_is_incomplete_not_a_page(tmp_path: Path) -> None:
+    claimed = _activation(tmp_path)
+
+    def unreadable():
+        raise OSError("no /proc")
+
+    section, alerts = _activations(tmp_path, now=claimed.stat().st_ctime + 2 * 86400, lock_reader=unreadable)
+    assert section == {"status": "ownership_unknown", "processing": 1}
+    assert alerts == [{"code": stall.INCOMPLETE_CODE, "reason": "lock_table_unreadable"}]
+
+
+def test_the_kernel_lock_table_is_parsed_by_device_and_inode(tmp_path: Path) -> None:
+    table = tmp_path / "locks"
+    table.write_text("1: FLOCK  ADVISORY  WRITE 4242 08:00:1234567 0 EOF\n"
+                     "1: -> FLOCK  ADVISORY  WRITE 4343 08:00:1234567 0 EOF\n"
+                     "2: POSIX  ADVISORY  READ 77 fd:01:99 0 EOF\n")
+    assert stall.read_lock_holders(table) == {(8, 0, 1234567): [4242, 4343], (253, 1, 99): [77]}
+
+
+def test_activation_check_is_quiet_when_unconfigured_or_empty(tmp_path: Path) -> None:
+    assert stall.check_launch_activations(_config(tmp_path), now=NOW, budget=_budget()) == (
+        {"status": "not_configured"}, [])
+    assert _activations(tmp_path, now=NOW) == ({"status": "absent"}, [])
+    (tmp_path / "activations" / "processing").mkdir(parents=True)
+    assert _activations(tmp_path, now=NOW)[1] == []
+
+
+# --------------------------------------------------------------------------- #
 # Always-armed triggers
 # --------------------------------------------------------------------------- #
 
@@ -395,12 +486,18 @@ def test_configuration_comes_from_the_capacity_units_environment() -> None:
     for name in (stall.SCENE_INTENT_ROOT_ENV, stall.LAUNCH_QUEUE_ROOT_ENV, stall.LAUNCH_STATE_ROOT_ENV):
         line = next(row for row in unit.splitlines() if row.startswith(f"Environment={name}="))
         assert line in reconciler_unit.splitlines(), name
+    activation_unit = (REPO / "deploy" / "systemd" / "blueprint-task-evaluation-launch-activation.service").read_text()
+    line = next(row for row in unit.splitlines() if row.startswith(f"Environment={stall.ACTIVATION_QUEUE_ROOT_ENV}="))
+    assert line in activation_unit.splitlines()
+    assert stall.config_from_environment({stall.ACTIVATION_QUEUE_ROOT_ENV: "/srv/activations"}
+                                         ).activation_queue_root == Path("/srv/activations")
 
 
 def test_unconfigured_roots_are_reported_as_incomplete(tmp_path: Path) -> None:
     config = stall.StallConfig(None, None, None, None, config_errors=("threshold_invalid:X",))
     result = stall.observe_stalls(config, now=NOW, unit_reader=lambda _units: {})
-    assert set(result["checks"]) == {"scene_progression", "launch_leases", "triggers"}
+    assert set(result["checks"]) == {"scene_progression", "launch_leases", "launch_activations", "triggers"}
+    assert result["checks"]["launch_activations"] == {"status": "not_configured"}
     assert [row["reason"] for row in result["alerts"]] == [
         "threshold_invalid:X", "scene_intent_root_unconfigured", "launch_roots_unconfigured",
         "deploy_tool_unconfigured"]

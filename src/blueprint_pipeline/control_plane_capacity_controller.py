@@ -78,6 +78,18 @@ ORPHAN_SCRATCH_AGGREGATE_PAGE_BYTES = 5 * 1024**3
 ORPHAN_SCRATCH_SINGLE_PAGE_BYTES = 2 * 1024**3
 USAGE_ATTRIBUTION_ALERT_FRACTION = 0.9
 USAGE_PROJECTED_UNCLASSIFIED_ROOTS = 20
+#: Byte budgets per storage class, in GiB, so a class that grows with no cap
+#: pages instead of filling the disk (2026-11-02: per-deploy and per-attempt
+#: copies grew the work volume about 4.8 GB a day with no retention). A survey
+#: is a lower bound, so a class it measures above budget really is above it;
+#: below budget it proves nothing. Alerting only: nothing is reclaimed.
+#: ``BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB`` overrides them as
+#: ``release=15,cache=20``; ``0``/``off`` turns the budgets off. ``work`` and
+#: ``unclassified`` start above what they held on 2026-11-02 (16.4 and 24.4 GiB),
+#: so the page means new growth, not the backlog awaiting the owner's retention
+#: decisions; tighten them (10 and 5) once that backlog is offloaded.
+CLASS_BUDGETS_ENV = "BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB"
+DEFAULT_CLASS_BUDGETS_GIB: Mapping[str, int] = {"release": 15, "cache": 20, "work": 25, "unclassified": 30}
 RESIZE_RECEIPT_SCHEMA_VERSION = "control_plane_volume_resize_receipt.v1"
 DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/capacity")
 DEFAULT_RELEASE_RETIREMENT_SUMMARY = Path(
@@ -113,6 +125,8 @@ PAGE_ALERT_CODES = frozenset({
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
     "reclaim_ineffective",
     "orphan_scratch_large",
+    # A storage class past its byte budget: something grows with no cap.
+    "storage_class_over_budget",
     # Vast stops every instance once its balance runs out.
     "provider_credit_insufficient",
     # A live job that stopped moving (control_plane_stall_alarm); the disk level is unchanged.
@@ -653,13 +667,50 @@ def usage_projection(
     return projection
 
 
-def usage_alerts(survey: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Warnings and one owner page for large unregistered scratch."""
+def class_budgets(environ: Mapping[str, str] | None = None) -> tuple[dict[str, int], bool]:
+    """Budgets in bytes per storage class, and whether the setting was invalid."""
+
+    env = os.environ if environ is None else environ
+    raw = str(env.get(CLASS_BUDGETS_ENV) or "").strip()
+    defaults = {name: gib * GIB for name, gib in DEFAULT_CLASS_BUDGETS_GIB.items()}
+    if not raw:
+        return defaults, False
+    if raw.lower() in {"0", "off", "false", "no"}:
+        return {}, False
+    budgets: dict[str, int] = {}
+    for item in raw.split(","):
+        name, separator, value = item.partition("=")
+        name = name.strip()
+        try:
+            gib = int(value.strip())
+        except ValueError:
+            gib = 0
+        if not separator or not re.fullmatch(r"[a-z_]{1,32}", name) or gib <= 0 or name in budgets:
+            return defaults, True
+        budgets[name] = gib * GIB
+    return budgets, False
+
+
+def usage_alerts(survey: Mapping[str, Any], *, budgets: Mapping[str, int] | None = None) -> list[dict[str, Any]]:
+    """Warnings, one owner page for large unregistered scratch, and a page per class over budget."""
 
     def number(value: Any) -> bool:
         return isinstance(value, (int, float)) and not isinstance(value, bool)
 
     alerts: list[dict[str, Any]] = []
+    budget_invalid = False
+    if budgets is None:
+        budgets, budget_invalid = class_budgets()
+    if budget_invalid:
+        alerts.append({"code": "class_budget_setting_invalid"})
+    for row in survey.get("by_class") or []:
+        if not isinstance(row, Mapping):
+            continue
+        name, size = row.get("storage_class"), row.get("allocated_bytes")
+        if isinstance(name, str) and name in budgets and number(size) and size > budgets[name]:
+            alerts.append({"code": "storage_class_over_budget", "storage_class": name,
+                           "allocated_bytes": size, "budget_bytes": budgets[name],
+                           "byte_accounting": survey.get("byte_accounting", "current_snapshot")})
     total = survey.get("orphan_scratch_bytes")
     count = survey.get("orphan_scratch_count")
     largest = survey.get("orphan_scratch_largest_bytes")
@@ -698,6 +749,7 @@ _SUMMARY_ALERT_KEYS = (
     "largest_bytes", "credit_usd", "required_usd",
     "top_retained_reasons",
     "hours_until_floor", "decline_bytes_per_hour", "window_seconds",
+    "storage_class", "budget_bytes", "byte_accounting",
     # Stall pages: identifiers and codes only, never paths or owner fields.
     "target", "targets", "label", "phase", "blockers", "age_seconds", "age_is_lower_bound",
     "threshold_seconds", "bound_seconds",
@@ -856,6 +908,10 @@ def post_alert(url: str, report: Mapping[str, Any], *, timeout_seconds: float = 
     elif first.get("code") == "orphan_scratch_large":
         gib = float(first.get("allocated_bytes") or 0) / GIB
         summary = f"control plane: {gib:.1f} GiB unowned scratch in {first.get('count')} folders"
+    elif first.get("code") == "storage_class_over_budget":
+        summary = (f"control plane: {first.get('storage_class')} holds at least "
+                   f"{float(first.get('allocated_bytes') or 0) / GIB:.1f} GiB, over its "
+                   f"{float(first.get('budget_bytes') or 0) / GIB:.0f} GiB budget")
     ineffective = next(
         (row for row in page_alerts if row.get("code") == "reclaim_ineffective"), None
     )

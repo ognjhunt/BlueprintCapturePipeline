@@ -27,10 +27,19 @@ tick so those stops page on the same route:
     A ``.timer`` or ``.path`` the deploy tool always arms is loaded but has been
     inactive longer than ``trigger`` minutes (default 60, above a deploy's
     trigger pause) with no operator-door hold record.
+``launch_activation_stuck``
+    A row in ``task-evaluation-launch-activations/processing/`` that no process
+    holds a lock on, claimed longer ago than the activation role's TTL. The
+    activation worker holds an exclusive ``flock`` on the row from its claim to
+    its terminal move; the kernel lists every held lock in ``/proc/locks``, so
+    an unlisted row has no live worker. 2026-10-31: activation ``6e9f0cac`` sat
+    in ``processing/`` for two days, held 14 GB of staging as queue-referenced,
+    and nothing paged.
 
 Every check only reads: it lists the named directories with limits, reads
 bounded JSON, takes the dispatcher lock exactly as the reconciler does to learn
-ownership, and runs one ``systemctl show``. It never moves a queue entry,
+ownership, reads ``/proc/locks`` (never locking an activation row itself), and
+runs one ``systemctl show``. It never moves a queue entry,
 writes a progression, calls a provider or starts or stops a unit. A check that
 cannot run reports ``stall_check_incomplete`` (warn) and the tick goes on.
 """
@@ -50,10 +59,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .control_plane_disk_budget import ROLE_TTL_SECONDS
 from .task_evaluation_launch_dispatcher_ownership import DISPATCHER_LOCK_NAME, unowned_processing_names
 
 SCHEMA_VERSION = "control_plane_stall_check.v1"
-PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trigger_inactive_unheld"})
+PAGE_CODES = frozenset({"scene_progression_stalled", "launch_lease_stuck", "trigger_inactive_unheld",
+                        "launch_activation_stuck"})
 INCOMPLETE_CODE = "stall_check_incomplete"
 
 DISABLE_ENV = "BLUEPRINT_STALL_ALARM"
@@ -65,6 +76,8 @@ TRIGGER_MINUTES_ENV = "BLUEPRINT_STALL_TRIGGER_MINUTES"
 SCENE_INTENT_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"
 LAUNCH_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_QUEUE_ROOT"
 LAUNCH_STATE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_STATE_ROOT"
+# The activation worker unit's own name for its queue.
+ACTIVATION_QUEUE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_LAUNCH_ACTIVATION_QUEUE_ROOT"
 
 DEFAULT_PROGRESSION_MINUTES = 90
 DEFAULT_HANDOFF_MINUTES = 8 * 60
@@ -110,6 +123,13 @@ MAX_INTENTS = 256
 MAX_EVENTS_PER_INTENT = 64
 MAX_EVENT_READS = 512
 MAX_LEASES = 256
+MAX_ACTIVATIONS = 256
+PROC_LOCKS = Path("/proc/locks")
+MAX_PROC_LOCKS_BYTES = 4 * 1024 * 1024
+# A claimed activation row older than this has outlived any worker: the unit's
+# start timeout is shorter, and the disk ledger uses the same bound.
+ACTIVATION_STALE_SECONDS = ROLE_TTL_SECONDS["launch_activation"]
+_LOCK_KEY = re.compile(r"([0-9a-f]+):([0-9a-f]+):([0-9]+)\Z")
 MAX_TARGETS = 10
 MAX_JSON_BYTES = 1024 * 1024
 MAX_DEPLOY_TOOL_BYTES = 8 * 1024 * 1024
@@ -146,6 +166,7 @@ class StallConfig:
     launch_grace_seconds: float = DEFAULT_LAUNCH_GRACE_MINUTES * 60.0
     trigger_seconds: float = DEFAULT_TRIGGER_MINUTES * 60.0
     config_errors: tuple[str, ...] = ()
+    activation_queue_root: Path | None = None
 
 
 def default_deploy_tool() -> Path:
@@ -188,6 +209,7 @@ def config_from_environment(environ: Mapping[str, str] | None = None) -> StallCo
         launch_grace_seconds=minutes(LAUNCH_GRACE_MINUTES_ENV, DEFAULT_LAUNCH_GRACE_MINUTES),
         trigger_seconds=minutes(TRIGGER_MINUTES_ENV, DEFAULT_TRIGGER_MINUTES),
         config_errors=tuple(errors),
+        activation_queue_root=root(ACTIVATION_QUEUE_ROOT_ENV),
     )
 
 
@@ -524,7 +546,104 @@ def check_launch_leases(config: StallConfig, *, now: float, budget: _Budget) -> 
 
 
 # --------------------------------------------------------------------------- #
-# 3. Always-armed triggers left inactive without an owner hold
+# 3. Activation queue rows no live worker holds, past the activation TTL
+# --------------------------------------------------------------------------- #
+
+
+def read_lock_holders(path: Path = PROC_LOCKS) -> dict[tuple[int, int, int], list[int]]:
+    """Every file lock the kernel lists, as ``(major, minor, inode) -> pids``.
+
+    Reading ``/proc/locks`` takes no lock and changes nothing. A waiter line
+    (``->``) counts too: someone still wants the row.
+    """
+
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_PROC_LOCKS_BYTES + 1)
+    if len(raw) > MAX_PROC_LOCKS_BYTES:
+        raise StallCheckError("proc_locks_oversized")
+    holders: dict[tuple[int, int, int], list[int]] = {}
+    for line in raw.decode("ascii", "replace").splitlines():
+        fields = [field for field in line.split() if field != "->"]
+        for index, field in enumerate(fields[1:], start=1):
+            match = _LOCK_KEY.match(field)
+            if match is None:
+                continue
+            try:
+                pid = int(fields[index - 1])
+            except ValueError:
+                pid = -1
+            key = (int(match.group(1), 16), int(match.group(2), 16), int(match.group(3)))
+            holders.setdefault(key, []).append(pid)
+            break
+    return holders
+
+
+def _activation_target(path: Path) -> str:
+    try:
+        request = _read_json(path).get("request")
+    except (OSError, ValueError):
+        request = None
+    activation_id = request.get("activation_id") if isinstance(request, Mapping) else None
+    if isinstance(activation_id, str) and _IDENTIFIER.match(activation_id) and ".." not in activation_id:
+        return activation_id
+    return path.stem[:200]
+
+
+def check_launch_activations(
+    config: StallConfig,
+    *,
+    now: float,
+    budget: _Budget,
+    lock_reader: Callable[[], Mapping[tuple[int, int, int], Sequence[int]]] = read_lock_holders,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    queue = config.activation_queue_root
+    if queue is None:
+        return {"status": "not_configured"}, []
+    processing = queue / "processing"
+    try:
+        with os.scandir(processing) as iterator:
+            names = sorted(entry.name for entry in iterator if entry.name.endswith(".json"))
+    except FileNotFoundError:
+        return {"status": "absent"}, []
+    except OSError:
+        return {"status": "unreadable"}, [_incomplete("activation_queue_unreadable")]
+    if not names:
+        return {"status": "observed", "processing": 0, "unowned": 0, "stuck": 0}, []
+    try:
+        holders = lock_reader()
+    except (OSError, ValueError, StallCheckError):
+        return {"status": "ownership_unknown", "processing": len(names)}, [_incomplete("lock_table_unreadable")]
+    bound = float(ACTIVATION_STALE_SECONDS)
+    unowned = 0
+    stuck: list[dict[str, Any]] = []
+    for name in names[:MAX_ACTIVATIONS]:
+        if budget.expired():
+            break
+        path = processing / name
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue  # reached a terminal state since the listing
+        except OSError:
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            continue
+        if (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino) in holders:
+            continue
+        unowned += 1
+        # The claim renames the row into processing/, which sets its ctime;
+        # its mtime is when the envelope was written, possibly much earlier.
+        age = now - info.st_ctime
+        if age > bound:
+            stuck.append({"target": _activation_target(path), "age_seconds": round(age),
+                          "bound_seconds": round(bound)})
+    section = {"status": "observed", "processing": len(names), "unowned": unowned, "stuck": len(stuck),
+               "truncated": len(names) > MAX_ACTIVATIONS}
+    return section, ([_page("launch_activation_stuck", stuck)] if stuck else [])
+
+
+# --------------------------------------------------------------------------- #
+# 4. Always-armed triggers left inactive without an owner hold
 # --------------------------------------------------------------------------- #
 
 
@@ -653,7 +772,7 @@ def observe_stalls(
     unit_reader: Callable[[Sequence[str]], Mapping[str, Mapping[str, str]]] = read_unit_states,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
-    """All three checks; ``alerts`` are capacity-report alert rows (severity added there).
+    """Every check; ``alerts`` are capacity-report alert rows (severity added there).
 
     ``previous`` is the last tick's result; its ``memory`` keeps each watched
     row's unchanged-since time across the bounded event walk.
@@ -670,6 +789,7 @@ def observe_stalls(
         ("scene_progression", lambda: check_scene_progressions(
             config, now=observed, budget=budget, remembered=remembered, memory_out=progression_memory)),
         ("launch_leases", lambda: check_launch_leases(config, now=observed, budget=budget)),
+        ("launch_activations", lambda: check_launch_activations(config, now=observed, budget=budget)),
         ("triggers", lambda: check_triggers(config, unit_reader=unit_reader, monotonic=monotonic)),
     ):
         try:
@@ -716,6 +836,8 @@ def describe(alert: Mapping[str, Any]) -> str | None:
                 f"{name}{tail}")
     if code == "launch_lease_stuck":
         return f"launch lease in processing/ {age} with no dispatcher: {target}{tail}"
+    if code == "launch_activation_stuck":
+        return f"launch activation in processing/ {age} with no live worker: {target}{tail}"
     return f"{target} {alert.get('status') or 'inactive'} {age} with no owner hold{tail}"
 
 
@@ -725,6 +847,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "StallCheckError",
     "StallConfig",
+    "check_launch_activations",
     "check_launch_leases",
     "check_scene_progressions",
     "check_triggers",
@@ -734,5 +857,6 @@ __all__ = [
     "hold_reason",
     "observe_stalls",
     "read_deploy_trigger_contract",
+    "read_lock_holders",
     "read_unit_states",
 ]
