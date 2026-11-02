@@ -1,5 +1,16 @@
 # First GPU E2E Runbook
 
+> **Archived 2026-11-02 (tracker H-01).** This runbook described the first
+> sample-video pass into owner GPU simulator execution. It is not the run
+> procedure for a beta website job: use the WebApp's
+> `docs/runbooks/cloud-scene-runs.md` and [`OPERATOR_DOOR.md`](OPERATOR_DOOR.md).
+> Paid resources still go only through the allocator in `AGENTS.md`. Beta
+> status:
+> [`launch-readiness/2026-11-beta-launch-tracker.md`](launch-readiness/2026-11-beta-launch-tracker.md).
+> This file stays at its path because
+> `src/blueprint_pipeline/cross_repo_first_gpu_readiness.py`,
+> `scripts/verify_paid_resource_allocator.py` and tests read it.
+
 Use this runbook for the first sample-video pass that intentionally crosses from
 local capture/package automation into owner GPU simulator execution.
 
