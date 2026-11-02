@@ -458,15 +458,16 @@ def test_a_finished_source_is_exported_without_any_model_call(stage_fixture, mon
     stage = json.loads(input_path.read_text())
     input_path.write_text(json.dumps({**stage, "run_id": "source-run"}))
     runtime = fixture.output / "artisan_runtime"
-    exports = driver.upstream_exports
+    from blueprint_pipeline import task_object_artisan_candidate as packaging
+    exports = packaging.upstream_exports
 
     def refused(*_args, **_kwargs):
         raise AuthoringContractError("artisan_not_done_and_registered")
-    monkeypatch.setattr(driver, "upstream_exports", refused)
+    monkeypatch.setattr(packaging, "upstream_exports", refused)
     with pytest.raises(AuthoringContractError):
         driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner,
                                          cost_gate_factory=fixture.gate)
-    monkeypatch.setattr(driver, "upstream_exports", exports)
+    monkeypatch.setattr(packaging, "upstream_exports", exports)
     source_request = json.loads((runtime / "blueprint_request.v1.json").read_text())
     upstream = "pl_" + source_request["request_digest"][7:39]
     terminal = json.loads((runtime / "terminal.v1.json").read_text())

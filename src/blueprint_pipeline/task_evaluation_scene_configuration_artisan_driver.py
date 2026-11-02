@@ -16,7 +16,7 @@ from .task_object_authoring_contracts import (
     require, read_json, write_json, file_record, source_frames,
     build_construction_request, verify_construction_request, artisan_prompt, verified_file,
 )
-from .task_object_artisan_exports import UPSTREAM_DONE_PHASE, upstream_exports, adapt_usd
+from .task_object_artisan_exports import UPSTREAM_DONE_PHASE
 from .task_object_artisan_process import run_controller
 from .task_evaluation_scene_configuration_artisan_runtime import validate_artisan_runtime
 from .task_evaluation_scene_configuration_openai_gate import scene_configuration_openai_stage_gate, scene_configuration_openai_stage_scope
@@ -399,42 +399,10 @@ def _execute(values, output, runner, cost_gate_factory):
             snapshot_gate.complete(provider_call_performed=attempted and bool(calls), runtime_result_digest=canonical_digest(terminal) if terminal else None,
                           runtime_exception_type=failure)
     verify_construction_request(request)
-    exports = upstream_exports(terminal, workspace)
-    candidates.mkdir(exist_ok=True)
-    candidate_root = candidates / f"{len(list(candidates.iterdir())):04d}"
-    candidate_root.mkdir()
-    asset = candidate_root / "replacement_asset.usdz"
-    try:
-        adaptation = adapt_usd(Path(exports["usd"]["path"]), asset, request,
-            annotations_path=Path(terminal["paths"]["root"]) / "assets/blueprint_candidate_annotations.v1.json")
-    except Exception as exc:
-        write_json(candidate_root / "refusal.v1.json", {"schema_version": "artisan_candidate_refusal.v1",
-            "status": "candidate_refused", "request_digest": request["request_digest"],
-            "upstream_candidate_id": terminal["candidate_id"], "exception_type": type(exc).__name__,
-            "reason": str(exc)[:2000], "framework_generation_repeated": False})
-        raise
-    observed = adaptation["final_readback"]
-    graph = {"schema_version": "task_evaluation_articulated_replacement_graph.v1" if context["object_kind"] == "articulated_assembly"
-             else "task_evaluation_rigid_replacement_graph.v1", "backend": ARTISAN_BACKEND,
-             "asset_id": configuration["replacement_identity"]["id"], "asset_version": configuration["replacement_identity"]["version"],
-             "articulation_graph": observed["articulation_graph"], "final_readback": observed,
-             "construction_request": file_record(request_path), "physics_authority_granted": False,
-             "single_rigid_candidate": context["object_kind"] == "rigid_body"}
-    graph_path = candidate_root / "replacement_graph_spec.v1.json"
-    write_json(graph_path, graph)
-    receipt = {"schema_version": "task_object_artisan_candidate.v1", "backend": ARTISAN_BACKEND,
-        "status": "authored_candidate_pending_qualification", "asset_kind": context["object_kind"],
-        "replacement_identity": configuration["replacement_identity"], "source_candidate_digest": request["source_candidate"]["digest"],
-        "source_candidate_claim": "source_geometry_not_observed_truth_or_physics_authority",
-        "source_object_identity": request["source_object_identity"], "request_digest": request["request_digest"],
-        "construction_request": file_record(request_path), "upstream_runtime": packaged,
-        "upstream_terminal": terminal, "upstream_artifacts": exports, "export_adaptation": adaptation,
-        "output_usd": file_record(asset), "graph_sha256": file_record(graph_path)["sha256"],
-        "physics_authority_granted": False, "claim_ceiling": "development_only", "native_import_qualified": False,
-        "scene_placement_qualified": False, "physical_equivalence_proven": False}
-    receipt["result_digest"] = canonical_digest(receipt, digest_field="result_digest")
-    receipt_path = candidate_root / "replacement_authoring_receipt.v1.json"
-    write_json(receipt_path, receipt)
+    from .task_object_artisan_candidate import package_upstream_candidate
+    asset, receipt_path, graph_path = package_upstream_candidate(
+        terminal=terminal, workspace=workspace, request=request, request_path=request_path,
+        candidates=candidates, configuration=configuration, object_kind=context["object_kind"], packaged=packaged)
     result = _component_result(stage_input, request, (("replacement_asset", asset),
               ("replacement_authoring_receipt", receipt_path), ("replacement_graph_spec", graph_path)))
     write_json(result_path, result)
