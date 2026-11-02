@@ -1,5 +1,11 @@
 # Cross-Repo Readiness Matrix
 
+> **Archived 2026-11-02 (tracker H-01).** A cross-repo readiness snapshot from
+> June 2026, kept for its history. It is not current launch state. Beta status:
+> [`launch-readiness/2026-11-beta-launch-tracker.md`](launch-readiness/2026-11-beta-launch-tracker.md).
+> This file stays at its path because `tests/test_readiness_matrix_docs.py`
+> reads it.
+
 This matrix is intentionally strict. A row is only `ready` when the capability is implemented in-repo, on the canonical contract, and does not still depend on unproven external runtime access.
 
 ## Status Rules
