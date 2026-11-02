@@ -9,7 +9,10 @@ from .task_evaluation_scene_progression_state import safe_path
 from .task_evaluation_public_scene_attempt_factory import record
 
 
-def reconcile_preparation_completion(*, intent, config):
+def reconcile_preparation_completion(*, intent, config, fetcher=None):
+    # ``fetcher`` reads the published revision for readiness retention. Production
+    # passes none (retention's default object-store reader); the offline
+    # downstream replay passes one that answers from pulled copies.
     if not preparation_only(directory=Path(config['intent_root']) / intent['intent_id'], intent=intent):
         return None
     root = safe_path(config['launch_execution_root'])
@@ -54,7 +57,8 @@ def reconcile_preparation_completion(*, intent, config):
             from . import robot_free_readiness_retention as retention
             readiness = retention.retain_robot_free_readiness(
                 run_root=run, revision_reference=result['configured_scene_revision_reference'],
-                revision_digest=result['configured_scene_revision_digest'])
+                revision_digest=result['configured_scene_revision_digest'],
+                **({'fetcher': fetcher} if fetcher is not None else {}))
             # Beta L5: a website scene's team half is compiled by its own
             # no-spend worker. This join only enqueues one sealed request for
             # it; an I/O failure raises and it is retried. A refused readiness

@@ -572,6 +572,63 @@ on a scratch copy until its first stop and reports what it would buy there; a
 the code looked for just before stopping, which a partial pull can turn into a
 false purchase or refusal. The pulled files are never written.
 
+### Replay the post-completion chain before deploy
+
+A website scene's post-completion chain (completion join, robot-free readiness,
+team scene packet, rigid probe enqueue, screening plan) replays the same way,
+with `task_evaluation_downstream_replay`. Pull these to their own absolute paths,
+because the launch receipt, its result and the registry name files by absolute
+path (`<bucket>` is the capture partition under `pubsub-handoffs`):
+
+```bash
+L=/var/lib/blueprint/pipeline-control-plane/task-evaluation-launch-runs/<launch>
+I=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/<intent>
+C=/var/lib/blueprint/pubsub-handoffs/<bucket>/scenes/<scene>/captures/<capture>
+R=/etc/blueprint/team-evaluation-registry.json
+door() { python3 scripts/operator_door.py pull "$1" "$1"; }
+for f in launch_profile.json launch_receipt.json webapp_sync_succeeded.json \
+         post_teardown_provider_zero_receipt.json allocator/result.json; do door "$L/$f"; done
+# Present only once the probe or an earlier join ran; a refused pull just means it is absent.
+for f in rigid_robot_free_probe_trace.v1.json robot_free_readiness.v1.json robot-free-readiness; do door "$L/$f"; done
+# The published revision and the configured bundle the result names (the bundle can be large).
+REV=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["configured_scene_revision_path"])' \
+      "$L/allocator/result.json")
+door "$REV"; door "$(dirname "$REV")/configured_scene_bundle.v1.zip"
+door "$I"                                   # intent.json, attempts/, progression
+for f in capture_descriptor.json pipeline/website_task_context.json pipeline/website_scene_sponsorship.json \
+         pipeline/atlas/configuration.json pipeline/website_candidate_ranking.json; do door "$C/$f"; done
+door "$R"
+```
+
+Pull only these: the replay copies and digests everything under each input, so
+a whole launch run with its provider output costs minutes. Also pull, to their
+own paths, the DROID profile and runtime-source receipt the registry's
+`derived_profiles.packet_inputs` names, and for a scene whose probe has not passed
+the packet that receipt names. The scored-matrix salt key is never pulled: the
+replay uses a placeholder. Save the WebApp's current answers for the capture as
+`webapp/task-context.json` and the non-creating `webapp/atlas-configuration.json`
+(the one carrying `job_ceiling`); without them the replay answers from the
+capture's retained copies and `webapp_answers` says so. Then, on the fix branch:
+
+```bash
+python -m blueprint_pipeline.task_evaluation_downstream_replay --launch-run "$L" --intent-dir "$I" \
+    --capture-dir "$C" --registry "$R" --webapp-snapshots ./webapp --mirror ./mirror \
+    --until screening_plan --replay-root ./replays
+```
+
+It runs this tree's join, readiness scorer, team compile, probe lane and
+screening planner on scratch copies and prints `downstream_replay_report.v1.json`
+(also written under `./replays`). `first_stop.kind` is `completed` (`--until`
+reached), `would_buy` (the probe's paid allocator, named, never started),
+`external_effect` (a WebApp write other than the recorded job offer, the network,
+a subprocess or a write outside the replay root), `missing_input` (`code` is the
+next file to pull, or a published object to add at `./mirror/<bucket>/<key>`;
+objects the launch retained byte for byte are found without it), `refusal` (the
+code's typed blocker, with `fired_predicates` and `unpulled_before`) or `error`.
+`evidence.unchanged` confirms the pulled files' digests did not change; nothing
+is sent, bought or written outside `./replays`. Exit codes: 0 completed,
+would_buy or external_effect; 2 error; 3 refusal; 4 missing_input.
+
 `usage` answers "what uses the disk?" in one call. It prints `capacity.usage` from
 `status` as tables: each surveyed filesystem's used, surveyed and classified bytes
 and the attributed fraction, then bytes by storage class, the top roots, the top
