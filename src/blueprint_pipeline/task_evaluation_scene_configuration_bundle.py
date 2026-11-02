@@ -65,6 +65,16 @@ from .task_evaluation_scene_configuration_builtin_producers import (
     TOOLCHAIN_SCHEMA_VERSION,
     validate_scene_configuration_toolchain,
 )
+from .task_evaluation_scene_configuration_toolchain_archive import (
+    TaskEvaluationSceneConfigurationToolchainArchiveError,
+    ToolchainArchive,
+    discard_toolchain_archive,
+    member_info,
+    prepare_toolchain_archive,
+    release_toolchain_archive,
+    splice_toolchain_archive,
+    split_toolchain_manifest,
+)
 from .task_evaluation_scene_construction_queue import (
     ENVELOPE_SCHEMA_VERSION,
     TaskEvaluationSceneConstructionQueueError,
@@ -109,6 +119,41 @@ _OPENUSD_REFERENCE_SUFFIXES = frozenset({".usd", ".usda", ".usdc"})
 
 
 
+
+
+def _stage_toolchain_release_layer(
+    *, toolchain: Path, destination: Path, rows: list[Mapping[str, Any]]
+) -> None:
+    """Copy the uncached toolchain files, each checked against its manifest row.
+
+    These are never hashed by the archive, so this copy is their only check,
+    with or without stat-only host validation. The ZIP member mode follows
+    the copy's execute bit, as it does for the cached members.
+    """
+
+    for row in rows:
+        relative = Path(str(row["relative_path"]))
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_toolchain_member_path_invalid"
+            )
+        source = toolchain / relative
+        target = destination / relative
+        if (
+            any(parent.is_symlink() for parent in (source, *source.parents) if parent.is_relative_to(toolchain))
+            or not source.is_file()
+            or bool(source.stat().st_mode & 0o111) != bool(row["executable"])
+        ):
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_toolchain_member_mismatch:" + relative.as_posix()
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        target.chmod(0o555 if row["executable"] else 0o444)
+        if target.stat().st_size != int(row["size_bytes"]) or _sha256(target) != row["sha256"]:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_toolchain_member_mismatch:" + relative.as_posix()
+            )
 
 
 def _copy_file(source: Path, destination: Path) -> dict[str, Any]:
@@ -422,14 +467,28 @@ def _member_compress_type(path: Path) -> int:
 _DEFLATE_LEVEL = 1
 
 
-def _zip_tree(source: Path, destination: Path) -> None:
+def _zip_tree(
+    source: Path,
+    destination: Path,
+    *,
+    toolchain_archive: ToolchainArchive | None = None,
+) -> None:
+    """Write ``source`` and, after it, the pre-compressed toolchain members.
+
+    The toolchain members are spliced byte for byte, so a reused and a freshly
+    built toolchain archive give the same bundle bytes.
+    """
     total = 0
+    directories = {
+        path.relative_to(source).as_posix() + "/"
+        for path in source.rglob("*")
+        if path.is_dir()
+    }
+    if toolchain_archive is not None:
+        directories.update(toolchain_archive.index["directories"])
     with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for path in sorted(item for item in source.rglob("*") if item.is_dir()):
-            info = zipfile.ZipInfo(
-                path.relative_to(source).as_posix() + "/",
-                date_time=(1980, 1, 1, 0, 0, 0),
-            )
+        for name in sorted(directories):
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
             info.create_system = 3
             info.external_attr = (stat.S_IFDIR | 0o555) << 16
             archive.writestr(info, b"")
@@ -440,18 +499,96 @@ def _zip_tree(source: Path, destination: Path) -> None:
                 raise TaskEvaluationSceneConfigurationBundleError(
                     "scene_configuration_bundle_archive_limit_exceeded"
                 )
-            info = zipfile.ZipInfo(
-                path.relative_to(source).as_posix(), date_time=(1980, 1, 1, 0, 0, 0)
+            info = member_info(
+                path.relative_to(source).as_posix(),
+                size=size,
+                executable=bool(path.stat().st_mode & 0o111),
+                compress_type=_member_compress_type(path),
+                deflate_level=_DEFLATE_LEVEL,
             )
-            info.compress_type = _member_compress_type(path)
-            info.file_size = size  # members over 2 GiB need ZIP64 headers before they are written
-            if info.compress_type == zipfile.ZIP_DEFLATED:
-                info._compresslevel = _DEFLATE_LEVEL
-            info.create_system = 3
-            info.external_attr = (stat.S_IFREG | (0o755 if path.stat().st_mode & 0o111 else 0o444)) << 16
+            if info.filename in archive.NameToInfo:
+                raise TaskEvaluationSceneConfigurationBundleError(
+                    "scene_configuration_bundle_archive_member_duplicate"
+                )
             with path.open("rb") as input_stream, archive.open(info, "w") as output_stream:
                 shutil.copyfileobj(input_stream, output_stream, length=1024 * 1024)
+        if toolchain_archive is not None:
+            for row in toolchain_archive.index["members"]:
+                total += int(row["file_size"])
+                if (
+                    row["file_size"] > _MAX_MEMBER_BYTES
+                    or total > _MAX_TOTAL_BYTES
+                ):
+                    raise TaskEvaluationSceneConfigurationBundleError(
+                        "scene_configuration_bundle_archive_limit_exceeded"
+                    )
+                if row["name"] in archive.NameToInfo:
+                    raise TaskEvaluationSceneConfigurationBundleError(
+                        "scene_configuration_bundle_archive_member_duplicate"
+                    )
+            splice_toolchain_archive(archive, toolchain_archive)
     destination.chmod(0o644)
+
+
+def _zip_bundle(
+    *,
+    stage: Path,
+    bundle: Path,
+    toolchain: Path,
+    toolchain_manifest: Mapping[str, Any],
+    output: Path,
+    cache_root: str | Path | None,
+) -> dict[str, Any]:
+    """Zip the stage with the content-addressed toolchain archive spliced in."""
+
+    def prepare() -> ToolchainArchive:
+        return prepare_toolchain_archive(
+            toolchain_root=toolchain,
+            manifest=toolchain_manifest,
+            compress_type_for=_member_compress_type,
+            deflate_level=_DEFLATE_LEVEL,
+            stored_suffixes=_STORED_MEMBER_SUFFIXES,
+            scratch_root=output,
+            cache_root=cache_root,
+        )
+
+    toolchain_archive: ToolchainArchive | None = None
+    try:
+        toolchain_archive = prepare()
+        try:
+            _zip_tree(stage, bundle, toolchain_archive=toolchain_archive)
+        except TaskEvaluationSceneConfigurationToolchainArchiveError:
+            # A cached archive whose bytes no longer hash to its index is
+            # discarded and rebuilt from the validated toolchain once.
+            if not toolchain_archive.reused:
+                raise
+            discard_toolchain_archive(toolchain_archive)
+            bundle.unlink(missing_ok=True)
+            toolchain_archive = prepare()
+            _zip_tree(stage, bundle, toolchain_archive=toolchain_archive)
+        return toolchain_archive.receipt()
+    except (OSError, TaskEvaluationSceneConfigurationToolchainArchiveError) as exc:
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_toolchain_archive_failed:" + str(exc)
+        ) from exc
+    finally:
+        if toolchain_archive is not None:
+            release_toolchain_archive(toolchain_archive)
+
+
+#: Owner decision, default off: check the host toolchain's manifests,
+#: inventory, sizes and modes, but hash only its ``.json`` manifests. Every
+#: shipped toolchain byte is hashed against the inventory by the archive: as it
+#: is built on a cache miss, and as its fragment is spliced on a hit.
+STAT_ONLY_HOST_VALIDATION_ENV = (
+    "BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION"
+)
+
+
+def _stat_only_host_validation(explicit: bool | None) -> bool:
+    if explicit is not None:
+        return explicit
+    return os.environ.get(STAT_ONLY_HOST_VALIDATION_ENV, "").strip() == "1"
 
 
 def _remove_self_created_stage_tree(stage: Path) -> None:
@@ -591,6 +728,9 @@ def build_scene_configuration_provider_bundle(
     retained_candidate_selection_optional: bool = False,
     partial_astra_successor_selection: str | Path | None = None,
     scene_owner_attempt_path: str | Path | None = None,
+    expected_toolchain_digest: str | None = None,
+    toolchain_archive_cache_root: str | Path | None = None,
+    stat_only_toolchain_host_validation: bool | None = None,
 ) -> dict[str, Any]:
     """Package provider-authorized derived inputs; raw InteriorGS stays local."""
 
@@ -695,9 +835,26 @@ def build_scene_configuration_provider_bundle(
         if diagnostic_mode_requested or production_semantic_reuse
         else construction_source_commit
     )
+    stat_only = _stat_only_host_validation(stat_only_toolchain_host_validation)
+    # Owner-gated (default off). Every shipped toolchain byte comes from the
+    # archive, which hashes each member against this same inventory: as it is
+    # read on a cache miss, and as the cached fragment is spliced on a hit. The
+    # provider validates every byte again. With the flag on, the host tree's
+    # bytes, wheels included, are hashed only where the archive reads them;
+    # its .json manifests are still hashed here.
     toolchain_manifest = validate_scene_configuration_toolchain(
-        root=toolchain, expected_source_commit=toolchain_source_commit
+        root=toolchain,
+        expected_source_commit=toolchain_source_commit,
+        verify_bytes=not stat_only,
     )
+    toolchain_host_validation = "stat_only_archive_verified" if stat_only else "full_bytes"
+    if (
+        expected_toolchain_digest is not None
+        and toolchain_manifest["toolchain_digest"] != expected_toolchain_digest
+    ):
+        raise TaskEvaluationSceneConfigurationBundleError(
+            "scene_configuration_bundle_toolchain_binding_mismatch"
+        )
     try:
         from .task_evaluation_scene_configuration_astra_runtime import declared_python_profile
         python_profile = declared_python_profile(toolchain)
@@ -709,6 +866,7 @@ def build_scene_configuration_provider_bundle(
             raise ValueError("scene_configuration_astra_runtime_not_sealed")
         provider_python_runtime = validate_scene_configuration_python_wheelhouse(
             root=toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE, profile=python_profile,
+            verify_bytes=not stat_only,
         )
     except (OSError, ValueError) as exc:
         raise TaskEvaluationSceneConfigurationBundleError(
@@ -1085,25 +1243,27 @@ def build_scene_configuration_provider_bundle(
     (runtime / "input/portable_construction_envelope.v1.json").write_text(
         canonical_json(portable) + "\n", encoding="utf-8"
     )
-    portable_toolchain = runtime / "toolchain"
-    _copy_tree(toolchain, portable_toolchain, keep_compiled=True)
-    copied_toolchain_manifest = validate_scene_configuration_toolchain(
-        root=portable_toolchain, expected_source_commit=toolchain_source_commit
+    # The per-release toolchain manifest and its small release layer are
+    # staged here. The large third-party trees are spliced into the ZIP from a
+    # content-addressed archive built from bytes hashed against this same
+    # validated manifest, so a release that stamps only its own small files
+    # still reuses that archive.
+    cached_toolchain_manifest, toolchain_release_rows = split_toolchain_manifest(
+        toolchain_manifest
     )
-    if copied_toolchain_manifest["toolchain_digest"] != toolchain_manifest["toolchain_digest"]:
+    _stage_toolchain_release_layer(
+        toolchain=toolchain, destination=runtime / "toolchain", rows=toolchain_release_rows
+    )
+    toolchain_manifest_name = f"{TOOLCHAIN_SCHEMA_VERSION}.json"
+    _copy_file(
+        toolchain / toolchain_manifest_name,
+        runtime / "toolchain" / toolchain_manifest_name,
+    )
+    if json.loads(
+        (runtime / "toolchain" / toolchain_manifest_name).read_text(encoding="utf-8")
+    ).get("toolchain_digest") != toolchain_manifest["toolchain_digest"]:
         raise TaskEvaluationSceneConfigurationBundleError(
             "scene_configuration_bundle_toolchain_copy_mismatch"
-        )
-    copied_python_runtime = validate_scene_configuration_python_wheelhouse(
-        root=portable_toolchain / _PROVIDER_PYTHON_WHEELHOUSE_RELATIVE,
-        profile=declared_python_profile(portable_toolchain),
-    )
-    if (
-        copied_python_runtime["manifest_digest"]
-        != provider_python_runtime["manifest_digest"]
-    ):
-        raise TaskEvaluationSceneConfigurationBundleError(
-            "scene_configuration_bundle_provider_python_runtime_copy_mismatch"
         )
     provider_renderer: dict[str, Any] | None = None
     if provider_render and provider_render_runtime_source is not None:
@@ -1259,7 +1419,14 @@ def build_scene_configuration_provider_bundle(
         canonical_json(manifest) + "\n", encoding="utf-8"
     )
     bundle = output / "task_evaluation_scene_configuration_provider_bundle.zip"
-    _zip_tree(stage, bundle)
+    toolchain_archive_receipt = _zip_bundle(
+        stage=stage,
+        bundle=bundle,
+        toolchain=toolchain,
+        toolchain_manifest=cached_toolchain_manifest,
+        output=output,
+        cache_root=toolchain_archive_cache_root,
+    )
     # ``stage`` is a self-created expansion tree used only to construct the
     # immutable ZIP. Keeping a second 1.5 GB copy per activation filled the
     # production host even though every allocator consumes ``bundle_path``.
@@ -1280,6 +1447,8 @@ def build_scene_configuration_provider_bundle(
         "bundle_path": str(bundle),
         "bundle_sha256": _sha256(bundle),
         "bundle_size_bytes": bundle.stat().st_size,
+        "toolchain_archive": toolchain_archive_receipt,
+        "toolchain_host_validation": toolchain_host_validation,
         "receipt_digest": "",
     }
     receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
@@ -1327,6 +1496,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--retained-candidate-selection", default="")
     parser.add_argument("--partial-astra-successor-selection")
     parser.add_argument("--scene-owner-attempt")
+    parser.add_argument(
+        "--expected-toolchain-digest",
+        default=None,
+        help="Refuse unless the fully validated toolchain has this digest.",
+    )
+    parser.add_argument(
+        "--toolchain-archive-cache-root",
+        default=None,
+        help="Content-addressed toolchain archive cache (default: "
+        "$BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_ARCHIVE_CACHE_ROOT, else the "
+        "control-plane inputs volume when present).",
+    )
     args = parser.parse_args(argv)
     ambient_selection = os.getenv(RETAINED_CANDIDATE_SELECTION_ENV, "")
     if not args.retained_candidate_selection and ambient_selection:
@@ -1355,6 +1536,8 @@ def main(argv: list[str] | None = None) -> int:
         retained_candidate_selection_optional=retained_selection_optional,
         partial_astra_successor_selection=args.partial_astra_successor_selection,
         scene_owner_attempt_path=args.scene_owner_attempt,
+        expected_toolchain_digest=args.expected_toolchain_digest,
+        toolchain_archive_cache_root=args.toolchain_archive_cache_root,
     )
     print(canonical_json(receipt))
     return 0
