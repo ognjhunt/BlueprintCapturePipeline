@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 
 IDENTITY_FIELDS = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation"}
+# Modes that act on an Atlas status snapshot the operator reviewed first.
+_REVIEWED_MODES = ("atlas-retry", "preparation-resume", "preparation-reissue")
 
 FIELDS = {
     "kind",
@@ -34,16 +36,16 @@ FIELDS = {
 def validate_selection(value):
     if type(value) is not dict or set(value) != (
         IDENTITY_FIELDS if value.get("mode") == "discover-selector" else
-        FIELDS | ({"atlas_status_digest"} if value.get("mode") in ("atlas-retry", "preparation-resume") else set())
+        FIELDS | ({"atlas_status_digest"} if value.get("mode") in _REVIEWED_MODES else set())
     ):
         raise ValueError("selected_handoff_fields_invalid")
     if (
         value["kind"] != "selected-handoff"
         or type(value["mode"]) is not str
-        or value["mode"] not in {"inspect", "dispatch", "atlas-status", "atlas-retry", "preparation-resume", "discover-selector"}
+        or value["mode"] not in {"inspect", "dispatch", "atlas-status", "discover-selector", *_REVIEWED_MODES}
     ):
         raise ValueError("selected_handoff_mode_invalid")
-    if value["mode"] in {"atlas-retry", "preparation-resume"} and (
+    if value["mode"] in _REVIEWED_MODES and (
         type(value["atlas_status_digest"]) is not str
         or not re.fullmatch(r"sha256:[a-f0-9]{64}", value["atlas_status_digest"])
     ):
@@ -275,7 +277,7 @@ def recover_selected_handoff(
             )
             return result
         capture_root = listener._handoff_capture_root(parsed, storage_root=Path(storage_root))
-        if selection["mode"] in {"atlas-status", "atlas-retry", "preparation-resume"}:
+        if selection["mode"] in {"atlas-status", *_REVIEWED_MODES}:
             from .selected_atlas_preview_recovery import recover_selected_atlas_preview
 
             resume = selection["mode"] == "preparation-resume"

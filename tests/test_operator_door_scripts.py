@@ -1220,6 +1220,26 @@ printf '%s\\n' '{"status":"atlas_status_returned"}'
     assert rc == 2 and outcome["code"] == "selected_handoff_user_invalid"
 
 
+@pytest.mark.parametrize("mode", ["dispatch", "preparation-resume", "preparation-reissue"])
+def test_selected_native_modes_pass_the_production_runtime_guard_first(env, tmp_path, mode):
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _write_stub(tmp_path / "stubs/setpriv", SETPRIV_STUB)
+    _write_stub(tmp_path / "stubs/chgrp", "#!/bin/bash\nexit 0\n")
+    python = tmp_path / "selected-python"
+    _write_stub(python, '''#!/bin/bash
+printf '%s\\n' "$*" >> "$STUB_LOG"
+if [[ "$*" == *production_runtime_env_guard* ]]; then exit 19; fi
+printf '%s\\n' '{"status":"blocked"}'
+''')
+    rc, outcome, calls = _run("door-selected-handoff.sh", env, DOOR_REQUEST_ID="20261009T154718Z-selected-handoff-0000abcd",
+        DOOR_VENV_PYTHON=str(python), DOOR_CONTROL_PLANE_REPO=str(repository), DOOR_SERVICE_USER="blueprint",
+        DOOR_SELECTED_HANDOFF_REQUEST=json.dumps({"mode": mode}))
+    assert rc == 2 and outcome["code"] == "selected_handoff_runtime_admission_failed"
+    assert any("production_runtime_env_guard" in call for call in calls)
+    assert not any("blueprint_pipeline.selected_handoff_recovery" in call for call in calls)
+
+
 RESUME_PYTHON_STUB = r"""#!/bin/bash
 { echo "resume $*"; echo "cwd $PWD"; echo "pythonpath ${PYTHONPATH:-}"
   echo "artifact-bucket ${BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_EXPECTED_BUCKET:-unset}"

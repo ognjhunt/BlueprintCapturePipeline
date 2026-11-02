@@ -618,12 +618,12 @@ def test_selected_staging_recovery_refuses_partial_local_state_before_native_cal
     assert retained.read_bytes() == before
 
 
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume", "preparation-reissue"])
 def test_selected_atlas_reuses_original_validators_before_existing_job_surface(tmp_path, monkeypatch, mode):
     from blueprint_pipeline import selected_atlas_preview_recovery as atlas
     selection, objects, client, listener, owner, retirement, _, pins, native_calls = fixture(tmp_path)
     selection["mode"] = mode
-    if mode in {"atlas-retry", "preparation-resume"}:
+    if mode in {"atlas-retry", "preparation-resume", "preparation-reissue"}:
         selection["atlas_status_digest"] = "sha256:" + "c" * 64
     root = tmp_path / "capture"
     root.mkdir()
@@ -643,6 +643,8 @@ def test_selected_atlas_reuses_original_validators_before_existing_job_surface(t
     assert not native_calls and len(pins) == 4 and len(seen) == 1
     assert seen[0][1]["membership"] is membership
     assert seen[0][1]["capture_root"] == root
+    # Only a resume carries the original envelope into the native handler; a reissue never does.
+    assert ("listener" in seen[0][1]) == ("handoff_payload" in seen[0][1]) == (mode == "preparation-resume")
     # Corrupt the exact immutable delivery selector: the Atlas helper is never reached.
     selection["handoff_sha256"] = "sha256:" + "0" * 64
     result = recover_selected_handoff(selection, storage_root=tmp_path, client=client, listener=listener,
@@ -651,12 +653,12 @@ def test_selected_atlas_reuses_original_validators_before_existing_job_surface(t
     assert result["status"] == "blocked" and len(seen) == 1
 
 
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume", "preparation-reissue"])
 def test_selected_atlas_inherits_current_owner_membership_and_retirement_refusals(tmp_path, monkeypatch, mode):
     from blueprint_pipeline import selected_atlas_preview_recovery as atlas
     selection, _, client, listener, owner, retirement, admission, _, _ = fixture(tmp_path)
     selection["mode"] = mode
-    if mode in {"atlas-retry", "preparation-resume"}:
+    if mode in {"atlas-retry", "preparation-resume", "preparation-reissue"}:
         selection["atlas_status_digest"] = "sha256:" + "c" * 64
     monkeypatch.setattr(atlas, "recover_selected_atlas_preview", lambda *a, **kw: pytest.fail("Atlas reached"))
     for changed in ({"owner_reader": lambda **kw: {"producer_delivery": {"kind": "other"}}},

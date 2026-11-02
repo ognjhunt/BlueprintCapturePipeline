@@ -230,6 +230,23 @@ as `blueprint`; retry can write only the selected capture's `pipeline/atlas`
 directory and the door's result directory. This recovery supports the beta scene
 journey and the ADP-009D development rehearsal without raising evidence claims.
 
+`--reissue-preparation --atlas-status-digest sha256:...` (mode
+`preparation-reissue`) re-issues a completed native preparation as a new job
+after its sponsor renewed the expired grant in the WebApp. It takes the same
+review, Atlas lock and ignored blockers as `--resume-preparation`, but requires
+the native job to be `completed`. It never invokes the native handler or buys
+anything. `website_preparation_renewal` refuses unless the old intent was revoked or
+expired with every attempt cancelled or settled, no sibling of the capture is
+live, the current task equals the stored one and the fresh grant renews exactly
+the old one. It then writes the renewed preparation under
+`renewals/<authority hex>/`, recomputes its CPU native inputs, registers it and
+enqueues it at the WebApp. The intake then charges every sibling's holds against the
+capture's original caps. A WebApp refusal (for example
+`website_scene_preparation_budget_exhausted`) is a typed `blocked` outcome
+recorded in `reissue.json`. It runs as `blueprint` under the production runtime guard
+and writes under `/var/lib/blueprint`. It is not in the dispatcher-hold-only
+profile.
+
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |

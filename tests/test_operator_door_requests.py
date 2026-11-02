@@ -526,10 +526,10 @@ def test_selected_handoff_resume_is_dispatch_only():
     assert validate_request({**body, "mode": "dispatch"}) == {**body, "mode": "dispatch"}
 
 
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume", "preparation-reissue"])
 def test_selected_atlas_modes_are_bounded_and_never_native_resume(mode):
     body = {**_selected_request(), "mode": mode}
-    if mode in {"atlas-retry", "preparation-resume"}:
+    if mode in {"atlas-retry", "preparation-resume", "preparation-reissue"}:
         body["atlas_status_digest"] = "sha256:" + "c" * 64
     assert validate_request(body) == body
     for extra in ({"resume_request_id": "20261009T154718Z-selected-handoff-9ef60661"},
@@ -537,7 +537,7 @@ def test_selected_atlas_modes_are_bounded_and_never_native_resume(mode):
                   {"provider": "openai"}, {"command": "retry"}):
         with pytest.raises(RequestRefused):
             validate_request({**body, **extra})
-    if mode in {"atlas-retry", "preparation-resume"}:
+    if mode in {"atlas-retry", "preparation-resume", "preparation-reissue"}:
         for digest in (None, "", "sha256:" + "x" * 64, True):
             with pytest.raises(RequestRefused):
                 validate_request({**body, "atlas_status_digest": digest})

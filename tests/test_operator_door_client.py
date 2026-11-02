@@ -950,14 +950,15 @@ def test_selected_handoff_cli_links_explicit_recovery_and_keeps_selector_plain(d
     assert _run(*args, "--dispatch")[0] == 2
 
 
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume", "preparation-reissue"])
 def test_selected_atlas_cli_requires_explicit_snapshot_review_and_excludes_native_dispatch(door, mode):
     from tests.test_operator_door_requests import _selected_request
     body = {key: value for key, value in _selected_request().items() if key not in {"kind", "mode"}}
     selector = door["base"] / "selected-atlas.json"
     selector.write_text(json.dumps(body))
     args = ["selected-handoff", "--selector-file", str(selector),
-            "--resume-preparation" if mode == "preparation-resume" else "--" + mode]
+            {"preparation-resume": "--resume-preparation",
+             "preparation-reissue": "--reissue-preparation"}.get(mode, "--" + mode)]
     retry = mode != "atlas-status"
     digest = "sha256:" + "c" * 64
     if retry:
