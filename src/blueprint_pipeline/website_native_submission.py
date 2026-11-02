@@ -103,7 +103,7 @@ def validate_website_publication(*, root, manifest, request):
 def materialize_website_submission(*, task, deploy_receipt_path, release_provenance_path,
                                   release_environment_path, runtime_publication_root,
                                   expected_production_commit, namespace_timestamp,
-                                  release_admission_mode, staging_root):
+                                  release_admission_mode, staging_root, attempt_id=None):
     intent, preparation, context, rights, construction, paths = verified_submission_inputs(task)
     owner_task = intent["request"]["task"]
     from .task_evaluation_scene_execution_budget_evidence import effective_execution_budget
@@ -141,8 +141,12 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
         provenance_path=Path(release_provenance_path), publication_root=Path(runtime_publication_root),
         commit=commit, release_admission_mode=release_admission_mode)
     team = "website-" + intent["intent_digest"][7:31]
-    namespace = slug(f"{team}-{commit}-{namespace_timestamp.lower()}")
-    run_id = slug(f"{team}-{commit[:8]}-{namespace_timestamp.lower()}")
+    # A capacity successor under the same release rebuilt this request byte for
+    # byte and found its predecessor's queue envelope (capture-447ae4f4,
+    # 2026-11-02). The attempt names the run, as the public factory already does.
+    attempt = "" if attempt_id is None else "-" + slug(attempt_id.removeprefix("source-")[:12])
+    namespace = slug(f"{team}-{commit}-{namespace_timestamp.lower()}{attempt}")
+    run_id = slug(f"{team}-{commit[:8]}-{namespace_timestamp.lower()}{attempt}")
     stage = Staging(Path(staging_root), namespace)
     manifest_ref = stage.copy(paths["preparation"], "website/preparation.json")
     stage.copy(paths["task_context"], "website/task_context.json")
