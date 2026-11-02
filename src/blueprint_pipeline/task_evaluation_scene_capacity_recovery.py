@@ -65,15 +65,11 @@ def preallocation_capacity_failure(result) -> bool:
             and not recovery_withheld(result))
 
 
-def credit_launch_failure(result) -> bool:
-    """A funding refusal before any allocation or API preparation executed."""
-    if not isinstance(result, Mapping):
-        return False
-    blockers = set(result.get("blockers") or [])
-    return (result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
+def nothing_started(result) -> bool:
+    """The launch result proves no allocation, provider output or API preparation ran."""
+    return (isinstance(result, Mapping)
+            and result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
             and result.get("status") == "blocked"
-            and "provider_credit_insufficient" in blockers
-            and blockers <= DEAD_MACHINE_CONSEQUENCE_BLOCKERS | {"provider_credit_insufficient"}
             and result.get("api_pretraining") is None
             and result.get("continuing_spend_from_this_run") is False
             and not result.get("provider_runtime_output_zip_path")
@@ -81,6 +77,15 @@ def credit_launch_failure(result) -> bool:
             and result["provider_mutations_performed"] == 0
             and not result.get("instance_id") and not result.get("vast_instance_ids")
             and result.get("allocation_created") is not True)
+
+
+def credit_launch_failure(result) -> bool:
+    """A funding refusal before any allocation or API preparation executed."""
+    if not nothing_started(result):
+        return False
+    blockers = set(result.get("blockers") or [])
+    return ("provider_credit_insufficient" in blockers
+            and blockers <= DEAD_MACHINE_CONSEQUENCE_BLOCKERS | {"provider_credit_insufficient"})
 
 
 def dead_machine_launch_failure(result) -> bool:
