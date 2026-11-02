@@ -504,7 +504,13 @@ controller warns with `usage_unclassified_root` for each unclassified root over
 20 GiB, and with
 `usage_attribution_low` when a filesystem's `attributed_fraction` (surveyed bytes
 over used bytes, capped at 1) is under 0.9. Any of these warnings raises an `ok` report
-to `warning`. A survey exception keeps the last result and names the error
+to `warning`. It pages with `storage_class_over_budget` when the survey measures a
+storage class above its byte budget: `release` 15, `cache` 20, `work` 10 and
+`unclassified` 5 GiB by default, set as `release=15,cache=20` in
+`BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB` (`off` disables them; an invalid value warns
+with `class_budget_setting_invalid` and keeps the defaults). A survey is a lower
+bound, so a class it measures above budget is really above it; one below budget
+proves nothing. The budget only pages: it reclaims nothing. A survey exception keeps the last result and names the error
 (`usage_survey_failed:<type>`) without stopping the capacity tick. Failed and
 interrupted attempts do not retry on every ten-minute tick. A new non-usage
 warning still pages when a usage warning has already raised the report to
