@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import time
 import zipfile
 
+from PIL import Image
 import pytest
 
 from blueprint_pipeline import task_evaluation_scene_configuration_artisan_driver as driver
@@ -346,7 +347,9 @@ def test_unprivileged_stage_runs_the_sealed_blender(stage_fixture, monkeypatch):
     assert not (fixture.output / "artisan_runtime/packaged_blender").exists()
 
 
-def test_a_continued_source_resumes_its_upstream_run_and_meters_only_the_remainder(stage_fixture, monkeypatch, tmp_path):
+@pytest.mark.parametrize("changed_frame", [False, True])
+def test_a_continued_source_resumes_its_upstream_run_and_meters_only_the_remainder(stage_fixture, monkeypatch, tmp_path,
+                                                                                  changed_frame):
     """capture-447ae4f4: the successor resumes the source's upstream run at its saved
     phase; the carried spend counts against the cumulative cap, never against new money."""
     from blueprint_pipeline import task_evaluation_artisan_continuation as continuation
@@ -418,9 +421,21 @@ def test_a_continued_source_resumes_its_upstream_run_and_meters_only_the_remaind
     def gate(**kwargs):
         reservations.append(kwargs["max_cost_usd"])
         return fixture.gate(**kwargs)
+    if changed_frame:
+        # The successor's own stage 2 produced a different view: never resume
+        # incompatible work, and never stop the job for it.
+        Image.new("RGB", (4, 4), color=(250, 1, 1)).save(fixture.frames[0])
     result = driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner,
                                               cost_gate_factory=gate)
     argv, _ = fixture.calls[-1]
+    if changed_frame:
+        assert "resume" not in argv and "--prompt-file" in argv
+        assert argv[argv.index("--max-cost-usd") + 1] == "12.0" and reservations == [12.0]
+        rejected = json.loads((fixture.output / "artisan_continuation_rejected.json").read_text())
+        assert rejected["reason"] == "scientific_inputs_changed" and rejected["fresh_authoring"] is True
+        assert (fixture.output / "artisan_continuation_rejected_runtime/workspace").is_dir()
+        assert result["status"] == "completed"
+        return
     assert argv[argv.index("resume") + 1] == upstream and "--prompt-file" not in argv
     # The configuration's $15 cumulative cap: upstream may reach it; this attempt meters $10.
     assert argv[argv.index("--max-cost-usd") + 1] == "15.0"

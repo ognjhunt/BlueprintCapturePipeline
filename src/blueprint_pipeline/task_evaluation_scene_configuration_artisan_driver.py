@@ -135,8 +135,21 @@ def _restore_continuation(envelope, runtime, request):
                 "artisan_continuation_transport_file_changed")
         records[name] = path
     descriptor = read_json(records["descriptor"])
+    rejected = runtime.parent / "artisan_continuation_rejected.json"
+    if rejected.exists():
+        return None  # an earlier pass of this run already chose fresh authoring
     restore_artisan_continuation(descriptor=descriptor, archive_path=records["runtime_archive"], runtime_root=runtime,
                                  verified_lineage=value["verified_lineage"], successor_run_id=request["run_id"])
+    from .task_evaluation_artisan_continuation import continuation_mismatch
+    reason = continuation_mismatch(descriptor=descriptor, runtime_root=runtime, request=request)
+    if reason is not None:
+        # Never resume incompatible work; author from this attempt's own inputs.
+        aside = runtime.parent / "artisan_continuation_rejected_runtime"
+        runtime.rename(aside)
+        write_json(rejected, {"schema_version": "artisan_continuation_rejected.v1", "reason": reason,
+                              "adoption_digest": descriptor["adoption_digest"], "restored_root_moved_to": str(aside),
+                              "fresh_authoring": True})
+        return None
     return descriptor
 
 

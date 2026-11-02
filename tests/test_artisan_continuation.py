@@ -73,8 +73,9 @@ def usage(costs):
 CALLS = (2.5, 2.5, 2.5, 2.5, 2.5, 1.26)  # $13.76 in six calls; the largest is $2.50
 
 
-def source_archive(path, *, source_request, terminal_phase="P5_review", calls=CALLS, extra=None, omit=()):
-    upstream = "pl_" + source_request["request_digest"][7:39]
+def source_archive(path, *, source_request, terminal_phase="P5_review", calls=CALLS, extra=None, omit=(),
+                   upstream=None):
+    upstream = upstream or "pl_" + source_request["request_digest"][7:39]
     runs = f"{PREFIX}workspace/data/cache/runs/{upstream}/"
     members = {
         PREFIX + "blueprint_request.v1.json": json.dumps(source_request),
@@ -373,3 +374,33 @@ def test_an_artisan_successor_selects_its_continuation_before_any_astra_transpor
         activation_root=source["tmp"] / "activation", activation_request=None, created_storage_pins=None)
     assert Path(operations["artisan_continuation_selection"]).name == "selection.json"
     assert "partial_astra_successor_selection" not in operations
+
+
+def test_a_continued_source_keeps_its_original_upstream_run_and_cumulative_spend(source):
+    """A second attempt that also stopped early is the newest resumable source; a third
+    attempt must continue it under the original upstream identity, carrying all spend."""
+    original = "pl_" + "c" * 32
+    prior = seal({"schema_version": "task_evaluation_artisan_continuation_record.v1",
+                  "successor_run_id": SOURCE_RUN, "successor_request_digest": source["source_request"]["request_digest"],
+                  "upstream_run_id": original, "carried_cost_usd": 13.76, "carried_call_count": 6,
+                  "carried_largest_call_usd": 2.5}, "record_digest")
+    source["build"](upstream=original, calls=(1.0, 0.5),
+                    extra={PREFIX + continuation.RELOCATED_ROOT + "adoption.v1.json": json.dumps(prior)})
+    selection = _select(source, cap=30.0)
+    value = json.loads(selection.read_text())
+    descriptor = json.loads(Path(value["descriptor"]["path"]).read_text())
+    assert descriptor["source_upstream_run_id"] == original
+    assert descriptor["carried_spend"]["cost_usd"] == 15.26 and descriptor["carried_spend"]["call_count"] == 8
+    assert descriptor["carried_spend"]["largest_call_usd"] == 2.5
+    with zipfile.ZipFile(value["runtime_archive"]["path"]) as archive:
+        assert continuation.RELOCATED_ROOT + "prior_adoption.v1.json" in archive.namelist()
+
+
+def test_a_prior_adoption_for_another_request_is_refused(source):
+    prior = seal({"schema_version": "task_evaluation_artisan_continuation_record.v1",
+                  "successor_run_id": SOURCE_RUN, "successor_request_digest": SHA,
+                  "upstream_run_id": "pl_" + "c" * 32, "carried_cost_usd": 1.0, "carried_call_count": 1,
+                  "carried_largest_call_usd": 1.0}, "record_digest")
+    source["build"](upstream="pl_" + "c" * 32,
+                    extra={PREFIX + continuation.RELOCATED_ROOT + "adoption.v1.json": json.dumps(prior)})
+    assert _select(source, cap=30.0) is None

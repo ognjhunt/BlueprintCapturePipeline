@@ -112,8 +112,12 @@ def semantic_request(request: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
-def carried_spend(usage: Mapping[str, Any]) -> dict[str, Any]:
-    """Every metered call of the source, which must all be priced."""
+def carried_spend(usage: Mapping[str, Any], prior: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Every metered call of the source, which must all be priced, plus what it carried itself.
+
+    A source that was itself a continuation brings its sealed adoption record
+    (``prior``): its carried spend already folds every earlier attempt in.
+    """
 
     calls = usage.get("calls")
     _require(usage.get("schema_version") == "artisan_upstream_usage.v1" and isinstance(calls, list),
@@ -126,7 +130,30 @@ def carried_spend(usage: Mapping[str, Any]) -> dict[str, Any]:
                  and math.isfinite(cost) and cost >= 0, "unknown_charge_requires_reconciliation")
         total += float(cost)
         largest = max(largest, float(cost))
-    return {"cost_usd": round(total, 6), "call_count": len(calls), "largest_call_usd": round(largest, 6)}
+    count = len(calls)
+    if prior is not None:
+        total += float(prior["carried_cost_usd"])
+        count += int(prior["carried_call_count"])
+        largest = max(largest, float(prior["carried_largest_call_usd"]))
+    return {"cost_usd": round(total, 6), "call_count": count, "largest_call_usd": round(largest, 6)}
+
+
+ADOPTION_RECORD = "adoption.v1.json"
+PRIOR_ADOPTION = "prior_adoption.v1.json"
+
+
+def validated_prior(record: Mapping[str, Any], *, source_run_id: str, source_request_digest: str) -> dict[str, Any]:
+    """The sealed adoption record a continued source wrote, bound to that source's own request."""
+
+    _require(record.get("schema_version") == "task_evaluation_artisan_continuation_record.v1"
+             and record.get("record_digest") == canonical_digest(record, digest_field="record_digest")
+             and record.get("successor_run_id") == source_run_id
+             and record.get("successor_request_digest") == source_request_digest
+             and all(isinstance(record.get(k), (int, float)) and not isinstance(record.get(k), bool)
+                     and math.isfinite(record[k]) and record[k] >= 0
+                     for k in ("carried_cost_usd", "carried_call_count", "carried_largest_call_usd"))
+             and isinstance(record.get("upstream_run_id"), str), "prior_adoption_invalid")
+    return dict(record)
 
 
 def frozen_cap(configuration: Mapping[str, Any]) -> float:
@@ -147,6 +174,8 @@ def _classify(relative: str) -> str | None:
              "runtime_secret_forbidden")
     if relative in RELOCATED:
         return "relocate"
+    if relative == RELOCATED_ROOT + ADOPTION_RECORD:
+        return "prior"
     if relative.endswith(".lock") or any(part in _DROPPED_PARTS for part in parts):
         return None
     if parts[0] == "workspace":
@@ -168,7 +197,8 @@ def _members(archive: zipfile.ZipFile) -> list[tuple[str, str, zipfile.ZipInfo]]
             continue
         _require(stat.S_IFMT(info.external_attr >> 16) in (0, stat.S_IFREG) and info.file_size >= 0,
                  "archive_entry_invalid")
-        destination = relative if kind == "keep" else RELOCATED_ROOT + relative
+        destination = {"keep": relative, "relocate": RELOCATED_ROOT + relative,
+                       "prior": RELOCATED_ROOT + PRIOR_ADOPTION}[kind]
         selected.append((destination, relative, info))
     _require(sum(i.file_size for _, _, i in selected) <= transport.MAX_EXPANDED_BYTES, "archive_expansion_exceeded")
     return sorted(selected)
@@ -216,7 +246,13 @@ def _source_state(archive: zipfile.ZipFile, *, source_run_id: str) -> dict[str, 
     _require(request.get("request_digest") == canonical_digest(request, digest_field="request_digest")
              and request.get("run_id") == source_run_id
              and request.get("backend") == ARTISAN_BACKEND, "source_request_invalid")
-    upstream_run_id = "pl_" + request["request_digest"][7:39]
+    prior = None
+    if PREFIX + RELOCATED_ROOT + ADOPTION_RECORD in names:
+        # This source continued an earlier one: its upstream run keeps the
+        # original identity, and its carried spend folds in every earlier attempt.
+        prior = validated_prior(_archive_json(archive, PREFIX + RELOCATED_ROOT + ADOPTION_RECORD),
+                                source_run_id=source_run_id, source_request_digest=request["request_digest"])
+    upstream_run_id = prior["upstream_run_id"] if prior else "pl_" + request["request_digest"][7:39]
     terminal = _archive_json(archive, PREFIX + "terminal.v1.json")
     _require(terminal.get("schema_version") == "blueprint_artisan_terminal.v1"
              and terminal.get("run_id") == upstream_run_id
@@ -226,7 +262,7 @@ def _source_state(archive: zipfile.ZipFile, *, source_run_id: str) -> dict[str, 
     state = f"{PREFIX}workspace/data/cache/runs/{upstream_run_id}/pipeline_state.json"
     _require(state in names, "upstream_checkpoint_missing")
     usage = _archive_json(archive, PREFIX + "blueprint_usage.json")
-    spend = carried_spend(usage)
+    spend = carried_spend(usage, prior)
     source_input = _archive_json(archive, STAGE_INPUT)
     configuration = source_input.get("configuration")
     _require(isinstance(configuration, dict) and configuration.get("authoring_backend") == ARTISAN_BACKEND
@@ -489,7 +525,7 @@ def restore_artisan_continuation(*, descriptor: Mapping[str, Any], archive_path:
     actual = transport._file(archive_path)
     _require(actual["sha256"] == record.get("sha256") and actual["size_bytes"] == record.get("size_bytes")
              and actual["size_bytes"] <= transport.MAX_ARCHIVE_BYTES, "archive_invalid")
-    adoption = runtime_root / RELOCATED_ROOT.rstrip("/") / "adoption.v1.json"
+    adoption = runtime_root / RELOCATED_ROOT / ADOPTION_RECORD
     if runtime_root.exists():
         _require(not runtime_root.is_symlink() and adoption.is_file() and not adoption.is_symlink()
                  and json.loads(adoption.read_text()).get("adoption_digest") == descriptor["adoption_digest"],
@@ -532,6 +568,27 @@ def restore_artisan_continuation(*, descriptor: Mapping[str, Any], archive_path:
     return True
 
 
+def continuation_mismatch(*, descriptor: Mapping[str, Any], runtime_root: Path,
+                          request: Mapping[str, Any]) -> str | None:
+    """Why a restored source cannot serve this request, or ``None``.
+
+    A mismatch is not a stop: the driver sets the restored source aside and
+    authors from this attempt's own inputs (AGENTS.md: only privacy, rights
+    and money stop a job).
+    """
+
+    try:
+        previous = json.loads((runtime_root / RELOCATED_ROOT / "blueprint_request.v1.json").read_text())
+    except (OSError, ValueError):
+        return "source_request_unreadable"
+    if semantic_request(previous) != semantic_request(request):
+        return "scientific_inputs_changed"
+    if (canonical_digest(semantic_configuration(request["configuration"]))
+            != descriptor["semantic_configuration_digest"]):
+        return "configuration_semantics_changed"
+    return None
+
+
 def adopt_artisan_continuation(*, descriptor: Mapping[str, Any], runtime_root: Path, request: Mapping[str, Any],
                                cumulative_cap: float, attempt_allocation: float) -> dict[str, Any]:
     """Bind the restored source to the successor's request and split the cumulative cap.
@@ -547,7 +604,11 @@ def adopt_artisan_continuation(*, descriptor: Mapping[str, Any], runtime_root: P
     relocated = runtime_root / RELOCATED_ROOT
     previous = json.loads((relocated / "blueprint_request.v1.json").read_text())
     usage = json.loads((relocated / "blueprint_usage.json").read_text())
-    spend = carried_spend(usage)
+    prior_path = relocated / PRIOR_ADOPTION
+    prior = (validated_prior(json.loads(prior_path.read_text()), source_run_id=descriptor["source_run_id"],
+                             source_request_digest=descriptor["source_request_digest"])
+             if prior_path.exists() else None)
+    spend = carried_spend(usage, prior)
     usage_sha = "sha256:" + hashlib.sha256((relocated / "blueprint_usage.json").read_bytes()).hexdigest()
     carried = descriptor["carried_spend"]
     _require(previous.get("request_digest") == descriptor["source_request_digest"]
@@ -568,7 +629,7 @@ def adopt_artisan_continuation(*, descriptor: Mapping[str, Any], runtime_root: P
     checkpoint = (runtime_root / "workspace/data/cache/runs" / descriptor["source_upstream_run_id"]
                   / "pipeline_state.json")
     _require(checkpoint.is_file() and not checkpoint.is_symlink(), "upstream_checkpoint_missing")
-    adoption_path = relocated / "adoption.v1.json"
+    adoption_path = relocated / ADOPTION_RECORD
     record = {"schema_version": "task_evaluation_artisan_continuation_record.v1",
               "adoption_digest": descriptor["adoption_digest"],
               "source_run_id": descriptor["source_run_id"], "successor_run_id": descriptor["successor_run_id"],
@@ -577,6 +638,7 @@ def adopt_artisan_continuation(*, descriptor: Mapping[str, Any], runtime_root: P
               "upstream_run_id": descriptor["source_upstream_run_id"],
               "cumulative_cap_usd": float(cumulative_cap), "attempt_allocation_usd": float(attempt_allocation),
               "carried_cost_usd": spend["cost_usd"], "carried_call_count": spend["call_count"],
+              "carried_largest_call_usd": spend["largest_call_usd"],
               "increment_usd": increment, "upstream_cap_usd": round(spend["cost_usd"] + increment, 6),
               "carried_spend_settled_under_source_attempt": True, "new_spend_authorized": False}
     record["record_digest"] = canonical_digest(record, digest_field="record_digest")
@@ -589,6 +651,7 @@ def adopt_artisan_continuation(*, descriptor: Mapping[str, Any], runtime_root: P
 
 __all__ = [
     "ArtisanContinuationError",
+    "continuation_mismatch",
     "StageThreeContinuationError",
     "select_stage_three_continuation",
     "FIELD",
