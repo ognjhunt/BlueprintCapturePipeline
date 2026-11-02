@@ -1,12 +1,14 @@
 """Conservative reclamation for control-plane caches, on a timer.
 
-One tick (``run_storage_gc``) runs nine phases in this order. Every phase
+One tick (``run_storage_gc``) runs ten phases in this order. Every phase
 plans before it mutates, and a tick applies nothing unless it runs with
 ``--apply`` and its typed acknowledgement. The plan-only phase never applies:
 
 * **Stranded queue rows**: pending rows bound to a release other than the
   running one are moved to ``stranded/`` beside a receipt, so they stop
   counting as live queue references.  Nothing is deleted.
+* **Abandoned activation claims**: a claim a killed worker left in ``processing/`` is sealed
+  ``blocked`` once ``task_evaluation_launch_activation_claim_recovery`` proves it abandoned.
 * **Terminal cache pins** whose run is proven closed by archived-run or sealed
   cold-run evidence are released. The extended proofs (a sealed registry run,
   an activation whose mutation window lapsed unlaunched, a stale preparation or
@@ -107,6 +109,7 @@ from .control_plane_storage_references import (  # noqa: F401 - re-exported
 from .control_plane_storage_roots import require_storage_class, DEFAULT_MINIMUM_AGE_SECONDS
 from .control_plane_pin_proofs import activation_queue_root_of, launch_queue_root_of, preparation_queue_root_of
 from .control_plane_terminal_cache_pins import extended_pin_proofs_setting, reconcile_terminal_cache_pins
+from .task_evaluation_launch_activation_claim_recovery import storage_gc_phase as activation_claims_phase
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_release_identity import running_release_commit
 from .task_evaluation_standing_launch_authorization import STANDING_AUTHORIZATION_DIR_ENV
@@ -1322,8 +1325,8 @@ def run_storage_gc(
 ) -> dict[str, Any]:
     """One timer tick: stranded rows, derived directories, blobs, offload, scratch, replay caches, scenes.
 
-    Stranded rows go first so the derived-directory step in the same tick no
-    longer sees them as live queue references. Every phase is isolated.
+    Stranded rows and abandoned activation claims go first so the derived-directory
+    step in the same tick no longer sees them as live queue references. Every phase is isolated.
     """
 
     if apply and ack != RUN_ACK:
@@ -1379,6 +1382,9 @@ def run_storage_gc(
             return apply_stranded_queue_manifest(stranded, ack=STRANDED_ACK, now=clock) if apply else stranded
 
         _isolated(report, "stranded_queue_rows", stranded_phase)
+    _isolated(report, "abandoned_activation_claims", lambda: activation_claims_phase(
+        activation_queue_root_of(queue_roots), apply=apply, now=observed_at, running_commit=running_commit,
+        classifier=classifier))
 
     def terminal_cache_pins_phase() -> Any:
         return reconcile_terminal_cache_pins(
