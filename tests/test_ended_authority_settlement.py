@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import task_evaluation_terminal_scene_attempt_settlement as settlement
+from blueprint_pipeline import task_evaluation_ended_authority_settlement as ended
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_retained_controls_evidence import validated_cancellation
 from blueprint_pipeline.task_evaluation_sam31_prefix_adoption import record
@@ -138,7 +139,7 @@ def _end(site, how):
 
 
 def _settle(site, state, now):
-    return settlement.settle_ended_authority_attempt(directory=site["directory"], intent=site["intent"], state=state,
+    return ended.settle_ended_authority_attempt(directory=site["directory"], intent=site["intent"], state=state,
                                                      config=site["config"], now=now)
 
 
