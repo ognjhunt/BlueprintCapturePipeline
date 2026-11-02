@@ -36,10 +36,9 @@ Go-live, in order:
 Rollback is unsetting the setting and deploying again. Issued configurations keep
 their recorded backend.
 
-At the $15 default (`BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD`), a rigid website
-build quotes $21: $6 of provider compute plus $15. That is above the website's
-default $20 build ceiling. A $14 cap keeps it under $20; otherwise an owner grant
-is needed.
+At the $12 default (`BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD`, which the deploy
+installs from `ARTISAN_AUTHORING_CAP_USD`), a rigid website build quotes $18: $6
+of provider compute plus $12, under the website's default $20 build ceiling.
 
 ## Integration map
 
@@ -57,12 +56,26 @@ There is no automatic backend fallback.
 The upstream pin is
 `physicalvision/Artisan@ad322b5b31e50bdb84155520f09622c00c6056c3`, tree
 `6ed9c860e74afdf90bade4bc5ec4ac592cb1e920`. Preserve its Apache-2.0 license,
-notices, third-party attributions and `uv.lock`. The tracked patch
+notices, third-party attributions and `uv.lock`. The component builder applies
+the tracked patches in order and seals each digest in its manifest (`patches`;
+`patch_sha256` stays the 0001 digest).
 `patches/artisan/0001-confine-generated-code.patch` routes generated model,
 QA, probe and Blender execution through Blueprint's OS sandbox; admits a
 declared one-part rigid model without a fake joint; and retains visual/collision
-identity and opacity in USD. Design/Coding/Review, CAD, collision construction,
-simulation, repair, review and exports remain upstream implementations.
+identity and opacity in USD. `patches/artisan/0002-gpt-6-1-sol.patch` prices
+and admits `gpt-6.1-sol` (text, compaction and image envelope) and lets it run
+at `xhigh` and `max` reasoning, as upstream already allowed for `gpt-6-astra`.
+Design/Coding/Review, CAD, collision construction, simulation, repair, review
+and exports remain upstream implementations.
+
+`ARTISAN_MODELS` (owner direction 2026-11-02): `gpt-6.1-sol` at `max` reasoning
+for design, coding and review; `gpt-6.1-sol` for compaction (which sends no
+reasoning setting) and the image envelope; `gpt-image-2.5-sunburst` for the
+image tool. Rates and efforts were read from
+https://developers.openai.com/api/docs/models/gpt-6.1-sol on 2026-11-02. A
+website job whose stage 3 froze earlier models is rebound to these models and
+their cap on its next attempt (`website_owner_authoring_cap`); a continuation
+resumes only a source with the same models.
 
 ## Inputs and authority
 
@@ -131,7 +144,7 @@ Set **one** future-request setting, without changing Python:
 export BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD=40
 ```
 
-The starting default is USD 15 for the entire object/assembly authoring stage,
+The starting default is USD 12 for the entire object/assembly authoring stage,
 including all roles, compaction, image generation and resumes. It is not a
 per-part allowance or an immutable owner ceiling. Higher finite settings reach
 quoting, intake validation, stage/parent profiles, bundle receipts, signed

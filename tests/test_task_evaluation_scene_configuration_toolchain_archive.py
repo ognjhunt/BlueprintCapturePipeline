@@ -247,6 +247,7 @@ def test_only_large_third_party_trees_are_cached() -> None:
     assert cached("components/artifixer3d_observed_object_removal/package/blueprint_runtime/torch_home/x")
     for release in ("run", "task_evaluation_scene_configuration_component_package.v1.json",
                     "bridge/blueprint_pipeline/task_object_artisan_bridge.py", "upstream.patch",
+                    "upstream_patches/0002-gpt-6-1-sol.patch",
                     "blueprint_runtime/src/blueprint_pipeline/x.py", "source_receipt.json"):
         assert not cached(package + release)
     assert not cached("stages/content_agents_rigid_replacement")

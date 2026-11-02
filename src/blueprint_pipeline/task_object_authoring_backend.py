@@ -25,9 +25,26 @@ ARTISAN_REVISION = "ad322b5b31e50bdb84155520f09622c00c6056c3"
 ARTISAN_TREE = "6ed9c860e74afdf90bade4bc5ec4ac592cb1e920"
 ARTISAN_BUDGET_ENV = "BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD"
 BUDGET_SCHEMA = "task_object_authoring_budget.v1"
-ARTISAN_MODELS = {"provider": "openai", "model": "gpt-6-astra", "thinking": "high",
-                  "compaction_model": "gpt-5.6-sol", "image_model": "gpt-6-astra",
+#: Owner direction 2026-11-02: author with gpt-6.1-sol at maximum reasoning
+#: instead of gpt-6-astra (capture-447ae4f4's last run: astra was 76 of 91 calls
+#: and $17.16 of $21.63), and compact with gpt-6.1-sol instead of gpt-5.6-sol.
+#: ``patches/artisan/0002-gpt-6-1-sol.patch`` prices and admits the model and
+#: its ``max`` effort, both read on 2026-11-02 from
+#: https://developers.openai.com/api/docs/models/gpt-6.1-sol. Compaction calls
+#: send no reasoning setting, so ``thinking`` reaches only design, coding and
+#: review. The image tool model is unchanged.
+ARTISAN_MODELS = {"provider": "openai", "model": "gpt-6.1-sol", "thinking": "max",
+                  "compaction_model": "gpt-6.1-sol", "image_model": "gpt-6.1-sol",
                   "image_tool_model": "gpt-image-2.5-sunburst"}
+#: The per-object authoring cap for ``ARTISAN_MODELS``, cumulative across
+#: resumes; the deploy installs it as ``BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD``.
+#: capture-447ae4f4 on gpt-6-astra metered about $15-17 for a run that passes
+#: review first time, plus about $8-10 per review/repair loop. At gpt-6.1-sol's
+#: rates (about 1/5 of astra's) that is about $3-4, or $5-6 with one repair loop;
+#: max reasoning adds output tokens, budgeted at up to 2x. $12 covers one repair
+#: loop with margin and fits capture-447's restart ($12 + $6 compute inside the
+#: $25.35 its intent has left). It replaces gpt-6-astra's $25 (#3240).
+ARTISAN_AUTHORING_CAP_USD = 12.0
 
 
 def default_backend(environment: Mapping[str, str] | None = None) -> str:
@@ -54,7 +71,7 @@ def positive_cost(value: Any) -> float:
 def new_authoring_budget(environment: Mapping[str, str] | None = None) -> dict[str, Any]:
     values = os.environ if environment is None else environment
     return {"schema_version": BUDGET_SCHEMA, "mode": "finite_cap",
-            "maximum_cost_usd": positive_cost(values.get(ARTISAN_BUDGET_ENV, "15")),
+            "maximum_cost_usd": positive_cost(values.get(ARTISAN_BUDGET_ENV, ARTISAN_AUTHORING_CAP_USD)),
             "scope": "whole_authoring_stage_cumulative_including_resume"}
 
 

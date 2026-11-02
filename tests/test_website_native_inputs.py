@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import json
 from pathlib import Path
@@ -161,12 +162,14 @@ def test_second_scene_requires_its_own_preparation_observation_and_identity(tmp_
         subject_identity=DRAWER_DEPTH_PRIOR["subject_identity"]) is website_drawer_depth_prior.PRIOR
 
 
-def packet(tmp_path, *, authoring_backend=None):
+def packet(tmp_path, *, authoring_backend=None, freezing=contextlib.nullcontext):
+    """``freezing`` wraps the first preparation, which freezes stage 3."""
     tmp_path.mkdir(parents=True, exist_ok=True)
-    args, preparation, _ = inputs(tmp_path, authoring_backend=authoring_backend)
-    preparation_path = args["output_root"] / "preparation.json"
-    runtime = prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
-        source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=tmp_path / "native")
+    with freezing():
+        args, preparation, _ = inputs(tmp_path, authoring_backend=authoring_backend)
+        preparation_path = args["output_root"] / "preparation.json"
+        runtime = prepare_website_runtime_inputs(preparation=preparation, base_scene=args["base_scene"],
+            source_geometry=args["source_geometry"], task_masks=args["task_masks"], output_root=tmp_path / "native")
     construction = prepare_construction_stages(runtime_inputs_path=tmp_path / "native/runtime_inputs.json",
                                                preparation_path=preparation_path)
     rights = tmp_path / "rights.json"
@@ -434,18 +437,63 @@ def test_the_owner_deployed_artisan_cap_raises_a_frozen_website_stage_three(tmp_
     # A lower deployed value never lowers a frozen cap; no file changes nothing.
     release.write_text("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD=5\n")
     assert packet(tmp_path / "lower", authoring_backend="artisan_v1")[1]["stage-3"]["authoring_budget"][
-        "maximum_cost_usd"] == 15.0
+        "maximum_cost_usd"] == 12.0
     release.unlink()
     assert packet(tmp_path / "absent", authoring_backend="artisan_v1")[1]["stage-3"]["authoring_budget"][
-        "maximum_cost_usd"] == 15.0
+        "maximum_cost_usd"] == 12.0
+
+
+ASTRA_MODELS = {"provider": "openai", "model": "gpt-6-astra", "thinking": "high",
+                "compaction_model": "gpt-5.6-sol", "image_model": "gpt-6-astra",
+                "image_tool_model": "gpt-image-2.5-sunburst"}
+
+
+def test_a_stage_three_frozen_under_earlier_models_runs_on_the_release_models_and_their_cap(tmp_path, monkeypatch):
+    """Owner direction 2026-11-02: ARTISAN moves from gpt-6-astra to gpt-6.1-sol and its cap
+    from $25 to $12. capture-447ae4f4's stage 3 froze gpt-6-astra at $25; stage 3 refuses any
+    models but the release's, so its retry is rebound to them and to their lower cap."""
+    from blueprint_pipeline import task_object_authoring_backend as backend
+    from blueprint_pipeline import website_owner_authoring_cap as owner_cap
+    from blueprint_pipeline.task_evaluation_scene_configuration_stage_configuration import _stage_three_refusal
+    release = tmp_path / "task-evaluation-scene-configuration-release.env"
+    release.write_text("BLUEPRINT_ARTISAN_AUTHORING_MAX_COST_USD=12\n")
+    monkeypatch.setattr(owner_cap, "RELEASE_ENVIRONMENT_FILE", release)
+
+    @contextlib.contextmanager
+    def under_astra():
+        with monkeypatch.context() as frozen:
+            frozen.setattr(backend, "ARTISAN_MODELS", ASTRA_MODELS)
+            frozen.setenv(backend.ARTISAN_BUDGET_ENV, "25")
+            yield
+    envelope, configs = packet(tmp_path / "rebound", authoring_backend="artisan_v1", freezing=under_astra)
+    runtime = json.loads((tmp_path / "rebound/native/runtime_inputs.json").read_text())
+    frozen = runtime["object_authoring"]["configuration"]
+    assert frozen["authoring_models"] == ASTRA_MODELS and frozen["authoring_budget"]["maximum_cost_usd"] == 25.0
+    third = configs["stage-3"]
+    assert third["authoring_models"] == backend.ARTISAN_MODELS == {
+        "provider": "openai", "model": "gpt-6.1-sol", "thinking": "max", "compaction_model": "gpt-6.1-sol",
+        "image_model": "gpt-6.1-sol", "image_tool_model": "gpt-image-2.5-sunburst"}
+    assert third["authoring_budget"]["maximum_cost_usd"] == 12.0
+    assert {k: v for k, v in third.items() if k not in {"authoring_models", "authoring_budget"}} == {
+        k: v for k, v in frozen.items() if k not in {"authoring_models", "authoring_budget"}}
+    validate_immutable_stage_configurations(envelope=envelope, configurations=configs)
+    validate_website_native_inputs(envelope=envelope, configurations=configs, require_render_inputs=False)
+    assert _stage_three_refusal(frozen, envelope) == "artisan_framework_or_budget_binding"
+    assert _stage_three_refusal(third, envelope) is None
+    # Without a deployed value the model's own cap applies.
+    release.unlink()
+    assert packet(tmp_path / "absent", authoring_backend="artisan_v1", freezing=under_astra)[1]["stage-3"][
+        "authoring_budget"]["maximum_cost_usd"] == backend.ARTISAN_AUTHORING_CAP_USD == 12.0
 
 
 def test_only_a_raised_cumulative_artisan_cap_passes_the_stage_three_rederivation():
+    from blueprint_pipeline.task_object_authoring_backend import ARTISAN_AUTHORING_CAP_USD, ARTISAN_MODELS
     from blueprint_pipeline.website_owner_authoring_cap import same_except_owner_cap, with_owner_artisan_cap
     derived = {"authoring_backend": "artisan_v1", "replacement_identity": {"id": "tray"},
                "authoring_budget": {"schema_version": "task_object_authoring_budget.v1", "mode": "finite_cap",
                                     "maximum_cost_usd": 15.0,
                                     "scope": "whole_authoring_stage_cumulative_including_resume"}}
+    derived["authoring_models"] = dict(ARTISAN_MODELS)
     raised = with_owner_artisan_cap(derived, 25.0)
     assert raised["authoring_budget"]["maximum_cost_usd"] == 25.0 and same_except_owner_cap(raised, derived)
     assert with_owner_artisan_cap(derived, 10.0) == derived and same_except_owner_cap(derived, derived)
@@ -454,3 +502,16 @@ def test_only_a_raised_cumulative_artisan_cap_passes_the_stage_three_rederivatio
     astra = {**derived, "authoring_backend": "astra_cad_blender_v1"}
     assert with_owner_artisan_cap(astra, 25.0) == astra
     assert not same_except_owner_cap({**astra, "authoring_budget": raised["authoring_budget"]}, astra)
+    # Frozen under earlier models: rebound to the release's models and their cap, even a lower one.
+    earlier = {**derived, "authoring_models": ASTRA_MODELS,
+               "authoring_budget": {**derived["authoring_budget"], "maximum_cost_usd": 25.0}}
+    rebound = with_owner_artisan_cap(earlier, 12.0)
+    assert rebound == {**earlier, "authoring_models": ARTISAN_MODELS,
+                       "authoring_budget": {**earlier["authoring_budget"], "maximum_cost_usd": 12.0}}
+    assert same_except_owner_cap(rebound, earlier)
+    assert with_owner_artisan_cap(earlier, None)["authoring_budget"]["maximum_cost_usd"] == ARTISAN_AUTHORING_CAP_USD
+    assert not same_except_owner_cap(earlier, rebound)  # never back to earlier models
+    assert not same_except_owner_cap({**rebound, "authoring_models": {**ARTISAN_MODELS, "thinking": "high"}}, earlier)
+    assert not same_except_owner_cap({**rebound, "replacement_identity": {"id": "other"}}, earlier)
+    assert not same_except_owner_cap({**rebound, "authoring_budget": {**rebound["authoring_budget"],
+                                                                      "maximum_cost_usd": 0}}, earlier)

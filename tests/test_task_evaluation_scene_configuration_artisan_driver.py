@@ -437,12 +437,12 @@ def test_a_continued_source_resumes_its_upstream_run_and_meters_only_the_remaind
         assert result["status"] == "completed"
         return
     assert argv[argv.index("resume") + 1] == upstream and "--prompt-file" not in argv
-    # The configuration's $15 cumulative cap: upstream may reach it; this attempt meters $10.
-    assert argv[argv.index("--max-cost-usd") + 1] == "15.0"
+    # The configuration's $12 cumulative cap: upstream may reach it; this attempt meters $12 - $5.
+    assert argv[argv.index("--max-cost-usd") + 1] == "12.0"
     context = json.loads((runtime / "bridge_context.v1.json").read_text())
-    assert context["maximum_cost_usd"] == 10.0 and reservations == [10.0]
+    assert context["maximum_cost_usd"] == 7.0 and reservations == [7.0]
     record = json.loads((runtime / continuation.RELOCATED_ROOT / "adoption.v1.json").read_text())
-    assert record["carried_cost_usd"] == 5.0 and record["increment_usd"] == 10.0
+    assert record["carried_cost_usd"] == 5.0 and record["increment_usd"] == 7.0
     assert record["successor_request_digest"] != record["source_request_digest"]
     assert result["status"] == "completed"
 
