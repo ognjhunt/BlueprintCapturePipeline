@@ -24,7 +24,7 @@ from __future__ import annotations
 import math
 import time
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -101,8 +101,13 @@ def run_team_candidate_session_vast(
     hard_ttl_seconds: int = 14_400,
     allowed_active_instance_ids: Sequence[int] = (),
     provider_runtime_environment: Mapping[str, str] | None = None,
+    pre_provider_create: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
-    """One zero-retry allocation; the authority is consumed once, only when executing."""
+    """One zero-retry allocation; the authority is consumed once, only when executing.
+
+    ``pre_provider_create`` runs inside the adapter's pre-create hook,
+    immediately before the create request.
+    """
 
     authority = validate_session_authority(session_authority)
     bundle = validate_provider_bundle(prepared_bundle, authority=authority)
@@ -123,11 +128,19 @@ def run_team_candidate_session_vast(
     if blockers:
         return _blocked(blockers)
     environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
+    from .beta_screening_control_delivery import runtime_control_ready_for_authority
+    runtime_control_ready = runtime_control_ready_for_authority(authority=authority, execute=execute)
     consumption = consume_session_authority_once(
         authority, consumption_path=Path(job_dir) / "policy_canary_session_consumption.json") if execute else None
     if consumption is not None and consumption.get("status") != "consumed":
         return _blocked(list(consumption.get("blockers") or []), authorization_consumption=consumption)
+
+    def pre_create() -> dict[str, Any]:
+        pre_provider_create()
+        return {"status": "consumed", "authority_digest": authority["authority_digest"]}
     return run_arena_native_control_vast(
+        **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
+        **({"pre_provider_mutation_hook": pre_create} if pre_provider_create is not None else {}),
         approval_path=".", job_dir=job_dir, paid_resource_admission_grant=paid_resource_admission_grant,
         execute=execute, prepared_bundle=bundle, machine_avoidlist_path=machine_avoidlist_path,
         max_hourly_rate_usd=max_hourly_rate_usd, hard_cap_usd=hard_cap_usd, hard_ttl_seconds=hard_ttl_seconds,

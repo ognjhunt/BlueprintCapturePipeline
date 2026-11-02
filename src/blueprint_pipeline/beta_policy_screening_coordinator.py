@@ -41,6 +41,8 @@ LEDGER_FILENAME = "screening_ledger.v1.json"
 SITE_LIMIT = Decimal("15")
 CAPACITY_RETRY_SECONDS = 60
 CAPACITY_WAIT_BLOCKER = "beta_screening_waiting_for_capacity"
+# Published beside the capacity code, the only one the WebApp accepts for a return to preparing.
+CONTROL_WAIT_BLOCKER = "beta_screening_waiting_for_control"
 INFEASIBLE_BLOCKER = "candidate_infeasible_measured_geometry"
 # The plan's own reason: published reasons stay a subset of the plan's.
 WAITLIST_BLOCKER = "site_screening_budget_insufficient"
@@ -537,6 +539,43 @@ def _refill_waitlist(root: Path) -> int:
     return changed
 
 
+def _unstarted_refusal_proof(root: Path, attempt: Mapping[str, Any], observation: Mapping[str, Any]) -> bool:
+    """Reopen bytes from our exact job fence; caller booleans are not evidence."""
+    from .allocator_invocation import manifest
+    record = observation.get("unstarted_refusal_receipt") or {}
+    directory = root / "attempts" / attempt["attempt_id"] / "invocation"
+    path = directory / "no_create_fence.json"
+    if (type(observation.get("retryable_unstarted_refusal")) is not bool
+            or observation.get("no_policy_api_calls_proven") is not True
+            or record.get("path") != str(path) or path.is_symlink()
+            or (directory / "provider_create_intent.json").exists()):
+        return False
+    try:
+        raw = path.read_bytes()
+        proof, value = json.loads(raw), manifest(directory / "manifest.json")
+        return bool(
+            record.get("size_bytes") == len(raw)
+            and record.get("sha256") == "sha256:" + hashlib.sha256(raw).hexdigest()
+            and proof.get("schema_version") == "blueprint.allocator_no_create_fence.v1"
+            and proof.get("manifest_digest") == value["manifest_digest"]
+            and proof.get("invocation_id") == value["invocation_id"]
+            and proof.get("binding") == value["binding"]
+            and value["binding"].get("prepared_digest") == attempt.get("prepared", {}).get("prepared_digest")
+            and proof.get("provider_create_prevented") is True
+            and proof.get("no_policy_api_calls_proven") is True
+        )
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def _launch_unclaimed(root: Path, attempt: Mapping[str, Any]) -> bool:
+    """No launch slot was ever claimed for this attempt, so no allocator can exist for it."""
+    directory = root / "attempts" / attempt["attempt_id"]
+    return not any(path.exists() or path.is_symlink() for path in (
+        directory / "allocator_launch_intent.json", directory / "invocation" / "manifest.json",
+        directory / "allocator_process.json", directory / "allocator_result.json"))
+
+
 def _update(root: Path, campaign_id: str, candidate_id: str, update) -> dict[str, Any]:
     with _lock(root):
         ledger = _ledger(root)
@@ -563,13 +602,40 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
         attempt["provider_allocation_observed"] = attempt["provider_allocation_observed"] or allocated
         status = observation.get("status")
         if status == "running":
+            row.pop("next_action", None)
             row.update(status="running", blockers=[])
             return
         no_allocation = (observation.get("no_allocation_proven") is True
                          and observation.get("provider_allocation_performed") is False
                          and attempt["provider_allocation_observed"] is False)
         closed = observation.get("provider_zero_verified") is True and attempt["provider_allocation_observed"] is True
+        if (status == "deferred" and no_allocation and observation.get("retryable_control_refusal") is True
+                and _launch_unclaimed(root, attempt)):
+            # The control read before spawn got no answer (429, 5xx, timeout).
+            # Nothing could start: keep this attempt and its reservation, read again.
+            attempt["retry_not_before"] = _retry_after_capacity()
+            row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER, CONTROL_WAIT_BLOCKER])
+            return
         if status in {"completed", "blocked"} and no_allocation:
+            unstarted_proof = _unstarted_refusal_proof(root, attempt, observation)
+            if "unstarted_refusal_receipt" in observation and not unstarted_proof:
+                row.update(status="reconciliation_required", blockers=["beta_screening_unspent_fence_unproven"])
+                return
+            if unstarted_proof and observation.get("retryable_unstarted_refusal") is True:
+                # A durable generation fence prevents every delayed old start;
+                # transfer, never replenish, the site's existing reservation.
+                attempt.update(reservation_status="released", closed_at=_now(),
+                    terminal_reason="allocator_fenced_before_create",
+                    unstarted_refusal_receipt=dict(observation["unstarted_refusal_receipt"]),
+                    no_policy_api_calls_proven=True)
+                row.setdefault("attempt_history", []).append(json.loads(json.dumps(attempt)))
+                row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
+                                  "retry_not_before": _retry_after_capacity()}
+                # The WebApp lets a published running candidate return to
+                # preparing only with the capacity-wait code; it names the wait.
+                row.update(status="preparing",
+                           blockers=[CAPACITY_WAIT_BLOCKER, "beta_screening_unspent_invocation_recovery"])
+                return
             if _capacity_refusal_proof(root, attempt, observation):
                 # This is a proven zero-GPU/zero-API pre-create refusal, not
                 # another paid attempt. Retain every old intent and proof;
@@ -602,6 +668,12 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                 row.update(status="blocked", blockers=_safe_blockers(observation.get("blockers"),
                                                                     "beta_screening_native_result_missing"))
             return
+        if observation.get("next_action") == "reconcile_exact_provider_identity":
+            row["next_action"] = "reconcile_exact_provider_identity"
+            checks = min(6, int(attempt.get("provider_reconciliation_checks", 0)) + 1)
+            attempt["provider_reconciliation_checks"] = checks
+            attempt["reconcile_not_before"] = (datetime.now(timezone.utc) + timedelta(
+                seconds=min(600, 60 * 2 ** (checks - 1)))).isoformat()
         row.update(status="reconciliation_required", blockers=_safe_blockers(observation.get("blockers"),
                                                                             "beta_screening_allocation_uncertain"))
     _update(root, plan["campaign_id"], candidate["candidate_id"], apply)
@@ -643,6 +715,9 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
         return False
     attempt_dir = _attempt_root(root, attempt)
     if row["status"] != "preparing":
+        if attempt.get("reconcile_not_before") and datetime.fromisoformat(
+                attempt["reconcile_not_before"].replace("Z", "+00:00")) > datetime.now(timezone.utc):
+            return False
         try:
             observed = executor.reconcile_candidate(plan=plan, candidate=candidate, attempt_dir=attempt_dir,
                                                     prepared=attempt.get("prepared") or {},
