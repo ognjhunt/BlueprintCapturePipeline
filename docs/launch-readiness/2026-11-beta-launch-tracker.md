@@ -7,7 +7,12 @@ Status: **done** (verified, with evidence) · **in progress** · **owner** (wait
 on an owner decision or action) · **next deploy** (merged, ships with the next
 batched Pipeline deploy) · **not started**.
 
-Last updated: 2026-11-02 14:15Z.
+Last updated: 2026-11-02 14:30Z.
+
+## Operating notes (2026-11-02)
+
+- A second operator uses the shared `cloud-scene-runs` door token. It started `configured-controls-progression` at 13:35:32Z and deployed `b631b23fa` at 14:05:57Z (`deploy_activation_hold` none). Two drivers on one job risk collisions; the owner has been asked. This session is holding its own Pipeline deploys until that is resolved.
+- Five `footage_before_account` emails, the first ever, went to the owner at 14:05–14:08Z about old guest-uploaded test jobs. Each job gets one. The email promises "We email you when that changes", but nothing will change for those jobs (wording follow-up under F-03).
 
 ## Owner decisions (2026-11-02)
 
@@ -35,7 +40,7 @@ onto paid Actions minutes).
 
 | ID | Status | Evidence / next step |
 |---|---|---|
-| A-01 | owner | capture-447 (intent `scene-819be616…`) attempt `source-690b1233…` on release `4c2640ba9` (#3248, export-only ARTISAN reuse). Activation succeeded 13:34:58Z; the launch was dispatched 13:37:52Z and **refused before allocation at $0** (13:39:42Z, `scene_configuration_provider_output_disk_budget_exceeded`). It needs 35.19 GB available on the work volume (CPU-prestage peak = 2× the 16.3 GB bundle) and has 8.06 GB (free 23.9 GB − floor 15.8 GB). Intent now `blocked/configuration_capacity/preallocation_capacity_not_recovered` (13:45:12Z); it relaunches once capacity returns. Unblock: owner volume growth (E-01). Execution window open to 2026-11-07 10:30Z. Owned by this session from 13:30Z. |
+| A-01 | owner | capture-447's export-only relaunch was refused before allocation at $0 (13:39:42Z, `scene_configuration_provider_output_disk_budget_exceeded`): it needs 35.19 GB available on the work volume and had 8.06 GB. **Then its scene intent was revoked at 14:08:33Z** (`scene_intake_authority_revoked`, scope `future_execution`). Cause: its brief (`siteTaskBriefs/capture-447…`) was rewritten at 14:08:02Z with `confirmedAtIso` null, the WebApp worker's sponsorship check failed, and it POSTed `/revoke` (intake log). The WebApp intake is now `closeout_pending`. The actor is unknown; the owner has been asked. To continue: the owner re-confirms the brief → a new scene intake (needs a budget grant) → disk growth → launch. |
 | A-02 | not started | Runs in the same GPU session after stage 3. The 10-31 destination gates are fixed on main (#3136; `ef276779a` for the stage-5 bind tolerance; `ae0e4ae2b`). |
 | A-03 | owner | WebApp #1168 merged 14:04Z (deploy pending CI). capture-447 still needs the D-02 ceiling row ($110) before its screening plan can fit. |
 | A-04 | not started | Host has never created the team-scene-packet status or rigid-probe roots. |
@@ -108,9 +113,9 @@ onto paid Actions minutes).
 | ID | Status | Evidence / next step |
 |---|---|---|
 | G-01 | owner | Counsel status before 2026-11-15. |
-| G-02 | not started | Approved (D-15): rebase #1142, split #3042. |
-| G-03 | not started | Approved (D-15): rebase #1980. |
-| G-04 | not started | Decision D-16: consent plus real face-blurring on every frame that leaves to a provider. |
+| G-02 | in progress | WebApp [#1178](https://github.com/ognjhunt/Blueprint-WebApp/pull/1178) (auto-merge) carries #1142's two reviewed rights commits onto main (82 tests, `npm run check` pass); #1142 is closed. Next: split the rights chain out of Pipeline #3042 (screening-runtime revocation: `b57cde47c`, `dd1c2ffee`, `b994839ab`, `81f57c38c`, `c371cec63`, `6f62b422c`, validators `fde308f66`) and run a withdrawal drill. |
+| G-03 | superseded | D-16 (owner, 14:15Z): no blurring or person screening. The residual-person check in #1980 is moot; its stage-reuse part can be revisited separately. |
+| G-04 | owner | Audit: the raw walkthrough goes unscreened to Meta SAM 3.1, Gemini (Pipeline and WebApp), OpenAI (planner, authoring, spec research) and Vast. The only face blur is on Atlas-bound frames. **Owner decision D-16 (14:15Z): no blurring or screening; rely on the site's consent.** Still to do: correct the privacy page (it claims people are removed from reconstruction frames, and Meta is not listed as a processor; public legal text, so it needs the owner's or counsel's OK on wording) and runbook §3a. The shared doctrine line "people in captures are screened" is owner-edited. |
 | G-05 | owner | Rotation is the owner's action. Both repos are public (verified 13:30Z). |
 
 ## H. Cleanup and consistency
@@ -118,5 +123,5 @@ onto paid Actions minutes).
 | ID | Status | Evidence / next step |
 |---|---|---|
 | H-01 | not started | |
-| H-02 | not started | Bulk close authorized (D-23). |
+| H-02 | done | 126 PRs and 3 issues closed (owner-authorized D-23), each with one comment; 10 already merged and skipped; #2245 and #443 marked stale. Closing disarmed auto-merge on WebApp #858 and Pipeline #1348, #1462 and #116. All of it is reversible. |
 | H-03, H-04 | not started | |
