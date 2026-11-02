@@ -113,6 +113,8 @@ PAGE_ALERT_CODES = frozenset({
     "mount_unreadable", "volume_growth_blocked", "operator_alert_route_unconfigured",
     "reclaim_ineffective",
     "orphan_scratch_large",
+    # Vast stops every instance once its balance runs out.
+    "provider_credit_insufficient",
     # A live job that stopped moving (control_plane_stall_alarm); the disk level is unchanged.
     *stall_alarm.PAGE_CODES,
 })
@@ -693,7 +695,7 @@ _SUMMARY_MOUNT_KEYS = (
 _SUMMARY_ALERT_KEYS = (
     "code", "mount", "provider", "roles", "used_fraction", "days_until_floor", "root",
     "allocated_bytes", "attributed_fraction", "severity", "reason", "status", "alert_count", "count",
-    "largest_bytes",
+    "largest_bytes", "credit_usd", "required_usd",
     "top_retained_reasons",
     "hours_until_floor", "decline_bytes_per_hour", "window_seconds",
     # Stall pages: identifiers and codes only, never paths or owner fields.
@@ -1022,7 +1024,7 @@ def run_controller(
     disk_usage: Callable[[str | os.PathLike[str]], Any] = shutil.disk_usage,
     now: float | None = None,
     credit_collector: Callable[[], Mapping[str, Any]] | None = None,
-    credit_warning_usd: float = 5.0,
+    credit_warning_usd: float | None = None,
     credit_reserve_usd: float = 1.0,
     survey: Callable[..., Mapping[str, Any]] | None | object = _DEFAULT_SURVEY,
     survey_interval_seconds: float = DEFAULT_SURVEY_INTERVAL_SECONDS,
@@ -1063,7 +1065,7 @@ def run_controller(
         } else "scene_spend_snapshot_unreadable_or_invalid"
         report["alerts"].append({"code": "project_spend_observation_blocked", "reason": reason})
     if credit_collector is not None:
-        from .provider_credit_admission import credit_admission
+        from .provider_credit_admission import PAGE_CREDIT_USD, credit_admission
 
         try:
             observation = credit_collector()
@@ -1076,12 +1078,16 @@ def run_controller(
         # old observation (epoch far in the past -> age > maximum_age).
         credit_epoch = observation.get("observed_at_epoch")
         credit_now = max(observed, float(credit_epoch)) if isinstance(credit_epoch, (int, float)) and not isinstance(credit_epoch, bool) else observed
-        funding = credit_admission(observation, required_usd=credit_warning_usd,
-                                   reserve_usd=credit_reserve_usd, now=credit_now)
+        funding = credit_admission(
+            observation, required_usd=PAGE_CREDIT_USD if credit_warning_usd is None else credit_warning_usd,
+            reserve_usd=credit_reserve_usd, now=credit_now)
         report["provider_funding"] = funding
         if funding["blockers"]:
             report["level"] = "critical"
-            report["alerts"].extend({"provider": "vast", "code": code}
+            balance = {"credit_usd": observation.get("credit_usd"),
+                       "required_usd": (funding["required_usd"] or 0) + (funding["reserve_usd"] or 0)}
+            report["alerts"].extend({"provider": "vast", "code": code,
+                                     **(balance if code == "provider_credit_insufficient" else {})}
                                     for code in funding["blockers"])
     if survey is _DEFAULT_SURVEY:
         survey = survey_usage
@@ -1215,7 +1221,7 @@ def _volume_from_environment() -> dict[str, Any] | None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     from .provider_credit_admission import (
-        ENABLED_ENV, RESERVE_ENV, WARNING_ENV, observe_vast_credit,
+        ENABLED_ENV, PAGE_CREDIT_USD, RESERVE_ENV, WARNING_ENV, observe_vast_credit,
     )
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
@@ -1241,7 +1247,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         token=_read_secret(str(os.getenv(DO_TOKEN_FILE_ENV) or "")) if os.getenv(VOLUME_ID_ENV) else "",
         credit_collector=(observe_vast_credit if os.getenv(ENABLED_ENV, "false").lower()
                           not in {"false", "0", ""} else None),
-        credit_warning_usd=float(os.getenv(WARNING_ENV, "5")),
+        credit_warning_usd=float(os.getenv(WARNING_ENV, str(PAGE_CREDIT_USD))),
         credit_reserve_usd=float(os.getenv(RESERVE_ENV, "1")),
         survey=survey_usage,
         survey_interval_seconds=_env_int(SURVEY_INTERVAL_ENV, DEFAULT_SURVEY_INTERVAL_SECONDS),
