@@ -11,22 +11,24 @@ fails only if it fails even at the optimistic end, passes only if it passes at t
 and is otherwise ``unknown``. The scene's scale may be off by the preparation's dimension prior f
 (25%), taken as the band [1 - f, 1 / (1 - f)]: 0.75-1.33x, the band within which preparation admits
 the registration scale. The object weighs the owner's stated weight +-10% when the text parses
-cleanly, else the preparation's estimated range.
+cleanly, else the preparation's estimated range widened by the band cubed (mass scales with volume).
 
 - ``stance``: a clear floor station exists: the verdict's own stations, or one ``ground_stance``
   search made the same way (``carry_station_search``) when the verdict stopped early or never
-  searched. A fixed arm is assumed on the station's standard pedestal. A mobile base or humanoid
-  stands at the same stations and passes only if its published footprint fits the cleared one. No
-  clear station is ``unknown`` (reconstructed floors have holes), never ``fail``.
-- ``reach`` (fixed arms and mobile bases): from some station, the grasp point (the object's top plus
-  the tool's length, top-down) and the place point (the destination plus half the object's height
-  plus the tool's length) both lie within the published reach of the shoulder, taken as the
-  station's base at mount height. Scene offsets scale across the band; the tool's length does not.
+  searched. Every model stands at those stations (a fixed arm on the station's standard pedestal)
+  and passes only if its published base footprint fits the cleared one; a larger or unpublished
+  footprint is ``unknown``. No clear station is ``unknown`` (reconstructed floors have holes), never
+  ``fail``.
+- ``reach`` (fixed arms and mobile bases): from some station, the grasp point and the place point,
+  each the object's top plus the tool's length (top-down) where it starts and where it ends, both
+  lie within the published reach of the shoulder, taken as the station's base at mount height.
+  Scene offsets scale across the band; the tool's length does not.
   A model on an arm the verdict path-checks takes the verdict's own carry for that arm: clear
   passes, blocked fails with its blockers, not tried is ``unknown``. A humanoid's is ``unknown``.
 - ``payload``: the object's mass plus the tool's, against the rated payload.
 - ``cycle_time``: only against the owner's target. Two straight-line trips at the published TCP
-  speed bound it from below; two carry paths at half that speed plus 2 s bound it from above.
+  speed bound it from below; two carry paths at a tenth of that speed plus 4 s bound it from above,
+  because a published TCP speed is a peak that short, acceleration-limited moves never hold.
 - ``access`` (mobile bases and humanoids): the route from the site's entrance is not checked.
 
 A row ``fits`` when every check passed and its carry was path-checked, ``fits_spec`` when every
@@ -53,9 +55,10 @@ EVIDENCE_LABEL = "spec_bounded_estimate"
 CLAIM_CEILING = "development_only"
 VERDICTS = ("fits", "fits_spec", "doesnt_fit", "unknown")
 OWNER_WEIGHT_RELATIVE_BAND = 0.10
-#: The pessimistic cycle: each carry at this fraction of the published TCP speed, plus this allowance.
-PESSIMISTIC_SPEED_FRACTION = 0.5
-PESSIMISTIC_ALLOWANCE_S = 2.0
+#: The pessimistic cycle: each carry at this fraction of the published (peak) TCP speed, plus this
+#: allowance for grasping and releasing.
+PESSIMISTIC_SPEED_FRACTION = 0.1
+PESSIMISTIC_ALLOWANCE_S = 4.0
 #: The recipe (embodiment) id of each robot profile ``robot_arm_path_clearance.ROBOT_PROFILE_ARMS``
 #: names: a catalog model on that recipe takes the capability verdict's carry for the profile's arm.
 PROFILE_RECIPES = {DROID_POLICY_CANARY_PRESET_ID: DROID_EMBODIMENT_ID}
@@ -145,7 +148,6 @@ def _stance(model: Mapping[str, Any], stations: Sequence[Sequence[float]], sourc
     if model["body_type"] == "fixed_arm":
         values.update(mount="station_pedestal_level_with_task_support",
                       assumption="the same standard mount as the existing station")
-        return _check("stance", "pass", "a clear floor station exists for the standard pedestal", values)
     cleared = sorted(2.0 * float(v) for v in footprint_half)
     diameter = figure_value(model, "base_footprint_diameter_m")
     pair = figure_value(model, "base_footprint_l_w_m")
@@ -233,8 +235,11 @@ def _cycle_time(model: Mapping[str, Any], target: float | None, straight_m: floa
         "unknown": "the target lies between the lower bound and the pessimistic cycle"})
 
 
-def _mass(preparation: Mapping[str, Any]) -> tuple[list[float] | None, str, dict[str, Any]]:
-    """The object's mass band, its basis and what it was read from."""
+def _mass(preparation: Mapping[str, Any], band: Sequence[float]) -> tuple[list[float] | None, str, dict[str, Any]]:
+    """The object's mass band, its basis and what it was read from.
+
+    An estimate comes from the object's measured volume, so it widens by the scale band cubed.
+    """
     constraints = (((preparation.get("authoring_inputs") or {}).get("configuration") or {})
                    .get("construction_constraints") or {})
     text = (constraints.get("operator_task_details") or {}).get("item_weight")
@@ -251,8 +256,9 @@ def _mass(preparation: Mapping[str, Any]) -> tuple[list[float] | None, str, dict
     if (isinstance(estimate, list) and len(estimate) == 2
             and all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in estimate)
             and 0 <= estimate[0] <= estimate[1]):
-        record["mass_estimate_basis"] = physics.get("basis")
-        return [float(estimate[0]), float(estimate[1])], "estimated", record
+        record.update(mass_estimate_basis=physics.get("basis"), mass_estimate_kg=[_r(v) for v in estimate],
+                      mass_widened_by="scale_band_cubed")
+        return [float(estimate[0]) * band[0] ** 3, float(estimate[1]) * band[1] ** 3], "estimated", record
     return None, "unavailable", record
 
 
@@ -288,10 +294,10 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
     upper = [float(v) for v in preparation["subject"]["aabb_max_xyz"]]
     half_height = (upper[2] - lower[2]) / 2.0
     destination = preparation["destination"]
-    # Scene points, before the tool: the object's top at the grasp, the destination plus half its height.
+    # Scene points, before the tool: the object's top where it starts and where it is placed.
     grasp = [(lower[0] + upper[0]) / 2.0, (lower[1] + upper[1]) / 2.0, upper[2]]
     place = [float(v) for v in destination["position_world_m"]]
-    place[2] += half_height
+    place[2] += 2.0 * half_height
     tool = catalog["default_tool"]
     tool_length = figure_value(tool, "length_m")
     lift = 0.0 if tool_length is None else float(tool_length)
@@ -301,7 +307,7 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
     straight = [s * math.dist(place, grasp) for s in band]
     path = [_carry_path_m(s, rise=rise, across=across, clearance=RIGID_CARRY_CLEARANCE_M, inside_rise=inside_rise)
             for s in band]
-    mass_range, mass_basis, mass_record = _mass(preparation)
+    mass_range, mass_basis, mass_record = _mass(preparation, band)
     target = _cycle_target(preparation)
     stations, source = _stations(preparation, verdict, collision, digest)
     recipe_arms = {PROFILE_RECIPES[p]: arm for p, arm in ROBOT_PROFILE_ARMS.items() if p in PROFILE_RECIPES}
@@ -340,7 +346,7 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
             "grasp_point_world_m": [_r(grasp[0]), _r(grasp[1]), _r(grasp[2] + lift)],
             "place_point_world_m": [_r(place[0]), _r(place[1]), _r(place[2] + lift)],
             "point_rule": {"grasp": "object_top_plus_tool_length_top_down",
-                           "place": "destination_plus_half_object_height_plus_tool_length"},
+                           "place": "destination_plus_object_height_plus_tool_length"},
             "scale_uncertainty_fraction": float(fraction), "scale_band": [_r(v) for v in band],
             "scale_basis": "preparation.authoring_inputs.metric_envelope.maximum_dimension_relative_error",
             "mass_kg_range": None if mass_range is None else [_r(v) for v in mass_range], "mass_basis": mass_basis,

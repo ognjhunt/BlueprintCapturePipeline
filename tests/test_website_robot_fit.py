@@ -22,7 +22,7 @@ from blueprint_pipeline.website_scene_handoff import prepare_rigid_native_inputs
 from tests.test_robot_spec_catalog import _catalog, _figure, _model, sealed
 from tests.test_website_rigid_feasibility import DROID, _preparation, _room
 
-# A 10 cm box on the floor, its top at (0.5, 0, 0.1), set down 0.3 m away: its centre then at 0.05 m.
+# A 10 cm box on the floor, its top at (0.5, 0, 0.1), set down 0.3 m away: its top again at 0.1 m.
 SUBJECT = ([0.45, -0.05, 0.0], [0.55, 0.05, 0.1])
 ACROSS = {"relation": "on", "position_world_m": [0.5, 0.3, 0.0]}
 FRANKA_RECIPE = "droid_franka_robotiq_2f85"
@@ -89,10 +89,10 @@ def test_reach_fails_only_when_even_the_optimistic_scale_is_out_of_reach(tmp_pat
     table = _table(tmp_path, catalog)
     rows = _rows(table)
     # From the station at the origin with the 0.15 m tool, at 0.75x and 1.33x scale, the place point
-    # (0.5, 0.3, 0.05 + tool) needs 0.4758 m at best and 0.8071 m at worst; the grasp point
+    # (0.5, 0.3, 0.1 + tool) needs 0.4918 m at best and 0.8275 m at worst; the grasp point
     # (0.5, 0, 0.1 + tool) needs less, 0.4373 and 0.7244 m.
     assert _check(rows["long_arm"], "reach")["values"]["required_m"] == pytest.approx(
-        {"optimistic": 0.475822, "pessimistic": 0.807087}, abs=1e-6)
+        {"optimistic": 0.491808, "pessimistic": 0.827479}, abs=1e-6)
     assert [_check(rows[name], "reach")["result"] for name in ("long_arm", "short_arm", "middle_arm")] == [
         "pass", "fail", "unknown"]
     assert [rows[name]["verdict"] for name in ("long_arm", "short_arm", "middle_arm")] == [
@@ -102,7 +102,8 @@ def test_reach_fails_only_when_even_the_optimistic_scale_is_out_of_reach(tmp_pat
     assert rows["middle_arm"]["reasons"] == ["reach: reach depends on the scene's scale"]
     assert table["counts"] == {"fits": 0, "fits_spec": 1, "doesnt_fit": 1, "unknown": 1}
     inputs = table["inputs"]
-    assert inputs["grasp_point_world_m"] == [0.5, 0.0, 0.25] and inputs["place_point_world_m"] == [0.5, 0.3, 0.2]
+    # Both points are the object's top plus the tool: where it starts and where it is set down.
+    assert inputs["grasp_point_world_m"] == [0.5, 0.0, 0.25] and inputs["place_point_world_m"] == [0.5, 0.3, 0.25]
     assert inputs["scale_uncertainty_fraction"] == 0.25 and inputs["scale_band"] == [0.75, 1.333333]
     assert inputs["stations"] == {"source": "capability_verdict_stations", "positions_world_m": [[0.0, 0.0, 0.0]]}
     # A fixed arm is assumed on the existing station's pedestal; it has no access check.
@@ -137,28 +138,32 @@ def test_payload_takes_the_owners_weight_with_a_band_else_the_estimate(tmp_path)
     assert {name: _check(row, "payload")["result"] for name, row in _rows(stated).items()} == {
         "strong": "pass", "weak": "fail", "close": "unknown"}
     assert _rows(stated)["weak"]["verdict"] == "doesnt_fit"
-    # Without a clean statement: the preparation's estimate, 0.2-1.0 kg, so 1.1-1.9 kg with the tool.
-    catalog = sealed(*[_model(name, rated_payload_kg=_payload(kg)) for name, kg in (("strong", 2), ("weak", 1),
-                                                                                    ("close", 1.5))])
+    # Without a clean statement: the preparation's estimate, 0.2-1.0 kg at the measured volume. Mass
+    # scales with volume, so across the 0.75-1.33x band it is 0.084-2.370 kg: 0.98-3.27 kg with the tool.
+    catalog = sealed(*[_model(name, rated_payload_kg=_payload(kg)) for name, kg in (("strong", 4), ("weak", 0.9),
+                                                                                    ("close", 2))])
     for job in (_job(), _job(weight="2-3 kg")):
         estimated = _table(tmp_path, catalog, job=job)
-        assert estimated["inputs"]["mass_basis"] == "estimated" and estimated["inputs"]["mass_kg_range"] == [0.2, 1.0]
+        assert estimated["inputs"]["mass_basis"] == "estimated"
+        assert estimated["inputs"]["mass_kg_range"] == [0.084375, 2.37037]
+        assert estimated["inputs"]["mass_estimate_kg"] == [0.2, 1.0]
+        assert estimated["inputs"]["mass_widened_by"] == "scale_band_cubed"
         assert {name: _check(row, "payload")["result"] for name, row in _rows(estimated).items()} == {
             "strong": "pass", "weak": "fail", "close": "unknown"}
     assert estimated["inputs"]["owner_item_weight"] == {"text": "2-3 kg", "parsed_kg": None, "used": False}
 
 
 @pytest.mark.parametrize("target, result", [(None, "not_requested"), (0.3, "fail"), (2.0, "unknown"),
-                                            (5.0, "pass")])
+                                            (20.0, "pass")])
 def test_cycle_time_is_bounded_from_both_sides(tmp_path, target, result):
     table = _table(tmp_path, sealed(), job=_job(cycle=target))
     check = _check(table["rows"][0], "cycle_time")
     assert check["result"] == result and table["inputs"]["cycle_time_target_s"] == target
     if target is not None:
-        # Two straight 0.228 m trips at 1 m/s take 0.456 s at best. At worst each 0.627 m carry (up 8 cm,
-        # 0.4 m across, down 14.7 cm) runs at 0.5 m/s, plus 2 s: 4.507 s.
-        assert check["values"]["lower_bound_s"] == pytest.approx(0.456207, abs=1e-6)
-        assert check["values"]["pessimistic_s"] == pytest.approx(4.506667, abs=1e-6)
+        # Two straight 0.225 m trips at 1 m/s take 0.45 s at best. At worst each 0.56 m carry (up 8 cm,
+        # 0.4 m across, down 8 cm) runs at a tenth of the 1 m/s peak, plus 4 s: 15.2 s.
+        assert check["values"]["lower_bound_s"] == pytest.approx(0.45, abs=1e-6)
+        assert check["values"]["pessimistic_s"] == pytest.approx(15.2, abs=1e-6)
     assert table["rows"][0]["verdict"] == {"not_requested": "fits_spec", "pass": "fits_spec", "fail": "doesnt_fit",
                                            "unknown": "unknown"}[result]
 
@@ -240,6 +245,20 @@ def test_mobile_bases_and_humanoids_are_never_cleared_for_access(tmp_path):
     assert _check(rows["small_mobile"], "reach")["result"] == "pass"
     assert _check(rows["large_mobile"], "stance")["result"] == "unknown"
     assert _check(rows["humanoid"], "reach")["result"] == "unknown"
+
+
+def test_a_fixed_arm_passes_stance_only_when_its_published_base_fits_the_station(tmp_path):
+    rows = _rows(_table(tmp_path, sealed(
+        _model("cobot"),
+        _model("industrial", base_footprint_diameter_m=None,
+               base_footprint_l_w_m=_figure([0.6, 0.6], "m", "600 x 600 mm", "600 mm = 0.6 m")),
+        _model("unpublished", base_footprint_diameter_m=None))))
+    # The standard pedestal clears a 0.3 m square: a 0.2 m base fits; a 0.6 m one or an unknown one is not known to.
+    assert {name: _check(row, "stance")["result"] for name, row in rows.items()} == {
+        "cobot": "pass", "industrial": "unknown", "unpublished": "unknown"}
+    assert {name: row["verdict"] for name, row in rows.items()} == {
+        "cobot": "fits_spec", "industrial": "unknown", "unpublished": "unknown"}
+    assert _check(rows["unpublished"], "stance")["reason"] == "no base footprint figure to compare with the cleared station"
 
 
 def test_the_table_is_bound_to_its_inputs_and_its_digest_is_stable(tmp_path):
