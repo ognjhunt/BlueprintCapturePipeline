@@ -274,6 +274,39 @@ def _clear_work_products(work_dir: Path) -> None:
             shutil.rmtree(target)
 
 
+#: What the prefix writes beside the unpacked bundle, on the same work volume.
+#: Measured on capture-447ae4f4's ARTISAN run (7f4e4a4a, 2026-11-02): stages 1-3
+#: wrote 0.68 GB and archived to 0.30 GB. The allowance is 1 GiB of stage output;
+#: the runner's checkpoint, the capsule copied from it and the output archive
+#: are each an archive of those outputs, so each is budgeted at the same 1 GiB.
+#: The provider runtime is materialized under the output root, up to its cap.
+#: The reservation records the real peak (``reservation.sample()``), so the
+#: role's history replaces this estimate once it has samples.
+PRESTAGE_STAGE_OUTPUT_ALLOWANCE_BYTES = 1024**3
+PRESTAGE_ARCHIVES = 3
+PRESTAGE_OVERHEAD_BYTES = 512 * 1024**2
+
+
+def prestage_peak_bytes(source_unpacked_bytes: int) -> int:
+    """Disk the prefix reserves: the unpacked bundle, its runtime, outputs and archives.
+
+    Until 2026-11-02 this was 3 x the unpacked bundle, about 35 GB for an
+    ARTISAN bundle (11.5 GB unpacked) whose prefix writes about 1 GB beside it,
+    so every website run skipped the prestage and ran all stages on the GPU.
+    """
+
+    from .task_evaluation_scene_configuration_python_runtime import PROFILE_RUNTIME_MAX_BYTES
+
+    return (int(source_unpacked_bytes) + PROFILE_RUNTIME_MAX_BYTES
+            + (1 + PRESTAGE_ARCHIVES) * PRESTAGE_STAGE_OUTPUT_ALLOWANCE_BYTES + PRESTAGE_OVERHEAD_BYTES)
+
+
+def prestage_residue_bytes() -> int:
+    """What the prefix leaves in the job directory: its capsule and its output archive."""
+
+    return 2 * PRESTAGE_STAGE_OUTPUT_ALLOWANCE_BYTES
+
+
 def prepare_stage_prefix_before_gpu(
     *,
     bundle_receipt: Mapping[str, Any],
@@ -328,7 +361,7 @@ def prepare_stage_prefix_before_gpu(
             _require(not Path(str(value)).resolve().is_relative_to(work), "secret_inside_work_dir")
     with zipfile.ZipFile(bundle) as zipped:
         source_unpacked_bytes = sum(row.file_size for row in _safe_infos(zipped, budget=_source_bundle_budget()))
-    peak_bytes = 3 * source_unpacked_bytes + 512 * 1024**2
+    peak_bytes = prestage_peak_bytes(source_unpacked_bytes)
     root = work / BUNDLE_DIRNAME
     runtime = root / "provider_runtime"
     output = root / "runtime_output"

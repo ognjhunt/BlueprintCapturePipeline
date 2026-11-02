@@ -24,6 +24,8 @@ MANIFEST_NAME = f"{SCHEMA_VERSION}.json"
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _MAX_MEMBER_BYTES = 256 * 1024**2
 _MAX_TOTAL_BYTES = 768 * 1024**2
+#: The ceiling for a sealed authoring profile (ARTISAN, Astra); ``base`` keeps ``_MAX_TOTAL_BYTES``.
+PROFILE_RUNTIME_MAX_BYTES = 2 * 1024**3
 DEFAULT_RUNTIME_PROFILE = "base"
 RUNTIME_PROFILE_ROOTS = {
     "base": ("openai-agents", "usd-core"),
@@ -362,7 +364,7 @@ def materialize_scene_configuration_python_runtime(
                             "scene_configuration_python_wheel_expansion_limit_exceeded"
                         )
                     total += member.file_size
-                    if total > (_MAX_TOTAL_BYTES if profile == DEFAULT_RUNTIME_PROFILE else 2 * 1024**3):
+                    if total > (_MAX_TOTAL_BYTES if profile == DEFAULT_RUNTIME_PROFILE else PROFILE_RUNTIME_MAX_BYTES):
                         raise TaskEvaluationSceneConfigurationPythonRuntimeError(
                             "scene_configuration_python_wheel_expansion_limit_exceeded"
                         )
