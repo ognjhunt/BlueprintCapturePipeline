@@ -35,6 +35,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +61,9 @@ SETTLED_SPEND_BASES = {
     "launch_stopped_before_allocator",  # run started, one-use authority never consumed, closed with provider zero
 }
 PREPARATION_ONLY_BASIS = "preparation_only_no_execution_authority_issued"
+# ``budget_retained_hold`` (B-04): the GPU allowance plus the authoring spend a
+# completed, agreeing ARTISAN cost gate and usage meter prove.
+PROVEN_AUTHORING_SPEND_BASIS = "artisan_proven_authoring_with_native_allowance"
 # What ``_release_successor`` records under that basis, apart from an optional
 # ``preparation_failure``. It never records a ``reconciliation``.
 _PREPARATION_ONLY_LINEAGE_KEYS = frozenset({"attempt", "factory", "new_source_commit", "basis"})
@@ -239,7 +243,11 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
     applies. Legacy pre-allocation failures retain the API background allowance.
     Two initial admission refusals prove model work unentered; the native case
     still retains its entire provider allowance, not an estimated final bill.
+    A native ARTISAN run past its model gate keeps that allowance plus the
+    authoring spend its gate and meter prove (B-04, owner approval 2026-11-02),
+    with the proof's evidence and policy version under ``evidence``.
     Callers must first validate the terminal settlement and ownership evidence.
+    Holds are derived on every read, so this applies to existing settlements.
     """
     hold = retained_hold(receipt)
     if hold["basis"] != "terminal_launch_unreconciled":
@@ -276,25 +284,31 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
         result = terminal_artifact(terminal["result"])
         teardown = terminal_artifact(terminal["artifacts"]["teardown_manifest_path"])
         from .task_evaluation_unentered_authoring_budget import (
-            authoring_never_entered, pretraining_never_entered, prestage_before_first_stage,
+            artisan_proven_authoring_spend, authoring_never_entered, pretraining_never_entered,
+            prestage_before_first_stage,
         )
-        if (result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
-                and result.get("run_id") == request["run_id"]
-                and result.get("source_commit") == receipt["source_commit"]
-                and result.get("status") == "blocked"
-                and result.get("continuing_spend_from_this_run") is False
-                and type(result.get("provider_mutations_performed")) is int
-                and result.get("provider_mutations_performed") == 1
-                and teardown.get("schema_version") == "vast_teardown_manifest.v1"
-                and teardown.get("status") == "completed"
-                and teardown.get("continuing_spend_from_this_run") is False
-                and authoring_never_entered(result, request)):
+        native_run = (result.get("schema_version") == "task_evaluation_scene_configuration_vast_result.v1"
+                      and result.get("run_id") == request["run_id"]
+                      and result.get("source_commit") == receipt["source_commit"]
+                      and result.get("status") == "blocked"
+                      and result.get("continuing_spend_from_this_run") is False
+                      and type(result.get("provider_mutations_performed")) is int
+                      and result.get("provider_mutations_performed") == 1
+                      and teardown.get("schema_version") == "vast_teardown_manifest.v1"
+                      and teardown.get("status") == "completed"
+                      and teardown.get("continuing_spend_from_this_run") is False)
+        if native_run and authoring_never_entered(result, request):
             # Keep the entire native allowance; partial posted billing or a
             # runtime estimate cannot establish a final provider charge.
             bound = float(request["spend"]["provider_compute_spend_cap_usd"])
             if 0 <= bound <= hold["retained_spend_usd"]:
                 return {"basis": "native_allowance_with_unentered_authoring", "retained_spend_usd": bound,
                         "counts_as_attempt": hold["counts_as_attempt"]}
+        if native_run:
+            proof = artisan_proven_authoring_spend(result, request)
+            if proof is not None:
+                return _proven_authoring_hold(hold, proof, request)
+            return hold
         if (result.get("schema_version") != "task_evaluation_scene_configuration_vast_result.v1"
                 or result.get("run_id") != request["run_id"]
                 or result.get("source_commit") != receipt["source_commit"]
@@ -341,6 +355,26 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                 "counts_as_attempt": hold["counts_as_attempt"]}
     except (OSError, ValueError, KeyError, TypeError):
         return hold
+
+
+def _proven_authoring_hold(hold: Mapping[str, Any], proof: Mapping[str, Any],
+                           request: Mapping[str, Any]) -> dict[str, Any]:
+    """The row's hold with only its unspent authoring allowance released (B-04).
+
+    Everything else the attempt reserved stays held: its whole GPU allowance
+    (a runtime estimate is not a Vast bill) and any other model allowance. The
+    figure is rounded up to the micro-dollar, so it never falls below the proof.
+    """
+    held = Decimal(str(hold["retained_spend_usd"]))
+    kept = held - Decimal(str(proof["authoring_allowance_usd"]))
+    proven = Decimal(str(proof["proven_authoring_spend_usd"]))
+    compute = Decimal(str(request["spend"]["provider_compute_spend_cap_usd"]))
+    retained = (kept + proven).quantize(Decimal("0.000001"), rounding=ROUND_CEILING)
+    if not (0 <= compute <= kept and kept + proven <= retained <= held):
+        return dict(hold)
+    return {"basis": PROVEN_AUTHORING_SPEND_BASIS, "retained_spend_usd": float(retained),
+            "counts_as_attempt": hold["counts_as_attempt"],
+            "evidence": {**proof, "kept_allowance_usd": float(kept), "compute_allowance_usd": float(compute)}}
 
 
 def _contained_before_run(*, run_root: Path, launch_id: str) -> dict[str, Any] | None:
