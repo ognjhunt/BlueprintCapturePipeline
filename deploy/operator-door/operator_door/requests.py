@@ -404,13 +404,16 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
                   "receipt_sha256", "receipt_size_bytes"}
         mode = body.get("mode")
         identity_fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation"}
+        # A preparation reissue (a completed preparation as a new job under its sponsor-renewed
+        # grant) is not in the hold-only allowlist above: that profile needs the owner's approval.
+        reviewed = ("atlas-retry", "preparation-resume", "preparation-reissue")
         allowed = (identity_fields,) if mode == "discover-selector" else (
-            (fields | {"atlas_status_digest"},) if mode in ("atlas-retry", "preparation-resume") else (
+            (fields | {"atlas_status_digest"},) if mode in reviewed else (
                 (fields, fields | {"resume_request_id"}) if mode == "dispatch" else (fields,)))
         if (set(body) not in allowed or type(mode) is not str
-                or mode not in {"inspect", "dispatch", "atlas-status", "atlas-retry", "preparation-resume", "discover-selector"}):
+                or mode not in {"inspect", "dispatch", "atlas-status", "discover-selector", *reviewed}):
             raise RequestRefused("selected_handoff_fields_invalid")
-        if mode in {"atlas-retry", "preparation-resume"} and (type(body["atlas_status_digest"]) is not str
+        if mode in reviewed and (type(body["atlas_status_digest"]) is not str
                 or not _LEASE_DIGEST.fullmatch(body["atlas_status_digest"])):
             raise RequestRefused("selected_handoff_atlas_status_digest_invalid")
         if "resume_request_id" in body:

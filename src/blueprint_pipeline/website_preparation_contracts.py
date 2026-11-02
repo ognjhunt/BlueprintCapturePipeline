@@ -21,7 +21,7 @@ def _require(condition):
 
 def preparation_consent_valid(request):
     """Structural scope only; consequential consumers must reopen authority."""
-    from .website_preparation_revision_identity import revision
+    from .website_preparation_revision_identity import renewal, revision
     consent = request.get("consent") or {}
     task = request.get("task") or {}
     return (
@@ -30,7 +30,7 @@ def preparation_consent_valid(request):
         and "robot_binding_id" not in task
         and "evaluation_source" not in task
         and (consent.get("task_confirmed") is False or (consent.get("task_confirmed") is True
-             and revision(request) is not None))
+             and (revision(request) is not None or renewal(request) is not None)))
     )
 
 

@@ -76,6 +76,10 @@ assert r.validate_request(atlas_status) == atlas_status
 assert r.validate_request(atlas_retry) == atlas_retry
 preparation = {**atlas_retry, "mode":"preparation-resume"}
 assert r.validate_request(preparation) == preparation
+# A preparation reissue is not in the owner-approved hold-only profile.
+try: r.validate_request({**atlas_retry, "mode":"preparation-reissue"})
+except r.RequestRefused as e: assert e.code == "selected_handoff_dispatch_only"
+else: raise AssertionError("preparation reissue admitted through restricted profile")
 discovery = {key:value for key,value in selected.items() if key in {"kind", "bucket", "scene_id", "capture_id", "marker_generation"}}
 discovery["mode"] = "discover-selector"
 assert r.validate_request(discovery) == discovery

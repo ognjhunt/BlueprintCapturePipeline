@@ -1346,11 +1346,12 @@ def test_canonical_provenance_cannot_replace_existing_results_symlink(config: Do
 _PRIOR_SELECTED = "20261009T154718Z-selected-handoff-9ef60661"
 
 
-@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume", "discover-selector"])
+@pytest.mark.parametrize("mode", ["atlas-status", "atlas-retry", "preparation-resume", "preparation-reissue",
+                                  "discover-selector"])
 def test_selected_atlas_runner_keeps_service_user_and_only_exact_job_write_path(config, mode):
     from tests.test_operator_door_requests import _selected_request
     body = {**_selected_request(), "mode": mode}
-    if mode in {"atlas-retry", "preparation-resume"}:
+    if mode in {"atlas-retry", "preparation-resume", "preparation-reissue"}:
         body["atlas_status_digest"] = "sha256:" + "c" * 64
     if mode == "discover-selector":
         fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation"}
@@ -1367,7 +1368,7 @@ def test_selected_atlas_runner_keeps_service_user_and_only_exact_job_write_path(
     if mode == "atlas-retry":
         writable += (f" /var/lib/blueprint/pubsub-handoffs/{body['bucket']}/scenes/{body['scene_id']}"
                      f"/captures/{body['capture_id']}/pipeline/atlas")
-    if mode == "preparation-resume":
+    if mode in {"preparation-resume", "preparation-reissue"}:
         writable += " /var/lib/blueprint"
     assert f"--property=ReadWritePaths={writable}" in launch
     assert "--property=ReadWritePaths=/var/lib/blueprint" not in launch

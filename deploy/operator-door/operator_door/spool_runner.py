@@ -274,7 +274,8 @@ def _native_g1_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[
 
 def _selected_handoff_properties(config: DoorConfig, request: dict[str, Any]) -> tuple[str, ...]:
     writable = str(Path(config.spool_root) / "results")
-    if request["mode"] in {"dispatch", "preparation-resume"}:
+    if request["mode"] in {"dispatch", "preparation-resume", "preparation-reissue"}:
+        # A reissue writes the capture's renewal workspace and the source registration.
         writable += " /var/lib/blueprint"
     elif request["mode"] == "atlas-retry":
         # Only the existing selected capture's Atlas job may be requeued.
