@@ -832,6 +832,76 @@ def test_spend_guard_refresh_leaves_a_bounded_idle_window_after_slow_runs():
     assert seconds(settings["OnActiveSec"]) <= 60
 
 
+def _unit_settings(name: str) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in _read(name).splitlines()
+        if line and not line.startswith(("#", "[")) and "=" in line
+    )
+
+
+def _span_seconds(value: str) -> int:
+    match = re.fullmatch(r"(\d+)(s|min|h)", value)
+    assert match is not None, f"unbounded time span: {value}"
+    return int(match[1]) * {"s": 1, "min": 60, "h": 3600}[match[2]]
+
+
+def test_preflight_cadence_leaves_the_host_idle_and_the_door_summary_fresh(tmp_path):
+    """E-02: a ~13-minute run every 15 minutes kept the preflight busy 87% of the time.
+
+    The operator door serves the summary only while it is at most an hour old,
+    stamped when a run starts. Start-to-start spacing bounds that age whatever
+    a run takes: one interval, the randomized delay, and the longest run the
+    unit allows before the next summary replaces it.
+    """
+    import dataclasses
+    import json
+    import sys
+    import time
+
+    timer = _unit_settings("blueprint-control-plane-preflight.timer")
+    service = _unit_settings("blueprint-control-plane-preflight.service")
+    assert "OnUnitInactiveSec" not in timer, "spacing from completion would add a run to the bound"
+    interval = _span_seconds(timer["OnUnitActiveSec"])
+    delay = _span_seconds(timer["RandomizedDelaySec"])
+    longest_run = _span_seconds(service["TimeoutStartSec"])
+    assert interval >= 30 * 60
+    assert longest_run < interval, "a run always ends before the next one is due"
+    oldest_served = interval + delay + longest_run
+
+    sys.path.insert(0, str(REPO_ROOT / "deploy" / "operator-door"))
+    try:
+        from operator_door.config import DoorConfig
+        from operator_door.status import _preflight
+    finally:
+        sys.path.remove(str(REPO_ROOT / "deploy" / "operator-door"))
+    from blueprint_pipeline.production_preflight_summary import build_safe_summary
+
+    release = tmp_path / ("a" * 40)
+    release.mkdir()
+    active = tmp_path / "active"
+    active.symlink_to(release)
+    public = tmp_path / "preflight" / "public"
+    public.mkdir(parents=True)
+    config = dataclasses.replace(
+        DoorConfig(), preflight_summary=str(public / "summary.json"), active_release_link=str(active)
+    )
+
+    def served(age_seconds: int) -> str:
+        stamped = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - age_seconds))
+        report = {"schema_version": "task_evaluation_production_chain_preflight.v1",
+                  "generated_at": stamped, "active_sha": "a" * 40, "lane": "diagnostic",
+                  "units": {}, "host_findings": []}
+        summary = build_safe_summary(report, raw_report_bytes=json.dumps(report).encode())
+        (public / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+        return _preflight(config)["status"]
+
+    # A margin for scheduling jitter under load still stays inside the door's hour.
+    assert served(oldest_served + 5 * 60) == "observed"
+    # The bound is real: the cadence an hour apart would leave the door refusing it.
+    assert served(60 * 60 + delay + longest_run) == "refused"
+
+
 def test_main_deploy_image_includes_ffmpeg_for_clip_and_keyframe_lanes():
     text = ROOT_DOCKERFILE.read_text(encoding="utf-8")
 

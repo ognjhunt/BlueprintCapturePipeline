@@ -32,7 +32,6 @@ from .pubsub_handoff_disk_admission import (  # noqa: F401 - native bodies resol
     staging_manifest_row as _staging_manifest_row,
 )
 from .decision_evidence_contracts import canonical_digest
-from .run_e2e import run_end_to_end
 from .handoff_job_state import (  # noqa: F401 - compatibility exports and shared durability primitives
     JOB_LEDGER_FILENAME,
     JOB_LEDGER_SCHEMA_VERSION,
@@ -54,6 +53,21 @@ from .core.security_controls import (
 from .website_capture_entry import is_website_capture_manifest
 
 logger = logging.getLogger(__name__)
+
+
+def run_end_to_end(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Run the pipeline entrypoint, importing it on first use.
+
+    The listener starts every minute and almost always acknowledges nothing,
+    yet importing ``run_e2e`` at module load (the capture orchestrator, trimesh
+    and scipy: about 2.5 s of CPU, compiled from source, per start) was most of
+    an idle tick's own cost. The runtime env guard imports
+    ``blueprint_pipeline.run_e2e`` at unit start, so a broken install still
+    stops the unit before any handoff is pulled.
+    """
+    from .run_e2e import run_end_to_end as run
+
+    return run(*args, **kwargs)
 
 
 @dataclass(frozen=True)
