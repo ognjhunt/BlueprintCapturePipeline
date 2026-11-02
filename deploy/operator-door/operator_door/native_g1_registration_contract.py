@@ -353,6 +353,23 @@ def verify_scene(record, *, candidate_id, profile, source, site_id, inputs, base
     return scene
 
 
+#: The Pipeline's advisory note on the chosen stance (native_g1_scene_reach_probe):
+#: a static shoulder-to-target bound, development-only, that refuses nothing.
+STANCE_REACH_RULE = "closest_clear_stance_within_nominal_arm_span"
+STANCE_REACH_INTERPRETATIONS = frozenset({"nominal_static_reach_candidate", "body_motion_or_new_stance_required"})
+
+
+def stance_reach_valid(value):
+    """Accept the stance-reach note only as development-only geometry, never as a stronger claim."""
+    if not isinstance(value, dict) or value.get("rule") != STANCE_REACH_RULE:
+        return False
+    if value.get("status") == "unassessed":
+        return set(value) == {"rule", "status", "reason"} and isinstance(value["reason"], str)
+    return (value.get("claim_ceiling") == "development_only_static_geometry"
+            and value.get("interpretation") in STANCE_REACH_INTERPRETATIONS
+            and type(value.get("within_nominal_arm_span")) is bool)
+
+
 def verify_assumptions(*, request, scene, base_request, base_scene, base_receipt, profile, source, site_id, inputs):
     derivation = request["g1_scene_derivation"]
     assumptions = derivation.get("assumptions")
@@ -376,7 +393,8 @@ def verify_assumptions(*, request, scene, base_request, base_scene, base_receipt
         "navigation_goal_added": False, "source_geometry_changed": False, "policy_queried": False,
         "simulator_executed": False, "physical_outcome_claimed": False, "new_human_review_claimed": False,
         "current_consent_revalidated": False}
-    require(set(assumptions) == {*expected, "stance", "subject_bounds_world_m", "subject_bounds_basis", "assumptions_digest"}
+    require(set(assumptions) - {"stance_reach"} == {*expected, "stance", "subject_bounds_world_m", "subject_bounds_basis", "assumptions_digest"}
+        and ("stance_reach" not in assumptions or stance_reach_valid(assumptions["stance_reach"]))
         and all(assumptions.get(key) == value for key, value in expected.items())
         and all(type(assumptions[key]) is bool for key, value in expected.items() if type(value) is bool), "simulation_assumptions_changed")
     require(math.isfinite(duration) and duration >= 0.02 and request.get("physics_frequency_hz") == 200

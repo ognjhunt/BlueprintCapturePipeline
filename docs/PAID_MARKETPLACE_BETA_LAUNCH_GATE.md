@@ -1,5 +1,14 @@
 # Paid Marketplace Beta Launch Gate
 
+> **Archived 2026-11-02 (tracker H-01).** This gate checked the earlier paid
+> marketplace path: checkout, payouts and buyer access. The beta is free, with
+> no fees or checkout (`PLATFORM_CONTEXT.md`). This is not a current launch
+> gate. Beta status:
+> [`launch-readiness/2026-11-beta-launch-tracker.md`](launch-readiness/2026-11-beta-launch-tracker.md).
+> This file and `scripts/run_paid_marketplace_launch_gate.py` stay at their
+> paths because `tests/test_deploy_systemd_contract.py` and
+> `tests/test_paid_marketplace_launch_gate.py` read them.
+
 Run the automated gate from [run_paid_marketplace_launch_gate.py](scripts/run_paid_marketplace_launch_gate.py):
 
 ```bash

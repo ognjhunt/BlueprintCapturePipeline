@@ -19,6 +19,7 @@ from .validation_progress import FILENAME as PROGRESS_FILENAME, progress_sink
 from .task_evaluation_scene_progression_state import (
     advance, atomic_json, intent_lock, load_progression, require, safe_path,
 )
+from .task_evaluation_scene_outcome import settle_outcome, terminal_outcome
 from .task_evaluation_scene_progression_transport import submit_preparation, read_preparation_status
 
 CONFIG_SCHEMA = "task_evaluation_scene_progression_config.v1"
@@ -543,6 +544,7 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
         nonlocal progress
         progress = advance(directory, intent, progress, status=status, phase=phase, state=deepcopy(state),
                            blockers=blockers, result_reference=result_reference, now=now)
+        settle_outcome(directory, intent, progress, now=now)
         return progress
     if progress and progress["status"] == "completed":
         return progress
@@ -574,6 +576,12 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
             state.update(terminal.get("state", {}))
             return emit(terminal["status"], terminal["phase"], terminal.get("blockers", ()),
                         terminal.get("result_reference"))
+    # C-04: a terminal outcome ends the job. The read-only joins above still close
+    # out runs authorized before it (and a completed one supersedes the outcome);
+    # nothing below them -- no source, attempt, retry or successor -- runs again.
+    if terminal_outcome(directory, intent) is not None:
+        require(progress is not None, "outcome_without_progression")
+        return progress
     if (directory / "revoked.json").exists() or now >= intake.effective_execution_expiry(directory, intent):
         return emit("blocked", "authority", ["scene_intake_authority_revoked" if (directory / "revoked.json").exists()
                                               else "scene_intake_authority_expired"])
@@ -913,6 +921,7 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                         code = "scene_progression_dependency_unavailable"
                     progress = advance(directory, intent, progress, status="blocked", phase="preparation",
                         state=failure_state, blockers=[code], now=moment)
+                    settle_outcome(directory, intent, progress, now=moment)
                 rows.append({"intent_id": directory.name, "status": progress["status"], "phase": progress["phase"],
                              "blockers": progress.get("blockers", []),
                              **({"source_binding": progress["state"]["source_binding"]}

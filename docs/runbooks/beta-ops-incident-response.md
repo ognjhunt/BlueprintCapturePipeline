@@ -8,12 +8,17 @@ that affect Task Evaluation Runs, optional evidence-use exports, capture truth,
 privacy/takedown handling, provider spend, or WebApp delivery handoff. It does
 not replace counsel/security review for regulated notification decisions.
 
+For a stuck job, Vast credit, a full work volume, a door or host outage, or a
+deploy rollback, use [`beta-operations.md`](beta-operations.md).
+
 ## Owners and escalation
 
 - Primary owner: the founder until a named beta incident commander is
   assigned.
-- Pipeline owner: `pipeline-oncall`.
-- Ops owner: `ops-lead`.
+- Pipeline owner: `pipeline-oncall` role. Named person: TBD — owner to name
+  (tracker D-24).
+- Ops owner: `ops-lead` role. Named person: TBD — owner to name (tracker
+  D-24).
 - Finance owner: the monitored finance-review owner recorded by the WebApp
   payout/finance queue before live money movement is enabled.
 - Escalation owner: Founder/CEO for customer-visible, legal, finance, or

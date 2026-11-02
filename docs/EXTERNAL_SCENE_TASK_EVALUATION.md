@@ -176,6 +176,6 @@ bounded; it does not mean the task, policy ranking, or deployment succeeded.
 For the provider-neutral top-level contract that binds source admission,
 registered native 3DGS, automatic target selection, robot defaults, task/site
 engine routing, and five learned-policy attempts, see
-`docs/NEW_SITE_TASK_EVALUATION_RUN.md`. The older external-scene compiler
-remains the exact Isaac evidence adapter used by the 506 lane; it is not the
-global engine-selection policy.
+`docs/archive/runbooks/NEW_SITE_TASK_EVALUATION_RUN.md` (archived 2026-11-02).
+The older external-scene compiler remains the exact Isaac evidence adapter
+used by the 506 lane; it is not the global engine-selection policy.
