@@ -33,7 +33,10 @@ MONITOR_GRACE_SECONDS = 600
 MONITOR_STALE_SECONDS = 3 * POLL_SECONDS
 MONITOR_HEARTBEAT = "monitor_heartbeat.json"
 TIMEOUT_STOP_REASON = "beta_screening_control_unavailable_timeout"
+# The execution-control route answers 409 only for a refusal that will not clear.
+CONTROL_REFUSED_STOP_REASON = "beta_screening_execution_control_refused"
 CONTROL_UNAVAILABLE_BEFORE_CREATE = "beta_screening_control_unavailable_before_create"
+CONTROL_UNAVAILABLE_BEFORE_START = "beta_screening_control_unavailable_before_start"
 _TRANSPORT_HTTP = re.compile(
     r"(?:beta_screening_execution_control|website_control_task-context)_http_(?:408|425|429|5[0-9]{2})(?::|$)")
 
@@ -176,6 +179,7 @@ def observe(*, control: Mapping[str, Any], root: Path, now: float | None = None)
         outcome = ("revoked" if code in {"beta_screening_current_capture_consent_required",
             "beta_screening_current_task_context_changed", "beta_screening_source_context_mismatch",
             "website_task_context_not_confirmed"} or code.startswith("website_control_task-context_http_409:")
+            else "refused" if code == "beta_screening_execution_control_http_409"
             else "monitor_unavailable")
         cause = "transport" if transport_failure(exc) else "unproven"
     completed = time.time() if now is None else now
@@ -190,6 +194,8 @@ def observe(*, control: Mapping[str, Any], root: Path, now: float | None = None)
             state["execution_deadline_epoch"] = min(old, deadline) if old is not None else deadline
         if outcome == "revoked":
             return _stop(control, root, "beta_screening_current_source_revoked", source_control=source_control)
+        if outcome == "refused":
+            return _stop(control, root, CONTROL_REFUSED_STOP_REASON)
         if state["execution_deadline_epoch"] is not None and completed >= state["execution_deadline_epoch"]:
             return _stop(control, root, "beta_screening_authority_expired")
         if generation >= state["committed_generation"]:
@@ -416,7 +422,12 @@ class CurrentSourceMonitor:
     def __enter__(self):
         state = observe(control=self.control, root=self.root)
         if state.get("new_processing_authorized") is False or state.get("status") == "monitor_unavailable":
-            raise ValueError("beta_screening_current_source_unproven_before_start")
+            # As at create admission: only a read that got no answer is retried.
+            stopped = state.get("new_processing_authorized") is False
+            unanswered = (retryable_stop(state) if stopped
+                          else state.get("unavailable_cause") == "transport")
+            raise ValueError(CONTROL_UNAVAILABLE_BEFORE_START if unanswered
+                             else "beta_screening_current_source_unproven_before_start")
         self._publish(state)
         self._beat()
         if self.identity is not None:

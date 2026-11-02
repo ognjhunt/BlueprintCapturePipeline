@@ -322,3 +322,127 @@ def test_unspent_recovery_publishes_the_wait_code_the_website_accepts(tmp_path, 
     row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
     assert row["status"] == "preparing" and row["attempt"]["generation"] == 1
     assert coordinator.CAPACITY_WAIT_BLOCKER in row["blockers"]
+
+
+def _fresh_attempt_backend(monkeypatch, *, self_fenced):
+    """Each attempt spawns an allocator that refuses before any create.
+
+    ``self_fenced``: its create-time control read got no answer, so it fenced
+    its own job and wrote its no-create result. Otherwise it was lost before
+    create (a crash or a deploy), and recovery fences the job.
+    """
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from tests.test_beta_policy_screening_coordinator import Backend
+
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
+
+    class FreshAttempts(Backend):
+        def prepare_candidate(self, **kwargs):
+            self.preparations += 1
+            return {"prepared_digest": "sha256:" + "c" * 64}
+
+        def launch_candidate(self, **kwargs):
+            self.launches += 1
+            directory = kwargs["attempt_dir"]
+            path = jobs.retain_invocation(attempt_dir=directory,
+                binding={"prepared_digest": kwargs["prepared"]["prepared_digest"]}, argv=["gpu-canary"])
+            launch._write(directory / "allocator_launch_intent.json", {
+                "prepared_digest": kwargs["prepared"]["prepared_digest"], "invocation_manifest": str(path)})
+            if self_fenced:
+                assert jobs.fence_unstarted(path)["status"] == "fenced_unspent"  # The allocator's own fence.
+                launch._write(directory / "allocator_result.json", {"status": "blocked",
+                    "provider_mutations_performed": 0, "provider_create_attempted": False,
+                    "blockers": ["beta_screening_control_unavailable_before_create"]})
+            return {"status": "running", "handle": {"pid": 1}, "blockers": []}
+
+        def reconcile_candidate(self, **kwargs):
+            self.reconciliations += 1
+            return launch.reconcile_candidate(**kwargs)
+
+    return FreshAttempts()
+
+
+def test_fresh_attempts_after_unanswered_create_reads_are_capped_at_three(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from tests.test_beta_policy_screening_coordinator import plan, publication
+
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = _fresh_attempt_backend(monkeypatch, self_fenced=True)
+
+    def row():
+        return coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+
+    for retry in range(1, coordinator.TRANSPORT_RETRY_CAP + 1):
+        coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
+        coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
+        current = row()
+        assert current["status"] == "preparing" and current["transport_retries"] == retry
+        assert current["attempt"]["generation"] == retry
+        assert publication(tmp_path)["budget"]["reserved_usd"] == "4"
+    coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
+    coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
+    current = row()
+    assert backend.launches == 4 and backend.preparations == 4
+    assert current["status"] == "blocked" and current["blockers"] == [coordinator.TRANSPORT_RETRY_CAP_BLOCKER]
+    attempts = [*current["attempt_history"], current["attempt"]]
+    assert len(attempts) == 4 and all(item["reservation_status"] == "released" for item in attempts)
+    # The fourth job keeps its fence; nothing can start it later.
+    fence = tmp_path / "attempts" / current["attempt"]["attempt_id"] / "invocation" / "no_create_fence.json"
+    assert fence.is_file() and current["attempt"]["unstarted_refusal_receipt"]["path"] == str(fence)
+    budget = publication(tmp_path)["budget"]
+    assert budget["reserved_usd"] == "0" and budget["spent_upper_bound_usd"] == "0"
+
+
+def test_lost_allocator_recovery_does_not_spend_the_unanswered_read_budget(tmp_path, monkeypatch):
+    """A crash or a deploy before create is not a control refusal; it keeps its existing recovery."""
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from tests.test_beta_policy_screening_coordinator import plan
+
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = _fresh_attempt_backend(monkeypatch, self_fenced=False)
+    for _ in range(coordinator.TRANSPORT_RETRY_CAP + 1):
+        coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
+        coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    assert row["status"] == "preparing" and row.get("transport_retries", 0) == 0
+    assert row["attempt"]["generation"] == coordinator.TRANSPORT_RETRY_CAP + 1
+
+
+def test_monitor_start_without_answer_fences_the_job_for_a_counted_retry(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_control as control
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    prepared = {"prepared_digest": "sha256:" + "c" * 64}
+    path = jobs.retain_invocation(attempt_dir=tmp_path, binding={**prepared, "provider": "vast"},
+        argv=["gpu-canary"], control={"source": {}, "site_id": "site-one", **prepared,
+            "initial_observed_at_epoch": time.time(), "execution_deadline_epoch": None})
+
+    def unanswered(*args, **kwargs):
+        raise ValueError("website_control_task-context_http_503:unclassified")
+
+    monkeypatch.setattr(worker, "require_current_source", unanswered)
+    with pytest.raises(ValueError, match=control.CONTROL_UNAVAILABLE_BEFORE_START):
+        jobs.run_invocation(path, allocator=lambda argv: pytest.fail("started without a current answer"))
+    assert (path.parent / "no_create_fence.json").is_file()
+    assert not (path.parent / "provider_create_intent.json").exists()
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
+    result = launch.reconcile_candidate(plan={}, candidate={}, attempt_dir=tmp_path, prepared=prepared)
+    assert result["retryable_unstarted_refusal"] is True and result["retry_cause"] == "control_unanswered"
+
+
+def test_definite_start_refusal_is_not_fenced_as_a_retry(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    prepared = {"prepared_digest": "sha256:" + "c" * 64}
+    path = jobs.retain_invocation(attempt_dir=tmp_path, binding={**prepared, "provider": "vast"},
+        argv=["gpu-canary"], control={"source": {}, "site_id": "site-one", **prepared,
+            "initial_observed_at_epoch": time.time(), "execution_deadline_epoch": None})
+
+    def forbidden(*args, **kwargs):
+        raise ValueError("website_control_task-context_http_403:unclassified")
+
+    monkeypatch.setattr(worker, "require_current_source", forbidden)
+    with pytest.raises(ValueError, match="unproven_before_start"):
+        jobs.run_invocation(path, allocator=lambda argv: pytest.fail("started without a current answer"))
+    assert not (path.parent / "no_create_fence.json").exists()

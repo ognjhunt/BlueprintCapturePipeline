@@ -273,11 +273,16 @@ def run_invocation(path: Path, *, allocator: Callable[[Sequence[str]], int] | No
             try:
                 if allocator is None:
                     from .paid_resource_allocator import main as allocator
-                from .beta_policy_screening_control import CurrentSourceMonitor
+                from .beta_policy_screening_control import CONTROL_UNAVAILABLE_BEFORE_START, CurrentSourceMonitor
                 monitor = CurrentSourceMonitor(value) if value.get("control") is not None else nullcontext()
-                with _one_stop_signal(root), monitor as active:
-                    effective_argv = active.allocator_argv(value["argv"]) if active is not None else value["argv"]
-                    return allocator(effective_argv)
+                try:
+                    with _one_stop_signal(root), monitor as active:
+                        effective_argv = active.allocator_argv(value["argv"]) if active is not None else value["argv"]
+                        return allocator(effective_argv)
+                except ValueError as exc:
+                    if str(exc) == CONTROL_UNAVAILABLE_BEFORE_START:
+                        fence_before_create()  # Nothing started: recovery retries, counted toward its cap.
+                    raise
             finally:
                 for key, old in previous.items():
                     if old is None:

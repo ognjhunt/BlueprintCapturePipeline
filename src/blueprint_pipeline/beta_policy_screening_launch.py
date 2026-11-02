@@ -425,13 +425,21 @@ def _invocation_stop(path: Path, value: Mapping[str, Any], *, finished: bool) ->
     return stop
 
 
-def _unstarted_refusal(fenced: Mapping[str, Any], stopped: Mapping[str, Any] | None) -> dict[str, Any]:
-    """A job fenced before any create spent nothing; only a definite stop blocks its retry."""
+def _unstarted_refusal(fenced: Mapping[str, Any], stopped: Mapping[str, Any] | None, *,
+                       unanswered: bool) -> dict[str, Any]:
+    """A job fenced before any create spent nothing; only a definite stop blocks its retry.
+
+    ``retry_cause`` is ``control_unanswered`` when a control read that got no
+    answer refused it (the coordinator caps those retries), otherwise
+    ``allocator_lost_before_create`` (a crash or a deploy before create).
+    """
     from .beta_policy_screening_control import retryable_stop
     retryable = retryable_stop(stopped)
+    cause = "control_unanswered" if unanswered or stopped is not None else "allocator_lost_before_create"
     return {"status": "blocked", "provider_allocation_performed": False,
             "provider_zero_verified": True, "no_allocation_proven": True,
             "no_policy_api_calls_proven": True, "retryable_unstarted_refusal": retryable,
+            **({"retry_cause": cause} if retryable else {}),
             "unstarted_refusal_receipt": _record(Path(fenced["proof_path"])),
             "blockers": (["beta_screening_allocator_fenced_before_create"] if retryable
                          else [str(stopped["reason"])])}
@@ -484,7 +492,7 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
                     return {"status": "running", "provider_zero_verified": False,
                             "no_allocation_proven": False, "blockers": []}
                 if fenced["status"] == "fenced_unspent":
-                    return _unstarted_refusal(fenced, stopped)
+                    return _unstarted_refusal(fenced, stopped, unanswered=True)
             refusal = {"status": "blocked", "provider_allocation_performed": False,
                        "provider_zero_verified": True, "no_allocation_proven": True,
                        "blockers": adapter.get("blockers") or ["beta_screening_allocator_refused"]}
@@ -567,9 +575,12 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
         value = manifest(invocation_path)
         if value["binding"].get("prepared_digest") != prepared.get("prepared_digest"):
             raise ValueError("beta_screening_invocation_binding_changed")
+        # A fence already present was written by the allocator itself: its
+        # control read got no answer before it could start or create.
+        self_fenced = (root / "invocation" / "no_create_fence.json").exists()
         fenced = fence_unstarted(invocation_path)
         if fenced["status"] == "fenced_unspent":
-            return _unstarted_refusal(fenced, stopped)
+            return _unstarted_refusal(fenced, stopped, unanswered=self_fenced)
         if fenced["status"] == "running":
             return {"status": "running", "provider_zero_verified": False,
                     "no_allocation_proven": False, "blockers": []}
