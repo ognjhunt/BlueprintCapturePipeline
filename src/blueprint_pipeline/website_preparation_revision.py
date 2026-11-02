@@ -7,7 +7,7 @@ import re
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 
 from .website_preparation_revision_identity import (  # noqa: F401  (re-exported)
-    FIELD, PREFIX, capture_id, requires_retained_authority, revision)
+    FIELD, PREFIX, RENEWAL_FIELD, RENEWAL_PREFIX, capture_id, renewal, requires_retained_authority, revision)
 
 
 def workspace(capture_root):
@@ -44,6 +44,12 @@ def bind_preparation(preparation, *, output_root, capture_root, authority=None):
 def capture_root_for_preparation(path):
     path = Path(path)
     parent = path.parent
+    # A renewal re-issues a completed (possibly corrected) preparation beside it:
+    # ``.../website_scene_preparation[/revisions/<hex>]/renewals/<hex>/preparation.json``.
+    if parent.parent.name == 'renewals' and re.fullmatch(r'[a-f0-9]{64}', parent.name):
+        parent = parent.parent.parent
+        if parent.name == 'website_scene_preparation' and parent.parent.name == 'pipeline':
+            return parent.parent.parent
     if (parent.parent.name == 'revisions' and re.fullmatch(r'[a-f0-9]{64}', parent.name)
             and parent.parent.parent.name == 'website_scene_preparation'):
         parent = parent.parent.parent
