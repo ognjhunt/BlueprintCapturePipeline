@@ -34,6 +34,7 @@ MONITOR_STALE_SECONDS = 3 * POLL_SECONDS
 MONITOR_HEARTBEAT = "monitor_heartbeat.json"
 TIMEOUT_STOP_REASON = "beta_screening_control_unavailable_timeout"
 CONTROL_UNAVAILABLE_BEFORE_CREATE = "beta_screening_control_unavailable_before_create"
+CONTROL_UNAVAILABLE_BEFORE_START = "beta_screening_control_unavailable_before_start"
 _TRANSPORT_HTTP = re.compile(
     r"(?:beta_screening_execution_control|website_control_task-context)_http_(?:408|425|429|5[0-9]{2})(?::|$)")
 
@@ -416,7 +417,12 @@ class CurrentSourceMonitor:
     def __enter__(self):
         state = observe(control=self.control, root=self.root)
         if state.get("new_processing_authorized") is False or state.get("status") == "monitor_unavailable":
-            raise ValueError("beta_screening_current_source_unproven_before_start")
+            # As at create admission: only a read that got no answer is retried.
+            stopped = state.get("new_processing_authorized") is False
+            unanswered = (retryable_stop(state) if stopped
+                          else state.get("unavailable_cause") == "transport")
+            raise ValueError(CONTROL_UNAVAILABLE_BEFORE_START if unanswered
+                             else "beta_screening_current_source_unproven_before_start")
         self._publish(state)
         self._beat()
         if self.identity is not None:

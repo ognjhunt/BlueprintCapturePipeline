@@ -462,3 +462,94 @@ def test_retryable_control_refusal_needs_an_unclaimed_launch_slot(tmp_path):
     coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
     row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
     assert row["status"] == "reconciliation_required" and row["attempt"]["reservation_status"] == "reserved"
+
+
+DEFERRED = {"status": "deferred", "provider_allocation_performed": False, "provider_zero_verified": True,
+            "no_allocation_proven": True, "retryable_control_refusal": True,
+            "blockers": ["beta_screening_control_unavailable_before_spawn"]}
+
+
+def _row(root, candidate_id="candidate-000"):
+    return coordinator._ledger(root)["campaigns"]["campaign-1"]["candidates"][candidate_id]
+
+
+def test_third_unanswered_control_retry_still_runs_and_the_fourth_blocks_releasing_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend(DEFERRED)
+    first = None
+    for retry in range(1, coordinator.TRANSPORT_RETRY_CAP + 1):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+        row = _row(tmp_path)
+        first = first or row["attempt"]["attempt_id"]
+        assert row["status"] == "preparing" and row["transport_retries"] == retry
+        assert row["attempt"]["attempt_id"] == first and row["attempt"]["reservation_status"] == "reserved"
+        assert publication(tmp_path)["budget"]["reserved_usd"] == "4"
+    assert backend.launches == coordinator.TRANSPORT_RETRY_CAP == 3
+    # The fourth read without an answer blocks this candidate and releases its one reservation.
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = _row(tmp_path)
+    assert backend.launches == 4
+    assert row["status"] == "blocked" and row["blockers"] == [coordinator.TRANSPORT_RETRY_CAP_BLOCKER]
+    assert row["attempt"]["attempt_id"] == first and row["attempt"]["reservation_status"] == "released"
+    assert not row.get("attempt_history")
+    budget = publication(tmp_path)["budget"]
+    assert budget["reserved_usd"] == "0" and budget["spent_upper_bound_usd"] == "0"
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    assert backend.launches == 4 and _row(tmp_path)["status"] == "blocked"
+
+
+def test_definite_refusal_still_blocks_at_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend({"status": "blocked", "provider_allocation_performed": False, "provider_zero_verified": True,
+                       "no_allocation_proven": True, "blockers": ["beta_screening_prelaunch_refused:ValueError"]})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = _row(tmp_path)
+    assert backend.launches == 1 and row["status"] == "blocked"
+    assert coordinator.TRANSPORT_RETRY_CAP_BLOCKER not in row["blockers"]
+    assert row["attempt"]["reservation_status"] == "released" and row.get("transport_retries", 0) == 0
+    assert publication(tmp_path)["budget"]["reserved_usd"] == "0"
+
+
+def test_unanswered_control_retries_wait_longer_each_time(tmp_path):
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend(DEFERRED)
+    waits = []
+    for _ in range(coordinator.TRANSPORT_RETRY_CAP):
+        before = datetime.now(timezone.utc)
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+        attempt = _row(tmp_path)["attempt"]
+        waits.append((datetime.fromisoformat(attempt["retry_not_before"]) - before).total_seconds())
+        # Let the next tick launch at once; the recorded wait is what matters.
+        state = coordinator._ledger(tmp_path)
+        state["campaigns"]["campaign-1"]["candidates"]["candidate-000"]["attempt"]["retry_not_before"] = (
+            before - timedelta(seconds=1)).isoformat()
+        coordinator._save(tmp_path, state)
+    base = coordinator.CAPACITY_RETRY_SECONDS
+    assert [round(value / base) for value in waits] == [1, 2, 4]
+
+
+def test_capped_candidate_blocks_alone_while_the_others_and_the_campaign_continue(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+
+    class Split(Backend):
+        def launch_candidate(self, **kwargs):
+            self.launches += 1
+            return DEFERRED if kwargs["candidate"]["candidate_id"] == "candidate-000" else {"status": "running"}
+
+        def reconcile_candidate(self, **kwargs):
+            self.reconciliations += 1
+            return {"status": "running"}
+
+    backend = Split()
+    for _ in range(coordinator.TRANSPORT_RETRY_CAP + 2):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend,
+                                            max_launches=2)
+    capped, other = _row(tmp_path, "candidate-000"), _row(tmp_path, "candidate-001")
+    assert capped["status"] == "blocked" and capped["blockers"] == [coordinator.TRANSPORT_RETRY_CAP_BLOCKER]
+    assert other["status"] == "running" and other["attempt"]["reservation_status"] == "reserved"
+    assert publication(tmp_path)["status"] == "running"
+    assert publication(tmp_path)["budget"]["reserved_usd"] == "4"

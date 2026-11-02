@@ -107,6 +107,15 @@ A definite stopped, changed or expired answer, any other 4xx, or an invalid
 response still blocks. The 600-second rule for running work is unchanged; a
 timeout stop recorded before any create is retried like a failed read.
 
+These retries are capped per candidate at `TRANSPORT_RETRY_CAP` (3, in
+`beta_policy_screening_coordinator.py`), counting preflight reads again and
+fresh attempts after the allocator fenced its own start or create together.
+They wait 1, 2, then 4 minutes. The next such refusal blocks only that
+candidate with `beta_screening_transport_retry_cap_exhausted` and releases its
+reservation; the other candidates and the campaign continue. A fresh attempt
+after a crash or a deploy before create (`allocator_lost_before_create`) is
+not counted.
+
 ## Verification and remaining acceptance
 
 Offline coverage exercises strict WebApp signatures/readback, all six source

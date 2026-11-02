@@ -41,6 +41,17 @@ LEDGER_FILENAME = "screening_ledger.v1.json"
 SITE_LIMIT = Decimal("15")
 CAPACITY_RETRY_SECONDS = 60
 CAPACITY_WAIT_BLOCKER = "beta_screening_waiting_for_capacity"
+# A candidate retries a refusal whose control read got no answer (a 429, a 5xx,
+# a timeout) at most this many times in all: a launch preflight read again, or
+# a fresh attempt after its allocator fenced its own create. Each fresh attempt
+# rebuilds and restages its bundle and re-arms the watchdog. The next such
+# refusal blocks only this candidate with TRANSPORT_RETRY_CAP_BLOCKER and
+# releases its reservation as any other no-spend block does. Retries wait
+# CAPACITY_RETRY_SECONDS, doubled after each one (1, 2, then 4 minutes).
+TRANSPORT_RETRY_CAP = 3
+TRANSPORT_RETRY_CAP_BLOCKER = "beta_screening_transport_retry_cap_exhausted"
+# The launch module's retry_cause for a fresh attempt after an unanswered read.
+TRANSPORT_RETRY_CAUSE = "control_unanswered"
 # Published beside the capacity code, the only one the WebApp accepts for a return to preparing.
 CONTROL_WAIT_BLOCKER = "beta_screening_waiting_for_control"
 INFEASIBLE_BLOCKER = "candidate_infeasible_measured_geometry"
@@ -390,8 +401,15 @@ def _new_attempt(plan: Mapping[str, Any], candidate: Mapping[str, Any], *, gener
             "reservation_status": "reserved", "provider_allocation_observed": False}
 
 
-def _retry_after_capacity() -> str:
-    return (datetime.now(timezone.utc) + timedelta(seconds=CAPACITY_RETRY_SECONDS)).isoformat()
+def _retry_after_capacity(earlier_retries: int = 0) -> str:
+    delay = CAPACITY_RETRY_SECONDS * 2 ** earlier_retries
+    return (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+
+
+def _transport_retries(row: Mapping[str, Any]) -> int:
+    value = row.get("transport_retries", 0)
+    # An unreadable count is treated as spent, so the cap always holds.
+    return value if type(value) is int and 0 <= value <= TRANSPORT_RETRY_CAP else TRANSPORT_RETRY_CAP
 
 
 def _capacity_retry_ready(attempt: Mapping[str, Any]) -> bool:
@@ -612,8 +630,15 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
         if (status == "deferred" and no_allocation and observation.get("retryable_control_refusal") is True
                 and _launch_unclaimed(root, attempt)):
             # The control read before spawn got no answer (429, 5xx, timeout).
-            # Nothing could start: keep this attempt and its reservation, read again.
-            attempt["retry_not_before"] = _retry_after_capacity()
+            # Nothing could start: keep this attempt and its reservation, read
+            # again, up to the cap; past it, release and block this candidate.
+            retries = _transport_retries(row)
+            if retries >= TRANSPORT_RETRY_CAP:
+                attempt["reservation_status"] = "released"
+                row.update(status="blocked", blockers=[TRANSPORT_RETRY_CAP_BLOCKER])
+                return
+            row["transport_retries"] = retries + 1
+            attempt["retry_not_before"] = _retry_after_capacity(retries)
             row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER, CONTROL_WAIT_BLOCKER])
             return
         if status in {"completed", "blocked"} and no_allocation:
@@ -628,9 +653,18 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                     terminal_reason="allocator_fenced_before_create",
                     unstarted_refusal_receipt=dict(observation["unstarted_refusal_receipt"]),
                     no_policy_api_calls_proven=True)
+                # Only a fresh attempt after an unanswered read counts toward
+                # the cap; a crash or deploy before create keeps its recovery.
+                transport = observation.get("retry_cause") == TRANSPORT_RETRY_CAUSE
+                retries = _transport_retries(row) if transport else 0
+                if transport and retries >= TRANSPORT_RETRY_CAP:
+                    row.update(status="blocked", blockers=[TRANSPORT_RETRY_CAP_BLOCKER])
+                    return
+                if transport:
+                    row["transport_retries"] = retries + 1
                 row.setdefault("attempt_history", []).append(json.loads(json.dumps(attempt)))
                 row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
-                                  "retry_not_before": _retry_after_capacity()}
+                                  "retry_not_before": _retry_after_capacity(retries)}
                 # The WebApp lets a published running candidate return to
                 # preparing only with the capacity-wait code; it names the wait.
                 row.update(status="preparing",
