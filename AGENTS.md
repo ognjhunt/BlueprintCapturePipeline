@@ -65,9 +65,14 @@ decision for the owner.
 | GPU fleet guard | 10 live instances, $10/h, $100/day, $5,000 total | `BLUEPRINT_GPU_FLEET_MAX_*` in `deploy/systemd/blueprint-gpu-spend-guard.service`; `/etc/blueprint/pipeline-control-plane.env` can override | unit default; host override unverified. Totals are the guard ledger's estimate, not the bill (B-03 §8) |
 | Vast credit page | pages below $11 ($10 `PAGE_CREDIT_USD` + $1 reserve) | `src/blueprint_pipeline/provider_credit_admission.py`; overrides `BLUEPRINT_VAST_CREDIT_WARNING_USD`, `BLUEPRINT_VAST_CREDIT_RESERVE_USD` | code default; host override unverified |
 | Vast launch credit check | balance must cover the launch's cap + $1 reserve | `record_vast_credit_admission` in `src/blueprint_pipeline/vast_provider_adapter.py`, with `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true` in `deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service` | code and unit |
+| OpenAI spend page, one UTC day | pages at $75 of organization spend in one UTC day (today so far, or yesterday) | `OPENAI_24H_PAGE_USD` in `src/blueprint_pipeline/provider_spend_alerts.py`; override `BLUEPRINT_OPENAI_SPEND_24H_PAGE_USD` | alert line, not a ceiling; code default; host override unverified |
+| OpenAI spend page, month | pages at $560 for the UTC month to date | `OPENAI_MONTH_PAGE_USD`, same file; override `BLUEPRINT_OPENAI_SPEND_MONTH_PAGE_USD` | alert line, not a ceiling; code default; host override unverified |
+| World Labs spend page, 24 h | pages at $60 of Blueprint's recorded Atlas purchases in the last 24 h | `WORLD_LABS_24H_PAGE_USD`, same file; override `BLUEPRINT_WORLD_LABS_SPEND_24H_PAGE_USD` | alert line, not a ceiling; code default; host override unverified |
+| World Labs spend page, month | pages at $450 of recorded Atlas purchases for the UTC month to date | `WORLD_LABS_MONTH_PAGE_USD`, same file; override `BLUEPRINT_WORLD_LABS_SPEND_MONTH_PAGE_USD` | alert line, not a ceiling; code default; host override unverified |
+| Google Cloud spend page | pages at 80% of the month's effective limit ($80 of $100) | `GCP_PAGE_FRACTION`, same file; override `BLUEPRINT_GCP_SPEND_PAGE_FRACTION` | alert line, not a ceiling; the limit is unchanged; code default; host override unverified |
 | WebApp open intake | 5 new jobs a day (20 per IP) | WebApp `server/utils/betaAbuseCaps.ts`; Render `BLUEPRINT_INTAKE_DAILY_LIMIT` overrides | code default; Render value unverified (tracker F-04) |
 
-Runbooks for credit, disk and stalls: [`docs/runbooks/beta-operations.md`](docs/runbooks/beta-operations.md).
+Runbooks for credit, provider spend, disk and stalls: [`docs/runbooks/beta-operations.md`](docs/runbooks/beta-operations.md).
 
 ## Two Truths
 

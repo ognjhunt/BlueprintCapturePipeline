@@ -11,15 +11,20 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import json
 import math
 from pathlib import Path
-import stat
 from typing import Any
-from urllib.parse import urlencode, urlparse
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode
 
 from ..decision_evidence_contracts import canonical_digest
+# The endpoint, the Admin key file check and the pinned GET are shared with the
+# capacity tick's organization-spend alert, which must not import this package.
+from ..openai_organization_costs import (
+    OPENAI_COSTS_ENDPOINT,
+    OpenAICostsError,
+    get_costs_page,
+    read_admin_key,
+)
 from .candidate_policy import (
     CANDIDATE_COST_RESERVATION_SCHEMA_VERSION,
     CANDIDATE_COST_SETTLEMENT_SCHEMA_VERSION,
@@ -31,13 +36,11 @@ OPENAI_COST_SNAPSHOT_SCHEMA_VERSION = "openai_organization_cost_snapshot.v1"
 OPENAI_COST_SCOPE_ATTESTATION_SCHEMA_VERSION = "openai_candidate_cost_scope_attestation.v1"
 OPENAI_COST_AUTHORITY_ID = "openai_organization_costs_api@1"
 OPENAI_COSTS_SOURCE_ID = "openai_organization_costs_api"
-OPENAI_COSTS_ENDPOINT = "https://api.openai.com/v1/organization/costs"
 OPENAI_COSTS_DOCUMENTATION_URL = (
     "https://developers.openai.com/api/reference/resources/admin/subresources/"
     "organization/subresources/usage/methods/costs"
 )
 _SHA256_PREFIX = "sha256:"
-_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 _MAX_PAGES = 200
 
 
@@ -279,19 +282,10 @@ class OpenAIOrganizationCostsClient:
             raise OpenAICostAuthorityError("openai_cost_timeout_invalid")
 
     def _admin_key(self) -> str:
-        path = self.admin_api_key_file
-        if path.is_symlink() or not path.is_file():
-            raise OpenAICostAuthorityError("openai_admin_key_file_missing_or_symlink")
-        mode = stat.S_IMODE(path.stat().st_mode)
-        if mode & 0o077:
-            raise OpenAICostAuthorityError("openai_admin_key_file_permissions_too_open")
         try:
-            value = path.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise OpenAICostAuthorityError("openai_admin_key_file_unreadable") from exc
-        if len(value) < 16 or any(character.isspace() for character in value):
-            raise OpenAICostAuthorityError("openai_admin_key_invalid")
-        return value
+            return read_admin_key(self.admin_api_key_file)
+        except OpenAICostsError as exc:
+            raise OpenAICostAuthorityError(str(exc)) from exc
 
     @staticmethod
     def _default_transport(
@@ -299,30 +293,10 @@ class OpenAIOrganizationCostsClient:
         headers: Mapping[str, str],
         timeout_seconds: float,
     ) -> Mapping[str, Any]:
-        parsed = urlparse(url)
-        if (
-            parsed.scheme != "https"
-            or parsed.netloc != "api.openai.com"
-            or parsed.path != "/v1/organization/costs"
-        ):
-            raise OpenAICostAuthorityError("openai_cost_endpoint_invalid")
-        request = Request(url, headers=dict(headers), method="GET")
         try:
-            # URL origin, scheme, and exact path are pinned immediately above.
-            with urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
-                payload = response.read(_MAX_RESPONSE_BYTES + 1)
-                status_code = int(getattr(response, "status", 200))
-        except OSError as exc:
-            raise OpenAICostAuthorityError("openai_cost_request_failed") from exc
-        if status_code != 200 or len(payload) > _MAX_RESPONSE_BYTES:
-            raise OpenAICostAuthorityError("openai_cost_response_invalid")
-        try:
-            decoded = json.loads(payload.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise OpenAICostAuthorityError("openai_cost_response_invalid") from exc
-        if not isinstance(decoded, Mapping):
-            raise OpenAICostAuthorityError("openai_cost_response_invalid")
-        return decoded
+            return get_costs_page(url, headers, timeout_seconds)
+        except OpenAICostsError as exc:
+            raise OpenAICostAuthorityError(str(exc)) from exc
 
     def snapshot(self, *, start_time: int, end_time: int) -> dict[str, Any]:
         if (
