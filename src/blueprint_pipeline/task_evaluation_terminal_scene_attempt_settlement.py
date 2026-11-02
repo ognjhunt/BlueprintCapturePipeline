@@ -82,6 +82,9 @@ PREPARATION_ONLY_BASIS = "preparation_only_no_execution_authority_issued"
 # ``budget_retained_hold`` (B-04): the GPU allowance plus the authoring spend a
 # completed, agreeing ARTISAN cost gate and usage meter prove.
 PROVEN_AUTHORING_SPEND_BASIS = "artisan_proven_authoring_with_native_allowance"
+# The same proof for ARTISAN run on the CPU prestage, which rented no GPU: the
+# compute allowance is released too, since the run's records prove no allocation.
+PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS = "artisan_proven_authoring_without_allocation"
 # What ``_release_successor`` records under that basis, apart from an optional
 # ``preparation_failure``. It never records a ``reconciliation``.
 _PREPARATION_ONLY_LINEAGE_KEYS = frozenset({"attempt", "factory", "new_source_commit", "basis"})
@@ -269,7 +272,8 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
     still retains its entire provider allowance, not an estimated final bill.
     A native ARTISAN run past its model gate keeps that allowance plus the
     authoring spend its gate and meter prove (B-04, owner approval 2026-11-02),
-    with the proof's evidence and policy version under ``evidence``.
+    with the proof's evidence and policy version under ``evidence``. One that
+    failed on the CPU prestage, before any GPU, keeps only the proven spend.
     Callers must first validate the terminal settlement and ownership evidence.
     Holds are derived on every read, so this applies to existing settlements.
     """
@@ -331,7 +335,7 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
         if native_run:
             proof = artisan_proven_authoring_spend(result, request)
             if proof is not None:
-                return _proven_authoring_hold(hold, proof, request)
+                return _proven_authoring_hold(hold, proof, request, compute_allocated=True)
             return hold
         if (result.get("schema_version") != "task_evaluation_scene_configuration_vast_result.v1"
                 or result.get("run_id") != request["run_id"]
@@ -362,6 +366,11 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
                         "retained_spend_usd": rejected["retained_spend_usd"],
                         "counts_as_attempt": hold["counts_as_attempt"]}
             if not authoring_never_entered(result, request):
+                # ARTISAN past its model gate on the CPU prestage, before any GPU.
+                if _cpu_prestage_failed_before_allocation(result):
+                    proof = artisan_proven_authoring_spend(result, request)
+                    if proof is not None:
+                        return _proven_authoring_hold(hold, proof, request, compute_allocated=False)
                 return hold
             return {"basis": "preallocation_unentered_authoring", "retained_spend_usd": 0.0,
                     "counts_as_attempt": hold["counts_as_attempt"]}
@@ -379,23 +388,46 @@ def budget_retained_hold(receipt: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _proven_authoring_hold(hold: Mapping[str, Any], proof: Mapping[str, Any],
-                           request: Mapping[str, Any]) -> dict[str, Any]:
-    """The row's hold with only its unspent authoring allowance released (B-04).
+                           request: Mapping[str, Any], *, compute_allocated: bool) -> dict[str, Any]:
+    """The row's hold with its unspent authoring allowance released (B-04).
 
-    Everything else the attempt reserved stays held: its whole GPU allowance
-    (a runtime estimate is not a Vast bill) and any other model allowance. The
+    Every other model allowance stays held. So does the whole GPU allowance of
+    a run that rented a GPU (a runtime estimate is not a Vast bill); a run whose
+    records prove no allocation (``compute_allocated`` false) releases it. The
     figure is rounded up to the micro-dollar, so it never falls below the proof.
     """
     held = Decimal(str(hold["retained_spend_usd"]))
-    kept = held - Decimal(str(proof["authoring_allowance_usd"]))
-    proven = Decimal(str(proof["proven_authoring_spend_usd"]))
     compute = Decimal(str(request["spend"]["provider_compute_spend_cap_usd"]))
+    others = held - Decimal(str(proof["authoring_allowance_usd"])) - compute
+    kept = others + compute if compute_allocated else others
+    proven = Decimal(str(proof["proven_authoring_spend_usd"]))
     retained = (kept + proven).quantize(Decimal("0.000001"), rounding=ROUND_CEILING)
-    if not (0 <= compute <= kept and kept + proven <= retained <= held):
+    if not (0 <= compute and 0 <= others and kept + proven <= retained <= held):
         return dict(hold)
-    return {"basis": PROVEN_AUTHORING_SPEND_BASIS, "retained_spend_usd": float(retained),
-            "counts_as_attempt": hold["counts_as_attempt"],
-            "evidence": {**proof, "kept_allowance_usd": float(kept), "compute_allowance_usd": float(compute)}}
+    return {"basis": PROVEN_AUTHORING_SPEND_BASIS if compute_allocated else PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS,
+            "retained_spend_usd": float(retained), "counts_as_attempt": hold["counts_as_attempt"],
+            "evidence": {**proof, "kept_allowance_usd": float(kept), "compute_allowance_usd": float(compute),
+                         "compute_allowance_kept": compute_allocated}}
+
+
+def _cpu_prestage_failed_before_allocation(result: Mapping[str, Any]) -> bool:
+    """The output is the CPU prestage's own archive, retained when the prestage failed before any GPU.
+
+    The caller has already bound the result and its teardown: no provider
+    mutation, no instance, a teardown that never had to run. The lane writes
+    ``cpu_prestage_failure.json`` beside the archive only on that path.
+    """
+    try:
+        archive = Path(str(result["provider_runtime_output_zip_path"]))
+        failure = _read(archive.parent / "cpu_prestage_failure.json")
+        return (archive.name == "cpu_prestage_output.zip" and result.get("cpu_prestage") is None
+                and failure.get("status") == "blocked_before_gpu_allocation"
+                and failure.get("phase") == "cpu_prestage"
+                and failure.get("gpu_allocation_attempted") is False
+                and failure.get("run_id") == result.get("run_id")
+                and failure.get("source_commit") == result.get("source_commit"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
 
 
 def _contained_before_run(*, run_root: Path, launch_id: str) -> dict[str, Any] | None:

@@ -194,15 +194,23 @@ def _pre_gate_refusal(output, request):
     _write(output / PRODUCER / "stage_producer.log", SANDBOX_LOG)
 
 
-def _result(run, request, output):
-    archive = run / "vast_provider_runtime_output.zip"
-    run.mkdir(parents=True, exist_ok=True)
+def _result(run, request, output, *, prestage=False):
+    """The lane's result. A failed CPU prestage keeps its own archive and failure record in the job dir."""
+    job = run / "allocator/scene-configuration-job" if prestage else run
+    archive = job / ("cpu_prestage_output.zip" if prestage else "vast_provider_runtime_output.zip")
+    job.mkdir(parents=True, exist_ok=True)
     write_output_archive(output, archive)
+    if prestage:
+        _write(job / "cpu_prestage_failure.json", {
+            "status": "blocked_before_gpu_allocation", "phase": "cpu_prestage", "run_id": request["run_id"],
+            "source_commit": COMMIT, "failure": "TaskEvaluationSceneConfigurationCpuPrestageError:prefix_not_completed",
+            "gpu_allocation_attempted": False, "raw_secret_values_recorded": False})
     with archive.open("rb") as stream:
         digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
     return _seal({"schema_version": "task_evaluation_scene_configuration_vast_result.v1", "status": "blocked",
                   "run_id": request["run_id"], "source_commit": COMMIT, "authority_digest": AUTHORITY,
-                  "retry_cap": 0, "api_pretraining": None, "cpu_prestage": None, "provider_mutations_performed": 1,
+                  "retry_cap": 0, "api_pretraining": None, "cpu_prestage": None,
+                  "provider_mutations_performed": 0 if prestage else 1,
                   "continuing_spend_from_this_run": False,
                   "blockers": ["provider_result_blocker:" + STAGE3_FAILURE, "scene_configuration_provider_not_completed"],
                   "provider_runtime_output_zip_path": str(archive), "provider_runtime_output_zip_sha256": digest},
@@ -384,8 +392,13 @@ def site(tmp_path, monkeypatch):
             "launches": tmp_path / "launch-runs", "queue": queue}
 
 
-def _terminal_attempt(site, name, request, build):
-    """Reserve one website scene attempt, run it to a terminal blocked launch, and settle it."""
+def _terminal_attempt(site, name, request, build, *, prestage=False, after=None):
+    """Reserve one website scene attempt, run it to a terminal blocked launch, and settle it.
+
+    ``prestage`` runs it the way a failed CPU prestage ends: no GPU, the
+    prestage's archive retained, and a teardown that never had to run.
+    ``after(run)`` changes the retained records before the launch is sealed.
+    """
     from blueprint_pipeline.task_evaluation_scene_preparation_attempts import create_preparation_attempt
     directory, intent = site["directory"], site["intent"]
     source = create_preparation_attempt(directory=directory, attempt_id="source-" + name, source_commit=COMMIT,
@@ -418,9 +431,12 @@ def _terminal_attempt(site, name, request, build):
     run = site["launches"] / launch_id
     output = out / "runtime_output"
     build(output, request)
-    result = _write(run / "result.json", _result(run, request, output))
-    teardown = _write(run / "teardown.json", {"schema_version": "vast_teardown_manifest.v1", "status": "completed",
-                                              "vast_instance_ids": [7], "continuing_spend_from_this_run": False})
+    result = _write(run / "result.json", _result(run, request, output, prestage=prestage))
+    teardown = _write(run / "teardown.json", {"schema_version": "vast_teardown_manifest.v1",
+        "status": "not_required_provider_adapter_never_invoked" if prestage else "completed",
+        "vast_instance_ids": [] if prestage else [7], "continuing_spend_from_this_run": False})
+    if after is not None:
+        after(run)
     _write(run / "launch_receipt.json", {"launch_id": launch_id, "source_commit": COMMIT, "status": "blocked",
         "terminal_evidence": {"result": {**settlement._file(result), "exists": True},
                               "artifacts": {"teardown_manifest_path": {**settlement._file(teardown), "exists": True}}}})
@@ -537,3 +553,101 @@ def test_proof_changed_after_settlement_restores_the_maximum(site):
     with open(json.loads(result.read_text())["provider_runtime_output_zip_path"], "ab") as stream:
         stream.write(b"changed")
     assert _hold(site, row)["retained_spend_usd"] == 20.0
+
+
+# ---------------------------------------------------------------------------
+# The same proof when ARTISAN ran on the CPU prestage and failed before any GPU
+# (#3259 sizes the prestage to fit, so capture-447's restart runs stages 1-4 on
+# the control plane first). No GPU was rented, so no compute allowance is kept.
+
+
+def _prestage_attempt(site, *, runs=AGREEING, after=None):
+    """A $31 attempt ($25 ARTISAN cumulative cap + $6 GPU) whose prestage failed in ARTISAN."""
+    return _terminal_attempt(site, "prestage", _request("prestage", authoring=25.0, total=31.0),
+                             lambda output, request: _artisan_runtime(output, request, runs=runs),
+                             prestage=True, after=after)
+
+
+def test_a_failed_cpu_prestage_keeps_only_its_proven_authoring_spend(site, monkeypatch):
+    row = _prestage_attempt(site)
+    hold = _hold(site, row)
+    assert (hold["basis"], hold["retained_spend_usd"]) == (settlement.PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS, 13.76)
+    assert hold["evidence"]["compute_allowance_kept"] is False and hold["evidence"]["compute_allowance_usd"] == 6.0
+    assert hold["evidence"]["output_archive"]["path"].endswith("/cpu_prestage_output.zip")
+    assert committed_spend_usd(site["directory"], site["intent"]) == Decimal("13.76")
+    # The restart's next $31 attempt now fits beside it.
+    assert reserve_scene_attempt(queue_root=site["root"], intent_id=site["intent"]["intent_id"],
+                                 attempt_id="scene-configuration-restart", source_commit=COMMIT,
+                                 runtime_digest="sha256:" + "e" * 64, input_digest="sha256:" + "f" * 64,
+                                 provider="vast", maximum_spend_usd=31.0, now=300)["status"] == "reserved"
+    monkeypatch.setattr(budget, "artisan_proven_authoring_spend", lambda result, request: None)
+    assert _hold(site, row)["retained_spend_usd"] == 31.0
+
+
+def _job(run):
+    return run / "allocator/scene-configuration-job"
+
+
+def _reseal_result(run, **changes):
+    path = run / "result.json"
+    value = json.loads(path.read_text())
+    value.update(changes)
+    _write(path, _seal(value, "result_digest"))
+
+
+def _retouch(name, **changes):
+    def change(run):
+        path = _job(run) / "cpu_prestage_failure.json" if name == "failure" else run / "teardown.json"
+        _write(path, {**json.loads(path.read_text()), **changes})
+    return change
+
+
+PRESTAGE_FAILING = {
+    # The records must prove no provider allocation, or the GPU allowance stays too.
+    "failure_record_missing": dict(after=lambda run: (_job(run) / "cpu_prestage_failure.json").unlink()),
+    "gpu_allocation_attempted": dict(after=_retouch("failure", gpu_allocation_attempted=True)),
+    "instance_recorded": dict(after=_retouch("teardown", vast_instance_ids=[7])),
+    "teardown_ran": dict(after=_retouch("teardown", status="completed")),
+    "provider_mutation": dict(after=lambda run: _reseal_result(run, provider_mutations_performed=1)),
+    "prestage_completed": dict(after=lambda run: _reseal_result(run, cpu_prestage={"status": "completed_prefix"})),
+    # The authoring proof itself fails closed exactly as on the GPU.
+    "official_above_meter": dict(runs=[([1.25, 2.5], 3.76, True)]),
+    "no_completion": dict(runs=[([1.25, 2.5], None, True)]),
+    "unpriced_call": dict(runs=[([1.25, None], 1.0, True)]),
+}
+
+
+@pytest.mark.parametrize("case", sorted(PRESTAGE_FAILING))
+def test_a_failed_cpu_prestage_without_both_proofs_keeps_its_maximum(site, case):
+    row = _prestage_attempt(site, **PRESTAGE_FAILING[case])
+    assert _hold(site, row) == {"basis": "terminal_launch_unreconciled", "retained_spend_usd": 31.0,
+                                "counts_as_attempt": False}
+
+
+@pytest.mark.parametrize("shape", ["archive_without_stages", "no_archive"])
+def test_a_cpu_prestage_that_failed_before_its_first_stage_settles_at_zero(site, shape):
+    """Existing proofs: ``prestage_before_first_stage``, or no output and no API preparation at all."""
+    early = "scene_configuration_provider_failed:TimeoutExpired"
+
+    def build(output, request):
+        _write(output / "task_evaluation_scene_configuration_provider_result.v1.json", _seal({
+            "schema_version": "task_evaluation_scene_configuration_provider_result.v1", "status": "blocked",
+            "run_id": request["run_id"], "source_commit": COMMIT, "first_stage_started": False,
+            "evaluation_episode_executed": False, "candidate_policy_queried": False, "blockers": [early]},
+            "result_digest"))
+
+    def after(run):
+        if shape == "no_archive":
+            # The prestage stopped before it wrote an archive (work dir or disk refused).
+            (_job(run) / "cpu_prestage_output.zip").unlink()
+            _reseal_result(run, provider_runtime_output_zip_path=None, provider_runtime_output_zip_sha256=None,
+                           blockers=["vast_adapter_failed:TaskEvaluationSceneConfigurationCpuPrestageError"])
+        else:
+            _reseal_result(run, blockers=["provider_result_blocker:" + early])
+
+    row = _terminal_attempt(site, "early", _request("early", authoring=25.0, total=31.0), build,
+                            prestage=True, after=after)
+    hold = _hold(site, row)
+    assert hold["retained_spend_usd"] == 0.0
+    assert hold["basis"] == ("preallocation_unentered_authoring" if shape == "archive_without_stages"
+                             else "preallocation_api_budget_upper_bound")
