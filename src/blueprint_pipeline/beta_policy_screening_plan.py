@@ -404,10 +404,12 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     ``priority`` (the job's intake ranking) sets the order the budget is spent
     in; unranked candidates follow by identifier, learned policies before
     scripted baselines, which are reference only and never chosen (a site's few
-    funded slots must not all go to them). Capabilities may name measured
-    ``candidate_infeasible`` refusals, which stay listed as ``infeasible``.
-    Runnable candidates the budget cannot fund yet are ``waitlisted``, in the
-    same order, for money a selected candidate releases before spend.
+    funded slots must not all go to them). Capabilities may name
+    ``candidate_infeasible`` refusals (measured station reach, or a GPU memory
+    floor the screening lane cannot rent), which stay listed as ``infeasible``
+    and are never funded or waitlisted. Runnable candidates the budget cannot
+    fund yet are ``waitlisted``, in the same order, for money a selected
+    candidate releases before spend.
     """
     catalog = validate_catalog(catalog)
     scene = _scene(scene)
@@ -460,7 +462,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         elif candidate_id in G1_CANDIDATES:
             row["execution_evidence_kind"] = "learned_policy"
         if candidate_id in infeasible:
-            # Measured on this scene (station reach); listed with its reason, never quoted.
+            # Measured on this scene (station reach), or a memory floor no GPU the
+            # screening lane may rent can meet; listed with its reason, never quoted.
             row.update(status="infeasible", blockers=sorted(set(infeasible[candidate_id])))
             candidates.append(row)
             continue

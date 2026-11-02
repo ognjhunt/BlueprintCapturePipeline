@@ -114,8 +114,11 @@ def test_unregistered_bodies_stay_unassessed_never_infeasible(tmp_path, monkeypa
     # A job with no registered team body (Franka-only) keeps exactly the rows it had: nothing is added.
     assert all(row == {"status": "unassessed", "blockers": ["embodiment_reach_manifest_not_registered"]}
                for row in feasibility["candidates"].values())
-    assert facts["capabilities"]["candidate_infeasible"] == {}
-    assert "infeasible" not in {row["status"] for row in plan["candidates"]}
+    # Nothing is measured out of reach; the one refusal is a GPU floor the screening lane cannot rent.
+    assert facts["capabilities"]["candidate_infeasible"] == {
+        "cosmos3_nano_policy_droid": ["screening_gpu_memory_floor_unrentable"]}
+    assert {row["candidate_id"] for row in plan["candidates"] if row["status"] == "infeasible"} == {
+        "cosmos3_nano_policy_droid"}
     assert len(plan["candidates"]) == len(load_default_catalog()["candidates"])
 
 

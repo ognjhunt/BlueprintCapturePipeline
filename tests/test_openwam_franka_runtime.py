@@ -131,6 +131,12 @@ def test_registered_local_checkpoint_retains_all_routes_and_builds_real_sealed_b
     row = next(row for row in catalog["candidates"] if row["candidate_id"] == CANDIDATE_ID)
     assert row["eligibility"]["enabled"] and row["eligibility"]["requires_credentials"] == []
     assert row["deployment"]["policy_route_id"] == "customer_controller"
+    # The default screening lane cannot rent this 80 GB floor (RT-core parts at or below the
+    # TensorRT ceiling top out at 48 GB); lifting the ceiling admits the RTX PRO 6000.
+    from blueprint_pipeline.beta_policy_screening_gpu import gpu_infeasible_blockers
+    monkeypatch.delenv("BLUEPRINT_VAST_MAX_COMPUTE_CAP", raising=False)
+    assert gpu_infeasible_blockers(row["runtime"]) == ["screening_gpu_memory_floor_unrentable"]
+    monkeypatch.setenv("BLUEPRINT_VAST_MAX_COMPUTE_CAP", "0")
     planning = build_planning_inputs(
         catalog=catalog,
         profile=profile,
