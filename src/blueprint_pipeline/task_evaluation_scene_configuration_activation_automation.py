@@ -620,11 +620,8 @@ def default_provider_zero_collector(
     ceiling; without it the job-scoped receipt is refused.
     """
 
-    from .paid_provider_job_scope import (
-        SCOPE_JOB,
-        collect_job_scoped_vast_provider_zero,
-        provider_zero_scope,
-    )
+    from .paid_provider_job_scope import SCOPE_JOB, provider_zero_scope
+    from .paid_provider_job_scope_inventory import collect_job_scoped_vast_provider_zero
 
     if job_key and provider_zero_scope() == SCOPE_JOB:
         try:

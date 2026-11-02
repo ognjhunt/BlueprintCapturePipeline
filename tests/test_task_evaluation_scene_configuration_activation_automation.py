@@ -1270,8 +1270,6 @@ def test_default_collector_admits_the_job_at_its_own_maximum_hourly_rate(
 ) -> None:
     """The preparation's spend.maximum_hourly_rate_usd reaches the fleet check."""
 
-    from blueprint_pipeline import paid_provider_job_scope as scope
-
     seen = {}
 
     def collect(*, job_key, added_burn_usd_per_hour):
@@ -1279,7 +1277,9 @@ def test_default_collector_admits_the_job_at_its_own_maximum_hourly_rate(
         return _job_zero(NOW - timedelta(seconds=20))
 
     monkeypatch.setenv("BLUEPRINT_PAID_PROVIDER_ZERO_SCOPE", "job")
-    monkeypatch.setattr(scope, "collect_job_scoped_vast_provider_zero", collect)
+    from blueprint_pipeline import paid_provider_job_scope_inventory as inventory
+
+    monkeypatch.setattr(inventory, "collect_job_scoped_vast_provider_zero", collect)
     intent_root, _intent_value = _intent(tmp_path)
     result_path = _preparation(tmp_path)
     observed = automation.advance_scene_configuration_activation(

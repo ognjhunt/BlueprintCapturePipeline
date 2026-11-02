@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from blueprint_pipeline import paid_provider_job_scope as scope
+from blueprint_pipeline import paid_provider_job_scope_inventory as inventory
 from blueprint_pipeline import vast_launch_slots as slots
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.task_evaluation_scene_configuration_paid_authority import (
@@ -229,7 +230,7 @@ def test_collector_keeps_the_classic_receipt_when_the_account_is_empty(tmp_path:
         calls.append(inventory_collector())
         return {"schema_version": "adp_paid_provider_zero.v1"}
 
-    receipt = scope.collect_job_scoped_vast_provider_zero(
+    receipt = inventory.collect_job_scoped_vast_provider_zero(
         job_key="prep-1", added_burn_usd_per_hour=RATE, guard_path=tmp_path / "missing.json",
         inventory_collector=lambda: _observed([]), global_receipt_collector=global_collector,
     )
@@ -240,7 +241,7 @@ def test_collector_keeps_the_classic_receipt_when_the_account_is_empty(tmp_path:
 def test_collector_issues_a_job_receipt_beside_another_jobs_instance(tmp_path: Path) -> None:
     guard_path = tmp_path / "latest.json"
     guard_path.write_text(json.dumps(_guard()))
-    receipt = scope.collect_job_scoped_vast_provider_zero(
+    receipt = inventory.collect_job_scoped_vast_provider_zero(
         job_key="prep-1", added_burn_usd_per_hour=RATE, guard_path=guard_path,
         inventory_collector=lambda: _observed(_live(("101", OTHER_JOB + "a"))),
         global_receipt_collector=lambda **_: pytest.fail("account is not empty"),
@@ -253,10 +254,10 @@ def test_collector_issues_a_job_receipt_beside_another_jobs_instance(tmp_path: P
 
 def test_collector_refuses_an_unconfirmed_inventory_and_a_missing_guard(tmp_path: Path) -> None:
     with pytest.raises(scope.ProviderJobScopeError, match="inventory_query_failed"):
-        scope.collect_job_scoped_vast_provider_zero(
+        inventory.collect_job_scoped_vast_provider_zero(
             job_key="prep-1", added_burn_usd_per_hour=RATE, inventory_collector=lambda: dict(_observed([]), api_confirmed=False))
     with pytest.raises(scope.ProviderJobScopeError, match="spend_guard_unreadable"):
-        scope.collect_job_scoped_vast_provider_zero(
+        inventory.collect_job_scoped_vast_provider_zero(
             job_key="prep-1", added_burn_usd_per_hour=RATE, guard_path=tmp_path / "missing.json",
             inventory_collector=lambda: _observed(_live(("101", OTHER_JOB + "a"))))
 
@@ -318,7 +319,7 @@ def test_admission_without_a_positive_incoming_rate_is_refused(tmp_path: Path, r
     with pytest.raises(scope.ProviderJobScopeError, match="job_scope_incoming_hourly_rate_missing"):
         _receipt(added_burn_usd_per_hour=rate)
     with pytest.raises(scope.ProviderJobScopeError, match="job_scope_incoming_hourly_rate_missing"):
-        scope.collect_job_scoped_vast_provider_zero(
+        inventory.collect_job_scoped_vast_provider_zero(
             job_key="prep-1", added_burn_usd_per_hour=rate,
             inventory_collector=lambda: pytest.fail("refused before any provider read"))
 
