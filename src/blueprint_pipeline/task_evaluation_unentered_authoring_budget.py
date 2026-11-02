@@ -10,6 +10,7 @@ authoring stage spent, so the allowance it did not spend can be released.
 """
 from __future__ import annotations
 
+import ast
 from datetime import datetime
 import hashlib
 import json
@@ -444,6 +445,44 @@ _ARTISAN_STAGE_FAILURE = ("scene_configuration_provider_failed:TaskEvaluationSce
                           "scene_configuration_stage_producer_failed:content_agents_rigid_replacement:1")
 #: Float noise only. An official figure above the meter by more is a disagreement.
 _AGREEMENT_TOLERANCE_USD = 1e-6
+#: The uncaught exception that ends a controller run the provider refused for
+#: want of credit. OpenAI never charges a request it refuses this way.
+_QUOTA_REFUSAL = re.compile(r"openai\.RateLimitError: Error code: 429 - (\{.*\})")
+_QUOTA_CODES = frozenset({"insufficient_quota", "credit_balance_exhausted"})
+
+
+def _quota_refusal_termination(read, read_json, names, *, snapshots, main_completion, latest, calls, issued,
+                               context):
+    """Prove a run with no terminal record ended on the provider's credit refusal, with nothing after it.
+
+    The driver writes ``controller-<n>.log`` only after the controller process
+    has exited, then its failure snapshot; one log per snapshot means every
+    controller run ended and was snapshotted. The latest log must end on the
+    uncaught 429 ``insufficient_quota`` refusal, and the meter's last call must
+    be that refused request, priced at $0. Any other ending keeps the hold.
+    """
+    logs = {name for name in names if name.startswith(_ARTISAN_RUNTIME + "controller-") and name.endswith(".log")}
+    expected = [f"{_ARTISAN_RUNTIME}controller-{index}.log" for index in range(snapshots)]
+    _require(not main_completion and snapshots > 0 and logs == set(expected)
+             and latest.get("runtime_result_digest") is None
+             and latest.get("runtime_exception_type") == "AuthoringContractError"
+             and latest.get("provider_call_performed") is True)
+    failure = read_json(_ARTISAN_RUNTIME + "last_failure.json")
+    _require(failure == {"status": "failed_or_uncertain", "exception_type": "AuthoringContractError",
+                         "request_digest": issued["request_digest"], "upstream_run_id": context.get("upstream_run_id"),
+                         "completed_generation_adoptable": False})
+    lines = [line for line in read(expected[-1]).decode("utf-8").splitlines() if line.strip()]
+    match = _QUOTA_REFUSAL.fullmatch(lines[-1])
+    _require(match is not None)
+    error = ast.literal_eval(match[1])["error"]
+    refused = calls[-1]
+    failed = refused.get("failure") or {}
+    _require(error.get("type") == "insufficient_quota" and error.get("code") in _QUOTA_CODES
+             and refused.get("cost_usd") == 0 and refused.get("cost_origin") == "upstream_rejected_request"
+             and failed.get("http_status") == 429 and failed.get("error_type") == "RateLimitError")
+    return {"kind": "provider_credit_refusal", "http_status": 429, "error_type": error["type"],
+            "error_code": error["code"], "controller_log": expected[-1],
+            "refused_call": {"id": refused["id"], "request_id": failed.get("request_id")}}
 
 
 def _usd(value):
@@ -466,7 +505,10 @@ def artisan_proven_authoring_spend(result, request):
       ``content_agents`` allowance;
     - every controller run under that reservation left a completion or failure
       snapshot, and the latest one binds the ARTISAN terminal record whose usage
-      is exactly the retained meter, so no metered call follows it;
+      is exactly the retained meter, so no metered call follows it. With no
+      terminal record, only a run that ended on the provider's 429
+      ``insufficient_quota`` refusal qualifies, as its controller log and meter
+      both end on that uncharged request (``_quota_refusal_termination``);
     - every metered call is priced (a call that raised is priced at its own
       upper bound) under the gate's own cap;
     - the official spend observed since the reservation's baseline is no more
@@ -597,19 +639,25 @@ def artisan_proven_authoring_spend(result, request):
             latest = ordered[-1][1]
 
             usage = read_json(_ARTISAN_RUNTIME + "blueprint_usage.json")
-            terminal = read_json(_ARTISAN_RUNTIME + "terminal.v1.json")
             calls = usage.get("calls")
             _require(usage.get("schema_version") == "artisan_upstream_usage.v1"
                      and usage.get("maximum_cost_usd") == context.get("maximum_cost_usd") == cap
                      and usage.get("maximum_requests") == context.get("maximum_requests")
                      and usage.get("deadline_epoch") == context.get("deadline_epoch")
                      and str(context.get("usage_file")).endswith("/" + _ARTISAN_RUNTIME + "blueprint_usage.json")
-                     and isinstance(calls, list) and len(calls) <= usage["maximum_requests"]
-                     # The latest snapshot binds the record its run wrote last, and that
-                     # record's usage is the retained meter: no call was metered after it.
-                     and terminal.get("schema_version") == "blueprint_artisan_terminal.v1"
-                     and latest.get("runtime_result_digest") == canonical_digest(terminal)
-                     and terminal.get("usage") == usage)
+                     and isinstance(calls, list) and len(calls) <= usage["maximum_requests"])
+            termination = None
+            if _ARTISAN_RUNTIME + "terminal.v1.json" in names:
+                # The latest snapshot binds the record its run wrote last, and that
+                # record's usage is the retained meter: no call was metered after it.
+                terminal = read_json(_ARTISAN_RUNTIME + "terminal.v1.json")
+                _require(terminal.get("schema_version") == "blueprint_artisan_terminal.v1"
+                         and latest.get("runtime_result_digest") == canonical_digest(terminal)
+                         and terminal.get("usage") == usage)
+            else:
+                termination = _quota_refusal_termination(
+                    read, read_json, names, snapshots=len(snapshots), main_completion=_GATE_COMPLETION in main,
+                    latest=latest, calls=calls, issued=issued, context=context)
             identities, costs = set(), []
             for call in calls:
                 _require(isinstance(call, dict) and call.get("status") == "priced"
@@ -649,7 +697,7 @@ def artisan_proven_authoring_spend(result, request):
                 "authoring_allowance_usd": allowance, "gate_maximum_cost_usd": cap,
                 "official_observed_cost_usd": official, "official_cost_final": False,
                 "metered_cost_usd": metered, "metered_call_count": len(calls),
-                "proven_authoring_spend_usd": proven, "continuation": continuation}
+                "proven_authoring_spend_usd": proven, "continuation": continuation, "termination": termination}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, UnicodeError,
             zipfile.BadZipFile):
         return None

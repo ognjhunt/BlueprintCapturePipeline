@@ -119,12 +119,28 @@ def _stage_tree(output, request, *, provider_blockers=(STAGE3_FAILURE,)):
     return stage_input
 
 
-def _artisan_runtime(output, request, *, runs, cap=None, baseline=0.0, continuation=None):
+class RateLimitError(Exception):
+    """What the OpenAI SDK raises for a 429; the meter reads its status and request id."""
+
+    status_code = 429
+    request_id = "req_synthetic_refusal"
+
+
+#: The final line the bridge's uncaught credit refusal leaves in the controller log (capture-447ae4f4, 21:16Z).
+CREDIT_REFUSAL = ("openai.RateLimitError: Error code: 429 - {'error': {'message': 'You have no credits remaining. "
+                  "Add credits to continue using the API.', 'type': 'insufficient_quota', 'param': None, "
+                  "'code': 'credit_balance_exhausted'}}")
+
+
+def _artisan_runtime(output, request, *, runs, cap=None, baseline=0.0, continuation=None, credit_refusal=None):
     """Drive the real gate and meter the way the ARTISAN driver does, one controller run at a time.
 
     ``runs`` lists each controller run as ``(call costs, official day total at
     its snapshot, failed)``. A cost of ``None`` is a call still in flight; a
     total of ``None`` means the run never reached its snapshot (the instance died).
+    ``credit_refusal`` ends the last run as the provider's credit refusal does:
+    that many refused (uncharged) requests, then the bridge exits with no
+    terminal record and the log ends on this line.
     """
     stage_input = _stage_tree(output, request)
     runtime = output / RUNTIME
@@ -135,7 +151,8 @@ def _artisan_runtime(output, request, *, runs, cap=None, baseline=0.0, continuat
     _write(runtime / "blueprint_request.v1.json", issued)
     usage_file = "/workspace/runtime_output/" + RUNTIME + "blueprint_usage.json"
     _write(runtime / "bridge_context.v1.json", {"maximum_cost_usd": cap, "maximum_requests": 100,
-                                                "deadline_epoch": DEADLINE, "usage_file": usage_file})
+                                                "deadline_epoch": DEADLINE, "usage_file": usage_file,
+                                                "upstream_run_id": "pl_" + issued["request_digest"][7:39]})
     if continuation is not None:
         source_calls, carried = continuation
         _write(runtime / "continuation/source/blueprint_usage.json", {
@@ -158,7 +175,7 @@ def _artisan_runtime(output, request, *, runs, cap=None, baseline=0.0, continuat
     _write(runtime / "official_openai_cost/openai_cost_scope_attestation_content_agents.json", {})
     gate.reserve()
     terminal = None
-    for costs, total, failed in runs:
+    for index, (costs, total, failed) in enumerate(runs):
         meter = Meter(runtime / "blueprint_usage.json", maximum_cost_usd=cap, maximum_requests=100,
                       deadline_epoch=DEADLINE)
         for cost in costs:
@@ -169,18 +186,33 @@ def _artisan_runtime(output, request, *, runs, cap=None, baseline=0.0, continuat
                 meter.after(identity, cost)
             except RuntimeError:
                 break  # the meter records the charge, then stops the run
-        terminal = {"schema_version": "blueprint_artisan_terminal.v1", "returncode": int(failed),
-                    "phase": "P5_review", "status": "running", "usage": meter.read()}
-        _write(runtime / "terminal.v1.json", json.dumps(terminal))
+        refused = credit_refusal is not None and index == len(runs) - 1
+        if refused:
+            for _ in range(credit_refusal["refused_calls"]):
+                meter.failed(meter.before("create", "synthetic-model"), RateLimitError())
+        else:
+            terminal = {"schema_version": "blueprint_artisan_terminal.v1", "returncode": int(failed),
+                        "phase": "P5_review", "status": "running", "usage": meter.read()}
+            _write(runtime / "terminal.v1.json", json.dumps(terminal))
         if total is None:
             return gate
+        # The driver logs a controller run once it has exited, before its snapshot.
+        _write(runtime / f"controller-{index}.log",
+               "P4_build (iter 0)\nTraceback (most recent call last):\n" + credit_refusal["final_line"] + "\n"
+               if refused else "P4_build (iter 0)\n")
+        if refused:
+            _write(runtime / "last_failure.json", {
+                "status": "failed_or_uncertain", "exception_type": "AuthoringContractError",
+                "request_digest": issued["request_digest"], "upstream_run_id": "pl_" + issued["request_digest"][7:39],
+                "completed_generation_adoptable": False})
         snapshot = gate
         if failed:
             attempts = runtime / "official_openai_cost/attempts"
             attempts.mkdir(exist_ok=True)
             snapshot = replace(gate, output_root=attempts / str(len(list(attempts.iterdir()))))
             shutil.copyfile(gate.reservation_path, snapshot.reservation_path)
-        snapshot.complete(provider_call_performed=bool(costs), runtime_result_digest=canonical_digest(terminal),
+        snapshot.complete(provider_call_performed=bool(costs) or refused,
+                          runtime_result_digest=canonical_digest(terminal) if terminal is not None else None,
                           runtime_exception_type="AuthoringContractError" if failed else None)
     return gate
 
@@ -561,10 +593,11 @@ def test_proof_changed_after_settlement_restores_the_maximum(site):
 # the control plane first). No GPU was rented, so no compute allowance is kept.
 
 
-def _prestage_attempt(site, *, runs=AGREEING, after=None):
+def _prestage_attempt(site, *, runs=AGREEING, after=None, credit_refusal=None):
     """A $31 attempt ($25 ARTISAN cumulative cap + $6 GPU) whose prestage failed in ARTISAN."""
     return _terminal_attempt(site, "prestage", _request("prestage", authoring=25.0, total=31.0),
-                             lambda output, request: _artisan_runtime(output, request, runs=runs),
+                             lambda output, request: _artisan_runtime(output, request, runs=runs,
+                                                                      credit_refusal=credit_refusal),
                              prestage=True, after=after)
 
 
@@ -651,3 +684,83 @@ def test_a_cpu_prestage_that_failed_before_its_first_stage_settles_at_zero(site,
     assert hold["retained_spend_usd"] == 0.0
     assert hold["basis"] == ("preallocation_unentered_authoring" if shape == "archive_without_stages"
                              else "preallocation_api_budget_upper_bound")
+
+
+# ---------------------------------------------------------------------------
+# A run the provider ended by refusing for want of credit (capture-447ae4f4's
+# restart, 2026-11-02 21:16Z: HTTP 429 insufficient_quota / credit_balance_exhausted
+# inside the CPU prestage). The bridge exits before writing its terminal record,
+# so the meter is bound to the run's end through the controller log instead.
+
+REFUSED = {"refused_calls": 3, "final_line": CREDIT_REFUSAL}
+
+
+def test_a_run_refused_for_credit_is_proven_by_its_log_and_meter(tmp_path):
+    result, request = _proof(tmp_path, runs=[([1.25, 2.5, 4.75], 7.0, True)], credit_refusal=REFUSED)
+    proof = budget.artisan_proven_authoring_spend(result, request)
+    assert proof["proven_authoring_spend_usd"] == 8.5 and proof["metered_call_count"] == 6
+    assert proof["termination"] == {
+        "kind": "provider_credit_refusal", "http_status": 429, "error_type": "insufficient_quota",
+        "error_code": "credit_balance_exhausted", "controller_log": RUNTIME + "controller-0.log",
+        "refused_call": {"id": proof["termination"]["refused_call"]["id"], "request_id": "req_synthetic_refusal"}}
+    assert {RUNTIME + "controller-0.log", RUNTIME + "last_failure.json"} <= {row["name"] for row in proof["records"]}
+
+
+def test_the_plain_insufficient_quota_code_qualifies_too(tmp_path):
+    line = CREDIT_REFUSAL.replace("'credit_balance_exhausted'", "'insufficient_quota'")
+    result, request = _proof(tmp_path, runs=[([1.25, 2.5], 3.0, True)],
+                             credit_refusal={**REFUSED, "final_line": line})
+    assert budget.artisan_proven_authoring_spend(result, request)["termination"]["error_code"] == "insufficient_quota"
+
+
+def _append_priced_call(output):
+    meter = Meter(output / RUNTIME / "blueprint_usage.json", maximum_cost_usd=15.0, maximum_requests=100,
+                  deadline_epoch=DEADLINE)
+    meter.after(meter.before("create", "synthetic-model"), 0.25)
+
+
+REFUSAL_FAILING = {
+    # A 429 that is only a rate limit, or any other ending, is not a definitive refusal.
+    "rate_limit_not_quota": dict(credit_refusal={**REFUSED, "final_line": CREDIT_REFUSAL.replace(
+        "'insufficient_quota'", "'requests'").replace("'credit_balance_exhausted'", "'rate_limit_exceeded'")}),
+    "another_exception_last": dict(credit_refusal={**REFUSED, "final_line": "RuntimeError: controller stopped"}),
+    "refusal_not_last_in_log": dict(credit_refusal={**REFUSED, "final_line": CREDIT_REFUSAL + "\nP4_build (iter 1)"}),
+    # Something was metered after the refused request.
+    "call_after_refusal": dict(credit_refusal=REFUSED, mutate=_append_priced_call),
+    "no_refused_call_metered": dict(credit_refusal={**REFUSED, "refused_calls": 0}),
+    # Every controller run must have ended and been snapshotted.
+    "log_missing": dict(credit_refusal=REFUSED, mutate=lambda output: (output / RUNTIME / "controller-0.log").unlink()),
+    "run_without_snapshot": dict(credit_refusal=REFUSED, mutate=lambda output: _write(
+        output / RUNTIME / "controller-1.log", "P4_build (iter 1)\n")),
+    "failure_record_adoptable": dict(credit_refusal=REFUSED, mutate=_rewrite(
+        "last_failure.json", lambda value: value.update(completed_generation_adoptable=True))),
+    # An earlier run's terminal record does not bind a meter the refused run added to.
+    "stale_terminal_record": dict(runs=[([1.25], 1.0, True), ([2.5], 3.0, True)]),
+    # And the gate must still agree.
+    "official_above_meter": dict(runs=[([1.25, 2.5], 3.76, True)]),
+}
+
+
+@pytest.mark.parametrize("case", sorted(REFUSAL_FAILING))
+def test_a_refusal_that_is_not_definitive_or_not_final_proves_nothing(tmp_path, case):
+    spec = {"runs": [([1.25, 2.5, 4.75], 7.0, True)], "credit_refusal": REFUSED, **REFUSAL_FAILING[case]}
+    result, request = _proof(tmp_path, **spec)
+    assert budget.artisan_proven_authoring_spend(result, request) is None
+
+
+def test_a_crash_without_a_terminal_record_still_proves_nothing(tmp_path):
+    """Only the credit refusal stands in for the terminal record: any other crash keeps the hold."""
+    def crash(output):
+        (output / RUNTIME / "terminal.v1.json").unlink()
+        _write(output / RUNTIME / "controller-0.log", "Traceback (most recent call last):\nKeyError: 'x'\n")
+    result, request = _proof(tmp_path, runs=[([1.25, 2.5], 3.0, True)], mutate=crash)
+    assert budget.artisan_proven_authoring_spend(result, request) is None
+
+
+def test_capture_447_restart_refused_for_credit_on_the_cpu_prestage(site):
+    """$31 attempt ($25 ARTISAN + $6 GPU), refused for credit mid-build on the control plane, no GPU."""
+    row = _prestage_attempt(site, runs=[([2.5, 4.75, 6.0, 5.26, 3.12], 17.95, True)], credit_refusal=REFUSED)
+    hold = _hold(site, row)
+    assert (hold["basis"], hold["retained_spend_usd"]) == (settlement.PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS, 21.63)
+    assert hold["evidence"]["termination"]["kind"] == "provider_credit_refusal"
+    assert committed_spend_usd(site["directory"], site["intent"]) == Decimal("21.63")
