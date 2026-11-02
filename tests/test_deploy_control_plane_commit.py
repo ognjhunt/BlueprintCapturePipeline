@@ -554,6 +554,8 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         "PathExistsGlob=/activations/pending/*.json\n",
         encoding="utf-8",
     )
+    activation_timer = unit_dir / "blueprint-task-evaluation-launch-activation.timer"
+    activation_timer.write_text("[Timer]\nOnUnitInactiveSec=1h\n", encoding="utf-8")
     canary_service = (
         unit_dir / "blueprint-task-evaluation-policy-canary-dispatcher.service"
     )
@@ -753,6 +755,7 @@ def test_deploy_installs_exact_queue_unit_bytes_atomically(tmp_path: Path) -> No
         *remote_units,
         activation_service,
         activation_path,
+        activation_timer,
         canary_service,
         canary_path,
         team_runner_service,
@@ -837,6 +840,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-episode-compilation-remote.path",
         "blueprint-task-evaluation-launch-activation.service",
         "blueprint-task-evaluation-launch-activation.path",
+        "blueprint-task-evaluation-launch-activation.timer",
         "blueprint-task-evaluation-policy-canary-dispatcher.service",
         "blueprint-task-evaluation-policy-canary-dispatcher.path",
         "blueprint-team-evaluation-runner.service",
@@ -897,6 +901,7 @@ def test_deployed_unit_set_contains_paid_and_no_spend_queue_pairs() -> None:
         "blueprint-task-evaluation-launch-preparation.path",
         "blueprint-task-evaluation-episode-compilation.path",
         "blueprint-task-evaluation-launch-activation.path",
+        "blueprint-task-evaluation-launch-activation.timer",
         "blueprint-scene-object-discovery.path",
         "blueprint-team-scene-packet.path",
     )

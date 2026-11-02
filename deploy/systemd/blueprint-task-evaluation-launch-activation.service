@@ -3,6 +3,10 @@ Description=Activate verified Blueprint Task Evaluation launch inputs
 Documentation=https://github.com/ognjhunt/BlueprintCapturePipeline
 Wants=network-online.target
 After=network-online.target
+# Both the path unit and the hourly timer start this worker. A door hold on the
+# path unit must still mean nothing claims a pending/ row
+# (operator_door/activation_hold.py), so every start obeys that hold.
+ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/blueprint-task-evaluation-launch-activation.path.json
 
 [Service]
 ReadOnlyPaths=-/var/lib/blueprint/pipeline-control-plane/release-retention

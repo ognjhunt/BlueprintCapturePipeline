@@ -452,6 +452,7 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-task-evaluation-episode-compilation-remote.path",
     "blueprint-task-evaluation-launch-activation.service",
     "blueprint-task-evaluation-launch-activation.path",
+    "blueprint-task-evaluation-launch-activation.timer",
     "blueprint-task-evaluation-policy-canary-dispatcher.service",
     "blueprint-task-evaluation-policy-canary-dispatcher.path",
     "blueprint-team-evaluation-runner.service",
@@ -529,6 +530,9 @@ DEFAULT_ALWAYS_ARM_PATH_UNITS = (
     "blueprint-task-evaluation-launch-preparation.path",
     "blueprint-task-evaluation-episode-compilation.path",
     "blueprint-task-evaluation-launch-activation.path",
+    # Starts the same no-spend activation oneshot hourly, so a claim a killed
+    # worker left is retired on an idle queue too; a hold on the path stops it.
+    "blueprint-task-evaluation-launch-activation.timer",
     "blueprint-scene-object-discovery.path",
     # CPU compile of a prepared scene's team half, its derived registry row and a
     # signed offer republish (facts, never authority); it holds no provider path.

@@ -1,7 +1,6 @@
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/task_evaluation_launch_activation_claim_recovery.py
 #   src/blueprint_pipeline/task_evaluation_launch_activation_worker.py
-#   src/blueprint_pipeline/control_plane_storage_gc.py
 """A launch-activation claim whose worker died is retired, so it stops holding disk.
 
 Production shape (2026-10-31, capture-447): the oneshot activation unit hit its
@@ -10,6 +9,8 @@ bundle and was killed with SIGTERM. Its envelope stayed in ``processing/``
 with no lock and no result. Later runs claim only from ``pending/``, so nothing
 ever moved it, and the storage GC, which reads pending and processing rows as
 live references, kept the activation's 14.8 GB directory as ``queue_referenced``.
+The worker retires such a claim at the start of each run, as the service
+account; the storage GC (root) never touches ``processing/``.
 """
 
 from __future__ import annotations
@@ -119,7 +120,7 @@ def test_a_killed_workers_claim_is_sealed_blocked_and_moved_byte_for_byte(tmp_pa
     claimed_at = _claim_time(queue, name)
     now = _abandoned(queue, name)
 
-    rows = _retire(queue, now, recovered_by="control_plane_storage_gc")
+    rows = _retire(queue, now)
 
     assert [(row["name"], row["action"]) for row in rows] == [(name, "retired")]
     assert _states(queue, name) == ["blocked"]
@@ -140,7 +141,7 @@ def test_a_killed_workers_claim_is_sealed_blocked_and_moved_byte_for_byte(tmp_pa
     assert claim["envelope_size_bytes"] == len(original)
     assert claim["claim_source_commit"] == CLAIM_COMMIT
     assert claim["recovered_by_source_commit"] == RECOVERING
-    assert claim["recovered_by"] == "control_plane_storage_gc"
+    assert claim["recovered_by"] == "task_evaluation_launch_activation_worker"
     assert claim["claimed_at_epoch"] == claimed_at and claim["recovered_at_epoch"] == now
     assert claim["abandoned_after_seconds"] == recovery.ABANDONED_AFTER_SECONDS
     assert claim["worker_lease_held"] is False
@@ -285,34 +286,15 @@ def test_a_placeholder_left_beside_its_pending_row_is_removed(tmp_path) -> None:
     assert status["status"] == "pending"
 
 
-def test_a_dry_run_reports_without_mutating(tmp_path) -> None:
+def test_root_never_writes_into_the_service_accounts_queue(tmp_path, monkeypatch) -> None:
+    """The queue's directories belong to the service account; root would follow its links."""
+
     _value, queue, name = _killed_claim(tmp_path)
-    rows = _retire(queue, _abandoned(queue, name), apply=False)
-    assert [row["action"] for row in rows] == ["would_retire"]
-    assert _states(queue, name) == ["processing"] and not list((queue / "results").iterdir())
-
-
-def test_a_root_caller_seals_the_result_owned_like_the_results_directory(tmp_path, monkeypatch) -> None:
-    _value, queue, name = _killed_claim(tmp_path)
-    results = queue / "results"
-    owner = results.stat()
-    calls = []
-    real_chown = os.chown
-
-    def chown(path, uid, gid, *, follow_symlinks=True):
-        calls.append((Path(path).parent, Path(path).name.startswith("."), uid, gid, follow_symlinks,
-                      (results / name).exists()))
-        real_chown(path, uid, gid, follow_symlinks=follow_symlinks)
-
+    original = (queue / "processing" / name).read_bytes()
     monkeypatch.setattr(recovery.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(recovery.os, "chown", chown)
-    assert [row["action"] for row in _retire(queue, _abandoned(queue, name))] == ["retired"]
-    # The staged copy gets the owner before the result name exists, never after.
-    assert calls == [(results, True, owner.st_uid, owner.st_gid, False, False)]
-    sealed = (results / name).stat()
-    assert (sealed.st_uid, sealed.st_gid) == (owner.st_uid, owner.st_gid)
-    assert oct(sealed.st_mode & 0o777) == oct(0o440)
-    assert [path.name for path in results.iterdir()] == [name]
+    assert _retire(queue, _abandoned(queue, name)) == [{"name": name, "action": "kept", "reason": "running_as_root"}]
+    assert _states(queue, name) == ["processing"] and not list((queue / "results").iterdir())
+    assert (queue / "processing" / name).read_bytes() == original
 
 
 def test_the_worker_retires_an_abandoned_claim_before_it_claims(tmp_path, monkeypatch) -> None:
@@ -388,7 +370,9 @@ def test_after_recovery_the_activation_directory_is_no_longer_queue_referenced(t
         assert after["candidate_count"] == 0 and after["retained_counts"][retention] == 1
 
 
-def test_the_storage_gc_retires_the_claim_and_reclaims_its_directory_in_one_tick(tmp_path, monkeypatch) -> None:
+def test_the_root_gc_never_touches_the_claim_and_reclaims_its_directory_once_the_worker_retired_it(
+    tmp_path, monkeypatch
+) -> None:
     import blueprint_pipeline.control_plane_storage_gc as gc_module
 
     monkeypatch.setattr(gc_module, "reconcile_terminal_cache_pins", lambda **_kwargs: {"status": "applied"})
@@ -396,32 +380,21 @@ def test_the_storage_gc_retires_the_claim_and_reclaims_its_directory_in_one_tick
     now = _abandoned(queue, name)
     derived = tmp_path / "launch-activations"
     directory = _activation_directory(derived, value["activation_id"], idle_seconds=2 * 86400, now=now)
+    original = (queue / "processing" / name).read_bytes()
     common = dict(content_store_roots=[], derived_roots=[derived], queue_roots=[queue], pins_root=tmp_path / "pins",
                   derived_minimum_age_seconds=3600, now=lambda: now, classifier=lambda *_a, **_k: None)
 
-    planned = run_storage_gc(**common)
-    assert planned["abandoned_activation_claims"]["status"] == "dry_run"
-    assert [row["action"] for row in planned["abandoned_activation_claims"]["claims"]] == ["would_retire"]
-    assert planned["derived_directories"]["retained_counts"]["queue_referenced"] == 1
-    assert _states(queue, name) == ["processing"] and directory.exists()
+    before = run_storage_gc(**common, apply=True, ack=RUN_ACK)
+    assert not before.get("phase_errors")
+    assert before["derived_directories"]["retained_by_reason"]["queue_referenced"]["count"] == 1
+    assert _states(queue, name) == ["processing"] and (queue / "processing" / name).read_bytes() == original
+    assert not list((queue / "results").iterdir()) and directory.exists()
 
-    applied = run_storage_gc(**common, apply=True, ack=RUN_ACK)
-    assert not applied.get("phase_errors")
-    phase = applied["abandoned_activation_claims"]
-    assert phase["status"] == "applied" and phase["action_counts"] == {"retired": 1}
-    assert applied["derived_directories"]["removed"] == [{"name": value["activation_id"], "size_bytes": 64}]
+    assert [row["action"] for row in _retire(queue, now)] == ["retired"]  # the worker's next run
+    after = run_storage_gc(**common, apply=True, ack=RUN_ACK)
+    assert not after.get("phase_errors")
+    assert after["derived_directories"]["removed"] == [{"name": value["activation_id"], "size_bytes": 64}]
     assert _states(queue, name) == ["blocked"] and not directory.exists()
-    claim = json.loads((queue / "results" / name).read_text())["claim_recovery"]
-    assert claim["recovered_by"] == "control_plane_storage_gc"
-    assert claim["recovered_by_source_commit"] is None  # the GC's own release is unknown on the host
-
-
-def test_the_storage_gc_skips_the_phase_without_an_activation_queue(tmp_path) -> None:
-    queue = tmp_path / "queue"
-    (queue / "processing").mkdir(parents=True)
-    report = run_storage_gc(content_store_roots=[], derived_roots=[], queue_roots=[queue], pins_root=tmp_path / "pins",
-                            now=lambda: 1_000.0, classifier=lambda *_a, **_k: None)
-    assert "abandoned_activation_claims" not in report and not report.get("phase_errors")
 
 
 def test_a_retired_claim_never_re_activates_its_stale_preparation(tmp_path) -> None:
