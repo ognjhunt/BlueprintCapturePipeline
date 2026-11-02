@@ -17,7 +17,9 @@ Shared doctrine is generated from `doctrine/` (see `doctrine/README.md`).
 
 Fail closed only for:
 
-- **Privacy:** people in captures are screened, and consent is respected.
+- **Privacy:** the site's consent is respected, including its withdrawal.
+  Faces are blurred in the frames sent to World Labs; people in captures are
+  not otherwise screened or blurred.
 - **Rights:** capture permissions, revocation, and dataset or model licenses.
 - **Money:** the per-site budget (USD 15 for screening candidates), the Google
   Cloud monthly ceiling (USD 100), and the paid-resource allocator below. Never
