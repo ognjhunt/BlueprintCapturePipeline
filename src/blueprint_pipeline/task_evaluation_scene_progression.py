@@ -346,7 +346,7 @@ def _settle_ended_authority(*, directory, intent, state, config, now):
     try:
         if not ((directory / "revoked.json").exists() or now >= intake.effective_execution_expiry(directory, intent)):
             return
-        from .task_evaluation_terminal_scene_attempt_settlement import settle_ended_authority_attempt
+        from .task_evaluation_ended_authority_settlement import settle_ended_authority_attempt
         outcome = settle_ended_authority_attempt(directory=directory, intent=intent, state=state, config=config, now=now)
     except (OSError, ValueError, KeyError, TypeError) as exc:
         # Recorded as its stable code only, so an unchanged refusal does not rewrite progression.
