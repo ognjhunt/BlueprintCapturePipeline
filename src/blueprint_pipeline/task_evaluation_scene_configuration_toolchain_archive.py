@@ -484,18 +484,26 @@ def prepare_toolchain_archive(
 
 
 def _prune(cache: Path, *, keep: Path) -> None:
-    """Keep the most recently used entries; an open fragment survives its unlink."""
+    """Keep the most recently used entries; an open fragment survives its unlink.
 
-    entries = sorted(
-        (
-            path for path in cache.iterdir()
-            if path.is_dir() and not path.is_symlink() and not path.name.startswith(".")
-            and path != keep
-        ),
+    Only an entry this schema can read counts toward ``RETAINED_ENTRIES``. An
+    entry without the current index (a v1 entry after the v2 change) can never
+    be reused, so it goes first. On 2026-11-02 one stale v1 entry held 5.5 GiB
+    and one of the two slots on the control-plane work volume.
+    """
+
+    entries = [
+        path for path in cache.iterdir()
+        if path.is_dir() and not path.is_symlink() and not path.name.startswith(".")
+        and path != keep
+    ]
+    unreadable = [path for path in entries if not (path / INDEX_NAME).is_file()]
+    current = sorted(
+        (path for path in entries if path not in unreadable),
         key=lambda path: path.stat().st_mtime_ns,
         reverse=True,
     )
-    for stale in entries[RETAINED_ENTRIES - 1:]:
+    for stale in unreadable + current[RETAINED_ENTRIES - 1:]:
         try:
             _remove_entry(stale)
         except OSError:

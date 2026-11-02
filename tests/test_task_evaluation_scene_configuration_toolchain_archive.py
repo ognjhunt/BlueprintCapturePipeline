@@ -182,6 +182,26 @@ def test_a_changed_cached_tree_builds_a_new_archive_and_bounds_the_cache(tmp_pat
     assert empty_member not in _toolchain_members(built[0]["bundle_path"])
 
 
+def test_an_entry_of_an_older_schema_is_pruned_and_never_holds_a_slot(tmp_path: Path) -> None:
+    """A v1 entry the current code cannot read is removed first, not kept as one of two."""
+
+    cache = tmp_path / "cache"
+    first = _bundle(tmp_path, "out-plain", toolchain=_published_toolchain(tmp_path / "plain", A),
+                    commit=A, cache=cache)
+    stale = cache / ("a" * 64)
+    stale.mkdir()
+    (stale / "task_evaluation_scene_configuration_toolchain_archive.v1.json").write_text("{}\n")
+    (stale / archive_module.FRAGMENT_NAME).write_bytes(b"v1 fragment")
+    newer = _bundle(tmp_path, "out-bytecode",
+                    toolchain=_published_toolchain(tmp_path / "bytecode", A, bundled_bytecode=True),
+                    commit=A, cache=cache)
+
+    retained = sorted(path.name for path in cache.iterdir())
+    assert not stale.exists()
+    assert retained == sorted(row["toolchain_archive"]["archive_key"].removeprefix("sha256:")
+                              for row in (first, newer))
+
+
 def test_a_release_that_only_restamps_its_packages_reuses_the_archive(tmp_path: Path) -> None:
     """capture-447ae4f4, 2026-11-01: each release stamps its commit into every
     component package seal, which changed the whole-inventory key on every release."""
