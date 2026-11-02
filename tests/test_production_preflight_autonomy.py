@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import stat
@@ -58,6 +59,25 @@ def test_summary_projects_only_fixed_safe_fields_and_groups_causes() -> None:
     assert len(summary["findings"]) == 1 and summary["findings"][0]["count"] == 2
     assert summary["findings"][0]["next_action"] == "inspect_selected_route_access_contract"
     assert summary["proof_boundary"] == "selected_route_plumbing_only"
+
+
+def test_summary_accepts_the_report_bytes_the_chain_actually_writes() -> None:
+    # run_chain stores EnvironmentFiles as (path, ignore_errors) tuples. JSON
+    # has no tuples, so the written bytes hold lists for the same document.
+    report = _report()
+    report["units"]["blueprint-beta-policy-screening.service"]["environment_files"] = preflight.environment_files(
+        {"EnvironmentFiles": ["/etc/blueprint/pipeline-control-plane.env (ignore_errors=no)"]})
+    raw = (json.dumps(report, indent=1, sort_keys=True) + "\n").encode()
+    summary = build_safe_summary(report, raw_report_bytes=raw)
+    assert summary["report_sha256"] == hashlib.sha256(raw).hexdigest()
+    assert summary["counts"] == {"blocker": 1, "warning": 0, "info": 0}
+
+
+def test_summary_still_refuses_bytes_of_a_different_report() -> None:
+    report, other = _report(), _report()
+    other["host_findings"].append({"severity": "blocker", "code": "unit_not_found"})
+    with pytest.raises(PreflightSummaryError, match="preflight_report_bytes_mismatch"):
+        build_safe_summary(report, raw_report_bytes=json.dumps(other).encode())
 
 
 @pytest.mark.parametrize("field,value", [("active_sha", "unknown"), ("active_sha", ""), ("active_sha", None),
