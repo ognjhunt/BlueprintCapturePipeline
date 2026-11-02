@@ -785,7 +785,7 @@ def test_dishwasher_admitted_under_measured_mode(tmp_path, monkeypatch, mode) ->
 def test_prestage_and_output_hold_are_sequential_not_additive(
     tmp_path, monkeypatch, room
 ) -> None:
-    """The CPU prefix reserves 3 x unpacked + 512 MiB on the same volume first.
+    """The CPU prefix reserves its own peak on the same volume first.
 
     Admission checks max(prefix, hold + what the prefix leaves) up front; the
     hold is taken only after the prefix released its own reservation, so the
@@ -799,9 +799,10 @@ def test_prestage_and_output_hold_are_sequential_not_additive(
     hold = SMALL_UPLOAD + RESERVE
     need = int(observed["need"])
     unpacked = admission.bundle_unpacked_bytes(Path(lane.receipt["bundle_path"]))
-    larger = max(need, hold + unpacked)
+    residue = admission.cpu_prefix_phase_bytes(admission.CPU_PRESTAGE_PHASE, unpacked)[1]
+    larger = max(need, hold + residue)
     if room == "larger_need":
-        lane.volume.free = FLOOR + larger + need // 2
+        lane.volume.free = FLOOR + larger + hold // 2
         # Together they would not fit: a hold held across the prefix would
         # have refused the prefix's own reservation.
         assert lane.volume.free - FLOOR < hold + need
@@ -832,7 +833,7 @@ def test_prestage_and_output_hold_are_sequential_not_additive(
     assert record["hold"] == "held"
     assert record["hold_phase"] == "after_cpu_prefix"
     assert record["sequential_phases"] == [{
-        "phase": "cpu_prestage", "peak_bytes": need, "residue_bytes": unpacked,
+        "phase": "cpu_prestage", "peak_bytes": need, "residue_bytes": residue,
         "shares_output_volume": True,
     }]
     assert _ledger_rows(lane.ledger) == []
@@ -1027,7 +1028,7 @@ def test_deferred_hold_refusal_after_api_pretraining_is_typed_but_withheld(
     semantic_root.mkdir()
     monkeypatch.setattr(pretraining, "LOGICAL_ROOT", semantic_root)
     hold = SMALL_UPLOAD + RESERVE
-    need = admission.cpu_prefix_peak_bytes(Path(lane.receipt["bundle_path"]))
+    need = admission.cpu_prefix_peak_bytes(Path(lane.receipt["bundle_path"]), "semantic_pretraining")
     unpacked = admission.bundle_unpacked_bytes(Path(lane.receipt["bundle_path"]))
     lane.volume.free = FLOOR + max(need, hold + unpacked)
     lane.behaviour["free_after_pretraining"] = FLOOR + hold - 1
@@ -1080,7 +1081,7 @@ def test_prefix_residue_is_admitted_up_front_or_refused_before_any_prefix(
 ) -> None:
     """What the prefix leaves in the job directory counts before any work starts.
 
-    The prefix leaves exactly its bound, one unpacked bundle, beside the output.
+    The prefix leaves exactly its bound, its capsule and output archive, beside the output.
     Either admission finds room for that up front and the run completes, or it
     skips the prefix before staging, before any prefix or paid work, never
     after them, and every stage runs on the GPU.
@@ -1090,20 +1091,29 @@ def test_prefix_residue_is_admitted_up_front_or_refused_before_any_prefix(
     work = tmp_path / "prestage-work"
     work.mkdir()
     unpacked = admission.bundle_unpacked_bytes(Path(lane.receipt["bundle_path"]))
+    # Written for real below, so the outputs' allowance is scaled to the fixture.
+    monkeypatch.setattr(cpu_prestage, "PRESTAGE_STAGE_OUTPUT_ALLOWANCE_BYTES", 64 * 1024)
+    residue = admission.cpu_prefix_phase_bytes(admission.CPU_PRESTAGE_PHASE, unpacked)[1]
     if not shares:
         real_device = admission.target_device
         monkeypatch.setattr(
             admission, "target_device", lambda path: -1 if Path(path) == work else real_device(path)
         )
     observed = _install_prestage(
-        lane, monkeypatch, work, residue_bytes=unpacked, elsewhere=not shares
+        lane, monkeypatch, work, residue_bytes=residue, elsewhere=not shares
     )
     hold = SMALL_UPLOAD + RESERVE
     need = int(observed["need"])
-    required = max(need, hold + unpacked) if shares else hold + unpacked
+    required = max(need, hold + residue) if shares else hold + residue
     lane.volume.free = FLOOR + required - (room == "short")
-    # The earlier check, max(prefix, hold), would have admitted both rooms.
-    assert lane.volume.free - FLOOR >= (max(need, hold) if shares else hold)
+    # The earlier check, max(prefix, hold), would have admitted both rooms
+    # wherever the residue binds. Beside a shared prefix its own peak binds now
+    # (it writes outputs and archives far smaller than the bundle it unpacks).
+    earlier = max(need, hold) if shares else hold
+    if required > earlier:
+        assert lane.volume.free - FLOOR >= earlier
+    else:
+        assert shares and required == need
 
     result = lane.run(cpu_prestage_stage_limit="stage-2")
 
@@ -1114,7 +1124,7 @@ def test_prefix_residue_is_admitted_up_front_or_refused_before_any_prefix(
         assert skipped["required_available_bytes"] == required
         assert skipped["blockers"] == [admission.BUDGET_EXCEEDED_BLOCKER]
         return
-    assert observed["left_behind"] == unpacked
+    assert observed["left_behind"] == residue
     assert result["status"] == "completed", result["blockers"]
     record = result["provider_output_disk_capacity"]["before_allocation_and_staging"]
     assert record["required_available_bytes"] == required
@@ -1129,10 +1139,12 @@ def test_prestage_is_skipped_when_only_its_disk_share_does_not_fit(
 ) -> None:
     """CPU prestage is an optimization; the GPU runs every stage within the same authority.
 
-    With the prestage the website bundle needs max(3 x 11.34 GB + 512 MiB, hold +
-    11.34 GB) = 34.55 GB above the floor, against about 27 GB; without it, only the
-    12.77 GB hold. That run is admitted without the prestage and says so; a volume
-    too small either way keeps today's refusal; a prestage that fits is unchanged.
+    With the prestage the website bundle needs max(11.34 GB + the 2 GiB runtime + 1 GiB
+    of outputs and its three archives + 512 MiB, hold + its 2 GiB residue) = 18.32 GB
+    above the floor (34.55 GB at 3 x unpacked until 2026-11-02); without it, only the
+    12.77 GB hold. A volume between the two is admitted without the prestage and says
+    so; a volume too small either way keeps today's refusal; a prestage that fits is
+    unchanged.
     """
 
     lane = _harness(tmp_path, monkeypatch, bundle_size_bytes=WEBSITE_BUNDLE_BYTES)
@@ -1150,12 +1162,13 @@ def test_prestage_is_skipped_when_only_its_disk_share_does_not_fit(
     monkeypatch.setattr(scene_vast, "run_vast_provider_adapter", adapter)
     upload = 2 * WEBSITE_BUNDLE_BYTES
     hold = upload + RESERVE
-    with_prestage = max(3 * WEBSITE_UNPACKED_BYTES + RESERVE, hold + WEBSITE_UNPACKED_BYTES)
-    assert (hold, with_prestage) == (12_768_236_504, 34_554_016_988)
+    peak, residue = admission.cpu_prefix_phase_bytes(admission.CPU_PRESTAGE_PHASE, WEBSITE_UNPACKED_BYTES)
+    with_prestage = max(peak, hold + residue)
+    assert (hold, with_prestage) == (12_768_236_504, 18_318_370_548)
     floor = disk_budget.floor_bytes(LAUNCH_VOLUME_TOTAL, role=admission.OUTPUT_ROLE)
     lane.volume.total = LAUNCH_VOLUME_TOTAL
     lane.volume.free = {
-        "prestage_short": LAUNCH_VOLUME_FREE,
+        "prestage_short": floor + with_prestage - 1,
         "both_short": floor + hold - 1,
         "prestage_fits": floor + with_prestage,
     }[room]
@@ -1190,7 +1203,7 @@ def test_prestage_is_skipped_when_only_its_disk_share_does_not_fit(
     assert _ledger_rows(lane.ledger) == []
     if room == "prestage_fits":
         assert result["cpu_prestage"]["capsule_path"].endswith("cpu_prestage_capsule.zip")
-        assert observed["ledger_during"] == [("cpu_prestage", 3 * WEBSITE_UNPACKED_BYTES + RESERVE)]
+        assert observed["ledger_during"] == [("cpu_prestage", peak)]
         assert prefix_sent
         assert record["required_available_bytes"] == with_prestage
         assert "cpu_prestage_decision" not in result and not decision_path.exists()
@@ -1228,9 +1241,10 @@ def test_a_skipped_prestage_is_recorded_on_a_later_hold_refusal(tmp_path, monkey
     work.mkdir()
     observed = _install_prestage(lane, monkeypatch, work)
     hold = SMALL_UPLOAD + RESERVE
-    need = int(observed["need"])
+    need = admission.cpu_prefix_peak_bytes(Path(lane.receipt["bundle_path"]), "semantic_pretraining")
     unpacked = admission.bundle_unpacked_bytes(Path(lane.receipt["bundle_path"]))
     without_prestage = max(need, hold + unpacked)
+    assert int(observed["need"]) + unpacked > without_prestage
     lane.volume.free = FLOOR + without_prestage
     lane.behaviour["free_after_pretraining"] = FLOOR + hold - 1
 
@@ -1324,6 +1338,28 @@ def test_up_front_prefix_need_is_what_the_prestage_reserves(tmp_path) -> None:
     assert admission.cpu_prefix_peak_bytes(tmp_path / "bundle.zip") == receipt["reserved_peak_bytes"]
 
 
+def test_recorded_website_prestage_fits_where_the_volume_has_room() -> None:
+    """capture-447ae4f4, 2026-11-02: every run skipped the prestage at 3 x unpacked.
+
+    Recorded: an ARTISAN bundle of 11,465,748,040 unpacked bytes and an
+    8,536,870,912-byte hold; available above the floor 16.99, 18.67 and 28.36 GB.
+    The prefix writes about 1 GB beside the bundle, so it needs 18.45 GB, not 34.93.
+    """
+
+    unpacked, hold = 11_465_748_040, 8_536_870_912
+    peak, residue = admission.cpu_prefix_phase_bytes(admission.CPU_PRESTAGE_PHASE, unpacked)
+    required = admission.output_volume_requirement(
+        hold, [{"phase": "cpu_prestage", "peak_bytes": peak, "residue_bytes": residue,
+                "shares_output_volume": True}]
+    )
+    assert (peak, residue, required) == (18_445_069_896, 2 * GIB, 18_445_069_896)
+    assert [available >= required for available in (16_988_073_984, 18_668_105_728, 28_360_376_320)] == [
+        False, True, True]
+    # The pretraining phase re-archives the extracted bundle and keeps 3 x unpacked.
+    assert admission.cpu_prefix_phase_bytes("semantic_pretraining", unpacked) == (
+        3 * unpacked + 512 * MIB, unpacked)
+
+
 def test_up_front_prefix_need_is_what_api_pretraining_reserves(tmp_path, monkeypatch) -> None:
     """The ArtiFixer semantic preparation reserves on its own volume by the same formula."""
 
@@ -1351,7 +1387,7 @@ def test_up_front_prefix_need_is_what_api_pretraining_reserves(tmp_path, monkeyp
 
     assert reserved["role"] == "semantic_pretraining"
     assert reserved["target_root"] == tmp_path / "semantic-pretraining"
-    assert reserved["expected_bytes"] == admission.cpu_prefix_peak_bytes(bundle)
+    assert reserved["expected_bytes"] == admission.cpu_prefix_peak_bytes(bundle, "semantic_pretraining")
     assert reserved["expected_bytes"] == 3 * 5096 + 512 * MIB
 
 

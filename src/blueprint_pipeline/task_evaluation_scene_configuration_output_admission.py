@@ -103,20 +103,18 @@ EXTRACTION_BUDGET_EXCEEDED_BLOCKER = (
 RESERVATION_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
 #: Footprint samples are labelled by lane.
 WORKLOAD = "website_scene_configuration"
-#: Both CPU phases that may run on this host before the GPU reserve 3 x the
-#: bundle's unpacked bytes + 512 MiB: the prefix in
-#: ``task_evaluation_scene_configuration_cpu_prestage`` and the ArtiFixer
-#: semantic preparation in ``task_evaluation_artifixer_pretraining``.
+#: The ArtiFixer semantic preparation in ``task_evaluation_artifixer_pretraining``
+#: reserves 3 x the bundle's unpacked bytes + 512 MiB before the GPU. The CPU
+#: prestage sizes itself by what it writes
+#: (``task_evaluation_scene_configuration_cpu_prestage.prestage_peak_bytes``).
 CPU_PREFIX_EXPANSION = 3
 CPU_PREFIX_OVERHEAD_BYTES = 512 * 1024**2
-#: What a CPU phase leaves in the job directory once it released its own
-#: reservation is estimated at one unpacked bundle, not proven: the API
-#: pretraining capsule re-archives the extracted bundle with its prepared
-#: frames, and the prestage keeps its capsule and output archive, both archives
-#: of its stage outputs. Each phase's own 3 x unpacked estimate already budgets
-#: its outgoing archive at one unpacked share, so admission counts that share
-#: beside the output. A prefix that leaves more can still see the deferred hold
-#: refused; compare against the sealed receipts' capsule sizes before tightening.
+#: What the pretraining phase leaves in the job directory once it released its
+#: own reservation is estimated at one unpacked bundle, not proven: its capsule
+#: re-archives the extracted bundle with its prepared frames. The prestage
+#: leaves its capsule and output archive, both archives of its stage outputs
+#: (``prestage_residue_bytes``). A phase that leaves more can still see the
+#: deferred hold refused.
 CPU_PREFIX_RESIDUE_SHARES = 1
 #: Where a hold deferred behind a CPU prefix sharing the volume is taken.
 #: Why a typed refusal after the prefix is not retried automatically: a retry
@@ -167,10 +165,24 @@ def bundle_unpacked_bytes(bundle_path: Path) -> int:
         return sum(member.file_size for member in archive.infolist())
 
 
-def cpu_prefix_peak_bytes(bundle_path: Path) -> int:
+def cpu_prefix_phase_bytes(phase: str, unpacked: int) -> tuple[int, int]:
+    """One pre-GPU CPU phase's (peak, residue) over a bundle of ``unpacked`` bytes."""
+
+    if phase == CPU_PRESTAGE_PHASE:
+        from .task_evaluation_scene_configuration_cpu_prestage import (  # noqa: PLC0415
+            prestage_peak_bytes,
+            prestage_residue_bytes,
+        )
+
+        return prestage_peak_bytes(unpacked), prestage_residue_bytes()
+    return (CPU_PREFIX_EXPANSION * unpacked + CPU_PREFIX_OVERHEAD_BYTES,
+            CPU_PREFIX_RESIDUE_SHARES * unpacked)
+
+
+def cpu_prefix_peak_bytes(bundle_path: Path, phase: str = CPU_PRESTAGE_PHASE) -> int:
     """What a CPU phase over this bundle reserves before the GPU is rented."""
 
-    return CPU_PREFIX_EXPANSION * bundle_unpacked_bytes(bundle_path) + CPU_PREFIX_OVERHEAD_BYTES
+    return cpu_prefix_phase_bytes(phase, bundle_unpacked_bytes(bundle_path))[0]
 
 
 
@@ -592,10 +604,11 @@ class SceneConfigurationOutputAdmission:
         unpacked = bundle_unpacked_bytes(Path(str(self.receipt["bundle_path"])))
         output_device = target_device(self.job)
         for phase, target in self._cpu_prefix_phases:
+            peak, residue = cpu_prefix_phase_bytes(phase, unpacked)
             self.record["sequential_phases"].append({
                 "phase": phase,
-                "peak_bytes": CPU_PREFIX_EXPANSION * unpacked + CPU_PREFIX_OVERHEAD_BYTES,
-                "residue_bytes": CPU_PREFIX_RESIDUE_SHARES * unpacked,
+                "peak_bytes": peak,
+                "residue_bytes": residue,
                 "shares_output_volume": target_device(target) == output_device,
             })
         return self.record["sequential_phases"]
@@ -924,6 +937,7 @@ __all__ = [
     "SceneConfigurationOutputHoldRefused",
     "configured_output_admission_mode",
     "cpu_prefix_peak_bytes",
+    "cpu_prefix_phase_bytes",
     "cpu_prefix_spend",
     "extraction_requirement",
     "measured_admission_record",
