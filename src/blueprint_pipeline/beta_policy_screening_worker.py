@@ -154,7 +154,11 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     outcome["robot_free_probe_status"] = probe["status"]
                     # The intake ranking orders the plan; the site budget decides how far it runs.
                     priority = retained_priority(capture / "pipeline", task_context_digest=source["task_context_digest"])
-                    outcome["candidate_order"] = "intake_ranking" if priority else "identifier"
+                    outcome["candidate_order"] = "intake_ranking" if priority else "beta_default_priority"
+                    if not priority:
+                        from .beta_policy_screening_default_priority import default_screening_priority
+
+                        priority = default_screening_priority()
                     inputs = build_planning_inputs(catalog=catalog, profile=profile, capture_root=capture,
                         source=source, inputs_dir=root / "inputs" / campaign_id, priority=priority)
                     # The job's one dollar ceiling sizes the plan; unreadable, it holds and retries.
