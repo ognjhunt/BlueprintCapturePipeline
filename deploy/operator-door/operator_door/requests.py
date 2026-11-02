@@ -100,7 +100,12 @@ if DISPATCHER_HOLD_ONLY:
     # writes one sealed record, starts no compute and moves no money. The
     # owner approved (2026-11-01) the scene budget grant the same way: a
     # preview, then an apply bound to that preview's digest, appending one
-    # owner-approved ceiling record; it starts no compute itself.
+    # owner-approved ceiling record; it starts no compute itself. The owner
+    # approved (2026-11-02, verbatim: "approve adding preparation-reissue to
+    # the operator door's restricted profile") the preparation re-issue: it
+    # acts only on a completed preparation whose grant the owner renewed (the
+    # renewal names the owner as approver), recomputes CPU inputs, buys
+    # nothing, and leaves every money check to the intake.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
@@ -397,7 +402,8 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             normalized["bucket"] = bucket
         return normalized
     if kind == "selected-handoff":
-        if DISPATCHER_HOLD_ONLY and body.get("mode") not in ("dispatch", "atlas-status", "atlas-retry", "preparation-resume", "discover-selector"):
+        if DISPATCHER_HOLD_ONLY and body.get("mode") not in ("dispatch", "atlas-status", "atlas-retry", "preparation-resume",
+                                                             "preparation-reissue", "discover-selector"):
             raise RequestRefused("selected_handoff_dispatch_only")
         fields = {"kind", "mode", "bucket", "scene_id", "capture_id", "marker_generation",
                   "handoff_generation", "handoff_sha256", "handoff_size_bytes", "receipt_generation",
