@@ -361,6 +361,20 @@ def test_prepared_capture_materializes_a_publishable_native_request_without_raw_
     assert "placement_uncertainty_m" in task and task["physical_world_truth_claimed"] is False
 
 
+def test_attempts_under_one_release_name_their_own_runs(tmp_path, monkeypatch):
+    # capture-447ae4f4: a capacity successor rebuilt its predecessor's request
+    # byte for byte, found that envelope in the queue and stopped.
+    kwargs, _ = setup(tmp_path, monkeypatch)
+    ids = []
+    for attempt in ("source-c8a8269d6c9071eef84bb554", "source-6dbe031627c0ffd243cf8e34"):
+        root = tmp_path / attempt
+        materialize_website_submission(**{**kwargs, "staging_root": root, "attempt_id": attempt})
+        request = json.loads((root / "scene_configuration_preparation_request.v1.json").read_text())
+        assert attempt[7:19] in request["preparation_id"]
+        ids.append(request["preparation_id"])
+    assert ids[0] != ids[1]
+
+
 @pytest.mark.parametrize("backend", ["astra_cad_blender_v1", "artisan_v1"])
 def test_articulated_open_close_task_materializes_without_a_surface_target(tmp_path, monkeypatch, backend):
     if backend == "artisan_v1":

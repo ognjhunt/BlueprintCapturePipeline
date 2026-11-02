@@ -219,7 +219,7 @@ def materialize_website_attempt(*, intent_path, source_binding_path, machinery_p
         **{key + "_path": checked_file(release[key]["path"], release[key])
            for key in ("deploy_receipt", "release_provenance", "release_environment")},
         runtime_publication_root=release["runtime_publication_root"], namespace_timestamp=release["namespace_timestamp"],
-        release_admission_mode=release["release_admission_mode"], staging_root=submission)
+        release_admission_mode=release["release_admission_mode"], staging_root=submission, attempt_id=attempt_id)
     result = {"schema_version": "website_scene_attempt_factory.v1", "status": "publication_ready",
         "intent_digest": intent["intent_digest"], "attempt_digest": attempt["attempt_digest"],
         "source_commit": release["source_commit"], "submission_manifest": record(submission / "bundle_manifest.v1.json"),

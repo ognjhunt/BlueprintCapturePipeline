@@ -52,7 +52,8 @@ def _grasp_axis(minimum: list[float], maximum: list[float]) -> int:
     return 0 if extents[0] <= extents[1] else 1
 
 
-def _task_and_blockers(*, intent: dict, binding: dict, commit: str) -> tuple[dict | None, list[str]]:
+def _task_and_blockers(*, intent: dict, binding: dict, commit: str,
+                       attempt_id: str | None = None) -> tuple[dict | None, list[str]]:
     request = intent["request"]
     owner_task = request["task"]
     bindings = binding["object_bindings"]
@@ -99,7 +100,10 @@ def _task_and_blockers(*, intent: dict, binding: dict, commit: str) -> tuple[dic
         "expected_production_commit": commit,
         "team_namespace": "scene-" + canonical_digest({"intent_digest": intent["intent_digest"],
             "attempt_binding": binding["binding_digest"]})[7:55],
-        "run_prefix": "scene-" + intent["intent_id"].removeprefix("scene-")[:20] + "-completed",
+        # The attempt names the run so a same-release successor does not rebuild
+        # its predecessor's request (as the public factory already does).
+        "run_prefix": "scene-" + intent["intent_id"].removeprefix("scene-")[:20] + "-completed"
+                      + ("" if attempt_id is None else "-" + attempt_id.removeprefix("source-")[:12]),
         "scene_identity": {"id": "completed-scene-" + scene_key, "version": version},
 
 
@@ -167,7 +171,7 @@ def materialize_completed_scene_attempt(*, intent_path, source_binding_path, mac
             and attempt.get("source_commit") == commit
             and attempt.get("input_digest") == binding["binding_digest"], "completed_factory_attempt_mismatch")
 
-    task, blockers = _task_and_blockers(intent=intent, binding=binding, commit=commit)
+    task, blockers = _task_and_blockers(intent=intent, binding=binding, commit=commit, attempt_id=attempt_id)
     if blockers:
         return {"schema_version": FACTORY_SCHEMA, "status": "needs_input", "blockers": blockers,
                 "provider_mutation_performed": False}
