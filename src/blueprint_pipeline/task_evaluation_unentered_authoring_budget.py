@@ -458,7 +458,8 @@ def artisan_proven_authoring_spend(result, request):
     The owner approved settling failed attempts at their proven cost
     (2026-11-02, B-04): capture-447ae4f4 held about $58 against about $18
     spent, because every attempt that entered ARTISAN kept its whole authoring
-    allowance. Proof comes from the digest-bound output archive only:
+    allowance. Proof comes from the digest-bound output archive only: the GPU
+    run's, or the CPU prestage's own when the prestage failed before any GPU.
 
     - the official cost gate reserved before any model call, for this run, this
       stage input, this candidate and this authority, at most the signed
