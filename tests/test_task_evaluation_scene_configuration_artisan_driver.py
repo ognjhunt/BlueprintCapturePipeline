@@ -445,3 +445,83 @@ def test_a_continued_source_resumes_its_upstream_run_and_meters_only_the_remaind
     assert record["carried_cost_usd"] == 5.0 and record["increment_usd"] == 10.0
     assert record["successor_request_digest"] != record["source_request_digest"]
     assert result["status"] == "completed"
+
+
+def test_a_finished_source_is_exported_without_any_model_call(stage_fixture, monkeypatch, tmp_path):
+    """capture-447ae4f4 (2026-11-02): ARTISAN finished and registered the tray, then
+    the export refused "done" for "DONE". The successor reuses that run's terminal
+    record, exports the accepted candidate, and never calls ARTISAN or reserves cost."""
+    from blueprint_pipeline import task_evaluation_artisan_continuation as continuation
+    from blueprint_pipeline.task_object_authoring_contracts import AuthoringContractError
+    fixture = stage_fixture
+    input_path = Path(fixture.environment[driver.INPUT])
+    stage = json.loads(input_path.read_text())
+    input_path.write_text(json.dumps({**stage, "run_id": "source-run"}))
+    runtime = fixture.output / "artisan_runtime"
+    exports = driver.upstream_exports
+
+    def refused(*_args, **_kwargs):
+        raise AuthoringContractError("artisan_not_done_and_registered")
+    monkeypatch.setattr(driver, "upstream_exports", refused)
+    with pytest.raises(AuthoringContractError):
+        driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner,
+                                         cost_gate_factory=fixture.gate)
+    monkeypatch.setattr(driver, "upstream_exports", exports)
+    source_request = json.loads((runtime / "blueprint_request.v1.json").read_text())
+    upstream = "pl_" + source_request["request_digest"][7:39]
+    terminal = json.loads((runtime / "terminal.v1.json").read_text())
+    assert terminal["phase"] == "done" and terminal["registered"] is True
+    context = json.loads((runtime / "bridge_context.v1.json").read_text())
+    (runtime / "blueprint_usage.json").write_text(json.dumps({
+        "schema_version": "artisan_upstream_usage.v1", "maximum_cost_usd": context["maximum_cost_usd"],
+        "maximum_requests": context["maximum_requests"], "deadline_epoch": context["deadline_epoch"],
+        "calls": [{"id": "1", "status": "priced", "cost_usd": 2.5}, {"id": "2", "status": "priced", "cost_usd": 2.5}]}))
+    checkpoint = Path(terminal["paths"]["root"]).parent / "pipeline_state.json"
+    checkpoint.write_text('{"phase": "done"}')
+    archive = tmp_path / "retained_runtime.zip"
+    inventory = []
+    with zipfile.ZipFile(archive, "w") as packed:
+        for path in sorted(p for p in runtime.rglob("*") if p.is_file()):
+            relative = path.relative_to(runtime).as_posix()
+            kind = continuation._classify(relative)
+            if kind is None:
+                continue
+            name = relative if kind == "keep" else continuation.RELOCATED_ROOT + relative
+            packed.write(path, name)
+            inventory.append({"relative_path": name, **{k: v for k, v in file_record(path).items() if k != "path"}})
+    usage_bytes = (runtime / "blueprint_usage.json").read_bytes()
+    shutil.rmtree(runtime)  # a new provider host
+    monkeypatch.setattr(continuation, "ORIGINAL_ROOT", str(runtime))
+    lineage = {"source_run_id": "source-run", "successor_run_id": stage["run_id"]}
+    descriptor = {"schema_version": continuation.SCHEMA_VERSION, "source_run_id": "source-run",
+                  "successor_run_id": stage["run_id"], "original_runtime_root": str(runtime),
+                  "source_request_digest": source_request["request_digest"], "source_upstream_run_id": upstream,
+                  "source_terminal_phase": "done",
+                  "semantic_request_digest": canonical_digest(continuation.semantic_request(source_request)),
+                  "semantic_configuration_digest": canonical_digest(
+                      continuation.semantic_configuration(stage["configuration"])),
+                  "carried_spend": {"cost_usd": 5.0, "call_count": 2, "largest_call_usd": 2.5,
+                                    "usage_sha256": "sha256:" + hashlib.sha256(usage_bytes).hexdigest()},
+                  "owner_intent_lineage": lineage,
+                  "retained_runtime_archive": {k: v for k, v in file_record(archive).items() if k != "path"},
+                  "retained_files": sorted(inventory, key=lambda row: row["relative_path"]),
+                  "new_spend_authorized": False}
+    descriptor["adoption_digest"] = canonical_digest(descriptor, digest_field="adoption_digest")
+    descriptor_path = tmp_path / "descriptor.json"
+    descriptor_path.write_text(json.dumps(descriptor))
+    successor = json.loads(json.dumps(stage))
+    successor["construction_envelope"]["artisan_continuation"] = {
+        "verified_lineage": lineage,
+        "descriptor": {"materialized_path": str(descriptor_path), **file_record(descriptor_path)},
+        "runtime_archive": {"materialized_path": str(archive), **file_record(archive)}}
+    input_path.write_text(json.dumps(successor))
+    calls_before, reservations = len(fixture.calls), []
+
+    def gate(**kwargs):
+        reservations.append(kwargs["max_cost_usd"])
+        return fixture.gate(**kwargs)
+    result = driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner,
+                                              cost_gate_factory=gate)
+    assert result["status"] == "completed"
+    assert len(fixture.calls) == calls_before and reservations == []  # no model call, no cost reservation
+    assert json.loads((runtime / "terminal.v1.json").read_text())["candidate_id"] == terminal["candidate_id"]

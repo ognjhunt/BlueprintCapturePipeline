@@ -25,6 +25,11 @@ from .task_evaluation_scene_configuration_submission_inputs import (
 from .website_native_background import prepare_construction_stages, construction_rights_admission, PREFIX
 
 
+#: An attempt that reuses a finished ARTISAN run makes no model call; it keeps
+#: the smallest allocation the ARTISAN budget profile admits.
+MINIMUM_ARTISAN_ALLOCATION_USD = 0.01
+
+
 def _validate_development_opening_criterion(success, hypothesis):
     """Allow only floating-point representation noise in the frozen estimate."""
     require(success["estimated_usable_travel"] == hypothesis["estimated_usable_stroke_m"]
@@ -131,7 +136,10 @@ def materialize_website_submission(*, task, deploy_receipt_path, release_provena
                                         intent_root=directory.parent)
         remainder = (math.floor((artisan_allocation - carried["cost_usd"]) * 100) / 100
                      if carried is not None else 0)
-        if remainder > 0:
+        if carried is not None and carried.get("completed"):
+            # The source finished upstream; this attempt only exports it.
+            artisan_allocation = MINIMUM_ARTISAN_ALLOCATION_USD
+        elif remainder > 0:
             artisan_allocation = remainder
     try:
         spend = records.spend_block(authoring.get("authoring_backend", "content_agents"),

@@ -288,6 +288,12 @@ def _execute(values, output, runner, cost_gate_factory):
                        else "pl_" + request["request_digest"][7:39])
     generated_workspace = workspace / "data/cache/runs" / upstream_run_id / "workspace"
     terminal_file = runtime / "terminal.v1.json"
+    if (continuation is not None and continuation.get("source_terminal_phase") == UPSTREAM_DONE_PHASE
+            and not terminal_file.exists()):
+        # The source finished and registered upstream; only its export remains,
+        # so its own terminal record stands and no model is called.
+        from .task_evaluation_artisan_continuation import RELOCATED_ROOT
+        shutil.copyfile(runtime / RELOCATED_ROOT / "terminal.v1.json", terminal_file)
     context = {"workspace": str(workspace), "upstream_run_id": upstream_run_id,
         "usage_file": str(runtime / "blueprint_usage.json"),
         "maximum_cost_usd": attempt_cap, "maximum_requests": int(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS"]),
