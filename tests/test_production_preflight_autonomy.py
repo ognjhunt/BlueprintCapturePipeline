@@ -242,3 +242,14 @@ def test_route_health_separates_held_unused_and_broken_required_trigger(monkeypa
     rows = _unit_health([{"Id": unit, "ActiveState": "inactive", "Type": "oneshot", "Result": "success"}], ["blueprint-old-diagnostic.service"])
     assert rows["current"][0]["state"] == "successful_inactive_oneshot"
     assert rows["historical_diagnostics"] == ["blueprint-old-diagnostic.service"]
+
+
+def test_preflight_unit_claims_its_private_report_directory_before_it_runs() -> None:
+    # 2026-11-02: an older tool had created the report directory as another account, so
+    # write_safe_summary refused it (preflight_summary_private_parent_unsafe) on every run.
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/blueprint-control-plane-preflight.service").read_text()
+    report_dir = "/var/lib/blueprint/pipeline-control-plane/preflight"
+    claim = next(line for line in unit.splitlines() if line.startswith("ExecStartPre=+"))
+    assert f"chown root:root {report_dir}" in claim and f"chmod 0711 {report_dir}" in claim
+    assert unit.index("ExecStartPre=+") < unit.index("ExecStart=/bin/bash")
+    assert f"--json-out {report_dir}/latest.json" in unit

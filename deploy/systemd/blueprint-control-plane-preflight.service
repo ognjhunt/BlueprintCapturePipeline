@@ -41,4 +41,8 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-eva
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
+# The private report directory must be root's and not group/other writable before the
+# summary is published from it (production_preflight_summary refuses otherwise); an older
+# tool created it as another account, so the public summary was never written.
+ExecStartPre=+/bin/bash -c 'install -d -m 0711 /var/lib/blueprint/pipeline-control-plane/preflight && chown root:root /var/lib/blueprint/pipeline-control-plane/preflight && chmod 0711 /var/lib/blueprint/pipeline-control-plane/preflight'
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" && export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}" && test -x "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" && exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.task_evaluation_production_chain_preflight run --json-out /var/lib/blueprint/pipeline-control-plane/preflight/latest.json --history-out /var/lib/blueprint/pipeline-control-plane/preflight/history.jsonl'
