@@ -425,3 +425,40 @@ def test_restarted_preparing_attempt_requires_ack_of_its_latest_progress(tmp_pat
     coordinator.acknowledge_publication(value["campaign_id"], current["publication_digest"], queue_root=tmp_path)
     coordinator.process_screening_queue(queue_root=tmp_path, executor=backend)
     assert backend.preparations == backend.launches == 1
+
+
+def test_control_read_without_answer_keeps_the_attempt_and_its_reservation_then_launches(tmp_path, monkeypatch):
+    """A 429/5xx/timeout before spawn is not a terminal block: nothing could start, so read again."""
+    monkeypatch.setattr(coordinator, "CAPACITY_RETRY_SECONDS", 0)
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = Backend({"status": "deferred", "provider_allocation_performed": False, "provider_zero_verified": True,
+                       "no_allocation_proven": True, "retryable_control_refusal": True,
+                       "blockers": ["beta_screening_control_unavailable_before_spawn"]})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    first = row["attempt"]["attempt_id"]
+    assert row["status"] == "preparing" and row["attempt"]["reservation_status"] == "reserved"
+    # The website accepts a return to preparing only with the capacity-wait code.
+    assert coordinator.CAPACITY_WAIT_BLOCKER in row["blockers"] and coordinator.CONTROL_WAIT_BLOCKER in row["blockers"]
+    assert publication(tmp_path)["budget"]["reserved_usd"] == "4"
+    backend.observation = {"status": "running"}
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    assert row["status"] == "running" and row["attempt"]["attempt_id"] == first and backend.launches == 2
+
+
+def test_retryable_control_refusal_needs_an_unclaimed_launch_slot(tmp_path):
+    """A claimed launch intent means an allocator may exist: never treat that as a free retry."""
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+
+    class Claimed(Backend):
+        def launch_candidate(self, **kwargs):
+            self.launches += 1
+            (kwargs["attempt_dir"] / "allocator_launch_intent.json").write_text("{}")
+            return self.observation
+
+    backend = Claimed({"status": "deferred", "provider_allocation_performed": False, "provider_zero_verified": True,
+                       "no_allocation_proven": True, "retryable_control_refusal": True, "blockers": []})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=backend)
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    assert row["status"] == "reconciliation_required" and row["attempt"]["reservation_status"] == "reserved"

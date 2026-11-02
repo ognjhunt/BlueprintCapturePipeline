@@ -41,6 +41,8 @@ LEDGER_FILENAME = "screening_ledger.v1.json"
 SITE_LIMIT = Decimal("15")
 CAPACITY_RETRY_SECONDS = 60
 CAPACITY_WAIT_BLOCKER = "beta_screening_waiting_for_capacity"
+# Published beside the capacity code, the only one the WebApp accepts for a return to preparing.
+CONTROL_WAIT_BLOCKER = "beta_screening_waiting_for_control"
 INFEASIBLE_BLOCKER = "candidate_infeasible_measured_geometry"
 # The plan's own reason: published reasons stay a subset of the plan's.
 WAITLIST_BLOCKER = "site_screening_budget_insufficient"
@@ -566,6 +568,14 @@ def _unstarted_refusal_proof(root: Path, attempt: Mapping[str, Any], observation
         return False
 
 
+def _launch_unclaimed(root: Path, attempt: Mapping[str, Any]) -> bool:
+    """No launch slot was ever claimed for this attempt, so no allocator can exist for it."""
+    directory = root / "attempts" / attempt["attempt_id"]
+    return not any(path.exists() or path.is_symlink() for path in (
+        directory / "allocator_launch_intent.json", directory / "invocation" / "manifest.json",
+        directory / "allocator_process.json", directory / "allocator_result.json"))
+
+
 def _update(root: Path, campaign_id: str, candidate_id: str, update) -> dict[str, Any]:
     with _lock(root):
         ledger = _ledger(root)
@@ -599,6 +609,13 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                          and observation.get("provider_allocation_performed") is False
                          and attempt["provider_allocation_observed"] is False)
         closed = observation.get("provider_zero_verified") is True and attempt["provider_allocation_observed"] is True
+        if (status == "deferred" and no_allocation and observation.get("retryable_control_refusal") is True
+                and _launch_unclaimed(root, attempt)):
+            # The control read before spawn got no answer (429, 5xx, timeout).
+            # Nothing could start: keep this attempt and its reservation, read again.
+            attempt["retry_not_before"] = _retry_after_capacity()
+            row.update(status="preparing", blockers=[CAPACITY_WAIT_BLOCKER, CONTROL_WAIT_BLOCKER])
+            return
         if status in {"completed", "blocked"} and no_allocation:
             unstarted_proof = _unstarted_refusal_proof(root, attempt, observation)
             if "unstarted_refusal_receipt" in observation and not unstarted_proof:
@@ -614,7 +631,10 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                 row.setdefault("attempt_history", []).append(json.loads(json.dumps(attempt)))
                 row["attempt"] = {**_new_attempt(plan, candidate, generation=attempt.get("generation", 0) + 1),
                                   "retry_not_before": _retry_after_capacity()}
-                row.update(status="preparing", blockers=["beta_screening_unspent_invocation_recovery"])
+                # The WebApp lets a published running candidate return to
+                # preparing only with the capacity-wait code; it names the wait.
+                row.update(status="preparing",
+                           blockers=[CAPACITY_WAIT_BLOCKER, "beta_screening_unspent_invocation_recovery"])
                 return
             if _capacity_refusal_proof(root, attempt, observation):
                 # This is a proven zero-GPU/zero-API pre-create refusal, not

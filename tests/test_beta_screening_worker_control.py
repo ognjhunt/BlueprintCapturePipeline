@@ -386,3 +386,32 @@ def test_beta_authority_stop_cannot_be_ignored_by_legacy_local_signal_option(tmp
     assert result["reason"] == "vast_probe_interrupted"
     receipt = json.loads((tmp_path / "stopped/vast_signal_handling_manifest.json").read_text())
     assert receipt["status"] == "probe_interrupted_by_signal"
+
+
+@pytest.mark.parametrize("hosted", [False, True])
+def test_screening_create_intent_runs_only_inside_the_adapter_pre_create_hook(tmp_path, monkeypatch, hosted):
+    from blueprint_pipeline import team_candidate_quick10_vast, native_task_arena_vast
+    transport = team_candidate_quick10_vast if hosted else native_task_arena_vast
+    _runtime, _output, _inputs, authority, _scope, _prepared, bundle, candidate = stage_beta_bundle(
+        tmp_path, monkeypatch, hosted=hosted)
+    monkeypatch.setenv("BLUEPRINT_POLICY_CANARY_OUTPUT_DELIVERY", "download")
+    monkeypatch.setitem(sys.modules, "blueprint_pipeline.beta_policy_screening_control", SimpleNamespace(
+        require_runtime_control_monitor=lambda **kwargs: None,
+        subscribe_runtime_control=lambda **kwargs: (lambda: None)))
+    created = []
+
+    def allocate(**kwargs):
+        # Consumption is done; staging and watchdog arming run before the adapter's hook.
+        assert created == []
+        consumed = kwargs["pre_provider_mutation_hook"]()
+        assert consumed["status"] == "consumed" and created == ["intent"]
+        return {"status": "blocked"}
+
+    monkeypatch.setattr(transport, "run_arena_native_control_vast", allocate)
+    run = transport.run_team_candidate_session_vast if hosted else transport.run_native_task_arena_policy_canary_session_vast
+    result = run(job_dir=tmp_path / "allocator", prepared_bundle=bundle,
+        session_authority=authority, paid_resource_admission_grant=None, execute=True,
+        **({"credential_file": Path(candidate["execution_spec"]["credential_file"])} if hosted else {}),
+        hard_cap_usd=4.0, hard_ttl_seconds=authority["hard_ttl_seconds"],
+        pre_provider_create=lambda: created.append("intent"))
+    assert result["status"] == "blocked" and created == ["intent"]

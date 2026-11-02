@@ -195,6 +195,7 @@ from .vast_provider_output_recovery import (
 )
 from .vast_policy_canary_remote_progress import probe_policy_canary_remote_progress, remote_progress_probe_for_bundle
 from .beta_screening_control_delivery import RuntimeControlRelay, runtime_control_probe
+from .vast_signal_guard import OneStopSignal
 from .vast_args_payload_transport import args_mode_command, onstart_mode_script, VAST_ARGS_STR_SAFE_MAX_BYTES
 from .vast_provider_bundle_digest_guard import provider_bundle_digest_guard
 
@@ -6391,8 +6392,6 @@ def _remote_progress_probe_for_bundle(provider_bundle_kind: str, job_dir: Path, 
     return remote_progress_probe_for_bundle(provider_bundle_kind, job_dir, cell_count=cell_count, probe=probe_policy_canary_remote_progress)
 
 
-
-
 def _request_logs_and_fetch(
     *,
     instance_id: int,
@@ -8364,6 +8363,7 @@ def run_vast_provider_adapter(
         "BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN"
     ) and runtime_control_ready is None
     ignored_signal_counts: dict[str, int] = {}
+    one_stop = OneStopSignal(resolved_job_dir)  # The first signal unwinds into teardown; later ones never interrupt it.
 
     def _raise_probe_interrupt(signum: int, _frame: Any) -> None:
         if signum in {signal.SIGINT, signal.SIGTERM} and ignore_local_probe_signals:
@@ -8378,14 +8378,14 @@ def run_vast_provider_adapter(
                     "ignored_signal_counts": ignored_signal_counts,
                     "ignore_local_sigterm_during_provider_run": True,
                     "ignored_signal": signum,
-                    "reason": (
-                        "Local Codex runner may send SIGINT/SIGTERM to long-running local "
-                        "provider orchestration; adapter keeps running so Vast can "
-                        "reach its own timeout/teardown path."
-                    ),
+                    "reason": ("Local Codex runner may send SIGINT/SIGTERM to long-running local "
+                               "provider orchestration; adapter keeps running so Vast can "
+                               "reach its own timeout/teardown path."),
                     "raw_secret_values_recorded": False,
                 },
             )
+            return
+        if one_stop.absorbs(signum):
             return
         # Name the delivery before unwinding.  Three paid GR00T launches on
         # 2026-08-25 ended `vast_probe_interrupted_before_completion` with a
@@ -9878,6 +9878,7 @@ def run_vast_provider_adapter(
             provider_reason=exception_blockers[0],
         )
     finally:
+        one_stop.teardown()
         runtime_control_relay.close()  # Unsubscribe before exact owned provider teardown, including interrupted sinks.
         if provider_bundle_kind in {"native_task_arena", "native_task_arena_policy_canary_session"}:
             try:

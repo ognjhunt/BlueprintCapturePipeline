@@ -1,6 +1,7 @@
 """AUT-10 current-source stop intent, bounded outage and exact-pid isolation."""
 
 import json
+import os
 import threading
 import time
 
@@ -82,7 +83,8 @@ def test_exact_invocation_stopper_refuses_reused_pid(tmp_path, monkeypatch):
     monkeypatch.setattr(native, "_process_start_ticks", lambda pid: "new")
     monkeypatch.setattr(jobs.os, "kill", lambda *a: pytest.fail("signalled reused pid"))
     with pytest.raises(ValueError, match="stop_identity_unproven"):
-        jobs.stop_invocation(path)
+        jobs.stop_invocation(path, reason="beta_screening_current_source_revoked")
+    assert not (path.parent / jobs.STOP_SIGNAL_RECORD).exists()
 
 
 def test_independent_monitor_stops_itself_after_bounded_outage(tmp_path, monkeypatch):
@@ -329,3 +331,93 @@ def test_interrupted_initial_runtime_push_removes_sink_before_provider_teardown(
         assert not monitor._sinks
         monitor._publish(control.observe(control=monitor.control, root=monitor.root))
         assert calls == ["initial push"]
+
+
+def test_monitor_records_its_one_stop_signal_before_sending_it(tmp_path, monkeypatch):
+    """The monitor claims stop_signalled.json first, so the timer never sends a second SIGTERM."""
+    def revoked(*args, **kwargs):
+        raise ValueError("beta_screening_current_capture_consent_required")
+    monkeypatch.setattr(worker, "require_current_source", revoked)
+    sent = []
+
+    def stop():
+        record = json.loads((tmp_path / "stop_signalled.json").read_text())
+        sent.append((record["sender"], record["reason"], record["pid"]))
+
+    monitor = control.CurrentSourceMonitor({"control": binding(), "root": str(tmp_path)}, stop=stop)
+    monkeypatch.setattr(monitor.done, "wait", lambda interval: False)
+    monitor._run()
+    assert sent == [("allocator_monitor", "beta_screening_current_source_revoked", os.getpid())]
+    # Already recorded (say the timer signalled a dead monitor's allocator): nothing more is sent.
+    again = control.CurrentSourceMonitor({"control": binding(), "root": str(tmp_path)},
+                                         stop=lambda: sent.append("second signal"))
+    monkeypatch.setattr(again.done, "wait", lambda interval: False)
+    again._run()
+    assert len(sent) == 1 and again.done.is_set()
+
+
+def test_monitor_closed_by_its_returned_allocator_sends_no_stop(tmp_path, monkeypatch):
+    def revoked(*args, **kwargs):
+        raise ValueError("beta_screening_current_capture_consent_required")
+    monkeypatch.setattr(worker, "require_current_source", revoked)
+    monitor = control.CurrentSourceMonitor({"control": binding(), "root": str(tmp_path)},
+                                           stop=lambda: pytest.fail("signalled an allocator that already returned"))
+    # __exit__ ran while this poll was reading: the result is already written.
+    monkeypatch.setattr(monitor.done, "wait", lambda interval: monitor.done.set() or False)
+    monitor._run()
+    assert not (tmp_path / "stop_signalled.json").exists()
+
+
+def test_incomplete_read_is_a_failed_read_inside_the_grace_not_an_immediate_stop(tmp_path, monkeypatch):
+    import http.client
+    from blueprint_pipeline import beta_policy_screening_control_transport as transport
+    from tests.test_beta_policy_screening_control_contracts import binding as scope
+
+    def truncated(**kwargs):
+        raise http.client.IncompleteRead(b"{")
+    monkeypatch.setattr(transport, "request_control", truncated)
+    value = binding(source_control_binding=scope())
+    state = control.observe(control=value, root=tmp_path, now=1100)
+    assert state["status"] == "monitor_unavailable" and state["unavailable_cause"] == "transport"
+    assert not (tmp_path / "stop_requested.json").exists()
+    stopped = []
+    monitor = control.CurrentSourceMonitor({"control": value, "root": str(tmp_path)}, stop=lambda: stopped.append(1))
+    monkeypatch.setattr(control.time, "time", lambda: 1200)
+    waits = iter([False, True])
+    monkeypatch.setattr(monitor.done, "wait", lambda interval: next(waits))
+    monitor._run()
+    assert stopped == [] and not (tmp_path / "stop_requested.json").exists()
+    # The existing grace still ends a run whose reads keep failing.
+    assert control.observe(control=value, root=tmp_path, now=1600)["reason"] == control.TIMEOUT_STOP_REASON
+
+
+@pytest.mark.parametrize("failure,retryable", [
+    (ValueError("website_control_task-context_http_503:unclassified"), True),
+    (ValueError("website_control_task-context_http_429:pipeline_sync_rate_limited"), True),
+    (TimeoutError("timed out"), True),
+    (ValueError("website_control_task-context_http_403:unclassified"), False),
+    (ValueError("website_task_context_response_invalid"), False),
+    (ValueError("beta_screening_current_capture_consent_required"), False),
+])
+def test_create_admission_fences_for_retry_only_a_read_that_got_no_answer(tmp_path, monkeypatch, failure, retryable):
+    authority = {"authority_digest": "sha256:" + "d" * 64, "resource_name": "exact-resource"}
+    bundle = {"bundle_sha256": "sha256:" + "e" * 64}
+    path = jobs.retain_invocation(attempt_dir=tmp_path, binding={**authority, **bundle, "provider": "vast"},
+                                  argv=["gpu-canary"], control=binding(initial_observed_at_epoch=time.time()))
+    reads = iter([{}, failure])
+
+    def current(*args, **kwargs):
+        outcome = next(reads)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(worker, "require_current_source", current)
+    with pytest.raises(ValueError) as refused:
+        jobs.run_invocation(path, allocator=lambda argv: jobs.before_provider_create(authority=authority, bundle=bundle))
+    assert str(refused.value) == (control.CONTROL_UNAVAILABLE_BEFORE_CREATE if retryable
+                                  else "beta_screening_current_source_unproven_before_create")
+    assert not (path.parent / "provider_create_intent.json").exists()
+    # Nothing was spent. Only a read without an answer fences the job for a retry.
+    assert (path.parent / "no_create_fence.json").exists() is retryable
+    assert (path.parent / "stop_requested.json").exists() is (failure.args[0] == "beta_screening_current_capture_consent_required")

@@ -79,6 +79,34 @@ historical-only. Existing finally/closeout and independent watchdog teardown
 remain permitted after processing stops. Media retention/deletion policies are
 separate from proof that work stopped.
 
+## One stop signal, and retries before spend
+
+The allocator's own monitor sends its stop. It records `stop_signalled.json`
+(exclusive, atomic) before the SIGTERM. The screening timer's reconcile signals
+only when no stop signal was recorded and the monitor's heartbeat
+(`monitor_heartbeat.json`, one beat per poll) is older than three polls; it
+records the same file first. The adapter turns the first signal into its
+teardown. A repeat, or any signal once teardown has begun, is recorded in
+`vast_signal_teardown_guard.json` and ignored, so the instance DELETE finishes.
+Around the whole allocator run, a SIGTERM before the provider create intent
+unwinds it. The intent is written only inside the adapter's pre-create hook
+(native, team and G1 lanes), so a later SIGTERM finds the teardown done and is
+ignored: the watchdog close and `allocator_result.json` always complete.
+
+Once `allocator_result.json` exists, reconcile never reads the control again;
+only a stop recorded while the allocator ran applies to it. While the live
+monitor's last success is fresher than two polls, reconcile reuses it instead
+of sending its own request.
+
+A read that never got the WebApp's answer (408, 425, 429, 5xx, timeout,
+connection failure, truncated or non-JSON body) refuses without spending.
+Before spawn, the attempt claims no launch slot, keeps its reservation and reads
+again. At create admission, the allocator fences its own job
+(`no_create_fence.json`), so recovery retries the candidate on a fresh attempt.
+A definite stopped, changed or expired answer, any other 4xx, or an invalid
+response still blocks. The 600-second rule for running work is unchanged; a
+timeout stop recorded before any create is retried like a failed read.
+
 ## Verification and remaining acceptance
 
 Offline coverage exercises strict WebApp signatures/readback, all six source

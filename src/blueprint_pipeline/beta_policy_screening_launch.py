@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from decimal import Decimal
+import http.client
 import json
 import os
 import subprocess
@@ -349,7 +350,15 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
         # This authenticated existing-source contract supplies the actual
         # intake expiry. A missing expiry can never become a four-hour default.
         deadline = preflight_control["execution_deadline_at_ms"] / 1000
-    except (ValueError, OSError, RuntimeError) as exc:
+    except (ValueError, OSError, RuntimeError, http.client.HTTPException) as exc:
+        from .beta_policy_screening_control import transport_failure
+        if transport_failure(exc):
+            # A 429, 5xx or timeout is no answer about the site's rights. No
+            # slot is claimed and nothing can spawn: keep the reservation and
+            # read again later. A definite stopped/changed answer still blocks.
+            return {"status": "deferred", "provider_allocation_performed": False, "provider_zero_verified": True,
+                    "no_allocation_proven": True, "retryable_control_refusal": True,
+                    "blockers": ["beta_screening_control_unavailable_before_spawn"]}
         # Claim the same exclusive intent slot as a launch, so a concurrent
         # caller cannot start after this refusal releases its reservation.
         refusal = {"prepared_digest": prepared["prepared_digest"], "status": "refused_before_spawn",
@@ -383,6 +392,51 @@ def launch_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], a
             "no_allocation_proven": False, "blockers": []}
 
 
+def _invocation_stop(path: Path, value: Mapping[str, Any], *, finished: bool) -> dict[str, Any] | None:
+    """This invocation's control stop, if any.
+
+    A finished allocator is never observed again, so no later read can void
+    its result: only a stop recorded while it ran applies. While it runs, its
+    own monitor reads the control every minute; this timer reads only when
+    that read is not fresh, and sends the stop signal only when that monitor
+    is dead and no stop signal was recorded, so the allocator gets one.
+    """
+    from .allocator_invocation import STOP_SIGNAL_RECORD, stop_invocation
+    from .beta_policy_screening_control import POLL_SECONDS, monitor_alive, observe, recorded
+    invocation_root = Path(value["root"])
+    stop = recorded(control=value["control"], root=invocation_root)
+    if finished:
+        return stop if stop.get("new_processing_authorized") is False else None
+    started = invocation_root / "started.json"
+    pid = _read(started).get("pid") if started.exists() else None
+    alive = pid is not None and monitor_alive(invocation_root, pid=pid)
+    if stop.get("new_processing_authorized") is not False:
+        fresh = (alive and stop.get("status") == "current"
+                 and time.time() - stop["last_success_at_epoch"] < 2 * POLL_SECONDS)
+        if not fresh:
+            stop = observe(control=value["control"], root=invocation_root)
+        if stop.get("new_processing_authorized") is not False:
+            return None
+    if pid is not None and not alive and not (invocation_root / STOP_SIGNAL_RECORD).exists():
+        try:
+            stop_invocation(path, reason=str(stop.get("reason") or "beta_screening_current_source_stopped"))
+        except (OSError, ValueError):
+            pass  # Never signal an unverified/reused pid; reconcile its durable job.
+    return stop
+
+
+def _unstarted_refusal(fenced: Mapping[str, Any], stopped: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A job fenced before any create spent nothing; only a definite stop blocks its retry."""
+    from .beta_policy_screening_control import retryable_stop
+    retryable = retryable_stop(stopped)
+    return {"status": "blocked", "provider_allocation_performed": False,
+            "provider_zero_verified": True, "no_allocation_proven": True,
+            "no_policy_api_calls_proven": True, "retryable_unstarted_refusal": retryable,
+            "unstarted_refusal_receipt": _record(Path(fenced["proof_path"])),
+            "blockers": (["beta_screening_allocator_fenced_before_create"] if retryable
+                         else [str(stopped["reason"])])}
+
+
 def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any], attempt_dir: Path,
                         prepared: Mapping[str, Any], handle: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Read retained allocator receipts; never start or restart an allocation."""
@@ -407,26 +461,30 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
     result_path = root / "allocator_result.json"
     stopped = None
     invocation_path = root / "invocation/manifest.json"
-    if invocation_path.exists() and intent.get("invocation_manifest") in {None, str(invocation_path)}:
-        from .allocator_invocation import manifest, stop_invocation
-        from .beta_policy_screening_control import observe
+    invocation = invocation_path.exists() and intent.get("invocation_manifest") in {None, str(invocation_path)}
+    if invocation:
+        from .allocator_invocation import manifest
         value = manifest(invocation_path)
         if value.get("control") is not None:
-            control_state = observe(control=value["control"], root=Path(value["root"]))
-            if control_state.get("new_processing_authorized") is False:
-                stopped = control_state
-                if not result_path.exists() and (Path(value["root"]) / "started.json").exists():
-                    signal_path = Path(value["root"]) / "stop_signalled.json"
-                    if not signal_path.exists():
-                        try:
-                            stop_invocation(invocation_path)
-                        except (OSError, ValueError):
-                            pass  # Never signal an unverified/reused pid; reconcile its durable job.
-                        else:
-                            _write(signal_path, {"reason": stopped["reason"], "prepared_digest": prepared["prepared_digest"]})
+            stopped = _invocation_stop(invocation_path, value, finished=result_path.exists())
     if result_path.is_file():
         adapter = _read(result_path)
         if proves_no_provider_allocation(adapter):
+            from .beta_policy_screening_control import retryable_stop
+            if invocation and ((root / "invocation" / "no_create_fence.json").exists()
+                               or (stopped is not None and retryable_stop(stopped))):
+                # The allocator fenced its own create on a read that never got
+                # an answer, or the control's outage grace stopped it before any
+                # create: nothing was spent, so the candidate is retried.
+                from .allocator_invocation import fence_unstarted, manifest
+                if manifest(invocation_path)["binding"].get("prepared_digest") != prepared.get("prepared_digest"):
+                    raise ValueError("beta_screening_invocation_binding_changed")
+                fenced = fence_unstarted(invocation_path)
+                if fenced["status"] == "running":  # Its result is written; the process is exiting.
+                    return {"status": "running", "provider_zero_verified": False,
+                            "no_allocation_proven": False, "blockers": []}
+                if fenced["status"] == "fenced_unspent":
+                    return _unstarted_refusal(fenced, stopped)
             refusal = {"status": "blocked", "provider_allocation_performed": False,
                        "provider_zero_verified": True, "no_allocation_proven": True,
                        "blockers": adapter.get("blockers") or ["beta_screening_allocator_refused"]}
@@ -511,11 +569,7 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             raise ValueError("beta_screening_invocation_binding_changed")
         fenced = fence_unstarted(invocation_path)
         if fenced["status"] == "fenced_unspent":
-            return {"status": "blocked", "provider_allocation_performed": False,
-                    "provider_zero_verified": True, "no_allocation_proven": True,
-                    "no_policy_api_calls_proven": True, "retryable_unstarted_refusal": stopped is None,
-                    "unstarted_refusal_receipt": _record(Path(fenced["proof_path"])),
-                    "blockers": ["beta_screening_allocator_fenced_before_create"]}
+            return _unstarted_refusal(fenced, stopped)
         if fenced["status"] == "running":
             return {"status": "running", "provider_zero_verified": False,
                     "no_allocation_proven": False, "blockers": []}

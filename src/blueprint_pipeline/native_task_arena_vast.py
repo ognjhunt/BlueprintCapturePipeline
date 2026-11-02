@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -587,8 +587,13 @@ def run_native_task_arena_policy_canary_session_vast(
     hard_ttl_seconds: int = 14_400,
     allowed_active_instance_ids: Sequence[int] = (),
     provider_runtime_environment: Mapping[str, str] | None = None,
+    pre_provider_create: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the paired Quick-10 bundle through one canonical Vast allocation."""
+    """Run the paired Quick-10 bundle through one canonical Vast allocation.
+
+    ``pre_provider_create`` runs inside the adapter's pre-create hook, after
+    every other check and immediately before the create request.
+    """
 
     if session_authority is None:
         if execute:
@@ -676,6 +681,13 @@ def run_native_task_arena_policy_canary_session_vast(
             return {"status": "consumed", "authority_digest": authority["authority_digest"],
                     "scene_attempt_id": owner["scene_attempt_id"]}
 
+        def pre_create() -> dict[str, Any]:
+            consumed = (owner_pre_create() if "scene_execution_owner" in authority
+                        else {"status": "consumed", "authority_digest": authority["authority_digest"]})
+            if pre_provider_create is not None:
+                pre_provider_create()  # Last: a refused owner check leaves no create intent behind.
+            return consumed
+
         pi_download, _ = _policy_provider_transfer_byte_budget("pi05_droid")
         groot_download, _ = _policy_provider_transfer_byte_budget("groot_n17_droid")
         cosmos = prepared_bundle.get("cosmos_runtime") is not None
@@ -701,7 +713,8 @@ def run_native_task_arena_policy_canary_session_vast(
             download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
         result = run_arena_native_control_vast(
             **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
-            pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
+            pre_provider_mutation_hook=(pre_create if pre_provider_create is not None or "scene_execution_owner" in authority
+                                        else None),
             approval_path=".",
             job_dir=job_dir,
             paid_resource_admission_grant=paid_resource_admission_grant,

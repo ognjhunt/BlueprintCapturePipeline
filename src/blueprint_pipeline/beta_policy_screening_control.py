@@ -11,19 +11,50 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 import fcntl
+import http.client
+import json
 import math
 from pathlib import Path
+import re
 import signal
+import ssl
 import os
 import threading
 import time
 from typing import Any
+import urllib.error
 
 from .common import write_json, utc_now_iso
 from .decision_evidence_contracts import canonical_digest
 
 POLL_SECONDS = 60
 MONITOR_GRACE_SECONDS = 600
+# The monitor beats once per poll; a read (10 s) and an SSH push (20 s) fit well inside three.
+MONITOR_STALE_SECONDS = 3 * POLL_SECONDS
+MONITOR_HEARTBEAT = "monitor_heartbeat.json"
+TIMEOUT_STOP_REASON = "beta_screening_control_unavailable_timeout"
+CONTROL_UNAVAILABLE_BEFORE_CREATE = "beta_screening_control_unavailable_before_create"
+_TRANSPORT_HTTP = re.compile(
+    r"(?:beta_screening_execution_control|website_control_task-context)_http_(?:408|425|429|5[0-9]{2})(?::|$)")
+
+
+def transport_failure(error: BaseException) -> bool:
+    """A read that never got the WebApp's answer, so it says nothing about the site's rights.
+
+    Retry these; a definite answer (stopped, changed, expired, invalid, other
+    4xx) is never one of them.
+    """
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in {408, 425, 429} or 500 <= error.code <= 599
+    if isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, ssl.SSLError,
+                          http.client.HTTPException, json.JSONDecodeError)):
+        return True
+    return isinstance(error, ValueError) and _TRANSPORT_HTTP.match(str(error)) is not None
+
+
+def retryable_stop(stop: Mapping[str, Any] | None) -> bool:
+    """Only a definite revoked or expired answer blocks an invocation that never created."""
+    return stop is None or stop.get("reason") == TIMEOUT_STOP_REASON
 
 
 def _deadline(current: Mapping[str, Any]) -> float | None:
@@ -78,12 +109,14 @@ def _state(control: Mapping[str, Any], root: Path, moment: float) -> dict[str, A
     deadlines = [value for value in (previous.get("execution_deadline_epoch"),
                                      control.get("execution_deadline_epoch")) if value is not None]
     issued, committed = previous.get("issued_generation", 0), previous.get("committed_generation", 0)
+    cause = previous.get("unavailable_cause")
     if (type(last_success) not in (int, float) or not math.isfinite(last_success)
             or last_success > moment + POLL_SECONDS or last_success <= 0
             or any(type(value) not in (float, int) or not math.isfinite(value) or value <= 0
                    for value in deadlines)
             or type(issued) is not int or type(committed) is not int or not 0 <= committed <= issued
-            or previous.get("status", "monitor_unavailable") not in {"current", "monitor_unavailable"}):
+            or previous.get("status", "monitor_unavailable") not in {"current", "monitor_unavailable"}
+            or cause not in {None, "transport", "unproven"}):
         raise ValueError("beta_screening_control_record_unproven")
     return {"schema_version": "blueprint.beta_policy_screening_execution_control.v1",
             "control_digest": binding, "observed_at_epoch": previous.get("observed_at_epoch", moment),
@@ -92,6 +125,7 @@ def _state(control: Mapping[str, Any], root: Path, moment: float) -> dict[str, A
             "execution_deadline_epoch": min(deadlines) if deadlines else None,
             "status": previous.get("status", "monitor_unavailable"),
             "issued_generation": issued, "committed_generation": committed,
+            **({"unavailable_cause": cause} if cause is not None else {}),
             **({"source_control": previous["source_control"]} if previous.get("source_control") else {})}
 
 
@@ -124,7 +158,7 @@ def observe(*, control: Mapping[str, Any], root: Path, now: float | None = None)
         state["issued_generation"] = generation
         write_json(root / "execution_control.json", state)
     # A slow signed read cannot block a newer revocation or provider closeout.
-    outcome, deadline, source_control = "current", None, None
+    outcome, deadline, source_control, cause = "current", None, None, None
     try:
         if control.get("source_control_binding") is not None:
             from .beta_policy_screening_control_transport import request_control
@@ -135,12 +169,15 @@ def observe(*, control: Mapping[str, Any], root: Path, now: float | None = None)
                 outcome = "revoked"
         else:
             deadline = _deadline(require_current_source(control["source"], site_id=control["site_id"]))
-    except (OSError, ValueError, RuntimeError) as exc:
+    except (OSError, ValueError, RuntimeError, http.client.HTTPException) as exc:
+        # http.client errors (IncompleteRead) are a failed read like any other,
+        # inside the same grace; they must not escape and stop the run at once.
         code = str(exc)
         outcome = ("revoked" if code in {"beta_screening_current_capture_consent_required",
             "beta_screening_current_task_context_changed", "beta_screening_source_context_mismatch",
             "website_task_context_not_confirmed"} or code.startswith("website_control_task-context_http_409:")
             else "monitor_unavailable")
+        cause = "transport" if transport_failure(exc) else "unproven"
     completed = time.time() if now is None else now
     with _control_lock(root):
         stopped = _stopped(control, root)
@@ -160,14 +197,24 @@ def observe(*, control: Mapping[str, Any], root: Path, now: float | None = None)
             state["observed_at_epoch"] = max(completed, state["observed_at_epoch"])
             state["next_check_at_epoch"] = state["observed_at_epoch"] + POLL_SECONDS
             state["committed_generation"] = generation
+            state.pop("unavailable_cause", None)
             if outcome == "current":
                 state["last_success_at_epoch"] = max(moment, state["last_success_at_epoch"])
                 if source_control is not None:
                     state["source_control"] = source_control
+            else:
+                state["unavailable_cause"] = cause
         if completed - state["last_success_at_epoch"] >= MONITOR_GRACE_SECONDS:
-            return _stop(control, root, "beta_screening_control_unavailable_timeout")
+            return _stop(control, root, TIMEOUT_STOP_REASON)
         write_json(root / "execution_control.json", state)
         return state
+
+
+def recorded(*, control: Mapping[str, Any], root: Path) -> dict[str, Any]:
+    """The committed stop, else the committed observation. Never a remote read."""
+    with _control_lock(root):
+        stopped = _stopped(control, root)
+        return stopped if stopped is not None else _state(control, root, time.time())
 
 
 @contextmanager
@@ -176,6 +223,8 @@ def current_control_admission(*, control: Mapping[str, Any], root: Path) -> Iter
 
     Lock order is invocation -> control. Observers never acquire the invocation
     lock; neither lock is held by this scope for a remote call or teardown.
+    A read that never reached the WebApp (or only those, past the grace) is
+    ``CONTROL_UNAVAILABLE_BEFORE_CREATE``: nothing was spent, so it is retried.
     """
     observed = observe(control=control, root=root)
     with _control_lock(root):
@@ -187,8 +236,25 @@ def current_control_admission(*, control: Mapping[str, Any], root: Path) -> Iter
         if (stopped is not None or observed.get("new_processing_authorized") is False
                 or state["status"] != "current"
                 or time.time() - state["last_success_at_epoch"] >= MONITOR_GRACE_SECONDS):
-            raise ValueError("beta_screening_current_source_unproven_before_create")
+            stop = stopped if stopped is not None else (
+                observed if observed.get("new_processing_authorized") is False else None)
+            transient = (retryable_stop(stop) if stop is not None
+                         else state.get("unavailable_cause") == "transport")
+            raise ValueError(CONTROL_UNAVAILABLE_BEFORE_CREATE if transient
+                             else "beta_screening_current_source_unproven_before_create")
         yield
+
+
+def monitor_alive(root: Path, *, pid: Any) -> bool:
+    """The allocator's own monitor beat within three polls, so it sends the stop itself."""
+    from .allocator_invocation import _read
+    try:
+        beat = _read(Path(root) / MONITOR_HEARTBEAT)
+    except (OSError, ValueError):
+        return False
+    at = beat.get("beat_at_epoch")
+    return (type(pid) is int and beat.get("pid") == pid and type(at) in (int, float) and math.isfinite(at)
+            and -POLL_SECONDS <= time.time() - at < MONITOR_STALE_SECONDS)
 
 
 _monitors_lock = threading.Lock()
@@ -313,27 +379,46 @@ class CurrentSourceMonitor:
             for sink in sinks:
                 sink(self.binding, verified)
 
+    def _beat(self) -> None:
+        """Tell the screening timer this monitor is alive, so the timer never signals too."""
+        try:
+            write_json(self.root / MONITOR_HEARTBEAT, {
+                "schema_version": "blueprint.beta_screening_monitor_heartbeat.v1",
+                "pid": os.getpid(), "beat_at_epoch": time.time()})
+        except OSError:
+            pass  # A missing beat only lets the timer send the one stop signal instead.
+
+    def _halt(self, reason: str) -> None:
+        """Send this allocator's one stop signal, recorded before it is sent."""
+        self.done.set()
+        from .allocator_invocation import record_stop_signal
+        if record_stop_signal(self.root, sender="allocator_monitor", reason=reason, pid=os.getpid()):
+            self.stop()
+
     def _run(self):
         while not self.done.wait(POLL_SECONDS):
+            self._beat()
             try:
                 state = observe(control=self.control, root=self.root)
                 self._publish(state)
             except Exception:
                 # An unprovable local record or failed own-resource control
                 # delivery cannot extend processing. Existing finally remains.
-                self.done.set()
-                self.stop()
-                return
-            if state.get("new_processing_authorized") is False:
-                self.done.set()
-                self.stop()
-                return
+                reason = "beta_screening_runtime_control_monitor_failed"
+            else:
+                if state.get("new_processing_authorized") is not False:
+                    continue
+                reason = str(state.get("reason") or "beta_screening_current_source_stopped")
+            if not self.done.is_set():  # Set by __exit__: the allocator already returned.
+                self._halt(reason)
+            return
 
     def __enter__(self):
         state = observe(control=self.control, root=self.root)
         if state.get("new_processing_authorized") is False or state.get("status") == "monitor_unavailable":
             raise ValueError("beta_screening_current_source_unproven_before_start")
         self._publish(state)
+        self._beat()
         if self.identity is not None:
             with _monitors_lock:
                 if self.identity in _monitors:

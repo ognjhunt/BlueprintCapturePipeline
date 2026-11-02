@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 import hashlib
 import json
 import math
@@ -280,6 +281,14 @@ def run_policy_canary_allocator_lane(
             write_json(Path(args.adapter_output), result)
             print(json.dumps({"success": False}, sort_keys=True))
             return 2
+    # Under a screening invocation the create intent is retained by the
+    # adapter's own pre-create hook, inside its signal-to-teardown scope: a
+    # stop during bundle staging or watchdog arming leaves no intent, so
+    # recovery fences that job instead of leaving it unresolved.
+    pre_provider_create = None
+    if args.execute and authority is not None and prepared_bundle is not None:
+        from .allocator_invocation import before_provider_create
+        pre_provider_create = partial(before_provider_create, authority=authority, bundle=prepared_bundle)
     if prepared_bundle is None or authority is None or blockers:
         result = {
             "status": "blocked",
@@ -287,9 +296,6 @@ def run_policy_canary_allocator_lane(
             "provider_mutations_performed": 0,
         }
     elif team or beta_remote:
-        if args.execute:
-            from .allocator_invocation import before_provider_create
-            before_provider_create(authority=authority, bundle=prepared_bundle)
         result = run_team_candidate_session_vast(
             job_dir=args.adp_job_dir, prepared_bundle=prepared_bundle, session_authority=authority,
             paid_resource_admission_grant=grant, execute=args.execute, credential_file=credential_file,
@@ -299,11 +305,9 @@ def run_policy_canary_allocator_lane(
             allowed_active_instance_ids=args.adp_allowed_active_vast_instance_id,
             provider_runtime_environment={name: os.environ[name] for name in POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES
                                           if name in os.environ},
+            pre_provider_create=pre_provider_create,
         )
     else:
-        if args.execute:
-            from .allocator_invocation import before_provider_create
-            before_provider_create(authority=authority, bundle=prepared_bundle)
         result = run_native_task_arena_policy_canary_session_vast(
             job_dir=args.adp_job_dir,
             prepared_bundle=prepared_bundle,
@@ -321,6 +325,7 @@ def run_policy_canary_allocator_lane(
                 for name in POLICY_PROVIDER_RUNTIME_ENVIRONMENT_NAMES
                 if name in os.environ
             },
+            pre_provider_create=pre_provider_create,
         )
     write_json(Path(args.adapter_output), result)
     success = result.get("status") in {"dry_run_ready", "completed"}

@@ -232,3 +232,55 @@ def test_signed_g1_revocation_before_create_refuses_the_provider_create(tmp_path
     assert not (path.parent / "provider_create_intent.json").exists()
     stop = json.loads((path.parent / "stop_requested.json").read_text())
     assert stop["reason"] == "beta_screening_current_source_revoked" and stop["new_processing_authorized"] is False
+
+
+@pytest.mark.parametrize("unanswered", ["signed_control", "task_context"])
+def test_g1_read_without_answer_before_create_fences_the_job_for_a_retry(tmp_path, monkeypatch, unanswered):
+    """A 503/429/timeout before the G1 create spent nothing: fence it so recovery retries, not blocks."""
+    from blueprint_pipeline import beta_policy_screening_control_transport as transport
+    args, authority, bundle, identity, _, _ = setup(tmp_path, monkeypatch)
+    jobs, path, reads = _screening_invocation(tmp_path, monkeypatch, authority, bundle, revoke_before_create=False)
+    answered = transport.request_control
+
+    def control_read(**kwargs):
+        if unanswered == "signed_control" and len(reads) >= 1:
+            raise ValueError("beta_screening_execution_control_http_503")
+        return answered(**kwargs)
+
+    def task_context(source, *, site_id):
+        raise ValueError("website_control_task-context_http_429:pipeline_sync_rate_limited")
+
+    monkeypatch.setattr(transport, "request_control", control_read)
+    if unanswered == "task_context":
+        monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", task_context)
+
+    def provider(**kwargs):
+        observed = kwargs["pre_provider_mutation_hook"]()
+        assert observed == {"status": "blocked", "blockers": ["g1_beta_paid_precreate_recheck_failed"]}
+        return {"status": "blocked", "blockers": observed["blockers"], "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(paid, "run_arena_native_control_vast", provider)
+    jobs.run_invocation(path, allocator=lambda argv: dispatch(args, identity))
+    assert not (path.parent / "provider_create_intent.json").exists()
+    assert (path.parent / "no_create_fence.json").exists()
+    assert not (path.parent / "stop_requested.json").exists()
+    assert jobs.fence_unstarted(path)["status"] == "fenced_unspent"
+
+
+def test_g1_definite_task_context_refusal_is_not_fenced_for_retry(tmp_path, monkeypatch):
+    args, authority, bundle, identity, _, _ = setup(tmp_path, monkeypatch)
+    jobs, path, _ = _screening_invocation(tmp_path, monkeypatch, authority, bundle, revoke_before_create=False)
+
+    def withdrawn(source, *, site_id):
+        raise ValueError("beta_screening_current_capture_consent_required")
+
+    monkeypatch.setattr("blueprint_pipeline.beta_policy_screening_worker.require_current_source", withdrawn)
+
+    def provider(**kwargs):
+        assert kwargs["pre_provider_mutation_hook"]()["status"] == "blocked"
+        return {"status": "blocked", "blockers": ["g1_beta_paid_precreate_recheck_failed"], "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(paid, "run_arena_native_control_vast", provider)
+    jobs.run_invocation(path, allocator=lambda argv: dispatch(args, identity))
+    assert not (path.parent / "provider_create_intent.json").exists()
+    assert not (path.parent / "no_create_fence.json").exists()

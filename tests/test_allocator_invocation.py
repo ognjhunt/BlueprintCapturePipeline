@@ -202,3 +202,123 @@ def test_coordinator_transfers_original_reservation_only_after_exact_fence(tmp_p
     assert publication(tmp_path)["budget"]["reserved_usd"] == "4"
     assert publication(tmp_path)["budget"]["spent_upper_bound_usd"] == "0"
     assert backend.launches == 1
+
+
+def test_stop_after_the_create_intent_is_ignored_so_the_result_is_always_written(tmp_path):
+    """Once the adapter has torn down, a SIGTERM must not kill the watchdog close or the result write."""
+    import signal
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    path, authority, bundle = retained(tmp_path)
+    before = signal.getsignal(signal.SIGTERM)
+    written = []
+
+    def allocator(args):
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler), "the default action would kill the allocator before its result"
+        jobs.before_provider_create(authority=authority, bundle=bundle)
+        # The adapter tore down and restored this handler; a stop lands now.
+        handler(signal.SIGTERM, None)
+        handler(signal.SIGTERM, None)
+        launch._write(tmp_path / "allocator_result.json", {"status": "blocked"})
+        written.append(True)
+        return 0
+
+    assert jobs.run_invocation(path, allocator=allocator) == 0
+    assert written == [True] and (tmp_path / "allocator_result.json").is_file()
+    assert signal.getsignal(signal.SIGTERM) == before
+
+
+def test_first_stop_before_any_create_unwinds_once_and_the_job_is_fenced(tmp_path):
+    import signal
+    path, _, _ = retained(tmp_path)
+
+    def allocator(args):
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler), "the default action kills without unwinding"
+        try:
+            handler(signal.SIGTERM, None)
+        except KeyboardInterrupt:
+            handler(signal.SIGTERM, None)  # A repeat cannot interrupt the unwinding.
+            raise
+        pytest.fail("a stop before any create must unwind the allocator")
+
+    with pytest.raises(KeyboardInterrupt):
+        jobs.run_invocation(path, allocator=allocator)
+    assert not (path.parent / "provider_create_intent.json").exists()
+    assert jobs.fence_unstarted(path)["status"] == "fenced_unspent"
+
+
+def test_stop_signal_record_is_claimed_once(tmp_path):
+    assert jobs.record_stop_signal(tmp_path, sender="allocator_monitor", reason="revoked", pid=7) is True
+    assert jobs.record_stop_signal(tmp_path, sender="screening_reconcile", reason="revoked", pid=7) is False
+    assert json.loads((tmp_path / jobs.STOP_SIGNAL_RECORD).read_text())["sender"] == "allocator_monitor"
+
+
+def test_create_refused_on_a_read_without_answer_is_retried_not_blocked(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from blueprint_pipeline import beta_policy_screening_worker as worker
+    authority = {"authority_digest": "sha256:" + "a" * 64, "resource_name": "exact-owned-resource"}
+    bundle = {"bundle_sha256": "sha256:" + "b" * 64}
+    prepared = {"prepared_digest": "sha256:" + "c" * 64}
+    path = jobs.retain_invocation(attempt_dir=tmp_path, binding={**authority, **bundle, "provider": "vast", **prepared},
+        argv=["gpu-canary"], control={"source": {}, "site_id": "site-one", **prepared,
+            "initial_observed_at_epoch": time.time(), "execution_deadline_epoch": None})
+    reads = iter([{}, ValueError("website_control_task-context_http_503:unclassified")])
+
+    def current(*args, **kwargs):
+        outcome = next(reads, None)
+        if outcome is None:
+            pytest.fail("a finished allocator was read again")
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(worker, "require_current_source", current)
+
+    def allocator(args):
+        # The adapter's pre-create hook refuses; the adapter writes its no-create result.
+        with pytest.raises(ValueError, match="control_unavailable_before_create"):
+            jobs.before_provider_create(authority=authority, bundle=bundle)
+        launch._write(tmp_path / "allocator_result.json", {"status": "blocked", "provider_mutations_performed": 0,
+            "provider_create_attempted": False, "blockers": ["g1_beta_paid_precreate_recheck_failed"]})
+        return 2
+
+    assert jobs.run_invocation(path, allocator=allocator) == 2
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
+    result = launch.reconcile_candidate(plan={}, candidate={}, attempt_dir=tmp_path, prepared=prepared)
+    assert result["retryable_unstarted_refusal"] is True and result["no_allocation_proven"] is True
+    assert result["unstarted_refusal_receipt"]["path"] == str(path.parent / "no_create_fence.json")
+
+
+def test_unspent_recovery_publishes_the_wait_code_the_website_accepts(tmp_path, monkeypatch):
+    """The WebApp refuses a running->preparing regression unless it carries the capacity-wait code."""
+    from blueprint_pipeline import beta_policy_screening_coordinator as coordinator
+    from blueprint_pipeline import beta_policy_screening_launch as launch
+    from tests.test_beta_policy_screening_coordinator import Backend, plan
+
+    monkeypatch.setattr(launch, "_validate_prepared", lambda *args: None)
+
+    class SpawnedThenLost(Backend):
+        def prepare_candidate(self, **kwargs):
+            return {"prepared_digest": "sha256:" + "c" * 64}
+
+        def launch_candidate(self, **kwargs):
+            directory = kwargs["attempt_dir"]
+            path = jobs.retain_invocation(attempt_dir=directory,
+                binding={"prepared_digest": kwargs["prepared"]["prepared_digest"]}, argv=["gpu-canary"])
+            launch._write(directory / "allocator_launch_intent.json", {
+                "prepared_digest": kwargs["prepared"]["prepared_digest"], "invocation_manifest": str(path)})
+            return {"status": "running", "handle": {"pid": 1}, "blockers": []}
+
+        def reconcile_candidate(self, **kwargs):
+            return launch.reconcile_candidate(**kwargs)
+
+    coordinator.enqueue_screening_campaign(plan(), queue_root=tmp_path)
+    backend = SpawnedThenLost()
+    coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    assert row["status"] == "running"
+    coordinator.process_screening_queue(queue_root=tmp_path, executor=backend, require_publication_ack=False)
+    row = coordinator._ledger(tmp_path)["campaigns"]["campaign-1"]["candidates"]["candidate-000"]
+    assert row["status"] == "preparing" and row["attempt"]["generation"] == 1
+    assert coordinator.CAPACITY_WAIT_BLOCKER in row["blockers"]
