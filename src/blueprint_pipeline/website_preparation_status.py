@@ -68,12 +68,46 @@ def requested_status_version(value: Any) -> str:
 
 
 class PreparationStatusUnavailable(ValueError):
-    """Fixed public refusal; internal paths/errors never cross this boundary."""
+    """Fixed public refusal; internal paths/errors never cross this boundary.
+
+    ``reason`` names the failed check with a fixed code for the private delivery
+    record only (``unavailable_reason``). The message stays the public refusal.
+    """
+
+    def __init__(self, message: str = _UNAVAILABLE, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
-def _require(condition: bool) -> None:
+def _require(condition: bool, reason: str | None = None) -> None:
     if not condition:
-        raise PreparationStatusUnavailable(_UNAVAILABLE)
+        raise PreparationStatusUnavailable(_UNAVAILABLE, reason=reason)
+
+
+_REASON_CODE = re.compile(r"[a-z][a-z0-9_.:-]{0,159}")
+
+
+def unavailable_reason(exc: BaseException) -> str | None:
+    """The fixed code behind a refused status read, for the delivery record.
+
+    A named check's ``reason``, else the first fixed-code message of a
+    ``ValueError`` or ``RuntimeError`` in the cause chain, such as
+    ``website_control_scene-sponsorship_http_409:website_scene_sponsorship_missing``.
+    Free text, paths and response bodies never match, so they are never kept.
+    """
+    current: BaseException | None = exc
+    for _ in range(8):
+        if current is None:
+            return None
+        reason = getattr(current, "reason", None)
+        if isinstance(current, PreparationStatusUnavailable) and type(reason) is str and _REASON_CODE.fullmatch(reason):
+            return reason
+        message = current.args[0] if len(current.args) == 1 else None
+        if (isinstance(current, (ValueError, RuntimeError)) and type(message) is str
+                and message != _UNAVAILABLE and _REASON_CODE.fullmatch(message)):
+            return message
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def validate_selectors(value: Any) -> dict[str, str]:
@@ -107,10 +141,52 @@ def _read_delivery(path: Path) -> dict[str, Any]:
     for field in ("delivery_attempt_count", "delivery_failure_count"):
         counter = value.get(field, 0)
         _require(type(counter) is int and counter >= 0)
-    for field in ("pending_since_epoch", "next_attempt_at_epoch"):
+    for field in ("pending_since_epoch", "next_attempt_at_epoch", "status_unavailable_since_epoch", "parked_at_epoch"):
         timestamp = value.get(field, 0.0)
         _require(type(timestamp) in (int, float) and math.isfinite(timestamp) and timestamp >= 0)
     return value
+
+
+# D-05 (2026-11-02): seven callbacks whose status read failed on every attempt
+# held the due backlog for 4.6 days. A delivery whose status read has failed on
+# every attempt for a day is parked, not dropped: it stays pending with all its
+# fields, is retried every six hours, and is counted apart from the due backlog.
+# One successful read, or a newer revision from the producer, makes it live.
+PARK_AFTER_SECONDS = 24 * 3600
+PARKED_RETRY_SECONDS = 6 * 3600
+PARKED_REASON = "preparation_status_persistently_unavailable"
+_READ_STREAK_FIELDS = ("status_unavailable_since_epoch", "last_unavailable_reason", "parked_reason",
+                       "parked_at_epoch")
+
+
+def _instant(value: Any, *, now: float) -> float | None:
+    return float(value) if type(value) in (int, float) and math.isfinite(value) and 0 <= value <= now else None
+
+
+def _status_read_outcome(updated: Mapping[str, Any], previous: Mapping[str, Any], *, now: float,
+                         failure: BaseException | None) -> dict[str, Any]:
+    """Failed-read bookkeeping for the status read that precedes each callback.
+
+    A read that succeeds ends the streak and any parking. A failed read extends
+    it; a streak a day long parks the delivery until its six-hour retry.
+    """
+    record = {key: value for key, value in updated.items() if key not in _READ_STREAK_FIELDS}
+    if failure is None:
+        return record
+    since = _instant(previous.get("status_unavailable_since_epoch"), now=now)
+    if (since is None and "last_attempt_at_epoch" not in previous
+            and previous.get("delivery_failure_count", 0) > 0):
+        # Recorded before streaks were kept: every failure the index counted on
+        # this record came before any callback, so the streak began when it
+        # became pending.
+        since = _instant(previous.get("pending_since_epoch"), now=now)
+    since = now if since is None else since
+    record.update(status_unavailable_since_epoch=since, last_unavailable_reason=unavailable_reason(failure))
+    if now - since >= PARK_AFTER_SECONDS:
+        parked_at = _instant(previous.get("parked_at_epoch"), now=now)
+        record.update(parked_reason=PARKED_REASON, parked_at_epoch=now if parked_at is None else parked_at,
+                      next_attempt_at_epoch=now + PARKED_RETRY_SECONDS)
+    return record
 
 
 def _root(root: Path) -> Path:
@@ -193,7 +269,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         _require(all(before.get(key) == selected[key] for key in
                      ("scene_id", "capture_id", "producer_delivery_key", "source_payload_sha256")))
         birth = capture_birth_source_projection(root, expected_purpose="scene_preparation")
-        _require(type(birth) is dict)
+        _require(type(birth) is dict, "capture_birth_missing")
         _require(all(birth.get(key) == selected[key] for key in ("request_id", "scene_id", "capture_id")))
         _require(birth.get("delivery_key") == selected["producer_delivery_key"])
         delivery = _read(Path(birth["birth_delivery_raw_ref"]["path"]))
@@ -204,14 +280,18 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         owner = load_original_owner_observation(bucket=delivery["source_finalize"]["bucket"], scene_id=selected["scene_id"],
             capture_id=selected["capture_id"], marker_generation=selected["completion_marker_generation"],
             **({"expected_purpose": purpose} if purpose else {}))
-        _require((owner["capture_owner"] or {}).get("user_id") == birth["capture_owner_user_id"])
-        _require(owner["producer_delivery"] == delivery["producer_delivery"])
-        _require(owner["producer_delivery"]["delivery_key"] == selected["producer_delivery_key"])
-        _require(owner["producer_delivery"]["raw_video"]["generation"] == birth["raw_video"]["generation"])
-        _require(owner["producer_delivery"]["raw_video"]["object_name"] == birth["raw_video"]["object_name"])
+        _require((owner["capture_owner"] or {}).get("user_id") == birth["capture_owner_user_id"],
+                 "capture_owner_changed")
+        _require(owner["producer_delivery"] == delivery["producer_delivery"], "capture_source_changed")
+        _require(owner["producer_delivery"]["delivery_key"] == selected["producer_delivery_key"],
+                 "capture_source_changed")
+        _require(owner["producer_delivery"]["raw_video"]["generation"] == birth["raw_video"]["generation"],
+                 "capture_source_changed")
+        _require(owner["producer_delivery"]["raw_video"]["object_name"] == birth["raw_video"]["object_name"],
+                 "capture_source_changed")
         # Current fresh owner transport validates rights and complete generation
         # authority; historical birth alone grants no current consent.
-        _require(read_consent_state(root)["state"] != "revoked")
+        _require(read_consent_state(root)["state"] != "revoked", "consent_revoked")
         raw_retained = _retained_context_or_none(root)
         # Birth scope authenticates the original owner. Task preparation has
         # its own scope and may remain unconfirmed under that same capture.
@@ -223,7 +303,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                         scene_id=selected["scene_id"], capture_id=selected["capture_id"],
                         purpose=context_purpose, allow_unconfirmed_preparation=raw_retained is None)
         _require(current["context_digest"] == selected["task_context_digest"]
-                 and (retained is None or retained["context_digest"] == current["context_digest"]))
+                 and (retained is None or retained["context_digest"] == current["context_digest"]),
+                 "task_context_changed")
         # A completed job always retained its context; never hand off without it.
         _require(retained is not None or before.get("status") != "completed")
         if current.get("confirmed") is False:
@@ -272,8 +353,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             from .website_task_target_choice import public_question
             question = public_question(root)
         after = _read_job_ledger(root)
-        _require(before == after)
-        _require(read_consent_state(root)["state"] != "revoked")
+        _require(before == after, "ledger_changed")
+        _require(read_consent_state(root)["state"] != "revoked", "consent_revoked")
         result = {"schema_version": schema_version, **selected,
                   "attempt_count": before["attempt_count"], "revision": before["revision"],
                   "state": state, "code": _CODES[state],
@@ -460,6 +541,8 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
                                   "last_attempt_at_epoch": now,
                                   "delivered_at_epoch": now if error is None else None,
                                   "last_error_type": error, "acceptance": acceptance}
+                # The status read succeeded before this callback: unparked and live.
+                updated = _status_read_outcome(updated, delivery, now=now, failure=None)
                 write_json(path, updated)
                 update_index(root, updated)
             counts["delivered"] += int(error is None)
@@ -479,6 +562,9 @@ def reconcile_preparation_wakeups(storage_root: Path, *, limit: int = 50,
                                 "delivery_failure_count": failures,
                                 "next_attempt_at_epoch": now + min(1800, 60 * 2 ** min(failures - 1, 5)),
                                 "last_error_type": type(exc).__name__}
+                            # Before the callback this is a failed status read; a day of them parks.
+                            updated = _status_read_outcome(updated, delivery, now=now,
+                                                           failure=None if attempted else exc)
                             write_json(path, updated)
                             update_index(root, updated)
                 except Exception:

@@ -14,6 +14,7 @@ import os
 import re
 import stat
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,9 +25,23 @@ from .common import write_json
 DIRECTORY = ".website_preparation_pending"
 SCHEMA_VERSION = "website_preparation_delivery_hint.v1"
 METRICS_FILE = ".website_preparation_delivery_metrics.json"
+METRICS_SCHEMA_VERSION = "website_preparation_delivery_metrics.v1"
 MAX_HINT_SCAN = 20000
 _UNAVAILABLE_FIELDS = ("unavailable_failure_count", "unavailable_last_attempt_at_epoch",
                        "unavailable_next_attempt_at_epoch")
+# D-05: the capacity tick pages (PAGE_ALERT_CODES) when a live, unparked callback
+# has waited over an hour, whether it is due now or waiting out a retry backoff.
+# Parked callbacks only warn. Nothing here admits, refuses or changes delivery.
+STALLED_CODE = "preparation_delivery_stalled"
+PARKED_CODE = "preparation_delivery_parked"
+METRICS_UNREADABLE_CODE = "preparation_delivery_metrics_unreadable"
+PAGE_CODES = frozenset({STALLED_CODE})
+LIVE_PAGE_SECONDS = 3600
+# The listener writes the metrics every minute; an hour without them means it stopped.
+METRICS_STALE_SECONDS = 3600
+MAX_METRICS_BYTES = 256 * 1024
+STORAGE_ROOT_ENV = "BLUEPRINT_PUBSUB_HANDOFF_STORAGE_ROOT"
+DEFAULT_STORAGE_ROOT = Path("/var/lib/blueprint/pubsub-handoffs")
 
 
 @dataclass(frozen=True)
@@ -109,6 +124,10 @@ def update(capture_root: Path, delivery: Mapping[str, Any]) -> None:
                 "revision": delivery.get("revision"),
                 "next_attempt_at_epoch": _number(delivery.get("next_attempt_at_epoch"), 0.0),
                 "pending_since_epoch": _number(delivery.get("pending_since_epoch"), 0.0)}
+        parked_at = _number(delivery.get("parked_at_epoch"), -1.0)
+        if parked_at >= 0:
+            # Parked: counted apart from the due backlog (website_preparation_status).
+            hint["parked_at_epoch"] = parked_at
         try:
             previous = json.loads(path.read_text())
         except (FileNotFoundError, ValueError):
@@ -144,8 +163,17 @@ def defer_unavailable(selected: DueDelivery, *, now: float) -> None:
 
 
 def due(storage_root: Path, *, now: float, limit: int) -> tuple[list[DueDelivery], dict[str, Any]]:
+    """Due rows, live before parked, and backlog metrics.
+
+    ``due_backlog``, ``oldest_due_age_seconds`` and ``overloaded`` count live rows
+    due now. ``live_count`` and ``oldest_live_age_seconds`` add live rows waiting
+    out a retry backoff. Parked rows count only in ``parked_count`` and
+    ``oldest_parked_age_seconds``. Every age runs from ``pending_since_epoch``.
+    """
     storage = Path(storage_root).absolute()
     rows = []
+    live_ages: list[float] = []
+    parked_ages: list[float] = []
     invalid = scanned = 0
     with _locked(storage) as directory:
         for path in directory.iterdir():
@@ -170,17 +198,82 @@ def due(storage_root: Path, *, now: float, limit: int) -> tuple[list[DueDelivery
                     invalid += 1
                 next_attempt = max(_number(hint.get("next_attempt_at_epoch"), 0.0),
                                    backoff.get("unavailable_next_attempt_at_epoch", 0.0))
+                pending_since = _number(hint.get("pending_since_epoch"), now)
+                parked = _number(hint.get("parked_at_epoch"), -1.0) >= 0
+                (parked_ages if parked else live_ages).append(max(0.0, now - pending_since))
                 if next_attempt <= now:
-                    pending_since = _number(hint.get("pending_since_epoch"), now)
                     # Zero means immediately eligible, not older than every
                     # retained retry. Compare real eligibility times so a
                     # stream of new revisions cannot starve an already-due one.
-                    rows.append((max(next_attempt, pending_since), pending_since, root, hint))
+                    # A parked retry waits behind every live row that is due.
+                    rows.append((parked, max(next_attempt, pending_since), pending_since, root, hint))
             except (OSError, ValueError, KeyError, TypeError):
                 invalid += 1
-    rows.sort(key=lambda row: (row[0], row[1], str(row[2])))
-    return [DueDelivery(row[2], row[3]) for row in rows[:limit]], {
-        "due_backlog": len(rows), "oldest_due_age_seconds": max([0.0, *(now - row[1] for row in rows)]),
+    rows.sort(key=lambda row: (row[0], row[1], row[2], str(row[3])))
+    live_due = [row for row in rows if not row[0]]
+    return [DueDelivery(row[3], row[4]) for row in rows[:limit]], {
+        "due_backlog": len(live_due), "oldest_due_age_seconds": max([0.0, *(now - row[2] for row in live_due)]),
+        "live_count": len(live_ages), "oldest_live_age_seconds": max([0.0, *live_ages]),
+        "parked_count": len(parked_ages), "oldest_parked_age_seconds": max([0.0, *parked_ages]),
         "hint_count_scanned": scanned, "hint_scan_limit_reached": scanned >= MAX_HINT_SCAN,
         "invalid_hint_count": invalid,
-        "overloaded": len(rows) > limit or scanned >= MAX_HINT_SCAN}
+        "overloaded": len(live_due) > limit or scanned >= MAX_HINT_SCAN}
+
+
+def _read_metrics(path: Path) -> dict[str, Any]:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_METRICS_BYTES:
+            raise ValueError("preparation_delivery_metrics_unsafe")
+        raw = os.read(descriptor, MAX_METRICS_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    value = json.loads(raw)
+    if type(value) is not dict or value.get("schema_version") != METRICS_SCHEMA_VERSION:
+        raise ValueError("preparation_delivery_metrics_invalid")
+    return value
+
+
+def observe_delivery_backlog(storage_root: Path, *, now: float) -> dict[str, Any]:
+    """Read-only: the listener's last delivery metrics as capacity-report alert rows.
+
+    A live callback older than ``LIVE_PAGE_SECONDS`` pages; parked callbacks
+    warn. Metrics the listener stopped writing age by the silence, and say so.
+    """
+    try:
+        metrics = _read_metrics(Path(storage_root) / METRICS_FILE)
+    except FileNotFoundError:
+        return {"status": "absent", "alerts": []}
+    except (OSError, ValueError):
+        return {"status": "unreadable",
+                "alerts": [{"code": METRICS_UNREADABLE_CODE, "reason": "metrics_unreadable"}]}
+    counts = {key: metrics.get(key) for key in ("live_count", "parked_count")}
+    ages = {key: metrics.get(key) for key in
+            ("observed_at_epoch", "oldest_live_age_seconds", "oldest_parked_age_seconds")}
+    if (metrics.get("index_unavailable") is True
+            or not all(type(value) is int and value >= 0 for value in counts.values())
+            or not all(type(value) in (int, float) and math.isfinite(value) and value >= 0
+                       for value in ages.values())):
+        reason = "index_unavailable" if metrics.get("index_unavailable") is True else "metrics_incomplete"
+        return {"status": "incomplete", "alerts": [{"code": METRICS_UNREADABLE_CODE, "reason": reason}]}
+    silent = max(0.0, now - float(ages["observed_at_epoch"]))
+    live_age = float(ages["oldest_live_age_seconds"]) + silent if counts["live_count"] else 0.0
+    parked_age = float(ages["oldest_parked_age_seconds"]) + silent if counts["parked_count"] else 0.0
+    alerts: list[dict[str, Any]] = []
+    if counts["live_count"] and live_age > LIVE_PAGE_SECONDS:
+        alerts.append({"code": STALLED_CODE, "count": counts["live_count"], "age_seconds": round(live_age),
+                       "threshold_seconds": LIVE_PAGE_SECONDS, "parked_count": counts["parked_count"]})
+    if counts["parked_count"]:
+        alerts.append({"code": PARKED_CODE, "count": counts["parked_count"], "age_seconds": round(parked_age)})
+    if silent > METRICS_STALE_SECONDS:
+        alerts.append({"code": METRICS_UNREADABLE_CODE, "reason": "metrics_stale", "age_seconds": round(silent)})
+    return {"status": "observed", "observed_at_epoch": ages["observed_at_epoch"], **counts,
+            "oldest_live_age_seconds": live_age, "oldest_parked_age_seconds": parked_age, "alerts": alerts}
+
+
+def configured_delivery_check() -> Callable[[float], dict[str, Any]]:
+    """The capacity service's check, on the listener's storage root."""
+    configured = str(os.getenv(STORAGE_ROOT_ENV) or "").strip()
+    root = Path(configured) if configured.startswith("/") else DEFAULT_STORAGE_ROOT
+    return lambda now: observe_delivery_backlog(root, now=now)
