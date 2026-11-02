@@ -22,6 +22,7 @@ Before you act:
 |---|---|
 | [1. A job stops moving](#1-a-job-stops-moving) | A stall page arrives, or a job shows the same state for hours. |
 | [2. Vast credit runs out](#2-vast-credit-runs-out) | `provider_credit_insufficient` pages, or a launch is refused for credit. |
+| [2a. Provider funding](#2a-provider-funding) | An OpenAI, World Labs or Google Cloud spend page arrives (`*_spend_*_high`). |
 | [3. The work volume is full](#3-the-work-volume-is-full) | A launch is refused for disk, or a capacity page arrives. |
 | [4. The operator door or the host is down](#4-the-operator-door-or-the-host-is-down) | The uptime probe pages, or `door` calls fail. |
 | [5. Roll back a bad deploy](#5-roll-back-a-bad-deploy) | A deploy broke production. |
@@ -94,7 +95,12 @@ The alarm (PR #3257, `src/blueprint_pipeline/provider_credit_admission.py`):
 - `BLUEPRINT_VAST_CREDIT_WARNING_USD` changes the $10 line.
   `BLUEPRINT_VAST_CREDIT_RESERVE_USD` changes the $1 reserve.
 - `provider_credit_credentials_missing`, `provider_credit_unverifiable` and
-  `provider_credit_transport_failed` are warnings only.
+  `provider_credit_transport_failed` are warnings only. They raise the
+  capacity level to `warning` at most. Only `provider_credit_insufficient`
+  makes it `critical`. A release without PR #3279 shows any of them as
+  `critical`.
+- Disk pages such as `reclaim_ineffective` follow the disks' own level, not
+  a level that a credit or spend alert raised.
 - PR #3257 merged as `882d3bd59` on 2026-11-02. A release without it warns
   once at $5 + $1 and does not repeat. Check that the active release contains
   `882d3bd59`.
@@ -124,6 +130,123 @@ then lost its machine is a different case. On a website scene
 (`max_retries: 0`) it stops at `scene_configuration_failed` or
 `retry_cap_exhausted` (`_recover_configuration_capacity` in
 `src/blueprint_pipeline/task_evaluation_scene_progression.py`).
+
+## 2a. Provider funding
+
+Only Vast gives this host a balance to read (section 2). For OpenAI, World
+Labs and Google Cloud, each capacity tick (every 10 min) reads what Blueprint
+spent and pages when the spend crosses a line (beta tracker B-08,
+`src/blueprint_pipeline/provider_spend_alerts.py`). The alarm only reads. It
+never adds credit, and no launch waits on it. A page goes to the capacity alert
+route, `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`, and repeats each hour while it
+lasts. As for Vast, a page makes the capacity level `critical`, and a warning
+raises it to `warning` at most. Neither raises a disk page.
+
+| Provider | How it is funded | What pages | Default line | Override in `/etc/blueprint/pipeline-control-plane.env` |
+|---|---|---|---|---|
+| Vast | Prepaid credit. Automatic recharge: owner to confirm (tracker D-09). | `provider_credit_insufficient`: the balance (section 2). | Below $11 | `BLUEPRINT_VAST_CREDIT_WARNING_USD`, `BLUEPRINT_VAST_CREDIT_RESERVE_USD` |
+| OpenAI | Owner to confirm: prepaid credit (with or without automatic recharge) or a monthly invoice. | `openai_spend_24h_high`: organization spend in one UTC day, today so far or yesterday. `openai_spend_month_high`: the UTC month to date. | $75 a day. $560 a month. | `BLUEPRINT_OPENAI_SPEND_24H_PAGE_USD`, `BLUEPRINT_OPENAI_SPEND_MONTH_PAGE_USD` |
+| World Labs (Atlas) | Prepaid credit: tasks draw from the account balance, 1,000 credits per US dollar in the beta. Automatic recharge and the account's monthly spend limit: owner to confirm. | `world_labs_spend_24h_high`: Blueprint's recorded Atlas purchases in the last 24 h. `world_labs_spend_month_high`: the UTC month to date. | $60 a day. $450 a month. | `BLUEPRINT_WORLD_LABS_SPEND_24H_PAGE_USD`, `BLUEPRINT_WORLD_LABS_SPEND_MONTH_PAGE_USD` |
+| Google Cloud project `blueprint-8c1ca` (Gemini) | A Cloud Billing account that Google charges after use. Payment setup: owner to confirm. | `gcp_spend_month_high`: the budget guard's cost for the month. | 80% of the month's limit: $80 of $100. | `BLUEPRINT_GCP_SPEND_PAGE_FRACTION`, more than 0 and at most 1 |
+
+The lines come from the B-03 cost model
+([`../launch-readiness/2026-11-cost-model.md`](../launch-readiness/2026-11-cost-model.md)):
+
+- One website job at its caps costs $30.91 of OpenAI: ARTISAN's $25
+  cumulative cap, $0.91 of Atlas planner and review calls (measured on
+  capture-447), and the $5 upstream ledger. It costs $25 of World Labs: the
+  default Atlas allowance. capture-447 measured $17.93 of OpenAI. Its World
+  Labs cost was about $8.60 at rate-card prices, part of it estimated.
+- The plan is 2 jobs a day and 15 a month. B-03 found 15 website jobs in the
+  30 days to 2026-11-02. The WebApp admits at most 5 new jobs a day.
+- Each line is jobs × cost per job × 1.2, rounded up to $5. The 20% is for
+  spend outside website jobs. Raise the lines when the job rate goes up.
+
+These are alert lines, not ceilings. A bad override (not a positive number,
+or a fraction above 1) keeps the default and warns
+`provider_spend_config_invalid`. `BLUEPRINT_PROVIDER_SPEND_ALERTS=0` turns the
+alarm off.
+
+**OpenAI.** OpenAI has no balance API. The alarm reads the organization Costs
+API (`src/blueprint_pipeline/openai_organization_costs.py`) with the Admin key
+in `OPENAI_ADMIN_API_KEY_FILE`. The capacity unit sets it to
+`/etc/blueprint/provider-secrets/openai_admin_api_key`, the file that the
+launch dispatcher uses. Every project in the organization counts.
+
+- Cost data lags. OpenAI reports costs by UTC day, and a day's figure keeps
+  growing for hours after the spend. The alarm sees a cost only when OpenAI
+  reports it, so a page can come hours after the spend. The alarm also checks
+  yesterday, because late costs land in yesterday's figure after midnight. A
+  page therefore lasts until the day that crossed the line is older than
+  yesterday: about 48 h at most.
+- The balance and the recharge settings are on the OpenAI platform's billing
+  page (owner login).
+- Whether the WebApp's OpenAI key is in the same organization: owner to
+  confirm. If it is not, the WebApp's OpenAI spend is not counted.
+
+**World Labs.** The Atlas API has no balance, usage or billing endpoint (its
+API reference, read 2026-11-02). The alarm counts Blueprint's own record of
+each Atlas attempt under
+`/var/lib/blueprint/pubsub-handoffs/*/scenes/*/captures/*/pipeline/atlas`
+(`BLUEPRINT_WEBSITE_ATLAS_PREVIEW_STORAGE_ROOT`):
+
+- A completed operation counts at its reviewed price. An operation that may
+  still be charged counts in full. A failed operation or a refused send counts
+  $0, the same rule as `src/blueprint_pipeline/atlas_spend_settlement.py`.
+- A purchase is dated by its last send.
+- World Labs use outside website jobs is not counted.
+- Check the balance itself on the World Labs dashboard: Settings → Billing
+  (`https://atlas-beta.worldlabs.ai/settings/billing?tab=developer`). Daily
+  spend is at `https://atlas-beta.worldlabs.ai/usage?tab=developer`. With no
+  credit left, Atlas refuses tasks with HTTP 402 `CREDITS_UNAVAILABLE`. At the
+  account's monthly limit it refuses them with `SPEND_LIMIT_EXCEEDED` (World
+  Labs billing documentation, read 2026-11-02).
+
+**Google Cloud (Gemini).** The WebApp and the Pipeline call the Gemini API
+with `GEMINI_API_KEY` or `GOOGLE_GENAI_API_KEY`. The Google Cloud project that
+owns the key pays. That this project is `blueprint-8c1ca`: owner to confirm.
+The Gemini lanes already handle the error "prepayment credits are depleted"
+(`src/blueprint_pipeline/wam_generated_video_success_label_gemini.py`).
+Whether the key uses Gemini API prepayment: owner to confirm. This alarm
+cannot see a prepaid Gemini balance.
+
+- The alarm reads the monthly budget guard's report. That is the
+  `report_path` in the policy that `BLUEPRINT_GCP_BUDGET_GUARD_CONFIG` names,
+  `/var/lib/blueprint/pipeline-control-plane/gcp-monthly-budget/latest.json`
+  on the host. `blueprint-gpu-spend-guard.timer` writes it every few minutes
+  ([`development-cloud-cost-controls.md`](development-cloud-cost-controls.md#monthly-admission-and-automatic-stop)).
+- The line is a share of the month's effective limit, so a dated owner
+  exception moves it too. The alarm never changes the limit. At 100%, the
+  guard itself refuses paid work.
+- Google's cost reports are hours late, so the 80% line leaves room.
+
+These codes warn and never page:
+
+| Code | Meaning |
+|---|---|
+| `openai_spend_credentials_missing` | The Admin key file is not set, is missing, or is not owner-only (`reason`). |
+| `openai_spend_transport_failed` | The request failed. `http_status` 401 or 403 means OpenAI refused the key. |
+| `openai_spend_unverifiable` | OpenAI's answer was malformed (`reason`). |
+| `world_labs_spend_unverifiable` | The job root is missing, an attempt record is unreadable, or the walk stopped early. A walk that stopped early is a lower bound, and it still pages on what it counted. |
+| `gcp_spend_unverifiable` | No guard policy, a report that is unreadable, stale or for another month, or no cost reported yet this month (`reason`). |
+| `provider_spend_config_invalid` | An override is bad (`reason` names it). The default line applies. |
+| `provider_spend_check_failed` | The check stopped with an error. The tick went on. |
+
+When a spend page arrives:
+
+1. Read the alert in `door status` (`capacity.alerts`: `spend_usd`,
+   `threshold_usd`, `window`). For the current figures of all three
+   providers, read `provider_spend` in
+   `door cat /var/lib/blueprint/pipeline-control-plane/capacity/summary.json`.
+2. Ask the owner to check the provider's balance on its own dashboard, and to
+   add credit if it is low. This is a money action. Recharge settings are the
+   owner's account settings.
+3. If the spend is not expected, find what spent it: OpenAI usage by project,
+   World Labs usage by API key or project, or the Google Cloud billing report.
+   For World Labs, also look at the Atlas folders of recent jobs.
+4. A page for an expected busy day stops by itself when that day leaves the
+   window. To move a line, the owner edits the environment file over SSH
+   (section 4) and records a break-glass note ([`break-glass.md`](break-glass.md)).
 
 ## 3. The work volume is full
 
