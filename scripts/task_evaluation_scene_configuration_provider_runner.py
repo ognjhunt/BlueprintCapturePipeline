@@ -159,6 +159,17 @@ def _hydrate_envelope(runtime: Path, portable: dict) -> dict:
         validate_envelope_owner(envelope, transport["authority_evidence"]["successor_owner_attempt"])
         validate_transport(transport,
                            _read(Path(partial["descriptor"]["materialized_path"])))
+    if "artisan_continuation" in envelope:
+        from blueprint_pipeline.task_evaluation_artisan_continuation import validate_artisan_transport
+        from blueprint_pipeline.task_evaluation_partial_astra_transport import validate_envelope_owner
+        continuation = envelope["artisan_continuation"]
+        for name in ("descriptor", "runtime_archive", "transport"):
+            row = continuation[name]
+            row["materialized_path"] = str(_runtime_file(
+                runtime, row["path"], digest=row["digest"], size_bytes=row["size_bytes"]))
+        transport = _read(Path(continuation["transport"]["materialized_path"]))
+        validate_envelope_owner(envelope, transport["authority_evidence"]["successor_owner_attempt"])
+        validate_artisan_transport(transport, _read(Path(continuation["descriptor"]["materialized_path"])))
     envelope["portable_envelope_digest"] = portable["envelope_digest"]
     envelope["envelope_digest"] = canonical_digest(
         envelope, digest_field="envelope_digest"

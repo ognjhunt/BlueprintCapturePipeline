@@ -1,5 +1,6 @@
 """Hermetic stage orchestration with real final USD; no framework/live proof."""
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 import time
 import zipfile
 
+from PIL import Image
 import pytest
 
 from blueprint_pipeline import task_evaluation_scene_configuration_artisan_driver as driver
@@ -343,3 +345,103 @@ def test_unprivileged_stage_runs_the_sealed_blender(stage_fixture, monkeypatch):
     context = json.loads((fixture.output / "artisan_runtime/bridge_context.v1.json").read_text())["sandbox"]
     assert context["blender"] == str(sealed.resolve() / "blender")
     assert not (fixture.output / "artisan_runtime/packaged_blender").exists()
+
+
+@pytest.mark.parametrize("changed_frame", [False, True])
+def test_a_continued_source_resumes_its_upstream_run_and_meters_only_the_remainder(stage_fixture, monkeypatch, tmp_path,
+                                                                                  changed_frame):
+    """capture-447ae4f4: the successor resumes the source's upstream run at its saved
+    phase; the carried spend counts against the cumulative cap, never against new money."""
+    from blueprint_pipeline import task_evaluation_artisan_continuation as continuation
+    fixture = stage_fixture
+    input_path = Path(fixture.environment[driver.INPUT])
+    stage = json.loads(input_path.read_text())
+    source_stage = {**stage, "run_id": "source-run"}
+    input_path.write_text(json.dumps(source_stage))
+    runtime = fixture.output / "artisan_runtime"
+
+    def paid_then_stopped(argv, **kwargs):
+        context = json.loads((runtime / "bridge_context.v1.json").read_text())
+        workspace = Path(context["sandbox"]["write_root"])
+        (workspace.parent / "pipeline_state.json").parent.mkdir(parents=True, exist_ok=True)
+        (workspace.parent / "pipeline_state.json").write_text('{"phase": "P5_review"}')
+        (workspace / "candidate").mkdir(parents=True, exist_ok=True)
+        (workspace / "candidate/object.usd").write_text("#usda 1.0")
+        Path(context["usage_file"]).write_text(json.dumps({
+            "schema_version": "artisan_upstream_usage.v1", "maximum_cost_usd": context["maximum_cost_usd"],
+            "maximum_requests": context["maximum_requests"], "deadline_epoch": context["deadline_epoch"],
+            "calls": [{"id": "1", "status": "priced", "cost_usd": 2.5}, {"id": "2", "status": "priced", "cost_usd": 2.5}]}))
+        raise RuntimeError("synthetic authority exhausted in review")
+    with pytest.raises(RuntimeError, match="authority exhausted"):
+        driver.execute_artisan_component(environment=fixture.environment, runner=paid_then_stopped,
+                                         cost_gate_factory=fixture.gate)
+    source_request = json.loads((runtime / "blueprint_request.v1.json").read_text())
+    upstream = "pl_" + source_request["request_digest"][7:39]
+    (runtime / "terminal.v1.json").write_text(json.dumps({"run_id": upstream, "phase": "P5_review"}))
+    # Pack what selection would carry: the workspace in place, run-bound records relocated.
+    archive = tmp_path / "retained_runtime.zip"
+    inventory = []
+    with zipfile.ZipFile(archive, "w") as packed:
+        for path in sorted(p for p in runtime.rglob("*") if p.is_file()):
+            relative = path.relative_to(runtime).as_posix()
+            kind = continuation._classify(relative)
+            if kind is None:
+                continue
+            name = relative if kind == "keep" else continuation.RELOCATED_ROOT + relative
+            packed.write(path, name)
+            inventory.append({"relative_path": name, **{k: v for k, v in file_record(path).items() if k != "path"}})
+    usage_bytes = (runtime / "blueprint_usage.json").read_bytes()
+    shutil.rmtree(runtime)  # a new provider host
+    monkeypatch.setattr(continuation, "ORIGINAL_ROOT", str(runtime))
+    lineage = {"source_run_id": "source-run", "successor_run_id": stage["run_id"]}
+    configuration = stage["configuration"]
+    descriptor = {"schema_version": continuation.SCHEMA_VERSION, "source_run_id": "source-run",
+                  "successor_run_id": stage["run_id"], "original_runtime_root": str(runtime),
+                  "source_request_digest": source_request["request_digest"], "source_upstream_run_id": upstream,
+                  "source_terminal_phase": "P5_review",
+                  "semantic_request_digest": canonical_digest(continuation.semantic_request(source_request)),
+                  "semantic_configuration_digest": canonical_digest(continuation.semantic_configuration(configuration)),
+                  "carried_spend": {"cost_usd": 5.0, "call_count": 2, "largest_call_usd": 2.5,
+                                    "usage_sha256": "sha256:" + hashlib.sha256(usage_bytes).hexdigest()},
+                  "owner_intent_lineage": lineage,
+                  "retained_runtime_archive": {k: v for k, v in file_record(archive).items() if k != "path"},
+                  "retained_files": sorted(inventory, key=lambda row: row["relative_path"]),
+                  "new_spend_authorized": False}
+    descriptor["adoption_digest"] = canonical_digest(descriptor, digest_field="adoption_digest")
+    descriptor_path = tmp_path / "descriptor.json"
+    descriptor_path.write_text(json.dumps(descriptor))
+    successor = json.loads(json.dumps(stage))
+    successor["construction_envelope"]["artisan_continuation"] = {
+        "verified_lineage": lineage,
+        "descriptor": {"materialized_path": str(descriptor_path), **file_record(descriptor_path)},
+        "runtime_archive": {"materialized_path": str(archive), **file_record(archive)}}
+    input_path.write_text(json.dumps(successor))
+    reservations = []
+
+    def gate(**kwargs):
+        reservations.append(kwargs["max_cost_usd"])
+        return fixture.gate(**kwargs)
+    if changed_frame:
+        # The successor's own stage 2 produced a different view: never resume
+        # incompatible work, and never stop the job for it.
+        Image.new("RGB", (4, 4), color=(250, 1, 1)).save(fixture.frames[0])
+    result = driver.execute_artisan_component(environment=fixture.environment, runner=fixture.runner,
+                                              cost_gate_factory=gate)
+    argv, _ = fixture.calls[-1]
+    if changed_frame:
+        assert "resume" not in argv and "--prompt-file" in argv
+        assert argv[argv.index("--max-cost-usd") + 1] == "12.0" and reservations == [12.0]
+        rejected = json.loads((fixture.output / "artisan_continuation_rejected.json").read_text())
+        assert rejected["reason"] == "scientific_inputs_changed" and rejected["fresh_authoring"] is True
+        assert (fixture.output / "artisan_continuation_rejected_runtime/workspace").is_dir()
+        assert result["status"] == "completed"
+        return
+    assert argv[argv.index("resume") + 1] == upstream and "--prompt-file" not in argv
+    # The configuration's $15 cumulative cap: upstream may reach it; this attempt meters $10.
+    assert argv[argv.index("--max-cost-usd") + 1] == "15.0"
+    context = json.loads((runtime / "bridge_context.v1.json").read_text())
+    assert context["maximum_cost_usd"] == 10.0 and reservations == [10.0]
+    record = json.loads((runtime / continuation.RELOCATED_ROOT / "adoption.v1.json").read_text())
+    assert record["carried_cost_usd"] == 5.0 and record["increment_usd"] == 10.0
+    assert record["successor_request_digest"] != record["source_request_digest"]
+    assert result["status"] == "completed"

@@ -277,6 +277,34 @@ def scene_configuration_bundle_contract(
             blockers.append("scene_configuration_partial_astra_transport_invalid")
     elif manifest.get("partial_astra_successor_digest") is not None:
         blockers.append("scene_configuration_partial_astra_transport_missing")
+    if "artisan_continuation" in envelope:
+        try:
+            from .task_evaluation_artisan_continuation import validate_artisan_transport
+            from .task_evaluation_partial_astra_transport import validate_envelope_owner
+            continuation = envelope["artisan_continuation"]
+            if ("partial_astra_successor" in envelope
+                    or manifest.get("artisan_continuation_digest") != canonical_digest(continuation)
+                    or continuation["verified_lineage"]["successor_run_id"] != envelope["run_id"]):
+                raise ValueError("artisan_continuation_bundle_binding_changed")
+            for name in ("descriptor", "runtime_archive", "transport"):
+                row = continuation[name]
+                if row.get("materialized_path") is not None:
+                    raise ValueError("artisan_continuation_not_portable")
+                bound_rows.append((str(row["path"]), row))
+            transport = json.loads(archive.read(root + continuation["transport"]["path"]))
+            descriptor = json.loads(archive.read(root + continuation["descriptor"]["path"]))
+            validate_artisan_transport(transport, descriptor)
+            validate_envelope_owner(envelope, transport["authority_evidence"]["successor_owner_attempt"])
+            if continuation["verified_lineage"] != transport["verified_lineage"]:
+                raise ValueError("artisan_continuation_lineage_changed")
+            for name in ("descriptor", "runtime_archive"):
+                if (continuation[name]["digest"] != transport[name]["sha256"]
+                        or continuation[name]["size_bytes"] != transport[name]["size_bytes"]):
+                    raise ValueError("artisan_continuation_reference_changed")
+        except (KeyError, TypeError, ValueError, UnicodeError):
+            blockers.append("scene_configuration_artisan_continuation_invalid")
+    elif manifest.get("artisan_continuation_digest") is not None:
+        blockers.append("scene_configuration_artisan_continuation_missing")
     if isinstance(references, list):
         bound_rows.extend(
             (str(row.get("provider_relative_path") or ""), row)
