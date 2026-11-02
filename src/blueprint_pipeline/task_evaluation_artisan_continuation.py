@@ -356,7 +356,8 @@ def select_artisan_continuation_source(*, owner_attempt_path, envelope, output_r
                     activation_root=activation_root, pins_root=pins_root, on_pin_created=on_pin_created)
                 with reserve_control_plane_disk(
                     "semantic_pretraining", target_root=target.parent,
-                    expected_bytes=sum(i.file_size for _, _, i in members) + 16 * 1024**2,
+                    # The packed archive plus the restore rehearsal's expanded copy.
+                    expected_bytes=2 * sum(i.file_size for _, _, i in members) + 16 * 1024**2,
                 ):
                     target.mkdir(parents=True, exist_ok=False)
                     created = True
@@ -371,6 +372,10 @@ def select_artisan_continuation_source(*, owner_attempt_path, envelope, output_r
                                     sink.write(chunk)
                             inventory.append({"relative_path": destination, "sha256": "sha256:" + digest.hexdigest(),
                                               "size_bytes": info.file_size})
+                    # Rehearse the provider's restore here, before a GPU is rented.
+                    # capture-447ae4f4's restore failed only on the GPU (2026-11-02);
+                    # a source that cannot restore is now rejected at $0.
+                    shutil.rmtree(_extract_verified(inventory, packed, target))
             _require(transport._file(archive_path) == original
                      and packed.stat().st_size <= transport.MAX_ARCHIVE_BYTES, "source_archive_changed")
             descriptor = {
@@ -534,8 +539,24 @@ def restore_artisan_continuation(*, descriptor: Mapping[str, Any], archive_path:
                  and json.loads(adoption.read_text()).get("adoption_digest") == descriptor["adoption_digest"],
                  "original_root_occupied")
         return False
+    scratch = _extract_verified(descriptor["retained_files"], archive_path, runtime_root.parent)
+    try:
+        os.rename(scratch, runtime_root)
+    finally:
+        if scratch.exists():
+            shutil.rmtree(scratch)
+    return True
+
+
+def _extract_verified(retained_files: Any, archive_path: Path, parent: Path) -> Path:
+    """Extract the archive into a new directory under ``parent`` and prove it is exactly ``retained_files``.
+
+    The provider renames the result into place; selection on the host runs the
+    same extraction as a rehearsal and removes it.
+    """
+
     expected = {}
-    for row in descriptor.get("retained_files") or []:
+    for row in retained_files or []:
         relative = PurePosixPath(row["relative_path"])
         _require(not relative.is_absolute() and ".." not in relative.parts and str(relative) == row["relative_path"]
                  and relative.parts and str(relative) not in expected and type(row["size_bytes"]) is int
@@ -543,8 +564,8 @@ def restore_artisan_continuation(*, descriptor: Mapping[str, Any], archive_path:
         expected[str(relative)] = row
     _require(expected and sum(row["size_bytes"] for row in expected.values()) <= transport.MAX_EXPANDED_BYTES,
              "inventory_invalid")
-    runtime_root.parent.mkdir(parents=True, exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(prefix=".artisan-continuation-", dir=runtime_root.parent))
+    parent.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix=".artisan-continuation-", dir=parent))
     try:
         with zipfile.ZipFile(archive_path) as bundle:
             entries = [entry for entry in bundle.infolist() if not entry.is_dir()]
@@ -562,13 +583,12 @@ def restore_artisan_continuation(*, descriptor: Mapping[str, Any], archive_path:
                         digest.update(chunk)
                         output.write(chunk)
                 _require("sha256:" + digest.hexdigest() == row["sha256"], "archive_entry_changed")
-        _require(_inventory(scratch) == sorted(descriptor["retained_files"], key=lambda r: r["relative_path"]),
+        _require(_inventory(scratch) == sorted(retained_files, key=lambda r: r["relative_path"]),
                  "restored_inventory_mismatch")
-        os.rename(scratch, runtime_root)
-    finally:
-        if scratch.exists():
-            shutil.rmtree(scratch)
-    return True
+    except BaseException:
+        shutil.rmtree(scratch, ignore_errors=True)
+        raise
+    return scratch
 
 
 def continuation_mismatch(*, descriptor: Mapping[str, Any], runtime_root: Path,

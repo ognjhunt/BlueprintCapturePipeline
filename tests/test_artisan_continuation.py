@@ -211,6 +211,21 @@ def test_a_resumable_source_is_selected_with_its_workspace_and_carried_spend(sou
     assert _select(source) == selection  # retained selection is reopened, not rebuilt
 
 
+def test_selection_rehearses_the_restore_and_leaves_no_copy(source):
+    source["build"]()
+    selection = _select(source)
+    assert sorted(path.name for path in selection.parent.iterdir()) == [
+        "descriptor.json", "retained_runtime.zip", "selection.json"]
+
+
+def test_a_source_that_cannot_restore_is_rejected_before_any_gpu(source, monkeypatch):
+    # capture-447ae4f4 (2026-11-02): the restore failed only on the rented GPU.
+    source["build"]()
+    monkeypatch.setattr(continuation, "_inventory", lambda root: [])
+    assert _select(source) is None
+    assert not any((source["tmp"] / "selected").rglob("retained_runtime.zip"))
+
+
 @pytest.mark.parametrize("cap", [16.0, 15.0, 13.76, 5.0])
 def test_a_cap_without_room_for_one_source_sized_call_selects_nothing(source, cap):
     source["build"]()
