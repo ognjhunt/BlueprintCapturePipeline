@@ -227,6 +227,8 @@ def reissue_renewed_preparation(*, capture_root: str | Path, queue_root: str | P
     load_context = load_context or webapp.load_current_website_task_context
     enqueue = enqueue or webapp.enqueue_website_prepared_scene
     capture_root, queue_root = Path(capture_root), Path(queue_root)
+    from . import website_atlas_preview_store as captures
+    _require(not captures.capture_withdrawn(capture_root), "capture_withdrawn")
 
     # 1. The completed handoff and the rigid preparation it registered and enqueued.
     handoff = _sealed(capture_root / "pipeline" / "website_scene_preparation" / "handoff.json", "digest",

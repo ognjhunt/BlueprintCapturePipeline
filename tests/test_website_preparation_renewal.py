@@ -377,6 +377,13 @@ def test_refusals_before_any_write(site, case, code):
     assert not site.registered and not site.enqueued
 
 
+def test_a_withdrawn_capture_is_never_reissued(site, monkeypatch):
+    monkeypatch.setattr("blueprint_pipeline.website_atlas_preview_store.capture_withdrawn", lambda root: True)
+    with pytest.raises(ValueError, match="^website_preparation_renewal_capture_withdrawn$"):
+        run(site)
+    assert not site.registered and not site.enqueued
+
+
 def test_a_task_family_preparation_is_not_reissued(site):
     prior = copy.deepcopy(site.prior)
     prior["task_evaluation_inputs"] = {"native_runtime_contract": {"schema_version": RUNTIME_SCHEMA}}
