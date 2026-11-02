@@ -35,6 +35,7 @@ import zipfile
 from .decision_evidence_contracts import canonical_digest
 from .control_plane_disk_budget import reserve_control_plane_disk
 from . import task_evaluation_partial_astra_transport as transport
+from .task_object_artisan_exports import UPSTREAM_DONE_PHASE
 
 SCHEMA_VERSION = "task_evaluation_artisan_continuation_adoption.v1"
 TRANSPORT_SCHEMA = "task_evaluation_artisan_continuation_transport.v1"
@@ -256,7 +257,7 @@ def _source_state(archive: zipfile.ZipFile, *, source_run_id: str) -> dict[str, 
     terminal = _archive_json(archive, PREFIX + "terminal.v1.json")
     _require(terminal.get("schema_version") == "blueprint_artisan_terminal.v1"
              and terminal.get("run_id") == upstream_run_id
-             and terminal.get("registered") is False and terminal.get("phase") != "DONE"
+             and terminal.get("registered") is False and terminal.get("phase") != UPSTREAM_DONE_PHASE
              and terminal.get("status") == "running" and not terminal.get("termination_reason"),
              "upstream_not_resumable")
     state = f"{PREFIX}workspace/data/cache/runs/{upstream_run_id}/pipeline_state.json"

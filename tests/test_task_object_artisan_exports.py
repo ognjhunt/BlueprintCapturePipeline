@@ -470,7 +470,7 @@ def export_fixture(root):
         "physics_report_path": "physics.json", "physics_report_sha256": file_record(files["physics_report"])["sha256"][7:],
         "artifacts": {"object.usd": {"path": "object.usd", "sha256": record["sha256"][7:], "size_bytes": record["size_bytes"]}}}
     (exports / "export_manifest.json").write_text(json.dumps(manifest))
-    return {"phase": "DONE", "registered": True, "returncode": 0, "canonical_record_id": "fixture-record",
+    return {"phase": "done", "registered": True, "returncode": 0, "canonical_record_id": "fixture-record",
             "candidate_id": "fixture-candidate", "reviewed_physics_report_sha256": manifest["physics_report_sha256"],
             "paths": {**{k: str(v) for k, v in files.items()}, "exports": str(exports)}}, manifest
 
@@ -478,10 +478,10 @@ def export_fixture(root):
 def test_upstream_manifest_preserves_reviewed_program_and_refuses_changed_or_missing_usd(tmp_path):
     terminal, manifest = export_fixture(tmp_path)
     assert upstream_exports(terminal, tmp_path)["usd"]["path"] == str(tmp_path / "exports/object.usd")
-    terminal["phase"] = "FAILED"
+    terminal["phase"] = "failed"
     with pytest.raises(AuthoringContractError, match="not_done"):
         upstream_exports(terminal, tmp_path)
-    terminal["phase"] = "DONE"
+    terminal["phase"] = "done"
     Path(terminal["paths"]["model"]).write_text("changed")
     with pytest.raises(AuthoringContractError, match="reviewed_program"):
         upstream_exports(terminal, tmp_path)
