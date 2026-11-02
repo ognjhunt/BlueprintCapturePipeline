@@ -72,6 +72,78 @@ def test_observer_refuses_wrong_generation_and_rights():
                              capture_id="walkthrough-req-1", marker_generation="17000000000000000001")
 
 
+_SAME = object()
+
+
+def attested_under(attested, rights=_SAME):
+    """The fixture, resealed as if the site attested `attested` (rights recorded under `rights`)."""
+    from blueprint_pipeline.capture_original_owner_observer import _SOURCE_KEYS
+
+    value = observation()
+    value["consent_attestation"]["statement_version"] = attested
+    value["capture_rights"]["statement_version"] = attested if rights is _SAME else rights
+    value["source_projection_digest"] = cross_runtime_canonical_digest({key: value[key] for key in _SOURCE_KEYS})
+    value["observation_digest"] = cross_runtime_canonical_digest(value, digest_field="observation_digest")
+    return value
+
+
+def validate_original(value):
+    from blueprint_pipeline.capture_original_owner_observer import validate_observation
+
+    return validate_observation(value, bucket="capture-bucket", scene_id="site-req-1",
+                                capture_id="walkthrough-req-1", marker_generation="17000000000000000001")
+
+
+def test_recording_rights_statement_versions_are_a_closed_set():
+    from blueprint_pipeline.capture_original_owner_observer import RECORDING_RIGHTS_STATEMENT_VERSIONS
+
+    # WebApp `client/src/lib/recordingRightsStatement.ts` names the same two.
+    assert RECORDING_RIGHTS_STATEMENT_VERSIONS == frozenset({"2026-09-18.v1", "2026-11-02.v2"})
+
+
+@pytest.mark.parametrize("version", ["2026-09-18.v1", "2026-11-02.v2"])
+def test_owner_observation_admits_each_recording_statement_a_site_can_attest(version):
+    # v1 records stay valid; v2 is the sentence the site now sees where it attests.
+    value = attested_under(version)
+    assert validate_original(value) == value
+
+
+@pytest.mark.parametrize("version", [
+    "2026-11-02.v3", "2026-09-18.v2", "2026-11-02.V2", " 2026-11-02.v2", "2026-11-02.v2 ", "",
+    None, 2, ["2026-11-02.v2"], {"version": "2026-11-02.v2"},
+])
+def test_owner_observation_refuses_a_recording_statement_outside_the_closed_set(version):
+    from blueprint_pipeline.capture_original_owner_observer import CaptureOwnerObservationError
+
+    with pytest.raises(CaptureOwnerObservationError, match="^capture_owner_attestation_invalid$"):
+        validate_original(attested_under(version))
+
+
+@pytest.mark.parametrize("attested,rights", [
+    ("2026-09-18.v1", "2026-11-02.v2"), ("2026-11-02.v2", "2026-09-18.v1"), ("2026-11-02.v2", None),
+])
+def test_owner_observation_refuses_rights_recorded_under_another_statement(attested, rights):
+    from blueprint_pipeline.capture_original_owner_observer import CaptureOwnerObservationError
+
+    with pytest.raises(CaptureOwnerObservationError, match="^capture_owner_rights_not_admitted$"):
+        validate_original(attested_under(attested, rights))
+
+
+def test_signed_owner_read_admits_a_v2_attestation(monkeypatch):
+    from types import SimpleNamespace
+    from blueprint_pipeline import capture_original_owner_observer as observer
+
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://tryblueprint.io/api/internal/pipeline/sync")
+    monkeypatch.setenv("PIPELINE_SYNC_TOKEN", "fixture-secret")
+    body = json.dumps(attested_under("2026-11-02.v2")).encode()
+    monkeypatch.setattr(observer, "safe_request", lambda *_args, **_kwargs: SimpleNamespace(status=200, body=body))
+    got = observer.load_original_owner_observation(
+        bucket="capture-bucket", scene_id="site-req-1", capture_id="walkthrough-req-1",
+        marker_generation="17000000000000000001")
+    assert got["consent_attestation"]["statement_version"] == "2026-11-02.v2"
+    assert got["capture_rights"]["statement_version"] == "2026-11-02.v2"
+
+
 @pytest.mark.parametrize("purpose", [None, "scene_preparation"])
 @pytest.mark.parametrize("error_kind", ["typed", "generic", "unsafe_typed"])
 def test_selected_delivery_refuses_before_lease_when_owner_api_missing(tmp_path: Path, monkeypatch, purpose, error_kind):

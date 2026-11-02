@@ -37,6 +37,11 @@ _SOURCE_KEYS = (
     "capture_owner", "ownership_record", "consent_attestation", "capture_rights",
     "completion_marker", "producer_delivery",
 )
+# The recording-rights statements a site can have attested on the WebApp
+# (`client/src/lib/recordingRightsStatement.ts`). A closed set: records made
+# under v1 stay valid, v2 is the sentence the site now sees where it attests,
+# and any other version is refused.
+RECORDING_RIGHTS_STATEMENT_VERSIONS = frozenset({"2026-09-18.v1", "2026-11-02.v2"})
 
 
 OWNER_OBSERVATION_REASON_CODES = frozenset({
@@ -231,7 +236,8 @@ def validate_observation(
     attestation = _object(value["consent_attestation"],
                           {"granted", "statement_version", "recorded_at_iso"})
     if (attestation["granted"] is not True
-            or attestation["statement_version"] != "2026-09-18.v1"
+            or type(attestation["statement_version"]) is not str
+            or attestation["statement_version"] not in RECORDING_RIGHTS_STATEMENT_VERSIONS
             or not _iso(attestation["recorded_at_iso"])):
         _refuse("capture_owner_attestation_invalid")
     rights = _object(value["capture_rights"], {
