@@ -280,7 +280,7 @@ def test_a_source_that_cannot_resume_safely_is_not_selected(source, change):
     if change == "completed":
         options["extra"] = {"stages/stage-3/producer/candidates/0000/replacement_asset.usdz": "x"}
     elif change == "terminal_done":
-        options["terminal_phase"] = "DONE"
+        options["terminal_phase"] = "done"
     elif change == "unpriced":
         options["calls"] = (12.0, None)  # an unknown charge must be reconciled first
     elif change == "articulated":

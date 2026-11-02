@@ -16,7 +16,7 @@ from .task_object_authoring_contracts import (
     require, read_json, write_json, file_record, source_frames,
     build_construction_request, verify_construction_request, artisan_prompt, verified_file,
 )
-from .task_object_artisan_exports import upstream_exports, adapt_usd
+from .task_object_artisan_exports import UPSTREAM_DONE_PHASE, upstream_exports, adapt_usd
 from .task_object_artisan_process import run_controller
 from .task_evaluation_scene_configuration_artisan_runtime import validate_artisan_runtime
 from .task_evaluation_scene_configuration_openai_gate import scene_configuration_openai_stage_gate, scene_configuration_openai_stage_scope
@@ -329,7 +329,7 @@ def _execute(values, output, runner, cost_gate_factory):
         prompt_path.write_text(prompt)
     checkpoint = workspace / "data/cache/runs" / upstream_run_id / "pipeline_state.json"
     terminal = read_json(terminal_file) if terminal_file.exists() else None
-    completed_upstream = terminal and terminal.get("phase") == "DONE" and terminal.get("registered") is True
+    completed_upstream = terminal and terminal.get("phase") == UPSTREAM_DONE_PHASE and terminal.get("registered") is True
     if not completed_upstream:
         require(time.time() < deadline, "artisan_absolute_stage_deadline_exhausted")
         if (runtime / "blueprint_usage.json").exists():
