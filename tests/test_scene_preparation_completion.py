@@ -105,6 +105,23 @@ def test_completion_retains_the_robot_free_readiness_receipt_beside_the_launch(p
         'status': 'passed', 'retained': True}
 
 
+def test_an_injected_fetcher_reaches_retention_and_the_default_call_is_unchanged(prepared, monkeypatch):
+    """The offline downstream replay answers the published revision locally; production passes none."""
+    args, _, _ = prepared
+    calls = []
+    monkeypatch.setattr(retention, 'retain_robot_free_readiness',
+                        lambda **kwargs: calls.append(kwargs) or {'status': 'passed', 'retained': True})
+
+    def fetcher(_reference):
+        return b''
+
+    reconcile_preparation_completion(**args)
+    reconcile_preparation_completion(**args, fetcher=fetcher)
+    # Today's call keeps exactly its three keywords, so retention's default fetcher still applies.
+    assert set(calls[0]) == {'run_root', 'revision_reference', 'revision_digest'}
+    assert calls[1] == {**calls[0], 'fetcher': fetcher}
+
+
 def test_a_transient_retention_failure_keeps_completion_pending_for_retry(prepared, monkeypatch):
     args, _, _ = prepared
 
