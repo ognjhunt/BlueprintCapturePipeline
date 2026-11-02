@@ -7,7 +7,7 @@ permitted. A local stop is absorbing across process and cell restarts.
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import datetime
 import fcntl
@@ -263,6 +263,20 @@ class RuntimeControlGuard:
             except (OSError, ValueError, KeyError, TypeError) as exc:
                 reason = str(exc) if re.fullmatch("beta_screening_runtime_[a-z_]+", str(exc)) else "beta_screening_runtime_control_unproven"
                 raise self._stop(reason, boundary, binding_digest, control) from exc
+
+
+def begin_runtime_processing(*, runtime_root: Path, inputs: Mapping[str, Any], authority: Mapping[str, Any],
+                             boundary: str, on_stop: Callable[[Mapping[str, Any]], None]) -> tuple[RuntimeControlGuard | None, bool]:
+    """Share the two worker entry checks while retaining every refusal before return."""
+    if inputs.get("run_kind") != BETA_RUN_KIND:
+        return None, True
+    guard = RuntimeControlGuard(runtime_root=runtime_root, inputs=inputs, authority=authority)
+    try:
+        guard.check(boundary)
+    except RuntimeControlStopped as exc:
+        on_stop(exc.receipt)
+        return guard, False
+    return guard, True
 
 
 def await_initial_control(*, runtime_root: Path, timeout_seconds: float = MONITOR_GRACE_SECONDS) -> dict[str, Any]:

@@ -127,3 +127,15 @@ def remote_progress_cursor(result: Mapping[str, Any]) -> int | None:
 
 
 __all__ = ["probe_policy_canary_remote_progress"]
+
+
+def remote_progress_probe_for_bundle(provider_bundle_kind: str, job_dir: Path, *, cell_count: int = 10, probe=probe_policy_canary_remote_progress):
+    """Only the policy canary has an SSH milestone probe."""
+
+    if (provider_bundle_kind != "native_task_arena_policy_canary_session"
+            or type(cell_count) is not int or not 1 <= cell_count <= 200):
+        return None
+    return lambda connection: probe(
+        connection, attempt_dir=job_dir / "policy_remote_progress_ssh",
+        **({"maximum_cell_count": cell_count} if cell_count != 10 else {}),
+    )
