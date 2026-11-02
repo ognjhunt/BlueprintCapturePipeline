@@ -191,3 +191,117 @@ def test_stop_committed_after_read_before_create_admission_is_absorbing(tmp_path
     with pytest.raises(ValueError, match="unproven_before_create"):
         with control.current_control_admission(control=value, root=tmp_path):
             pytest.fail("stopped authority entered create-intent scope")
+
+
+def test_scoped_monitor_relay_binds_exact_resource_and_preserves_unrelated_site(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_control_transport as transport
+    from tests.test_beta_policy_screening_control_contracts import binding as scope, response
+    now = [1001]
+    monkeypatch.setattr(control.time, "time", lambda: now[0])
+    revoked = set()
+    def read(*, binding, **kwargs):
+        return response(scope=binding, now=now[0], stopped=binding["site_id"] in revoked)
+    monkeypatch.setattr(transport, "request_control", read)
+    a = scope()
+    b = {**scope(), "site_id": "site-two", "authority_digest": "sha256:" + "9" * 64, "resource_name": "other"}
+    def monitored(scoped, root):
+        return control.CurrentSourceMonitor({"root": root, "control": binding(
+            source=scoped["source"], site_id=scoped["site_id"], source_control_binding=scoped,
+            execution_deadline_epoch=2000)}, stop=lambda: None)
+    delivered_a, delivered_b = [], []
+    with monitored(a, tmp_path / "a") as first, monitored(b, tmp_path / "b"):
+        remove = control.subscribe_runtime_control(authority_digest=a["authority_digest"],
+            resource_name=a["resource_name"], sink=lambda binding, value: delivered_a.append((binding, value)))
+        remove_b = control.subscribe_runtime_control(authority_digest=b["authority_digest"],
+            resource_name=b["resource_name"], sink=lambda binding, value: delivered_b.append((binding, value)))
+        with pytest.raises(ValueError, match="monitor_unavailable"):
+            control.require_runtime_control_monitor(authority_digest=a["authority_digest"], resource_name="unrelated")
+        now[0] = 1002
+        revoked.add(a["site_id"])
+        stopped = control.observe(control=first.control, root=first.root)
+        first._publish(stopped)
+        assert delivered_a[-1][1]["status"] == "stopped"
+        assert delivered_a[-1][1]["applicability"] == "historical_only"
+        assert delivered_b[-1][1]["status"] == "current" and len(delivered_b) == 1
+        with pytest.raises(ValueError, match="monitor_unavailable"):
+            control.require_runtime_control_monitor(authority_digest=a["authority_digest"], resource_name=a["resource_name"])
+        control.require_runtime_control_monitor(authority_digest=b["authority_digest"], resource_name=b["resource_name"])
+        remove()
+        remove_b()
+    with pytest.raises(ValueError, match="monitor_unavailable"):
+        control.require_runtime_control_monitor(authority_digest=b["authority_digest"], resource_name=b["resource_name"])
+
+
+def test_unavailable_scoped_control_never_refreshes_gpu_snapshot(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_control_transport as transport
+    from tests.test_beta_policy_screening_control_contracts import binding as scope, response
+    now = [1001]
+    monkeypatch.setattr(control.time, "time", lambda: now[0])
+    monkeypatch.setattr(transport, "request_control", lambda **kwargs: response(now=now[0]))
+    value = binding(source_control_binding=scope(), execution_deadline_epoch=2000)
+    delivered = []
+    monitor = control.CurrentSourceMonitor({"root": tmp_path, "control": value}, stop=lambda: None)
+    with monitor:
+        unsubscribe = control.subscribe_runtime_control(authority_digest=scope()["authority_digest"],
+            resource_name=scope()["resource_name"], sink=lambda b, c: delivered.append(c))
+        def unavailable(**kwargs):
+            raise OSError("control unavailable")
+        monkeypatch.setattr(transport, "request_control", unavailable)
+        now[0] = 1599
+        state = control.observe(control=value, root=tmp_path)
+        monitor._publish(state)
+        assert state["status"] == "monitor_unavailable" and len(delivered) == 1
+        now[0] = 1601
+        stopped = control.observe(control=value, root=tmp_path)
+        monitor._publish(stopped)
+        assert stopped["new_processing_authorized"] is False and len(delivered) == 1
+        unsubscribe()
+
+
+def test_wrapper_rebinds_provider_cap_to_shorter_actual_expiry_and_exact_invocation(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_control_transport as transport
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from tests.test_beta_policy_screening_control_contracts import binding as scope, response
+    monkeypatch.setattr(control.time, "time", lambda: 1001)
+    scoped = scope()
+    invocation_binding = {key: scoped[key] for key in ("prepared_digest", "plan_digest", "candidate_id",
+        "configuration_digest", "authority_digest", "resource_name", "attempt_id")}
+    invocation_binding.update(bundle_sha256="sha256:" + "f" * 64, provider="vast")
+    scoped["invocation_id"] = canonical_digest(invocation_binding)
+    value = binding(source=scoped["source"], site_id=scoped["site_id"], source_control_binding=scoped,
+                    execution_deadline_epoch=2500)
+    path = jobs.retain_invocation(attempt_dir=tmp_path, binding=invocation_binding,
+        argv=["gpu-canary", "--execute", "--team-candidate-execution-deadline-epoch", "2500"], control=value)
+    monkeypatch.setattr(transport, "request_control", lambda **kwargs: response(scope=scoped, now=1001, deadline=2000))
+    captured = []
+    assert jobs.run_invocation(path, allocator=lambda argv: captured.append(list(argv)) or 0) == 0
+    assert captured[0][-1] == "2000.0"
+    assert jobs.manifest(path)["argv"][-1] == "2500"
+    actual = json.loads((path.parent / "effective_execution_deadline.json").read_text())
+    assert actual["execution_deadline_epoch"] == 2000 and actual["binding"]["invocation_id"] == scoped["invocation_id"]
+
+
+def test_runtime_control_delivery_failure_stops_exact_monitor_without_new_authority(tmp_path, monkeypatch):
+    from blueprint_pipeline import beta_policy_screening_control_transport as transport
+    from tests.test_beta_policy_screening_control_contracts import binding as scope, response
+    monkeypatch.setattr(control.time, "time", lambda: 1001)
+    monkeypatch.setattr(transport, "request_control", lambda **kwargs: response(now=1001))
+    stopped = []
+    monitor = control.CurrentSourceMonitor({"root": tmp_path, "control": binding(
+        source_control_binding=scope(), execution_deadline_epoch=2000)}, stop=lambda: stopped.append("own-only"))
+    calls = []
+    def sink(binding, value):
+        calls.append(value)
+        if len(calls) > 1:
+            raise OSError("existing SSH control push unavailable")
+    with monitor:
+        unsubscribe = control.subscribe_runtime_control(authority_digest=scope()["authority_digest"],
+            resource_name=scope()["resource_name"], sink=sink)
+        with monkeypatch.context() as patch:
+            patch.setattr(monitor.done, "wait", lambda interval: False)
+            monitor._run()
+        assert stopped == ["own-only"] and monitor.done.is_set()
+        with pytest.raises(ValueError, match="monitor_unavailable"):
+            control.require_runtime_control_monitor(authority_digest=scope()["authority_digest"],
+                                                   resource_name=scope()["resource_name"])
+        unsubscribe()

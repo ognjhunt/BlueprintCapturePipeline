@@ -8,7 +8,7 @@ leases remain separate integration requirements.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 import fcntl
 import math
@@ -91,10 +91,11 @@ def _state(control: Mapping[str, Any], root: Path, moment: float) -> dict[str, A
             "next_check_at_epoch": previous.get("next_check_at_epoch", moment),
             "execution_deadline_epoch": min(deadlines) if deadlines else None,
             "status": previous.get("status", "monitor_unavailable"),
-            "issued_generation": issued, "committed_generation": committed}
+            "issued_generation": issued, "committed_generation": committed,
+            **({"source_control": previous["source_control"]} if previous.get("source_control") else {})}
 
 
-def _stop(control: Mapping[str, Any], root: Path, reason: str) -> dict[str, Any]:
+def _stop(control: Mapping[str, Any], root: Path, reason: str, *, source_control=None) -> dict[str, Any]:
     from .allocator_invocation import _once
     existing = _stopped(control, root)
     if existing is not None:
@@ -102,7 +103,8 @@ def _stop(control: Mapping[str, Any], root: Path, reason: str) -> dict[str, Any]
     value = {"schema_version": "blueprint.beta_policy_screening_stop.v1",
              "control_digest": canonical_digest(control), "prepared_digest": control["prepared_digest"],
              "reason": reason, "observed_at_iso": utc_now_iso(),
-             "applicability": "historical_only", "new_processing_authorized": False}
+             "applicability": "historical_only", "new_processing_authorized": False,
+             **({"source_control": source_control} if source_control is not None else {})}
     _once(root / "stop_requested.json", value)
     return value
 
@@ -122,9 +124,17 @@ def observe(*, control: Mapping[str, Any], root: Path, now: float | None = None)
         state["issued_generation"] = generation
         write_json(root / "execution_control.json", state)
     # A slow signed read cannot block a newer revocation or provider closeout.
-    outcome, deadline = "current", None
+    outcome, deadline, source_control = "current", None, None
     try:
-        deadline = _deadline(require_current_source(control["source"], site_id=control["site_id"]))
+        if control.get("source_control_binding") is not None:
+            from .beta_policy_screening_control_transport import request_control
+            source_control = request_control(binding=control["source_control_binding"],
+                execution_deadline_epoch=state["execution_deadline_epoch"])
+            deadline = _deadline(source_control)
+            if source_control["status"] == "stopped":
+                outcome = "revoked"
+        else:
+            deadline = _deadline(require_current_source(control["source"], site_id=control["site_id"]))
     except (OSError, ValueError, RuntimeError) as exc:
         code = str(exc)
         outcome = ("revoked" if code in {"beta_screening_current_capture_consent_required",
@@ -142,7 +152,7 @@ def observe(*, control: Mapping[str, Any], root: Path, now: float | None = None)
             old = state["execution_deadline_epoch"]
             state["execution_deadline_epoch"] = min(old, deadline) if old is not None else deadline
         if outcome == "revoked":
-            return _stop(control, root, "beta_screening_current_source_revoked")
+            return _stop(control, root, "beta_screening_current_source_revoked", source_control=source_control)
         if state["execution_deadline_epoch"] is not None and completed >= state["execution_deadline_epoch"]:
             return _stop(control, root, "beta_screening_authority_expired")
         if generation >= state["committed_generation"]:
@@ -152,6 +162,8 @@ def observe(*, control: Mapping[str, Any], root: Path, now: float | None = None)
             state["committed_generation"] = generation
             if outcome == "current":
                 state["last_success_at_epoch"] = max(moment, state["last_success_at_epoch"])
+                if source_control is not None:
+                    state["source_control"] = source_control
         if completed - state["last_success_at_epoch"] >= MONITOR_GRACE_SECONDS:
             return _stop(control, root, "beta_screening_control_unavailable_timeout")
         write_json(root / "execution_control.json", state)
@@ -179,6 +191,35 @@ def current_control_admission(*, control: Mapping[str, Any], root: Path) -> Iter
         yield
 
 
+_monitors_lock = threading.Lock()
+_monitors: dict[tuple[str, str], "CurrentSourceMonitor"] = {}
+
+
+def _active_monitor(*, authority_digest: str, resource_name: str) -> "CurrentSourceMonitor":
+    with _monitors_lock:
+        monitor = _monitors.get((authority_digest, resource_name))
+    if monitor is None or monitor.done.is_set() or not monitor.thread.is_alive():
+        raise ValueError("beta_screening_runtime_control_monitor_unavailable")
+    monitor.current_snapshot()
+    return monitor
+
+
+def require_runtime_control_monitor(*, authority_digest: str, resource_name: str) -> None:
+    """Before provider mutation, an exact beta run must have its live monitor."""
+    _active_monitor(authority_digest=authority_digest, resource_name=resource_name)
+
+
+def subscribe_runtime_control(*, authority_digest: str, resource_name: str,
+                              sink: Callable[[Mapping[str, Any], Mapping[str, Any]], Any]) -> Callable[[], None]:
+    """Deliver verified observations through an already-owned provider transport.
+
+    No service credential is sent to the sink. It receives only the exact
+    immutable binding and validated historical/current control response.
+    """
+    monitor = _active_monitor(authority_digest=authority_digest, resource_name=resource_name)
+    return monitor.subscribe(sink)
+
+
 class CurrentSourceMonitor:
     """A monitor owned by the allocator process, independent of its coordinator."""
 
@@ -187,16 +228,99 @@ class CurrentSourceMonitor:
         self.stop = stop or (lambda: os.kill(os.getpid(), signal.SIGTERM))
         self.done = threading.Event()
         self.thread = threading.Thread(target=self._run, daemon=True)
+        self._snapshot_lock = threading.Lock()
+        self._delivery_lock = threading.Lock()
+        self._latest: dict[str, Any] = {}
+        self._sinks: dict[object, Callable] = {}
+        self.binding = self.control.get("source_control_binding")
+        self.identity = ((self.binding["authority_digest"], self.binding["resource_name"])
+                         if self.binding is not None else None)
+
+    def current_snapshot(self) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        from .beta_policy_screening_control_contracts import validate_control
+        with _control_lock(self.root):
+            stopped = _stopped(self.control, self.root)
+            state = _state(self.control, self.root, time.time())
+        if (self.binding is None or state.get("status") != "current"
+                or stopped is not None or state.get("new_processing_authorized") is False):
+            raise ValueError("beta_screening_runtime_control_monitor_unavailable")
+        remote = validate_control(state.get("source_control"), binding=self.binding)
+        return self.binding, remote
+
+    def subscribe(self, sink: Callable) -> Callable[[], None]:
+        token = object()
+        # Serialize initial snapshot delivery with monitor updates so an older
+        # healthy initial push cannot follow a newer stopped push.
+        with self._delivery_lock:
+            binding, remote = self.current_snapshot()
+            with self._snapshot_lock:
+                self._sinks[token] = sink
+            try:
+                sink(binding, remote)
+            except BaseException:
+                with self._snapshot_lock:
+                    self._sinks.pop(token, None)
+                raise
+        def unsubscribe():
+            with self._delivery_lock:
+                with self._snapshot_lock:
+                    self._sinks.pop(token, None)
+        return unsubscribe
+
+    def allocator_argv(self, argv) -> list[str]:
+        """Pass the latest smaller actual expiry into provider/watchdog caps."""
+        effective = list(argv)
+        if self.binding is None:
+            return effective
+        self.current_snapshot()
+        with _control_lock(self.root):
+            state = _state(self.control, self.root, time.time())
+        deadline = state["execution_deadline_epoch"]
+        flag = "--team-candidate-execution-deadline-epoch"
+        if effective.count(flag) > 1 or deadline is None:
+            raise ValueError("beta_screening_execution_control_deadline_unproven")
+        if flag in effective:
+            index = effective.index(flag) + 1
+            prior = float(effective[index])
+            if not math.isfinite(prior) or prior <= 0:
+                raise ValueError("beta_screening_execution_control_deadline_unproven")
+            deadline = min(prior, deadline)
+            effective[index] = str(deadline)
+        else:
+            effective += [flag, str(deadline)]
+        write_json(self.root / "effective_execution_deadline.json", {
+            "schema_version": "blueprint.beta_screening_effective_deadline.v1",
+            "binding": self.binding, "execution_deadline_epoch": deadline})
+        return effective
+
+    def _publish(self, state: Mapping[str, Any]) -> None:
+        # Only a successful signed observation can refresh the GPU file. A
+        # service outage leaves its original freshness running down locally.
+        with self._delivery_lock:
+            with self._snapshot_lock:
+                self._latest = dict(state)
+                sinks = list(self._sinks.values())
+            remote = state.get("source_control")
+            if remote is None or self.binding is None or state.get("status") == "monitor_unavailable":
+                return
+            from .beta_policy_screening_control_contracts import validate_control
+            verified = validate_control(remote, binding=self.binding)
+            for sink in sinks:
+                sink(self.binding, verified)
 
     def _run(self):
         while not self.done.wait(POLL_SECONDS):
             try:
                 state = observe(control=self.control, root=self.root)
+                self._publish(state)
             except Exception:
-                # An unprovable local control record cannot extend processing.
+                # An unprovable local record or failed own-resource control
+                # delivery cannot extend processing. Existing finally remains.
+                self.done.set()
                 self.stop()
                 return
             if state.get("new_processing_authorized") is False:
+                self.done.set()
                 self.stop()
                 return
 
@@ -204,9 +328,24 @@ class CurrentSourceMonitor:
         state = observe(control=self.control, root=self.root)
         if state.get("new_processing_authorized") is False or state.get("status") == "monitor_unavailable":
             raise ValueError("beta_screening_current_source_unproven_before_start")
-        self.thread.start()
+        self._publish(state)
+        if self.identity is not None:
+            with _monitors_lock:
+                if self.identity in _monitors:
+                    raise ValueError("beta_screening_runtime_control_monitor_conflict")
+                _monitors[self.identity] = self
+        try:
+            self.thread.start()
+        except BaseException:
+            with _monitors_lock:
+                if self.identity is not None:
+                    _monitors.pop(self.identity, None)
+            raise
         return self
 
     def __exit__(self, *args):
         self.done.set()
+        with _monitors_lock:
+            if self.identity is not None and _monitors.get(self.identity) is self:
+                _monitors.pop(self.identity, None)
         self.thread.join(timeout=1)
