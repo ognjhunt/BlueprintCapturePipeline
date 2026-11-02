@@ -349,7 +349,9 @@ def prepare_construction_stages(*, runtime_inputs_path: Path, preparation_path: 
         # Compile flagged support_surface_not_found_under_subject: nothing to assemble the subject on.
         raise ValueError("website_native_construction_support_missing")
     first, second = prepare_appearance_stage(runtime_inputs_path), prepare_collision_stage(runtime_inputs_path)
-    third = derived_stage_three_configuration(runtime=runtime, preparation=preparation)
+    from .website_owner_authoring_cap import owner_artisan_cap, with_owner_artisan_cap
+    third = with_owner_artisan_cap(derived_stage_three_configuration(runtime=runtime, preparation=preparation),
+                                   owner_artisan_cap())
     identity = third["replacement_identity"]
     scene_identity = {"id": third["scene_id"], "version": "v1"}
     subject = runtime["subject"]
