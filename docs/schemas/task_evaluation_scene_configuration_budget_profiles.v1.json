@@ -34,16 +34,16 @@
     },
     "artisan_v1": {
       "authoring_minimum": 0.01,
-      "authoring_maximum": 15.0,
-      "external_maximum": 20.76,
-      "attempt_maximum": 26.76,
+      "authoring_maximum": 12.0,
+      "external_maximum": 17.76,
+      "attempt_maximum": 23.76,
       "default_stage_caps": {
         "artifixer_semantic_teacher": 4.8,
         "artifixer_visual_review": 0.96,
-        "content_agents": 15.0
+        "content_agents": 12.0
       },
-      "default_external_cap": 20.76,
-      "default_attempt_cap": 26.76
+      "default_external_cap": 17.76,
+      "default_attempt_cap": 23.76
     }
   }
 }
