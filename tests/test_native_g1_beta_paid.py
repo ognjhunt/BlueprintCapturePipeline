@@ -166,3 +166,69 @@ def test_budget_and_capacity_blocks_never_enter_transport(tmp_path, monkeypatch,
     result = dispatch(args, identity)
     assert result["provider_mutations_performed"] == 0
     assert not (Path(args.adp_job_dir) / "authorization_consumption.json").exists()
+
+
+def _screening_invocation(tmp_path, monkeypatch, authority, bundle, *, revoke_before_create):
+    """The exact launch shape: one G1 invocation monitored through the signed current control."""
+    import time
+    from blueprint_pipeline import allocator_invocation as jobs
+    from blueprint_pipeline import beta_policy_screening_control_transport as transport
+    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+    from tests.test_beta_policy_screening_control_contracts import binding as scope, response
+
+    attempt = tmp_path / "screen-g1-attempt"
+    attempt.mkdir()
+    scoped = {**scope(), "attempt_id": attempt.name, "authority_digest": authority["authority_digest"],
+              "resource_name": authority["resource_name"]}
+    invocation_binding = {key: scoped[key] for key in ("prepared_digest", "plan_digest", "candidate_id",
+        "configuration_digest", "authority_digest", "resource_name", "attempt_id")}
+    invocation_binding.update(bundle_sha256=bundle["bundle_sha256"], provider="vast")
+    scoped["invocation_id"] = canonical_digest(invocation_binding)
+    now = int(time.time())
+    reads = []
+
+    def read(*, binding, **kwargs):
+        reads.append(binding)
+        return response(scope=binding, now=now, deadline=now + 7200,
+                        stopped=revoke_before_create and len(reads) > 1)
+
+    monkeypatch.setattr(transport, "request_control", read)
+    path = jobs.retain_invocation(attempt_dir=attempt, binding=invocation_binding, argv=["gpu-canary", "--execute"],
+        control={"site_id": scoped["site_id"], "source": scoped["source"],
+                 "prepared_digest": scoped["prepared_digest"], "initial_observed_at_epoch": now,
+                 "execution_deadline_epoch": now + 7200, "source_control_binding": scoped})
+    return jobs, path, reads
+
+
+def test_screening_invocation_retains_g1_create_intent_so_a_lost_create_is_never_fenced(tmp_path, monkeypatch):
+    args, authority, bundle, identity, _, _ = setup(tmp_path, monkeypatch)
+    jobs, path, reads = _screening_invocation(tmp_path, monkeypatch, authority, bundle, revoke_before_create=False)
+    hooks = []
+
+    def transport(**kwargs):
+        hooks.append(kwargs["pre_provider_mutation_hook"]())
+        assert (path.parent / "provider_create_intent.json").is_file()
+        raise RuntimeError("allocator lost after the provider create")
+
+    monkeypatch.setattr(paid, "run_arena_native_control_vast", transport)
+    with pytest.raises(RuntimeError):
+        jobs.run_invocation(path, allocator=lambda argv: dispatch(args, identity))
+    assert hooks[0]["status"] == "consumed" and len(reads) == 2
+    # Recovery keeps the created G1 reconciliation-only; it cannot mint a no-create proof.
+    assert jobs.fence_unstarted(path)["status"] == "reconciliation_required"
+
+
+def test_signed_g1_revocation_before_create_refuses_the_provider_create(tmp_path, monkeypatch):
+    args, authority, bundle, identity, _, _ = setup(tmp_path, monkeypatch)
+    jobs, path, _ = _screening_invocation(tmp_path, monkeypatch, authority, bundle, revoke_before_create=True)
+
+    def transport(**kwargs):
+        observed = kwargs["pre_provider_mutation_hook"]()
+        assert observed == {"status": "blocked", "blockers": ["g1_beta_paid_precreate_recheck_failed"]}
+        return {"status": "blocked", "blockers": observed["blockers"], "provider_mutations_performed": 0}
+
+    monkeypatch.setattr(paid, "run_arena_native_control_vast", transport)
+    jobs.run_invocation(path, allocator=lambda argv: dispatch(args, identity))
+    assert not (path.parent / "provider_create_intent.json").exists()
+    stop = json.loads((path.parent / "stop_requested.json").read_text())
+    assert stop["reason"] == "beta_screening_current_source_revoked" and stop["new_processing_authorized"] is False
