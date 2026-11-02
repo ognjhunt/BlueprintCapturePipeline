@@ -31,7 +31,7 @@ _VERSION_KEYS = ("source_commit", "commit_proven", "blockers", "disk_headroom", 
 _RECEIPT_KEYS = ("schema", "status", "source_commit", "commit", "mode", "finished_at", "completed_at")
 _CAPACITY_KEYS = (
     "schema_version", "observed_at_epoch", "level", "report_digest", "alerts", "mounts", "usage",
-    "volume_resize", "truncated",
+    "volume_resize", "truncated", "reclaim_outlook", "stall", "provider_spend",
 )
 _MAX_JSON_BYTES = 256 * 1024
 _MAX_BREAK_GLASS_LEDGER_BYTES = 16 * 1024 * 1024
