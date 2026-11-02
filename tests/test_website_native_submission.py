@@ -514,7 +514,7 @@ def test_artisan_owner_ceiling_bounds_compute_before_any_staging(tmp_path, monke
     assert authority_path.read_bytes() == authority_bytes
 
 
-@pytest.mark.parametrize("carried,allocation", [(None, 15.0), (5.0, 10.0), (13.761, 1.23)])
+@pytest.mark.parametrize("carried,allocation", [(None, 15.0), (5.0, 10.0), (13.761, 1.23), ("finished", 0.01)])
 def test_a_continuation_reserves_only_what_its_source_left(tmp_path, monkeypatch, carried, allocation):
     """capture-447ae4f4, 2026-11-02: the cumulative cap was $25 and the source had
     spent $13.76, so the successor could spend $11.24, yet it reserved $30 and
@@ -526,7 +526,10 @@ def test_a_continuation_reserves_only_what_its_source_left(tmp_path, monkeypatch
     seen = []
     def factory(**kwargs):
         seen.append(kwargs)
-        return None if carried is None else {"cost_usd": carried, "call_count": 3, "largest_call_usd": 1.0}
+        if carried == "finished":  # the source finished upstream: export only
+            return {"cost_usd": 13.761, "call_count": 3, "largest_call_usd": 1.0, "completed": True}
+        return None if carried is None else {"cost_usd": carried, "call_count": 3, "largest_call_usd": 1.0,
+                                             "completed": False}
     monkeypatch.setattr(continuation, "factory_carried_spend", factory)
     kwargs, accepted = setup(tmp_path, monkeypatch, articulated=True, max_total_spend_usd=20,
                              authoring_backend="artisan_v1")

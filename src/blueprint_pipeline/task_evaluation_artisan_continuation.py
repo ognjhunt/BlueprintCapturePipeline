@@ -255,10 +255,17 @@ def _source_state(archive: zipfile.ZipFile, *, source_run_id: str) -> dict[str, 
                                 source_run_id=source_run_id, source_request_digest=request["request_digest"])
     upstream_run_id = prior["upstream_run_id"] if prior else "pl_" + request["request_digest"][7:39]
     terminal = _archive_json(archive, PREFIX + "terminal.v1.json")
+    # A finished, registered run whose export never completed is reused as is:
+    # its successor exports the accepted candidate and makes no model call
+    # (capture-447ae4f4, 2026-11-02: the export refused "done" for "DONE").
+    completed = (terminal.get("phase") == UPSTREAM_DONE_PHASE and terminal.get("status") == "done"
+                 and terminal.get("registered") is True and terminal.get("returncode") == 0
+                 and bool(terminal.get("canonical_record_id")) and bool(terminal.get("candidate_id"))
+                 and not terminal.get("termination_reason"))
     _require(terminal.get("schema_version") == "blueprint_artisan_terminal.v1"
              and terminal.get("run_id") == upstream_run_id
-             and terminal.get("registered") is False and terminal.get("phase") != UPSTREAM_DONE_PHASE
-             and terminal.get("status") == "running" and not terminal.get("termination_reason"),
+             and (completed or (terminal.get("registered") is False and terminal.get("phase") != UPSTREAM_DONE_PHASE
+                                and terminal.get("status") == "running" and not terminal.get("termination_reason"))),
              "upstream_not_resumable")
     state = f"{PREFIX}workspace/data/cache/runs/{upstream_run_id}/pipeline_state.json"
     _require(state in names, "upstream_checkpoint_missing")
@@ -271,9 +278,24 @@ def _source_state(archive: zipfile.ZipFile, *, source_run_id: str) -> dict[str, 
              and not str(configuration.get("schema_version", "")).startswith("articulated_"),
              "source_configuration_invalid")
     return {"request": request, "upstream_run_id": upstream_run_id, "terminal_phase": terminal["phase"],
+            "completed": completed,
             "spend": spend, "usage_sha256": "sha256:" + hashlib.sha256(
                 archive.read(PREFIX + "blueprint_usage.json")).hexdigest(),
             "configuration": configuration}
+
+
+def _admitted(state: Mapping[str, Any], cap: float) -> bool:
+    """Selection's admission rule, shared with the factory's sizing.
+
+    A continuation that cannot afford one call as large as the source already
+    made would rent a GPU only to exhaust again. A finished source needs no
+    call; its spend must only lie within the cumulative cap.
+    """
+
+    spend = state["spend"]
+    if state["completed"]:
+        return 0 < spend["cost_usd"] <= cap
+    return cap - spend["cost_usd"] >= spend["largest_call_usd"] > 0
 
 
 def factory_carried_spend(*, intent_digest: str, configuration: Mapping[str, Any], intent_root: Path,
@@ -326,11 +348,9 @@ def factory_carried_spend(*, intent_digest: str, configuration: Mapping[str, Any
                     state = _source_state(archive, source_run_id=result["run_id"])
                 _require(semantic_configuration(state["configuration"]) == semantic_configuration(configuration),
                          "configuration_semantics_changed")
-                spend = state["spend"]
-                # Selection's own admission rule: room for one call as large as the source made.
-                if not cap - spend["cost_usd"] >= spend["largest_call_usd"] > 0:
+                if not _admitted(state, cap):
                     return None
-                return dict(spend)
+                return {**state["spend"], "completed": state["completed"]}
             except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile):
                 continue
     except (OSError, ValueError, KeyError, TypeError):
@@ -408,10 +428,7 @@ def select_artisan_continuation_source(*, owner_attempt_path, envelope, output_r
                 state = _source_state(archive, source_run_id=lineage["source_run_id"])
                 _require(semantic_configuration(state["configuration"]) == semantic_configuration(configuration),
                          "configuration_semantics_changed")
-                # A continuation that cannot afford one call as large as the source
-                # already made would rent a GPU only to exhaust again.
-                _require(cap - state["spend"]["cost_usd"] >= state["spend"]["largest_call_usd"] > 0,
-                         "cumulative_cap_below_one_source_call")
+                _require(_admitted(state, cap), "cumulative_cap_below_one_source_call")
                 members = _members(archive)
                 _require(any(dest.endswith(f"/{state['upstream_run_id']}/pipeline_state.json")
                              for dest, _, _ in members), "upstream_checkpoint_missing")

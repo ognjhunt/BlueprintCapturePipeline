@@ -273,6 +273,29 @@ def test_a_cap_without_room_for_one_source_sized_call_selects_nothing(source, ca
     assert not (source["tmp"] / "selected").exists()
 
 
+def _finished_terminal(source, upstream):
+    return {PREFIX + "terminal.v1.json": json.dumps({
+        "schema_version": "blueprint_artisan_terminal.v1", "run_id": upstream, "phase": "done", "status": "done",
+        "registered": True, "returncode": 0, "canonical_record_id": "rec-tray", "candidate_id": "cand-tray",
+        "termination_reason": None})}
+
+
+def test_a_finished_unexported_source_is_selected_for_export_only(source):
+    # capture-447ae4f4 (2026-11-02): ARTISAN finished and registered the tray,
+    # then the export refused "done" for "DONE". Its successor only exports.
+    upstream = "pl_" + source["source_request"]["request_digest"][7:39]
+    source["build"](extra=_finished_terminal(source, upstream))
+    value = json.loads(_select(source).read_text())
+    descriptor = json.loads(Path(value["descriptor"]["path"]).read_text())
+    assert descriptor["source_terminal_phase"] == "done" and descriptor["source_upstream_run_id"] == upstream
+    assert descriptor["carried_spend"]["cost_usd"] == 13.76
+    carried = _factory(source)
+    assert carried["completed"] is True and carried["cost_usd"] == 13.76
+    # Within the cumulative cap is enough: no further call is needed.
+    assert _factory(source, cap=14.0)["completed"] is True
+    assert _factory(source, cap=13.0) is None
+
+
 @pytest.mark.parametrize("change", ["completed", "terminal_done", "no_checkpoint", "unpriced", "configuration",
                                     "articulated"])
 def test_a_source_that_cannot_resume_safely_is_not_selected(source, change):
