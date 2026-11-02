@@ -39,7 +39,8 @@ def publication_digest_scope(monkeypatch):
 
 
 def _component_packages(tmp_path: Path, *, empty_file: bool = False,
-                        bundled_bytecode: bool = False) -> dict[str, Path]:
+                        bundled_bytecode: bool = False,
+                        package_commit: str = "c" * 40) -> dict[str, Path]:
     packages: dict[str, Path] = {}
     for identity in ADMITTED_PRODUCER_IDENTITIES:
         root = tmp_path / "component-packages" / identity.adapter_id
@@ -145,7 +146,7 @@ def _component_packages(tmp_path: Path, *, empty_file: bool = False,
             "capability": identity.capability,
             "source_identity": {
                 "repository": "https://example.test/public-component",
-                "commit": "c" * 40,
+                "commit": package_commit,
                 "license": "Apache-2.0",
                 "scene_specific_source": False,
             },

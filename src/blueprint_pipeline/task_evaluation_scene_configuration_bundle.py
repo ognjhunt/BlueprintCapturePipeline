@@ -73,6 +73,7 @@ from .task_evaluation_scene_configuration_toolchain_archive import (
     prepare_toolchain_archive,
     release_toolchain_archive,
     splice_toolchain_archive,
+    split_toolchain_manifest,
 )
 from .task_evaluation_scene_construction_queue import (
     ENVELOPE_SCHEMA_VERSION,
@@ -118,6 +119,41 @@ _OPENUSD_REFERENCE_SUFFIXES = frozenset({".usd", ".usda", ".usdc"})
 
 
 
+
+
+def _stage_toolchain_release_layer(
+    *, toolchain: Path, destination: Path, rows: list[Mapping[str, Any]]
+) -> None:
+    """Copy the uncached toolchain files, each checked against its manifest row.
+
+    These are never hashed by the archive, so this copy is their only check,
+    with or without stat-only host validation. The ZIP member mode follows
+    the copy's execute bit, as it does for the cached members.
+    """
+
+    for row in rows:
+        relative = Path(str(row["relative_path"]))
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_toolchain_member_path_invalid"
+            )
+        source = toolchain / relative
+        target = destination / relative
+        if (
+            any(parent.is_symlink() for parent in (source, *source.parents) if parent.is_relative_to(toolchain))
+            or not source.is_file()
+            or bool(source.stat().st_mode & 0o111) != bool(row["executable"])
+        ):
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_toolchain_member_mismatch:" + relative.as_posix()
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        target.chmod(0o555 if row["executable"] else 0o444)
+        if target.stat().st_size != int(row["size_bytes"]) or _sha256(target) != row["sha256"]:
+            raise TaskEvaluationSceneConfigurationBundleError(
+                "scene_configuration_bundle_toolchain_member_mismatch:" + relative.as_posix()
+            )
 
 
 def _copy_file(source: Path, destination: Path) -> dict[str, Any]:
@@ -1207,9 +1243,17 @@ def build_scene_configuration_provider_bundle(
     (runtime / "input/portable_construction_envelope.v1.json").write_text(
         canonical_json(portable) + "\n", encoding="utf-8"
     )
-    # Only the per-release toolchain manifest is staged. Every inventoried
-    # toolchain file is spliced into the ZIP from a content-addressed archive
-    # built from bytes hashed against this same validated manifest.
+    # The per-release toolchain manifest and its small release layer are
+    # staged here. The large third-party trees are spliced into the ZIP from a
+    # content-addressed archive built from bytes hashed against this same
+    # validated manifest, so a release that stamps only its own small files
+    # still reuses that archive.
+    cached_toolchain_manifest, toolchain_release_rows = split_toolchain_manifest(
+        toolchain_manifest
+    )
+    _stage_toolchain_release_layer(
+        toolchain=toolchain, destination=runtime / "toolchain", rows=toolchain_release_rows
+    )
     toolchain_manifest_name = f"{TOOLCHAIN_SCHEMA_VERSION}.json"
     _copy_file(
         toolchain / toolchain_manifest_name,
@@ -1379,7 +1423,7 @@ def build_scene_configuration_provider_bundle(
         stage=stage,
         bundle=bundle,
         toolchain=toolchain,
-        toolchain_manifest=toolchain_manifest,
+        toolchain_manifest=cached_toolchain_manifest,
         output=output,
         cache_root=toolchain_archive_cache_root,
     )

@@ -117,8 +117,11 @@ def test_reused_archive_gives_the_same_bundle_and_every_toolchain_byte(tmp_path:
         assert "sha256:" + hashlib.sha256(members[name]).hexdigest() == row["sha256"]
 
     # The provider's own validation of the unpacked toolchain still passes.
-    unpacked = tmp_path / "unpacked"
-    with zipfile.ZipFile(second["bundle_path"]) as archive:
+    _assert_provider_validates(second["bundle_path"], tmp_path / "unpacked", A)
+
+
+def _assert_provider_validates(bundle: str, unpacked: Path, commit: str) -> None:
+    with zipfile.ZipFile(bundle) as archive:
         archive.extractall(unpacked)
         modes = {info.filename.rstrip("/"): (info.external_attr >> 16) & 0o777
                  for info in archive.infolist()}
@@ -126,7 +129,7 @@ def test_reused_archive_gives_the_same_bundle_and_every_toolchain_byte(tmp_path:
         path.chmod(modes[path.relative_to(unpacked).as_posix()] & ~0o222)  # the provider seals read-only
     try:
         validate_scene_configuration_toolchain(
-            root=unpacked / "provider_runtime/toolchain", expected_source_commit=A
+            root=unpacked / "provider_runtime/toolchain", expected_source_commit=commit
         )
     finally:
         for path in unpacked.rglob("*"):
@@ -153,23 +156,80 @@ def test_a_release_with_unchanged_toolchain_content_reuses_the_archive(tmp_path:
     assert first_members == second_members
 
 
-def test_changed_toolchain_content_builds_a_new_archive_and_bounds_the_cache(tmp_path: Path) -> None:
+def test_a_changed_cached_tree_builds_a_new_archive_and_bounds_the_cache(tmp_path: Path) -> None:
     cache = tmp_path / "cache"
     plain = _published_toolchain(tmp_path / "plain", A)
     with_bytecode = _published_toolchain(tmp_path / "bytecode", A, bundled_bytecode=True)
     with_empty = _published_toolchain(tmp_path / "empty", A, empty_file=True)
 
-    keys = [
-        _bundle(tmp_path, name, toolchain=root, commit=A, cache=cache)["toolchain_archive"]
+    built = [
+        _bundle(tmp_path, name, toolchain=root, commit=A, cache=cache)
         for name, root in (("out-plain", plain), ("out-bytecode", with_bytecode),
                            ("out-empty", with_empty))
     ]
+    keys = [row["toolchain_archive"] for row in built]
 
-    assert [row["reused"] for row in keys] == [False, False, False]
-    assert len({row["archive_key"] for row in keys}) == 3
+    # Bytecode under ``runtime/`` is in a cached tree; ``py.typed`` beside
+    # ``run`` is release layer, so the third build reuses the first archive.
+    assert [row["reused"] for row in keys] == [False, False, True]
+    assert keys[0]["archive_key"] == keys[2]["archive_key"] != keys[1]["archive_key"]
     retained = sorted(path.name for path in cache.iterdir())
     assert len(retained) == archive_module.RETAINED_ENTRIES
     assert keys[-1]["archive_key"].removeprefix("sha256:") in retained
+    empty_member = (archive_module.ARCHIVE_PREFIX
+                    + "components/content_agents_rigid_replacement/package/py.typed")
+    assert _toolchain_members(built[2]["bundle_path"])[empty_member] == b""
+    assert empty_member not in _toolchain_members(built[0]["bundle_path"])
+
+
+def test_a_release_that_only_restamps_its_packages_reuses_the_archive(tmp_path: Path) -> None:
+    """capture-447ae4f4, 2026-11-01: each release stamps its commit into every
+    component package seal, which changed the whole-inventory key on every release."""
+    cache = tmp_path / "cache"
+    release_a = _published_toolchain(tmp_path / "release-a", A, package_commit=A)
+    release_b = _published_toolchain(tmp_path / "release-b", B, package_commit=B)
+
+    first = _bundle(tmp_path, "a", toolchain=release_a, commit=A, cache=cache)
+    second = _bundle(tmp_path, "b", toolchain=release_b, commit=B, cache=cache)
+
+    assert second["toolchain_archive"]["reused"] is True
+    assert first["toolchain_archive"]["archive_key"] == second["toolchain_archive"]["archive_key"]
+    seals = {name: json.loads(payload) for name, payload in _toolchain_members(second["bundle_path"]).items()
+             if name.endswith("/package/task_evaluation_scene_configuration_component_package.v1.json")}
+    assert seals and {row["source_identity"]["commit"] for row in seals.values()} == {B}
+    _assert_provider_validates(second["bundle_path"], tmp_path / "unpacked-b", B)
+
+
+def test_the_release_layer_is_hashed_on_every_activation_even_stat_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toolchain = _published_toolchain(tmp_path / "release-a", A)
+    cache = tmp_path / "cache"
+    _bundle(tmp_path, "warm", toolchain=toolchain, commit=A, cache=cache)
+    monkeypatch.setenv("BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_STAT_ONLY_HOST_VALIDATION", "1")
+    victim = next(path for path in sorted(toolchain.rglob("run")) if path.is_file())
+    payload = victim.read_bytes()
+    victim.chmod(0o755)
+    victim.write_bytes(payload[:-2] + b"0\n")  # same size, different bytes
+    victim.chmod(0o555)
+
+    with pytest.raises(TaskEvaluationSceneConfigurationBundleError, match="toolchain_member_mismatch"):
+        _bundle(tmp_path, "hit", toolchain=toolchain, commit=A, cache=cache)
+
+
+def test_only_large_third_party_trees_are_cached() -> None:
+    cached = archive_module.cached_toolchain_member
+    package = "components/content_agents_rigid_replacement/package/"
+    assert cached(package + "runtime/blender/blender")
+    assert cached(package + "runtime/site_packages/openai/__init__.py")
+    assert cached(package + "artisan_source/pyproject.toml")
+    assert cached("components/artifixer3d_observed_object_removal/package/python_wheelhouse/wheels/a.whl")
+    assert cached("components/artifixer3d_observed_object_removal/package/blueprint_runtime/torch_home/x")
+    for release in ("run", "task_evaluation_scene_configuration_component_package.v1.json",
+                    "bridge/blueprint_pipeline/task_object_artisan_bridge.py", "upstream.patch",
+                    "blueprint_runtime/src/blueprint_pipeline/x.py", "source_receipt.json"):
+        assert not cached(package + release)
+    assert not cached("stages/content_agents_rigid_replacement")
 
 
 def test_a_prepared_archive_survives_eviction_by_concurrent_activations(tmp_path: Path) -> None:
@@ -331,11 +391,12 @@ def _tamper_wheel_same_size(toolchain: Path) -> Path:
 
 
 def _tamper_same_size(toolchain: Path) -> Path:
-    victim = next(path for path in sorted(toolchain.rglob("run")) if path.is_file())
-    payload = victim.read_bytes()
-    victim.chmod(0o755)
+    # A cached member: only the archive reads it, so only the archive can refuse it.
+    victim = next(path for path in sorted(toolchain.rglob("*.whl")) if path.is_file())
+    payload, mode = victim.read_bytes(), victim.stat().st_mode & 0o777
+    victim.chmod(0o644)
     victim.write_bytes(payload[:-2] + b"0\n")  # same size, different bytes
-    victim.chmod(0o555)
+    victim.chmod(mode)
     return victim
 
 
