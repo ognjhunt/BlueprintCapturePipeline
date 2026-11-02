@@ -104,7 +104,10 @@ Before spawn, the attempt claims no launch slot, keeps its reservation and reads
 again. At create admission, the allocator fences its own job
 (`no_create_fence.json`), so recovery retries the candidate on a fresh attempt.
 A definite stopped, changed or expired answer, any other 4xx, or an invalid
-response still blocks. The 600-second rule for running work is unchanged; a
+response still blocks. The execution-control route answers 409 only for a
+refusal that will not clear (for example an intake with no expiry), so a 409
+is an absorbing stop (`beta_screening_execution_control_refused`) at once,
+including for running work. The 600-second rule for running work is unchanged; a
 timeout stop recorded before any create is retried like a failed read.
 
 These retries are capped per candidate at `TRANSPORT_RETRY_CAP` (3, in

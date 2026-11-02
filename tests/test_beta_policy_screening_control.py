@@ -421,3 +421,23 @@ def test_create_admission_fences_for_retry_only_a_read_that_got_no_answer(tmp_pa
     # Nothing was spent. Only a read without an answer fences the job for a retry.
     assert (path.parent / "no_create_fence.json").exists() is retryable
     assert (path.parent / "stop_requested.json").exists() is (failure.args[0] == "beta_screening_current_capture_consent_required")
+
+
+def test_definite_control_refusal_stops_running_work_at_once(tmp_path, monkeypatch):
+    """A 409 from the execution-control route will not clear: no 600 s grace, no retry."""
+    from blueprint_pipeline import beta_policy_screening_control_transport as transport
+    from tests.test_beta_policy_screening_control_contracts import binding as scope
+
+    def refused(**kwargs):
+        raise ValueError("beta_screening_execution_control_http_409")
+
+    monkeypatch.setattr(transport, "request_control", refused)
+    value = binding(source_control_binding=scope())
+    stopped = control.observe(control=value, root=tmp_path, now=1001)
+    assert stopped["reason"] == control.CONTROL_REFUSED_STOP_REASON
+    assert stopped["new_processing_authorized"] is False and not control.retryable_stop(stopped)
+    sent = []
+    monitor = control.CurrentSourceMonitor({"control": value, "root": str(tmp_path)}, stop=lambda: sent.append(1))
+    monkeypatch.setattr(monitor.done, "wait", lambda interval: False)
+    monitor._run()
+    assert sent == [1]
