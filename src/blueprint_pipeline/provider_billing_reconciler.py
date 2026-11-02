@@ -51,6 +51,8 @@ AWS_BILLING_UNAVAILABLE_REASON = "aws_billing_unavailable_paid_api_collection_re
 MAX_MIN_REFRESH_INTERVAL_SECONDS = 3600
 #: The spend guard refuses a larger export, so a larger one is never retained.
 MAX_EXPORT_BYTES = 1024 * 1024
+#: Upper bound on the spend guard's ``--json-report`` read to vouch for coverage.
+MAX_GUARD_REPORT_BYTES = 16 * 1024 * 1024
 # DigitalOcean documents its current invoice preview as a daily artifact.  A
 # strict 24-hour wall-clock cutoff therefore races that provider cadence: the
 # same official response becomes inadmissible in the interval between crossing
@@ -577,12 +579,78 @@ def _euid() -> int:
     return os.geteuid()
 
 
+def _own_file_bytes(path: Path, limit: int) -> bytes | None:
+    """A regular file this account wrote, not group- or world-writable, read without following links."""
+    try:
+        observed = path.lstat()
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_size > limit
+            or observed.st_uid != _euid()
+            or stat.S_IMODE(observed.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            return None
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino):
+                return None
+            raw = stream.read(limit + 1)
+    except OSError:
+        return None
+    return raw if len(raw) <= limit else None
+
+
+def _guard_live_providers(
+    report_path: str | Path,
+    *,
+    export_digest: str,
+    export_providers: set[str],
+    now: datetime,
+    max_age_seconds: float,
+) -> list[str] | None:
+    """The providers the spend guard last required, when this export covers every one.
+
+    The guard blocks paid admission while a provider with live instances is
+    missing from the export (``reconcile_billing_export``), and only the guard
+    sees live inventory. Its own ``--json-report``, written by this account
+    within the interval, names them. A report that judged this very export and
+    found anything wrong is honoured too. Anything else returns ``None``.
+    """
+
+    raw = _own_file_bytes(Path(report_path).expanduser(), MAX_GUARD_REPORT_BYTES)
+    if raw is None:
+        return None
+    try:
+        report = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    billing = report.get("billing_reconciliation") if isinstance(report, dict) else None
+    if not isinstance(billing, dict):
+        return None
+    try:
+        generated_at = _parse_time(report.get("generated_at"), field="spend_guard_report_generated_at")
+    except ProviderBillingReconciliationError:
+        return None
+    if not 0 <= (now.astimezone(timezone.utc) - generated_at).total_seconds() <= max_age_seconds:
+        return None
+    live = billing.get("live_providers")
+    if not isinstance(live, list) or not all(isinstance(provider, str) for provider in live):
+        return None
+    if not set(live).issubset(export_providers):
+        return None
+    if billing.get("billing_export_sha256") == export_digest and billing.get("blockers"):
+        return None
+    return sorted(set(live))
+
+
 def retained_fresh_export(
     billing_export_path: str | Path,
     *,
     now: datetime,
     min_refresh_interval_seconds: float,
     required_providers: Sequence[str] = (),
+    spend_guard_report: str | Path | None = None,
 ) -> dict[str, Any] | None:
     """The current export, when a refresh inside the interval would only repeat it.
 
@@ -596,36 +664,24 @@ def retained_fresh_export(
 
     Age is the export's own ``generated_at``, the time the guard judges, so an
     export bound to an older source (a retained GCP report) is never treated as
-    fresh. Anything but a regular, readable, well-formed export owned by this
-    account, not group- or world-writable, covering every required provider and
-    generated within the interval returns ``None``: refresh.
+    fresh. Coverage is what the guard requires: every provider with live
+    instances in the guard's own last report (review of #3278: after one
+    provider's API failed, a skip keyed on age alone kept paid admission blocked
+    for ten minutes instead of about one). Anything but a regular, readable,
+    well-formed export owned by this account, not group- or world-writable,
+    covering every required and every live provider, generated within the
+    interval, with a current guard report returns ``None``: refresh.
     """
 
     try:
         interval = min(float(min_refresh_interval_seconds), MAX_MIN_REFRESH_INTERVAL_SECONDS)
     except (TypeError, ValueError):
         return None
-    if not math.isfinite(interval) or interval <= 0:
+    if not math.isfinite(interval) or interval <= 0 or not spend_guard_report:
         return None
     path = Path(billing_export_path).expanduser()
-    try:
-        observed = path.lstat()
-        if (
-            not stat.S_ISREG(observed.st_mode)
-            or observed.st_size > MAX_EXPORT_BYTES
-            or observed.st_uid != _euid()
-            or stat.S_IMODE(observed.st_mode) & (stat.S_IWGRP | stat.S_IWOTH)
-        ):
-            return None
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-        with os.fdopen(descriptor, "rb") as stream:
-            opened = os.fstat(stream.fileno())
-            if (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino):
-                return None
-            raw = stream.read(MAX_EXPORT_BYTES + 1)
-    except OSError:
-        return None
-    if len(raw) > MAX_EXPORT_BYTES:
+    raw = _own_file_bytes(path, MAX_EXPORT_BYTES)
+    if raw is None:
         return None
     try:
         export = json.loads(raw.decode("utf-8"))
@@ -655,12 +711,19 @@ def retained_fresh_export(
     age = (now.astimezone(timezone.utc) - generated_at).total_seconds()
     if not 0 <= age < interval:
         return None
+    live = _guard_live_providers(
+        spend_guard_report, export_digest=_digest_bytes(raw), export_providers=set(totals),
+        now=now, max_age_seconds=interval,
+    )
+    if live is None:
+        return None
     return {
         "billing_export_path": str(path),
         "billing_export_generated_at": generated_at.isoformat(),
         "billing_export_age_seconds": round(age, 3),
         "billing_export_digest": _digest_bytes(raw),
         "min_refresh_interval_seconds": interval,
+        "spend_guard_live_providers": live,
     }
 
 
@@ -698,12 +761,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             "0, the default, refreshes on every run"
         ),
     )
+    parser.add_argument(
+        "--spend-guard-report",
+        default=os.getenv("BLUEPRINT_GPU_SPEND_GUARD_REPORT"),
+        help=(
+            "the spend guard's --json-report; an export is retained only while that "
+            "report is current and every provider it found live is covered"
+        ),
+    )
     args = parser.parse_args(argv)
     retained = retained_fresh_export(
         args.billing_export,
         now=datetime.now(timezone.utc),
         min_refresh_interval_seconds=args.min_refresh_interval_seconds,
         required_providers=args.require_provider,
+        spend_guard_report=args.spend_guard_report,
     )
     if retained is not None:
         print(
