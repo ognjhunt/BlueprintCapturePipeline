@@ -141,6 +141,23 @@ def _severity(code: str) -> str:
     return "page" if code in PAGE_ALERT_CODES else "warn"
 
 
+_LEVEL_RANK = {"ok": 0, "warning": 1, "critical": 2}
+
+
+def _raise_level(report: dict[str, Any], codes: Collection[str]) -> None:
+    """Raise, never lower, the level for alerts that are not disk measurements.
+
+    A page code makes the tick critical; a warn-only code makes it a warning at
+    most. From 2026-09-05 any Vast funding blocker made the tick critical, so a
+    Vast API blip repeated hourly as critical capacity.
+    """
+    if not codes:
+        return
+    target = "critical" if any(code in PAGE_ALERT_CODES for code in codes) else "warning"
+    if _LEVEL_RANK[target] > _LEVEL_RANK.get(str(report.get("level")), 0):
+        report["level"] = target
+
+
 def _annotate_alerts(alerts: list[dict[str, Any]]) -> None:
     for alert in alerts:
         alert["severity"] = _severity(str(alert.get("code") or ""))
@@ -1124,6 +1141,9 @@ def run_controller(
             if isinstance(alert, Mapping) and alert.get("code") == "floor_within_hours"
         },
     )
+    # The disks' own level. Disk-only pages key off it, so an accounting, funding or
+    # spend alert that raises the report's level below cannot raise a disk page.
+    disk_level = report["level"]
     from .task_evaluation_scene_spend import observe_configured_scene_project_spend
     try:
         if project_spend := observe_configured_scene_project_spend(now=observed):
@@ -1155,20 +1175,21 @@ def run_controller(
             reserve_usd=credit_reserve_usd, now=credit_now)
         report["provider_funding"] = funding
         if funding["blockers"]:
-            report["level"] = "critical"
+            _raise_level(report, funding["blockers"])
             balance = {"credit_usd": observation.get("credit_usd"),
                        "required_usd": (funding["required_usd"] or 0) + (funding["reserve_usd"] or 0)}
             report["alerts"].extend({"provider": "vast", "code": code,
                                      **(balance if code == "provider_credit_insufficient" else {})}
                                     for code in funding["blockers"])
     if spend_check is not None:
-        # Spend pages carry their own severity and leave the disk level alone, so
-        # they cannot arm the disk-only pages that a critical level triggers.
+        # The Vast rule: a spend page makes the tick critical, a warn a warning at most.
         try:
             spend = dict(spend_check(observed))
         except Exception:  # noqa: BLE001 - never stop measurement; the error may carry credentials
             spend = {"status": "failed", "alerts": [{"code": "provider_spend_check_failed"}]}
-        report["alerts"].extend(dict(row) for row in spend.pop("alerts", None) or [] if isinstance(row, Mapping))
+        rows = [dict(row) for row in spend.pop("alerts", None) or [] if isinstance(row, Mapping)]
+        report["alerts"].extend(rows)
+        _raise_level(report, [str(row.get("code") or "") for row in rows])
         report["provider_spend"] = spend
     if survey is _DEFAULT_SURVEY:
         survey = survey_usage
@@ -1256,7 +1277,8 @@ def run_controller(
         gc_summary, now=observed, volume_growth=growth,
     )
     report["reclaim_outlook"] = outlook
-    if report["level"] == "critical" and reclaim_ineffective:
+    # Critical disks that GC cannot relieve; another alert's critical level is not a disk.
+    if disk_level == "critical" and reclaim_ineffective:
         report["alerts"].append({
             "code": "reclaim_ineffective",
             "top_retained_reasons": retained_reasons,

@@ -25,10 +25,11 @@ Google Cloud project ``blueprint-8c1ca`` (Gemini bills here)
     The monthly budget guard's own report (``gcp_monthly_budget_guard``). It
     pages at 80 % of the month's effective limit and never changes the limit.
 
-A page code repeats hourly on the capacity alert route while it lasts. Missing
-credentials, an unreadable source, a malformed answer or a failed request are
-warn codes: they never page. Nothing here reserves, admits or refuses work, and
-no launch reads it.
+A page code repeats hourly on the capacity alert route while it lasts and makes
+the capacity level critical, as the Vast page does. Missing credentials, an
+unreadable source, a malformed answer or a failed request are warn codes: they
+never page and raise the level to warning at most. Nothing here reserves, admits
+or refuses work, and no launch reads it.
 """
 
 from __future__ import annotations

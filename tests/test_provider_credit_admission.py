@@ -157,3 +157,74 @@ def test_default_page_line_is_two_launch_allowances_plus_reserve(tmp_path):
     assert _controller(tmp_path, 10.99)["provider_funding"]["blockers"] == ["provider_credit_insufficient"]
     assert _controller(tmp_path, 11)["provider_funding"]["status"] == "admitted"
     assert _controller(tmp_path, 11, credit_warning_usd=20)["provider_funding"]["status"] == "blocked"
+
+
+GIB = 1024**3
+
+
+def _gc_found_nothing(tmp_path, now):
+    """A fresh, applied storage-GC summary with nothing to free: with a critical level it
+    is exactly what pages ``reclaim_ineffective``."""
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    path = tmp_path / "storage-gc" / "summary.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(build_storage_gc_summary({
+        "observed_at_epoch": now - 60, "status": "applied",
+        "opt_in": {"evidence_offload": True, "scene_workspace_retirement": False},
+        "derived_directories": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+                                "retained_by_reason": {"pinned": {"count": 1, "bytes": 3 * GIB}}},
+        "content_store": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+                          "retained_by_reason": {"young": {"count": 1, "bytes": 4 * GIB}}},
+        "evidence_offload": {"status": "applied", "candidate_bytes": 0, "offloaded_bytes": 0,
+                             "retained_by_reason": {"protected_process": {"count": 1, "bytes": 5 * GIB}}},
+        "scene_workspaces": {"status": "dry_run", "candidate_bytes": 10 * GIB,
+                             "retained_by_reason": {"not_enabled": {"count": 1, "bytes": 2 * GIB}}},
+    })), encoding="utf-8")
+    return path
+
+
+def _gc_tick(tmp_path, *, free_gib, total_gib, credit_collector, now=100.0):
+    from collections import namedtuple
+    usage = namedtuple("Usage", "total used free")(total_gib * GIB, (total_gib - free_gib) * GIB, free_gib * GIB)
+    return capacity.run_controller(
+        mounts=[str(tmp_path)], report_root=tmp_path / "report", reservation_root=tmp_path / "ledger",
+        webhook_url="https://test.invalid", volume=None, ack="", token="", survey=None, now=now,
+        disk_usage=lambda _: usage, poster=lambda *_args: None, credit_collector=credit_collector,
+        release_retirement_summary_path=tmp_path / "absent-retirement",
+        break_glass_notes_root=tmp_path / "absent-notes", storage_gc_summary_path=_gc_found_nothing(tmp_path, now))
+
+
+def _blip():
+    def failed(**_kwargs):
+        raise RuntimeError("Vast API timeout")
+    return credit.observe_vast_credit(api_key="test-secret", now=100, request=failed)
+
+
+def test_a_warn_only_credit_code_on_healthy_disks_is_a_warning_and_never_a_disk_page(tmp_path):
+    # Since 3887f77f6 (2026-09-05) any funding blocker made the tick critical: a Vast
+    # API blip repeated hourly and, with GC finding nothing to free, paged reclaim_ineffective.
+    result = _gc_tick(tmp_path, free_gib=90, total_gib=100, credit_collector=_blip)
+    assert result["provider_funding"]["blockers"] == ["provider_credit_unverifiable"]
+    assert result["level"] == "warning"
+    severities = {row["code"]: row["severity"] for row in result["alerts"]}
+    assert severities["provider_credit_unverifiable"] == "warn"
+    assert "reclaim_ineffective" not in severities and "page" not in severities.values()
+
+
+def test_a_low_balance_page_makes_the_tick_critical_without_a_disk_page(tmp_path):
+    result = _gc_tick(tmp_path, free_gib=90, total_gib=100, credit_collector=lambda: observation(8))
+    assert result["level"] == "critical"
+    severities = {row["code"]: row["severity"] for row in result["alerts"]}
+    assert severities["provider_credit_insufficient"] == "page"
+    # The disks are healthy, so the disk-only reclaim page stays quiet.
+    assert "reclaim_ineffective" not in severities
+
+
+def test_a_disk_critical_tick_with_a_warn_only_credit_code_stays_critical(tmp_path):
+    result = _gc_tick(tmp_path, free_gib=20, total_gib=154, credit_collector=_blip)
+    assert result["level"] == "critical"
+    severities = {row["code"]: row["severity"] for row in result["alerts"]}
+    assert severities["provider_credit_unverifiable"] == "warn"
+    # A real disk-critical tick still pages reclaim_ineffective.
+    assert severities["reclaim_ineffective"] == "page"

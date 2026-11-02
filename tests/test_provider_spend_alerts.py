@@ -413,25 +413,47 @@ def test_the_service_check_is_on_unless_disabled(monkeypatch):
     assert spend.configured_spend_check() is None
 
 
-def _tick(tmp_path, spend_check, *, now=NOW, webhook="https://alerts.example/hook", posted=None):
+GIB = 1024**3
+HEALTHY_DISKS = SimpleNamespace(total=100 * GIB, used=10 * GIB, free=90 * GIB)
+CRITICAL_DISKS = SimpleNamespace(total=154 * GIB, used=134 * GIB, free=20 * GIB)
+
+
+def _gc_found_nothing(tmp_path) -> Path:
+    """A fresh, applied storage-GC summary with nothing to free: on critical disks it is
+    exactly what pages ``reclaim_ineffective``."""
+    from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
+
+    path = tmp_path / "storage-gc" / "summary.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(build_storage_gc_summary({
+        "observed_at_epoch": NOW - 60, "status": "applied",
+        "opt_in": {"evidence_offload": True, "scene_workspace_retirement": False},
+        "derived_directories": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+                                "retained_by_reason": {"pinned": {"count": 1, "bytes": 3 * GIB}}},
+        "content_store": {"status": "applied", "candidate_bytes": 0, "removed_bytes": 0,
+                          "retained_by_reason": {"young": {"count": 1, "bytes": 4 * GIB}}},
+        "evidence_offload": {"status": "applied", "candidate_bytes": 0, "offloaded_bytes": 0,
+                             "retained_by_reason": {"protected_process": {"count": 1, "bytes": 5 * GIB}}},
+        "scene_workspaces": {"status": "dry_run", "candidate_bytes": 10 * GIB,
+                             "retained_by_reason": {"not_enabled": {"count": 1, "bytes": 2 * GIB}}},
+    })), encoding="utf-8")
+    return path
+
+
+def _tick(tmp_path, spend_check, *, now=NOW, disks=HEALTHY_DISKS, webhook="https://alerts.example/hook",
+          posted=None):
     return capacity.run_controller(
         mounts=[str(tmp_path)], report_root=tmp_path / "capacity", reservation_root=tmp_path / "ledger",
         webhook_url=webhook, volume=None, ack="", token="", survey=None, now=now,
-        disk_usage=lambda _path: SimpleNamespace(total=100 * 1024**3, used=10 * 1024**3, free=90 * 1024**3),
+        disk_usage=lambda _path: disks,
         poster=lambda _url, value: (posted if posted is not None else []).append(value),
         release_retirement_summary_path=tmp_path / "absent-retirement",
-        break_glass_notes_root=tmp_path / "absent-notes", storage_gc_summary_path=tmp_path / "absent-gc",
+        break_glass_notes_root=tmp_path / "absent-notes", storage_gc_summary_path=_gc_found_nothing(tmp_path),
         spend_check=spend_check)
 
 
-def test_a_spend_page_rides_the_capacity_route_without_changing_the_disk_level(tmp_path, monkeypatch):
-    observed = _observe(tmp_path, Transport(_page(_month(today=80.0))))
-    posted: list = []
-    report = _tick(tmp_path, lambda _now: observed, posted=posted)
-
-    assert report["level"] == "ok" and report["alert_posted"] is True and posted == [report]
-    row = next(a for a in report["alerts"] if a["code"] == "openai_spend_24h_high")
-    assert row["severity"] == "page"
+def _payload(report, monkeypatch) -> dict:
+    """The webhook body ``post_alert`` sends for this report."""
     payloads = []
 
     class Response:
@@ -450,6 +472,21 @@ def test_a_spend_page_rides_the_capacity_route_without_changing_the_disk_level(t
     monkeypatch.setattr(capacity.urllib.request, "urlopen", urlopen)
     capacity.post_alert("https://alerts.example/hook", report)
     [payload] = payloads
+    return payload
+
+
+def test_a_spend_page_rides_the_capacity_route_and_makes_the_tick_critical(tmp_path, monkeypatch):
+    observed = _observe(tmp_path, Transport(_page(_month(today=80.0))))
+    posted: list = []
+    report = _tick(tmp_path, lambda _now: observed, posted=posted)
+
+    # A page code makes the tick critical, like the Vast balance page.
+    assert report["level"] == "critical" and report["alert_posted"] is True and posted == [report]
+    severities = {a["code"]: a["severity"] for a in report["alerts"]}
+    assert severities["openai_spend_24h_high"] == "page"
+    # The disks are healthy, so the disk-only reclaim page stays quiet although GC found nothing.
+    assert "reclaim_ineffective" not in severities
+    payload = _payload(report, monkeypatch)
     assert payload["page"] is True and payload["severity"] == "page"
     assert payload["summary"] == "OpenAI $80.00 on 2026-11-20 UTC (line $75.00)"
     assert payload["text"].startswith("provider spend: OpenAI $80.00 on 2026-11-20 UTC (line $75.00) | ")
@@ -467,13 +504,27 @@ def test_a_spend_page_rides_the_capacity_route_without_changing_the_disk_level(t
     assert _tick(tmp_path, lambda _now: observed, now=NOW + 3600)["alert_posted"] is True
 
 
-def test_spend_warns_alone_never_post_or_raise_the_level(tmp_path):
+def test_spend_warns_alone_are_a_warning_that_never_pages_or_repeats(tmp_path, monkeypatch):
     blind = _observe(tmp_path, Transport(), key=False)
     posted: list = []
     report = _tick(tmp_path, lambda _now: blind, posted=posted)
-    assert report["level"] == "ok" and posted == [] and report["alert_posted"] is False
+    # Warn codes raise the level to warning at most; the change posts once, as a warning.
+    assert report["level"] == "warning" and posted == [report]
     rows = [a for a in report["alerts"] if a.get("provider") in {"openai", "gcp", "world_labs"}]
     assert rows and {row["severity"] for row in rows} == {"warn"}
+    assert "reclaim_ineffective" not in {a["code"] for a in report["alerts"]}
+    payload = _payload(report, monkeypatch)
+    assert payload["page"] is False and payload["severity"] == "warn"
+    assert _tick(tmp_path, lambda _now: blind, now=NOW + 7200)["alert_posted"] is False
+
+
+def test_a_disk_critical_tick_with_spend_warns_stays_critical_and_still_pages_reclaim(tmp_path):
+    blind = _observe(tmp_path, Transport(), key=False)
+    report = _tick(tmp_path, lambda _now: blind, disks=CRITICAL_DISKS)
+    assert report["level"] == "critical"
+    severities = {a["code"]: a["severity"] for a in report["alerts"]}
+    assert severities["reclaim_ineffective"] == "page"
+    assert severities["openai_spend_credentials_missing"] == "warn"
 
 
 def test_a_failing_spend_check_is_a_warn_and_the_tick_finishes(tmp_path):
@@ -483,6 +534,7 @@ def test_a_failing_spend_check_is_a_warn_and_the_tick_finishes(tmp_path):
     report = _tick(tmp_path, broken)
     row = next(a for a in report["alerts"] if a["code"] == "provider_spend_check_failed")
     assert row == {"code": "provider_spend_check_failed", "severity": "warn"}
+    assert report["level"] == "warning"
     assert ADMIN_KEY not in json.dumps(report) and (tmp_path / "capacity" / "latest.json").is_file()
 
 

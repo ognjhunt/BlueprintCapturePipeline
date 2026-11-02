@@ -95,7 +95,12 @@ The alarm (PR #3257, `src/blueprint_pipeline/provider_credit_admission.py`):
 - `BLUEPRINT_VAST_CREDIT_WARNING_USD` changes the $10 line.
   `BLUEPRINT_VAST_CREDIT_RESERVE_USD` changes the $1 reserve.
 - `provider_credit_credentials_missing`, `provider_credit_unverifiable` and
-  `provider_credit_transport_failed` are warnings only.
+  `provider_credit_transport_failed` are warnings only. They raise the
+  capacity level to `warning` at most. Only `provider_credit_insufficient`
+  makes it `critical`. A release without PR #3279 shows any of them as
+  `critical`.
+- Disk pages such as `reclaim_ineffective` follow the disks' own level, not
+  a level that a credit or spend alert raised.
 - PR #3257 merged as `882d3bd59` on 2026-11-02. A release without it warns
   once at $5 + $1 and does not repeat. Check that the active release contains
   `882d3bd59`.
@@ -134,7 +139,8 @@ spent and pages when the spend crosses a line (beta tracker B-08,
 `src/blueprint_pipeline/provider_spend_alerts.py`). The alarm only reads. It
 never adds credit, and no launch waits on it. A page goes to the capacity alert
 route, `BLUEPRINT_OPERATOR_ALERT_WEBHOOK_URL`, and repeats each hour while it
-lasts.
+lasts. As for Vast, a page makes the capacity level `critical`, and a warning
+raises it to `warning` at most. Neither raises a disk page.
 
 | Provider | How it is funded | What pages | Default line | Override in `/etc/blueprint/pipeline-control-plane.env` |
 |---|---|---|---|---|
