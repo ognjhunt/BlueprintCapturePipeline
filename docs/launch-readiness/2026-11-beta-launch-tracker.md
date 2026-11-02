@@ -7,7 +7,7 @@ Status: **done** (verified, with evidence) · **in progress** · **owner** (wait
 on an owner decision or action) · **next deploy** (merged, ships with the next
 batched Pipeline deploy) · **not started**.
 
-Last updated: 2026-11-02 14:30Z.
+Last updated: 2026-11-02 14:45Z.
 
 ## Operating notes (2026-11-02)
 
@@ -40,18 +40,23 @@ onto paid Actions minutes).
 
 | ID | Status | Evidence / next step |
 |---|---|---|
-| A-01 | owner | capture-447's export-only relaunch was refused before allocation at $0 (13:39:42Z, `scene_configuration_provider_output_disk_budget_exceeded`): it needs 35.19 GB available on the work volume and had 8.06 GB. **Then its scene intent was revoked at 14:08:33Z** (`scene_intake_authority_revoked`, scope `future_execution`). Cause: its brief (`siteTaskBriefs/capture-447…`) was rewritten at 14:08:02Z with `confirmedAtIso` null, the WebApp worker's sponsorship check failed, and it POSTed `/revoke` (intake log). The WebApp intake is now `closeout_pending`. The actor is unknown; the owner has been asked. To continue: the owner re-confirms the brief → a new scene intake (needs a budget grant) → disk growth → launch. |
+| A-01 | owner | **Driven by the cloud session (branch prefix `bold-darwin-iketye`)**, which deployed `b631b23fa` at 14:05:57Z and opened Pipeline #3253 and WebApp #1182. This session stood down on capture-447 at 14:45Z to avoid two drivers. History: the export-only relaunch was refused before allocation at $0 (13:39:42Z, `scene_configuration_provider_output_disk_budget_exceeded`: needs 35.19 GB on the work volume, had 8.06 GB). The scene intent was then revoked at 14:08:33Z. Root cause (cloud session, WebApp #1182): the brief-reading lane, idle since 10-24, drained its backlog from 14:03Z, and one reading folded an inferred answer into the unconfirmed brief, which moved the task-context digest the scene grant is bound to (`website_scene_sponsorship_changed` → revoke). |
 | A-02 | not started | Runs in the same GPU session after stage 3. The 10-31 destination gates are fixed on main (#3136; `ef276779a` for the stage-5 bind tolerance; `ae0e4ae2b`). |
 | A-03 | owner | WebApp #1168 merged 14:04Z (deploy pending CI). capture-447 still needs the D-02 ceiling row ($110) before its screening plan can fit. |
 | A-04 | not started | Host has never created the team-scene-packet status or rigid-probe roots. |
-| A-05 | not started | `door status`: `beta_screening.campaign_count` = 0. |
+| A-05 | not started | Pre-flight (read-only):
+- The 10-26 canary's 8.4 GB output failed its single signed PUT (HTTP 400, probably the 5 GB single-upload limit). There is still no multipart upload, and screening uses the same path (about 4.2 GB per candidate).
+- With no ranking file the plan picks Cosmos3-Edge, GR00T and MolmoAct2-YAM ($12 of $15). π0.5, the one policy proven in production, is fifth.
+- WebApp #1168 counts the sum of every attempt's maximum, so a job with many retries leaves $0 for screening (fix: B-04).
+- Ingest needs `siteTaskBriefs/<job>`.
+- Root volume has 4.58 GB above its floor for screening attempt folders. |
 | A-06 | not started | After A-05 and C-01…C-07. |
 
 ## B. Velocity, cost model, money correctness
 
 | ID | Status | Evidence / next step |
 |---|---|---|
-| B-01 | in progress | Mapping stages 3–6 and the post-completion chain for an offline replay command. |
+| B-01 | in progress | Phase 1 merged: [#3256](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3256), `python -m blueprint_pipeline.task_evaluation_downstream_replay` replays completion → readiness → team packet → probe enqueue → screening plan offline, with paid calls, network and WebApp stubbed (18 tests). Phase 2 (stages 3–6) needs a Linux mount namespace (absolute `/workspace` paths); the cloud session's #3253 covers the stage-3/4 ARTISAN export replay. |
 | B-02 | not started | |
 | B-03 | done | [`2026-11-cost-model.md`](2026-11-cost-model.md): capture-447 measured spend $25.08 vs about $83 held across caps (scene holds 2.8× actual). Modelled job: p50 about $27 (plus unread upstream), p90 about $44, $59 with screening. Recommended defaults are listed in section 7; they need owner money approval (D-01/D-06). Found by code reading, not runtime-tested: `max_paid_attempts` never binds website scene-configuration reservations. |
 | B-04 | owner | Accounting policy change; needs owner approval once implemented. |
@@ -66,11 +71,11 @@ onto paid Actions minutes).
 |---|---|---|
 | C-01 | not started | #3196 merges after capture-447 settles. The configured-controls timer, path and service are all inactive (13:30Z). |
 | C-02 | in progress | [#3251](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3251) (auto-merge): a $0 pre-allocation disk refusal of a website scene (all have `max_retries: 0`) now resumes like credit/auth refusals instead of ending at `retry_cap_exhausted`; bounded by the 6-recovery ceiling. Defaults from B-03 still need owner money approval. capture-447 intent: `max_paid_attempts` 16, `max_retries` 0, base $20 (raised to $70 by grants). |
-| C-03 | not started | capture-447 needed a window extension to 2026-11-07 10:30Z. |
+| C-03 | owner | WebApp #1180 merged: the sponsorship TTL may be up to 7 days, the Pipeline's own window. **Owner action:** set `ttl_seconds: 604800` in Render `BLUEPRINT_WEBSITE_SCENE_SPONSORSHIP_JSON`. |
 | C-04 | in progress | Mapped. Only `completed` stops the progression driver; everything else retries every minute forever. The WebApp's `ENDED_BLOCKERS` lists unprefixed codes while the Pipeline writes `scene_progression_*`/`scene_intake_*`, so exhausted caps show "waiting" (fix folded into the F-03 PR). `failed_terminal` is never emitted. Plan: a write-once Pipeline `outcome.json` (held/setup_repair/awaiting_spend_approval/awaiting_site/withdrawn) surfaced as an optional `outcome` on the intent status. The WebApp ships `.optional()` first (its schema is strict) and maps it to one state plus one email. |
 | C-05 | not started | |
 | C-06 | not started | |
-| C-07 | not started | |
+| C-07 | next deploy | [#3257](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3257) merged: a Vast balance under $11 (two launches' $5 compute plus the $1 reserve) pages hourly, with the balance in the alert. Credit reservation across concurrent launches is still open (needed once dispatcher concurrency is above 1). Auto-recharge is the owner's Vast setting (D-09). |
 
 ## D. Observability and operations
 
@@ -102,10 +107,10 @@ onto paid Actions minutes).
 
 | ID | Status | Evidence / next step |
 |---|---|---|
-| F-01 | in progress | Verified on WebApp `8ead858b5`: screening ingest sends no email. A campaign that reaches evaluated/held between scans also gets its queued `scene_tests_started` cancelled at dispatch, so the site gets no email at all. Plan: one deduplicated `screening_outcome` outbox email per terminal outcome, re-checked at dispatch, with a reconciler. |
+| F-01 | in progress | WebApp #1179 (one email per terminal screening outcome) is in review. |
 | F-02 | done | `taskEvaluationPolicyRuns(job_evidence_binding.job_id, created_at_iso desc)` is READY in `blueprint-8c1ca` (gcloud, 14:00Z). Website scene-intake queries are equality-only. 17 declared indexes in `firestore.indexes.json` were never deployed. Created the one a live website page needs, `creatorCaptures(creator_id, created_at desc)` for `CapturerAccount` → `/v1/creator/captures`; READY 14:10Z. The rest serve ops, growth and payout routes and are left for H-03. |
-| F-03 | in progress | `no_match` headline/body mismatch still present. #1174 added a second mismatch (a preparation hold's body vs the generic held headline). Scripted-only runs are still called an estimate. Raw codes and "for development only" are still shown, and operator next-action text still reaches sites. |
-| F-04 | not started | |
+| F-03 | done | WebApp [#1177](https://github.com/ognjhunt/Blueprint-WebApp/pull/1177) merged and deployed (`ba27cd6e4`, 14:33Z): one sentence per outcome on both the headline and the body; reference-only runs are not called estimates; no raw codes, budgets or operator text reach sites; exhausted allowances now read as ended (the prefix bug). Follow-up: the `footage_before_account` email promises "We email you when that changes". |
+| F-04 | in progress | WebApp #1181 merged: the default intake cap is 5 a day. **Owner checks:** Render must not pin `BLUEPRINT_INTAKE_DAILY_LIMIT=50`. The allowlist needs the invitee list. App Check `monitor` needs `VITE_FIREBASE_APPCHECK_SITE_KEY`. |
 | F-05 … F-11 | not started | |
 
 ## G. Privacy, rights, legal
@@ -115,7 +120,7 @@ onto paid Actions minutes).
 | G-01 | owner | Counsel status before 2026-11-15. |
 | G-02 | in progress | WebApp [#1178](https://github.com/ognjhunt/Blueprint-WebApp/pull/1178) (auto-merge) carries #1142's two reviewed rights commits onto main (82 tests, `npm run check` pass); #1142 is closed. Next: split the rights chain out of Pipeline #3042 (screening-runtime revocation: `b57cde47c`, `dd1c2ffee`, `b994839ab`, `81f57c38c`, `c371cec63`, `6f62b422c`, validators `fde308f66`) and run a withdrawal drill. |
 | G-03 | superseded | D-16 (owner, 14:15Z): no blurring or person screening. The residual-person check in #1980 is moot; its stage-reuse part can be revisited separately. |
-| G-04 | owner | Audit: the raw walkthrough goes unscreened to Meta SAM 3.1, Gemini (Pipeline and WebApp), OpenAI (planner, authoring, spec research) and Vast. The only face blur is on Atlas-bound frames. **Owner decision D-16 (14:15Z): no blurring or screening; rely on the site's consent.** Still to do: correct the privacy page (it claims people are removed from reconstruction frames, and Meta is not listed as a processor; public legal text, so it needs the owner's or counsel's OK on wording) and runbook §3a. The shared doctrine line "people in captures are screened" is owner-edited. |
+| G-04 | owner | Owner decision D-16: no blurring or screening; rely on the site's consent. The published Terms and Privacy Policy overclaim ("we remove people from the frames used as input to reconstruction") and the Privacy Policy omits Meta. Draft correction: WebApp [#1183](https://github.com/ognjhunt/Blueprint-WebApp/pull/1183) (Terms 2026-11-15.4 / Privacy 2026-11-15.5; needs the owner's or counsel's OK on wording; a material-change notice is likely). The runbook §3a correction is still to do. |
 | G-05 | owner | Rotation is the owner's action. Both repos are public (verified 13:30Z). |
 
 ## H. Cleanup and consistency
