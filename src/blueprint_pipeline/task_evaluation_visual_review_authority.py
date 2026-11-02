@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+from .decision_deadlines import note_deadline
 from .decision_evidence_contracts import canonical_digest
 from .task_evaluation_retained_controls_evidence import _read
 
@@ -33,8 +34,10 @@ def validate(*, directory: Path, value: Mapping[str, Any], admission: bool = Fal
         and value.get('provider_mutation_performed') is False, 'owner_correction_authority_invalid')
     if admission:
         moment=time.time() if now is None else now
-        require(not (directory/'revoked.json').exists() and moment < intake.effective_execution_expiry(directory,owner)
-            and moment < value['expires_at_epoch'], 'owner_correction_authority_expired_or_revoked')
+        # Both expiries are reported: the grant can lapse while the owner window is open.
+        require(not (directory/'revoked.json').exists()
+            and moment < note_deadline(intake.effective_execution_expiry(directory,owner))
+            and moment < note_deadline(value['expires_at_epoch']), 'owner_correction_authority_expired_or_revoked')
     return dict(value)
 
 

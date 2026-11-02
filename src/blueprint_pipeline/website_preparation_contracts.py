@@ -8,6 +8,7 @@ from collections.abc import Mapping
 import math
 import re
 
+from .decision_deadlines import note_deadline
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from .website_task_context_contracts import validate_website_task_context
 
@@ -82,6 +83,11 @@ def validate_preparation_authority(*, task_context, authority, now, valid_until=
             raise ValueError("website_preparation_authority_invalid")
         if isinstance(expiry, (int, float)) and not isinstance(expiry, bool):
             current = min(max(expiry, valid_until), expiry + 7 * 86400)
+    # Reported: "still valid now" ends at ``current`` and "issued in the past"
+    # starts 60 s before ``issued``, both with no file changing.
+    note_deadline(current)
+    if isinstance(issued, (int, float)) and not isinstance(issued, bool):
+        note_deadline(issued - 60)
     limits = [
         authority.get(k)
         for k in (

@@ -266,6 +266,83 @@ def test_a_pass_after_the_environment_was_edited_is_not_recorded(site: _Site) ->
     assert site.recorded()["catalog_phase_verdict"]["recorded"] is True
 
 
+def test_a_grant_that_lapses_is_never_served_from_the_cache(site: _Site) -> None:
+    """Review of #3278: a lapsed visual-review grant blocks a full pass.
+
+    Its blocker is not an inactive owner state, so the catalog refuses and every
+    guarded unit stops. A ready verdict stored before the expiry must not let
+    them start after it: the pass reports the expiry it compared with the clock.
+    """
+    from blueprint_pipeline.decision_deadlines import note_deadline
+
+    clock = {"now": time.time()}
+    expires = clock["now"] + 600
+    grant = site.root / "owner" / "visual-review-correction.json"
+    grant.parent.mkdir()
+    grant.write_text(json.dumps({"expires_at_epoch": expires}), encoding="utf-8")
+    real_validate = catalog_module.validate_launch_profile
+
+    def validate(profile):
+        if profile["profile_id"] == "profile-a":
+            value = json.loads(grant.read_text(encoding="utf-8"))
+            if not clock["now"] < note_deadline(value["expires_at_epoch"]):
+                return ["scene_execution_visual_review_correction_invalid"]
+        return real_validate(profile)
+
+    site.monkeypatch.setattr(catalog_module, "validate_launch_profile", validate)
+    site.monkeypatch.setattr(phase_verdict, "_now", lambda: clock["now"])
+    site.recorded()
+
+    clock["now"] = expires - phase_verdict.DEADLINE_MARGIN_SECONDS - 1
+    before = site.run()
+    assert before["status"] == "ready" and _reused(before)
+
+    clock["now"] = expires - phase_verdict.DEADLINE_MARGIN_SECONDS
+    margin = site.run()
+    assert not _reused(margin) and margin["status"] == "ready"
+    assert margin["catalog_phase_verdict"]["miss_reason"] == "decision_deadline_reached"
+
+    clock["now"] = expires
+    after = site.run()
+    assert not _reused(after)
+    assert after["status"] == "blocked"
+    assert any(b.startswith("launch_profile_catalog_not_reconciled") for b in after["blockers"])
+
+
+def test_a_pass_that_reads_the_clock_without_reporting_is_never_recorded(site: _Site) -> None:
+    """A time check that reports no instant could flip unseen, so its pass is not cached."""
+    unreported = {"__name__": "blueprint_pipeline.unreported_expiry_check", "time": time}
+    exec("def still_valid():\n    return time.time() < 4e9\n", unreported)
+    real_validate = catalog_module.validate_launch_profile
+
+    def validate(profile):
+        assert unreported["still_valid"]()
+        return real_validate(profile)
+
+    site.monkeypatch.setattr(catalog_module, "validate_launch_profile", validate)
+
+    report = site.run()
+
+    assert report["status"] == "ready"
+    assert report["catalog_phase_verdict"]["recorded"] is False
+    assert report["catalog_phase_verdict"]["not_recorded_reason"] == (
+        "unrecordable:clock:blueprint_pipeline.unreported_expiry_check.still_valid"
+    )
+    assert time.time is phase_verdict._TIME and time.time_ns is phase_verdict._TIME_NS
+
+
+def test_every_permitted_clock_reader_is_real_and_reports_or_only_stamps() -> None:
+    """The permitted readers are named by function: a rename must not silently widen them."""
+    import importlib
+    import inspect
+
+    for site_name in phase_verdict._CLOCK_SITES:
+        module_name, function_name = site_name.rsplit(".", 1)
+        source = inspect.getsource(getattr(importlib.import_module(module_name), function_name))
+        assert "time.time()" in source, site_name
+        assert "note_deadline(" in source or "created_at_epoch" in source, site_name
+
+
 def test_a_repaired_catalog_is_recorded_only_once_a_pass_finds_it_consistent(site: _Site) -> None:
     site.catalog.unlink()
 

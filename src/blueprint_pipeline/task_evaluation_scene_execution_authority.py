@@ -14,6 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
+from .decision_deadlines import note_deadline
 from .task_evaluation_scene_intake import CLIENTS_ENV, ROOT_ENV, SceneIntakeError, _read
 
 from .task_evaluation_scene_attempt_binding import (
@@ -97,7 +98,8 @@ def scene_execution_authority_blockers(
     moment = time.time() if now is None else now
     from .task_evaluation_scene_execution_window import effective_execution_expiry
     try:
-        expiry = effective_execution_expiry(directory, intent)
+        # Reported: this answer flips at the window's end with no file changing.
+        expiry = note_deadline(effective_execution_expiry(directory, intent))
     except (ValueError, OSError, TypeError):
         return ["scene_execution_owner_window_invalid"]
     if not _positive(expiry) or moment >= expiry:

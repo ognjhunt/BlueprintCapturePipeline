@@ -47,17 +47,24 @@ the key and code, and at most ``MAX_VERDICT_AGE_SECONDS`` old. Anything else
 runs the full pass. The layer is a cache: any failure in it runs the full pass,
 so it can make the guard slower but never stop a unit.
 
-Time is the one input a fingerprint cannot hold. An owner's execution window
-lapses with no file changing, so the served catalog may keep a lapsed profile
-live for up to ``MAX_VERDICT_AGE_SECONDS``. Nothing can spend through that lag:
-the dispatcher re-reads the owner records and refuses a lapsed or revoked owner
-at dispatch. The same bound limits how long a change that raises no audit event
-and no Python ``stat`` (a C library's own reads) can go unseen.
+Time is held explicitly. An owner window, a visual-review grant or a
+preparation grant lapses with no file changing, and a lapsed visual-review grant
+does not merely demote its profile: its blocker fails the whole catalog, so a
+full pass stops every guarded unit. Each such check reports the instant its
+answer flips (``decision_deadlines``); the pass stores the earliest one still
+ahead, and a verdict is not reused from ``DEADLINE_MARGIN_SECONDS`` before it.
+Package code that reads ``time.time`` during the pass without being one of
+those checks (``_CLOCK_SITES``) makes the pass unstorable, so an unreported time
+check cannot hide behind the cache. What remains bounded only by
+``MAX_VERDICT_AGE_SECONDS``: a clock read that bypasses ``time.time`` (a C-level
+``datetime.now``), and a change that raises no audit event and no Python
+``stat`` (a C library's own reads).
 """
 
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import stat
 import sys
@@ -69,6 +76,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .decision_deadlines import collecting_deadlines
 from .production_runtime_import_verdict import _process_started_ns, verdict_key
 from .task_evaluation_release_identity import running_release_commit
 from .validation_file_digests import sha256_file, touched_files
@@ -93,9 +101,25 @@ _DIGESTED_MODULES = (
 #: listener's one-minute cadence it means about four full passes an hour per
 #: unit environment instead of one a minute.
 MAX_VERDICT_AGE_SECONDS = 15 * 60
+#: A verdict is not reused from this long before the earliest grant, authority or
+#: window expiry its pass compared with the clock. A pass takes 12-40 s on the
+#: host, so a start just inside the margin still decides on the same side of the
+#: expiry as the stored pass did, and the starts after it run the full pass.
+DEADLINE_MARGIN_SECONDS = 120
 #: One verdict per guarded unit environment and release; keep two releases' worth.
 RETAINED_VERDICTS = 12
+#: Package code that may read ``time.time`` during a stored pass: each reports the
+#: instant its answer flips through ``decision_deadlines``, or only stamps a record.
+_CLOCK_SITES = frozenset(
+    {
+        f"{PACKAGE}.task_evaluation_scene_execution_authority.scene_execution_authority_blockers",
+        f"{PACKAGE}.task_evaluation_visual_review_authority.validate",
+        # Stamps ``created_at_epoch`` on an input-digest cache entry; decides nothing.
+        f"{PACKAGE}.validation_verdict_store.store",
+    }
+)
 _ABSENT = "absent"
+_MISSING = object()
 # Kernel pseudo-files are live state, never a published input.
 _PSEUDO_ROOTS = ("/proc/", "/sys/", "/dev/")
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
@@ -119,6 +143,8 @@ _OPAQUE_EVENTS = frozenset(
 )
 _STAT = os.stat
 _LSTAT = os.lstat
+_TIME = time.time
+_TIME_NS = time.time_ns
 
 _ACTIVE: _Capture | None = None
 _HOOK_INSTALLED = False
@@ -156,6 +182,8 @@ class _Capture:
     sys_path: list[list[Any]] = field(default_factory=list)
     paths: dict[str, Any] = field(default_factory=dict)  # path -> identity at first touch
     listings: dict[str, Any] = field(default_factory=dict)  # directory -> names at first listing
+    deadlines: list[float] = field(default_factory=list)  # instants reported by time checks
+    started_at: float = 0.0
     refusal: str = ""
 
     def refuse(self, reason: str) -> None:
@@ -352,6 +380,23 @@ def _recorded_open(original: Callable[..., Any]) -> Callable[..., Any]:
     return opened
 
 
+def _recorded_clock(original: Callable[..., Any]) -> Callable[..., Any]:
+    """``time.time``/``time.time_ns``: package code reading the clock must report its deadline."""
+
+    def clock(*args: Any, **kwargs: Any) -> Any:
+        capture = _ACTIVE
+        if capture is not None and not getattr(_BUSY, "on", False):
+            caller = sys._getframe(1)
+            module = str(caller.f_globals.get("__name__") or "")
+            if module == PACKAGE or module.startswith(PACKAGE + "."):
+                site = f"{module}.{caller.f_code.co_name}"
+                if site not in _CLOCK_SITES:
+                    capture.refuse(f"unrecordable:clock:{site}")
+        return original(*args, **kwargs)
+
+    return clock
+
+
 def _start(scope: PhaseScope) -> _Capture:
     global _HOOK_INSTALLED
     if not _HOOK_INSTALLED:
@@ -359,7 +404,7 @@ def _start(scope: PhaseScope) -> _Capture:
         _HOOK_INSTALLED = True
     root = str(verdict_root())
     ignored = tuple(dict.fromkeys((os.path.abspath(root), os.path.realpath(root))))
-    capture = _Capture(scope=scope, key=_key(scope), ignored=ignored)
+    capture = _Capture(scope=scope, key=_key(scope), ignored=ignored, started_at=_now())
     capture.profile_dir = _directory_snapshot(_expanded(scope.profile_dir))
     capture.catalog = _identity(_expanded(scope.catalog_path))
     capture.sys_path = _sys_path_listings()
@@ -384,14 +429,16 @@ def capturing(scope: PhaseScope | None) -> Iterator[_Capture | None]:
     if capture is None:
         yield None
         return
-    saved = (os.stat, os.lstat, os.open)
+    saved = (os.stat, os.lstat, os.open, time.time, time.time_ns)
     os.stat, os.lstat, os.open = _recorded_stat(saved[0]), _recorded_stat(saved[1]), _recorded_open(saved[2])
+    time.time, time.time_ns = _recorded_clock(saved[3]), _recorded_clock(saved[4])
     _ACTIVE = capture
     try:
-        yield capture
+        with collecting_deadlines() as capture.deadlines:
+            yield capture
     finally:
         _ACTIVE = None
-        os.stat, os.lstat, os.open = saved
+        os.stat, os.lstat, os.open, time.time, time.time_ns = saved
 
 
 def _entry_unsafe(path: Path) -> str:
@@ -432,6 +479,11 @@ def _payload(stored: Any) -> dict[str, Any] | None:
         return None
     stored_at = stored.get("stored_at_epoch")
     if isinstance(stored_at, bool) or not isinstance(stored_at, (int, float)):
+        return None
+    deadline = stored.get("decision_deadline_epoch", _MISSING)
+    if deadline is _MISSING or (deadline is not None and (
+        isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)
+    )):
         return None
     for rows in (stored.get("paths"), stored.get("listings"), stored.get("sys_path"),
                  stored.get("code_files")):
@@ -476,8 +528,12 @@ def _reuse(scope: PhaseScope) -> tuple[dict[str, Any] | None, str]:
     payload = _payload(stored)
     if payload is None:
         return None, "entry_stale_or_invalid"
-    if not 0 <= _now() - float(payload["stored_at_epoch"]) <= MAX_VERDICT_AGE_SECONDS:
+    now = _now()
+    if not 0 <= now - float(payload["stored_at_epoch"]) <= MAX_VERDICT_AGE_SECONDS:
         return None, "expired"
+    deadline = payload["decision_deadline_epoch"]
+    if deadline is not None and now >= float(deadline) - DEADLINE_MARGIN_SECONDS:
+        return None, "decision_deadline_reached"
     moved = _moved(payload, scope)
     if moved:
         return None, moved
@@ -589,6 +645,10 @@ def _record(capture: _Capture, phases: Mapping[str, Mapping[str, Any]]) -> str:
         "listings": [[path, names] for path, names in sorted(capture.listings.items())],
         "sys_path": capture.sys_path,
         "code_files": [[path, _identity(path)] for path in sources],
+        # The earliest instant ahead at which a time check of this pass flips.
+        "decision_deadline_epoch": min(
+            (instant for instant in capture.deadlines if instant > capture.started_at), default=None
+        ),
         "stored_at_epoch": _now(),
     }
     written = store(
@@ -613,6 +673,7 @@ def record(capture: _Capture | None, phases: Mapping[str, Mapping[str, Any]]) ->
 
 
 __all__ = [
+    "DEADLINE_MARGIN_SECONDS",
     "MAX_VERDICT_AGE_SECONDS",
     "PHASES",
     "PhaseScope",
