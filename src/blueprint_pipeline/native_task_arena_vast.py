@@ -609,6 +609,8 @@ def run_native_task_arena_policy_canary_session_vast(
     # Screening planning reads these same filters to refuse a floor this lane cannot rent.
     hardware = policy_canary_session_offer_hardware(memory_floor)
     validated_environment = _validated_policy_provider_runtime_environment(provider_runtime_environment)
+    from .beta_screening_control_delivery import runtime_control_ready_for_authority
+    runtime_control_ready = runtime_control_ready_for_authority(authority=authority, execute=execute)
     from .native_task_arena_paired_witness_staging import build_paired_witness_binding
     # A beta attempt contains one candidate. The paired intermediate-delivery
     # slot reads both frozen specs and is only meaningful for the ADP pair.
@@ -698,6 +700,7 @@ def run_native_task_arena_policy_canary_session_vast(
             from .cosmos_droid_bundle import transfer_byte_budget
             download_bytes, upload_bytes = transfer_byte_budget(prepared_bundle)
         result = run_arena_native_control_vast(
+            **({"runtime_control_ready": runtime_control_ready} if runtime_control_ready is not None else {}),
             pre_provider_mutation_hook=owner_pre_create if "scene_execution_owner" in authority else None,
             approval_path=".",
             job_dir=job_dir,
