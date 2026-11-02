@@ -244,8 +244,10 @@ enqueues it at the WebApp. The intake then charges every sibling's holds against
 capture's original caps. A WebApp refusal (for example
 `website_scene_preparation_budget_exhausted`) is a typed `blocked` outcome
 recorded in `reissue.json`. It runs as `blueprint` under the production runtime guard
-and writes under `/var/lib/blueprint`. It is not in the dispatcher-hold-only
-profile.
+and writes under `/var/lib/blueprint`. The owner approved it for the
+dispatcher-hold-only profile on 2026-11-02 ("approve adding preparation-reissue
+to the operator door's restricted profile"): it acts only on a grant the owner
+renewed and buys nothing.
 
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
