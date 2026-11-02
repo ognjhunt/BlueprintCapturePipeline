@@ -62,8 +62,8 @@ identify which stages the measured filesystem can actually block. These
 projections do not replace each worker's atomic disk reservation.
 
 `storage_class_over_budget` (page) names a storage class the usage survey
-measured above its byte budget (`release` 15, `cache` 20, `work` 10,
-`unclassified` 5 GiB; `BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB` overrides them).
+measured above its byte budget (`release` 15, `cache` 20, `work` 25,
+`unclassified` 30 GiB; `BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB` overrides them).
 Something in that class grows with no cap. Read `usage.top_roots` and
 `usage.top_owners` for the class, then decide its retention; the alert itself
 changes nothing.

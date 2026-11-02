@@ -84,9 +84,12 @@ USAGE_PROJECTED_UNCLASSIFIED_ROOTS = 20
 #: is a lower bound, so a class it measures above budget really is above it;
 #: below budget it proves nothing. Alerting only: nothing is reclaimed.
 #: ``BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB`` overrides them as
-#: ``release=15,cache=20``; ``0``/``off`` turns the budgets off.
+#: ``release=15,cache=20``; ``0``/``off`` turns the budgets off. ``work`` and
+#: ``unclassified`` start above what they held on 2026-11-02 (16.4 and 24.4 GiB),
+#: so the page means new growth, not the backlog awaiting the owner's retention
+#: decisions; tighten them (10 and 5) once that backlog is offloaded.
 CLASS_BUDGETS_ENV = "BLUEPRINT_CAPACITY_CLASS_BUDGETS_GIB"
-DEFAULT_CLASS_BUDGETS_GIB: Mapping[str, int] = {"release": 15, "cache": 20, "work": 10, "unclassified": 5}
+DEFAULT_CLASS_BUDGETS_GIB: Mapping[str, int] = {"release": 15, "cache": 20, "work": 25, "unclassified": 30}
 RESIZE_RECEIPT_SCHEMA_VERSION = "control_plane_volume_resize_receipt.v1"
 DEFAULT_REPORT_ROOT = Path("/var/lib/blueprint/pipeline-control-plane/capacity")
 DEFAULT_RELEASE_RETIREMENT_SUMMARY = Path(

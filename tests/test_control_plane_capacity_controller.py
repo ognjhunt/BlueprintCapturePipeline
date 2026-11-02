@@ -1199,25 +1199,26 @@ def test_large_container_runtime_store_warns_by_name() -> None:
 def test_a_storage_class_over_its_byte_budget_pages(monkeypatch):
     """2026-11-02: work and unclassified grew with no cap; a budget makes that a page."""
     monkeypatch.delenv(cap.CLASS_BUDGETS_ENV, raising=False)
-    by_class = [{"storage_class": "work", "allocated_bytes": 17_595_211_776},
-                {"storage_class": "unclassified", "allocated_bytes": 5 * GIB},  # at budget: quiet
+    # Today's backlog sits below the defaults (16.4 and 24.4 GiB); new growth past them pages.
+    by_class = [{"storage_class": "work", "allocated_bytes": 27_595_211_776},
+                {"storage_class": "unclassified", "allocated_bytes": 30 * GIB},  # at budget: quiet
                 {"storage_class": "release", "allocated_bytes": 4096},
                 {"storage_class": "scene_workspace", "allocated_bytes": 27_139_760_128}]  # no budget
     survey = _survey_result(by_class=by_class, byte_accounting="current_snapshot_lower_bound")
     alerts = cap.usage_alerts(survey)
     assert alerts == [{"code": "storage_class_over_budget", "storage_class": "work",
-                       "allocated_bytes": 17_595_211_776, "budget_bytes": 10 * GIB,
+                       "allocated_bytes": 27_595_211_776, "budget_bytes": 25 * GIB,
                        "byte_accounting": "current_snapshot_lower_bound"}]
     cap._annotate_alerts(alerts)
     assert alerts[0]["severity"] == "page"
     summary = cap.capacity_summary({"alerts": alerts, "level": "warning"})
     assert summary["alerts"][0]["storage_class"] == "work"
-    assert summary["alerts"][0]["budget_bytes"] == 10 * GIB
+    assert summary["alerts"][0]["budget_bytes"] == 25 * GIB
 
 
 def test_class_budgets_come_from_the_environment():
     defaults = {name: gib * GIB for name, gib in cap.DEFAULT_CLASS_BUDGETS_GIB.items()}
-    assert defaults == {"release": 15 * GIB, "cache": 20 * GIB, "work": 10 * GIB, "unclassified": 5 * GIB}
+    assert defaults == {"release": 15 * GIB, "cache": 20 * GIB, "work": 25 * GIB, "unclassified": 30 * GIB}
     assert cap.class_budgets({}) == (defaults, False)
     assert cap.class_budgets({cap.CLASS_BUDGETS_ENV: "work=40, cache=25"}) == (
         {"work": 40 * GIB, "cache": 25 * GIB}, False)
