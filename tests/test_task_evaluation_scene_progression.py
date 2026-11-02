@@ -400,3 +400,24 @@ def test_catch_all_refusal_records_its_outcome_and_a_sealed_one_stops_new_execut
     assert engine.process_scene_intents(config_path=config)["results"][0] == ended
     status = intake.scene_intent_status(queue_root=directory.parent, intent_id=directory.name)
     assert status["status"] == "blocked" and status["outcome"] == sealed
+
+
+def test_refusal_reasons_reach_the_run_result_but_not_the_recorded_blocker(context, monkeypatch):
+    """The journal shows why a refusal held; progression keeps only its stable code."""
+    config = configuration(context, monkeypatch)
+    directory = context[0]["intent_path"].parent
+
+    def refuse(*args, **kwargs):
+        raise ValueError("scene_progression_recovery_provider_zero_required:"
+                         "gpu_inventory_missing:vast;gpu_spend_guard_stale;/var/lib/blueprint/x.json;Free Text")
+
+    monkeypatch.setattr(engine, "_source", refuse)
+    row = engine.process_scene_intents(config_path=config)["results"][0]
+    assert row["blockers"] == ["scene_progression_recovery_provider_zero_required"]
+    assert row["blocker_detail"] == ["gpu_inventory_missing:vast", "gpu_spend_guard_stale"]
+    recorded = json.loads((directory / "progression.json").read_text())
+    assert recorded["blockers"] == ["scene_progression_recovery_provider_zero_required"]
+    assert "blocker_detail" not in json.dumps(recorded)
+    monkeypatch.setattr(engine, "_source", lambda *a, **kw: (_ for _ in ()).throw(
+        ValueError("scene_progression_recovery_provider_zero_required")))
+    assert "blocker_detail" not in engine.process_scene_intents(config_path=config)["results"][0]
