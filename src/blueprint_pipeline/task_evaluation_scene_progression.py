@@ -867,6 +867,23 @@ def _advance_intent(directory, intent, config, release, *, resolver, publisher, 
     return emit("awaiting_execution", "preparation_complete")
 
 
+def _blocker_detail(exc):
+    """The reason codes after a refusal's stable code, for the run result only.
+
+    The recorded blocker keeps just the stable code, so an unchanged refusal
+    never rewrites progression and the website sees the same blocker. The run
+    result the service prints to its journal also carries the reasons: on
+    2026-11-02 a recovery refused while a deploy paused the spend guard showed
+    only ``recovery_provider_zero_required``, not ``gpu_spend_guard_stale``.
+    Only identifier-like reasons are kept, so a path or free text never
+    reaches the journal.
+    """
+    _, _, rest = str(exc).partition(":")
+    reasons = [part for part in rest.split(";") if part]
+    return [part for part in reasons
+            if len(part) <= 120 and all(c.islower() or c.isdigit() or c in "_:.-" for c in part)][:16]
+
+
 @scene_participant('config_path')
 def process_scene_intents(*, config_path, source_resolver=None, publisher=None, submitter=None,
                           status_reader=None, activation_provisioner=None, now=None, only_intent_id=None):
@@ -930,6 +947,7 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                 from .agent_execution.supervision_producer import best_effort_register_run_supervision
                 best_effort_register_run_supervision(intent=intent, directory=directory,
                     source_commit=release["source_commit"])
+                detail = []
                 try:
                     # Operational heartbeat only: the factory and prefix selector report
                     # step, elapsed time and bytes hashed here; no gate reads this file.
@@ -947,11 +965,13 @@ def process_scene_intents(*, config_path, source_resolver=None, publisher=None, 
                     code = str(exc).split(":", 1)[0] if isinstance(exc, ValueError) else "scene_progression_dependency_unavailable"
                     if not code or not all(c.islower() or c.isdigit() or c == "_" for c in code):
                         code = "scene_progression_dependency_unavailable"
+                    detail = _blocker_detail(exc) if isinstance(exc, ValueError) else []
                     progress = advance(directory, intent, progress, status="blocked", phase="preparation",
                         state=failure_state, blockers=[code], now=moment)
                     settle_outcome(directory, intent, progress, now=moment)
                 rows.append({"intent_id": directory.name, "status": progress["status"], "phase": progress["phase"],
                              "blockers": progress.get("blockers", []),
+                             **({"blocker_detail": detail} if detail else {}),
                              **({"source_binding": progress["state"]["source_binding"]}
                                 if (progress.get("state") or {}).get("source_binding") else {}),
                              "progression_digest": progress["progression_digest"]})
