@@ -7,7 +7,7 @@ Status: **done** (verified, with evidence) · **in progress** · **owner** (wait
 on an owner decision or action) · **next deploy** (merged, ships with the next
 batched Pipeline deploy) · **not started**.
 
-Last updated: 2026-11-02 14:45Z.
+Last updated: 2026-11-02 15:20Z. WebApp live at `475297b63` (deployed 15:06Z; `/health/ready` 0 blockers).
 
 ## Operating notes (2026-11-02)
 
@@ -45,6 +45,10 @@ onto paid Actions minutes).
 | A-03 | owner | WebApp #1168 merged 14:04Z (deploy pending CI). capture-447 still needs the D-02 ceiling row ($110) before its screening plan can fit. |
 | A-04 | not started | Host has never created the team-scene-packet status or rigid-probe roots. |
 | A-05 | not started | Pre-flight (read-only):
+- The 10-26 canary's 8.4 GB output failed its single signed PUT (probably the 5 GB single-upload limit). The automatic pinned-SSH fallback (`vast_provider_output_recovery`, 900 s) covers the screening lane. Multipart upload remains a SHOULD.
+- Fixed: candidate order. [#3260](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3260) (D-20) funds π0.5-DROID, Cosmos3-Edge-DROID and GR00T-N1.7-DROID first when there is no intake ranking.
+- Fixed: the job ceiling's native over-count. WebApp [#1184](https://github.com/ognjhunt/Blueprint-WebApp/pull/1184) bounds it by the budget the Pipeline enforces; it had counted about $361 against a $70 cap.
+- Still open: ingest needs a confirmed `siteTaskBriefs/<job>`, and root has only 4.58 GB of headroom for screening attempt folders. |
 - The 10-26 canary's 8.4 GB output failed its single signed PUT (HTTP 400, probably the 5 GB single-upload limit). There is still no multipart upload, and screening uses the same path (about 4.2 GB per candidate).
 - With no ranking file the plan picks Cosmos3-Edge, GR00T and MolmoAct2-YAM ($12 of $15). π0.5, the one policy proven in production, is fifth.
 - WebApp #1168 counts the sum of every attempt's maximum, so a job with many retries leaves $0 for screening (fix: B-04).
@@ -62,7 +66,7 @@ onto paid Actions minutes).
 | B-04 | owner | Accounting policy change; needs owner approval once implemented. |
 | B-05 | not started | |
 | B-06 | not started | |
-| B-07 | not started | `door status` 13:19Z: internal ledger $165.55; billing reconciled DigitalOcean $325.38 + Vast $455.88. |
+| B-07 | not started | `door status` 13:19Z: internal ledger $165.55; billing reconciled DigitalOcean $325.38 + Vast $455.88. The spend guard's RunPod inventory call succeeds (no errors in its journal over the last hour), so the audit's "1,065 failing RunPod calls a day" does not reproduce there; its source is unknown. |
 | B-08 | not started | |
 
 ## C. Unattended operation
@@ -84,7 +88,7 @@ onto paid Actions minutes).
 | D-01 | next deploy | #3226 merged 14:0xZ (stall paging on the capacity alert route; D-12 approved by delegation). Follow-up: page daily on cap exhaustion. |
 | D-02 | in progress | WebApp [#1176](https://github.com/ognjhunt/Blueprint-WebApp/pull/1176) merged: the external uptime probe also checks the door `/healthz`. Pending: the WebApp deploy, then a manual deploy of the `blueprint-uptime-probe` Render cron (`autoDeploy: false`). Capacity-tick freshness is a follow-up. |
 | D-03 | not started | |
-| D-04 | next deploy | Root cause: `run_chain` stores `EnvironmentFiles` as tuples, so `json.loads(raw) != report` on every run (journal 13:22:46Z: `preflight_report_bytes_mismatch`) and `door status` shows `preflight: refused`. Fix: [#3249](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3249). Triage of the 186–193 blockers starts once the summary is published. |
+| D-04 | done | [#3249](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3249) is in the active release (`b631b23fa`, deployed 14:05Z by the cloud session). Root cause: `run_chain` stored tuples, so `json.loads(raw) != report` on every run. Triage of the preflight's blockers starts once the summary is published. |
 | D-05 | not started | `door status` 13:19Z: `due_backlog` 1, oldest 4.5 days, not overloaded. |
 | D-06 | not started | `door status` 13:19Z: 206 failed units. |
 | D-07 | owner | Needs the on-call backup's name (D-24). |
@@ -100,18 +104,22 @@ onto paid Actions minutes).
 | E-03 | not started | |
 | E-04 | owner | Credential rotation (G-05). |
 | E-05 | not started | |
-| E-06 | not started | |
+| E-06 | in progress | Both nightly Full Test Lane failures since 2026-11-01 are fixed on main: the control-plane import leak through `paid_provider_job_scope` ([#3261](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3261)), and the door's G1 contract refusing the new `stance_reach` assumption ([#3263](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3263), issue #2236; takes effect at the next `upgrade-door`). Next: 7 green nightlies, and a documented beta deploy gate. |
 | E-07 | not started | |
 
 ## F. Website: result delivery, truthfulness, journey
 
 | ID | Status | Evidence / next step |
 |---|---|---|
-| F-01 | in progress | WebApp #1179 (one email per terminal screening outcome) is in review. |
-| F-02 | done | `taskEvaluationPolicyRuns(job_evidence_binding.job_id, created_at_iso desc)` is READY in `blueprint-8c1ca` (gcloud, 14:00Z). Website scene-intake queries are equality-only. 17 declared indexes in `firestore.indexes.json` were never deployed. Created the one a live website page needs, `creatorCaptures(creator_id, created_at desc)` for `CapturerAccount` → `/v1/creator/captures`; READY 14:10Z. The rest serve ops, growth and payout routes and are left for H-03. |
+| F-01 | done | WebApp [#1179](https://github.com/ognjhunt/Blueprint-WebApp/pull/1179) is live: one deduplicated email per terminal screening outcome (estimate, reference_only, held, infeasible, no_match). It re-checks the page at dispatch, is cancelled on consent withdrawal, and carries the simulation disclaimer. No backfill (0 production campaigns). |
+| F-02 | done | The job-evidence index is READY. Created `creatorCaptures(creator_id, created_at desc)` (READY 14:10Z) for the website's capturer page. 16 other declared indexes serve ops, growth and payout routes and were never deployed (H-03). |
 | F-03 | done | WebApp [#1177](https://github.com/ognjhunt/Blueprint-WebApp/pull/1177) merged and deployed (`ba27cd6e4`, 14:33Z): one sentence per outcome on both the headline and the body; reference-only runs are not called estimates; no raw codes, budgets or operator text reach sites; exhausted allowances now read as ended (the prefix bug). Follow-up: the `footage_before_account` email promises "We email you when that changes". |
 | F-04 | in progress | WebApp #1181 merged: the default intake cap is 5 a day. **Owner checks:** Render must not pin `BLUEPRINT_INTAKE_DAILY_LIMIT=50`. The allowlist needs the invitee list. App Check `monitor` needs `VITE_FIREBASE_APPCHECK_SITE_KEY`. |
-| F-05 … F-11 | not started | |
+| F-05 | not started | |
+| F-06 | not started | |
+| F-07 | done (mitigated) | WebApp #1068 (10-18) accepts footage only for a saved job, so a new guest upload cannot strand mid-run. Old guest jobs get one `footage_before_account` email; the first five were sent 14:05–14:08Z, all to the owner's test jobs. |
+| F-08 | in progress | WebApp [#1185](https://github.com/ognjhunt/Blueprint-WebApp/pull/1185) documents the 10 website-beta settings in `render.optional.env.example`. Readiness checks are a follow-up. |
+| F-09 … F-11 | not started | |
 
 ## G. Privacy, rights, legal
 
@@ -128,5 +136,5 @@ onto paid Actions minutes).
 | ID | Status | Evidence / next step |
 |---|---|---|
 | H-01 | not started | |
-| H-02 | done | 126 PRs and 3 issues closed (owner-authorized D-23), each with one comment; 10 already merged and skipped; #2245 and #443 marked stale. Closing disarmed auto-merge on WebApp #858 and Pipeline #1348, #1462 and #116. All of it is reversible. |
+| H-02 | done | 126 PRs and 3 issues closed (D-23). Also: WebApp #1142 was carried as #1178; #1103 was closed as superseded (main no longer caps Atlas requests, per the owner's 10-30 decision). #3051 is a 59-file tangle that overlaps #3042, so it is left open; its core, truthful worker status, already shows in `door status`. |
 | H-03, H-04 | not started | |
