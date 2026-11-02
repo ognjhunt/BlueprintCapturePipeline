@@ -1054,23 +1054,13 @@ def _build_scene_configuration_context(
     }
     _owner_attempt(operations, "config", activation_request, preparation_request, activation_root)
     if operations.get("scene_owner_attempt"):
-        from .task_evaluation_partial_astra_transport import (
-            PartialAstraTransportError,
-            select_partial_astra_source,
-        )
+        from .task_evaluation_artisan_continuation import StageThreeContinuationError, select_stage_three_continuation
         try:
-            selection = select_partial_astra_source(
-                owner_attempt_path=operations["scene_owner_attempt"], envelope=construction_value,
-                output_root=activation_root / "partial_astra_successor",
-                activation_request=activation_request if created_storage_pins is not None else None,
-                activation_root=activation_root,
-                on_pin_created=created_storage_pins.append if created_storage_pins is not None else None)
-        except PartialAstraTransportError as exc:
-            # This typed error contains a fixed predicate code, never artifact
-            # contents. Preserve it in the activation receipt for saved-input replay.
+            select_stage_three_continuation(operations, envelope=construction_value, activation_root=activation_root,
+                activation_request=activation_request, created_storage_pins=created_storage_pins)
+        except StageThreeContinuationError as exc:
+            # A fixed predicate code, never artifact contents; kept for saved-input replay.
             raise TaskEvaluationLaunchActivationWorkerError(str(exc)) from exc
-        if selection is not None:
-            operations["partial_astra_successor_selection"] = str(selection)
     return {
         "schema_version": (
             "task_evaluation_scene_configuration_launch_preparation_context.v1"

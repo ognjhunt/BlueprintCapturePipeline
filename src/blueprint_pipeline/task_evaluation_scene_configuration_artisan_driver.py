@@ -113,6 +113,33 @@ def _component_result(stage_input, request, paths):
     return result
 
 
+def _restore_continuation(envelope, runtime, request):
+    """Restore a selected source's upstream workspace before this run writes anything.
+
+    Returns the verified descriptor, or ``None`` when the bundle carries no
+    continuation. The upstream CLI's ``resume`` then continues the source's
+    run at its saved phase (``task_evaluation_artisan_continuation``).
+    """
+    value = envelope.get("artisan_continuation")
+    if value is None:
+        return None
+    from .task_evaluation_artisan_continuation import restore_artisan_continuation
+    if envelope.get("partial_astra_successor") is not None:
+        raise ValueError("artisan_continuation_conflicting_partial_astra")
+    records = {}
+    for name in ("descriptor", "runtime_archive"):
+        row = value[name]
+        path = Path(row["materialized_path"])
+        actual = file_record(path)
+        require(actual["sha256"] == row.get("sha256", row.get("digest")) and actual["size_bytes"] == row.get("size_bytes"),
+                "artisan_continuation_transport_file_changed")
+        records[name] = path
+    descriptor = read_json(records["descriptor"])
+    restore_artisan_continuation(descriptor=descriptor, archive_path=records["runtime_archive"], runtime_root=runtime,
+                                 verified_lineage=value["verified_lineage"], successor_run_id=request["run_id"])
+    return descriptor
+
+
 def execute_artisan_component(*, environment=None, runner=run_controller,
                               cost_gate_factory=scene_configuration_openai_stage_gate):
     values = dict(os.environ if environment is None else environment)
@@ -149,6 +176,7 @@ def _execute(values, output, runner, cost_gate_factory):
             and disclosure.get("provider_training") is False
             and disclosure.get("public_redistribution") is False, "artisan_disclosure_not_admitted")
     runtime = output / "artisan_runtime"
+    continuation = _restore_continuation(envelope, runtime, request)
     runtime.mkdir(exist_ok=True)
     request_path = runtime / "blueprint_request.v1.json"
     if request_path.exists():
@@ -213,10 +241,20 @@ def _execute(values, output, runner, cost_gate_factory):
     parent_manifest, _ = _validate_toolchain(root=toolchain, expected_source_commit=stage_input["source_commit"])
     require(parent_manifest["toolchain_digest"] == stage_input["toolchain_digest"] and package.is_relative_to(toolchain),
             "artisan_parent_toolchain_binding_changed")
-    effective_cap = min(frozen_authoring_cap(configuration),
-        float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD"]),
-        float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"]))
+    cumulative_cap = frozen_authoring_cap(configuration)
+    allocation = min(float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_CONTENT_AGENTS_MAX_COST_USD"]),
+                     float(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_COST_USD"]))
+    effective_cap = min(cumulative_cap, allocation)
     require(effective_cap > 0, "artisan_signed_stage_allocation_missing")
+    # A continued source's spend counts against the cumulative cap; this attempt
+    # may meter and reserve only the remainder (task_evaluation_artisan_continuation).
+    adoption = None
+    if continuation is not None:
+        from .task_evaluation_artisan_continuation import adopt_artisan_continuation
+        adoption = adopt_artisan_continuation(descriptor=continuation, runtime_root=runtime, request=request,
+                                              cumulative_cap=cumulative_cap, attempt_allocation=allocation)
+    attempt_cap = adoption["increment_usd"] if adoption is not None else effective_cap
+    upstream_cap = adoption["upstream_cap_usd"] if adoption is not None else effective_cap
     deadline = min(float(values[STAGE_DEADLINE_EPOCH_ENV]),
                    float(values.get(PARENT_DEADLINE_EPOCH_ENV) or values[STAGE_DEADLINE_EPOCH_ENV])) - 600
     scope = scene_configuration_openai_stage_scope(values, stage="content_agents")
@@ -233,12 +271,13 @@ def _execute(values, output, runner, cost_gate_factory):
     system_reads = ("/usr", "/bin", "/lib", "/lib64", "/etc/fonts", "/etc/ld.so.cache", "/etc/localtime", "/proc/self")
     require(not any(key_path.is_relative_to(Path(p).resolve()) for p in [str(workspace), *read_roots, *system_reads]),
             "artisan_credential_inside_generated_read_root")
-    upstream_run_id = "pl_" + request["request_digest"][7:39]
+    upstream_run_id = (continuation["source_upstream_run_id"] if continuation is not None
+                       else "pl_" + request["request_digest"][7:39])
     generated_workspace = workspace / "data/cache/runs" / upstream_run_id / "workspace"
     terminal_file = runtime / "terminal.v1.json"
     context = {"workspace": str(workspace), "upstream_run_id": upstream_run_id,
         "usage_file": str(runtime / "blueprint_usage.json"),
-        "maximum_cost_usd": effective_cap, "maximum_requests": int(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS"]),
+        "maximum_cost_usd": attempt_cap, "maximum_requests": int(values["BLUEPRINT_SCENE_CONFIGURATION_OPENAI_MAX_REQUESTS"]),
         "deadline_epoch": deadline, "api_key_file": scope["api_key_file"], "terminal_file": str(terminal_file),
         "project_id": values.get("OPENAI_PROJECT_ID"),
         "object_kind": "articulated_assembly" if configuration["schema_version"].startswith("articulated_") else "rigid_body",
@@ -291,10 +330,10 @@ def _execute(values, output, runner, cost_gate_factory):
             argv += ["run", "--prompt-file", str(prompt_path), "--run-id", upstream_run_id]
             for frame in frames:
                 argv += ["--image", str(frame)]
-        argv += ["--workspace", str(workspace), "--max-cost-usd", str(effective_cap), "--provider", "openai"]
+        argv += ["--workspace", str(workspace), "--max-cost-usd", str(upstream_cap), "--provider", "openai"]
         gate = cost_gate_factory(environment=values, stage="content_agents", run_id=stage_input["run_id"],
             request_digest=file_record(input_path)["sha256"], candidate_digest=request["source_candidate"]["digest"],
-            output_root=runtime / "official_openai_cost", max_cost_usd=effective_cap)
+            output_root=runtime / "official_openai_cost", max_cost_usd=attempt_cap)
         if gate.reservation_path.exists():
             gate._validated_reservation()
         else:
