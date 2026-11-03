@@ -288,12 +288,16 @@ def test_accuracy_target_is_independent_of_dollars_which_only_refuse(tmp_path, m
                                    output_root=tmp_path / "pose-low")
 
 
-@pytest.mark.parametrize("left_out", [
-    {"excluded_frame_ids": ["1"]},
+@pytest.mark.parametrize("left_out, options", [
+    ({"excluded_frame_ids": ["1"]}, {}),
     # On the direct path a frame showing a person is never posed as captured.
-    {"transient_frame_ids": ["1"]},
+    ({"transient_frame_ids": ["1"]}, {}),
+    # Nor on a geometry-only job, which edits nothing even when its plan would remove the subject.
+    ({"transient_frame_ids": ["1"], "automation": {"objects": [{"disposition": "remove"}]}},
+     {"exclude_transients": True}),
 ])
-def test_frames_the_review_excluded_inside_a_still_interval_never_become_candidates(tmp_path, monkeypatch, left_out):
+def test_frames_the_review_excluded_inside_a_still_interval_never_become_candidates(tmp_path, monkeypatch, left_out,
+                                                                                    options):
     from PIL import Image
     from blueprint_pipeline import atlas_privacy_screen as screen
     from blueprint_pipeline.local_reconstruction_adapters import _sha256_file
@@ -325,7 +329,7 @@ def test_frames_the_review_excluded_inside_a_still_interval_never_become_candida
                         lambda **kw: candidates.append([f["frame_id"] for f in kw["frames"]]) or ([0, 1], []))
     monkeypatch.setattr(screen, "blur_faces", lambda image: (image, []))
     video.prepare_video_inputs(survey_path=survey_root / "atlas_video_survey.json", review=review,
-                               output_root=tmp_path / "pose")
+                               output_root=tmp_path / "pose", **options)
     assert candidates == [["0", "2"]]
     selection = json.loads((tmp_path / "pose" / "atlas_view_selection.json").read_text())
     assert [frame["frame_id"] for frame in selection["frames"]] == ["0", "2"]
