@@ -64,7 +64,9 @@ STAGES: Mapping[str, Mapping[str, Any]] = {
         "queue": "team-scene-packets", "success_status": "completed",
         "retryable_blocker_prefixes": ("team_scene_packet_failed:OSError:", "team_scene_packet_failed:MemoryError"),
         "output_leaf": "scene",
-        "phase_seconds": {"fetch": 600, "seal_upload": 600},
+        # Plan 14's fetch and seal/upload phases; the compile keeps the rest (2700 s of a 3600 s task): the host's
+        # killed attempts of capture-447ae4f4 had run 9 to 23 minutes.
+        "phase_seconds": {"fetch": 300, "seal_upload": 420},
         # The whole tree lands (about three logical copies of the collider and appearance, hard-linked); 4 GiB
         # keeps the worst case of a 4 vCPU, 16 GiB, 3600 s attempt at $0.8544 under a $1 attempt cap.
         "max_output_bytes": 4 * GIB,

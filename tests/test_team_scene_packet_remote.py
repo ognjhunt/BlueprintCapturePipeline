@@ -59,7 +59,7 @@ def test_a_remote_compile_is_byte_identical_to_the_host_compile(tmp_path: Path, 
 
     world = TeamRemoteWorld(tmp_path / "remote", config=host.config)
     descriptor = world.descriptor(plan, mode="shadow")
-    assert descriptor["limits"]["phase_seconds"] == {"fetch": 600, "stage": 2220, "seal_upload": 600}
+    assert descriptor["limits"]["phase_seconds"] == {"fetch": 300, "stage": 2700, "seal_upload": 420}
     assert descriptor["limits"]["max_output_bytes"] == 4 * 1024**3
     environ = world.environ(descriptor)
     # The worker's /var/lib/blueprint starts empty: every host path moves aside while it runs.

@@ -56,7 +56,7 @@ def test_its_limits_come_from_the_config_entry_within_the_contract_maxima() -> N
     assert {name: limits[name] for name in ("vcpu", "memory_bytes", "task_timeout_seconds")} == {
         "vcpu": 4, "memory_bytes": 16 * GIB, "task_timeout_seconds": 3600}
     # The stage phase takes the configured timeout's remainder after fetch, seal/upload and the margin.
-    assert limits["phase_seconds"] == {"fetch": 600, "stage": 3600 - 600 - 600 - 180, "seal_upload": 600}
+    assert limits["phase_seconds"] == {"fetch": 300, "stage": 3600 - 300 - 420 - 180, "seal_upload": 420}
     assert limits["max_output_bytes"] == 4 * GIB
     assert allocator.worst_case_usd(limits=limits, rate_table=config["rate_table"]) == TEAM_WORST_CASE_USD
     # A probe of this stage runs on its job under its own budget, so it fits the same $1 attempt cap.
@@ -71,9 +71,9 @@ def test_its_limits_come_from_the_config_entry_within_the_contract_maxima() -> N
     # A shorter configured timeout narrows only the stage phase; one too short for the budget is no config.
     shorter = team_config(stages={**config["stages"], "team_scene_packet": team_stage(task_timeout_seconds=1800)})
     assert contract.config_blockers(shorter) == []
-    assert contract.stage_limits(shorter, "team_scene_packet")["phase_seconds"]["stage"] == 420
+    assert contract.stage_limits(shorter, "team_scene_packet")["phase_seconds"]["stage"] == 900
     minimum = contract.minimum_task_timeout_seconds("team_scene_packet")
-    assert minimum == 600 + 600 + 180 + 300 and contract.minimum_task_timeout_seconds("episode_compilation") == 1
+    assert minimum == 300 + 420 + 180 + 300 and contract.minimum_task_timeout_seconds("episode_compilation") == 1
     for entry in (team_stage(task_timeout_seconds=minimum - 1), team_stage(task_timeout_seconds=3601),
                   team_stage(memory_bytes=33 * GIB)):
         assert "remote_cpu_config_invalid:stages" in contract.config_blockers(
