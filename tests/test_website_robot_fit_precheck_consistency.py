@@ -186,12 +186,34 @@ def test_every_candidate_refused_early_is_refused_by_the_screening_plan_or_its_e
         candidate = catalog[row["candidate_id"]]
         plan = _candidate_blockers(candidate, {"task_kind": scene["early"]["task_kind"]}, None, set())
         static = [code for code in plan if code not in {"runtime_candidate_binding_missing"}]
-        if row["causes"] in (["catalog"], ["task_kind"]):
-            assert set(row["blockers"]) <= set(static) and static, row
-        elif row["causes"] == ["gpu_memory"]:
-            assert candidate_gpu_blockers(candidate) == row["blockers"], row
-        else:
-            assert row["causes"] == ["reach"] and late_by_embodiment[row["embodiment"]] is False, row
+        assert row["causes"], row
+        for cause in row["causes"]:
+            if cause in ("catalog", "task_kind"):
+                assert static and set(row["blockers"]) & set(static), row
+            elif cause == "gpu_memory":
+                assert candidate_gpu_blockers(candidate), row
+            else:
+                assert cause == "reach" and late_by_embodiment[row["embodiment"]] is False, row
+
+
+@pytest.mark.parametrize("ceiling", [None, "0", "800", "860", "1200"])
+def test_the_gpu_rule_never_refuses_early_what_screening_rents_under_its_own_ceiling(monkeypatch, ceiling):
+    """Planning reads BLUEPRINT_VAST_MAX_COMPUTE_CAP in its own process; the precheck lifts it."""
+    from blueprint_pipeline.beta_policy_screening_gpu import CEILING_LIFTED
+    from blueprint_pipeline.vast_compute_capability import MAX_COMPUTE_CAP_ENV
+
+    monkeypatch.delenv(MAX_COMPUTE_CAP_ENV, raising=False)
+    candidates = [row for row in load_default_catalog()["candidates"]
+                  if row["eligibility"]["enabled"] and row["runtime"] is not None]
+    early = {row["candidate_id"]: candidate_gpu_blockers(row, max_compute_cap=CEILING_LIFTED) for row in candidates}
+    if ceiling is not None:
+        monkeypatch.setenv(MAX_COMPUTE_CAP_ENV, ceiling)
+    # The early answer does not move with this process's environment.
+    assert {row["candidate_id"]: candidate_gpu_blockers(row, max_compute_cap=CEILING_LIFTED)
+            for row in candidates} == early
+    for row in candidates:
+        if early[row["candidate_id"]]:
+            assert candidate_gpu_blockers(row), row["candidate_id"]  # screening, under this ceiling, refuses too
 
 
 def test_a_fixed_arm_only_catalog_holds_exactly_where_the_late_franka_check_refuses(scene):

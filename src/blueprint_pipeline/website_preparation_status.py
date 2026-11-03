@@ -330,7 +330,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         terminal_reason = None
         if before.get("status") == "completed":
             from .website_task_context_contracts import (
-                holds_native_task_preparation, retains_geometry_only_fit, retains_task_family_preparation,
+                holds_native_task_preparation, retains_geometry_only_fit, retains_robot_fit_hold,
+                retains_task_family_preparation,
             )
             handoff = _read(root / "pipeline" / "website_scene_preparation" / "handoff.json")
             from .website_target_background_correction import retains_rejected_selection
@@ -338,7 +339,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             native_profile_held = (holds_native_task_preparation(handoff, current)
                                    or retains_rejected_selection(handoff, current)
                                    or retains_observed_room_limit(handoff, current)
-                                   or retains_geometry_only_fit(handoff, current))
+                                   or retains_geometry_only_fit(handoff, current)
+                                   or retains_robot_fit_hold(handoff, current))
             family_prepared = retains_task_family_preparation(handoff, current)
             _require(handoff.get("schema_version") == "website_scene_handoff.v1"
                      and handoff.get("scene_id") == selected["scene_id"]
@@ -358,7 +360,8 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
         if schema_version in {STATUS_V3, STATUS_V4, STATUS_V5, STATUS_V6}:
             from .website_preparation_outcome import read_preparation_outcome
             outcome = read_preparation_outcome(capture_root=root,
-                task_context_digest=selected["task_context_digest"], state=state)
+                task_context_digest=selected["task_context_digest"], state=state,
+                robot_fit_hold=schema_version == STATUS_V6)
         if schema_version in {STATUS_V4, STATUS_V5, STATUS_V6} and state != "authority_ended":
             # Optional: the job continues on its guess whether or not this is answered.
             from .website_task_target_choice import public_question

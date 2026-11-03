@@ -12,6 +12,7 @@ from it. The consistency of this early check with the late checks it must never 
 #   src/blueprint_pipeline/beta_policy_screening_plan.py
 #   src/blueprint_pipeline/beta_policy_screening_gpu.py
 #   src/blueprint_pipeline/website_preparation_renewal.py
+#   src/blueprint_pipeline/website_task_context_contracts.py
 
 from __future__ import annotations
 
@@ -137,8 +138,11 @@ def test_a_reachable_tray_on_a_table_fits(tmp_path):
     assert set(value["fit_candidates"]) == {key for key, row in rows.items() if row["embodiment"] == FRANKA
                                             and row["verdict"] == "fit"}
     assert "pi05_droid" in value["fit_candidates"]
-    assert rows["cosmos3_nano_policy_droid"]["verdict"] == "no_fit"
-    assert rows["cosmos3_nano_policy_droid"]["causes"] == ["gpu_memory"]
+    # Its 80 GB floor only the 96 GB parts meet, above this process's compute-capability ceiling; the
+    # screening lane reads its own ceiling, so this is open here, never a refusal.
+    assert rows["cosmos3_nano_policy_droid"]["verdict"] == "unknown"
+    assert rows["cosmos3_nano_policy_droid"]["blockers"] == [
+        "gpu_memory_floor_rentable_only_above_this_compute_cap_ceiling"]
     # The G1 stands at the table; its nominal arm span (0.45 m) misses, which its lane never refuses.
     g1 = by_embodiment(value, G1)
     assert g1["verdict"] == "unknown" and g1["reasons"] == ["nominal_arm_span_missed_body_motion_may_reach"]
@@ -153,8 +157,8 @@ def test_a_shelf_taller_than_any_reach_holds_a_fixed_arm_job_before_spend(tmp_pa
     preparation, collision = shelf_scene(tmp_path)
     value = robot_fit_precheck(preparation=preparation, collision_path=collision, catalog=fixed_arm_catalog())
     assert value["status"] == "no_fit" and value["hold_reason"] == HOLD_PREFIX + "reach"
-    # Seven DROID candidates out of reach; the eighth's 80 GB floor no GPU the lane rents meets.
-    assert value["no_fit_causes"] == {"gpu_memory": 1, "reach": 7}
+    # Every DROID candidate is out of reach; the 80 GB floor's ceiling question no longer matters.
+    assert value["no_fit_causes"] == {"reach": 8}
     franka = by_embodiment(value, FRANKA)
     # From the floor mount, the shelf top's box is 2 m above the shoulder: beyond the arm from any station.
     assert franka["verdict"] == "no_fit" and franka["reach"]["result"] == "beyond_reach"
@@ -286,7 +290,10 @@ def test_the_handoff_holds_a_no_fit_job_before_it_is_registered(tmp_path, handof
     assert result["blockers"] == [HOLD_PREFIX + "reach"]
     assert result["robot_fit_precheck"] == {"path": str(native / precheck.FILENAME),
                                             "digest": written["precheck_digest"], "status": "no_fit",
-                                            "hold_reason": HOLD_PREFIX + "reach", "counts": written["counts"]}
+                                            "hold_reason": HOLD_PREFIX + "reach", "counts": written["counts"],
+                                            "recheck_inputs": written["recheck_inputs"]}
+    assert written["recheck_inputs"] == {"catalog_digest": fixed_arm_catalog()["catalog_digest"],
+                                         "team_registry_digest": None}
 
 
 def test_the_handoff_goes_on_when_the_precheck_is_unknown(tmp_path, handoff):

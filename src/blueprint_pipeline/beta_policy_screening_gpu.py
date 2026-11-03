@@ -45,8 +45,16 @@ RT_GPU_PARTS: dict[str, tuple[int, int]] = {
 }
 
 
-def rentable_parts(minimum_gpu_memory_gb: Any) -> list[str] | None:
-    """Described parts the screening lane would rent for this floor; ``None`` when its market is not fully described."""
+#: ``max_compute_cap`` that lifts the lane's compute-capability ceiling (``vast_compute_capability``).
+CEILING_LIFTED = 0
+
+
+def rentable_parts(minimum_gpu_memory_gb: Any, *, max_compute_cap: Any = None) -> list[str] | None:
+    """Described parts the screening lane would rent for this floor; ``None`` when its market is not fully described.
+
+    The lane's compute-capability ceiling is its own, which ``BLUEPRINT_VAST_MAX_COMPUTE_CAP`` in the running
+    process may move; ``max_compute_cap`` sets it explicitly instead (``CEILING_LIFTED`` for none).
+    """
     from . import vast_compute_capability as vcc
     from .gpu_selection_policy import (
         ISAAC_RT_GPU_KEYWORDS,
@@ -67,7 +75,7 @@ def rentable_parts(minimum_gpu_memory_gb: Any) -> list[str] | None:
         return None
     # ``run_arena_native_control_vast`` always prefers RT parts, which resolves an unnamed policy to Isaac's.
     policy = resolve_gpu_selection_policy(lane["gpu_selection_policy"], prefer_isaac_rt=True)
-    ceiling = vcc.resolve_max_compute_cap(lane["max_compute_cap"])
+    ceiling = vcc.resolve_max_compute_cap(lane["max_compute_cap"] if max_compute_cap is None else max_compute_cap)
     return sorted(
         name for name, (memory_gb, capability) in RT_GPU_PARTS.items()
         if _is_isaac_rt_candidate(name)
@@ -79,30 +87,32 @@ def rentable_parts(minimum_gpu_memory_gb: Any) -> list[str] | None:
     )
 
 
-def gpu_infeasible_blockers(runtime: Any) -> list[str]:
+def gpu_infeasible_blockers(runtime: Any, *, max_compute_cap: Any = None) -> list[str]:
     """The planning refusal for a catalog runtime whose memory floor the screening lane cannot rent."""
     if not isinstance(runtime, Mapping):
         return []
     try:
-        parts = rentable_parts(runtime.get("minimum_gpu_memory_gb"))
+        parts = rentable_parts(runtime.get("minimum_gpu_memory_gb"), max_compute_cap=max_compute_cap)
     except (ValueError, TypeError):
         return []  # An invalid floor keeps its own refusal where the candidate is bound.
     return [GPU_MEMORY_FLOOR_UNRENTABLE] if parts == [] else []
 
 
-def candidate_gpu_blockers(candidate: Mapping[str, Any]) -> list[str]:
+def candidate_gpu_blockers(candidate: Mapping[str, Any], *, max_compute_cap: Any = None) -> list[str]:
     """``gpu_infeasible_blockers`` for a catalog candidate as screening planning applies it.
 
     G1's candidates rent on their own lane, and a disabled candidate keeps its own reason; neither is
     measured here. Planning (``beta_policy_screening_capabilities``) and the website robot fit precheck
-    (``website_robot_fit_precheck``) both read this one rule.
+    (``website_robot_fit_precheck``) both read this one rule. Planning takes the ceiling of the process
+    it runs in; the precheck, which runs in another, passes ``CEILING_LIFTED``: a floor no part meets
+    even then cannot be met under any ceiling the screening lane is configured with.
     """
     from .beta_policy_screening_g1 import CANDIDATES as G1_LANE_CANDIDATES
 
     if candidate["candidate_id"] in G1_LANE_CANDIDATES or candidate["eligibility"]["enabled"] is not True:
         return []
-    return gpu_infeasible_blockers(candidate["runtime"])
+    return gpu_infeasible_blockers(candidate["runtime"], max_compute_cap=max_compute_cap)
 
 
-__all__ = ["GPU_MEMORY_FLOOR_UNRENTABLE", "RT_GPU_PARTS", "candidate_gpu_blockers", "gpu_infeasible_blockers",
-           "rentable_parts"]
+__all__ = ["CEILING_LIFTED", "GPU_MEMORY_FLOOR_UNRENTABLE", "RT_GPU_PARTS", "candidate_gpu_blockers",
+           "gpu_infeasible_blockers", "rentable_parts"]

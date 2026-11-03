@@ -9,7 +9,8 @@ with the late checks' own rules and code, on the CPU:
 
 - the catalog row: what the screening plan refuses from the row alone (``catalog_blockers``: disabled,
   commercial use, an unpinned policy, a task kind it does not run), and a GPU memory floor the screening
-  lane cannot rent (``candidate_gpu_blockers``);
+  lane cannot rent (``candidate_gpu_blockers``), read with the lane's compute-capability ceiling lifted,
+  since planning reads that ceiling in another process: refused only when no ceiling would rent it;
 - the DROID Franka, on the station pedestal level with the lower of the task's supports, as the team
   packet stands it: the capability verdict's carry (``website_rigid_feasibility``, the carry gate's
   ``first_carrying_stance``), and the arm's own reach bound (``robot_arm_path_clearance.grasp_reach_bound``);
@@ -19,8 +20,9 @@ with the late checks' own rules and code, on the CPU:
   the same pedestal stations; a free base declares none.
 
 The early check is conservative: it says ``no_fit`` for a candidate only on a refusal the late checks
-make on the same inputs, whatever the published scene's collider turns out to be: a catalog refusal, an
-unrentable GPU floor, or a task the arm cannot reach from any station on the mount's plane. That last one
+make on the same inputs, whatever the published scene's collider turns out to be: a catalog refusal, a
+GPU floor no part meets under any ceiling, or a task the arm cannot reach from any station on the mount's
+plane. That last one
 is measured from the task's boxes, grown by the authored object's scale envelope, with no collider at
 all: the farthest box is at least its height off the plane, and at least half the gap between the pick
 and the place, from any station. A stance not found (reconstructed floors have holes, and the scene is
@@ -31,7 +33,9 @@ passed: the Franka's carry cleared, the G1 stands within its nominal span, a fix
 covers the task from a station found. That is an estimate from the reconstructed room, not a promise.
 
 When no candidate fits and none is unknown, the job holds before spend with
-``website_robot_fit_none:<cause>`` (``HOLD_PREFIX``): a hold, never a failure. The team packet, the
+``website_robot_fit_none:<cause>`` (``HOLD_PREFIX``): a hold, never a failure. The handoff's stage is
+accepted as held (``website_task_context_contracts.retains_robot_fit_hold``), and a change of the catalog
+or the team registry it was decided against reruns it (``website_robot_fit_hold``). The team packet, the
 screening plan and the carry gate stay the authoritative checks on the published scene.
 """
 from __future__ import annotations
@@ -46,11 +50,11 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .usd_binary_read_cache import read_scoped
+from .website_task_context_contracts import ROBOT_FIT_HOLD_PREFIX as HOLD_PREFIX
 
 SCHEMA = "website_robot_fit_precheck.v1"
 PROJECTION_SCHEMA = "website_robot_fit_precheck_projection.v1"
 FILENAME = "robot_fit_precheck.json"
-HOLD_PREFIX = "website_robot_fit_none:"
 CLAIM_CEILING = "development_only"
 STATUSES = ("fit", "no_fit", "unknown")
 VERDICTS = ("fit", "no_fit", "unknown", "unavailable")
@@ -241,15 +245,18 @@ def _embodiment(candidate: Mapping[str, Any], team: Mapping[str, Mapping[str, An
 @read_scoped
 def robot_fit_precheck(*, preparation: Mapping[str, Any], collision_path: str | Path | None = None,
                        verdict: Mapping[str, Any] | None = None, catalog: Mapping[str, Any] | None = None,
-                       team_bodies: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
+                       team_bodies: Mapping[str, Mapping[str, Any]] | None = None,
+                       team_registry_digest: str | None = None) -> dict[str, Any]:
     """Every catalog candidate's early verdict for this prepared job, and the job's: fit, no fit or unknown.
 
     ``verdict`` is the capability verdict computed for the same preparation and collider, when one was;
     ``catalog`` a validated screening catalog (default ``load_default_catalog``); ``team_bodies`` each
-    candidate's registered team body (``registered_team_bodies``). CPU only; it buys nothing.
+    candidate's registered team body (``registered_team_bodies``) from the team registry
+    ``team_registry_digest`` names. The catalog and the registry are what a hold is rechecked against
+    when they change (``recheck_inputs``, ``website_robot_fit_hold``). CPU only; it buys nothing.
     """
     from .beta_policy_candidate_catalog import load_default_catalog, validate_catalog
-    from .beta_policy_screening_gpu import candidate_gpu_blockers
+    from .beta_policy_screening_gpu import CEILING_LIFTED, candidate_gpu_blockers
     from .beta_policy_screening_plan import TASK_KIND_BLOCKERS, catalog_blockers
 
     catalog = validate_catalog(load_default_catalog() if catalog is None else catalog)
@@ -312,19 +319,37 @@ def robot_fit_precheck(*, preparation: Mapping[str, Any], collision_path: str | 
         row: dict[str, Any] = {"candidate_id": key, "embodiment": embodiment}
         if other:
             row.update(verdict="unavailable", causes=["catalog"], blockers=other)
-        elif task_kind is None:
+            rows.append(row)
+            continue
+        if task_kind is None:
             row.update(verdict="unknown", causes=[], blockers=["task_strategy_not_modelled"])
-        elif kind:
-            row.update(verdict="no_fit", causes=["task_kind"], blockers=kind)
-        elif gpu := candidate_gpu_blockers(candidate):
-            row.update(verdict="no_fit", causes=["gpu_memory"], blockers=list(gpu))
-        elif embodiment is None:
-            row.update(verdict="unknown", causes=[], blockers=["embodiment_not_modeled_before_spend"])
+            rows.append(row)
+            continue
+        # Every sound refusal is kept; a candidate fits only with none and nothing undecided.
+        causes, blockers, open_ = [], [], []
+        if kind:
+            causes.append("task_kind")
+            blockers += kind
         else:
-            measured_row = measured(embodiment)
-            row.update(verdict=measured_row["verdict"],
-                       causes=list(measured_row["reasons"]) if measured_row["verdict"] == "no_fit" else [],
-                       blockers=list(measured_row["reasons"]))
+            # Planning reads the compute-capability ceiling of the process it runs in. Lifted, a floor no
+            # part meets is unrentable under any ceiling; one only this process's ceiling excludes is unknown.
+            lifted = candidate_gpu_blockers(candidate, max_compute_cap=CEILING_LIFTED)
+            if lifted:
+                causes.append("gpu_memory")
+                blockers += list(lifted)
+            elif candidate_gpu_blockers(candidate):
+                open_.append("gpu_memory_floor_rentable_only_above_this_compute_cap_ceiling")
+            if embodiment is None:
+                open_.append("embodiment_not_modeled_before_spend")
+            else:
+                measured_row = measured(embodiment)
+                if measured_row["verdict"] == "no_fit":
+                    causes += list(measured_row["reasons"])
+                    blockers += list(measured_row["reasons"])
+                elif measured_row["verdict"] == "unknown":
+                    open_ += list(measured_row["reasons"])
+        row.update(verdict="no_fit" if causes else "unknown" if open_ else "fit", causes=causes,
+                   blockers=blockers if causes else open_)
         rows.append(row)
 
     counts = {name: sum(row["verdict"] == name for row in rows) for name in VERDICTS}
@@ -349,6 +374,7 @@ def robot_fit_precheck(*, preparation: Mapping[str, Any], collision_path: str | 
     value: dict[str, Any] = {
         "schema_version": SCHEMA, "preparation_digest": preparation.get("digest"), "collision_sha256": digest,
         "catalog_digest": catalog["catalog_digest"],
+        "recheck_inputs": {"catalog_digest": catalog["catalog_digest"], "team_registry_digest": team_registry_digest},
         "verdict_digest": None if verdict is None else verdict.get("verdict_digest"),
         "strategy": strategy, "task_kind": task_kind, "status": status, "hold_reason": hold,
         "no_fit_causes": dict(sorted(causes.items())), "fit_candidates": fit, "counts": counts, "flags": sorted(set(flags) | {"unknown:" + code for code in unknowns}),

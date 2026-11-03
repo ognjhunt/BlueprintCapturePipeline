@@ -111,17 +111,23 @@ def _robot_fit_precheck(*, preparation: Mapping[str, Any], verdict: Mapping[str,
     the late checks would also make holds the job. A lost handoff lease stops it, as it stops every write.
     """
     try:
+        from .website_robot_fit_hold import team_registry_state
         from .website_robot_fit_precheck import FILENAME, registered_team_bodies, robot_fit_precheck
+        registry, registry_digest = team_registry_state()
         try:
-            bodies, flags = registered_team_bodies(), []
+            bodies, flags = (registered_team_bodies(registry) if registry is not None else {}), []
         except (OSError, ValueError, KeyError, TypeError):
+            bodies, registry_digest = {}, "unreadable"
+        if registry_digest == "unreadable":
             # The operator's team registry did not read: its bodies stay unknown, never refused.
-            bodies, flags = {}, ["team_registry_unreadable"]
+            flags = ["team_registry_unreadable"]
         value = robot_fit_precheck(preparation=preparation, collision_path=collision_path, verdict=verdict,
-                                   team_bodies=bodies)
+                                   team_bodies=bodies, team_registry_digest=registry_digest)
         write_json(native_root / FILENAME, value)
+        # What a hold was decided against rides on the handoff, so a change reruns it (website_robot_fit_hold).
         return {"path": str(native_root / FILENAME), "digest": value["precheck_digest"], "status": value["status"],
-                "hold_reason": value["hold_reason"], "counts": value["counts"], **({"flags": flags} if flags else {})}
+                "hold_reason": value["hold_reason"], "counts": value["counts"],
+                "recheck_inputs": value["recheck_inputs"], **({"flags": flags} if flags else {})}
     except HandoffLeaseError:
         raise
     except Exception as exc:  # noqa: BLE001 - unknown never holds a job; this is recorded
