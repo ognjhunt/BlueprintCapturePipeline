@@ -39,6 +39,8 @@ STATUS_V3 = "website_preparation_status.v3"
 # v4 adds the one optional question the site can answer inside this job: which
 # object the robot moves, when preparation went on with its best guess.
 STATUS_V4 = "website_preparation_status.v4"
+# v5 adds the job's robot fit table, a spec-bounded estimate (website_robot_fit_projection).
+STATUS_V5 = "website_preparation_status.v5"
 # The WebApp opts in per read; an absent or unknown value is answered with v1.
 VERSION_HEADER = "x-blueprint-preparation-status-version"
 _STATES_V1 = frozenset({"preparing", "awaiting_inputs", "failed_retryable", "authority_ended", "handed_off"})
@@ -46,7 +48,8 @@ _STATES_V2 = _STATES_V1 | {"capacity_delayed", "failed_terminal"}
 _ACCEPTANCE = {"website_preparation_status_acceptance.v1": (STATUS_V1, _STATES_V1),
                "website_preparation_status_acceptance.v2": (STATUS_V2, _STATES_V2),
                "website_preparation_status_acceptance.v3": (STATUS_V3, _STATES_V2),
-               "website_preparation_status_acceptance.v4": (STATUS_V4, _STATES_V2)}
+               "website_preparation_status_acceptance.v4": (STATUS_V4, _STATES_V2),
+               "website_preparation_status_acceptance.v5": (STATUS_V5, _STATES_V2)}
 _CODES = {"preparing": "preparation_in_progress", "awaiting_inputs": "preparation_inputs_pending",
           "capacity_delayed": "preparation_capacity_delayed", "failed_retryable": "preparation_retryable_failure",
           "failed_terminal": "preparation_failed_terminal", "authority_ended": "preparation_authority_ended",
@@ -63,7 +66,8 @@ def requested_status_version(value: Any) -> str:
     text = value.strip() if type(value) is str else ""
     if re.fullmatch(r"[1-9][0-9]{0,2}", text):
         number = int(text)
-        return STATUS_V4 if number >= 4 else STATUS_V3 if number == 3 else STATUS_V2 if number == 2 else STATUS_V1
+        return (STATUS_V5 if number >= 5 else STATUS_V4 if number == 4 else STATUS_V3 if number == 3
+                else STATUS_V2 if number == 2 else STATUS_V1)
     return STATUS_V1
 
 
@@ -256,7 +260,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
     from .website_task_context import validate_website_task_context
 
     try:
-        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4})
+        _require(schema_version in {STATUS_V1, STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5})
         selected = validate_selectors(dict(selectors))
         root = _root(capture_root)
         _require(root.name == selected["capture_id"] and root.parent.name == "captures"
@@ -338,20 +342,23 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             _require(bool(_output_commit(root, scene_id=selected["scene_id"], capture_id=selected["capture_id"])))
             state = ("awaiting_inputs" if native_profile_held or (family_prepared and handoff["status"] == "needs_input")
                      else "handed_off")
-        elif schema_version in {STATUS_V2, STATUS_V3, STATUS_V4}:
+        elif schema_version in {STATUS_V2, STATUS_V3, STATUS_V4, STATUS_V5}:
             state, terminal_reason = _v2_state(before)
         else:
             _require(before.get("status") in _LEDGER_STATES)
             state = _LEDGER_STATES[before["status"]]
-        outcome = question = None
-        if schema_version in {STATUS_V3, STATUS_V4}:
+        outcome = question = robot_fit = None
+        if schema_version in {STATUS_V3, STATUS_V4, STATUS_V5}:
             from .website_preparation_outcome import read_preparation_outcome
             outcome = read_preparation_outcome(capture_root=root,
                 task_context_digest=selected["task_context_digest"], state=state)
-        if schema_version == STATUS_V4 and state != "authority_ended":
+        if schema_version in {STATUS_V4, STATUS_V5} and state != "authority_ended":
             # Optional: the job continues on its guess whether or not this is answered.
             from .website_task_target_choice import public_question
             question = public_question(root)
+        if schema_version == STATUS_V5:
+            from .website_robot_fit_projection import read_robot_fit
+            robot_fit = read_robot_fit(capture_root=root, task_context_digest=selected["task_context_digest"])
         after = _read_job_ledger(root)
         _require(before == after, "ledger_changed")
         _require(read_consent_state(root)["state"] != "revoked", "consent_revoked")
@@ -359,8 +366,9 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
                   "attempt_count": before["attempt_count"], "revision": before["revision"],
                   "state": state, "code": _CODES[state],
                   **({"terminal_reason": terminal_reason} if schema_version != STATUS_V1 else {}),
-                  **({"outcome": outcome} if schema_version in {STATUS_V3, STATUS_V4} else {}),
-                  **({"question": question} if schema_version == STATUS_V4 else {}),
+                  **({"outcome": outcome} if schema_version in {STATUS_V3, STATUS_V4, STATUS_V5} else {}),
+                  **({"question": question} if schema_version in {STATUS_V4, STATUS_V5} else {}),
+                  **({"robot_fit": robot_fit} if schema_version == STATUS_V5 else {}),
                   "correlation_id": cross_runtime_canonical_digest({**selected,
                       "attempt_count": before["attempt_count"], "revision": before["revision"]})}
         result["status_digest"] = cross_runtime_canonical_digest(result)

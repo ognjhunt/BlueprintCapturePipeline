@@ -347,6 +347,34 @@ def test_completed_observed_room_is_an_honest_task_limit_in_signed_status(prepar
     assert _post(prepared_source).json()["state"] == "awaiting_inputs"
 
 
+def test_status_v5_carries_the_jobs_robot_fit_table_and_older_versions_do_not(prepared_source):
+    from tests.test_website_robot_fit_projection import write_fit_table
+
+    root, owner, context, selected, ledger, _ = prepared_source
+    handoff = write_fit_table(root, context=context["context_digest"],
+                              handoff={"website_intake_outbox": {"state": "forward_pending"}, "simulator_ready": False})
+    listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
+        attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
+            "website_scene_preparation": handoff}, owner="synthetic-worker", token=ledger["lease_token"],
+        ledger_update={"status": "completed"})
+    v5 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                              schema_version=status_reader.STATUS_V5)
+    assert v5["state"] == "handed_off" and v5["robot_fit"]["status"] == "completed"
+    assert [row["verdict"] for row in v5["robot_fit"]["models"]] == ["fits", "fits_spec", "doesnt_fit", "unknown"]
+    assert v5["status_digest"] == cross_runtime_canonical_digest(
+        {key: value for key, value in v5.items() if key != "status_digest"})
+    assert len(json.dumps(v5)) < 8192
+    v4 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                              schema_version=status_reader.STATUS_V4)
+    assert "robot_fit" not in v4 and v4["state"] == "handed_off"
+    # The WebApp's acceptance names v5, so the postflight re-reads v5.
+    acceptance = {"schema_version": "website_preparation_status_acceptance.v5", **selected, "accepted": True,
+                  "state": v5["state"], "status_digest": v5["status_digest"], "native_execution_complete": False,
+                  "correlation_id": "bp-prep-" + v5["status_digest"][7:23]}
+    assert status_reader.accepted_status_version(status_reader.validate_acceptance(acceptance, selected)) \
+        == status_reader.STATUS_V5
+
+
 @pytest.mark.parametrize("fault", ["digest", "source", "context", "family", "description", "code",
                                   "disposition", "simulator_ready", "runtime_inputs", "missing_output_commit"])
 def test_completed_native_gap_requires_exact_current_binding_and_output_commit(prepared_source, fault):
