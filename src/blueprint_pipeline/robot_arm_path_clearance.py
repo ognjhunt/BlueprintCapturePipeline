@@ -837,9 +837,33 @@ def carry_grasps(task: Mapping[str, Any], bounds_m: Mapping[str, Sequence[float]
            "gripper_orientation_xyzw": list(task["gripper_orientation_xyzw"])}
     if bounds_m is None:
         return [own]
-    from .website_rigid_feasibility import _grasps
+    return [own, *intake_grasps(np.asarray(bounds_m["minimum"], dtype=float),
+                                np.asarray(bounds_m["maximum"], dtype=float))]
 
-    return [own, *_grasps(np.asarray(bounds_m["minimum"], dtype=float), np.asarray(bounds_m["maximum"], dtype=float))]
+
+#: After top-down, the hand tilts this far from vertical, approaching from each of these directions.
+GRASP_TILTS_DEG = (45.0, 90.0)
+GRASP_YAWS_DEG = (0.0, 90.0, 180.0, 270.0)
+
+
+def intake_grasps(lower: np.ndarray, upper: np.ndarray) -> list[dict[str, Any]]:
+    """Top-down closing across the narrower side of the box ``lower``-``upper``, then tilted and side-on,
+    each closing horizontally: the grasps the website intake's carry verdict tries
+    (``website_rigid_feasibility``). Kept here so a gate can try them without importing that verdict,
+    and through it the scene packet's hot lane."""
+    from .native_franka_action_math import grasp_orientation_contact_xyzw
+
+    jaw = [1.0, 0.0, 0.0] if upper[0] - lower[0] <= upper[1] - lower[1] else [0.0, 1.0, 0.0]
+    rows = [{"name": "top_down", "approach_unit": [0.0, 0.0, 1.0],
+             "gripper_orientation_xyzw": grasp_orientation_contact_xyzw(approach_axis=[0.0, 0.0, -1.0], jaw_axis=jaw)}]
+    for tilt in GRASP_TILTS_DEG:
+        for yaw in GRASP_YAWS_DEG:
+            t, y = math.radians(tilt), math.radians(yaw)
+            outward = [math.sin(t) * math.cos(y), math.sin(t) * math.sin(y), math.cos(t)]
+            rows.append({"name": f"tilt{tilt:g}_yaw{yaw:g}", "approach_unit": outward,
+                         "gripper_orientation_xyzw": grasp_orientation_contact_xyzw(
+                             approach_axis=[-v for v in outward], jaw_axis=[-math.sin(y), math.cos(y), 0.0])})
+    return rows
 
 
 @read_scoped

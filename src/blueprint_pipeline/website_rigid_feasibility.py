@@ -17,7 +17,6 @@ verdict as a risk; it never changes the carry status.
 """
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -29,9 +28,6 @@ from .usd_binary_read_cache import read_scoped
 
 SCHEMA = "website_rigid_task_capability_verdict.v1"
 DEFAULT_PREGRASP_CLEARANCE_M = 0.10
-#: After top-down, the hand tilts this far from vertical, approaching from each of these world directions.
-GRASP_TILTS_DEG = (45.0, 90.0)
-GRASP_YAWS_DEG = (0.0, 90.0, 180.0, 270.0)
 
 
 def enabled_robot_profiles() -> list[str]:
@@ -46,19 +42,9 @@ def enabled_robot_profiles() -> list[str]:
 
 def _grasps(lower: np.ndarray, upper: np.ndarray) -> list[dict[str, Any]]:
     """Top-down closing across the narrower side, then tilted and side-on, each closing horizontally."""
-    from .native_franka_action_math import grasp_orientation_contact_xyzw
+    from .robot_arm_path_clearance import intake_grasps
 
-    jaw = [1.0, 0.0, 0.0] if upper[0] - lower[0] <= upper[1] - lower[1] else [0.0, 1.0, 0.0]
-    rows = [{"name": "top_down", "approach_unit": [0.0, 0.0, 1.0],
-             "gripper_orientation_xyzw": grasp_orientation_contact_xyzw(approach_axis=[0.0, 0.0, -1.0], jaw_axis=jaw)}]
-    for tilt in GRASP_TILTS_DEG:
-        for yaw in GRASP_YAWS_DEG:
-            t, y = math.radians(tilt), math.radians(yaw)
-            outward = [math.sin(t) * math.cos(y), math.sin(t) * math.sin(y), math.cos(t)]
-            rows.append({"name": f"tilt{tilt:g}_yaw{yaw:g}", "approach_unit": outward,
-                         "gripper_orientation_xyzw": grasp_orientation_contact_xyzw(
-                             approach_axis=[-v for v in outward], jaw_axis=[-math.sin(y), math.cos(y), 0.0])})
-    return rows
+    return intake_grasps(lower, upper)
 
 
 def carry_station_search(preparation: Mapping[str, Any]) -> dict[str, Any]:
