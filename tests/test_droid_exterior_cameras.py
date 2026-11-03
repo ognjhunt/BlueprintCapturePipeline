@@ -1,6 +1,7 @@
 """DROID's right exterior: Arena's mount first, nearby DROID-like poses next, none when nothing sees the task."""
 
 import math
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -101,16 +102,26 @@ def test_a_candidate_is_fresh_on_the_views_it_reads_only():
     assert _policy_views_fresh({**three, "exterior_right": observed}, "cosmos3_edge_policy_droid") is True
 
 
-def test_the_runtime_adds_the_slot_as_a_rig_field_arena_spawns_like_its_own(monkeypatch):
+class _ArenaCameraCfg:
+    """Pinned Arena's rig parent (``isaaclab_arena/utils/cameras.py`` at ``ARENA_COMMIT``, sha256
+    9d7ff0ee...): the tiling choice is a property over a ``ClassVar`` an instance shadows. It has no
+    ``set_use_tiled_camera``; capture-447ae4f4's probe crashed calling one."""
+
+    _use_tiled_camera: ClassVar[bool] = True
+
+    @property
+    def use_tiled_camera(self) -> bool:
+        return self._use_tiled_camera
+
+    @use_tiled_camera.setter
+    def use_tiled_camera(self, use_tiled_camera: bool) -> None:
+        self._use_tiled_camera = use_tiled_camera
+
+
+def _fake_isaaclab(monkeypatch):
     import dataclasses
     import sys
     import types
-
-    from blueprint_pipeline.native_task_robot_registry import (
-        EXTERIOR_RIGHT_RUNTIME_NAME,
-        add_droid_exterior_right_slot,
-        native_robot_adapter,
-    )
 
     class CameraCfg:
         def __init__(self, prim_path):
@@ -125,26 +136,47 @@ def test_the_runtime_adds_the_slot_as_a_rig_field_arena_spawns_like_its_own(monk
                          ("isaaclab.sensors.camera", types.ModuleType("isaaclab.sensors.camera")),
                          ("isaaclab.sensors.camera.camera_cfg", camera_cfg)):
         monkeypatch.setitem(sys.modules, name, module)
+    return CameraCfg
 
-    @dataclasses.dataclass
-    class DroidCameraCfg:  # Arena's rig: three camera fields and a tiled flag
-        external_camera: CameraCfg = CameraCfg("{ENV_REGEX_NS}/Robot/panda_link0/external_camera")
-        external_camera_2: CameraCfg = CameraCfg("{ENV_REGEX_NS}/Robot/panda_link0/external_camera_2")
-        wrist_camera: CameraCfg = CameraCfg("{ENV_REGEX_NS}/Robot/Gripper/wrist_camera")
-        use_tiled_camera = False
 
-        def set_use_tiled_camera(self, value):
-            self.use_tiled_camera = value
+def _droid_rig(CameraCfg, parent=_ArenaCameraCfg, body=None):
+    import dataclasses
 
-    embodiment = types.SimpleNamespace(camera_config=DroidCameraCfg())
-    original = embodiment.camera_config
+    namespace = {
+        "__annotations__": {"external_camera": CameraCfg, "external_camera_2": CameraCfg, "wrist_camera": CameraCfg},
+        "external_camera": CameraCfg("{ENV_REGEX_NS}/Robot/panda_link0/external_camera"),
+        "external_camera_2": CameraCfg("{ENV_REGEX_NS}/Robot/panda_link0/external_camera_2"),
+        "wrist_camera": CameraCfg("{ENV_REGEX_NS}/Robot/Gripper/wrist_camera"),
+        **(body or {}),
+    }
+    return dataclasses.dataclass(type("DroidCameraCfg", (parent,), namespace))
+
+
+def test_the_runtime_adds_the_slot_as_a_rig_field_arena_spawns_like_its_own(monkeypatch):
+    import dataclasses
+    import types
+
+    from blueprint_pipeline.native_task_robot_registry import (
+        EXTERIOR_RIGHT_RUNTIME_NAME,
+        add_droid_exterior_right_slot,
+        native_robot_adapter,
+    )
+
+    CameraCfg = _fake_isaaclab(monkeypatch)
+    DroidCameraCfg = _droid_rig(CameraCfg)  # Arena's rig: three camera fields, tiling outside them
+    original = DroidCameraCfg()
+    original.use_tiled_camera = False
+    assert not hasattr(original, "set_use_tiled_camera")
+    embodiment = types.SimpleNamespace(camera_config=original)
     add_droid_exterior_right_slot(embodiment, [{"role": "external"}, {"role": "wrist"}, {"role": "overview"}])
     assert embodiment.camera_config is original  # a two-view plan keeps Arena's rig untouched
     add_droid_exterior_right_slot(embodiment, [{"role": "external"}, {"role": "exterior_right"}])
     rig = embodiment.camera_config
     assert isinstance(rig, DroidCameraCfg) and [field.name for field in dataclasses.fields(rig)] == [
         "external_camera", "external_camera_2", "wrist_camera", EXTERIOR_RIGHT_RUNTIME_NAME]
+    # The field copy does not carry the tiling choice; the property does.
     assert rig.external_camera is original.external_camera and rig.use_tiled_camera is False
+    assert type(rig)().use_tiled_camera is True
     slot = getattr(rig, EXTERIOR_RIGHT_RUNTIME_NAME)
     assert slot is not original.external_camera_2 and slot.prim_path == "{ENV_REGEX_NS}/exterior_right_camera"
     # The DROID adapter declares it as an optional policy camera, never a required one.
@@ -152,3 +184,50 @@ def test_the_runtime_adds_the_slot_as_a_rig_field_arena_spawns_like_its_own(monk
     assert ("exterior_right", EXTERIOR_RIGHT_RUNTIME_NAME, "world") in adapter.camera_roles
     assert "exterior_right" in adapter.policy_camera_roles
     assert "exterior_right" not in adapter.required_camera_roles
+
+
+def test_the_slot_carries_tiling_through_whatever_surface_the_rig_exposes(monkeypatch):
+    import types
+
+    from blueprint_pipeline.native_task_robot_registry import add_droid_exterior_right_slot
+
+    CameraCfg = _fake_isaaclab(monkeypatch)
+    plan = [{"role": "exterior_right"}]
+
+    class Setter:  # a rig that offers a setter method and no writable attribute
+        _tiled = True
+
+        @property
+        def use_tiled_camera(self):
+            return self._tiled
+
+        def set_use_tiled_camera(self, value):
+            self._tiled = value
+
+    class ReadOnly:  # derived from fields: nothing to carry, nothing written
+        @property
+        def use_tiled_camera(self):
+            return self.external_camera.prim_path.endswith("tiled")
+
+    rigs = {
+        "setter": _droid_rig(CameraCfg, parent=Setter),
+        "field": _droid_rig(CameraCfg, parent=object, body={"__annotations__": {
+            "external_camera": CameraCfg, "external_camera_2": CameraCfg, "wrist_camera": CameraCfg,
+            "use_tiled_camera": bool}, "use_tiled_camera": True}),
+        "absent": _droid_rig(CameraCfg, parent=object),
+        "read_only": _droid_rig(CameraCfg, parent=ReadOnly),
+    }
+    for name, rig_type in rigs.items():
+        rig = rig_type()
+        if name == "setter":
+            rig.set_use_tiled_camera(False)
+        if name == "field":
+            rig.use_tiled_camera = False
+        embodiment = types.SimpleNamespace(camera_config=rig)
+        add_droid_exterior_right_slot(embodiment, plan)
+        extended = embodiment.camera_config
+        assert extended is not rig and isinstance(extended, rig_type), name
+        if name == "absent":
+            assert not hasattr(extended, "use_tiled_camera")
+        else:
+            assert extended.use_tiled_camera is rig.use_tiled_camera, name
