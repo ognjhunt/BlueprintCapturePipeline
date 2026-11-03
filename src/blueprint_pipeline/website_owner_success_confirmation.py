@@ -27,6 +27,15 @@ owner's decision on exactly this proposal, if there is one:
   stays blocked; its status keeps the hold and the reason.
 - ``pending``: no decision yet.
 
+Each request keeps its next check time in its status (``STATUS_FIELD``) and is
+asked again only when that time comes, or sooner when its intent's
+progression changes and the proposal it then builds is a new one. The wait
+doubles while the answer stays the same, separately for ``pending``, ``held``,
+a WebApp refusal (4xx) and a transport failure, up to a cap (``BACKOFF``), so
+a job whose owner never answers, or a WebApp that refuses, costs a few signed
+calls a day rather than one a minute. Any error in one job's exchange is
+recorded as ``failed`` for that job and never stops the pass.
+
 A republished job (another revision, success document, threshold or proposal)
 has another proposal digest, so a decision on the old proposal is never
 applied; the WebApp asks the owner again. A revoked intent sends nothing. The
@@ -40,6 +49,7 @@ import os
 import re
 import time
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
@@ -60,6 +70,21 @@ STATUS_FIELD = "website_owner_success"
 # Each pass asks about at most this many blocked jobs, so an unreachable WebApp costs a bounded wait.
 MAX_EXCHANGES_PER_PASS = 4
 TIMEOUT_SECONDS = 5
+# (first wait, longest wait) in seconds before a request is asked again, by its last outcome; the
+# wait doubles each time the same outcome repeats for the same proposal.
+BACKOFF = {"pending": (120, 3600), "held": (1800, 86400), "refused": (900, 86400), "failed": (120, 21600),
+           "confirmed": (3600, 86400), "already_confirmed": (3600, 86400), "intent_unbound": (3600, 86400),
+           "intent_revoked": (3600, 86400)}
+# What each forbidden contact class counts, and the contact it leaves out, as the native scorer defines
+# them (``task_evaluation_task_parameter_proposal`` ``contact_class_semantics``; one entry per class in
+# ``native_rigid_episode_telemetry.CONTACT_CHANNELS``). The WebApp words the owner's page from these.
+CONTACT_CLASS_SCOPE = {
+    "robot_background": {"parts": ["robot_protected_bodies", "scene_including_destination_support"], "excluding": []},
+    "robot_object": {"parts": ["robot_protected_bodies", "task_object"],
+                     "excluding": ["admitted_gripper_task_contact_bodies"]},
+    "object_background": {"parts": ["task_object", "scene"], "excluding": ["destination_support"]},
+    "destination_background": {"parts": ["destination", "scene"], "excluding": ["qualified_placement_support"]},
+}
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,131}\Z")
 _INSTANT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\Z")
@@ -89,9 +114,25 @@ def proposal_notice(bound: Mapping[str, Any]) -> dict[str, Any]:
               "configured_success_criteria": json.loads(json.dumps(bound["configured_success_criteria"])),
               "configured_success_criteria_digest": bound["configured_success_criteria_digest"],
               "proposal_authority_digest": bound["proposal_authority_digest"],
+              "forbidden_contacts": forbidden_contacts(bound["configured_success_criteria"]),
               "binding_digest": canonical_digest(dict(bound))}
     notice["proposal_digest"] = cross_runtime_canonical_digest(notice)
     return notice
+
+
+def forbidden_contacts(criteria: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Each forbidden contact class the thresholds name, with what it counts and what it leaves out.
+
+    A class the scorer does not define here is sent with no parts, so the page
+    shows its name rather than a guess.
+    """
+
+    classes = criteria.get("forbidden_contact_classes")
+    if not isinstance(classes, list) or not all(isinstance(name, str) for name in classes):
+        return []
+    empty: dict[str, list[str]] = {"parts": [], "excluding": []}
+    return [{"contact_class": name, **json.loads(json.dumps(CONTACT_CLASS_SCOPE.get(name, empty)))}
+            for name in classes]
 
 
 def send_proposal(notice: Mapping[str, Any]) -> dict[str, Any]:
@@ -208,39 +249,110 @@ def _error_code(exc: BaseException) -> str:
     return code[:160] if re.fullmatch(r"[a-z][a-z0-9_.:-]{0,159}", code) else type(exc).__name__
 
 
-def exchange_owner_decision(packet_root: Path, request_key: str, *,
-                            transport: Transport | None = None) -> dict[str, Any] | None:
-    """Ask the WebApp about one owner-contract-blocked request, and record a confirmation; None if not blocked.
+def _now() -> float:
+    return time.time()
 
-    The outcome is what the request's status keeps under ``STATUS_FIELD``.
+
+def _instant(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _next_check(previous: Mapping[str, Any] | None) -> float | None:
+    """When the request may be asked again, from its kept exchange; None asks now."""
+
+    value = (previous or {}).get("next_check_at")
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _kind(outcome: Mapping[str, Any]) -> str:
+    if outcome.get("status") == "failed" and str(outcome.get("error", "")).startswith("website_owner_success_http_4"):
+        return "refused"  # a typed WebApp refusal (or its rate limit) will not change in a minute
+    return str(outcome.get("status"))
+
+
+def _scheduled(outcome: dict[str, Any], previous: Mapping[str, Any] | None, progression_digest: str | None,
+               now: float) -> dict[str, Any]:
+    """The outcome with its check time and the next one: the wait doubles while the same answer repeats."""
+
+    previous = previous or {}
+    attempt = previous.get("attempt")
+    repeated = (_kind(previous) == _kind(outcome) and previous.get("proposal_digest") == outcome.get("proposal_digest")
+                and previous.get("progression_digest") == progression_digest and type(attempt) is int and attempt > 0)
+    attempt = attempt + 1 if repeated else 1
+    first, longest = BACKOFF.get(_kind(outcome), BACKOFF["failed"])
+    wait = min(longest, first * 2 ** min(attempt - 1, 20))
+    return {**outcome, "progression_digest": progression_digest, "attempt": attempt,
+            "checked_at": _instant(now), "next_check_at": _instant(now + wait)}
+
+
+def exchange_owner_decision(packet_root: Path, request_key: str, *, transport: Transport | None = None,
+                            now: float | None = None) -> dict[str, Any] | None:
+    """Ask the WebApp about one owner-contract-blocked request, and record a confirmation.
+
+    None when the request is not blocked on the owner contract, or is not due:
+    its kept check time has not come and its intent's progression is unchanged.
+    The outcome is what the request's status keeps under ``STATUS_FIELD``. Any
+    error is this request's ``failed`` outcome; it never leaves this function.
     """
 
+    from . import task_evaluation_scene_intake as intake
     from .task_evaluation_owner_success_confirmation import binding, find_confirmation, published_job
     from .team_scene_packet_worker import _read_json, owner_success_confirmation_scope, validated_request
 
-    status = _read_json(packet_root / "status" / f"{request_key}.json") or {}
+    now = _now() if now is None else now
+    try:
+        status = _read_json(packet_root / "status" / f"{request_key}.json") or {}
+    except Exception:  # noqa: BLE001 - an unreadable status is not this exchange's to decide
+        return None
     if not _owner_contract_blocked(status) or (packet_root / "pending" / f"{request_key}.json").exists():
         return None
+    previous = status.get(STATUS_FIELD) if isinstance(status.get(STATUS_FIELD), dict) else None
+    # Cheap reads only, before anything is due: the request, its intent and its progression's digest.
+    scope = unbound = progression_digest = None
     try:
         request = validated_request(_read_json(packet_root / "processed" / f"{request_key}.json"))
         scope, unbound = owner_success_confirmation_scope(request)
-        if scope is None:
-            return {"status": "intent_unbound", "reason": unbound}
+        if scope is not None:
+            progression_digest = intake._read(Path(scope["directory"]) / "progression.json",
+                                              "progression_digest")["progression_digest"]
+    except Exception as exc:  # noqa: BLE001 - one job's exchange never stops the pass
+        prelude_error: BaseException | None = exc
+    else:
+        prelude_error = None
+    next_check = _next_check(previous)
+    backoff_expired = next_check is None or now >= next_check
+    if not backoff_expired and (previous or {}).get("progression_digest") == progression_digest:
+        return None
+    if prelude_error is not None:
+        return _scheduled({"status": "failed", "error": _error_code(prelude_error)}, previous, progression_digest, now)
+    if scope is None:
+        return _scheduled({"status": "intent_unbound", "reason": unbound}, previous, progression_digest, now)
+    proposal_digest: str | None = None
+    try:
         intent, directory = scope["intent"], Path(scope["directory"])
         if (directory / "revoked.json").exists():
-            return {"status": "intent_revoked"}
+            return _scheduled({"status": "intent_revoked"}, previous, progression_digest, now)
         job = published_job(directory, intent)
         bound = binding(intent=intent, revision=job["revision"], criteria=job["criteria"],
                         proposal=job["proposal"] or {})
         notice = proposal_notice(bound)
+        proposal_digest = notice["proposal_digest"]
+        if not backoff_expired and previous is not None and previous.get("proposal_digest") == notice["proposal_digest"]:
+            # The progression moved but the proposal is the same: keep the schedule, send nothing.
+            return {**previous, "progression_digest": progression_digest}
         existing = find_confirmation(directory, intent, bound)
         if existing is not None:
             # Already confirmed (door or website): the requeue pass takes it; nothing is sent.
-            return {"status": "already_confirmed", "proposal_digest": notice["proposal_digest"],
-                    "confirmation_digest": existing["confirmation_digest"],
-                    "issuer_channel": existing["issuer_channel"]}
+            outcome: dict[str, Any] = {"status": "already_confirmed", "proposal_digest": notice["proposal_digest"],
+                                       "confirmation_digest": existing["confirmation_digest"],
+                                       "issuer_channel": existing["issuer_channel"]}
+            return _scheduled(outcome, previous, progression_digest, now)
+        outcome = {"status": "failed", "proposal_digest": notice["proposal_digest"]}
         receipt = validated_receipt((transport or send_proposal)(notice), notice)
-        outcome: dict[str, Any] = {"status": receipt["status"], "proposal_digest": notice["proposal_digest"]}
+        outcome["status"] = receipt["status"]
         decision = receipt["decision"]
         if decision is not None:
             outcome["decision_digest"] = decision["decision_digest"]
@@ -249,40 +361,53 @@ def exchange_owner_decision(packet_root: Path, request_key: str, *,
         elif receipt["status"] == "confirmed":
             written = record_website_confirmation(intent_root=directory.parent, intent=intent, decision=decision)
             outcome.update(record=written["status"], confirmation_digest=written["confirmation_digest"])
-        return outcome
-    except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
-        return {"status": "failed", "error": _error_code(exc)}
+        return _scheduled(outcome, previous, progression_digest, now)
+    except Exception as exc:  # noqa: BLE001 - one job's exchange never stops the pass (http.client errors too)
+        failed = {"status": "failed", "error": _error_code(exc),
+                  **({"proposal_digest": proposal_digest} if proposal_digest else {})}
+        return _scheduled(failed, previous, progression_digest, now)
 
 
 def exchange_owner_decisions(packet_root: str | Path, *, transport: Transport | None = None,
                              limit: int = MAX_EXCHANGES_PER_PASS, now: float | None = None
                              ) -> dict[str, dict[str, Any]]:
-    """This pass's exchange for up to ``limit`` owner-contract-blocked requests, by request key.
+    """This pass's exchange for up to ``limit`` due owner-contract-blocked requests, by request key.
 
-    The starting request rotates every minute, so a job whose owner never
-    answers cannot starve a newer one. Runs without the packet queue lock: it
-    reads statuses only, and a confirmation is written under the intake lock
-    by the door's writer.
+    A request that is not due is skipped and does not count. The starting
+    request rotates every minute, so a job whose owner never answers cannot
+    starve a newer one. Runs without the packet queue lock: it reads statuses
+    only, and a confirmation is written under the intake lock by the door's
+    writer.
     """
 
     from .team_scene_packet_worker import _read_json
 
+    now = _now() if now is None else now
     root = Path(packet_root)
-    blocked = [path.stem for path in sorted((root / "processed").glob("*.json"))
-               if _owner_contract_blocked(_read_json(root / "status" / path.name) or {})
-               and not (root / "pending" / path.name).exists()]
+    blocked = []
+    for path in sorted((root / "processed").glob("*.json")):
+        try:
+            if (_owner_contract_blocked(_read_json(root / "status" / path.name) or {})
+                    and not (root / "pending" / path.name).exists()):
+                blocked.append(path.stem)
+        except Exception:  # noqa: BLE001 - one unreadable status never stops the pass
+            continue
     if not blocked:
         return {}
-    start = int((time.time() if now is None else now) // 60) % len(blocked)
+    start = int(now // 60) % len(blocked)
     outcomes: dict[str, dict[str, Any]] = {}
-    for key in (blocked[start:] + blocked[:start])[:max(0, limit)]:
-        outcome = exchange_owner_decision(root, key, transport=transport)
+    for key in blocked[start:] + blocked[:start]:
+        if len(outcomes) >= max(0, limit):
+            break
+        outcome = exchange_owner_decision(root, key, transport=transport, now=now)
         if outcome is not None:
             outcomes[key] = outcome
     return outcomes
 
 
 __all__ = [
+    "BACKOFF",
+    "CONTACT_CLASS_SCOPE",
     "DECISION_SCHEMA",
     "HOLD_REASONS",
     "NOTICE_SCHEMA",
@@ -290,6 +415,7 @@ __all__ = [
     "STATUS_FIELD",
     "exchange_owner_decision",
     "exchange_owner_decisions",
+    "forbidden_contacts",
     "proposal_notice",
     "record_website_confirmation",
     "send_proposal",

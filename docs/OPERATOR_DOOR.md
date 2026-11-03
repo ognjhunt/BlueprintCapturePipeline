@@ -631,8 +631,15 @@ is written by the door's own writer and validators, with `issuer_channel`
 `website`, and the same pass returns the request to `pending/`. A "wrong"
 answer writes nothing under the intent and leaves the request blocked; its
 status keeps the reason under `website_owner_success`, as it keeps `pending`
-or a `failed` exchange. A republished job has a new proposal digest and needs a
-new decision. The door path above is unchanged.
+or a `failed` exchange. Each request is asked again only at its kept
+`next_check_at`, or at once when its intent's progression changes and builds a
+new proposal; the wait doubles while the answer repeats, from 2 min (pending,
+up to 1 h), 30 min (held, up to 1 day), 15 min (a WebApp 4xx, up to 1 day) or
+2 min (a transport failure, up to 6 h). Any error in one job's exchange is that
+job's `failed` exchange and never stops the screening pass. A republished job
+has a new proposal digest and needs a new decision. The door path above is
+unchanged. The WebApp alerts ops (Slack, then ops email) when an owner holds a
+job's thresholds.
 
 Every team-packet status names the release that wrote it (`release_commit`,
 the commit of the release checkout the worker or timer runs from). Any other

@@ -857,8 +857,10 @@ def requeue_transient_blocked(*, queue_root: str | Path,
     unconfirmed owner contract asks the WebApp for the owner's decision on its
     thresholds (``website_owner_success_confirmation``); a website confirmation
     is written under the intent, so the requeue below returns that request to
-    pending in this same pass. ``website_transport`` replaces the signed POST
-    (tests).
+    pending in this same pass. Each request is asked again only when its kept
+    check time comes (``website_owner_success_confirmation.BACKOFF``). Nothing in
+    that exchange stops this pass: any error is recorded and the requeue below
+    still runs. ``website_transport`` replaces the signed POST (tests).
     """
 
     from .website_owner_success_confirmation import exchange_owner_decisions
@@ -867,7 +869,7 @@ def requeue_transient_blocked(*, queue_root: str | Path,
     release = current_release_commit()
     try:
         website = exchange_owner_decisions(root, transport=website_transport)
-    except (OSError, ValueError) as exc:  # a pass never stops on the website exchange
+    except Exception as exc:  # noqa: BLE001 - a pass never stops on the website exchange
         from .bounded_error import error_description
 
         website, website_error = {}, error_description(exc)
@@ -881,7 +883,12 @@ def requeue_transient_blocked(*, queue_root: str | Path,
         now = _utc_now()
         recovered = [_recover_interrupted(root, path, now=now, release=release)["request_key"]
                      for path in sorted((root / "processing").glob("*.json"))]
-        _record_website_owner_decisions(root, website)
+        try:
+            _record_website_owner_decisions(root, website)
+        except Exception as exc:  # noqa: BLE001 - a status that cannot be written is retried next pass
+            from .bounded_error import error_description
+
+            website_error = website_error or error_description(exc)
         requeued = _requeue_due(root, now, release)
     return {"schema_version": RUN_SCHEMA, "status": "requeued" if requeued else "idle", "requeued": requeued,
             "recovered": recovered, "website_owner_decisions": website,
