@@ -64,17 +64,19 @@ def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy
 
 def _robot_fit_table(*, preparation: Mapping[str, Any], verdict: Mapping[str, Any], collision_path: Path,
                      native_root: Path) -> dict[str, Any]:
-    """Which catalog robot models fit the job by spec sheet (``website_robot_fit``), beside the verdict.
+    """Which catalog robot models fit the job by spec sheet and, for the arms that have one, their own
+    kinematic chain (``website_robot_fit``), beside the verdict.
 
     Informational: it protects no privacy, rights or money, so it fails open. A failure is recorded
     and the handoff goes on with its gating unchanged; only a lost handoff lease, which stops every
     write, stops it here too.
     """
     try:
+        from .robot_arm_chains import load_robot_arm_chains
         from .robot_spec_catalog import load_robot_spec_catalog
         from .website_robot_fit import FILENAME, robot_fit_table
         table = robot_fit_table(preparation=preparation, collision_path=collision_path, verdict=verdict,
-                                catalog=load_robot_spec_catalog())
+                                catalog=load_robot_spec_catalog(), arm_chains=load_robot_arm_chains())
         write_json(native_root / FILENAME, table)
         return {"path": str(native_root / FILENAME), "digest": table["table_digest"], "counts": table["counts"]}
     except HandoffLeaseError:

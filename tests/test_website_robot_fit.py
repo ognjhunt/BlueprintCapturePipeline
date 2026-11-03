@@ -15,6 +15,7 @@ import pytest
 from blueprint_pipeline import team_embodiment_stance
 from blueprint_pipeline.core.handoff_lease import HandoffLeaseError
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.robot_arm_chains import load_robot_arm_chains
 from blueprint_pipeline.robot_spec_catalog import validate_robot_spec_catalog
 from blueprint_pipeline.website_rigid_feasibility import rigid_task_verdict
 from blueprint_pipeline.website_robot_fit import PROFILE_RECIPES, owner_stated_weight_kg, robot_fit_table
@@ -64,11 +65,11 @@ def _verdict(job, collision, status="abstained", *, stations=([0.0, 0.0, 0.0],),
     return value
 
 
-def _table(tmp_path, catalog, job=None, **verdict):
+def _table(tmp_path, catalog, job=None, arm_chains=None, **verdict):
     job = job or _job()
     collision = _collision(tmp_path)
     return robot_fit_table(preparation=job, collision_path=collision, verdict=_verdict(job, collision, **verdict),
-                           catalog=catalog)
+                           catalog=catalog, arm_chains=arm_chains)
 
 
 def _rows(table):
@@ -109,6 +110,83 @@ def test_reach_fails_only_when_even_the_optimistic_scale_is_out_of_reach(tmp_pat
     # A fixed arm is assumed on the existing station's pedestal; it has no access check.
     assert _check(rows["long_arm"], "stance")["values"]["mount"] == "station_pedestal_level_with_task_support"
     assert [check["check"] for check in rows["long_arm"]["checks"]] == ["stance", "reach", "payload", "cycle_time"]
+
+
+UR5E, CRX, IIWA = "universal_robots_ur5e", "fanuc_crx_10ia", "kuka_lbr_iiwa_14"
+# A box 0.25 m out, clear of the station's 0.3 m square, set down 0.1 m to the side: pointing down,
+# the LBR iiwa 14 cannot fold that close to its own base (from 0.45 m out at this height).
+NEAR = ([0.2, -0.05, 0.0], [0.3, 0.05, 0.1])
+NEAR_PLACE = {"relation": "on", "position_world_m": [0.25, 0.1, 0.0]}
+NO_POSE = ("no pose with the tool pointing down that reaches both points at every scale was found from the "
+           "stations tried; a search miss is not a proof")
+
+
+def _chained(*models):
+    """Fixture models on real recipes, so the shipped chains apply to them."""
+    return validate_robot_spec_catalog(_catalog(*models), recipe_ids={UR5E, CRX, IIWA})
+
+
+def test_an_arm_with_a_chain_reaches_by_its_own_kinematics(tmp_path):
+    chains = load_robot_arm_chains()
+    catalog = _chained(_model("ur5e", recipe_id=UR5E, max_reach_m=_reach(0.85)),
+                       _model("crx", recipe_id=CRX, max_reach_m=_reach(1.249)), _model("sheet_only"))
+    table = _table(tmp_path, catalog, arm_chains=chains)
+    rows = _rows(table)
+    for name, recipe in (("ur5e", UR5E), ("crx", CRX)):
+        reach = _check(rows[name], "reach")
+        assert (reach["result"], rows[name]["verdict"]) == ("pass", "fits_spec")
+        assert reach["values"]["decided_by"] == "arm_chain_ik" and reach["values"]["chain"]["recipe_id"] == recipe
+        # From the one station, both points at 0.75x to 1.33x: the place point, 0.59 m out at 1x, moves
+        # 0.35 m across the band, so 8 scales keep each step within 5 cm.
+        assert reach["values"]["station_world_m"] == [0.0, 0.0, 0.0]
+        assert reach["values"]["scales_solved"] == 8
+    # A model without a chain keeps the published-reach sphere.
+    assert "decided_by" not in _check(rows["sheet_only"], "reach")["values"]
+    assert table["arm_chains_digest"] == chains["catalog_digest"]
+
+
+def test_a_point_the_arm_cannot_fold_onto_is_unknown_not_a_pass(tmp_path):
+    job = _job(subject=NEAR, destination=NEAR_PLACE)
+    catalog = _chained(_model("iiwa", recipe_id=IIWA, max_reach_m=_reach(0.82)))
+    stations = ([0.0, 0.0, 0.0], [0.01, 0.0, 0.0], [0.0, 0.01, 0.0], [-0.01, 0.0, 0.0], [0.0, -0.01, 0.0])
+    # Well inside the published reach of the base, so the sphere alone passes it.
+    assert _check(_table(tmp_path, catalog, job=job, stations=stations)["rows"][0], "reach")["result"] == "pass"
+    row = _table(tmp_path, catalog, job=job, stations=stations, arm_chains=load_robot_arm_chains())["rows"][0]
+    reach = _check(row, "reach")
+    assert (reach["result"], reach["reason"], row["verdict"]) == ("unknown", NO_POSE, "unknown")
+    # Every station is within the arm's reach bound; only the four nearest the task are solved.
+    assert (reach["values"]["stations_within_bound"], reach["values"]["stations_solved"]) == (5, 4)
+    assert reach["values"]["first_miss"]["point"] == "grasp"
+
+
+@pytest.mark.parametrize("x, reason", [
+    (1.3, "the grasp or place point is beyond the published reach from every station even at the smaller scale, "
+          "and no pose reaching it was found"),
+    (2.5, "the grasp or place point is beyond the arm's own reach bound from every station at every scale"),
+])
+def test_a_chain_arm_fails_only_by_its_own_bound_or_its_published_reach(tmp_path, x, reason):
+    job = _job(subject=([x - 0.05, -0.05, 0.0], [x + 0.05, 0.05, 0.1]),
+               destination={"relation": "on", "position_world_m": [x, 0.3, 0.0]})
+    catalog = _chained(_model("ur5e", recipe_id=UR5E, max_reach_m=_reach(0.85)))
+    row = _table(tmp_path, catalog, job=job, arm_chains=load_robot_arm_chains())["rows"][0]
+    reach = _check(row, "reach")
+    assert (reach["result"], reach["reason"], row["verdict"]) == ("fail", reason, "doesnt_fit")
+
+
+def test_the_arms_own_chain_decides_over_its_published_figure(tmp_path):
+    # A sheet figure far below what the arm's chain reaches: the sphere fails, the solved pose passes.
+    catalog = _chained(_model("ur5e", recipe_id=UR5E, max_reach_m=_reach(0.3)))
+    reach = _check(_table(tmp_path, catalog, arm_chains=load_robot_arm_chains())["rows"][0], "reach")
+    assert reach["result"] == "pass" and reach["values"]["published_reach"]["result"] == "fail"
+
+
+def test_the_table_binds_the_chain_catalog_it_used(tmp_path):
+    catalog = _chained(_model("ur5e", recipe_id=UR5E))
+    assert _table(tmp_path, catalog)["arm_chains_digest"] is None
+    tampered = copy.deepcopy(load_robot_arm_chains())
+    tampered["arms"][0]["joints"][1]["upper"] = 0.0
+    with pytest.raises(ValueError, match="website_robot_fit_arm_chains_unsealed"):
+        _table(tmp_path, catalog, arm_chains=tampered)
 
 
 @pytest.mark.parametrize("text, kilograms", [("5 kg", 5.0), ("12 lb", 5.44310844), ("about 3kg", 3.0),
@@ -354,6 +432,8 @@ def test_the_handoff_writes_the_table_beside_the_verdict(handoff):
                                          "digest": table["table_digest"], "counts": table["counts"]}
     assert table["table_digest"] == canonical_digest(table, digest_field="table_digest")
     assert table["counts"] == {"fits": 0, "fits_spec": 1, "doesnt_fit": 0, "unknown": 0}
+    # The shipped arm chains decide reach for the arms that have one.
+    assert table["arm_chains_digest"] == load_robot_arm_chains()["catalog_digest"]
 
 
 @pytest.mark.parametrize("status", ["clear", "abstained"])
