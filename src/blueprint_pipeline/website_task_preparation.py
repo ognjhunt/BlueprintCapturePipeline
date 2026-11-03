@@ -33,6 +33,7 @@ from .decision_evidence_contracts import canonical_digest
 from .external_scene_frame_registration import _axis_rotations, _sample, _trimmed_rmse
 from .local_reconstruction_adapters import _sha256_file
 from .website_assembly_coverage import assembly_constraints, assembly_contract, coverage_blockers, coverage_matches
+from .website_task_context_contracts import GEOMETRY_ONLY_BLOCKER
 from .website_task_masks import decode_track_mask, estimate_region_bounds, estimate_target_bounds
 from .website_support_geometry import (REGION_EDGE_ROUNDING_M, destination_clear_of_start,
                                        farthest_supported_destination, footprint_at, ground_on_observed_floor,
@@ -896,7 +897,15 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                       base_scene: Mapping[str, Any], output_root: Path, spend: Mapping[str, Any],
                                       now: float, task_semantics: Mapping[str, Any] | None = None,
                                       evaluation_inputs: Mapping[str, Any] | None = None,
-                                      synthetic_authoring_backend: str = "pinned_cad_primitive_v1") -> dict[str, Any]:
+                                      synthetic_authoring_backend: str = "pinned_cad_primitive_v1",
+                                      atlas_route: str = "full") -> dict[str, Any]:
+    """``atlas_route="geometry_only"``: the Atlas job kept the scene as filmed
+    (``website_atlas_pipeline.ROUTE_ENV``). The preparation is for the robot fit check
+    only and never an intake (``GEOMETRY_ONLY_BLOCKER``); a captured rigid subject's box
+    is cut out of the collider before any lookup.
+    """
+    if atlas_route not in ("full", "geometry_only"):
+        raise ValueError("atlas_route_invalid")
     output_root.mkdir(parents=True, exist_ok=True)
     blockers: list[str] = []
     semantics_options = {"task_semantics": task_semantics,
@@ -1057,6 +1066,21 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                                             matrix=matrix, runtime_to_sim=runtime_to_sim, up=up, up_sign=up_sign)
                    if len(destination_rows) == 1 and not independent_object and not articulated
                    and destination_rows[0].get("placement_relation") == "on" else None)
+    subject_excision = None
+    if atlas_route == "geometry_only":
+        if synthetic is None and not articulated and not independent_object:
+            # A captured rigid subject is still in the reconstruction: cut its box out before
+            # anything rests on the collider, so no lookup or robot check meets it. An
+            # articulated subject is part of its fixture and stays.
+            from .website_subject_excision import excise_subject
+            excised = excise_subject(base_scene=base_scene, collider=collider, subject_min=subject_min,
+                                     subject_max=subject_max, up=up, up_sign=up_sign, meters_per_unit=mpu,
+                                     placement_residual_m=residual, output_root=output_root)
+            subject_excision = excised["record"]
+            if excised["status"] == "excised":
+                base_scene, collider = excised["base_scene"], excised["collider"]
+                write_json(output_root / "base_scene.json", base_scene)
+        blockers.append(GEOMETRY_ONLY_BLOCKER)
     support = collider_conditioning = None
     if not independent_object:
         # The surfaces the subject starts and ends on are flattened before anything rests
@@ -1559,6 +1583,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                              "aabb_min_xyz": sim_min, "aabb_max_xyz": sim_max,
                              "coordinate_frame": "Z_up_estimated_meters",
                              "geometry_origin": "synthetic_design" if synthetic is not None
+                             else "retained_in_captured_reconstruction" if atlas_route == "geometry_only"
                              else "removed_before_reconstruction",
                              "complete_object_dimensions": body is not None or synthetic is not None},
                  "support": {"description": subject_entry.get("support_label") or "support surface under subject",
@@ -1625,6 +1650,7 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         **({"surface_target_admission": surface_target_admission} if surface_target_admission is not None else {}),
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
         **({"collider_conditioning": collider_conditioning} if collider_conditioning is not None else {}),
+        **({"subject_excision": subject_excision} if subject_excision is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
                              else "provided_mesh_rigid_authoring" if synthetic is not None
                              else "content_agents_rigid_replacement",
@@ -1649,7 +1675,13 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                         # A designed subject was never captured: nothing to erase, its mesh is supplied.
                         **({"observed_appearance_object_removal": "not_required_subject_never_captured",
                             "rigid_replacement_authoring": "provided_mesh_rigid_authoring"}
-                           if synthetic is not None else {})},
+                           if synthetic is not None else {}),
+                        # Geometry only: nothing was erased; a rigid subject's box is cut from the
+                        # collider, or ``subject_excision`` says why not.
+                        **({"observed_appearance_object_removal": "not_performed_geometry_only",
+                            "collision_object_excision": "subject_box_excised_from_captured_reconstruction"
+                            if (subject_excision or {}).get("status") == "excised" else "not_performed_geometry_only"}
+                           if atlas_route == "geometry_only" else {})},
         "provider_mutation_performed": False,
     }
     value["digest"] = canonical_digest(value, digest_field="digest")

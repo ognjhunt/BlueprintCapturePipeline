@@ -216,13 +216,18 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
         if result.get('observed_scene_only') is True:
             return {'status': 'needs_input', 'reason': 'website_atlas_task_evidence_incomplete',
                     'observed_scene_available': True, 'simulation_qualified': False}
-    preserved = result.get("subject_origin") in PRESERVED_SCENE_ORIGINS
+    # A geometry-only job keeps the scene as filmed, its captured subject included
+    # (website_atlas_pipeline.ROUTE_ENV): preserved, never completed, never edited.
+    geometry_only = result.get("atlas_route") == "geometry_only"
+    preserved = result.get("subject_origin") in PRESERVED_SCENE_ORIGINS or geometry_only
     completion_admission = None
     if preserved:
         if (result.get("captured_scene_preserved") is not True
                 or result.get("object_removal_performed") is not False
                 or result.get("image_inpainting_performed") is not False
-                or type(result.get("generated_completion_performed")) is not bool):
+                or type(result.get("generated_completion_performed")) is not bool
+                or (geometry_only and (result["generated_completion_performed"]
+                                       or type(result.get("subject_in_reconstruction")) is not bool))):
             raise ValueError("website_atlas_preserved_scene_contract_invalid")
         if result['generated_completion_performed']:
             completion = result.get('scene_completion') or {}
@@ -400,4 +405,6 @@ def atlas_scene_source(*, capture_root: Path, output_root: Path,
             **({"subject_origin": result["subject_origin"],
                 "scene_content": ('captured_scene_with_bounded_completion' if completion_admission is not None
                                   else 'captured_scene_preserved')} if preserved else {}),
+            **({"atlas_route": "geometry_only", "subject_in_reconstruction": result["subject_in_reconstruction"]}
+               if geometry_only else {}),
             "alignment": "anchored" if anchor else "registration_search"}

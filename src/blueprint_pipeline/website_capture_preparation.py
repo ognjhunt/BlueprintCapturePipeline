@@ -34,6 +34,7 @@ def run_website_capture_preparation(
     from .website_scene_handoff import prepare_website_scene_handoff
     from .website_task_context_contracts import (
         holds_native_task_preparation,
+        retains_geometry_only_fit,
         retains_task_family_preparation,
         sponsors_scene_preparation,
     )
@@ -141,7 +142,8 @@ def run_website_capture_preparation(
     context = descriptor.metadata.get("site_task_context") or {}
     if (outbox.get("state") != "forward_pending"
             and not holds_native_task_preparation(preparation, context)
-            and not retains_task_family_preparation(preparation, context)):
+            and not retains_task_family_preparation(preparation, context)
+            and not retains_geometry_only_fit(preparation, context)):
         raise StageError("website_scene_preparation", ",".join(
             preparation.get("blockers")
             or (preparation.get("runtime_inputs") or {}).get("blockers")

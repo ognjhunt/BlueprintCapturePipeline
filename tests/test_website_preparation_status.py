@@ -347,6 +347,43 @@ def test_completed_observed_room_is_an_honest_task_limit_in_signed_status(prepar
     assert _post(prepared_source).json()["state"] == "awaiting_inputs"
 
 
+def _complete_geometry_only_fit(source, **change):
+    from blueprint_pipeline.website_task_context_contracts import GEOMETRY_ONLY_BLOCKER
+
+    root, owner, _, _, ledger, _ = source
+    handoff = {"schema_version": "website_scene_handoff.v1", "status": "needs_input",
+               **{key: owner[key] for key in ("scene_id", "capture_id")},
+               "blockers": [GEOMETRY_ONLY_BLOCKER], "atlas_route": "geometry_only",
+               "simulator_ready": False, "visual_reconstruction_ready": True,
+               "fit_check": {"status": "completed"}, **change}
+    handoff["digest"] = canonical_digest(handoff, digest_field="digest")
+    write_json(root / "pipeline/website_scene_preparation/handoff.json", handoff)
+    listener._write_output_commit(root, scene_id=owner["scene_id"], capture_id=owner["capture_id"],
+        attempt_count=ledger["attempt_count"], result={"status": "completed", "native_execution_complete": False,
+            "website_scene_preparation": handoff}, owner="synthetic-worker", token=ledger["lease_token"],
+        ledger_update={"status": "completed"})
+    return handoff
+
+
+@pytest.mark.parametrize("schema", [status_reader.STATUS_V1, status_reader.STATUS_V2, status_reader.STATUS_V3])
+def test_a_completed_geometry_only_fit_check_is_held_and_never_handed_off(prepared_source, schema):
+    _complete_geometry_only_fit(prepared_source)
+    result = status_reader.read_preparation_status(capture_root=prepared_source[0], selectors=prepared_source[3],
+                                                  schema_version=schema)
+    assert result["state"] == "awaiting_inputs" and result["code"] == "preparation_inputs_pending"
+    assert result.get("terminal_reason") is None
+    if schema == status_reader.STATUS_V3:
+        assert result["outcome"] is None  # A fit check is not a stopped attempt; v5 carries the table.
+    assert _post(prepared_source).json()["state"] == "awaiting_inputs"
+
+
+@pytest.mark.parametrize("change", [{"source_registration": {"path": "registered.json"}},
+                                    {"website_intake_outbox": {"state": "delivered"}}, {"atlas_route": "full"}])
+def test_a_geometry_only_stage_that_registered_or_left_its_route_is_not_completed(prepared_source, change):
+    _complete_geometry_only_fit(prepared_source, **change)
+    assert _post(prepared_source).status_code == 503
+
+
 def test_status_v5_carries_the_jobs_robot_fit_table_and_older_versions_do_not(prepared_source):
     from tests.test_website_robot_fit_projection import write_fit_table
 
