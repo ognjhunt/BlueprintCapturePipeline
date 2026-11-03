@@ -35,7 +35,7 @@ from operator_door import requests as r
 from operator_door import status
 from operator_door.config import DoorConfig
 from operator_door.spool_runner import _process_one
-assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window", "extend-scene-execution-budget"}
+assert set(r._SCOPES) == {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff", "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies", "extend-scene-execution-window", "extend-scene-execution-budget", "confirm-owner-success-contract"}
 # The owner-approved, time-only scene window extension passes the fence.
 assert r.required_scope("extend-scene-execution-window") == "operate"
 assert r.validate_request_id("20261031T000000Z-extend-scene-execution-window-0123abcd")
@@ -53,15 +53,15 @@ budget = {"kind":"extend-scene-execution-budget", "intent_id":"scene-"+"a"*64, "
 assert r.validate_request(budget) == budget
 applied = {**budget, "apply":True, "apply_ack":"sha256:"+"c"*64}
 assert r.validate_request(applied) == applied
-# The owner's success-threshold confirmation is not in this profile: adding it needs the owner's sign-off.
+# So does the owner's confirmation of a website job's built success thresholds, as preview and as apply.
+assert r.required_scope("confirm-owner-success-contract") == "operate"
+assert r.validate_request_id("20261103T000000Z-confirm-owner-success-contract-0123abcd")
 owner_success = {"kind":"confirm-owner-success-contract", "intent_id":"scene-"+"a"*64, "owner_user_id":"owner-uid",
           "owner_organization_id":"user:owner-uid", "approved_by":"owner-uid", "approval_evidence":"owner approval fixture",
           "apply":False, "apply_ack":"", "ack":"confirm-owner-success-contract"}
-for check in (lambda: r.required_scope("confirm-owner-success-contract"), lambda: r.validate_request(owner_success),
-              lambda: r.validate_request_id("20261103T000000Z-confirm-owner-success-contract-0123abcd")):
-    try: check()
-    except r.RequestRefused as e: assert e.code in {"kind_unknown", "request_id_invalid"}, e.code
-    else: raise AssertionError("owner success confirmation admitted through restricted profile")
+assert r.validate_request(owner_success) == owner_success
+owner_success_applied = {**owner_success, "apply":True, "apply_ack":"sha256:"+"c"*64}
+assert r.validate_request(owner_success_applied) == owner_success_applied
 assert r.required_scope("public-embodiment-preparation") == "operate"
 assert r.validate_request_id("20261029T000000Z-public-embodiment-preparation-0123abcd")
 commit = "a" * 40

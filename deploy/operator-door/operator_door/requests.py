@@ -111,11 +111,18 @@ if DISPATCHER_HOLD_ONLY:
     # the operator door's restricted profile") the preparation re-issue: it
     # acts only on a completed preparation whose grant the owner renewed (the
     # renewal names the owner as approver), recomputes CPU inputs, buys
-    # nothing, and leaves every money check to the intake.
+    # nothing, and leaves every money check to the intake. The owner's
+    # confirmation of a published website job's built success thresholds
+    # (confirm-owner-success-contract) is admitted the same way as the budget
+    # grant: a preview, then an apply bound to that preview's digest, writing
+    # one sealed record that names the owner as approver; it changes no
+    # threshold, starts no compute and moves no money. It was added to this
+    # profile in its own commit for the owner's explicit sign-off.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
-                           "extend-scene-execution-window", "extend-scene-execution-budget"}}
+                           "extend-scene-execution-window", "extend-scene-execution-budget",
+                           "confirm-owner-success-contract"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.

@@ -249,6 +249,12 @@ dispatcher-hold-only profile on 2026-11-02 ("approve adding preparation-reissue
 to the operator door's restricted profile"): it acts only on a grant the owner
 renewed and buys nothing.
 
+The same profile admits `confirm-owner-success-contract` (below) as it admits
+the budget grant: a preview, then an apply bound to the preview's digest, that
+writes one sealed record naming the owner as approver. It changes no
+threshold, starts no compute and moves no money. It was added to the profile
+in its own commit for the owner's explicit sign-off.
+
 | Kind | Scope | Body | What the runner does |
 |---|---|---|---|
 | `deploy` | deploy | `commit` on `origin/main`, `wait_for_idle` | `door-deploy.sh`. While any `blueprint-*deploy*` unit is active, an iteration deploy is parked until it ends (see below); a deploy with release provenance is refused |
