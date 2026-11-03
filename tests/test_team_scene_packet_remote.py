@@ -231,6 +231,9 @@ def test_the_worker_stage_is_registered_and_imports_no_authority() -> None:
 _CLOSURE = '''
 import importlib.metadata, json, sys
 from pathlib import Path
+# What site loaded at start-up (.pth hooks: setuptools' distutils shim, cmeel, CUDA path finders) is the
+# interpreter's, never the compile's: only what this script loads after it counts, as in the episode stage's proof.
+baseline = set(sys.modules)
 inputs = json.loads(Path(sys.argv[1]).read_text())
 inputs["documents"] = {name: Path(path) for name, path in inputs["documents"].items()}
 # What the registered handler imports before it compiles: its own module and the host worker's blocker typing.
@@ -238,8 +241,17 @@ import blueprint_pipeline.team_scene_packet_remote
 from blueprint_pipeline.team_scene_packet_worker import _blocker
 from blueprint_pipeline.team_scene_packet import materialize_team_scene
 materialize_team_scene(**inputs, output_root=Path(sys.argv[2]))
+repository = Path(sys.argv[4]).resolve()
+
+
+def ours(name):
+    path = getattr(sys.modules.get(name), "__file__", None)
+    return bool(path) and Path(path).resolve().is_relative_to(repository)
+
+
 mapping = importlib.metadata.packages_distributions()
-seen = {dist for name in set(sys.modules) for dist in mapping.get(name.split(".")[0], [])}
+loaded = {name.split(".")[0] for name in set(sys.modules) - baseline if not ours(name)}
+seen = {dist for top in loaded for dist in mapping.get(top, [])}
 Path(sys.argv[3]).write_text(json.dumps({"distributions": sorted(seen), "loaded": sorted(sys.modules)}))
 '''
 
@@ -259,7 +271,8 @@ def test_parity_set_covers_every_distribution_a_team_compile_loads(tmp_path: Pat
     inputs["documents"] = {name: str(path) for name, path in scene["documents"].items()}
     (tmp_path / "inputs.json").write_text(json.dumps(inputs), encoding="utf-8")
     run = subprocess.run(
-        [sys.executable, "-c", _CLOSURE, str(tmp_path / "inputs.json"), str(tmp_path / "scene"), str(tmp_path / "out.json")],
+        [sys.executable, "-c", _CLOSURE, str(tmp_path / "inputs.json"), str(tmp_path / "scene"), str(tmp_path / "out.json"),
+         str(ROOT / "src")],
         cwd=ROOT, capture_output=True, text=True, timeout=600,
         env={**os.environ, "PYTHONPATH": str(ROOT / "src"), "PYTHONDONTWRITEBYTECODE": "1"})
     assert run.returncode == 0, run.stderr[-4000:]
