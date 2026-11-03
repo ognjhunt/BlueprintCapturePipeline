@@ -11,7 +11,8 @@ bundle in execution mode ``rigid_robot_free_probe``
    bound to the task specification teams are scored with) and the scene's own
    packet plan resolved for its nominal cell;
 2. launches Isaac Lab and builds the scene exactly as a team session does, with
-   the packet's robot standing idle at its reset pose (nothing commands it);
+   the packet's robot standing idle at its reset pose (nothing commands it) and
+   no cameras: the probe reads object state, never an image;
 3. runs ``team_embodiment_runtime.record_arena_robot_free_probe`` once; and
 4. writes the raw trace and a ``status: completed`` result wrapper before Isaac
    closes (Isaac may end the process from ``close``).
@@ -207,8 +208,10 @@ def run_rigid_robot_free_probe(*, runtime_dir: Path, output_root: Path,
         if preconstruction.get("passed") is not True:
             result["blockers"].extend(preconstruction.get("blockers") or [])
             raise RuntimeError("rigid_robot_free_probe_preconstruction_failed")
+        # No cameras: the probe sets the object's pose, steps physics with ``render=False`` and reads
+        # its pose and contact forces (``team_embodiment_runtime._ArenaProbeScene``); no image is read.
         built = bound.build_environment(plan, device=bound.device, bundle_root=runtime_dir / "native_task_packet",
-                                        preconstruction_receipt=preconstruction)
+                                        preconstruction_receipt=preconstruction, enable_cameras=False)
         device = dict(bound.read_device_binding(built, expected_device=bound.device))
         result["device_readback"] = device
         if device.get("passed") is not True:
