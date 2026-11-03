@@ -432,6 +432,8 @@ def test_the_worker_pass_requeues_a_due_block_recorded_before_automatic_retries(
     os.replace(queue / "pending" / f"{key}.json", queue / "processed" / f"{key}.json")
     (queue / "status" / f"{key}.json").write_text(json.dumps(
         {"status": "blocked", "blockers": ["team_scene_packet_failed:OSError"]}))
+    # The transient path alone: with a known release, a status naming none takes the new-release retry first.
+    monkeypatch.setattr(worker, "current_release_commit", lambda: None)
     _at(monkeypatch, 0)
     run = world["process"]()
     assert run["automatic_requeue"] == [{"request_key": key, "attempt": 1, "reason": "team_scene_packet_failed:OSError"}]
