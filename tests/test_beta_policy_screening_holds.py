@@ -206,3 +206,128 @@ def test_a_hold_reaches_the_website_only_with_its_exact_acknowledgment(tmp_path,
     assert seen == ["https://webapp.example/api/internal/pipeline/beta-policy-screening-holds"]
     with pytest.raises(ValueError, match="beta_screening_hold_ack_invalid"):
         holds.publish_hold(publication)
+
+
+def _failed_receipt(launch):
+    launch.mkdir(parents=True, exist_ok=True)
+    receipt = {"schema_version": "task_evaluation_configured_scene_robot_free_readiness.v1", "status": "failed",
+               "receipt_digest": ""}
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    (launch / "robot_free_readiness.v1.json").write_text(json.dumps(receipt))
+
+
+def _held_request(source, queue, launch, *, intent="scene-intent-0", revision=0, readiness="failed"):
+    _failed_receipt(launch)
+    request = {"intent_id": intent, "intent_digest": canonical_digest({"intent": intent}),
+               "request": {"submission_id": source["capture_id"], "task": {"task_id": source["task_id"]}}}
+    return packets.enqueue_team_scene_request(intent=request, run_root=launch,
+        receipt={"receipt_digest": canonical_digest({"r": revision})},
+        result={"configured_scene_revision_digest": canonical_digest({"configured_scene_revision": revision})},
+        readiness={"status": readiness, "retained": True}, queue_root=queue)
+
+
+def test_an_error_or_unreadable_state_keeps_a_hold_and_never_releases_it(tmp_path, monkeypatch):
+    """A failed probe stays held through a pass that cannot read it: no release, no re-hold, no lost email."""
+    from blueprint_pipeline import beta_policy_screening_capabilities as capabilities
+
+    world = prepared_source_queue(tmp_path, monkeypatch)
+    monkeypatch.setattr(runner, "enqueue_rigid_robot_free_probe", lambda _capture: {"status": "already_queued"})
+    failed = {**_probe_state(tmp_path), "status": "receipt_decided", "receipt_status": "failed"}
+    monkeypatch.setattr(bundle, "current_probe_state", lambda _root: dict(failed))
+
+    def refused(**_kwargs):
+        raise ValueError("team_evaluation_robot_free_probe_not_passed")
+
+    monkeypatch.setattr(capabilities, "build_planning_inputs", refused)
+    kwargs = {"queue_root": world["screening_queue"], "packet_queue_root": world["packet_queue"]}
+    assert worker.enqueue_prepared_scenes(**kwargs)["sources"][0]["evaluation_hold"]["revision"] == 1
+
+    def unreadable(_root):
+        raise OSError(5, "Input/output error")
+
+    def transient(**_kwargs):
+        raise OSError(28, "No space left on device")
+
+    # probe_hold itself fails, then planning fails for a reason that is not the probe.
+    for patch in ((bundle, "current_probe_state", unreadable), (capabilities, "build_planning_inputs", transient)):
+        monkeypatch.setattr(*patch)
+        [outcome] = worker.enqueue_prepared_scenes(**kwargs)["sources"]
+        assert "evaluation_hold" not in outcome
+        [kept] = holds.pending_holds(queue_root=world["screening_queue"])
+        assert (kept["status"], kept["revision"]) == ("held", 1)
+    monkeypatch.setattr(bundle, "current_probe_state", lambda _root: dict(failed))
+    monkeypatch.setattr(capabilities, "build_planning_inputs", refused)
+    assert worker.enqueue_prepared_scenes(**kwargs)["sources"][0]["evaluation_hold"]["change"] == "unchanged"
+    [kept] = holds.pending_holds(queue_root=world["screening_queue"])
+    assert (kept["status"], kept["revision"]) == ("held", 1)
+
+
+def test_a_newer_scene_revision_of_the_intent_supersedes_a_held_older_one_without_churn(tmp_path, monkeypatch):
+    import os
+
+    from tests.test_beta_policy_screening_worker import source_world
+
+    source, _context = source_world(tmp_path / "partition", monkeypatch)
+    queue, screening = tmp_path / "packets", tmp_path / "screening"
+    old = _held_request(source, queue, tmp_path / "launch-r1", revision=1)
+    kwargs = {"queue_root": screening, "packet_queue_root": queue}
+    worker.enqueue_prepared_scenes(**kwargs)
+    [held] = holds.pending_holds(queue_root=screening)
+    assert (held["status"], held["source"]["scene_revision_digest"]) == (
+        "held", canonical_digest({"configured_scene_revision": 1}))
+    # Revision 2 of the same intent is compiled later (its readiness passed); its team half is done.
+    newer = _held_request(source, queue, tmp_path / "launch-r2", revision=2, readiness="passed")
+    key = newer["request_key"]
+    (queue / "pending" / f"{key}.json").rename(queue / "processed" / f"{key}.json")
+    (queue / "status" / f"{key}.json").write_text(json.dumps({"status": "completed"}))
+    stamp = (queue / "holds" / f"{old['hold_request_key']}.json").stat().st_mtime_ns
+    os.utime(queue / "processed" / f"{key}.json", ns=(stamp + 10**9, stamp + 10**9))
+    worker.enqueue_prepared_scenes(**kwargs)
+    [released] = holds.pending_holds(queue_root=screening)
+    assert (released["status"], released["revision"]) == ("released", 2)
+    assert released["source"]["scene_revision_digest"] == canonical_digest({"configured_scene_revision": 2})
+    assert (queue / "holds" / "superseded" / f"{old['hold_request_key']}.json").is_file()
+    # Later passes add no revisions: no flipping between the two revisions.
+    for _ in range(3):
+        worker.enqueue_prepared_scenes(**kwargs)
+    [again] = holds.pending_holds(queue_root=screening)
+    assert again == released
+
+
+def test_held_requests_rotate_under_a_cursor_and_are_set_aside_once_acknowledged(tmp_path, monkeypatch):
+    from tests.test_beta_policy_screening_worker import source_world
+
+    source, _context = source_world(tmp_path / "partition", monkeypatch)
+    queue, screening = tmp_path / "packets", tmp_path / "screening"
+    keys = sorted(_held_request(source, queue, tmp_path / f"launch-{index}", intent=f"scene-intent-{index}",
+                                revision=index)["hold_request_key"] for index in range(3))
+    seen = [worker.enqueue_prepared_scenes(queue_root=screening, packet_queue_root=queue, max_sources=1)
+            ["sources"][0]["request_key"] for _ in range(3)]
+    assert seen == keys
+    assert holds.deliver_holds(queue_root=screening, transport=lambda _publication: None)["acknowledged"] == 3
+    for _ in range(3):
+        worker.enqueue_prepared_scenes(queue_root=screening, packet_queue_root=queue, max_sources=1)
+    assert not list((queue / "holds").glob("*.json"))
+    assert sorted(path.stem for path in (queue / "holds" / "settled").glob("*.json")) == keys
+    assert not holds.pending_holds(queue_root=screening)
+
+
+@pytest.mark.parametrize("answer,accepted", [
+    ({"status": "replayed", "revision": 5, "hold_digest": "sha256:" + "2" * 64}, True),
+    ({"status": "replayed", "revision": 3, "hold_digest": "sha256:" + "1" * 64}, True),
+    ({"status": "replayed", "revision": 2, "hold_digest": "sha256:" + "2" * 64}, False),
+    ({"status": "updated", "revision": 5, "hold_digest": "sha256:" + "2" * 64}, False),
+])
+def test_a_replayed_answer_for_this_or_a_newer_revision_acknowledges_the_hold(monkeypatch, answer, accepted):
+    from blueprint_pipeline import safe_outbound_http, task_evaluation_launch_webapp_sync
+
+    publication = {"hold_id": "hold-" + "0" * 32, "revision": 3, "hold_digest": "sha256:" + "1" * 64}
+    monkeypatch.setenv("PIPELINE_SYNC_WEBAPP_URL", "https://webapp.example")
+    monkeypatch.setattr(task_evaluation_launch_webapp_sync, "load_pipeline_sync_token", lambda: "unit-test-key")
+    body = json.dumps({"hold_id": publication["hold_id"], **answer}).encode()
+    monkeypatch.setattr(safe_outbound_http, "request", lambda url, **_kwargs: type("Response", (), {"body": body})())
+    if accepted:
+        assert holds.publish_hold(publication)["status"] == answer["status"]
+    else:
+        with pytest.raises(ValueError, match="beta_screening_hold_ack_invalid"):
+            holds.publish_hold(publication)

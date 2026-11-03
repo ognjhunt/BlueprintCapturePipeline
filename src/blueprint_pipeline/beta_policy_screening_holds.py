@@ -54,6 +54,9 @@ ROUTE = "/api/internal/pipeline/beta-policy-screening-holds"
 REASONS = frozenset({"robot_free_probe_failed", "robot_free_probe_not_completed",
                      "robot_free_probe_unavailable_for_task", "team_scene_packet_blocked"})
 PROBE_GATE_PREFIX = "team_evaluation_robot_free_probe_"
+#: A positive sign the evaluation moves again: a campaign was planned, the team half went back to its queue,
+#: or a probe refusal is no longer final. Only this releases a hold; an error or an unreadable state never does.
+RELEASE = "release"
 _CODE = re.compile(r"[a-z][a-z0-9_:.=-]{0,199}")
 # The website ends a withdrawn or revoked job itself; a hold must never stand in for that.
 _RIGHTS = re.compile(r"withdrawn|revoked|consent|rights")
@@ -162,24 +165,35 @@ def _publication(*, previous: Mapping[str, Any] | None, source: Mapping[str, Any
 
 
 def settle_hold(queue_root: str | Path, request: Mapping[str, Any],
-                decision: tuple[str, str | None] | None) -> dict[str, Any] | None:
+                decision: tuple[str, str | None] | str | None) -> dict[str, Any] | None:
     """Record this pass's decision for the request's scene intent; never raises, never spends.
 
-    A new or changed hold, or the release of one, is a new revision. The same
-    decision again changes nothing. No decision and no earlier hold returns None.
+    ``decision`` is a ``(reason, detail)`` hold, ``RELEASE`` (positive progress)
+    or None: nothing was decided (an error, an unreadable state), so a hold is
+    kept as it is, unless the request is a newer scene revision of the intent
+    than the one held, which supersedes it. A new or changed hold, or a
+    release, is a new revision; the same decision again changes nothing.
+    Nothing to record returns None. ``request`` must be the intent's newest.
     """
     from .beta_policy_screening_coordinator import _lock, _read, _write
 
     try:
-        if decision is not None and decision[0] not in REASONS:
+        if isinstance(decision, tuple) and decision[0] not in REASONS:
             raise ValueError("beta_screening_hold_reason_invalid")
         store = _store(queue_root)
         path = store / f"{hold_id(str(request['intent_id']))}.json"
         with _lock(store.parent, ".holds.lock"):
             record = _read(path) if path.exists() else None
             previous = (record or {}).get("publication")
-            if decision is None and (previous is None or previous.get("status") == "released"):
+            held = previous is not None and previous.get("status") == "held"
+            if decision is None:
+                superseded = held and previous["source"].get("scene_revision_digest") != request["scene_revision_digest"]
+                if not superseded:
+                    return None
+                decision = RELEASE
+            if decision == RELEASE and not held:
                 return None
+            decision = None if decision == RELEASE else decision
             source, site_id = _source(request)
             same = previous is not None and (
                 previous.get("status"), previous.get("reason_code"), previous.get("detail_code"),
@@ -188,7 +202,8 @@ def settle_hold(queue_root: str | Path, request: Mapping[str, Any],
                 decision[1] if decision else None, source, site_id)
             if same:
                 return {"status": previous["status"], "reason_code": previous["reason_code"],
-                        "revision": previous["revision"], "change": "unchanged"}
+                        "revision": previous["revision"], "change": "unchanged",
+                        "acknowledged": record.get("acknowledged_digest") == previous["hold_digest"]}
             publication = _publication(previous=previous, source=source, site_id=site_id, decision=decision)
             _write(path, {"publication": publication, "acknowledged_digest": (record or {}).get("acknowledged_digest")})
             return {"status": publication["status"], "reason_code": publication["reason_code"],
@@ -245,9 +260,14 @@ def publish_hold(publication: Mapping[str, Any]) -> dict[str, Any]:
         exc.close()
         raise ValueError(f"beta_screening_hold_http_{code}") from None
     value = json.loads(response.body)
-    if (not isinstance(value, dict) or value.get("status") not in {"created", "updated", "replayed"}
-            or value.get("hold_id") != publication["hold_id"] or value.get("revision") != publication["revision"]
-            or value.get("hold_digest") != publication["hold_digest"]):
+    if not isinstance(value, dict) or value.get("hold_id") != publication["hold_id"]:
+        raise ValueError("beta_screening_hold_ack_invalid")
+    exact = (value.get("status") in {"created", "updated", "replayed"} and value.get("revision") == publication["revision"]
+             and value.get("hold_digest") == publication["hold_digest"])
+    # The website already keeps this revision or a newer one of ours (it never lets an older one replace it).
+    newer = (value.get("status") == "replayed" and type(value.get("revision")) is int
+             and value["revision"] >= publication["revision"])
+    if not (exact or newer):
         raise ValueError("beta_screening_hold_ack_invalid")
     return value
 
@@ -272,5 +292,5 @@ def deliver_holds(*, queue_root: str | Path, transport=None) -> dict[str, Any]:
     return {"acknowledged": sent, "pending": failed, **failure}
 
 
-__all__ = ["HOLD_SCHEMA", "REASONS", "ROUTE", "acknowledge_hold", "deliver_holds", "hold_id", "packet_hold",
+__all__ = ["HOLD_SCHEMA", "REASONS", "RELEASE", "ROUTE", "acknowledge_hold", "deliver_holds", "hold_id", "packet_hold",
            "pending_holds", "probe_hold", "publish_hold", "scene_preparation_probe_failed", "settle_hold"]
