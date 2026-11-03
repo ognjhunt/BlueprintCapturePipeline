@@ -19,7 +19,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -204,10 +203,10 @@ def website_job(tmp_path: Path, *, trace: bool = True, runtime_source: Path | No
     _save(capture / "pipeline" / "atlas" / "configuration.json", {
         "schema_version": "website_atlas_configuration.v1", "source_video_digest": SOURCE_VIDEO,
         "task_context_digest": context["context_digest"], "dispatch_authorized": False})
-    _save(capture / "pipeline" / "website_scene_sponsorship.json", _sealed({
-        "schema_version": "website_scene_sponsorship.v1", "sponsor": "blueprint", "request_id": REQUEST_ID,
-        "scene_id": SITE, "capture_id": CAPTURE, "task_context_digest": context["context_digest"],
-        "expires_at_epoch": time.time() + 86_400}, "authority_digest"))
+    # The grant as the WebApp's non-creating read returns it; the replay answers that read from this copy.
+    from tests.test_rigid_robot_free_probe_lane import website_sponsorship
+
+    _save(capture / "pipeline" / "website_scene_sponsorship.json", website_sponsorship(context))
 
     # The operator registry: who funds, the rate, and the fixed compile inputs; never the scene.
     operator = host / "operator"
