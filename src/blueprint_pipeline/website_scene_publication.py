@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import json
+import re
 import shutil
 
 from .website_scene_publication_contracts import (
@@ -12,6 +13,69 @@ from .website_scene_publication_contracts import (
 
 from .decision_evidence_contracts import canonical_digest, canonical_json
 
+
+
+ARTISAN_BACKEND = "artisan_v1"
+ARTISAN_RECEIPT_SCHEMA = "task_object_artisan_candidate.v1"
+_ARTISAN_RENDER_ROUND = re.compile(r"P(\d+)_(review|build)_r(\d+)")
+_ARTISAN_PERSPECTIVE = re.compile(r"perspective(?:__r\d+c\d+)?\.png")
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _artisan_review_render(receipt, *, stage_root, provider_stage):
+    """ARTISAN's last review render of the object, from this stage's retained archive.
+
+    ARTISAN renders the object it reviews under ``renders/P<phase>_review_r<round>/``
+    and its builds under ``_build_``. Nothing upstream records those images'
+    digests, so the image resolves only inside this stage's immutable archive,
+    under the workspace its sealed terminal record names, and its digest
+    becomes the selection's frame digest. The closed-pose perspective view of
+    the last review round is taken; the last build round only when no review
+    round exists. Returns the image and its rationale.
+    """
+    from .task_evaluation_scene_configuration_publication import (
+        TaskEvaluationSceneConfigurationPublicationError,
+    )
+
+    def refuse():
+        raise TaskEvaluationSceneConfigurationPublicationError(
+            "website_publication_artisan_review_render_invalid"
+        )
+
+    try:
+        relative = Path(str(receipt["upstream_terminal"]["paths"]["root"])).relative_to(provider_stage)
+    except (KeyError, TypeError, ValueError):
+        refuse()
+    renders = stage_root / relative / "renders"
+    if (".." in relative.parts or renders.is_symlink() or not renders.is_dir()
+            or not renders.resolve().is_relative_to(stage_root)):
+        refuse()
+    rounds = []
+    for path in renders.iterdir():
+        match = _ARTISAN_RENDER_ROUND.fullmatch(path.name)
+        if match and path.is_dir() and not path.is_symlink():
+            rounds.append(((match.group(2) == "review", int(match.group(1)), int(match.group(3))), path))
+    if not rounds:
+        refuse()
+    (review, _, _), chosen = max(rounds)
+    views = sorted((path for path in chosen.iterdir()
+                    if path.name.isdigit() and path.is_dir() and not path.is_symlink()),
+                   key=lambda path: int(path.name))
+    for view in views:
+        matches = [path for path in view.iterdir() if _ARTISAN_PERSPECTIVE.fullmatch(path.name)]
+        if matches:
+            break
+    else:
+        refuse()
+    image = matches[0]
+    if len(matches) != 1 or image.is_symlink() or not image.is_file() or not image.resolve().is_relative_to(stage_root):
+        refuse()
+    with image.open("rb") as stream:
+        if stream.read(len(_PNG_SIGNATURE)) != _PNG_SIGNATURE:
+            refuse()
+    kind = "review" if review else "build"
+    return image, (f"Last ARTISAN {kind} render ({chosen.name}, closed-pose perspective) of the "
+                   "authored task object. It shows the object alone, not the captured room.")
 
 
 def publication_inputs(*, envelope, stage_results, output_root):
@@ -68,8 +132,17 @@ def publication_inputs(*, envelope, stage_results, output_root):
 
     _, receipt_path = _artifact(stage_results, role="replacement_authoring_receipt")
     receipt = json.loads(receipt_path.read_text())
+    artisan = receipt.get("backend") == ARTISAN_BACKEND
     require(
-        receipt.get("authoring_backend") == "astra_cad_blender_v1"
+        (
+            receipt.get("authoring_backend") == "astra_cad_blender_v1"
+            or (
+                artisan
+                and receipt.get("schema_version") == ARTISAN_RECEIPT_SCHEMA
+                and receipt.get("status") == "authored_candidate_pending_qualification"
+                and receipt.get("physical_equivalence_proven") is False
+            )
+        )
         and receipt.get("replacement_identity") == envelope["recipe"]["subject_identity"]
         and receipt.get("result_digest") == canonical_digest(receipt, digest_field="result_digest")
     )
@@ -100,43 +173,49 @@ def publication_inputs(*, envelope, stage_results, output_root):
                 "website_publication_retained_artifact_invalid"
             ) from exc
 
-    authored = json.loads(retained(receipt["astra_authoring_result"]).read_text())
-    require(
-        authored.get("result_digest") == canonical_digest(authored, digest_field="result_digest")
-        and authored.get("physical_equivalence_proven") is False
-    )
-    rationale = "First retained task-object studio render. Does not show or qualify the captured room."
-    if receipt.get("asset_kind") == "articulated_assembly":
-        parts = authored.get("parts")
-        plan_parts = (authored.get("plan") or {}).get("parts")
-        receipt_parts = receipt.get("part_authoring_results")
-        require(
-            authored.get("schema_version") == "task_object_astra_articulated_authoring_result.v1"
-            and authored.get("status") == "parts_authored_pending_native_qualification"
-            and isinstance(parts, dict) and bool(parts)
-            and isinstance(plan_parts, dict) and set(plan_parts) == set(parts)
-            and isinstance(receipt_parts, dict) and set(receipt_parts) == set(parts)
+    if artisan:
+        image, rationale = _artisan_review_render(
+            receipt, stage_root=stage_root, provider_stage=provider_stage
         )
-        for part_id, part in parts.items():
-            require(
-                json.loads(retained(receipt_parts[part_id]).read_text()) == part
-                and part.get("status") == "candidate_authored_pending_native_qualification"
-                and part.get("result_digest") == canonical_digest(part, digest_field="result_digest")
-            )
-        fixed_parts = [part_id for part_id, spec in plan_parts.items()
-                       if spec.get("link_role") in {"carcass", "fixed_part"}]
-        require(len(fixed_parts) == 1 and bool(parts[fixed_parts[0]].get("review_images")))
-        selected_part = fixed_parts[0]
-        image = retained(parts[selected_part]["review_images"][0])
-        rationale = (f"First retained {selected_part} studio render of the articulated assembly. "
-                     "It shows one part, not the assembled object or captured room.")
+        authored = {"result_digest": receipt["result_digest"]}
     else:
+        authored = json.loads(retained(receipt["astra_authoring_result"]).read_text())
         require(
-            authored.get("status") == "candidate_authored_pending_native_qualification"
-            and authored.get("object_id") == receipt["replacement_identity"]["id"]
-            and bool(authored.get("review_images"))
+            authored.get("result_digest") == canonical_digest(authored, digest_field="result_digest")
+            and authored.get("physical_equivalence_proven") is False
         )
-        image = retained(authored["review_images"][0])
+        rationale = "First retained task-object studio render. Does not show or qualify the captured room."
+        if receipt.get("asset_kind") == "articulated_assembly":
+            parts = authored.get("parts")
+            plan_parts = (authored.get("plan") or {}).get("parts")
+            receipt_parts = receipt.get("part_authoring_results")
+            require(
+                authored.get("schema_version") == "task_object_astra_articulated_authoring_result.v1"
+                and authored.get("status") == "parts_authored_pending_native_qualification"
+                and isinstance(parts, dict) and bool(parts)
+                and isinstance(plan_parts, dict) and set(plan_parts) == set(parts)
+                and isinstance(receipt_parts, dict) and set(receipt_parts) == set(parts)
+            )
+            for part_id, part in parts.items():
+                require(
+                    json.loads(retained(receipt_parts[part_id]).read_text()) == part
+                    and part.get("status") == "candidate_authored_pending_native_qualification"
+                    and part.get("result_digest") == canonical_digest(part, digest_field="result_digest")
+                )
+            fixed_parts = [part_id for part_id, spec in plan_parts.items()
+                           if spec.get("link_role") in {"carcass", "fixed_part"}]
+            require(len(fixed_parts) == 1 and bool(parts[fixed_parts[0]].get("review_images")))
+            selected_part = fixed_parts[0]
+            image = retained(parts[selected_part]["review_images"][0])
+            rationale = (f"First retained {selected_part} studio render of the articulated assembly. "
+                         "It shows one part, not the assembled object or captured room.")
+        else:
+            require(
+                authored.get("status") == "candidate_authored_pending_native_qualification"
+                and authored.get("object_id") == receipt["replacement_identity"]["id"]
+                and bool(authored.get("review_images"))
+            )
+            image = retained(authored["review_images"][0])
     require(0 < image.stat().st_size <= MAX_TASK_THUMBNAIL_SIZE_BYTES and image.suffix == ".png")
     thumbnail = Path(output_root) / "generated_task_object.png"
     shutil.copyfile(image, thumbnail)
