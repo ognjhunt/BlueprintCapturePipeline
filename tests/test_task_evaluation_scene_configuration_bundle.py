@@ -3908,6 +3908,15 @@ def test_completed_vast_run_cannot_finish_without_publishing_revision(
     assert result["configured_scene_revision_reference"]["uri"].startswith(
         "s3://blueprint-inputs/"
     )
+    # The reference (uri, sha256 of the revision file's bytes, size) is what a
+    # website intent's status names as ``result_reference``; a screening source
+    # names the revision's self-digest. Two kinds of digest: the website relates
+    # them only through the offering's evaluation_preparation_binding.
+    binding = result["configured_scene_offering"]["evaluation_preparation_binding"]
+    assert binding["configured_scene_revision"] == result["configured_scene_revision_reference"]
+    assert binding["configured_scene_revision_digest"] == result["configured_scene_revision_digest"]
+    assert (result["configured_scene_revision_reference"]["digest"]
+            != result["configured_scene_revision_digest"])
     assert result["provider_runtime_output_remote_reference"][
         "remote_identity_verified"
     ] is True

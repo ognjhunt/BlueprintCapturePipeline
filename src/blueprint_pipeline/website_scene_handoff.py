@@ -14,7 +14,7 @@ from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as
 from .decision_evidence_contracts import canonical_digest
 from .website_task_preparation import (
     GEOMETRY_ONLY_BLOCKER, compile_website_scene_preparation, native_task_preparation_gap,
-    native_task_subject_profile,
+    native_task_subject_gap, native_task_subject_profile,
 )
 from .website_scene_runtime_inputs import prepare_website_runtime_inputs
 
@@ -428,6 +428,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 # Catch a contradictory profile before coverage/spec callbacks.
                 # Earlier mask work may have called a provider, so do not reset
                 # provider_mutation_performed to false on this later path.
+                result["source_geometry_digest"] = geometry["digest"]
+                return retain_gap(gap)
+        if synthetic is None:
+            # Several task objects, or a soft one, under a one-rigid-object or one-opening
+            # profile: held here, before coverage, spec research and authoring buy anything for it.
+            gap = native_task_subject_gap(context, subjects=subjects, targets=targets, **semantics_options)
+            if gap is not None:
                 result["source_geometry_digest"] = geometry["digest"]
                 return retain_gap(gap)
         # Each articulated task target needs views of its whole assembly from

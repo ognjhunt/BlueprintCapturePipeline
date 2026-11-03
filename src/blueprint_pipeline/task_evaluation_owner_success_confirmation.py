@@ -21,6 +21,11 @@ reads and only then compiles the owner contract as the owner's. A changed
 revision, document, threshold or proposal, another owner or a revoked intent
 finds no confirmation, and the job refuses exactly as before.
 
+The job's owner can also confirm on the website job page
+(``website_owner_success_confirmation``). That writes this same record through
+``confirm_owner_success_contract`` and these same validators, with
+``issuer_channel`` ``website`` instead of ``operator_door``.
+
 A confirmation changes no threshold: it records only that the owner accepted
 the thresholds as built. Nothing here starts compute, calls a provider or moves
 money, and nothing else is ever read as a confirmation.
@@ -42,6 +47,10 @@ SCOPE = "built_success_thresholds_acceptance_only"
 AUTHORITY_PREFIX = "owner-success-confirmation:"
 CONFIRMED_BASIS = "owner_confirmed_built_thresholds_via_operator_door"
 CHANNEL = "operator_door"
+# The owner's decision on the website job page (``website_owner_success_confirmation``).
+WEBSITE_CHANNEL = "website"
+CHANNELS = frozenset({CHANNEL, WEBSITE_CHANNEL})
+_BASIS = {CHANNEL: CONFIRMED_BASIS, WEBSITE_CHANNEL: "owner_confirmed_built_thresholds_via_website"}
 # Both native adapters drop exactly these from the success document (``configured_success_criteria``).
 _UNSCORED_SUCCESS_FIELDS = frozenset({"schema_version", "status"})
 _BINDING_FIELDS = ("intent_id", "intent_digest", "owner", "authenticated_issuer",
@@ -121,7 +130,7 @@ def _valid_record(path: Path, intent: Mapping[str, Any]) -> dict[str, Any] | Non
             and row["authenticated_issuer"] == intent["authenticated_issuer"]
             and isinstance(row["approval_evidence"], str) and bool(row["approval_evidence"].strip())
             and isinstance(row["authorization_reference"], str) and bool(row["authorization_reference"].strip())
-            and row["issuer_channel"] == CHANNEL and type(row["operator_uid"]) is int
+            and row["issuer_channel"] in CHANNELS and type(row["operator_uid"]) is int
             and row["thresholds_changed"] is False and row["provider_mutation_performed"] is False
             and isinstance(row["configured_success_criteria"], dict)
             and row["configured_success_criteria_digest"] == canonical_digest(row["configured_success_criteria"])
@@ -179,7 +188,7 @@ def confirmed_owner_authority(*, task_spec: Mapping[str, Any], revision: Mapping
     return {"author_source": "task_owner", "confirmation_status": "confirmed",
             "accepted_by": record["owner"]["user_id"],
             "authority_reference": AUTHORITY_PREFIX + record["confirmation_digest"],
-            "basis": CONFIRMED_BASIS, "confirmation_digest": record["confirmation_digest"],
+            "basis": _BASIS[record["issuer_channel"]], "confirmation_digest": record["confirmation_digest"],
             "proposal_authority": dict(authority)}
 
 
@@ -279,16 +288,18 @@ def preview_owner_success_confirmation(*, queue_root: str | Path, intent_id: str
 def confirm_owner_success_contract(*, queue_root: str | Path, intent_id: str, owner: Mapping[str, Any],
                                    approved_by: str, approval_evidence: str, apply_ack: str,
                                    authorization_reference: str, ack: str,
-                                   now: datetime | None = None) -> dict[str, Any]:
+                                   now: datetime | None = None, channel: str = CHANNEL) -> dict[str, Any]:
     """Write one confirmation under the intake lock, exclusively; an existing one is returned as is.
 
     The preview is recomputed under the lock and must still equal ``apply_ack``,
     so the record confirms exactly what the owner saw. Never overwrites.
+    ``channel`` names where the owner confirmed: the operator door (the
+    default) or the website job page.
     """
 
     from . import task_evaluation_scene_intake as intake
 
-    _require(ack == ACK and isinstance(authorization_reference, str)
+    _require(ack == ACK and channel in CHANNELS and isinstance(authorization_reference, str)
              and bool(authorization_reference.strip()), "not_authorized")
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     root = Path(queue_root)
@@ -311,7 +322,7 @@ def confirm_owner_success_contract(*, queue_root: str | Path, intent_id: str, ow
                 existing["confirmation_digest"].removeprefix("sha256:") + ".json")), **existing}
         value = intake._seal({"schema_version": SCHEMA, "scope": SCOPE, **preview,
                               "authorization_reference": authorization_reference,
-                              "issuer_channel": CHANNEL, "operator_uid": os.geteuid(),
+                              "issuer_channel": channel, "operator_uid": os.geteuid(),
                               "confirmed_at": moment.strftime("%Y-%m-%dT%H:%M:%SZ"),
                               "thresholds_changed": False, "provider_mutation_performed": False},
                              "confirmation_digest")
@@ -326,8 +337,11 @@ def confirm_owner_success_contract(*, queue_root: str | Path, intent_id: str, ow
 __all__ = [
     "ACK",
     "AUTHORITY_PREFIX",
+    "CHANNEL",
+    "CHANNELS",
     "DIRECTORY",
     "SCHEMA",
+    "WEBSITE_CHANNEL",
     "binding",
     "configured_success_criteria",
     "confirm_owner_success_contract",
