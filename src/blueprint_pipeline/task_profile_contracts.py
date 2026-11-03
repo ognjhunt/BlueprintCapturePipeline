@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 from .task_family_scoring import FAMILY_ALIASES
 
@@ -61,7 +62,8 @@ def task_profile_for(task_family: str | None) -> TaskProfile | None:
     return next((row for row in TASK_PROFILES if value in row.aliases), None)
 
 
-#: Soft objects a rigid body cannot stand in for. Matched only as the head noun of the
+#: Soft objects a rigid body cannot stand in for: the backstop when a task object carries no
+#: rigidity classification (``task_object_rigidity``). Matched only as the head noun of the
 #: manipulated object's own label ("folded bath towel", "stack of towels"), never anywhere
 #: in the task text: "put the mug on the towel" moves a mug, and a "towel rack" is a rack.
 DEFORMABLE_SUBJECT_NOUNS = frozenset({
@@ -99,3 +101,36 @@ def deformable_subject_noun(label: object) -> str | None:
         stop = next((index for index, word in enumerate(rest) if word in _LABEL_RELATION), len(rest))
         head = rest[stop - 1] if stop else None
     return _deformable_noun(head) if head else None
+
+
+#: The clean-plate object analysis's own reading of each target
+#: (``clean_plate_removal_response_schema``): whether it keeps its shape when handled.
+RIGIDITY_CLASSES = ("rigid", "deformable", "unknown")
+RIGIDITY_UNKNOWN_FLAG = "task_object_rigidity_unknown"
+#: Which source decided, as the deformable hold records it.
+RIGIDITY_BASIS = {"object_analysis": "manipulated_target_rigidity_classification",
+                  "label_word_backstop": "manipulated_target_label_text_screen"}
+
+
+def task_object_rigidity(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Whether a manipulated object is rigid, deformable or unknown, and which source decided.
+
+    The object analysis decides: its ``rigidity`` class and its stated ``rigidity_reason``.
+    An analysis bought before it was asked carries neither, and only then does the label's
+    head noun decide (``deformable_subject_noun``): a soft noun reads deformable, anything
+    else unknown. Unknown never holds a job; it is flagged. The word screen is recorded
+    either way. A model's reading, never a measurement.
+    """
+    label = entry.get("semantic_label")
+    label = label if isinstance(label, str) and label.strip() else None
+    noun = deformable_subject_noun(label)
+    stated = entry.get("rigidity")
+    if stated in RIGIDITY_CLASSES:
+        reason = entry.get("rigidity_reason")
+        reading = {"rigidity": stated, "source": "object_analysis", "field": "rigidity",
+                   "reason": reason.strip() if isinstance(reason, str) and reason.strip() else None}
+    else:
+        reading = {"rigidity": "deformable" if noun else "unknown", "source": "label_word_backstop",
+                   "field": "semantic_label", "reason": None}
+    return {"target_id": str(entry.get("target_id")), "label": label, **reading, "label_word_screen": noun,
+            **({"flag": RIGIDITY_UNKNOWN_FLAG} if reading["rigidity"] == "unknown" else {})}

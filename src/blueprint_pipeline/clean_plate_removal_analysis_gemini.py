@@ -44,8 +44,8 @@ from typing import Any, Mapping, Optional, Sequence
 from .capture_audio_minimization import AudioRemovalError, audio_free_upload_copy
 from .common import sha256_file, utc_now_iso
 from .core.handoff_lease import HandoffLeaseError, handoff_lease_checkpoint
-from .clean_plate_removal_response_schema import (PRIOR_RESPONSE_SCHEMA, RESPONSE_SCHEMA, SYNTHETIC_SHAPES,
-                                                  region_evidence, validate_destination_region)
+from .clean_plate_removal_response_schema import (PRIOR_RESPONSE_SCHEMA, REGION_RESPONSE_SCHEMA, RESPONSE_SCHEMA,
+                                                  SYNTHETIC_SHAPES, region_evidence, validate_destination_region)
 from .website_task_context_contracts import admits_scene_preparation
 
 GATE_ENV = "BLUEPRINT_ALLOW_GEMINI_CLEAN_PLATE_ANALYSIS"
@@ -66,6 +66,7 @@ DISPOSITIONS = ("remove", "keep")
 REBUILD_INTENTS = ("rebuild_and_compose", "none")
 TASK_EFFECTS = ("manipulated", "static_contact", "static_obstacle", "unrelated", "uncertain", "privacy")
 ARTICULATION_KINDS = ("prismatic", "revolute")
+RIGIDITY_CLASSES = ("rigid", "deformable", "unknown")
 # A validation failure gets one repair turn with the exact failed rule, never a
 # terminal refusal of a paid answer and never a per-failure script.
 VALIDATION_REPAIR_TURNS = 1
@@ -106,6 +107,16 @@ DESTINATION_REGION_INSTRUCTION = (
     "one or two coarse boxes of only that place, each at the same timestamp_seconds as one of the "
     "destination's own boxes and centred inside it. Omit destination_region when the task names no "
     "particular place on the destination; never invent one. "
+)
+#: The analysis's own judgment of each object's rigidity (2026-11-03): a soft task object is
+#: held rather than authored as a rigid body (``task_profile_contracts.task_object_rigidity``).
+RIGIDITY_INSTRUCTION = (
+    "Also give 'rigidity' for each target: rigid when the object keeps its own shape when it is "
+    "picked up or moved (a mug, a box, a tool, a bottle); deformable when it bends, folds, drapes, "
+    "sags or squashes when handled (cloth, towels, clothing, bags or sacks, cables, ropes, hoses, "
+    "pillows, cushions, sponges, dough); unknown when the video does not show which. Give "
+    "'rigidity_reason': the short visible evidence for it, such as its material or how it hangs, "
+    "folds or rests. "
 )
 PROMPT_INSTRUCTION = (
     "You are analyzing a walkthrough video of a work environment to plan which "
@@ -181,7 +192,9 @@ PROMPT_INSTRUCTION = (
     "fixed_clutter), 'disposition' (remove or keep), 'rebuild_intent' "
     "(rebuild_and_compose or none), 'spatial_evidence' (a list of "
     "{timestamp_seconds, box_xywh_normalized:[x,y,w,h]} entries time-localizing the "
-    "target), and 'confidence' in [0,1]. Always mark a person as remove. Mark a "
+    "target), and 'confidence' in [0,1]. "
+    + RIGIDITY_INSTRUCTION +
+    "Always mark a person as remove. Mark a "
     "movable task-object as remove with rebuild_and_compose. Keep fixed clutter that "
     "is genuinely part of the environment (disposition keep, rebuild_intent none). "
     "Do NOT fabricate targets you cannot actually see: if no relevant targets are "
@@ -189,9 +202,12 @@ PROMPT_INSTRUCTION = (
     "who is not visibly present."
 )
 PROMPT_TEMPLATE_SHA256 = hashlib.sha256(PROMPT_INSTRUCTION.encode("utf-8")).hexdigest()
+#: The instruction before rigidity (2026-10-31 to 2026-11-03). An analysis bought under it
+#: stays the capture's answer, unclassified, and is never bought again.
+REGION_PROMPT_INSTRUCTION = PROMPT_INSTRUCTION.replace(RIGIDITY_INSTRUCTION, "", 1)
 #: The instruction before the destination region (2026-10-31). An analysis bought
 #: under it stays the capture's answer, region-free, and is never bought again.
-PRIOR_PROMPT_INSTRUCTION = PROMPT_INSTRUCTION.replace(DESTINATION_REGION_INSTRUCTION, "", 1)
+PRIOR_PROMPT_INSTRUCTION = REGION_PROMPT_INSTRUCTION.replace(DESTINATION_REGION_INSTRUCTION, "", 1)
 
 
 def build_removal_plan_prompt() -> str:
@@ -320,6 +336,11 @@ def _normalize_target(raw: Mapping[str, Any], index: int) -> Optional[dict[str, 
         "rebuild_intent": rebuild_intent,
         "spatial_evidence": _normalize_spatial_evidence(raw.get("spatial_evidence")),
         "confidence": _clamp_confidence(raw.get("confidence")),
+        # Kept only as the analysis gave it: a missing or unreadable class is no class, and
+        # the label word backstop decides (``task_profile_contracts.task_object_rigidity``).
+        **({"rigidity": _string(raw.get("rigidity")).lower(),
+            "rigidity_reason": _string(raw.get("rigidity_reason"))[:300]}
+           if _string(raw.get("rigidity")).lower() in RIGIDITY_CLASSES else {}),
     }
 
 
@@ -990,8 +1011,10 @@ def analyze_removal_targets(*, video_path: Optional[str | Path], model: Optional
             raise ValueError("website_gemini_source_changed")
         return result
 
-    # The same decision bought before the destination region was asked for is
-    # reused as it stands (no region), by its exact request: never bought again.
+    # The same decision bought before rigidity, or before the destination region, was asked
+    # for is reused as it stands (unclassified, or region-free), by its exact request:
+    # never bought again.
     return retained_gemini_call(output_root=output_root, binding=binding, task_context=task_context,
         maximum_cost_usd=maximum_cost_usd, preflight=preflight, invoke=invoke,
-        earlier_requests=[request(PRIOR_PROMPT_INSTRUCTION, PRIOR_RESPONSE_SCHEMA)])
+        earlier_requests=[request(REGION_PROMPT_INSTRUCTION, REGION_RESPONSE_SCHEMA),
+                          request(PRIOR_PROMPT_INSTRUCTION, PRIOR_RESPONSE_SCHEMA)])
