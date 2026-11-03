@@ -656,10 +656,10 @@ def _claim_paired_lineage_successor(
 def materialize_paired_target_native_import_paid_attempt_authority(
     *,
     bundle_receipt_path: str | Path,
-    prior_artifixer_authority_path: str | Path,
-    prior_artifixer_result_path: str | Path,
-    prior_artifixer_cleanup_path: str | Path,
-    prior_artifixer_provider_zero_path: str | Path,
+    prior_artifixer_authority_path: str | Path | None = None,
+    prior_artifixer_result_path: str | Path | None = None,
+    prior_artifixer_cleanup_path: str | Path | None = None,
+    prior_artifixer_provider_zero_path: str | Path | None = None,
     supplemental_prior_spend_reconciliation_path: str | Path | None = None,
     prior_native_preallocation_provider_zero_path: str | Path | None = None,
     prior_paired_attempt_provider_zero_paths: Sequence[str | Path] = (),
@@ -676,12 +676,22 @@ def materialize_paired_target_native_import_paid_attempt_authority(
     """Seal one new authority chained to the exact prior scene spend and zero receipt."""
 
     bundle = validate_paired_target_native_import_bundle(bundle_receipt_path)
-    terminal = validate_artifixer3d_terminal_spend_chain(
-        authority_path=prior_artifixer_authority_path,
-        result_path=prior_artifixer_result_path,
-        cleanup_path=prior_artifixer_cleanup_path,
-        provider_zero_path=prior_artifixer_provider_zero_path,
-    )
+    catalog = bundle.get("source_kind") == "licensed_catalog_package"
+    if catalog:
+        if any(path is not None for path in (
+            prior_artifixer_authority_path, prior_artifixer_result_path,
+            prior_artifixer_cleanup_path, prior_artifixer_provider_zero_path,
+            supplemental_prior_spend_reconciliation_path,
+        )):
+            raise ValueError("catalog_import_cannot_borrow_scene_spend_authority")
+        terminal = _catalog_import_spend_origin(bundle, hard_cap_usd)
+    else:
+        terminal = validate_artifixer3d_terminal_spend_chain(
+            authority_path=prior_artifixer_authority_path,
+            result_path=prior_artifixer_result_path,
+            cleanup_path=prior_artifixer_cleanup_path,
+            provider_zero_path=prior_artifixer_provider_zero_path,
+        )
     prior_spend = float(terminal["aggregate_goal_spend_after_attempt_usd"])
     supplemental: dict[str, Any] | None = None
     if supplemental_prior_spend_reconciliation_path is not None:
@@ -773,7 +783,7 @@ def materialize_paired_target_native_import_paid_attempt_authority(
         "maximum_single_resource_ttl_seconds": hard_ttl_seconds,
         "aggregate_goal_spend_before_attempt_usd": prior_spend,
         "aggregate_goal_spend_cap_usd": aggregate_cap,
-        "prior_terminal_artifixer": {
+        "prior_terminal_artifixer": None if catalog else {
             **terminal["records"],
             "authority_digest": terminal["authority_digest"],
             "attempt_cost_usd": terminal["attempt_cost_usd"],
@@ -820,6 +830,24 @@ def materialize_paired_target_native_import_paid_attempt_authority(
     return authority
 
 
+def _catalog_import_spend_origin(bundle: Mapping[str, Any], hard_cap: float) -> dict[str, Any]:
+    """A fresh catalog import has no reconstruction predecessor to inherit.
+
+    It still consumes the same single-use authority and provider-zero lineage.
+    Its entire aggregate allowance is the explicitly authorized attempt cap.
+    """
+    rows = bundle.get("replacements")
+    if (bundle.get("source_kind") != "licensed_catalog_package"
+            or not isinstance(rows, list) or len(rows) != 1
+            or any(row.get("source_kind") != "licensed_catalog_package"
+                   or not row.get("catalog_intake_digest") or not row.get("catalog_files")
+                   or not row.get("license") for row in rows)):
+        raise ValueError("catalog_import_source_binding_invalid")
+    return {"aggregate_goal_spend_after_attempt_usd": 0.0,
+            "aggregate_goal_spend_cap_usd": hard_cap,
+            "authority_digest": None, "attempt_cost_usd": 0.0, "lineage_cost_usd": 0.0}
+
+
 def validate_paired_target_native_import_paid_attempt_authority(
     authority: Mapping[str, Any],
     *,
@@ -835,6 +863,13 @@ def validate_paired_target_native_import_paid_attempt_authority(
     expected = normalize_active_instance_allowlist(list(allowed_active_instance_ids))
     expected_excluded = tuple(sorted({int(value) for value in excluded_machine_ids}))
     errors: list[str] = []
+    if (not 0 < max_hourly_rate_usd <= hard_cap_usd <= MAX_HARD_CAP_USD
+            or not MIN_TTL_SECONDS <= hard_ttl_seconds <= MAX_TTL_SECONDS
+            or hard_ttl_seconds * max_hourly_rate_usd / 3600 > hard_cap_usd
+            or value.get("authority_kind") != "explicit_user_direction_in_current_goal"
+            or not all(str(value.get(key) or "").strip() for key in
+                       ("authority_reference", "authorized_by", "authorized_on"))):
+        errors.append("authority_configuration_invalid")
     if value.get("schema_version") != PAID_ATTEMPT_AUTHORITY_SCHEMA_VERSION:
         errors.append("schema_invalid")
     if value.get("authorization_digest") != canonical_digest(
@@ -893,23 +928,26 @@ def validate_paired_target_native_import_paid_attempt_authority(
         if receipt_path != Path(str(prepared_bundle.get("receipt_path") or "")).resolve():
             errors.append("bundle_receipt_path_mismatch")
         predecessor = value.get("prior_terminal_artifixer")
-        if not isinstance(predecessor, Mapping):
-            raise ValueError("predecessor_invalid")
-        paths = {
-            key: _bound_record(predecessor.get(key), "predecessor_unbound")[0]
-            for key in (
-                "authority",
-                "terminal_result",
-                "object_store_cleanup",
-                "provider_zero",
+        catalog = prepared_bundle.get("source_kind") == "licensed_catalog_package"
+        if catalog:
+            if predecessor is not None or value.get("supplemental_prior_spend_reconciliation") is not None:
+                raise ValueError("catalog_import_cannot_borrow_scene_spend_authority")
+            terminal = _catalog_import_spend_origin(prepared_bundle, hard_cap_usd)
+            predecessor = {key: terminal[key] for key in
+                           ("authority_digest", "attempt_cost_usd", "lineage_cost_usd")}
+        else:
+            if not isinstance(predecessor, Mapping):
+                raise ValueError("predecessor_invalid")
+            paths = {
+                key: _bound_record(predecessor.get(key), "predecessor_unbound")[0]
+                for key in ("authority", "terminal_result", "object_store_cleanup", "provider_zero")
+            }
+            terminal = validate_artifixer3d_terminal_spend_chain(
+                authority_path=paths["authority"],
+                result_path=paths["terminal_result"],
+                cleanup_path=paths["object_store_cleanup"],
+                provider_zero_path=paths["provider_zero"],
             )
-        }
-        terminal = validate_artifixer3d_terminal_spend_chain(
-            authority_path=paths["authority"],
-            result_path=paths["terminal_result"],
-            cleanup_path=paths["object_store_cleanup"],
-            provider_zero_path=paths["provider_zero"],
-        )
         supplemental_cost = 0.0
         supplemental_record = value.get("supplemental_prior_spend_reconciliation")
         if supplemental_record is not None:

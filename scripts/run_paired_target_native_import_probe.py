@@ -165,6 +165,11 @@ def _physics_cook_and_step(
                 blockers.append(f"native_gpu_collider_missing:{source_path}")
             elif expected is not None and approximation != expected:
                 blockers.append(f"native_gpu_collider_approximation_mismatch:{source_path}")
+            sdf_resolution = None
+            if expected == "sdf" and prim.IsValid():
+                sdf_resolution = prim.GetAttribute("physxSDFMeshCollision:sdfResolution").Get()
+                if sdf_resolution != row.get("sdf_resolution"):
+                    blockers.append(f"native_gpu_collider_sdf_resolution_mismatch:{source_path}")
             rows.append(
                 {
                     "source_prim_path": source_path,
@@ -172,6 +177,8 @@ def _physics_cook_and_step(
                     "prim_valid": prim.IsValid(),
                     "expected_approximation": expected,
                     "observed_approximation": approximation,
+                    **({"expected_sdf_resolution": row.get("sdf_resolution"),
+                        "observed_sdf_resolution": sdf_resolution} if expected == "sdf" else {}),
                 }
             )
         if len(rows) != intent.get("dynamic_collision_prim_count"):
@@ -210,6 +217,19 @@ def run(*, request_path: Path, output_root: Path) -> dict[str, Any]:
         str(row.get("asset_id") or "") for row in replacements
     }:
         raise ValueError("native_task_execution_candidate_asset_set_mismatch")
+    for row in replacements:
+        if row.get("source_kind") != "licensed_catalog_package":
+            continue
+        if request.get("source_kind") != "licensed_catalog_package" or not row.get("catalog_files"):
+            raise ValueError("catalog_dependency_inventory_missing")
+        for record in row["catalog_files"]:
+            relative = Path(record["relative_path"])
+            path = request_path.parent / relative
+            if (relative.is_absolute() or ".." in relative.parts or path.is_symlink()
+                    or not path.resolve().is_relative_to(request_path.parent.resolve())
+                    or not path.is_file() or path.stat().st_size != record["size_bytes"]
+                    or _sha256(path) != record["sha256"]):
+                raise ValueError("catalog_dependency_changed")
 
     from isaacsim import SimulationApp  # type: ignore
 
@@ -247,7 +267,7 @@ def run(*, request_path: Path, output_root: Path) -> dict[str, Any]:
             stage.Load()
             for _ in range(8):
                 app.update()
-            descendants = list(Usd.PrimRange(prim))
+            descendants = list(Usd.PrimRange(prim, Usd.TraverseInstanceProxies()))
             rigid_bodies = sum(child.HasAPI(UsdPhysics.RigidBodyAPI) for child in descendants)
             collisions = sum(child.HasAPI(UsdPhysics.CollisionAPI) for child in descendants)
             joints = sum(child.IsA(UsdPhysics.Joint) for child in descendants)
@@ -281,9 +301,10 @@ def run(*, request_path: Path, output_root: Path) -> dict[str, Any]:
                 blockers.append("native_import_composed_structure_missing")
             if not visual_meshes or bound_materials != len(visual_meshes):
                 blockers.append("native_import_visual_materials_missing")
-            if authored_colors != len(visual_meshes):
+            catalog = row.get("source_kind") == "licensed_catalog_package"
+            if not catalog and authored_colors != len(visual_meshes):
                 blockers.append("native_import_agent_authored_colors_missing")
-            if registration_digest != row.get("asset_frame_registration_digest"):
+            if not catalog and registration_digest != row.get("asset_frame_registration_digest"):
                 blockers.append("native_import_asset_frame_registration_missing")
             probe = {
                 "schema_version": PROBE_SCHEMA,
