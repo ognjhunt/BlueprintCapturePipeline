@@ -543,19 +543,25 @@ def test_a_refusal_recorded_without_a_release_requeues_once_under_a_known_releas
     # An owner-contract refusal waits for the owner's confirmation, whatever release is running.
     ({"status": "blocked", "blockers": [worker.OWNER_CONTRACT_BLOCKER_PREFIX + "authority_missing"],
       "release_commit": RELEASE_1}, RELEASE_2, None),
-    # A transient block keeps its own bounded backoff: not before its wait, and once due, as a transient retry.
+    # A new release gets one try at a transient block at once: inside its backoff, after its retries are
+    # spent, or due (capture-447ae4f4, 2026-11-03: killed three times for host memory, then two hours from
+    # its last retry when the memory fix shipped).
     ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1,
-      "automatic_retry": {"attempts": 0, "not_before": "2026-10-31T12:05:00+00:00"}}, RELEASE_2, None),
-    # Once its automatic retries are spent, a transient block gets one try per new release, like a
-    # deterministic one (capture-447ae4f4, 2026-11-03: killed three times for host memory).
+      "automatic_retry": {"attempts": 0, "not_before": "2026-10-31T12:05:00+00:00"}}, RELEASE_2, "new_release"),
     ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1,
       "automatic_retry": {"attempts": 3, "exhausted": True}}, RELEASE_2, "new_release"),
     ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"], "release_commit": RELEASE_1,
-      "automatic_retry": {"attempts": 3, "limit": 3, "reason": "team_scene_packet_interrupted"}},
+      "automatic_retry": {"attempts": 2, "limit": 3, "not_before": "2026-10-31T14:00:00+00:00",
+                          "reason": "team_scene_packet_interrupted"}}, RELEASE_2, "new_release"),
+    ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1},
      RELEASE_2, "new_release"),
+    # Under the same release a transient block keeps its own bounded backoff: not before its wait, never
+    # past its limit, and once due, as a transient retry.
+    ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_2,
+      "automatic_retry": {"attempts": 0, "not_before": "2026-10-31T12:05:00+00:00"}}, RELEASE_2, None),
     ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"], "release_commit": RELEASE_2,
       "automatic_retry": {"attempts": 3, "limit": 3}}, RELEASE_2, None),
-    ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1},
+    ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_2},
      RELEASE_2, "team_scene_offer_publication_failed"),
 ])
 def test_only_a_deterministic_refusal_is_requeued_by_a_new_release(tmp_path, status, release, reason):
@@ -567,9 +573,10 @@ def test_only_a_deterministic_refusal_is_requeued_by_a_new_release(tmp_path, sta
     assert (queue / ("pending" if reason else "processed") / "k.json").is_file()
     if reason == "new_release":
         assert json.loads((queue / "status" / "k.json").read_text())[worker.RELEASE_REQUEUE_FIELD] == [release]
-        # Back in processed with the same status: never twice for one release.
+        # Back in processed with the same status: never twice for one release (a transient block may
+        # still take its own bounded retry under it).
         os.replace(queue / "pending" / "k.json", queue / "processed" / "k.json")
-        assert worker._requeue_due(queue, T0, release) == []
+        assert "new_release" not in [row["reason"] for row in worker._requeue_due(queue, T0, release)]
 
 
 def test_the_running_release_is_the_release_checkouts_commit_or_unknown(monkeypatch):
