@@ -7,6 +7,10 @@ Description=Watch prepared website scenes waiting for their robot-team scene hal
 [Path]
 PathChanged=/var/lib/blueprint/pipeline-control-plane/team-scene-packets/pending
 PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/team-scene-packets/pending/*.json
+# A remote compile that landed, or a request the remote lane handed back: the worker records or compiles it
+# and removes the marker, so neither glob can loop.
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/collected/team_scene_packet/*.json
+PathExistsGlob=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs/fallback/team_scene_packet/*.json
 Unit=blueprint-team-scene-packet.service
 
 [Install]

@@ -306,3 +306,172 @@ def team_descriptor(config: dict[str, Any], *, attempt_name: str = "0123456789ab
         limits=limits, closure={"class": "not_applicable", "source_appearance_digest": None},
         spend={"worst_case_usd": allocator.worst_case_usd(limits=limits, rate_table=config["rate_table"]),
                "rate_table_digest": canonical_digest(config["rate_table"])}, nonce=nonce)
+
+
+class Crash(BaseException):
+    """A process death at a chosen point: nothing in the collector catches a ``BaseException``."""
+
+
+class TeamCollectorWorld:
+    """A host with one queued team request, a project of fakes (``RemoteCpuWorld``) and the team paid unit's
+    collector, whose Cloud Run executions run the real worker at the host's own paths with the registered
+    handler in-process. While a worker runs, the host tree moves aside, exactly as a Cloud Run execution's
+    in-memory ``/var/lib/blueprint`` starts empty. ``compiles`` records where each compile ran."""
+
+    def __init__(self, tmp_path: Path, monkeypatch: Any, *, mode: str = "cloud_run", authority: Any = None,
+                 with_authority: bool = True, bodies: bool = False) -> None:
+        from blueprint_pipeline import team_scene_packet
+        from tests.remote_cpu_allocator_fakes import RemoteCpuWorld, add_bootstrap_job
+
+        self.tmp_path, self.mode = tmp_path, mode
+        self.remote = RemoteCpuWorld(tmp_path / "remote", monkeypatch, config=team_config(),
+                                     authority=authority or team_authority(), with_authority=with_authority)
+        add_bootstrap_job(self.remote.jobs, name=TEAM_JOB, timeout_seconds=3600)
+        self.clock = self.remote.clock
+        self.host = TeamHost(tmp_path / "host", monkeypatch, mode=mode, config=self.remote.config, bodies=bodies,
+                             clock=lambda: self.clock.now)
+        self.remote.root = self.host.jobs
+        self.store = self.remote.store
+        self.in_worker, self.compiles, self.executed, self.results = False, [], [], []
+        self.stage_override: Any = None
+        original = team_scene_packet.materialize_team_scene
+
+        def recorded(**kwargs: Any) -> Any:
+            self.compiles.append("worker" if self.in_worker else "host")
+            return original(**kwargs)
+
+        monkeypatch.setattr(team_scene_packet, "materialize_team_scene", recorded)
+
+    # ------------------------------------------------------------------ the paid unit
+    def allocate(self, argv: list[str]) -> dict[str, Any]:
+        import argparse
+
+        from blueprint_pipeline.remote_cpu_job_allocator import run_remote_cpu_job
+
+        values: dict[str, Any] = {}
+        index = 1
+        while index < len(argv):
+            if argv[index] == "--execute":
+                values["--execute"] = True
+                index += 1
+            else:
+                values[argv[index]] = argv[index + 1]
+                index += 2
+        Path(values["--out"]).parent.mkdir(parents=True, exist_ok=True)
+        args = argparse.Namespace(action=values["--action"], stage=values["--stage"],
+                                  descriptor=values.get("--descriptor"), lease=values["--lease"], out=values["--out"],
+                                  execute=bool(values.get("--execute")))
+        return run_remote_cpu_job(args, runtime=self.remote.runtime)
+
+    def stage_release(self, object_store: Any, commit: str) -> dict[str, Any]:
+        from blueprint_pipeline.remote_cpu_transport import SOURCE_FILENAME, SOURCE_KIND, cas_key
+        from tests.remote_cpu_worker_support import digest_of, release_archive
+
+        archive = release_archive(commit)
+        key = cas_key(SOURCE_KIND, digest_of(archive), SOURCE_FILENAME)
+        object_store[0].put_object(Bucket=object_store[1], Key=key, Body=archive,
+                                   Metadata={"sha256": digest_of(archive)[7:]})
+        return {"source_commit": commit, "digest": digest_of(archive), "size_bytes": len(archive),
+                "uri": f"s3://{object_store[1]}/{key}"}
+
+    def collector(self, **changes: Any) -> Any:
+        from blueprint_pipeline import team_scene_packet_collector as collector
+
+        values = {"runtime": self.remote.runtime, "config": self.remote.config, "jobs_root": self.host.jobs,
+                  "queue_root": self.host.world["queue"], "source_commit": COMMIT, "mode": self.mode,
+                  "allocate": self.allocate, "stage_release": self.stage_release, "filesystem_root": self.host.fs,
+                  "execution": {"requested": self.mode, "effective": self.mode, "reason": "explicit", "findings": []},
+                  **changes}
+        return collector.Collector(**values)
+
+    def collect(self, **changes: Any) -> dict[str, Any]:
+        from blueprint_pipeline import team_scene_packet_collector as collector
+
+        result = collector.run_collector(self.collector(**changes))
+        self.results.append(result)
+        return result
+
+    # ------------------------------------------------------------------ Cloud Run
+    def executions(self) -> list[dict[str, Any]]:
+        return [self.remote.jobs.get_execution(row["name"]) for row in self.remote.jobs.executions[TEAM_JOB]]
+
+    def _stage(self, *, runtime: Any, descriptor: dict[str, Any], release: Path, handler: str,
+               seconds: float) -> dict[str, Any]:
+        from blueprint_pipeline import remote_cpu_worker as worker_module
+
+        roots = worker_module.StageRoots(runtime.filesystem_root, release)
+        if self.stage_override is not None:
+            return self.stage_override(descriptor, roots)
+        return {"result": lane.run_team_scene_packet_in_worker(descriptor, roots), "release_path_misses": [],
+                "failures": []}
+
+    def run_workers(self) -> None:
+        """Start the worker once in each running execution whose container would run it."""
+
+        from blueprint_pipeline import remote_cpu_worker as worker_module
+        from tests.remote_cpu_worker_support import PREFIX_URL, RecordingHttp
+
+        for view in self.executions():
+            name = view["name"].rsplit("/", 1)[1]
+            behaviour = next(row["behaviour"] for row in self.remote.jobs.executions[TEAM_JOB]
+                             if row["name"] == view["name"])
+            if view["runningCount"] != 1 or name in self.executed or behaviour not in {"succeed", "duplicate"}:
+                continue
+            self.executed.append(name)
+            container = view["template"]["containers"][0]
+            environ = {**{row["name"]: row["value"] for row in container["env"]}, "CLOUD_RUN_JOB": view["job"],
+                       "CLOUD_RUN_EXECUTION": name, "CLOUD_RUN_TASK_COUNT": "1",
+                       "BLUEPRINT_REMOTE_CPU_STAGE": "team-scene-packet", worker_module.PREFIX_VARIABLE: PREFIX_URL}
+            aside, tree = self.tmp_path / "host-aside", self.tmp_path / "workers" / name
+            tree.parent.mkdir(exist_ok=True)
+            os.rename(self.host.fs, aside)
+            self.in_worker = True
+            try:
+                common = {"environ": environ, "http": RecordingHttp(self.store), "filesystem_root": self.host.fs,
+                          "clock": self.clock, "measure": lambda: HOST_RECORD, "log": lambda line: None}
+                execute = worker_module.WorkerRuntime(**common, run_stage=self._stage)
+                assert worker_module.bootstrap(["bootstrap"], worker_module.WorkerRuntime(
+                    **common, reader=self.remote.bucket.reader(),
+                    launch=lambda handoff: worker_module.execute_attempt(handoff, execute))) == 0
+            finally:
+                self.in_worker = False
+                if self.host.fs.exists():
+                    os.rename(self.host.fs, tree)
+                os.rename(aside, self.host.fs)
+
+    def advance(self, seconds: float) -> None:
+        remaining = float(seconds)
+        while remaining > 0:
+            self.clock.advance(min(30.0, remaining))
+            remaining -= 30.0
+            self.run_workers()
+
+    def drive(self, *, until: Any, step: float = 60.0, limit: int = 200) -> None:
+        """Run the collector, then let time pass and executions run, until ``until()`` holds."""
+
+        for _ in range(limit):
+            self.collect()
+            if until():
+                return
+            self.advance(step)
+        raise AssertionError(f"not reached after {limit} steps: {self.results[-1]}")
+
+    # ------------------------------------------------------------------ observations
+    def lease(self) -> dict[str, Any] | None:
+        from blueprint_pipeline.remote_cpu_job_contract import job_id_for
+
+        markers = [marker for kind in ("authoritative", "shadow", "fallback", "collected")
+                   for _, marker in lane.markers(self.host.jobs, kind) if marker]
+        names = {marker["queue_row"]["name"] for marker in markers} or set(self.names)
+        self.names = sorted(names)
+        leases = [self.host.jobs / "leases" / f"{job_id_for('team_scene_packet', name)}.json" for name in self.names]
+        found = [json.loads(path.read_text(encoding="utf-8")) for path in leases if path.exists()]
+        return found[-1] if found else None
+
+    names: list[str] = []
+
+    def terminal(self) -> bool:
+        from blueprint_pipeline.remote_cpu_job_lease import TERMINAL_STATES
+
+        lease = self.lease()
+        return lease is not None and lease["state"] in TERMINAL_STATES

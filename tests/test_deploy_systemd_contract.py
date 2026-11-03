@@ -207,7 +207,8 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                     "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents/.lock",
                 }
             continue
-        if unit.name == "blueprint-task-evaluation-episode-compilation-remote.service":
+        if unit.name in {"blueprint-task-evaluation-episode-compilation-remote.service",
+                         "blueprint-team-scene-packet-remote.service"}:
             # Plan 14 §1: the paid remote-compilation unit.  The no-spend compile unit's hardening, but narrow
             # writes instead of /var/lib/blueprint, the dispatcher key through LoadCredential= and a read-only
             # standing authority; it never compiles, so 2G bounds its readback and landing.

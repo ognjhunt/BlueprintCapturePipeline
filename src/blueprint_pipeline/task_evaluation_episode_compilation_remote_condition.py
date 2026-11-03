@@ -50,26 +50,27 @@ STAGE = "episode_compilation"
 MARKER_DIRECTORIES = ("handoffs", "shadow")
 
 
-def _waiting(directory: Path) -> bool:
-    """Whether a directory holds a record; a dot file is one still being written."""
+def _waiting(directory: Path, prefix: str = "") -> bool:
+    """Whether a directory holds a record (whose name starts with ``prefix``); a dot file is one still being
+    written."""
 
     try:
         with os.scandir(directory) as entries:
-            return any(not entry.name.startswith(".") for entry in entries)
+            return any(not entry.name.startswith(".") and entry.name.startswith(prefix) for entry in entries)
     except OSError:
         return False
 
 
-def configured(path: str | Path) -> bool:
-    """Whether the remote-CPU config at ``path`` is there for this stage, as far as the standard library can tell."""
+def configured(path: str | Path, stage: str = STAGE) -> bool:
+    """Whether the remote-CPU config at ``path`` is there for ``stage``, as far as the standard library can tell."""
 
     try:
-        return _configured(path)
+        return _configured(path, stage)
     except Exception:  # noqa: BLE001 - review M1: deep nesting, a lone surrogate: what cannot be read is no config
         return False
 
 
-def _configured(path: str | Path) -> bool:
+def _configured(path: str | Path, stage: str = STAGE) -> bool:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0)
     try:
         descriptor = os.open(path, flags)
@@ -97,7 +98,7 @@ def _configured(path: str | Path) -> bool:
             or not isinstance(value["region"], str) or US_REGION.fullmatch(value["region"]) is None):
         return False
     stages = value["stages"]
-    if not isinstance(stages, dict) or not isinstance(stages.get(STAGE), dict) or set(stages[STAGE]) != STAGE_KEYS:
+    if not isinstance(stages, dict) or not isinstance(stages.get(stage), dict) or set(stages[stage]) != STAGE_KEYS:
         return False
     # The config's own seal, as ``decision_evidence_contracts.canonical_digest`` computes it.
     sealed = json.dumps({name: item for name, item in value.items() if name != "config_digest"}, sort_keys=True,

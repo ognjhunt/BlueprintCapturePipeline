@@ -44,6 +44,15 @@ Environment=BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT=/var/lib/blueprint/pipeline-c
 # Where a request's own intent is read: an owner's success confirmation lives
 # under it (read only; an env file below may name another root).
 Environment=BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
+# Where the compile runs: BLUEPRINT_TEAM_SCENE_PACKET_EXECUTION (host,
+# cloud_run_shadow or cloud_run) comes from the shared environment file. Unset
+# or empty it is auto: cloud_run once the config below is there and names
+# team_scene_packet, host (today's path, byte for byte) without it. This unit
+# holds no credential in any mode: in cloud_run it hands an eligible request to
+# blueprint-team-scene-packet-remote.service, then records what that unit lands
+# and republishes the offer. Set host to keep every compile on this host.
+Environment=BLUEPRINT_REMOTE_CPU_JOBS_ROOT=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs
+Environment=BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG=/etc/blueprint/remote-cpu-workers.json
 # The same registry, capture partition, object store and WebApp bindings the
 # scene progression and handoff listener read.
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env

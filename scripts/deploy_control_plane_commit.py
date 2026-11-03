@@ -472,6 +472,10 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     # A prepared website scene's robot-team half, compiled on this host; no allocator.
     "blueprint-team-scene-packet.service",
     "blueprint-team-scene-packet.path",
+    # The team stage's paid remote-compilation unit, woken by its timer and by hand-offs.
+    "blueprint-team-scene-packet-remote.service",
+    "blueprint-team-scene-packet-remote.timer",
+    "blueprint-team-scene-packet-remote.path",
     "blueprint-beta-policy-screening.service",
     "blueprint-beta-policy-screening.timer",
     "blueprint-task-evaluation-configured-controls-progression.service",
@@ -561,6 +565,9 @@ DEFAULT_ALWAYS_ARM_AUTHORITY_GATED_PATH_UNITS = (
     # standing authority and the dispatcher credential; in host mode, which an
     # unset flag without a config is, its ExecCondition skips it except to drain.
     "blueprint-task-evaluation-episode-compilation-remote.path",
+    # Remote team-scene compilation under the same rule, for its own stage: a
+    # config without team_scene_packet keeps it in host mode.
+    "blueprint-team-scene-packet-remote.path",
 )
 #: This fixed timer advances only a sealed, qualifying configured-scene plan
 #: through the canonical Website APIs.  It cannot be supplied by a request or
@@ -591,6 +598,7 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     "blueprint-task-evaluation-sam31-preparation-execution.timer",
     "blueprint-task-evaluation-episode-compilation.timer",
     "blueprint-task-evaluation-episode-compilation-remote.timer",
+    "blueprint-team-scene-packet-remote.timer",
     "blueprint-task-evaluation-configured-controls-progression.timer",
     "blueprint-task-evaluation-configured-controls-progression.path",
     # The storage reaper is no-spend housekeeping. By default it removes
@@ -667,6 +675,10 @@ DEFAULT_EPISODE_COMPILATION_RUNTIME_DIRECTORIES = (
     DEFAULT_REMOTE_CPU_JOBS_ROOT,
     *(f"{DEFAULT_REMOTE_CPU_JOBS_ROOT}/{kind}{stage}" for kind in
       ("handoffs", "shadow", "fallback", "recovery") for stage in ("", "/episode_compilation")),
+    # The team-scene stage's markers and envelopes, which both of its path units watch.
+    *(f"{DEFAULT_REMOTE_CPU_JOBS_ROOT}/{kind}" for kind in ("collected", "envelopes")),
+    *(f"{DEFAULT_REMOTE_CPU_JOBS_ROOT}/{kind}/team_scene_packet" for kind in
+      ("handoffs", "shadow", "fallback", "collected", "envelopes")),
     # Older root-run GC created stranded/ under umask 0077. The owning
     # dispatcher must be able to discover and resume its sealed deliveries.
     DEFAULT_POLICY_DISPATCH_QUEUE_ROOT,

@@ -111,6 +111,8 @@ WORKER_UNITS=(
   blueprint-completed-replay-cache-gc.timer
   blueprint-scene-object-discovery.path
   blueprint-team-scene-packet.path
+  blueprint-team-scene-packet-remote.path
+  blueprint-team-scene-packet-remote.timer
   blueprint-beta-policy-screening.timer
   blueprint-embodiment-preparation.path
   blueprint-embodiment-preparation.timer
@@ -143,6 +145,7 @@ WORKER_UNITS=(
   blueprint-completed-replay-cache-gc.service
   blueprint-scene-object-discovery.service
   blueprint-team-scene-packet.service
+  blueprint-team-scene-packet-remote.service
   blueprint-beta-policy-screening.service
   blueprint-embodiment-preparation.service
   blueprint-task-evaluation-launch-reconciler.service
