@@ -17,5 +17,5 @@ where they always were. An owner-approved extension (door
 expiry (``task_evaluation_scene_execution_window_evidence.MAXIMUM_EXTENSION_SECONDS``).
 """
 
-# Proposed 2026-11-03 (up from one day), held for the owner's approval of the length.
+# 7 days, owner-approved 2026-11-03 (up from one day).
 WEBSITE_JOB_WINDOW_MAX_SECONDS = 7 * 86400
