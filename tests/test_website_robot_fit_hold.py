@@ -274,3 +274,27 @@ def _shipped_catalog() -> dict[str, Any]:
     from blueprint_pipeline.beta_policy_candidate_catalog import load_catalog
 
     return load_catalog(Path(__file__).resolve().parents[1] / "config" / "beta_policy_candidates.v1.json")
+
+
+def test_a_recheck_that_stops_short_stays_owed_and_bounded(site):
+    _held(site)
+    site.catalogs["current"] = _shipped_catalog()
+    failures = []
+
+    def transient(**_):
+        failures.append(1)
+        raise PipelineError(str(StageError("website_scene_preparation", "synthetic_transient_refusal")))
+
+    args = {"provider": "openai", "run_e2e": transient}
+    now = 1_000_000.0
+    counts = hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4], process_args=args, now=now)
+    ledger = listener._read_job_ledger(site.root)
+    assert counts["rechecked"] == 1 and ledger["status"] == "failed_retryable"
+    assert ledger["attempt_history"][-1][hold.RECHECK_MARK]["catalog_digest"] == site.catalogs["current"]["catalog_digest"]
+    # Backed off, then owed again until the bound; never a loop.
+    assert hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4], process_args=args,
+                                          now=now + 1)["waiting"] == 1
+    for step in range(1, 6):
+        hold.reconcile_robot_fit_holds(listener, storage_root=site.root.parents[4], process_args=args,
+                                       now=now + 4000 * step)
+    assert len(failures) == hold.MAX_RECHECKS

@@ -364,6 +364,13 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         correction = (expected_target_choice_correction or {}).get('corrections_digest')
         if correction:
             failure_record[CORRECTION_MARK] = correction
+        kept_recheck = {}
+        if expected_robot_fit_recheck is not None:
+            # A robot fit recheck that stopped short stays owed to the drain, with its bytes (website_robot_fit_hold).
+            from .website_robot_fit_hold import FIELD as RECHECK_FIELD, RECHECK_MARK
+            failure_record[RECHECK_MARK] = expected_robot_fit_recheck.get('inputs')
+            if isinstance(expected_robot_fit_recheck.get('record'), dict):
+                kept_recheck[RECHECK_FIELD] = expected_robot_fit_recheck['record']
         reconstruction = waiting_record(_listener, exc=exc, payload=payload, payload_digest=digest,
             producer_delivery_key=producer_delivery_key, capture_root=capture_root, attempt_count=attempt_count,
             previous_history=previous_history, recovered_expired_lease=ledger.get('recovered_expired_lease'),
@@ -373,7 +380,7 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
         # Keep the exact bytes while a guessed object can still be corrected.
         replay = replay_record(_listener, payload=payload, payload_digest=digest,
             producer_delivery_key=producer_delivery_key, capture_root=capture_root)
-        _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'failed_retryable', 'updated_at': failed_at, 'last_failed_at': failed_at, 'last_error_type': type(exc).__name__, 'last_error': str(exc), 'attempt_history': [*previous_history, failure_record], **({'assessment_resume': resume_record} if resume_record else {}), **({RECONSTRUCTION_FIELD: reconstruction} if reconstruction else {}), **({REPLAY_FIELD: replay} if replay else {})})
+        _listener._finish_job_lease(capture_root, owner=owner, token=token, update={'status': 'failed_retryable', 'updated_at': failed_at, 'last_failed_at': failed_at, 'last_error_type': type(exc).__name__, 'last_error': str(exc), 'attempt_history': [*previous_history, failure_record], **({'assessment_resume': resume_record} if resume_record else {}), **({RECONSTRUCTION_FIELD: reconstruction} if reconstruction else {}), **({REPLAY_FIELD: replay} if replay else {}), **kept_recheck})
         raise
     completed_at = _listener.utc_now_iso()
     control_plane_staging_status = str(control_plane_staging.get('status') or '') or None if control_plane_staging else None
@@ -393,8 +400,10 @@ def _process_handoff_payload_body(_listener, /, payload, *, storage_root, provid
     from .website_robot_fit_hold import FIELD as RECHECK_FIELD, RECHECK_MARK, replay_record as recheck_record
     if expected_robot_fit_recheck is not None:
         completion_record[RECHECK_MARK] = expected_robot_fit_recheck.get('inputs')
-    recheck = recheck_record(_listener, payload=payload, payload_digest=digest,
-        producer_delivery_key=producer_delivery_key, capture_root=capture_root) if terminal_success else None
+    recheck = (recheck_record(_listener, payload=payload, payload_digest=digest,
+        producer_delivery_key=producer_delivery_key, capture_root=capture_root) if terminal_success
+        # A recheck that stopped short keeps the bytes it replayed, still owed.
+        else (expected_robot_fit_recheck or {}).get('record'))
     ledger_update = {'schema_version': _listener.JOB_LEDGER_SCHEMA_VERSION, 'status': 'completed' if terminal_success else 'retryable_blocked', 'scene_id': handoff.scene_id, 'capture_id': handoff.capture_id, 'attempt_count': attempt_count, 'started_at': job_started_at, 'updated_at': completed_at, 'last_attempt_started_at': attempt_started_at, 'completed_at': completed_at, 'run_e2e_status': str(result.get('status') or '') or None, 'last_error_type': None if terminal_success else 'RetryableBlockedResult', 'last_error': None if terminal_success else ','.join(result_blockers), 'retry_blockers': result_blockers, 'queue_disposition': disposition, 'output_commit_status': 'committed' if output_commit else None, 'output_commit_path': _listener.JOB_OUTPUT_COMMIT_FILENAME if output_commit else None, 'output_result_sha256': output_commit.get('result_sha256') if output_commit else None, 'attempt_history': [*previous_history, completion_record]}
     if control_plane_staging:
         ledger_update.update({'control_plane_staging_status': control_plane_staging_status, 'control_plane_staging_path': control_plane_staging_path})

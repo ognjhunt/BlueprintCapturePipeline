@@ -116,11 +116,23 @@ def replay_record(listener, *, payload, payload_digest, producer_delivery_key, c
             "recheck_inputs": held}
 
 
+def _rerun_stopped_short(ledger: Mapping[str, Any]) -> bool:
+    """Whether the ledger's last run was a recheck that stopped short, with nothing else owning its retry."""
+    from .website_reconstruction_resume import armed
+
+    history = ledger.get("attempt_history")
+    last = history[-1] if type(history) is list and history else None
+    return (ledger.get("status") in {"failed_retryable", "retryable_blocked"} and isinstance(last, Mapping)
+            and RECHECK_MARK in last and not armed(ledger) and not isinstance(ledger.get("assessment_resume"), Mapping))
+
+
 def claim_matches(ledger, expected, *, payload_sha256, producer_delivery_key) -> bool:
-    """Inside the claim lock: still the completed, held ledger the drain read, for the same delivery."""
+    """Inside the claim lock: still the ledger the drain read (held and completed, or a recheck that stopped
+    short), for the same delivery."""
     record = expected.get("record")
     return (type(expected.get("revision")) is int and ledger.get("revision") == expected["revision"]
-            and ledger.get("status") == "completed" and type(record) is dict and ledger.get(FIELD) == record
+            and (ledger.get("status") == "completed" or _rerun_stopped_short(ledger))
+            and type(record) is dict and ledger.get(FIELD) == record
             and record.get("source_payload_sha256") == payload_sha256
             and record.get("producer_delivery_key") == producer_delivery_key)
 
@@ -171,15 +183,22 @@ def reconcile_robot_fit_holds(listener, *, storage_root: Path, process_args, lim
             _require(not (root / listener.JOB_LEDGER_FILENAME).is_symlink())
             before = listener._read_job_ledger(root)
             record = before.get(FIELD)
-            if before.get("status") != "completed" or type(record) is not dict:
+            if type(record) is not dict:
                 continue
             pipeline = root / "pipeline"
-            held = held_inputs(pipeline)
-            if held is None:
-                continue
-            inputs = recheck_inputs() if inputs is None else inputs
-            if held == inputs:
-                counts["held"] += 1
+            if before.get("status") == "completed":
+                held = held_inputs(pipeline)
+                if held is None:
+                    continue
+                inputs = recheck_inputs() if inputs is None else inputs
+                if held == inputs:
+                    counts["held"] += 1
+                    continue
+            elif _rerun_stopped_short(before):
+                # Owed again, within the same bound, until it completes.
+                held = record.get("recheck_inputs")
+                inputs = recheck_inputs() if inputs is None else inputs
+            else:
                 continue
             digest = canonical_digest({"recheck_inputs": inputs})
             if (set(record) != _RECORD_FIELDS or record.get("schema_version") != SCHEMA
