@@ -4,6 +4,7 @@ Profiles describe existing adapter/scorer contracts, never an intake allowlist.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .task_family_scoring import FAMILY_ALIASES
@@ -58,3 +59,43 @@ TASK_PROFILES: tuple[TaskProfile, ...] = (
 def task_profile_for(task_family: str | None) -> TaskProfile | None:
     value = (task_family or "").strip().lower()
     return next((row for row in TASK_PROFILES if value in row.aliases), None)
+
+
+#: Soft objects a rigid body cannot stand in for. Matched only as the head noun of the
+#: manipulated object's own label ("folded bath towel", "stack of towels"), never anywhere
+#: in the task text: "put the mug on the towel" moves a mug, and a "towel rack" is a rack.
+DEFORMABLE_SUBJECT_NOUNS = frozenset({
+    "towel", "cloth", "clothes", "clothing", "garment", "shirt", "t-shirt", "tshirt", "blouse", "sweater",
+    "hoodie", "jacket", "coat", "pants", "trousers", "jeans", "shorts", "skirt", "dress", "sock", "scarf",
+    "glove", "apron", "uniform", "napkin", "rag", "washcloth", "dishcloth", "blanket", "duvet", "comforter",
+    "quilt", "bedsheet", "pillowcase", "linen", "linens", "fabric", "textile", "pillow", "cushion", "curtain",
+    "tarp", "tarpaulin", "bag", "sack", "pouch", "rope", "cord", "cable", "wire", "hose", "string", "twine",
+    "yarn", "ribbon", "strap", "belt", "sponge", "dough", "laundry",
+})
+#: A label stops naming its object at the first relation ("towel on the rack", "bag of rice").
+_LABEL_RELATION = frozenset({"on", "in", "into", "inside", "onto", "at", "from", "near", "under", "beside", "by",
+                             "next", "with", "behind", "above", "below", "against", "over", "to", "for", "that",
+                             "which", "of", "and", "or"})
+#: "A stack of towels" names the towels.
+_COLLECTIVE = frozenset({"stack", "pile", "heap", "bundle", "armful", "load", "handful", "bunch"})
+
+
+def _deformable_noun(word: str) -> str | None:
+    for candidate in (word, word[:-2] if word.endswith("es") else None, word[:-1] if word.endswith("s") else None):
+        if candidate in DEFORMABLE_SUBJECT_NOUNS:
+            return candidate
+    return None
+
+
+def deformable_subject_noun(label: object) -> str | None:
+    """The soft-object head noun of a task object's label, or None. A text screen, never a measurement."""
+    if not isinstance(label, str):
+        return None
+    words = re.findall(r"[a-z]+(?:-[a-z]+)*", re.split(r"[,;:(]", label.lower(), maxsplit=1)[0])
+    end = next((index for index, word in enumerate(words) if word in _LABEL_RELATION), len(words))
+    head = words[end - 1] if end else None
+    if head in _COLLECTIVE and end < len(words) and words[end] == "of":
+        rest = words[end + 1:]
+        stop = next((index for index, word in enumerate(rest) if word in _LABEL_RELATION), len(rest))
+        head = rest[stop - 1] if stop else None
+    return _deformable_noun(head) if head else None

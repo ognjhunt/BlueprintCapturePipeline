@@ -62,6 +62,7 @@ import numpy as np
 from .decision_evidence_contracts import canonical_digest
 from .droid_policy_canary_embodiment import DROID_EMBODIMENT_ID, DROID_POLICY_CANARY_PRESET_ID
 from .robot_spec_catalog import figure_value
+from .usd_binary_read_cache import read_scoped
 
 SCHEMA = "website_robot_fit_table.v1"
 FILENAME = "robot_fit_table.json"
@@ -395,6 +396,7 @@ def _cycle_target(preparation: Mapping[str, Any]) -> float | None:
             and math.isfinite(value) and value > 0 else None)
 
 
+@read_scoped
 def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, verdict: Mapping[str, Any],
                     catalog: Mapping[str, Any], arm_chains: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Per catalog model, whether it fits this prepared rigid pick-and-place by spec, from CPU geometry only.

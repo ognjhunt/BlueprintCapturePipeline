@@ -19,9 +19,10 @@ and the task's own top, the floor must be observed under the footprint, and no
 surface of it below the headroom may roof the whole footprint, as a closed
 cabinet's top does over floor the reconstruction rebuilt inside it
 (``_room_mesh_occupancy``).
-A website collider is a USDA text file (capture-447's: 292 MB) that OpenUSD
-parses again at every open finding no stage of it alive, so a search holds it
-open while it re-opens it (``scene_physics_preflight.collision_kept_loaded``).
+A website collider normalized before 2026-11-03 is a USDA text file
+(capture-447's: 292 MB) that OpenUSD parses again at every open finding no stage
+of it alive, so a search reads it through its read scope's one binary copy
+(``usd_binary_read_cache``), the caller's when it has one.
 Host-side and deterministic (OpenUSD), so a robot with no clear stance is
 refused by name before any GPU time is spent.
 """
@@ -37,6 +38,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .team_embodiment import TeamEmbodimentError
+from .usd_binary_read_cache import read_scoped, readable
 
 SCHEMA = "blueprint.team_free_base_stance.v1"
 SEARCH_RADIUS_M = 1.6
@@ -140,7 +142,7 @@ def _world_triangles(path: Path, offset: list[float], meshes: list[tuple[str, in
     import numpy as np
     from pxr import Usd, UsdGeom, Vt
 
-    stage = Usd.Stage.Open(str(path)) if stage is None else stage
+    stage = Usd.Stage.Open(readable(path)) if stage is None else stage
     if (UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z or (
             stage.HasAuthoredMetadata("metersPerUnit")
             and not math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.0))):
@@ -383,13 +385,14 @@ def _stage_without(path: Path, prims: list[str]) -> Any:
 
     from pxr import Usd
 
-    stage = Usd.Stage.Open(str(path))
+    stage = Usd.Stage.Open(readable(path))
     with Usd.EditContext(stage, stage.GetSessionLayer()):
         for prim in prims:
             stage.GetPrimAtPath(prim).SetActive(False)
     return stage
 
 
+@read_scoped
 def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[float],
                   subject_center: list[float], subject_minimum: list[float], subject_maximum: list[float],
                   footprint_half_extent_m: list[float], root_height_m: float | None = None,
@@ -420,11 +423,13 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
     from .scene_placement.usd_index import UsdSceneSpatialIndex
     from .scene_placement.validation import DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M, validate_stand_pose
 
-    # Held to the end of the search, which re-opens the file (``_stage_without``, the box index), so a USDA
-    # text collider is parsed once (``scene_physics_preflight.collision_kept_loaded``).
-    stage = Usd.Stage.Open(str(collision_path))
+    # Every read below (the triangles, ``_stage_without``, the box index) opens the scope's binary copy of a
+    # USDA text collider, read once (``usd_binary_read_cache``); the stance names the file by its digest.
+    # Held to the end of the search, so a file no copy is made of is parsed once too.
+    opened = Path(readable(collision_path))
+    stage = Usd.Stage.Open(str(opened))
     meshes: list[tuple[str, int]] = []
-    vertices, faces = _world_triangles(collision_path, offset, meshes, stage=stage)
+    vertices, faces = _world_triangles(opened, offset, meshes, stage=stage)
     try:
         floor_z, _, floor_fit = _infer_horizontal_support_surface(stage_vertices=vertices, faces=faces)
     except ExternalSceneRobotPlacementError as exc:
@@ -448,8 +453,7 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
         column_top_m=column_top, centre=start[:2], subject_top_z=float(subject_maximum[2]),
         reach_m=SEARCH_RADIUS_M + math.hypot(*(float(v) + clearance_m for v in footprint_half_extent_m[:2]))
         + GRID_STEP_M)
-    source = ({"usd_path": str(collision_path)} if room is None
-              else {"stage": _stage_without(collision_path, room["prims"])})
+    source = ({"usd_path": str(opened)} if room is None else {"stage": _stage_without(opened, room["prims"])})
     obstacles = [replace(box, bbox_min=shifted(box.bbox_min), bbox_max=shifted(box.bbox_max),
                          centroid=shifted(box.centroid))
                  for box in UsdSceneSpatialIndex(**source,

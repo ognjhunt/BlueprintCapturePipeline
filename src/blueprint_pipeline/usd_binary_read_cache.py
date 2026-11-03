@@ -1,20 +1,26 @@
-"""A compile's binary copy of a USDA text collider, read once; the published file is never touched.
+"""A binary copy of a USDA text collider, read once per scope; the published file is never touched.
 
-Beta journey step: L5 team policy evaluation (``team_scene_packet``). A website
-collider is a USDA text file (capture-447's: one 292 MB mesh of 3.25 M points),
-and OpenUSD parses the whole text again at every open that finds no stage of it
-alive, transiently at about twelve times the file's size (3.4 GB for a 280 MB
-synthetic room). A team packet opened it 22 times, and the host's OOM killer
-ended capture-447's compile twice on 2026-11-03 with the unit at 2.4 and 3.7 GB,
-under its 8 GB cap.
+Beta journey steps: L3 website preparation (the capability verdict and robot fit
+table) and L5 team policy evaluation (``team_scene_packet``). A website collider
+normalized before 2026-11-03 is a USDA text file (capture-447's: one 292 MB mesh
+of 3.25 M points), and OpenUSD parses the whole text again at every open that
+finds no stage of it alive, transiently at about twelve times the file's size
+(3.6 GB for a 280 MB synthetic room). A team packet opened it 22 times, and the
+host's OOM killer ended capture-447's compile twice on 2026-11-03 with the unit
+at 2.4 and 3.7 GB, under its 8 GB cap. New scenes' colliders are binary already
+(``task_evaluation_completed_scene_geometry``); published ones keep their text.
 
-Inside ``compile_scoped``, ``binary_copy`` writes the collider once as a USDC
-file under the compile's own root, holds it open, and deletes it when the
-compile ends. Readers open ``readable(path)``, which is that copy for the source
-or any hard link of it (the packet stages the collider as one); a step that may
-edit what it opens takes ``editable(path)``, its own in-memory copy, so an edit
-never reaches another reader. Receipts, digests and staged bytes keep naming the
-published file; the copy is only read.
+Every reader of a scene collider opens ``readable(path)``. Inside a
+``read_scope`` (``read_scoped`` on a function), that is one binary copy of the
+file, made the first time a reader opens a USDA text file of at least
+``LAZY_COPY_BYTES``, or explicitly by ``binary_copy``; outside one it is the
+file itself. The copy is a USDC file in a directory of its own, held open and
+deleted when the outermost scope ends, so nested scopes (a verdict around its
+stance and carry searches, a compile around its packets) share it. It answers
+for the source or any hard link of it (the packet stages the collider as one).
+A step that may edit what it opens takes ``editable(path)``, its own in-memory
+copy, so an edit never reaches another reader. Receipts, digests and staged
+bytes keep naming the published file; the copy is only read.
 
 The copy is written without OpenUSD's text parse of the large arrays: each
 numeric array literal of at least ``LARGE_ARRAY_BYTES`` is read with numpy
@@ -22,26 +28,32 @@ numeric array literal of at least ``LARGE_ARRAY_BYTES`` is read with numpy
 it), and OpenUSD parses the rest with those literals replaced by markers it then
 finds by value. Anything it does not recognise (an unknown type, a comment or a
 word in a literal, a marker not found exactly once, a 16-digit integer) falls
-back to OpenUSD's own parse of the whole file, still once per compile. A
+back to OpenUSD's own parse of the whole file, still once per scope. A
 collider with composition dependencies (sublayers, references, payloads) is not
-copied: its relative paths would resolve from the copy's directory.
+copied: its relative paths would resolve from the copy's directory. A file the
+scope declined is not tried again in it.
 """
 
 from __future__ import annotations
 
+import filecmp
 import functools
 import os
 import re
 import shutil
+import tempfile
 import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, TypeVar
 
 #: Array literals at least this long are read with numpy; smaller ones are left to OpenUSD.
 LARGE_ARRAY_BYTES = 1 << 20
+#: A USDA text file at least this long is copied by the first ``readable`` of it in a scope; a smaller
+#: one is cheap to parse (OpenUSD's peak is about twelve times the file) and is opened as it is.
+LAZY_COPY_BYTES = 16 << 20
 #: Marker values for a replaced literal: never a real coordinate or index next to its ordinal.
 _MARK_FLOAT = -1.5e38
 _MARK_INT = -2147483647
@@ -63,9 +75,18 @@ class _Copy:
     method: str
 
 
+@dataclass
+class _Scope:
+    directory: Path | None  # where ``readable`` puts its copies; the system's temporary directory if None
+    made: list[tuple[int, int]] = field(default_factory=list)
+    declined: dict[tuple[int, int], tuple[int, int]] = field(default_factory=dict)
+    temporary: Path | None = None
+
+
 #: Keyed by the source's (device, inode), so a hard link of it (a staged packet asset) reads the copy too.
 _COPIES: dict[tuple[int, int], _Copy] = {}
-_SCOPES: list[list[tuple[int, int]]] = []
+#: Open scopes, outermost first: it owns every copy and decline made inside.
+_SCOPES: list[_Scope] = []
 
 
 def _identity(path: str | Path) -> tuple[tuple[int, int], tuple[int, int]] | None:
@@ -82,16 +103,66 @@ def _copy_for(path: str | Path) -> _Copy | None:
     return copy if copy is not None and identity is not None and copy.version == identity[1] else None
 
 
+def _large_text(path: str | Path) -> bool:
+    """Whether the first ``readable`` of ``path`` in this scope should copy it: large USDA text, not declined."""
+
+    identity = _identity(path)
+    if identity is None or identity[1][0] < LAZY_COPY_BYTES or _SCOPES[0].declined.get(identity[0]) == identity[1]:
+        return False
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(5) == b"#usda"
+    except OSError:
+        return False
+
+
+def _lazy_directory() -> Path:
+    """A new directory for one copy, under the outermost scope's own temporary directory."""
+
+    scope = _SCOPES[0]
+    if scope.temporary is None:
+        if scope.directory is not None:
+            scope.directory.mkdir(parents=True, exist_ok=True)
+        scope.temporary = Path(tempfile.mkdtemp(prefix=".collider-read-cache-", dir=scope.directory))
+    return Path(tempfile.mkdtemp(prefix="copy-", dir=scope.temporary))
+
+
+def _same_bytes(path: str | Path) -> _Copy | None:
+    """The scope's copy of another file holding exactly ``path``'s bytes (a packet's copy of it), now ``path``'s."""
+
+    identity = _identity(path)
+    for copy in list(_COPIES.values()):
+        if (identity is not None and copy.version[0] == identity[1][0] and _copy_for(copy.source) is copy
+                and filecmp.cmp(copy.source, path, shallow=False)):
+            _COPIES[identity[0]] = alias = replace(copy, source=Path(path), version=identity[1])
+            _SCOPES[0].made.append(identity[0])
+            return alias
+    return None
+
+
 def readable(path: str | Path) -> str:
-    """What to open to read ``path``: the compile's binary copy of it (or of the file it hard-links), else itself."""
+    """What to open to read ``path``: the scope's binary copy of it (or of the file it hard-links), else itself.
+
+    Inside a scope, a USDA text file of ``LAZY_COPY_BYTES`` or more is copied the first time, unless the
+    scope has a copy of the same bytes from another file already.
+    """
 
     copy = _copy_for(path)
+    if copy is None and _SCOPES and _large_text(path):
+        copy = _same_bytes(path)
+        if copy is None:
+            return str(binary_copy(path, _lazy_directory()))
     return str(copy.path) if copy is not None else str(path)
 
 
 def editable(path: str | Path) -> Any:
-    """What to open to read ``path`` and maybe edit it in memory: an anonymous copy no other reader shares."""
+    """What to open to read ``path`` and maybe edit it in memory: an anonymous copy no other reader shares.
 
+    Inside a scope, of the scope's binary copy, made first as ``readable`` makes it.
+    """
+
+    if _SCOPES:
+        readable(path)
     copy = _copy_for(path)
     if copy is None:
         return str(path)
@@ -101,16 +172,20 @@ def editable(path: str | Path) -> Any:
 
 
 @contextmanager
-def read_scope() -> Iterator[None]:
-    """The copies ``binary_copy`` makes inside are released and deleted when the block ends."""
+def read_scope(directory: str | Path | None = None) -> Iterator[None]:
+    """Readers in the block share one binary copy of each text collider; deleted when the outermost scope ends.
 
-    made: list[tuple[int, int]] = []
-    _SCOPES.append(made)
+    ``readable`` puts the copies it makes under ``directory`` (the outermost scope's), else under the system's
+    temporary directory.
+    """
+
+    scope = _Scope(directory=None if directory is None else Path(directory))
+    _SCOPES.append(scope)
     try:
         yield
     finally:
-        _SCOPES.remove(made)
-        for key in made:
+        _SCOPES.remove(scope)
+        for key in scope.made:
             copy = _COPIES.pop(key, None)
             if copy is None:
                 continue
@@ -120,10 +195,12 @@ def read_scope() -> Iterator[None]:
                 copy.path.parent.rmdir()
             except OSError:
                 pass
+        if scope.temporary is not None:
+            shutil.rmtree(scope.temporary, ignore_errors=True)
 
 
-def compile_scoped(function: F) -> F:
-    """``function`` runs inside its own ``read_scope``."""
+def read_scoped(function: F) -> F:
+    """``function`` runs inside a ``read_scope``: its own, or its caller's when one is open."""
 
     @functools.wraps(function)
     def scoped(*args: Any, **kwargs: Any) -> Any:
@@ -150,7 +227,14 @@ def binary_copy(source: str | Path, directory: str | Path) -> Path:
     with source.open("rb") as handle:
         if handle.read(5) != b"#usda":
             return source  # binary already: every open of it is cheap
+    owner = _SCOPES[0]
+    if owner.declined.get(identity[0]) == identity[1]:
+        return source
     from pxr import Sdf, Tf, Usd
+
+    def declined() -> Path:
+        owner.declined[identity[0]] = identity[1]
+        return source
 
     try:
         layer, method = _fast_layer(source, minimum_bytes=LARGE_ARRAY_BYTES), "numpy_large_arrays"
@@ -160,9 +244,9 @@ def binary_copy(source: str | Path, directory: str | Path) -> Path:
         try:
             layer, method = Sdf.Layer.OpenAsAnonymous(str(source)), "openusd_text_parse"
         except Tf.ErrorException:
-            return source  # the reader that needs it refuses by its own name
+            return declined()  # the reader that needs it refuses by its own name
     if layer is None or layer.GetCompositionAssetDependencies():
-        return source
+        return declined()
     target = Path(directory)
     target.mkdir(parents=True, exist_ok=True)
     path = target / (source.stem + ".usdc")
@@ -173,10 +257,10 @@ def binary_copy(source: str | Path, directory: str | Path) -> Path:
     del layer
     if not exported:
         shutil.rmtree(target, ignore_errors=True)
-        return source
+        return declined()
     _COPIES[identity[0]] = _Copy(source=source, version=identity[1], path=path,
                                  stage=Usd.Stage.Open(str(path)), method=method)
-    _SCOPES[-1].append(identity[0])
+    owner.made.append(identity[0])
     return path
 
 
@@ -302,5 +386,5 @@ def _fast_layer(source: Path, *, minimum_bytes: int) -> Any:
     return layer
 
 
-__all__ = ["LARGE_ARRAY_BYTES", "binary_copy", "compile_scoped", "copy_method", "editable", "read_scope",
-           "readable"]
+__all__ = ["LARGE_ARRAY_BYTES", "LAZY_COPY_BYTES", "binary_copy", "copy_method", "editable", "read_scope",
+           "read_scoped", "readable"]

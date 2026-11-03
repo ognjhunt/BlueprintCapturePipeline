@@ -200,3 +200,55 @@ def test_background_triangles_measured_in_blocks_are_the_same_triangles(tmp_path
     blocks = preflight.load_background_triangles(room, centre=[-0.4, -1.2, 0.8], radius=1.3,
                                                  world_from_stage=np.eye(4))
     assert len(whole) > 100 and blocks.dtype == whole.dtype and blocks.tobytes() == whole.tobytes()
+
+
+def test_a_reader_in_a_scope_copies_a_large_text_collider_once_and_nested_scopes_share_it(tmp_path,
+                                                                                        monkeypatch) -> None:
+    # The website verdict holds its stance and carry searches, each a scope of its own when called alone.
+    monkeypatch.setattr(cache, "LARGE_ARRAY_BYTES", 64)
+    source = write_text_collider(tmp_path / "collision.usda")
+    small = write_text_collider(tmp_path / "small.usda", count=30)
+    monkeypatch.setattr(cache, "LAZY_COPY_BYTES", small.stat().st_size + 1)
+    assert source.stat().st_size >= cache.LAZY_COPY_BYTES
+    assert cache.readable(source) == str(source)  # no scope: the file itself
+    with cache.read_scope(directory=tmp_path / "work"):
+        copy = Path(cache.readable(source))
+        assert copy.suffix == ".usdc" and copy.is_relative_to(tmp_path / "work")
+        assert cache.copy_method(source) == "numpy_large_arrays"
+        assert cache.readable(small) == str(small)  # cheap to parse: opened as it is
+        with cache.read_scope():
+            assert cache.readable(source) == str(copy)
+        assert copy.exists()  # the outermost scope owns it
+    assert not copy.exists() and list((tmp_path / "work").iterdir()) == []
+    assert cache.readable(source) == str(source)
+
+
+def test_a_file_the_scope_declined_is_not_read_again(tmp_path, monkeypatch) -> None:
+    (tmp_path / "part.usda").write_text('#usda 1.0\ndef Mesh "m" {}\n')
+    source = tmp_path / "collision.usda"
+    source.write_text('#usda 1.0\ndef Xform "Root" (\n    prepend references = @./part.usda@</m>\n)\n{\n}\n')
+    monkeypatch.setattr(cache, "LAZY_COPY_BYTES", 1)
+    reads = []
+    fast = cache._fast_layer
+    monkeypatch.setattr(cache, "_fast_layer", lambda *a, **k: reads.append(a[0]) or fast(*a, **k))
+    with cache.read_scope(directory=tmp_path / "work"):
+        assert cache.readable(source) == cache.readable(source) == str(source)
+    assert reads == [source]
+
+
+def test_another_file_with_the_same_bytes_opens_the_same_copy(tmp_path, monkeypatch) -> None:
+    # A packet's evidence copy of the collider is a new file, not a hard link.
+    import shutil
+
+    monkeypatch.setattr(cache, "LARGE_ARRAY_BYTES", 64)
+    monkeypatch.setattr(cache, "LAZY_COPY_BYTES", 1)
+    source = write_text_collider(tmp_path / "collision.usda")
+    (tmp_path / "evidence").mkdir()
+    same = Path(shutil.copyfile(source, tmp_path / "evidence" / "collision.usda"))
+    other = write_text_collider(tmp_path / "other.usda", seed=2)
+    with cache.read_scope():
+        copy = cache.readable(source)
+        assert cache.readable(same) == copy and cache.readable(other) != copy
+        assert Path(cache.readable(other)).suffix == ".usdc"
+        same.write_text(same.read_text() + "\n")  # changed: no longer the copy's bytes, so a copy of its own
+        assert cache.readable(same) not in (copy, str(same)) and cache.readable(source) == copy

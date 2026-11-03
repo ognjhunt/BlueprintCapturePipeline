@@ -87,6 +87,30 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
                 or ("provider_mutation_performed" in handoff and
                     type(handoff["provider_mutation_performed"]) is not bool)):
             return False
+    elif code in {"website_multi_object_task_preparation_required",
+                  "website_deformable_task_object_preparation_required"}:
+        # ``website_task_preparation.native_task_subject_gap``: the job's own profile, and a
+        # subject that profile cannot represent, re-derived here rather than trusted.
+        from .task_profile_contracts import deformable_subject_noun
+        if declared is None and family == "general_task" and isinstance(gap.get("task_semantics"), Mapping):
+            from .website_task_semantics import resolved_task_profile
+            try:
+                declared = task_profile_for(resolved_task_profile(gap["task_semantics"], task_context=task_context,
+                    source_video_digest=gap.get("source_video_digest")))
+            except (ValueError, TypeError, KeyError):
+                return False
+        ids = gap.get("subject_target_ids")
+        multi = code == "website_multi_object_task_preparation_required"
+        if (declared is None or gap.get("inferred_profile_id") != declared.profile_id
+                or declared.profile_id not in {"rigid_pick_place", "articulated_open_close"}
+                or not isinstance(ids, list) or not all(isinstance(item, str) and item for item in ids)
+                or len(set(ids)) != len(ids) or (len(ids) < 2 if multi else len(ids) != 1)
+                or (not multi and (declared.profile_id != "rigid_pick_place"
+                                   or deformable_subject_noun(gap.get("subject_label")) is None
+                                   or gap.get("deformable_noun") != deformable_subject_noun(gap["subject_label"])))
+                or ("provider_mutation_performed" in handoff and
+                    type(handoff["provider_mutation_performed"]) is not bool)):
+            return False
     else:
         return False
     return (

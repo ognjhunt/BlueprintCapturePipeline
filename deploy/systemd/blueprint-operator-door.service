@@ -46,6 +46,10 @@ ReadWritePaths=/var/lib/blueprint-operator-door
 InaccessiblePaths=-/etc/blueprint/provider-secrets -/etc/blueprint/credentials -/etc/blueprint/secrets -/etc/blueprint/agent-execution-admissions -/var/lib/blueprint/spend-authority -/var/lib/blueprint/spend-authority-home -/var/lib/blueprint/pipeline-control-plane/agent-execution-rollout -/var/lib/blueprint/pipeline-control-plane/episode-interpreter-service-account.json
 TasksMax=64
 MemoryMax=1G
+# Host safety net (money safety): when the host runs out, the kernel's OOM
+# killer counts this unit half the host smaller (-500) and passes it over
+# unless it is the one holding the memory.
+OOMScoreAdjust=-500
 CPUQuota=100%
 CPUWeight=20
 IOWeight=20

@@ -24,9 +24,12 @@ every check below runs before any provider mutation:
 - spend authority is the capture's own website preparation grant: one
   ``gpu_render``/``vast`` reservation of the cap through the WebApp
   (``website_task_context.reserve_website_preparation_spend``) bound to this
-  allocation's binding digest. A missing, expired or exhausted grant is a
+  allocation's binding digest. The precheck reads the WebApp's current grant
+  (a sponsor's renewal supersedes the copy written when preparation started),
+  valid until its own expiry or an owner-approved, time-only window of the
+  scene intent sealed under it. A missing, expired or exhausted grant is a
   typed refusal and nothing is allocated; the run's watchdog deadline never
-  outlives the grant.
+  outlives the WebApp's admission.
 
 The transport is the shared native Arena Vast path with the existing
 ``native_task_arena`` bundle kind: zero retry and one allocation, US-only
@@ -87,8 +90,11 @@ WEBSITE_GRANT_REFUSALS = {
     "website_scene_preparation_budget_exhausted": "rigid_robot_free_probe_website_grant_exhausted",
     "website_scene_sponsorship_missing": "rigid_robot_free_probe_website_grant_missing",
 }
+# The longest owner-approved, time-only window past a grant's own expiry (the WebApp's bound).
+MAXIMUM_WINDOW_EXTENSION_SECONDS = 7 * 86400
 _RESOURCE_NAME = re.compile(r"^blueprint-rigid-robot-free-probe-[0-9a-f]{32}$")
 _WEBSITE_REFUSAL = re.compile(r"^website_control_preparation-spend_http_[0-9]{3}:([a-z][a-z0-9_]{0,99})$")
+_SPONSORSHIP_REFUSAL = re.compile(r"^website_control_scene-sponsorship_http_([0-9]{3}):([a-z][a-z0-9_]{0,99})$")
 
 
 class RigidRobotFreeProbeLaneError(ValueError):
@@ -213,37 +219,108 @@ def driver_ceiling_blockers() -> list[str]:
     return []
 
 
-def retained_website_grant(capture_root: str | Path, *, now: float | None = None
-                           ) -> tuple[dict[str, Any] | None, list[str]]:
-    """The capture's retained website task context, or the typed reason its grant cannot fund a run.
+def _capture_intent_windows(capture_id: str, intent_root: str | Path | None = None
+                            ) -> list[tuple[dict[str, Any], float]]:
+    """Each unrevoked scene-preparation intent sealed for this capture, with its verified effective expiry.
 
-    The local read is a precheck; the WebApp's reservation remains the spend authority.
+    Read-only, on this host's intent store (``BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT``
+    unless ``intent_root`` is given). An intent whose extension records do not
+    verify keeps its sealed expiry; an unreadable intent is skipped.
     """
 
+    from .task_evaluation_scene_execution_window_evidence import effective_execution_expiry
+    from .task_evaluation_scene_intent_contracts import ROOT_ENV, _read
+    from .website_preparation_revision_identity import capture_id as preparation_capture_id
+
+    configured = os.environ.get(ROOT_ENV, "").strip() if intent_root is None else str(intent_root)
+    root = Path(configured) if configured else None
+    if root is None or root.is_symlink() or not root.is_dir():
+        return []
+    windows = []
+    for directory in sorted(root.glob("scene-*")):
+        try:
+            if directory.is_symlink() or not directory.is_dir() or (directory / "revoked.json").exists():
+                continue
+            intent = _read(directory / "intent.json", "intent_digest")
+            request = intent["request"]
+            sealed = request["execution"]["expires_at_epoch"]
+            if (request["execution"].get("purpose") != "scene_preparation"
+                    or preparation_capture_id(request) != capture_id
+                    or isinstance(sealed, bool) or not isinstance(sealed, (int, float)) or not math.isfinite(sealed)):
+                continue
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            continue
+        try:
+            expiry = float(effective_execution_expiry(directory, intent))
+        except (OSError, ValueError, KeyError, TypeError):
+            expiry = float(sealed)  # One record that does not verify fails the window closed.
+        windows.append((request, expiry))
+    return windows
+
+
+def _sealed_under(request: Mapping[str, Any], grant: Mapping[str, Any]) -> bool:
+    """The intent's request was issued under exactly this grant: its owner, consent and window."""
+
+    return (request.get("owner") == grant.get("owner") and request.get("consent") == grant.get("consent")
+            and (request.get("execution") or {}).get("expires_at_epoch") == grant.get("expires_at_epoch"))
+
+
+def _sponsorship_refusal(exc: BaseException) -> str:
+    """The typed blocker for a current-grant read that did not succeed; each one defers and none spends."""
+
+    message = str(exc)
+    match = _SPONSORSHIP_REFUSAL.fullmatch(message)
+    if match is not None:
+        status, code = int(match.group(1)), match.group(2)
+        if code in WEBSITE_GRANT_REFUSALS:
+            return WEBSITE_GRANT_REFUSALS[code]
+        if status >= 500 or status == 429:
+            return "rigid_robot_free_probe_website_grant_unavailable:" + code
+        return "rigid_robot_free_probe_website_grant_refused:" + code
+    if isinstance(exc, ValueError) and message.startswith(("website_scene_sponsorship_", "website_preparation_authority_")):
+        return "rigid_robot_free_probe_website_grant_invalid:" + message[:120]
+    return "rigid_robot_free_probe_website_grant_unavailable:" + (message or type(exc).__name__)[:120]
+
+
+def retained_website_grant(capture_root: str | Path, *, now: float | None = None,
+                           intent_root: str | Path | None = None) -> tuple[dict[str, Any] | None, list[str]]:
+    """The capture's retained website task context, or the typed reason its current grant cannot fund a run.
+
+    The grant is the WebApp's current one, through the signed non-creating read, never
+    the copy written once when preparation started: a sponsor's renewal supersedes
+    it. It stays valid until its own expiry or, when an owner-approved, time-only
+    extension of the scene intent sealed under exactly this grant verifies, until
+    that window ends (never past expiry + 7 days). The read is a precheck that
+    stages nothing; the WebApp's reservation remains the spend authority.
+    """
+
+    from .website_task_context import load_website_scene_sponsorship
     from .website_task_context_contracts import validate_website_task_context
 
     current = float(time.time() if now is None else now)
-    pipeline = Path(capture_root) / "pipeline"
-    paths = (pipeline / "website_task_context.json", pipeline / "website_scene_sponsorship.json")
-    if any(path.is_symlink() or not path.is_file() for path in paths):
+    path = Path(capture_root) / "pipeline" / "website_task_context.json"
+    if path.is_symlink() or not path.is_file():
         return None, ["rigid_robot_free_probe_website_grant_missing"]
     try:
-        context, sponsorship = _load(paths[0]), _load(paths[1])
+        context = _load(path)
         context = validate_website_task_context(
             context, request_id=str(context.get("request_id") or ""), scene_id=str(context.get("scene_id") or ""),
             capture_id=str(context.get("capture_id") or ""), purpose="scene_preparation")
     except (OSError, ValueError) as exc:
         return None, [f"rigid_robot_free_probe_website_grant_invalid:{str(exc)[:120]}"]
-    expires = sponsorship.get("expires_at_epoch")
     if Path(capture_root).name != context.get("capture_id"):
         return None, ["rigid_robot_free_probe_website_grant_invalid:capture_binding"]
-    if (sponsorship.get("schema_version") != "website_scene_sponsorship.v1"
-            or sponsorship.get("authority_digest") != canonical_digest(sponsorship, digest_field="authority_digest")
-            or any(sponsorship.get(key) != context.get(key) for key in ("request_id", "scene_id", "capture_id"))
-            or sponsorship.get("task_context_digest") != context.get("context_digest")
-            or isinstance(expires, bool) or not isinstance(expires, (int, float))):
-        return None, ["rigid_robot_free_probe_website_grant_invalid:sponsorship_binding"]
-    if expires - current < MIN_HARD_TTL_SECONDS:
+    windows = _capture_intent_windows(context["capture_id"], intent_root)
+    extended = [expiry for request, expiry in windows if expiry > request["execution"]["expires_at_epoch"]]
+    try:
+        grant = load_website_scene_sponsorship(task_context=context, now=current, create=False,
+                                               **({"valid_until": max(extended)} if extended else {}))
+    except Exception as exc:  # noqa: BLE001 - a precheck: every failure defers and none spends
+        return None, [_sponsorship_refusal(exc)]
+    # Only the window of an intent sealed under exactly this grant extends it.
+    expires = float(grant["expires_at_epoch"])
+    effective = max([expires, *(expiry for request, expiry in windows if _sealed_under(request, grant))])
+    if min(effective, expires + MAXIMUM_WINDOW_EXTENSION_SECONDS) - current < MIN_HARD_TTL_SECONDS:
         # Expired, or ending before the shortest run could finish.
         return None, ["rigid_robot_free_probe_website_grant_expired"]
     return context, []

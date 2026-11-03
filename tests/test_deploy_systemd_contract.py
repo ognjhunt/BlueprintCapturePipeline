@@ -344,6 +344,55 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
     assert "threshold=40" in baseline
 
 
+#: Batch units, retried when killed. The host has 8.3 GB and no swap: the 8G MemoryMax most units carry never
+#: binds, and the kernel's OOM killer chose the team packet compile four times on 2026-11-03.
+HOST_SAFETY_BATCH_UNITS = (
+    "blueprint-team-scene-packet.service",
+    "blueprint-task-evaluation-scene-progression.service",
+    "blueprint-task-evaluation-launch-preparation.service",
+    "blueprint-embodiment-preparation.service",
+    "blueprint-control-plane-storage-gc.service",
+)
+#: Money safety, and the door to the host: the OOM killer passes them over.
+HOST_SAFETY_GUARD_UNITS = (
+    "blueprint-gpu-spend-guard.service",
+    "blueprint-operator-door.service",
+    "blueprint-existing-policy-canary-watchdog.service",
+    "blueprint-task-evaluation-launch-supervisor.service",
+    "blueprint-task-evaluation-launch-reconciler.service",
+    "blueprint-task-evaluation-terminal-resource-release.service",
+)
+
+
+def _directives(unit: str) -> dict[str, list[str]]:
+    values: dict[str, list[str]] = {}
+    for line in (SYSTEMD_DIR / unit).read_text(encoding="utf-8").splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            key, value = line.split("=", 1)
+            values.setdefault(key.strip(), []).append(value.strip())
+    return values
+
+
+def test_batch_units_give_way_to_the_money_safety_units_and_the_door_on_a_full_host() -> None:
+    for unit in HOST_SAFETY_BATCH_UNITS:
+        values = _directives(unit)
+        # Moderately first to go; never protected on its own, which would hand the kill to a guard.
+        assert values["OOMScoreAdjust"] == ["200"], unit
+        # No throttle until a peak is known: systemd's and the kernel's figures for the team packet disagree.
+        assert not {"MemoryHigh", "ManagedOOMMemoryPressure", "ManagedOOMSwap"} & set(values), unit
+    for unit in HOST_SAFETY_GUARD_UNITS:
+        values = _directives(unit)
+        assert values["OOMScoreAdjust"] == ["-500"], unit
+        # Never weakened: no throttle, no pressure kill, the memory cap each had before.
+        assert not {"MemoryHigh", "ManagedOOMMemoryPressure", "ManagedOOMSwap"} & set(values), unit
+        assert values["MemoryMax"] == (["1G"] if unit in {"blueprint-operator-door.service",
+                                                          "blueprint-existing-policy-canary-watchdog.service"}
+                                       else ["8G"]), unit
+    others = [unit.name for unit in SYSTEMD_DIR.glob("*.service")
+              if unit.name not in HOST_SAFETY_BATCH_UNITS + HOST_SAFETY_GUARD_UNITS]
+    assert not [unit for unit in others if {"OOMScoreAdjust", "MemoryHigh"} & set(_directives(unit))]
+
+
 def test_isolated_staging_intake_has_separate_identity_state_and_installer() -> None:
     service = _read("blueprint-pipeline-intake-staging.service")
     env_example = _read("pipeline-intake-staging.env.example")
