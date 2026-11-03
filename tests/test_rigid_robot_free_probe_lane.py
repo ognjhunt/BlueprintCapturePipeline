@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -38,10 +39,12 @@ from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import rigid_robot_free_probe_lane as lane
 from blueprint_pipeline import rigid_robot_free_probe_runner as runner
 from blueprint_pipeline import rigid_robot_free_probe_worker as worker
+from blueprint_pipeline import robot_arm_path_clearance as arm
+from blueprint_pipeline import scene_physics_preflight as physics
 from blueprint_pipeline import robot_free_probe_gate as gate
 from blueprint_pipeline import team_candidate_quick10_registry as registry
 from blueprint_pipeline import website_task_context
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.native_task_arena_execution_contract import native_task_arena_execution_transport_completed
 from blueprint_pipeline.native_task_arena_readback import _compose_pose_xyzw
 from blueprint_pipeline.native_task_nurec_render_setup import appearance_render_path_from_plan
@@ -55,6 +58,7 @@ REVISION = "sha256:" + "4" * 64
 COMMIT = "a" * 40
 PLAN = "native_task_arena_scene_plan.v1.json"
 PACKET_RECEIPT = "native_task_arena_packet_receipt.v1.json"
+UNREACHABLE = "robot_rigid_pick_place_unreachable:approach"
 
 
 def _sealed(value: dict[str, Any], field: str) -> dict[str, Any]:
@@ -85,18 +89,56 @@ def retask_packet(packet: Path, task_spec: dict[str, Any]) -> None:
     receipt_path.write_text(json.dumps(_sealed(receipt, "receipt_digest"), indent=2, sort_keys=True) + "\n")
 
 
+def _unreachable_from_the_packets_own_base(packet: Path) -> dict[str, Any]:
+    """The arm-path solver's verdict for this packet's own Franka, at the packet's own base pose, picking
+    its object up and placing it at its target.
+
+    The fixture's task is a planar push the gate does not measure, and its base stands about 3.4 m from
+    the object, so the real solver answers the refusal capture-447ae4f4's probe was sealed with.
+    """
+    plan = json.loads((packet / PLAN).read_text())
+    spec = plan["task_spec"]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.delitem(sys.modules, "torch", raising=False)  # the lane fixture's stand-in, not scipy's torch
+        return arm.rigid_pick_place_clearance(
+            robot_id=plan["robot"]["robot_id"], base_pose_world=plan["robot"]["base_pose_world"],
+            start_pose_world=spec["start_pose_world"], target_position_world=spec["target_position_world_m"],
+            contact_point_m=[0.0, 0.0, 0.0], approach_unit=[0.0, 0.0, 1.0],
+            gripper_orientation_xyzw=[1.0, 0.0, 0.0, 0.0], pregrasp_clearance_m=0.1,
+            seeds=[list(arm.NOMINAL_SEED_RAD)])
+
+
 def website_context() -> dict[str, Any]:
     return _sealed({"schema_version": "website_site_task_context.v1", "request_id": "req1", "scene_id": "site-req1",
-                    "capture_id": "walkthrough-req1", "description": "Move the mug onto the tray",
+                    "capture_id": "walkthrough-req1", "purpose": "scene_preparation",
+                    "description": "Move the mug onto the tray",
                     "confirmed": True, "confirmed_at": "2026-10-26T01:00:00Z", "operator_answers": {},
-                    "unresolved": []}, "context_digest")
+                    "unresolved": [], "capture_rights": {"derived_scene_generation_allowed": True,
+                                                         "consent_revoked": False}}, "context_digest")
 
 
-def website_sponsorship(context: dict[str, Any], *, expires_in: float = 20 * 3600) -> dict[str, Any]:
-    return _sealed({"schema_version": "website_scene_sponsorship.v1", "sponsor": "blueprint",
-                    **{key: context[key] for key in ("request_id", "scene_id", "capture_id")},
-                    "task_context_digest": context["context_digest"],
-                    "expires_at_epoch": time.time() + expires_in}, "authority_digest")
+GRANT_OWNER = {"user_id": "blueprint-preparation", "organization_id": "blueprint"}
+
+
+def website_sponsorship(context: dict[str, Any], *, expires_in: float = 20 * 3600,
+                        renewal: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A preparation grant as the WebApp's signed read returns it (synthetic caps and terms)."""
+
+    expires = time.time() + expires_in
+    value = {"schema_version": "website_scene_sponsorship.v1", "sponsor": "blueprint", "purpose": "scene_preparation",
+             **{key: context[key] for key in ("request_id", "scene_id", "capture_id")},
+             "task_context_digest": context["context_digest"], "policy_digest": "sha256:" + "8" * 64,
+             "authoring_provider": "openai", "owner": dict(GRANT_OWNER), "preparation_max_total_spend_usd": 25,
+             "upstream_max_spend_usd": 5, "max_total_spend_usd": 20, "max_paid_attempts": 2,
+             "expires_at_epoch": expires,
+             "consent": {"rights_reference": cross_runtime_canonical_digest(context["capture_rights"]),
+                         "provider_terms_reference": "sha256:" + "7" * 64, "accepted_by": GRANT_OWNER["user_id"],
+                         "accepted_at_epoch": expires - 86_000, "private_processing_authorized": True,
+                         "provider_training_authorized": False, "task_confirmed": context["confirmed"],
+                         "spend_authorized": True}}
+    if renewal is not None:
+        value["renewal"] = renewal
+    return _sealed(value, "authority_digest")
 
 
 class _FakeTorch(types.ModuleType):
@@ -242,6 +284,7 @@ def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options:
     (capture / "pipeline").mkdir(parents=True)
     context = website_context()
     (capture / "pipeline" / "website_task_context.json").write_text(json.dumps(context))
+    # The copy written once when preparation started; the precheck reads the WebApp's current grant instead.
     (capture / "pipeline" / "website_scene_sponsorship.json").write_text(json.dumps(website_sponsorship(context)))
     probe_root = tmp_path / "source-launch"
     probe_root.mkdir()
@@ -255,6 +298,7 @@ def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options:
         "tmp": tmp_path, "capture": capture, "probe_root": probe_root, "queue": tmp_path / "queue", "packet": packet,
         "spec": spec, "contract": contract, "scored": scored_task_spec(spec, contract), "profile": profile,
         "facts": facts, "context": context, "webapp_calls": [], "webapp_refusal": None, "transport_calls": [],
+        "grant": website_sponsorship(context), "grant_reads": [], "grant_failure": None, "webapp_window": False,
         "published": [], "launches": [], "host_options": dict(host_options), "continuing_spend": False,
         "allocator_calls": []}
     monkeypatch.setattr(registry, "profile_for_capture", lambda root: dict(profile) if str(
@@ -268,11 +312,24 @@ def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options:
     monkeypatch.setattr(arena_vast, "run_arena_native_control_vast", fake_transport(world))
     monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
     for name in ("BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT", "BLUEPRINT_GCP_BUDGET_GUARD_CONFIG",
-                 "BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "BLUEPRINT_VAST_MAX_ISAAC_DRIVER", runner.QUEUE_ENV):
+                 "BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "BLUEPRINT_VAST_MAX_ISAAC_DRIVER", runner.QUEUE_ENV,
+                 "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(lane.ENABLE_ENV, "1")
 
     def webapp(*, capture_id: str, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if operation == "scene-sponsorship":
+            # The current grant (the signed non-creating read). Past its own expiry the WebApp
+            # answers only while its own verified intent window covers it.
+            world["grant_reads"].append({"capture_id": capture_id, "payload": dict(payload)})
+            failure = world["grant_failure"]
+            if isinstance(failure, BaseException):
+                raise failure
+            if failure:
+                raise ValueError(f"website_control_scene-sponsorship_http_409:{failure}")
+            if world["grant"]["expires_at_epoch"] <= time.time() and not world["webapp_window"]:
+                raise ValueError("website_control_scene-sponsorship_http_409:consent_expired")
+            return copy.deepcopy(world["grant"])
         world["webapp_calls"].append({"capture_id": capture_id, "operation": operation, "payload": payload})
         if world["webapp_refusal"]:
             raise ValueError(f"website_control_{operation}_http_409:{world['webapp_refusal']}")
@@ -373,8 +430,10 @@ def _with(argv: list[str], flag: str, value: str) -> list[str]:
 
 @pytest.mark.parametrize("case, blocker, reserved", [
     ("disabled", "rigid_robot_free_probe_lane_disabled", False),
+    ("context_missing", "rigid_robot_free_probe_website_grant_missing", False),
     ("grant_missing", "rigid_robot_free_probe_website_grant_missing", False),
     ("grant_expired", "rigid_robot_free_probe_website_grant_expired", False),
+    ("grant_ending", "rigid_robot_free_probe_website_grant_expired", False),
     ("webapp_expired", "rigid_robot_free_probe_website_grant_expired", True),
     ("webapp_exhausted", "rigid_robot_free_probe_website_grant_exhausted", True),
     ("webapp_missing", "rigid_robot_free_probe_website_grant_missing", True),
@@ -392,11 +451,14 @@ def test_the_lane_refuses_before_any_spend(tmp_path, monkeypatch, case, blocker,
     pipeline = world["capture"] / "pipeline"
     if case == "disabled":
         monkeypatch.delenv(lane.ENABLE_ENV)
+    elif case == "context_missing":
+        (pipeline / "website_task_context.json").unlink()
     elif case == "grant_missing":
-        (pipeline / "website_scene_sponsorship.json").unlink()
+        world["grant_failure"] = "website_scene_sponsorship_missing"
     elif case == "grant_expired":
-        (pipeline / "website_scene_sponsorship.json").write_text(
-            json.dumps(website_sponsorship(world["context"], expires_in=600)))
+        world["grant"] = website_sponsorship(world["context"], expires_in=-60)
+    elif case == "grant_ending":
+        world["grant"] = website_sponsorship(world["context"], expires_in=600)
     elif case.startswith("webapp_"):
         world["webapp_refusal"] = {"webapp_expired": "consent_expired",
                                    "webapp_exhausted": "website_scene_preparation_budget_exhausted",
@@ -423,6 +485,139 @@ def test_the_lane_refuses_before_any_spend(tmp_path, monkeypatch, case, blocker,
     assert bool(world["webapp_calls"]) is reserved
     assert not (staged["root"] / "allocator" / lane.FUNDING_FILENAME).exists()
     assert not (staged["root"] / "allocator" / lane.CONSUMPTION_FILENAME).exists()
+
+
+# --- the capture's current website grant ------------------------------------------------------
+
+INTAKE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"
+
+
+def _stage_intent(root: Path, grant: dict[str, Any], *, name: str) -> dict[str, Any]:
+    """A sealed scene-preparation intent for this capture, issued under ``grant`` (synthetic request)."""
+
+    from blueprint_pipeline.task_evaluation_scene_intent_contracts import INTENT_SCHEMA, _seal
+
+    request = {"submission_id": grant["capture_id"], "owner": dict(grant["owner"]),
+               "consent": copy.deepcopy(grant["consent"]), "task": {"subject": {}},
+               "source": {"content_digest": "sha256:" + "3" * 64},
+               "execution": {"purpose": "scene_preparation", "policy_candidates": [], "max_retries": 0,
+                             "max_total_spend_usd": grant["max_total_spend_usd"],
+                             "max_paid_attempts": grant["max_paid_attempts"],
+                             "expires_at_epoch": grant["expires_at_epoch"]}}
+    intent = _seal({"schema_version": INTENT_SCHEMA, "intent_id": name, "request": request,
+                    "authenticated_issuer": "webapp", "accepted_at_epoch": grant["consent"]["accepted_at_epoch"],
+                    "source_content_digest": request["source"]["content_digest"],
+                    "task_content_digest": "sha256:" + "2" * 64, "provider_mutation_performed": False}, "intent_digest")
+    (root / name).mkdir(parents=True)
+    (root / name / "intent.json").write_text(json.dumps(intent))
+    return intent
+
+
+def _extend(root: Path, intent: dict[str, Any], until: float) -> dict[str, Any]:
+    """The operator door's sealed, time-only extension (the real writer)."""
+
+    from blueprint_pipeline.task_evaluation_scene_execution_window import ACK, extend_scene_execution_window_by_operator
+
+    return extend_scene_execution_window_by_operator(
+        queue_root=root, intent_id=intent["intent_id"], intent_digest=intent["intent_digest"], expires_at_epoch=until,
+        authorization_reference="synthetic owner approval (time only)", ack=ACK, door_caller="operator",
+        door_request_id="20261103T160000Z-extend-scene-execution-window-0123abcd", trusted_clients={"webapp"},
+        capture_rights={"consent_revoked": False, "derived_scene_generation_allowed": True}, apply=True)
+
+
+def test_the_precheck_reads_the_webapps_current_grant_not_the_copy_from_preparation_start(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    pipeline = world["capture"] / "pipeline"
+    # capture-447ae4f4: the copy written when preparation started is the original grant, long expired;
+    # the sponsor has since renewed it on the WebApp.
+    stale = website_sponsorship(world["context"], expires_in=-2 * 86400)
+    (pipeline / "website_scene_sponsorship.json").write_text(json.dumps(stale))
+    world["grant"] = website_sponsorship(world["context"], renewal={
+        "parent_authority_digest": stale["authority_digest"], "parent_expires_at_epoch": stale["expires_at_epoch"],
+        "approved_by": GRANT_OWNER["user_id"], "approval_reference": "synthetic owner approval"})
+    assert lane.retained_website_grant(world["capture"]) == (world["context"], [])
+    (read,) = world["grant_reads"]
+    # The non-creating read: it can never create or renew a grant.
+    assert read == {"capture_id": "walkthrough-req1", "payload": {
+        "request_id": "req1", "scene_id": "site-req1", "purpose": "scene_preparation",
+        "expected_task_context_digest": world["context"]["context_digest"], "create": False}}
+    (pipeline / "website_scene_sponsorship.json").unlink()
+    assert lane.retained_website_grant(world["capture"]) == (world["context"], [])
+    # The queued probe is then funded once from that grant and decided.
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    assert runner.run_queue(world["queue"], hooks=runner_hooks(world))[0]["status"] == "decided"
+    assert [call["operation"] for call in world["webapp_calls"]] == ["preparation-spend"]
+
+
+def test_an_owner_approved_window_of_the_grants_own_intent_keeps_it_funding_the_probe(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    intents = tmp_path / "intents"
+    intents.mkdir()
+    monkeypatch.setenv(INTAKE_ROOT_ENV, str(intents))
+    # The grant's own 24 h window ended an hour ago.
+    grant = world["grant"] = website_sponsorship(world["context"], expires_in=-3600)
+    bound = _stage_intent(intents, grant, name="scene-" + "1" * 64)
+    assert lane.retained_website_grant(world["capture"])[1] == ["rigid_robot_free_probe_website_grant_expired"]
+    # From here the WebApp honours its own mirrored window; the Pipeline still checks its own copy of it.
+    world["webapp_window"] = True
+    # The parent grant's intent carries a longer window, and a revoked intent another: neither extends this grant.
+    parent = _stage_intent(intents, website_sponsorship(world["context"], expires_in=-2 * 86400),
+                           name="scene-" + "2" * 64)
+    _extend(intents, parent, time.time() + 3 * 86400)
+    revoked = _stage_intent(intents, grant, name="scene-" + "3" * 64)
+    _extend(intents, revoked, time.time() + 2 * 86400)
+    (intents / revoked["intent_id"] / "revoked.json").write_text("{}")
+    assert lane.retained_website_grant(world["capture"])[1] == ["rigid_robot_free_probe_website_grant_expired"]
+    # A window ending before the shortest run could finish is still expired.
+    _extend(intents, bound, time.time() + 600)
+    assert lane.retained_website_grant(world["capture"])[1] == ["rigid_robot_free_probe_website_grant_expired"]
+    _extend(intents, bound, time.time() + 6 * 3600)
+    assert lane.retained_website_grant(world["capture"]) == (world["context"], [])
+    # The WebApp's admission follows the window past the grant's own expiry, and so does the run's deadline.
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    assert runner.run_queue(world["queue"], hooks=runner_hooks(world))[0]["status"] == "decided"
+    (attempt,) = runner._attempts(runner._job_dir(world["queue"], current_probe_state(world["capture"])))
+    funding = json.loads((attempt / "allocator" / lane.FUNDING_FILENAME).read_text())
+    assert funding["expires_at_epoch"] > grant["expires_at_epoch"]
+    assert world["transport_calls"][0]["hard_deadline_epoch"] == funding["expires_at_epoch"]
+
+
+@pytest.mark.parametrize("failure, blocker", [
+    ("consent_expired", "rigid_robot_free_probe_website_grant_expired"),
+    ("website_scene_sponsorship_missing", "rigid_robot_free_probe_website_grant_missing"),
+    ("website_task_context_changed", "rigid_robot_free_probe_website_grant_refused:website_task_context_changed"),
+    (ValueError("website_control_scene-sponsorship_http_503:website_scene_sponsorship_unavailable"),
+     "rigid_robot_free_probe_website_grant_unavailable:website_scene_sponsorship_unavailable"),
+    (ValueError("website_control_scene-sponsorship_http_429:unclassified"),
+     "rigid_robot_free_probe_website_grant_unavailable:unclassified"),
+    (ValueError("website_scene_sponsorship_binding_invalid"),
+     "rigid_robot_free_probe_website_grant_invalid:website_scene_sponsorship_binding_invalid"),
+    (OSError("connection refused"), "rigid_robot_free_probe_website_grant_unavailable:connection refused"),
+    (TimeoutError(), "rigid_robot_free_probe_website_grant_unavailable:TimeoutError"),
+])
+def test_a_failed_grant_read_is_a_typed_blocker(tmp_path, monkeypatch, failure, blocker) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    world["grant_failure"] = failure
+    assert lane.retained_website_grant(world["capture"]) == (None, [blocker])
+
+
+def test_an_unreachable_webapp_defers_the_probe_and_stages_nothing(tmp_path, monkeypatch) -> None:
+    from urllib.error import URLError
+
+    world = build_world(tmp_path, monkeypatch)
+    world["grant_failure"] = URLError("connection refused")
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    for _ in range(runner.MAX_UNFUNDED_ATTEMPTS + 1):
+        row = runner.run_queue(world["queue"], hooks=runner_hooks(world))[0]
+        assert row["status"] == "deferred", row
+        assert [code for code in row["blockers"] if code.startswith("rigid_robot_free_probe_website_grant_")] == [
+            "rigid_robot_free_probe_website_grant_unavailable:<urlopen error connection refused>"]
+    # Nothing was staged, so an outage never uses up the scene's bounded attempts.
+    assert runner._attempts(runner._job_dir(world["queue"], current_probe_state(world["capture"]))) == []
+    assert world["allocator_calls"] == [] and world["webapp_calls"] == [] and world["transport_calls"] == []
+    world["grant_failure"] = None
+    assert runner.run_queue(world["queue"], hooks=runner_hooks(world))[0]["status"] == "decided"
 
 
 def test_one_authority_funds_and_allocates_at_most_once(tmp_path, monkeypatch) -> None:
@@ -633,6 +828,152 @@ def test_a_refusal_before_funding_defers_to_the_next_wake_up_and_is_bounded(tmp_
     assert world["transport_calls"] == [] and _receipt(world) is None
 
 
+# --- a staging refusal under an older release is retried once by each newly deployed one -------------
+
+LEGACY_REFUSAL = "native_task_arena_bundle_robot_arm_path_blocked:" + UNREACHABLE
+PHYSICS_REFUSAL = "native_task_arena_bundle_scene_physics_blocked:task_object:scene_physics_rest_overlap:1.3cm"
+
+
+def _legacy_staging_refusal(world: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    """The queue exactly as the runner left capture-447ae4f4's probe at 2026-11-03T17:54:40Z.
+
+    ``stage_attempt`` made ``attempts/00`` and wrote its probe input; the bundle then refused (the
+    packet's Franka could not reach the approach), so no bundle, authority, argv or intent exists. The
+    runner sealed the job ``staging_refused``, before terminals named their release, and retired the
+    entry to ``done/``.
+    """
+    from blueprint_pipeline.rigid_robot_free_probe_bundle import probe_inputs
+
+    queued = runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    state = current_probe_state(world["capture"])
+    job = runner._job_dir(world["queue"], state)
+    attempt = job / "attempts" / "00"
+    attempt.mkdir(parents=True)
+    (job / "runner.lock").touch()
+    runner._write_exclusive(attempt / worker.INPUTS_FILENAME, probe_inputs(state=state))
+    terminal = _sealed({"schema_version": runner.TERMINAL_SCHEMA, "status": "staging_refused",
+                        "capture_root": state["capture_root"], "probe_request_digest": state["request"]["request_digest"],
+                        "detail": {"reason": LEGACY_REFUSAL}, "sealed_at_iso": "2026-11-03T17:54:40Z"},
+                       "terminal_digest")
+    runner._write_exclusive(job / runner.TERMINAL_FILENAME, terminal)
+    (world["queue"] / "done").mkdir()
+    os.replace(queued["path"], world["queue"] / "done" / Path(queued["path"]).name)
+    return job, terminal
+
+
+def test_the_refused_attempt_of_a_superseded_refusal_counts_toward_no_limit(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    job, terminal = _legacy_staging_refusal(world)
+    attempt = job / "attempts" / "00"
+    assert sorted(path.name for path in attempt.iterdir()) == [worker.INPUTS_FILENAME]
+    name = Path(next((world["queue"] / "done").glob("*.json"))).name
+    # Without a known running release nothing is retried.
+    assert runner.requeue_new_release(world["queue"], None) == []
+    unknown = {**runner_hooks(world), "source_commit": lambda: "not-a-release"}
+    assert runner.run_queue(world["queue"], hooks=unknown) == []
+    # A known release returns the retired entry to pending once ...
+    (moved,) = runner.requeue_new_release(world["queue"], COMMIT)
+    assert moved == {"entry": name, "reason": "new_release", runner.RELEASE_COMMIT_FIELD: COMMIT,
+                     "terminal_status": "staging_refused", "terminal_release_commit": None}
+    assert (world["queue"] / "pending" / name).is_file() and not (world["queue"] / "done" / name).exists()
+    assert runner.requeue_new_release(world["queue"], COMMIT) == []
+    # ... and sets the terminal aside under the job lock; an interrupted pass finishes the move.
+    marker = runner._supersede_for_release(job, COMMIT)
+    (job / runner.SUPERSEDED_DIRNAME / f"{terminal['terminal_digest'][7:23]}.terminal.json").rename(
+        job / runner.TERMINAL_FILENAME)
+    assert runner._supersede_for_release(job, "b" * 40) == marker
+    assert runner._supersede_for_release(job, COMMIT) is None and not (job / runner.TERMINAL_FILENAME).exists()
+    # The refused attempt launched nothing: neither funded nor a refusal before funding, and the next
+    # attempt takes the next index.
+    ingest = json.loads((attempt / runner.INGEST_FILENAME).read_text())
+    assert ingest["state"] == runner.NOT_STAGED_STATE and ingest["funded"] is False and ingest["allocated"] is False
+    assert ingest["reason"] == LEGACY_REFUSAL
+    assert runner.settle_attempt(attempt, state=current_probe_state(world["capture"]))["state"] == "not_staged"
+    assert runner._counts(job) == (0, 0) and runner.NOT_STAGED_STATE not in runner.UNFUNDED_STATES
+    assert runner._attempts(job) == [attempt]
+
+
+def test_a_staging_refusal_sealed_by_an_older_release_is_retried_once_on_a_new_one(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    job, terminal = _legacy_staging_refusal(world)
+    sealed = (job / runner.TERMINAL_FILENAME).read_bytes()
+    # The deployed fix: the packet's arm still cannot reach the tray, and the probe now runs.
+    verdict = _unreachable_from_the_packets_own_base(world["packet"])
+    monkeypatch.setattr(arm, "packet_arm_path_clearance", lambda packet_dir: dict(verdict))
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert row["status"] == "decided" and _receipt(world)["status"] == "passed", row
+    marker = row["superseded_terminal"]
+    assert marker[runner.RELEASE_COMMIT_FIELD] == COMMIT and marker["superseded_release_commit"] is None
+    assert marker["superseded_terminal_digest"] == terminal["terminal_digest"]
+    assert marker["superseded_detail"] == {"reason": LEGACY_REFUSAL}
+    # History is kept: the sealed refusal sits beside its marker, byte for byte.
+    history = job / runner.SUPERSEDED_DIRNAME
+    assert (history / f"{terminal['terminal_digest'][7:23]}.terminal.json").read_bytes() == sealed
+    first, second = runner._attempts(job)
+    assert [first.name, second.name] == ["00", "01"]
+    assert json.loads((first / runner.INGEST_FILENAME).read_text())["state"] == runner.NOT_STAGED_STATE
+    assert json.loads((second / runner.INGEST_FILENAME).read_text())["state"] == "decided"
+    assert runner._counts(job) == (1, 0) and len(world["allocator_calls"]) == 1
+    receipt = json.loads((second / "bundle" / runner.BUNDLE_RECEIPT_FILENAME).read_text())
+    assert receipt["evidence_only_checks"]["robot_arm_path_clearance"] == "blocked"
+    final = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    assert final["status"] == "decided" and final[runner.RELEASE_COMMIT_FIELD] == COMMIT
+    assert final[runner.RELEASE_REQUEUE_FIELD] == [COMMIT]
+    # Decided: neither this release nor a later one retries it.
+    assert runner.run_queue(world["queue"], hooks=runner_hooks(world)) == []
+    assert runner.run_queue(world["queue"], hooks={**runner_hooks(world), "source_commit": lambda: "b" * 40}) == []
+    assert len(world["allocator_calls"]) == 1
+
+
+def test_a_staging_refusal_is_final_under_its_release_and_retried_once_by_a_new_one(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    old, new = "c" * 40, COMMIT
+    admitted = physics.require_scene_physics_admission
+
+    def overlap(packet_dir: Path, **_options: Any) -> dict[str, Any]:
+        raise physics.ScenePhysicsAdmissionBlocked(["task_object:scene_physics_rest_overlap:1.3cm"])
+
+    monkeypatch.setattr(physics, "require_scene_physics_admission", overlap)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    under_old = {**runner_hooks(world), "source_commit": lambda: old}
+    (row,) = runner.run_queue(world["queue"], hooks=under_old)
+    assert row["status"] == "staging_refused" and row[runner.RELEASE_COMMIT_FIELD] == old, row
+    assert row["detail"] == {"reason": PHYSICS_REFUSAL, "attempt": "00"}
+    assert runner.RELEASE_REQUEUE_FIELD not in row
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    # Final under the release that sealed it, however its entry comes back.
+    assert runner.run_queue(world["queue"], hooks=under_old) == []
+    assert runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])["status"] == "queued"
+    (row,) = runner.run_queue(world["queue"], hooks=under_old)
+    assert row["status"] == "staging_refused" and "superseded_terminal" not in row
+    assert [attempt.name for attempt in runner._attempts(job)] == ["00"]
+    # A newly deployed release retries it once; the physics refusal stands, so it seals again under that one.
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert row["status"] == "staging_refused" and row["superseded_terminal"]["superseded_release_commit"] == old
+    assert row[runner.RELEASE_COMMIT_FIELD] == new and row[runner.RELEASE_REQUEUE_FIELD] == [old, new]
+    assert row["detail"] == {"reason": PHYSICS_REFUSAL, "attempt": "01"}
+    assert [json.loads((attempt / runner.INGEST_FILENAME).read_text())["state"]
+            for attempt in runner._attempts(job)] == [runner.NOT_STAGED_STATE] * 2
+    assert runner._counts(job) == (0, 0)
+    # Never twice, even once its cause is gone, and never by a release that already tried it.
+    monkeypatch.setattr(physics, "require_scene_physics_admission", admitted)
+    for hooks in (runner_hooks(world), under_old):
+        assert runner.run_queue(world["queue"], hooks=hooks) == []
+        runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+        (row,) = runner.run_queue(world["queue"], hooks=hooks)
+        assert row["status"] == "staging_refused" and "superseded_terminal" not in row, row
+    assert len(runner._attempts(job)) == 2 and len(list((job / runner.SUPERSEDED_DIRNAME).glob("*.terminal.json"))) == 1
+    # The next release runs it: both refused attempts count toward no limit, and it takes index 02.
+    later = "d" * 40
+    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers",
+                        lambda: ([], {"orchestrator_source_commit": later}))
+    (row,) = runner.run_queue(world["queue"], hooks={**runner_hooks(world), "source_commit": lambda: later})
+    assert row["status"] == "decided" and _receipt(world)["status"] == "passed", row
+    assert [attempt.name for attempt in runner._attempts(job)] == ["00", "01", "02"]
+    assert runner._counts(job) == (1, 0) and len(world["allocator_calls"]) == 1
+    assert row[runner.RELEASE_REQUEUE_FIELD] == [old, new, later]
+
+
 def test_an_allocator_that_cannot_start_allocates_nothing_and_defers(tmp_path, monkeypatch) -> None:
     world = build_world(tmp_path, monkeypatch)
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
@@ -786,7 +1127,9 @@ def test_the_runner_units_are_automatic_under_capture_grants_and_allow_opt_out(m
     assert service.index("ExecCondition=") < service.index("ExecStart=")
     for setting in ("KillMode=process", "User=blueprint", "ProtectSystem=strict", "NoNewPrivileges=true",
                     "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process",
-                    f"BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE={runner.DEFAULT_QUEUE}"):
+                    f"BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE={runner.DEFAULT_QUEUE}",
+                    "Environment=BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT="
+                    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"):
         assert setting in service
     # The service default implements the owner's automatic-check direction.
     # Operator env files can disable it; every pass keeps the canary attempt cap.

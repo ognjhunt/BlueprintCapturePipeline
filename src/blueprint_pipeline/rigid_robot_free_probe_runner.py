@@ -23,12 +23,25 @@ touches nothing. Enabled, for each pending capture it:
    whose provider zero is unproven holds it for an operator;
 2. stops when the receipt is decided (passed or failed, never replaced), the
    task cannot be probed, or the attempt budget is spent (two funded attempts,
-   four refusals before funding);
+   four refusals before funding). An attempt refused while staging (the packet
+   or its plan cannot carry the probe) launched nothing and counts toward
+   neither; the refusal seals the job ``staging_refused``;
 3. otherwise rechecks every precondition it can without spending (enable
    setting, receipt, the capture's retained website grant, driver ceiling,
    launch gate and watchdog scope), stages one attempt (probe input, sealed
    bundle, single-use authority) and runs the canonical allocator for it
    (``paid_resource_allocator gpu-canary --probe-kind rigid-robot-free-probe``).
+
+Every terminal records the release that sealed it (``release_commit``, the
+commit this runner stages bundles at). A ``staging_refused`` terminal is a
+deterministic refusal a new release may have fixed, so each newly deployed
+release sets it aside once, before the pass: the retired entry goes back to
+pending, the terminal moves under ``superseded_terminals/`` beside a marker
+naming the release that retried it (history is kept, never deleted), and the
+next terminal lists the releases already tried, the ones that sealed it
+included (``release_requeued``), so a refusal never loops. A terminal sealed by the running release stays final, as
+does every other terminal: a decided receipt, a trace conflict, or a spent
+attempt budget. Without a known running release nothing is retried.
 
 Ingest happens only once the allocator result is ``completed``, which proves
 teardown, provider zero and staged-object absence. It checks the result
@@ -53,6 +66,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -98,7 +112,19 @@ FINAL_STATES = frozenset({"receipt_decided", "unavailable_for_task", "scene_revi
 WAITING_STATES = frozenset({"running", "unknown", "provider_zero_unproven", "retention_pending"})
 # Refused before any grant was reserved: bounded, and never retried within the same pass.
 UNFUNDED_STATES = frozenset({"unfunded_blocked", "not_launched"})
+# Refused while staging, before any argv existed: nothing was launched, funded or allocated, so the
+# attempt counts toward neither limit. Its refusal seals the job, so it cannot loop.
+NOT_STAGED_STATE = "not_staged"
 TERMINAL_STATES = frozenset({"decided", "trace_conflict", "staging_refused"})
+# A deterministic refusal a new release may have fixed: each terminal names the release that sealed it,
+# each newly deployed release sets one aside once, and the next terminal keeps the releases already tried
+# (the shape of ``team_scene_packet_worker``'s once-per-release retry).
+RELEASE_COMMIT_FIELD = "release_commit"
+RELEASE_REQUEUE_FIELD = "release_requeued"
+RELEASE_RETRIED_STATES = frozenset({"staging_refused"})
+SUPERSEDED_DIRNAME = "superseded_terminals"
+SUPERSESSION_SCHEMA = "blueprint.rigid_robot_free_probe_terminal_supersession.v1"
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -158,9 +184,12 @@ def _capture_key(capture_root: str) -> str:
     return hashlib.sha256(str(capture_root).encode("utf-8")).hexdigest()[:32]
 
 
+def _job_path(root: Path, capture_root: str, request_digest: str) -> Path:
+    return root / "jobs" / f"{_capture_key(capture_root)}-{str(request_digest).removeprefix('sha256:')[:16]}"
+
+
 def _job_dir(root: Path, state: Mapping[str, Any]) -> Path:
-    digest = str(state["request"]["request_digest"]).removeprefix("sha256:")[:16]
-    return root / "jobs" / f"{_capture_key(state['capture_root'])}-{digest}"
+    return _job_path(root, state["capture_root"], state["request"]["request_digest"])
 
 
 def enqueue_rigid_robot_free_probe(capture_root: str | Path, *, queue_root: str | Path | None = None
@@ -364,6 +393,129 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
                                     "trace_write": trace_write, "retention": retention})
 
 
+def _never_staged(attempt: Path) -> bool:
+    """No argv, intent, process or result was ever written: no allocator can have run from it."""
+
+    return not any((attempt / name).exists() for name in (
+        INGEST_FILENAME, ATTEMPT_FILENAME, INTENT_FILENAME, PROCESS_FILENAME, SPAWN_FAILED_FILENAME, RESULT_FILENAME))
+
+
+def _record_not_staged(attempt: Path, reason: str, **extra: Any) -> None:
+    if attempt.is_dir() and _never_staged(attempt):
+        _record_ingest(attempt, {"state": NOT_STAGED_STATE, "funded": False, "allocated": False,
+                                 "reason": reason[:300], **extra})
+
+
+def _release(value: Any) -> str | None:
+    return value if isinstance(value, str) and _COMMIT.fullmatch(value) else None
+
+
+def _running_release(hooks: Mapping[str, Callable[..., Any]]) -> str | None:
+    """The release this pass stages bundles at, or None when it cannot be told (then nothing is retried)."""
+
+    try:
+        return _release(hooks["source_commit"]())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _supersessions(job: Path) -> list[dict[str, Any]]:
+    rows = [_read(path) for path in (job / SUPERSEDED_DIRNAME).glob("*.supersession.json")
+            if path.is_file() and not path.is_symlink()]
+    return sorted(rows, key=lambda row: str(row.get("superseded_at_iso") or ""))
+
+
+def _releases_tried(job: Path) -> list[str]:
+    """Every release that already sealed or retried one of this job's superseded refusals, in order."""
+
+    tried: list[str] = []
+    for row in _supersessions(job):
+        for release in (row.get("superseded_release_commit"), row.get(RELEASE_COMMIT_FIELD)):
+            if _release(release) and release not in tried:
+                tried.append(release)
+    return tried
+
+
+def _new_release_untried(terminal: Mapping[str, Any], release: str | None) -> bool:
+    """A staging refusal sealed by another release, or by none recorded, that ``release`` has not yet retried."""
+
+    tried = terminal.get(RELEASE_REQUEUE_FIELD)
+    return (release is not None and terminal.get("status") in RELEASE_RETRIED_STATES
+            and terminal.get(RELEASE_COMMIT_FIELD) != release
+            and release not in (tried if isinstance(tried, list) else []))
+
+
+def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | None:
+    """Set the job's staging refusal aside for a newly deployed release, once; return the marker.
+
+    The marker naming the release is written before the terminal moves beside it, so each release
+    sets a terminal aside at most once and a pass interrupted between the two finishes the move.
+    The refused attempt is recorded ``not_staged`` (it launched nothing), so it counts toward no
+    limit and the next attempt takes the next index. Nothing is deleted. The job lock is held.
+    """
+
+    terminal = _read_optional(job / TERMINAL_FILENAME)
+    if terminal is None:
+        return None
+    digest = str(terminal.get("terminal_digest") or "")
+    name = digest.removeprefix("sha256:")[:16]
+    if re.fullmatch(r"[0-9a-f]{16}", name) is None:
+        return None
+    history = job / SUPERSEDED_DIRNAME
+    marker_path = history / f"{name}.supersession.json"
+    marker = _read_optional(marker_path)
+    if marker is None:
+        if not _new_release_untried(terminal, release):
+            return None
+        marker = {"schema_version": SUPERSESSION_SCHEMA, RELEASE_COMMIT_FIELD: release,
+                  "superseded_terminal_digest": digest, "superseded_status": terminal.get("status"),
+                  "superseded_release_commit": terminal.get(RELEASE_COMMIT_FIELD),
+                  "superseded_detail": terminal.get("detail"), "superseded_at_iso": utc_now_iso(), "marker_digest": ""}
+        marker["marker_digest"] = canonical_digest(marker, digest_field="marker_digest")
+        try:
+            _write_exclusive(marker_path, marker)
+        except FileExistsError:
+            marker = _read(marker_path)
+    attempts = _attempts(job)
+    if attempts:
+        _record_not_staged(attempts[-1], str((terminal.get("detail") or {}).get("reason") or "staging_refused"),
+                           recorded_at_supersession_of=digest)
+    os.replace(job / TERMINAL_FILENAME, history / f"{name}.terminal.json")
+    return marker
+
+
+def requeue_new_release(queue_root: str | Path | None, release: str | None, *,
+                        names: set[str] | None = None) -> list[dict[str, Any]]:
+    """Return each retired entry whose staging refusal ``release`` has not yet retried to pending.
+
+    The pass that follows sets the terminal aside under the job lock (``_supersede_for_release``).
+    An entry already pending is left as it is; it is processed the same way.
+    """
+
+    root = _queue_root(queue_root)
+    requeued: list[dict[str, Any]] = []
+    if _release(release) is None:
+        return requeued
+    for path in sorted((root / "done").glob("*.json")):
+        target = root / "pending" / path.name
+        if (names is not None and path.name not in names) or target.exists():
+            continue
+        try:
+            entry = _read(path)
+            job = _job_path(root, str(entry["capture_root"]), str(entry["probe_request_digest"]))
+            terminal = _read_optional(job / TERMINAL_FILENAME)
+        except (OSError, KeyError, TypeError, ValueError):
+            continue
+        if terminal is None or not _new_release_untried(terminal, release):
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
+        os.replace(path, target)
+        requeued.append({"entry": path.name, "reason": "new_release", RELEASE_COMMIT_FIELD: release,
+                         "terminal_status": terminal.get("status"),
+                         "terminal_release_commit": terminal.get(RELEASE_COMMIT_FIELD)})
+    return requeued
+
+
 def _counts(job: Path) -> tuple[int, int]:
     funded = unfunded = 0
     for attempt in _attempts(job):
@@ -436,9 +588,14 @@ def _finish(root: Path, item: Path, entry: Mapping[str, Any], outcome: Mapping[s
 
 
 def _seal_terminal(root: Path, item: Path, entry: Mapping[str, Any], job: Path, status: str,
-                   detail: Mapping[str, Any]) -> dict[str, Any]:
+                   detail: Mapping[str, Any], release: str | None = None) -> dict[str, Any]:
+    tried = _releases_tried(job)
     value = {"schema_version": TERMINAL_SCHEMA, "status": status, "capture_root": entry.get("capture_root"),
              "probe_request_digest": entry.get("probe_request_digest"), "detail": dict(detail),
+             # The release that sealed it, and those that already retried it: a later release retries a
+             # staging refusal once.
+             **({RELEASE_COMMIT_FIELD: release} if _release(release) else {}),
+             **({RELEASE_REQUEUE_FIELD: tried} if tried else {}),
              "sealed_at_iso": utc_now_iso(), "terminal_digest": ""}
     value["terminal_digest"] = canonical_digest(value, digest_field="terminal_digest")
     try:
@@ -449,7 +606,8 @@ def _seal_terminal(root: Path, item: Path, entry: Mapping[str, Any], job: Path, 
 
 
 def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state: Mapping[str, Any],
-             hooks: Mapping[str, Callable[..., Any]], max_attempts: int | None) -> dict[str, Any]:
+             hooks: Mapping[str, Callable[..., Any]], max_attempts: int | None,
+             release: str | None = None) -> dict[str, Any]:
     staged_now: set[Path] = set()
     while True:
         terminal = _read_optional(job / TERMINAL_FILENAME)
@@ -463,18 +621,20 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
                 return {"status": "waiting", "capture_root": state["capture_root"], "attempt": attempts[-1].name,
                         "reason": settled["state"]}
             if settled["state"] in TERMINAL_STATES:
-                return _seal_terminal(root, item, entry, job, settled["state"], settled)
+                return _seal_terminal(root, item, entry, job, settled["state"], settled, release)
         funded, unfunded = _counts(job)
         if funded >= MAX_FUNDED_ATTEMPTS or unfunded >= MAX_UNFUNDED_ATTEMPTS:
             return _seal_terminal(root, item, entry, job, "attempts_exhausted",
-                                  {"funded_attempts": funded, "unfunded_attempts": unfunded, "last": settled})
+                                  {"funded_attempts": funded, "unfunded_attempts": unfunded, "last": settled},
+                                  release)
         if attempts and attempts[-1] in staged_now and settled.get("state") in UNFUNDED_STATES:
             # Refused before funding; the next wake-up retries, never this pass.
             return {"status": "deferred", "capture_root": state["capture_root"],
                     "blockers": settled.get("allocator_blockers") or [settled.get("reason") or settled["state"]]}
         state = current_probe_state(state["capture_root"])
         if state["status"] == "receipt_decided":
-            return _seal_terminal(root, item, entry, job, "decided", {"receipt_status": state["receipt_status"]})
+            return _seal_terminal(root, item, entry, job, "decided", {"receipt_status": state["receipt_status"]},
+                                  release)
         if state["status"] != "probe_required" or _job_dir(root, state) != job:
             return {"status": "deferred", "capture_root": entry.get("capture_root"),
                     "reason": "request_changed" if state["status"] == "probe_required" else state["status"]}
@@ -485,18 +645,23 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
         blockers = precheck_blockers(state, job=job)
         if blockers:
             return {"status": "deferred", "capture_root": state["capture_root"], "blockers": sorted(set(blockers))}
+        index = len(attempts)
         try:
-            staged = stage_attempt(job, len(attempts), state=state, commit=hooks["source_commit"]())
+            staged = stage_attempt(job, index, state=state, commit=hooks["source_commit"]())
         except (RigidRobotFreeProbeBundleError, ValueError) as exc:
-            # The packet or its plan cannot carry the probe: deterministic, so never retried.
-            return _seal_terminal(root, item, entry, job, "staging_refused", {"reason": str(exc)[:300]})
+            # The packet or its plan cannot carry the probe: deterministic, so never retried under this
+            # release. The refused attempt launched nothing and counts toward no limit.
+            refused = job / "attempts" / f"{index:02d}"
+            _record_not_staged(refused, str(exc))
+            return _seal_terminal(root, item, entry, job, "staging_refused",
+                                  {"reason": str(exc)[:300], "attempt": refused.name}, release)
         staged_now.add(staged["root"])
         _write_exclusive(staged["root"] / INTENT_FILENAME, {"observed_at_iso": utc_now_iso()})
         hooks["allocator_runner"](staged["argv"], attempt=staged["root"])
 
 
 def _process_entry(root: Path, item: Path, hooks: Mapping[str, Callable[..., Any]],
-                   max_attempts: int | None = None) -> dict[str, Any]:
+                   max_attempts: int | None = None, release: str | None = None) -> dict[str, Any]:
     entry = _read(item)
     state = current_probe_state(str(entry.get("capture_root") or ""))
     if state["status"] in FINAL_STATES:
@@ -510,7 +675,9 @@ def _process_entry(root: Path, item: Path, hooks: Mapping[str, Callable[..., Any
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return {"status": "locked", "capture_root": state["capture_root"]}
-        return _advance(root, item, entry, job, state, hooks, max_attempts)
+        superseded = _supersede_for_release(job, release)
+        row = _advance(root, item, entry, job, state, hooks, max_attempts, release)
+        return {**row, "superseded_terminal": superseded} if superseded is not None else row
 
 
 def run_queue(queue_root: str | Path | None = None, *, capture_root: str | Path | None = None,
@@ -525,16 +692,19 @@ def run_queue(queue_root: str | Path | None = None, *, capture_root: str | Path 
     if max_attempts is not None and (type(max_attempts) is not int or max_attempts < 1):
         raise ValueError("rigid_robot_free_probe_max_attempts_invalid")
     root = _queue_root(queue_root)
-    pending = sorted((root / "pending").glob("*.json"))
-    if capture_root is not None:
-        pending = [item for item in pending if item.name == f"{_capture_key(str(Path(capture_root).resolve()))}.json"]
+    names = None if capture_root is None else {f"{_capture_key(str(Path(capture_root).resolve()))}.json"}
     if not lane_enabled():
+        pending = [item for item in (root / "pending").glob("*.json") if names is None or item.name in names]
         return [{"status": "lane_disabled", "pending": len(pending)}]
     bound = {"allocator_runner": run_allocator, "source_commit": source_commit, **dict(hooks or {})}
+    release = _running_release(bound)
+    # A staging refusal this release has not yet retried returns to pending before the pass reads it.
+    requeue_new_release(root, release, names=names)
+    pending = [item for item in sorted((root / "pending").glob("*.json")) if names is None or item.name in names]
     rows = []
     for item in pending:
         try:
-            rows.append(_process_entry(root, item, bound, max_attempts))
+            rows.append(_process_entry(root, item, bound, max_attempts, release))
         except Exception as exc:  # noqa: BLE001 - one capture's failure never stops the others
             rows.append({"status": "error", "entry": item.name, "reason": f"{type(exc).__name__}:{str(exc)[:200]}"})
     return rows
@@ -610,6 +780,7 @@ __all__ = [
     "main",
     "precheck_blockers",
     "preflight_capture",
+    "requeue_new_release",
     "retain_trace_file",
     "run_allocator",
     "run_queue",

@@ -60,7 +60,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
-from .usd_binary_read_cache import binary_copy, compile_scoped
+from .usd_binary_read_cache import binary_copy, read_scoped
 
 SCHEMA = "blueprint.team_scene_inputs.v1"
 CLAIM_CEILING = "diagnostic_policy_execution"
@@ -432,7 +432,7 @@ def _owner_confirmed(task_spec: Mapping[str, Any], *, revision: Mapping[str, Any
     return {**task_spec, "configured_owner_authority": authority}, authority["confirmation_digest"]
 
 
-@compile_scoped
+@read_scoped
 def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[str, Path],
                            configured_scene_bundle_path: str | Path, droid_profile_path: str | Path,
                            droid_profile_digest: str, runtime_source_receipt_path: str | Path,

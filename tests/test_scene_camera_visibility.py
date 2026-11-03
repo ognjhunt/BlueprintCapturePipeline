@@ -243,3 +243,70 @@ def test_a_team_camera_is_measured_where_each_cell_renders_it(tmp_path):
     with pytest.raises(scv.SceneCameraVisibilityBlocked, match="outside_view:team_camera_0"):
         scv.require_scene_camera_admission(root, scene_plan={**team, "cameras": [shifted, plan["cameras"][1]]},
                                            rendered_external_views=[(shifted, team), (nominal, team)])
+
+
+def _detailed_tray_hull(segments: int = 24):
+    """A tray's hull as an authored mesh gives it: rounded corners and filleted edges, thousands of planes."""
+    import math
+
+    import numpy as np
+
+    from blueprint_pipeline.scene_physics_preflight import Collider, _hull
+
+    rings = []
+    for z, inset in ((0.0, 0.006), (0.002, 0.0015), (0.006, 0.0), (0.034, 0.0), (0.038, 0.0015), (0.04, 0.006)):
+        for qx, qy, start in ((1, 1, 0.0), (-1, 1, 0.5 * math.pi), (-1, -1, math.pi), (1, -1, 1.5 * math.pi)):
+            t = start + np.linspace(0.0, 0.5 * math.pi, segments + 1)
+            radius = 0.03 - inset
+            rings.append(np.c_[qx * 0.23 + radius * np.cos(t), qy * 0.125 + radius * np.sin(t), np.full(len(t), z)])
+    planes, vertices, bound = _hull(np.vstack(rings))
+    return Collider("/Asset/body", "/Asset", "hull", np.eye(4), planes=planes, vertices=vertices, bound_radius=bound)
+
+
+def test_a_detailed_asset_is_ray_cast_in_bounded_memory_with_the_same_coverage(monkeypatch):
+    # capture-447's tray: every (ray, plane) pair at once was rays x planes x 8 bytes per temporary, and the
+    # team packet's third-camera search reached 6.7 GB on a host of 8 GB.
+    import tracemalloc
+
+    import numpy as np
+
+    collider = _detailed_tray_hull()
+    assert len(collider.planes) > 400
+    world = np.eye(4)
+    world[:3, 3] = [0.0, 0.0, 0.8]
+    camera = {"role": "exterior_right", "optical_convention": "opencv",
+              "intrinsics": {"fx": 500.0, "fy": 500.0, "cx": 639.5, "cy": 359.5, "width": 1280, "height": 720},
+              "frame_from_camera_matrix": [[0.0, -0.6, 0.8, -0.7], [-1.0, 0.0, 0.0, 0.0], [0.0, -0.8, -0.6, 1.4],
+                                           [0.0, 0.0, 0.0, 1.0]]}
+    centres = np.random.default_rng(0).normal([0.0, 0.0, 0.79], [0.5, 0.5, 0.01], (20000, 3)).astype(np.float32)
+    radii = np.full(len(centres), 0.01, dtype=np.float32)
+
+    def measured(block):
+        monkeypatch.setattr(scv, "RAY_PLANE_BLOCK", block)
+        tracemalloc.start()
+        row = scv.camera_coverage(colliders=[(collider, world)], centres=centres, radii=radii, camera=camera,
+                                  region=None)
+        peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        return row, peak
+
+    block = scv.RAY_PLANE_BLOCK
+    whole, whole_peak = measured(1 << 40)  # every pair at once, as before
+    blocked, blocked_peak = measured(block)
+    assert whole["asset_in_view"] and whole["asset_interior_pixels"] > 10000
+    assert blocked == whole
+    assert blocked_peak < 160 * 2 ** 20 < whole_peak
+
+
+def test_ray_hits_in_blocks_are_the_same_hits(monkeypatch):
+    import numpy as np
+
+    collider = _detailed_tray_hull(8)
+    directions = np.random.default_rng(1).normal([0.0, 0.0, -1.0], 0.3, (5000, 3))
+    origin = np.array([0.01, -0.02, 0.5])
+    whole = scv._ray_hits([(collider, np.eye(4))], origin, directions)
+    monkeypatch.setattr(scv, "RAY_PLANE_BLOCK", 997)  # a few rays at a time
+    blocked = scv._ray_hits([(collider, np.eye(4))], origin, directions)
+    assert np.isfinite(whole).sum() > 1000
+    assert np.array_equal(np.isfinite(blocked), np.isfinite(whole))
+    assert np.allclose(blocked[np.isfinite(whole)], whole[np.isfinite(whole)], rtol=1e-12, atol=0.0)

@@ -58,6 +58,7 @@ from .scene_physics_preflight import (
     sample_surface,
     task_motion_ranges,
 )
+from .usd_binary_read_cache import read_scoped
 
 SCHEMA_VERSION = "robot_arm_path_clearance.v1"
 PACKET_REPORT_FILENAME = "native_task_robot_arm_path_clearance.v1.json"
@@ -746,6 +747,7 @@ def rigid_pick_place_clearance(*, robot_id: str, base_pose_world: Mapping[str, S
 CARRY_STATIONS = 8
 
 
+@read_scoped
 def first_carrying_stance(stances: Sequence[Mapping[str, Any]], *, collision_path: str | Path, robot_id: str,
                           seeds: Sequence[Sequence[float]], grasps: Sequence[Mapping[str, Any]] | None = None,
                           **task: Any
@@ -755,7 +757,8 @@ def first_carrying_stance(stances: Sequence[Mapping[str, Any]], *, collision_pat
     ``task`` holds that function's start, target and grasp arguments; the static scene is
     ``collision_path``. Each of ``grasps`` (best first, named) replaces the task's
     ``approach_unit`` and ``gripper_orientation_xyzw`` and is tried from every stance before
-    the next grasp; the scene near a stance is loaded once. Returns the stance (``None`` when
+    the next grasp; the scene near a stance is loaded once, from the read scope's one binary copy
+    of a USDA text collider (``usd_binary_read_cache``). Returns the stance (``None`` when
     none clears), the deciding report and every attempt. With no clearing stance the report
     is the attempt that got furthest; a pose reached but struck outranks one not reached.
     """
