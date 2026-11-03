@@ -385,3 +385,143 @@ def test_an_inactive_launch_reconciler_timer_is_a_required_trigger() -> None:
     assert timer in _Config.__dataclass_fields__["controller_units"].default
     health = _unit_health([{"Id": timer, "ActiveState": "inactive"}], [])
     assert health["current"] == [{"unit": timer, "state": "required_trigger_inactive", "invocation_id": None}]
+
+
+MEMINFO = """MemTotal:        7090000 kB
+MemFree:          120000 kB
+MemAvailable:     900000 kB
+Buffers:           10000 kB
+SwapTotal:             0 kB
+SwapFree:              0 kB
+Shmem:            450000 kB
+HugePages_Total:       0
+"""
+
+
+def _memory_tree(base: Path, units: dict[str, tuple[str, str | None]]) -> dict[str, Path]:
+    cgroup = base / "cgroup"
+    system = cgroup / "system.slice"
+    system.mkdir(parents=True)
+    (system / "memory.current").write_text("4000\n", encoding="utf-8")
+    (system / "memory.peak").write_text("5000\n", encoding="utf-8")
+    (system / "cgroup.procs").write_text("1\n", encoding="utf-8")
+    for name, (current, peak) in units.items():
+        (system / name).mkdir()
+        (system / name / "memory.current").write_text(current, encoding="utf-8")
+        (system / name / "cgroup.procs").write_text("4242\n", encoding="utf-8")
+        if peak is not None:
+            (system / name / "memory.peak").write_text(peak, encoding="utf-8")
+    (cgroup / "user.slice").mkdir()
+    (cgroup / "user.slice" / "memory.current").write_text("300\n", encoding="utf-8")
+    meminfo = base / "meminfo"
+    meminfo.write_text(MEMINFO, encoding="utf-8")
+    shm, run = base / "shm", base / "run"
+    shm.mkdir()
+    run.mkdir()
+    mounts = base / "mounts"
+    mounts.write_text(f"tmpfs {shm} tmpfs rw,nosuid,nodev 0 0\n"
+                      f"/dev/root {run} ext4 rw 0 0\n", encoding="utf-8")
+    return {"cgroup": cgroup, "meminfo": meminfo, "mounts": mounts, "shm": shm, "run": run}
+
+
+def _memory_host(tree: dict[str, Path], paths: dict[str, Path]) -> HostInfo:
+    return HostInfo(_config(tree), runner=FakeRunner({}), proc_meminfo_path=str(paths["meminfo"]),
+                    cgroup_root=str(paths["cgroup"]), mounts_path=str(paths["mounts"]),
+                    tmpfs_paths=(str(paths["shm"]), str(paths["run"]), str(tree["base"] / "tmp")))
+
+
+def test_parse_meminfo_reports_fixed_fields_in_bytes_and_none_when_absent() -> None:
+    from operator_door.hostinfo import parse_meminfo
+
+    assert parse_meminfo(MEMINFO) == {"MemTotal": 7090000 * 1024, "MemAvailable": 900000 * 1024,
+                                      "SwapTotal": 0, "SwapFree": 0, "Shmem": 450000 * 1024}
+    partial = parse_meminfo("MemTotal: 10 kB\nMemAvailable: lots kB\nShmem: 5 MB\n")
+    assert partial == {"MemTotal": 10240, "MemAvailable": None, "SwapTotal": None, "SwapFree": None,
+                       "Shmem": None}
+
+
+def test_parse_cgroup_bytes_accepts_only_a_byte_count() -> None:
+    from operator_door.hostinfo import parse_cgroup_bytes
+
+    assert parse_cgroup_bytes(b"123\n") == 123
+    assert parse_cgroup_bytes(b"max\n") is None
+    assert parse_cgroup_bytes(b"1 2\n") is None
+    assert parse_cgroup_bytes(b"") is None
+    assert parse_cgroup_bytes(None) is None
+
+
+def test_memory_reports_top_units_by_current_with_peak_slices_and_tmpfs(host_tree: dict[str, Path]) -> None:
+    units = {f"unit-{index:02d}.service": (f"{index * 1000}\n", f"{index * 2000}\n") for index in range(25)}
+    units["blueprint-team-scene-packet.service"] = ("2500000000\n", None)  # no memory.peak on this kernel
+    units["system-getty.slice"] = ("700\n", "800\n")
+    paths = _memory_tree(host_tree["base"], units)
+    memory = _memory_host(host_tree, paths).memory()
+
+    assert memory["meminfo"]["MemTotal"] == 7090000 * 1024 and memory["meminfo"]["Shmem"] == 450000 * 1024
+    assert memory["slices"] == {"system.slice": {"current_bytes": 4000, "peak_bytes": 5000},
+                                "user.slice": {"current_bytes": 300, "peak_bytes": None},
+                                "init.scope": None}
+    system = memory["system_units"]
+    assert system["count"] == 27 and system["scan_truncated"] is False
+    top = system["top"]
+    assert len(top) == 20
+    assert top[0] == {"unit": "blueprint-team-scene-packet.service", "current_bytes": 2500000000, "peak_bytes": None}
+    assert top[1] == {"unit": "unit-24.service", "current_bytes": 24000, "peak_bytes": 48000}
+    assert [row["current_bytes"] for row in top] == sorted((row["current_bytes"] for row in top), reverse=True)
+    # Only the tmpfs mount is sized; a non-tmpfs or unlisted path is None.
+    shm = os.statvfs(paths["shm"])
+    assert memory["tmpfs"][str(paths["shm"])] == {"total_bytes": shm.f_blocks * shm.f_frsize,
+                                                   "used_bytes": (shm.f_blocks - shm.f_bfree) * shm.f_frsize}
+    assert memory["tmpfs"][str(paths["run"])] is None
+    assert memory["tmpfs"][str(host_tree["base"] / "tmp")] is None
+    # Numbers and unit names only: no pids, paths or command lines.
+    encoded = json.dumps({key: memory[key] for key in ("meminfo", "slices", "system_units")})
+    assert "4242" not in encoded and str(host_tree["base"]) not in encoded
+    assert all(set(row) == {"unit", "current_bytes", "peak_bytes"} for row in top)
+
+
+def test_memory_skips_unsafe_entries_and_oversized_values(host_tree: dict[str, Path]) -> None:
+    units = {"good.service": ("10\n", None),
+             "huge.service": ("9" * 100 + "\n", None),  # over the read cap: dropped, never parsed
+             "max.service": ("max\n", None),
+             "not a unit": ("20\n", None)}
+    paths = _memory_tree(host_tree["base"], units)
+    system = paths["cgroup"] / "system.slice"
+    target = host_tree["base"] / "elsewhere.service"
+    target.mkdir()
+    (target / "memory.current").write_text("99\n", encoding="utf-8")
+    os.symlink(target, system / "linked.service")
+    (system / "file.service").write_text("", encoding="utf-8")
+    (system / "nocurrent.service").mkdir()
+    memory = _memory_host(host_tree, paths).memory()
+    assert memory["system_units"]["top"] == [{"unit": "good.service", "current_bytes": 10, "peak_bytes": None}]
+
+
+def test_memory_caps_the_system_slice_scan(host_tree: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+    from operator_door import hostinfo
+
+    paths = _memory_tree(host_tree["base"], {f"u{index}.service": ("1\n", None) for index in range(10)})
+    monkeypatch.setattr(hostinfo, "_MEMORY_SCAN_ENTRIES", 5)
+    system = _memory_host(host_tree, paths).memory()["system_units"]
+    assert system["scan_truncated"] is True and system["count"] <= 5
+
+
+def test_memory_fails_soft_to_none_when_nothing_is_readable(host_tree: dict[str, Path]) -> None:
+    missing = host_tree["base"] / "missing"
+    host = HostInfo(_config(host_tree), runner=FakeRunner({}), proc_meminfo_path=str(missing / "meminfo"),
+                    cgroup_root=str(missing / "cgroup"), mounts_path=str(missing / "mounts"))
+    memory = host.memory()
+    assert memory == {"meminfo": None,
+                      "slices": {"system.slice": None, "user.slice": None, "init.scope": None},
+                      "system_units": None,
+                      "tmpfs": {"/dev/shm": None, "/run": None, "/tmp": None}}
+    status = build_status(_config(host_tree), host, caller={})
+    assert status["memory"] == memory
+
+
+def test_status_carries_the_memory_section(host_tree: dict[str, Path]) -> None:
+    paths = _memory_tree(host_tree["base"], {"blueprint-pipeline-intake.service": ("1024\n", "2048\n")})
+    status = build_status(_config(host_tree), _memory_host(host_tree, paths), caller={})
+    assert status["schema"] == "blueprint_operator_door_status.v1"
+    assert status["memory"]["system_units"]["top"] == [
+        {"unit": "blueprint-pipeline-intake.service", "current_bytes": 1024, "peak_bytes": 2048}]

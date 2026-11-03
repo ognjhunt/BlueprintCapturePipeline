@@ -109,7 +109,7 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 |---|---|---|
 | `GET /healthz` | none | `{"ok": true, "version": …}` |
 | `GET /whoami` | read | token name and scopes |
-| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, `capacity` (the capacity controller's `summary.json`: level, alerts, per-mount admission and the usage survey by storage class, root and owner), load, door queue, owned timer holds (including overdue ones), and unreported break-glass note count/latest summary |
+| `GET /status` | read | deployed commit and blockers (loopback `/version`), active release, deploy units in flight and recent receipts, paid-launch lock holders from `/proc/locks`, spend guard, failed and controller units, disk, `capacity` (the capacity controller's `summary.json`: level, alerts, per-mount admission and the usage survey by storage class, root and owner), load, `memory` (see below), door queue, owned timer holds (including overdue ones), and unreported break-glass note count/latest summary |
 | `GET /fs/list?path=&sort=name\|mtime&match=` | read | directory entries (capped) or a file's metadata |
 | `GET /fs/read?path=&offset=&length=` | read | bytes; `X-Door-Size`, `X-Door-Offset`, `X-Door-Length`, `X-Door-Eof` headers for paging |
 | `GET /fs/archive?path=` | read | tar.gz of a directory (512 MiB cap, two at a time) |
@@ -117,6 +117,17 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 | `GET /units?pattern=&state=` · `GET /units/show?unit=a,b` | read | `blueprint-*` unit rows or properties (never `Environment`) |
 | `POST /requests` | per kind | `202 {"id": …}` |
 | `GET /requests` · `GET /requests/<id>` | read | queue, or one request with result, outcome, redacted log tail and live unit state |
+
+`status.memory` answers "what holds host RAM?" read-only. `meminfo` gives
+`MemTotal`, `MemAvailable`, `SwapTotal`, `SwapFree` and `Shmem` in bytes from
+`/proc/meminfo`; `slices` gives cgroup v2 `memory.current`/`memory.peak` for
+`system.slice`, `user.slice` and `init.scope`; `system_units.top` lists the 20
+largest direct children of `system.slice` by `memory.current` (every unit, not
+only `blueprint-*`; a `system-*.slice` row sums its template instances), with
+`count` and `scan_truncated`; `tmpfs` gives total and used bytes (statvfs) for
+`/dev/shm`, `/run` and `/tmp` when each is a tmpfs in the door's view. Only
+numbers and unit names are returned, every read is capped, and anything
+missing or unreadable is `null` rather than an error.
 
 `status.notifier_binding` is a fixed-target view of the live control-plane
 postcheck binding. It reports safe unit/drop-in paths, an opaque command hash,
