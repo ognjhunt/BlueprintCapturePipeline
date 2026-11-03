@@ -17,6 +17,9 @@ triangles are measured instead: nothing of it may rise into the station's
 column above the footprint, from the floor to the higher of the station's root
 and the task's own top, and the floor must be observed under the footprint
 (``_room_mesh_occupancy``).
+A website collider is a USDA text file (capture-447's: 292 MB) that OpenUSD
+parses again at every open finding no stage of it alive, so a search holds it
+open while it re-opens it (``scene_physics_preflight.collision_kept_loaded``).
 Host-side and deterministic (OpenUSD), so a robot with no clear stance is
 refused by name before any GPU time is spent.
 """
@@ -115,17 +118,18 @@ def _fan_triangles(counts: Any, indices: Any, first: int) -> Any:
     return np.stack([order[corner], order[corner + k], order[corner + k + 1]], axis=1) + first
 
 
-def _world_triangles(path: Path, offset: list[float],
-                     meshes: list[tuple[str, int]] | None = None) -> tuple[Any, Any]:
+def _world_triangles(path: Path, offset: list[float], meshes: list[tuple[str, int]] | None = None, *,
+                     stage: Any = None) -> tuple[Any, Any]:
     """Every collision mesh triangle in the scene's world frame (Z up, meters).
 
-    ``meshes``, when given, receives each mesh's prim path and triangle count, in face order.
+    ``meshes``, when given, receives each mesh's prim path and triangle count, in face order. ``stage``,
+    when given, is ``path`` already open.
     """
 
     import numpy as np
     from pxr import Usd, UsdGeom, Vt
 
-    stage = Usd.Stage.Open(str(path))
+    stage = Usd.Stage.Open(str(path)) if stage is None else stage
     if (UsdGeom.GetStageUpAxis(stage) != UsdGeom.Tokens.z or (
             stage.HasAuthoredMetadata("metersPerUnit")
             and not math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.0))):
@@ -351,6 +355,8 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
     search refuses by name (``team_embodiment_room_mesh_no_clear_stance``).
     """
 
+    from pxr import Usd
+
     from .external_scene_robot_placement import (
         ExternalSceneRobotPlacementError,
         _infer_horizontal_support_surface,
@@ -359,8 +365,11 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
     from .scene_placement.usd_index import UsdSceneSpatialIndex
     from .scene_placement.validation import DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M, validate_stand_pose
 
+    # Held to the end of the search, which re-opens the file (``_stage_without``, the box index), so a USDA
+    # text collider is parsed once (``scene_physics_preflight.collision_kept_loaded``).
+    stage = Usd.Stage.Open(str(collision_path))
     meshes: list[tuple[str, int]] = []
-    vertices, faces = _world_triangles(collision_path, offset, meshes)
+    vertices, faces = _world_triangles(collision_path, offset, meshes, stage=stage)
     try:
         floor_z, _, floor_fit = _infer_horizontal_support_surface(stage_vertices=vertices, faces=faces)
     except ExternalSceneRobotPlacementError as exc:

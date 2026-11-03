@@ -141,6 +141,32 @@ def _search(path: Path, **overrides: Any) -> Any:
                             "footprint_half_extent_m": FOOTPRINT, "root_world_z_m": SUPPORT_TOP, **overrides})
 
 
+def text_parses(monkeypatch: Any, suffix: str) -> tuple[list[str], list[str]]:
+    """The callers of every ``Usd.Stage.Open`` of a path ending in ``suffix``, and of those that read the file.
+
+    An open reads the file when no stage of it is alive (``Sdf.Layer.Find`` has no layer for it).
+    """
+
+    import sys
+
+    from pxr import Sdf, Usd
+
+    opened = Usd.Stage.Open
+    opens: list[str] = []
+    parsed: list[str] = []
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        if args and isinstance(args[0], str) and args[0].endswith(suffix):
+            caller = sys._getframe(1).f_code.co_name
+            opens.append(caller)
+            if Sdf.Layer.Find(args[0]) is None:
+                parsed.append(caller)
+        return opened(*args, **kwargs)
+
+    monkeypatch.setattr(Usd.Stage, "Open", staticmethod(counting))
+    return opens, parsed
+
+
 def footprint_samples(stance: dict[str, Any], *, grow_m: float = CLEARANCE_M) -> np.ndarray:
     """Points filling the station's footprint, grown by ``grow_m``, in plan."""
 
@@ -270,3 +296,22 @@ def test_scenes_with_their_own_floor_prim_keep_the_box_search(tmp_path) -> None:
     vertices, faces = stance_module._world_triangles(tmp_path / "bare.usda", [0.0, 0.0, 0.0], meshes)
     assert stance_module._room_mesh_occupancy(vertices, faces, meshes, floor_z=0.0, tolerance=0.05, column_top_m=0.9,
                                        centre=[1.3, 0.0], subject_top_z=1.0, reach_m=2.0) is None
+
+
+def test_a_stance_search_reads_a_text_room_from_disk_once(tmp_path, monkeypatch) -> None:
+    # A website collider is USDA text (capture-447's: 292 MB, parsed at about twelve times its size). The
+    # search re-opens it to leave the room out of the box index; with its first stage let go, that open
+    # parsed the whole file a second time, holding the room's triangles meanwhile.
+    room = write_scanned_room(tmp_path / "collision.usda")
+    opens, parsed = text_parses(monkeypatch, "collision.usda")
+    stances = _search(room, ranked=24)
+    assert "_stage_without" in opens and parsed == ["ground_stance"]
+    assert stances[0]["room_mesh_clearance"]["room_mesh_prims"] == ["/Root/mesh_0000_GLTF"]
+    # The box search of a scene with its own floor re-opens it too (the index), from the same parse.
+    floored = write_room_usd(tmp_path / "floored.usda")
+    _, floor_parsed = text_parses(monkeypatch, "floored.usda")
+    found = ground_stance(collision_path=floored, collision_sha256="sha256:" + "0" * 64, offset=[0.0, 0.0, 0.0],
+                          subject_center=[2.0, 0.0, 0.8], subject_minimum=[1.95, -0.05, 0.75],
+                          subject_maximum=[2.05, 0.05, 0.85], footprint_half_extent_m=[0.15, 0.15],
+                          root_world_z_m=0.75)
+    assert "room_mesh_clearance" not in found and floor_parsed == ["ground_stance"]

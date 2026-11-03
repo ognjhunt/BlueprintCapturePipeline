@@ -163,9 +163,10 @@ def _capture447(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     return configured, references
 
 
-def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_path, monkeypatch) -> None:
+def _inputs(tmp_path: Path, monkeypatch: Any) -> dict[str, Any]:
+    """capture-447's shape: ``materialize_team_scene``'s inputs, but for its output root."""
+
     from blueprint_pipeline import task_evaluation_scene_rigid_robot_free_readiness as rigid
-    from blueprint_pipeline.team_scene_packet import materialize_team_scene
 
     configured, references = _capture447(tmp_path / "case")
     bundle = _bundle(tmp_path / "bundle")
@@ -188,12 +189,23 @@ def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_pat
     confirm(job)
     documents = rigid.fetch_revision_documents(revision=job.revision, output_root=tmp_path / "work",
                                                fetcher=lambda reference: job.store[reference["uri"]])
-    compiled = materialize_team_scene(
-        revision=job.revision, documents=documents, output_root=tmp_path / "team-scene",
-        configured_scene_bundle_path=bundle, droid_profile_path=profile_path,
-        droid_profile_digest=_sha(profile_path.read_bytes()), runtime_source_receipt_path=runtime,
-        owner_success_confirmation_scope={"intent": job.intent, "directory": job.directory})
-    record = json.loads(Path(compiled["path"]).read_text())
+    return dict(revision=job.revision, documents=documents, configured_scene_bundle_path=bundle,
+                droid_profile_path=profile_path, droid_profile_digest=_sha(profile_path.read_bytes()),
+                runtime_source_receipt_path=runtime,
+                owner_success_confirmation_scope={"intent": job.intent, "directory": job.directory})
+
+
+def _compile(tmp_path: Path, monkeypatch: Any, **extra: Any) -> dict[str, Any]:
+    """capture-447's shape through ``materialize_team_scene``; the sealed record."""
+
+    from blueprint_pipeline.team_scene_packet import materialize_team_scene
+
+    compiled = materialize_team_scene(**_inputs(tmp_path, monkeypatch), output_root=tmp_path / "team-scene", **extra)
+    return json.loads(Path(compiled["path"]).read_text())
+
+
+def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_path, monkeypatch) -> None:
+    record = _compile(tmp_path, monkeypatch)
     station = record["robot_station"]
     # The mount is level with the support, on floor clear of the table by the validator's clearance.
     assert station["position_world_m"][2] == pytest.approx(SUPPORT_TOP)
@@ -209,3 +221,73 @@ def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_pat
     request = json.loads((Path(record["base_native_packet"]["path"]).parent
                           / "native_task_arena_packet_request.v1.json").read_text())
     assert request["robot_base_pose_world"]["position_world_m"] == station["position_world_m"]
+
+
+def test_the_team_packet_reads_a_text_room_collider_once_and_never_touches_it(tmp_path, monkeypatch) -> None:
+    # capture-447's collider is a 292 MB USDA text file. OpenUSD parses it again at each open that finds no
+    # stage of it alive, transiently at about twelve times its size, and the packet opened it 22 times: two
+    # killed compiles. Now the compile reads it once, into a binary copy every reader opens instead.
+    import hashlib
+
+    from blueprint_pipeline import team_scene_packet
+    from blueprint_pipeline import usd_binary_read_cache as cache
+    from tests.test_team_embodiment_stance_room_mesh import text_parses
+    from tests.test_team_scene_packet import bodies
+
+    monkeypatch.setattr(cache, "LARGE_ARRAY_BYTES", 64)  # the fixture room's arrays are small
+    copies: list[tuple[str, str, str | None]] = []
+    make = team_scene_packet.binary_copy
+
+    def recorded(source: Any, directory: Any) -> Any:
+        copy = make(source, directory)
+        copies.append((Path(source).name, copy.suffix, cache.copy_method(source)))
+        return copy
+
+    monkeypatch.setattr(team_scene_packet, "binary_copy", recorded)
+    _, parsed = text_parses(monkeypatch, "collision.usda")
+    copy_opens, _ = text_parses(monkeypatch, "collision.usdc")
+    record = _compile(tmp_path, monkeypatch, embodiment_manifests=list(bodies(tmp_path).values()))
+    assert copies == [("collision.usda", ".usdc", "numpy_large_arrays")]
+    assert parsed == []  # no reader parsed the text, the packet's staged hard link included
+    assert len(copy_opens) > 10  # every search, carried stance and packet step read the copy
+    # The published collider is untouched, and everything recorded still names it.
+    published = tmp_path / "team-scene" / "configured-scene" / "collision.usda"
+    digest = "sha256:" + hashlib.sha256(published.read_bytes()).hexdigest()
+    assert digest == "sha256:" + hashlib.sha256(
+        (tmp_path / "bundle" / "collision.usda").read_bytes()).hexdigest()
+    assert record["robot_station"]["scene_collision_sha256"] == digest
+    assert {row["station"]["scene_collision_sha256"] for row in record["embodiment_stations"].values()
+            if row["station"]} == {digest}
+    receipt = json.loads((Path(record["base_native_packet"]["path"])).read_text())
+    [binding] = [row for row in receipt["source_bindings"] if row["semantic_role"] == "scene_collision"]
+    assert binding["staged_sha256"] == binding["source"]["sha256"] == digest
+    assert not (tmp_path / "team-scene" / ".collider-read-cache").exists()
+
+
+def test_the_binary_copy_changes_no_byte_the_compile_writes(tmp_path, monkeypatch) -> None:
+    # The same compile into the same root, reading the text collider and then the compile's binary copy: every
+    # file it leaves (the team record, both packets' requests, plans, receipts and staged assets) is identical.
+    import hashlib
+    import shutil
+
+    from blueprint_pipeline import team_scene_packet
+    from blueprint_pipeline import usd_binary_read_cache as cache
+    from tests.test_team_scene_packet import bodies
+
+    inputs = {**_inputs(tmp_path, monkeypatch), "embodiment_manifests": list(bodies(tmp_path).values())}
+    root = tmp_path / "team-scene"
+
+    def compiled() -> dict[str, str]:
+        team_scene_packet.materialize_team_scene(**inputs, output_root=root)
+        files = {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                 for path in sorted(root.rglob("*")) if path.is_file()}
+        shutil.rmtree(root)
+        return files
+
+    with monkeypatch.context() as text_only:
+        text_only.setattr(team_scene_packet, "binary_copy", lambda source, directory: Path(source))
+        from_text = compiled()
+    monkeypatch.setattr(cache, "LARGE_ARRAY_BYTES", 64)
+    from_copy = compiled()
+    assert from_copy == from_text and "team_scene_inputs.v1.json" in from_copy
+    assert not any(".collider-read-cache" in name for name in from_copy)

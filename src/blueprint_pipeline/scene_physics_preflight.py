@@ -41,9 +41,10 @@ arm's shoulder at 60 degrees.
 from __future__ import annotations
 
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
 
@@ -385,6 +386,34 @@ def descendants(model: AssetModel, joint_id: str) -> set[str]:
     return moving
 
 
+#: Triangles ``load_background_triangles`` measures at once (72 MB of them, about 0.3 GB with temporaries).
+BACKGROUND_TRIANGLE_BLOCK = 1 << 20
+
+
+@contextmanager
+def collision_kept_loaded(usd_path: str | Path) -> Iterator[Any]:
+    """``usd_path``'s stage, held open while the block runs, so every open of it inside shares one parse.
+
+    ``Usd.Stage.Open`` reuses a layer only while some stage still holds it; with none alive it reads the
+    file again. A website collider is a USDA text file (capture-447's: one 292 MB mesh of 3.25 M points),
+    and each such read parses the whole text, transiently at about twelve times the file's size (3.4 GB
+    for a 280 MB synthetic room). A carry search reads it once per stance it tries; a team packet's
+    station searches read it 16 times for three registered bodies. Readers inside must only read, so
+    each still sees the file's own bytes (an edit to the shared layer would outlive its stage); a file
+    that cannot be opened is left to the reader that needs it to refuse.
+    """
+    from pxr import Tf, Usd
+
+    try:
+        stage = Usd.Stage.Open(str(usd_path))
+    except Tf.ErrorException:
+        stage = None
+    try:
+        yield stage
+    finally:
+        del stage
+
+
 def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], radius: float,
                               world_from_stage: np.ndarray | None = None) -> np.ndarray:
     """World triangles of every static collision mesh within ``radius`` of ``centre``."""
@@ -421,10 +450,12 @@ def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], 
         if world_from_stage is not None:
             matrix = world_from_stage @ matrix
         world = points @ matrix[:3, :3].T + matrix[:3, 3]
-        triangles = world[faces]
-        near = np.linalg.norm(triangles.mean(axis=1) - centre, axis=1) <= radius + np.linalg.norm(
-            triangles - triangles.mean(axis=1, keepdims=True), axis=2).max(axis=1)
-        kept.append(triangles[near])
+        # A block of triangles at a time: a scanned room's whole array and its temporaries held 2.1 GB at once.
+        for first in range(0, len(faces), BACKGROUND_TRIANGLE_BLOCK):
+            triangles = world[faces[first:first + BACKGROUND_TRIANGLE_BLOCK]]
+            near = np.linalg.norm(triangles.mean(axis=1) - centre, axis=1) <= radius + np.linalg.norm(
+                triangles - triangles.mean(axis=1, keepdims=True), axis=2).max(axis=1)
+            kept.append(triangles[near])
     if meshes == 0:
         raise ScenePhysicsPreflightError("scene_physics_background_collision_missing")
     return np.concatenate(kept) if kept else np.zeros((0, 3, 3))
