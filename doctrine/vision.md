@@ -11,10 +11,11 @@ video and its storage receipt are required before assessment; drafts can wait
 for footage. Existing analysis drafts the job for customer correction. Blueprint
 reuses its capture-to-package/testbed foundation, shortlists complete executable
 configurations, runs matched independently scored evaluations within existing
-authority, and helps compare real delivery proposals. Valid applicable artifacts
-are reused; unavailable capabilities and missing measurements remain explicit.
-The customer and deployment partner own their physical agreement; choosing a
-website proposal does not create it.
+authority, and, when the site asks, introduces it to a deployment company that
+could run a pilot. Valid applicable artifacts are reused; unavailable
+capabilities and missing measurements remain explicit. The customer and
+deployment partner own their physical agreement; an introduction does not
+create it.
 
 The service accepts different sites and tasks through the same durable stores,
 queues and capability contracts. Supported profiles accept new site data without
