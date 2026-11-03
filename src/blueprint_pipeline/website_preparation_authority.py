@@ -5,6 +5,8 @@ read-only consumers cannot reach this module's current-grant/worker dependencies
 A caller-supplied grant alone cannot confer authenticated issuance or paid admission.
 """
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 from time import time as current_time
 
 from .decision_evidence_contracts import cross_runtime_canonical_digest
@@ -12,6 +14,25 @@ from .website_preparation_contracts import (
     validate_preparation_authority as validate_preparation_authority,
     validate_preparation_request as validate_preparation_request,
 )
+
+# False only inside ``retained_sources_only``.
+_CURRENT_GRANT_READS = ContextVar("website_preparation_current_grant_reads", default=True)
+
+
+@contextmanager
+def retained_sources_only():
+    """Check the retained sources but skip the current-grant reads, which go to the WebApp.
+
+    For the launch catalog's projection only. It runs in the ExecStartPre of every
+    guarded unit, so a read there let one WebApp outage, or one job its site edited,
+    stop all of them, and its network request kept the runtime env guard from
+    caching the pass. Every paid path keeps the reads and refuses on them.
+    """
+    token = _CURRENT_GRANT_READS.set(False)
+    try:
+        yield
+    finally:
+        _CURRENT_GRANT_READS.reset(token)
 
 
 def _intent_valid_until(*, request, queue_root):
@@ -37,20 +58,14 @@ def _intent_valid_until(*, request, queue_root):
     return expiry if expiry > request["execution"]["expires_at_epoch"] else None
 
 
-def require_retained_preparation_authority(*, request, queue_root, now):
-    """Reopen server-owned source references; context-only consent is insufficient.
+def _retained_sources(*, request, queue_root, now):
+    """The retained, digest-bound sources for ``request``, read on this host only.
 
-    Signed Web intake and current source registration are both required. The
-    read-only current grant check cannot create or renew an allowance. A
-    verified time-only extension of the bound intent moves only the "still
-    valid now" checks; the grant itself is unchanged.
+    Returns the task context, the grant it was prepared under and the intent's
+    verified extended expiry (``None`` when nothing extends it).
     """
     from .website_scene_source_registry_paths import binding_root, _index_path
     from .task_evaluation_scene_configuration_submission_inputs import checked_file, read
-    from .website_task_context import (
-        load_current_website_task_context,
-        load_website_scene_sponsorship,
-    )
 
     root = binding_root({"intent_root": str(queue_root)})
     path = _index_path(root, request)
@@ -88,6 +103,27 @@ def require_retained_preparation_authority(*, request, queue_root, now):
         now=now,
         valid_until=valid_until,
     )
+    return context, authority, valid_until
+
+
+def require_retained_preparation_authority(*, request, queue_root, now):
+    """Reopen server-owned source references; context-only consent is insufficient.
+
+    Signed Web intake and current source registration are both required. The
+    read-only current grant check cannot create or renew an allowance. A
+    verified time-only extension of the bound intent moves only the "still
+    valid now" checks; the grant itself is unchanged. Inside
+    ``retained_sources_only`` it stops after the retained sources and returns
+    ``now``.
+    """
+    context, authority, valid_until = _retained_sources(request=request, queue_root=queue_root, now=now)
+    if not _CURRENT_GRANT_READS.get():
+        return now
+    from .website_task_context import (
+        load_current_website_task_context,
+        load_website_scene_sponsorship,
+    )
+
     current = load_current_website_task_context(
         request_id=context["request_id"],
         scene_id=context["scene_id"],
