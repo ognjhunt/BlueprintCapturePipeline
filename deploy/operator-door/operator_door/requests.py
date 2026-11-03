@@ -31,6 +31,10 @@ providers, task and rights are not request fields and cannot change.
 preview's digest records, one owner-approved execution budget grant (the spend
 and attempt ceilings) for a sealed scene intent through the active release. It
 names the approving owner and the evidence; it refunds and settles nothing.
+``confirm-owner-success-contract`` (``operate``) previews, or with ``apply`` and the
+preview's digest records, one owner confirmation that a published website job's
+success thresholds, exactly as built, are the owner's, through the active
+release. It changes no threshold, starts no compute and moves no money.
 """
 
 from __future__ import annotations
@@ -89,6 +93,8 @@ _SCOPES = {
     "extend-scene-execution-window": "operate",
     # One owner-approved spend/attempt ceiling grant for a sealed scene intent.
     "extend-scene-execution-budget": "operate",
+    # One owner confirmation of a published website job's built success thresholds.
+    "confirm-owner-success-contract": "operate",
 }
 if DISPATCHER_HOLD_ONLY:
     # Preserve the installed d78ee479 controls plus the approved dispatcher gate.
@@ -105,11 +111,18 @@ if DISPATCHER_HOLD_ONLY:
     # the operator door's restricted profile") the preparation re-issue: it
     # acts only on a completed preparation whose grant the owner renewed (the
     # renewal names the owner as approver), recomputes CPU inputs, buys
-    # nothing, and leaves every money check to the intake.
+    # nothing, and leaves every money check to the intake. The owner's
+    # confirmation of a published website job's built success thresholds
+    # (confirm-owner-success-contract) is admitted the same way as the budget
+    # grant: a preview, then an apply bound to that preview's digest, writing
+    # one sealed record that names the owner as approver; it changes no
+    # threshold, starts no compute and moves no money. It was added to this
+    # profile in its own commit for the owner's explicit sign-off.
     _SCOPES = {kind: scope for kind, scope in _SCOPES.items()
                if kind in {"deploy", "unit", "door-upgrade", "hold", "release-hold", "selected-handoff",
                            "public-embodiment-preparation", "install-public-piper-policy", "install-public-yam-policy", "install-public-franka-policy", "install-public-trlc-policy", "install-scripted-robot-baselines", "install-native-g1-policies",
-                           "extend-scene-execution-window", "extend-scene-execution-budget"}}
+                           "extend-scene-execution-window", "extend-scene-execution-budget",
+                           "confirm-owner-success-contract"}}
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 # A short logged reason to deploy past a live activation; the same pattern as
 # activation_hold.OVERRIDE_REASON. "fixes_live_activation" is the usual one.
@@ -132,6 +145,7 @@ _INTENT_ID = re.compile(r"scene-[0-9a-f]{64}\Z")
 _UTC_SECOND = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 SCENE_WINDOW_ACK = "extend-scene-execution-window"
 SCENE_BUDGET_ACK = "extend-scene-execution-budget"
+OWNER_SUCCESS_ACK = "confirm-owner-success-contract"
 # An owner's user or organization id, as the sealed intent records it.
 _OWNER_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}\Z")
 # Timers that protect money or cleanup are never paused through the door.
@@ -498,6 +512,27 @@ def validate_request(body: dict[str, Any]) -> dict[str, Any]:
             raise RequestRefused("scene_budget_apply_ack_invalid")
         if body["ack"] != SCENE_BUDGET_ACK:
             raise RequestRefused("scene_budget_unacknowledged")
+        return {key: body[key] for key in sorted(fields)}
+    if kind == "confirm-owner-success-contract":
+        # The budget grant's owner fields and acknowledgements; no threshold is a request field.
+        fields = {"kind", "intent_id", "owner_user_id", "owner_organization_id", "approved_by",
+                  "approval_evidence", "apply", "apply_ack", "ack"}
+        if (set(body) != fields or not isinstance(body.get("intent_id"), str)
+                or not _INTENT_ID.fullmatch(body["intent_id"])
+                or not all(isinstance(body.get(key), str) and _OWNER_ID.fullmatch(body[key])
+                           for key in ("owner_user_id", "owner_organization_id", "approved_by"))
+                or type(body.get("apply")) is not bool):
+            raise RequestRefused("owner_success_fields_invalid")
+        evidence = body.get("approval_evidence")
+        if (not isinstance(evidence, str) or evidence != evidence.strip()
+                or not 1 <= len(evidence) <= 500 or not evidence.isprintable()):
+            raise RequestRefused("owner_success_approval_evidence_invalid")
+        if body["apply"] != bool(isinstance(body.get("apply_ack"), str) and _LEASE_DIGEST.fullmatch(body["apply_ack"])):
+            raise RequestRefused("owner_success_apply_ack_invalid")
+        if not body["apply"] and body.get("apply_ack") != "":
+            raise RequestRefused("owner_success_apply_ack_invalid")
+        if body["ack"] != OWNER_SUCCESS_ACK:
+            raise RequestRefused("owner_success_unacknowledged")
         return {key: body[key] for key in sorted(fields)}
     if kind == "restore-scene-workspace":
         _only(body, ("kind", "scene_id", "bucket"))

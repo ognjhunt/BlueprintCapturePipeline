@@ -1092,6 +1092,45 @@ def test_scene_window_client_refuses_out_of_bounds_expiry_before_http(expires: s
     assert _run(*_scene_window_args(expires=expires))[0] == 2
 
 
+def _owner_success_args(*extra: str) -> list[str]:
+    return ["confirm-owner-success-contract", "scene-" + "a" * 64, "--owner-user-id", "owner-uid",
+            "--owner-organization-id", "user:owner-uid", "--approved-by", "owner-uid",
+            "--approval-evidence", "owner accepted the built thresholds 2026-11-03", *extra]
+
+
+def test_owner_success_client_previews_by_default_and_applies_only_with_both_acknowledgements(
+        door: dict[str, Any]) -> None:
+    code, out = _run(*_owner_success_args())
+    assert code == 0
+    spooled = json.loads((door["state"] / "requests" / "pending" / f"{json.loads(out)['id']}.json").read_text())
+    assert spooled["request"] == {"kind": "confirm-owner-success-contract", "intent_id": "scene-" + "a" * 64,
+                                  "owner_user_id": "owner-uid", "owner_organization_id": "user:owner-uid",
+                                  "approved_by": "owner-uid",
+                                  "approval_evidence": "owner accepted the built thresholds 2026-11-03",
+                                  "apply": False, "apply_ack": "", "ack": "confirm-owner-success-contract"}
+    ack = "sha256:" + "c" * 64
+    assert _run(*_owner_success_args("--apply"))[0] == 2
+    assert _run(*_owner_success_args("--apply", "--apply-ack", ack))[0] == 2
+    assert _run(*_owner_success_args("--apply", "--ack", "confirm-owner-success-contract"))[0] == 2
+    assert _run(*_owner_success_args("--apply-ack", ack))[0] == 2
+    code, out = _run(*_owner_success_args("--apply", "--apply-ack", ack, "--ack", "confirm-owner-success-contract"))
+    applied = json.loads((door["state"] / "requests" / "pending" / f"{json.loads(out)['id']}.json").read_text())
+    assert code == 0 and applied["request"]["apply"] is True and applied["request"]["apply_ack"] == ack
+
+
+@pytest.mark.parametrize("extra", [("--owner-user-id", "a b"), ("--approval-evidence", " padded ")])
+def test_owner_success_client_refuses_malformed_fields_before_http(extra: tuple[str, str], monkeypatch) -> None:
+    monkeypatch.setattr(client, "_json", lambda *a, **k: pytest.fail("no request may be sent"))
+    assert _run(*_owner_success_args(*extra))[0] == 2
+
+
+def test_owner_success_outcomes_finish_a_wait() -> None:
+    for status, verdict in (("planned", True), ("confirmed", True), ("already_confirmed", True),
+                            ("failed", False), ("refused", False)):
+        state = {"request": {"kind": "confirm-owner-success-contract"}, "outcome": {"status": status}}
+        assert client._terminal(state) is verdict
+
+
 def test_scene_window_outcomes_finish_a_wait() -> None:
     for status, verdict in (("planned", True), ("extended", True), ("already_covered", True),
                             ("failed", False), ("refused", False)):
