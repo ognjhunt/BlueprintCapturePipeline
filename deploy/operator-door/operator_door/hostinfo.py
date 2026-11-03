@@ -1,4 +1,4 @@
-"""Host facts the door reports: systemd units, journals, locks, disk, load.
+"""Host facts the door reports: systemd units, journals, locks, disk, load, memory.
 
 Every command goes through an injectable runner with a fixed argv (never a
 shell), and every unit name is validated against the ``blueprint-`` namespace
@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess  # nosec B404 - fixed argv over validated unit names
 import urllib.request
 from dataclasses import dataclass
@@ -31,6 +32,17 @@ SHOW_PROPERTIES = (
     "UnitFileState", "NextElapseUSecRealtime", "LastTriggerUSec",
     "InvocationID", "Type",
 )
+MEMINFO_KEYS = ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree", "Shmem")
+MEMORY_TOP_UNITS = 20
+MEMORY_SLICES = ("system.slice", "user.slice", "init.scope")
+TMPFS_PATHS = ("/dev/shm", "/run", "/tmp")
+# A systemd unit's cgroup directory name; anything else under system.slice is skipped.
+CGROUP_UNIT = re.compile(r"[A-Za-z0-9@_.:\\-]{1,255}\.(?:service|scope|slice|socket|mount|swap)")
+_CGROUP_BYTES = re.compile(rb"[0-9]{1,20}\n?")
+_MEMORY_SCAN_ENTRIES = 4096  # system.slice entries looked at, interface files included
+_MEMORY_VALUE_READ = 64
+_MEMINFO_READ = 64 * 1024
+_MOUNTS_READ = 1024 * 1024
 
 
 class HostRefused(Exception):
@@ -72,6 +84,52 @@ def _fetch_json(url: str) -> dict[str, Any]:
         return json.loads(response.read(1024 * 1024).decode("utf-8"))
 
 
+def _read_small(path: str, limit: int) -> bytes | None:
+    """At most ``limit`` bytes of a regular or pseudo file; None when missing, unreadable or larger."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        chunks: list[bytes] = []
+        size = 0
+        while size <= limit:
+            chunk = os.read(fd, limit + 1 - size)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            size += len(chunk)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    return b"".join(chunks) if size <= limit else None
+
+
+def parse_meminfo(text: str) -> dict[str, int | None]:
+    """The fixed ``/proc/meminfo`` fields in bytes; a field absent or malformed is None."""
+    values: dict[str, int | None] = dict.fromkeys(MEMINFO_KEYS)
+    for line in text.splitlines():
+        key, _, rest = line.partition(":")
+        fields = rest.split()
+        if key not in values or not fields or not re.fullmatch(r"[0-9]{1,20}", fields[0]):
+            continue
+        if fields[1:] == ["kB"]:  # the kernel's kB is KiB
+            values[key] = int(fields[0]) * 1024
+        elif len(fields) == 1:
+            values[key] = int(fields[0])
+    return values
+
+
+def parse_cgroup_bytes(data: bytes | None) -> int | None:
+    """A cgroup v2 ``memory.current``/``memory.peak`` value; None when absent or not a byte count."""
+    if data is None or not _CGROUP_BYTES.fullmatch(data):
+        return None
+    return int(data)
+
+
 def validate_unit(unit: str) -> str:
     if not isinstance(unit, str) or not UNIT_NAME.fullmatch(unit):
         raise HostRefused("unit_name_invalid")
@@ -86,10 +144,18 @@ class HostInfo:
         runner: CommandRunner | None = None,
         proc_locks_path: str = "/proc/locks",
         fetch_json: Callable[[str], dict[str, Any]] | None = None,
+        proc_meminfo_path: str = "/proc/meminfo",
+        cgroup_root: str = "/sys/fs/cgroup",
+        mounts_path: str = "/proc/self/mounts",
+        tmpfs_paths: Sequence[str] = TMPFS_PATHS,
     ) -> None:
         self.config = config
         self.runner = runner or SubprocessRunner()
         self._proc_locks = proc_locks_path
+        self._meminfo = proc_meminfo_path
+        self._cgroup_root = cgroup_root
+        self._mounts = mounts_path
+        self._tmpfs_paths = tuple(tmpfs_paths)
         self._fetch_json = fetch_json or _fetch_json
 
     # -- systemd ------------------------------------------------------------
@@ -235,6 +301,71 @@ class HostInfo:
         except OSError:
             one = five = fifteen = -1.0
         return {"loadavg": [round(one, 2), round(five, 2), round(fifteen, 2)], "cpus": os.cpu_count()}
+
+    # -- memory (read-only, fail-soft: anything unreadable is None) --------
+
+    def _cgroup_usage(self, directory: str) -> dict[str, int | None] | None:
+        current = parse_cgroup_bytes(_read_small(os.path.join(directory, "memory.current"), _MEMORY_VALUE_READ))
+        if current is None:
+            return None
+        peak = parse_cgroup_bytes(_read_small(os.path.join(directory, "memory.peak"), _MEMORY_VALUE_READ))
+        return {"current_bytes": current, "peak_bytes": peak}
+
+    def _system_units(self) -> dict[str, Any] | None:
+        rows: list[dict[str, Any]] = []
+        truncated = False
+        try:
+            with os.scandir(os.path.join(self._cgroup_root, "system.slice")) as entries:
+                for scanned, entry in enumerate(entries):
+                    if scanned >= _MEMORY_SCAN_ENTRIES:
+                        truncated = True
+                        break
+                    name = entry.name
+                    if (not CGROUP_UNIT.fullmatch(name) or redact_lines(name) != name
+                            or not entry.is_dir(follow_symlinks=False)):
+                        continue
+                    usage = self._cgroup_usage(entry.path)
+                    if usage is not None:
+                        rows.append({"unit": name, **usage})
+        except OSError:
+            return None
+        rows.sort(key=lambda row: (-row["current_bytes"], row["unit"]))
+        return {"count": len(rows), "scan_truncated": truncated, "top": rows[:MEMORY_TOP_UNITS]}
+
+    def _tmpfs(self) -> dict[str, dict[str, int] | None]:
+        usage: dict[str, dict[str, int] | None] = dict.fromkeys(self._tmpfs_paths)
+        data = _read_small(self._mounts, _MOUNTS_READ)
+        if data is None:
+            return usage
+        fstype: dict[str, str] = {}
+        for line in data.decode("utf-8", "replace").splitlines():
+            fields = line.split()
+            if len(fields) >= 3 and fields[1] in usage:
+                fstype[fields[1]] = fields[2]  # the last mount on a path is the visible one
+        for path in usage:
+            if fstype.get(path) != "tmpfs":
+                continue
+            try:
+                stats = os.statvfs(path)
+            except OSError:
+                continue
+            usage[path] = {"total_bytes": stats.f_blocks * stats.f_frsize,
+                           "used_bytes": (stats.f_blocks - stats.f_bfree) * stats.f_frsize}
+        return usage
+
+    def memory(self) -> dict[str, Any]:
+        """What holds host RAM: meminfo totals, per-unit cgroup v2 memory and tmpfs usage.
+
+        Only numbers and unit names leave: never command lines, environment or
+        paths beyond a unit name and the fixed tmpfs mount points.
+        """
+        meminfo = _read_small(self._meminfo, _MEMINFO_READ)
+        return {
+            "meminfo": parse_meminfo(meminfo.decode("ascii", "replace")) if meminfo is not None else None,
+            "slices": {name: self._cgroup_usage(os.path.join(self._cgroup_root, name)) for name in MEMORY_SLICES},
+            "system_units": self._system_units(),
+            "tmpfs": self._tmpfs(),
+        }
 
     def version(self) -> dict[str, Any]:
         return self._fetch_json(self.config.intake_version_url)
