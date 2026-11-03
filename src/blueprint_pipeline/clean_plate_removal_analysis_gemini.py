@@ -110,12 +110,12 @@ DESTINATION_REGION_INSTRUCTION = (
 )
 #: The analysis's own judgment of each object's rigidity (2026-11-03): a soft task object is
 #: held rather than authored as a rigid body (``task_profile_contracts.task_object_rigidity``).
+#: It names the property, never example objects (tests/test_harness_prompts_scene_agnostic.py).
 RIGIDITY_INSTRUCTION = (
     "Also give 'rigidity' for each target: rigid when the object keeps its own shape when it is "
-    "picked up or moved (a mug, a box, a tool, a bottle); deformable when it bends, folds, drapes, "
-    "sags or squashes when handled (cloth, towels, clothing, bags or sacks, cables, ropes, hoses, "
-    "pillows, cushions, sponges, dough); unknown when the video does not show which. Give "
-    "'rigidity_reason': the short visible evidence for it, such as its material or how it hangs, "
+    "picked up, moved or set down; deformable when its shape changes when it is handled, because it "
+    "bends, folds, drapes, sags, stretches or squashes; unknown when the video does not show which. "
+    "Give 'rigidity_reason': the short visible evidence for it, such as its material or how it hangs, "
     "folds or rests. "
 )
 PROMPT_INSTRUCTION = (
