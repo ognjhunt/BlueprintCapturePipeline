@@ -423,7 +423,8 @@ def box_rest(triangles: Any, *, centre_xy: Sequence[float], bounds: Any, yaw_rad
         tris[:, :, :2] = (tris[:, :, :2] - centre) @ rotation.T + centre
     lower = [centre[i] + box[0][i] for i in (0, 1)]
     upper = [centre[i] + box[1][i] for i in (0, 1)]
-    points = footprint_points(tris, lower, upper, floor_z=floor_z, ceiling_z=ceiling_z)
+    # Each point once: a scan repeats a vertex in every triangle it is a corner of.
+    points = np.unique(footprint_points(tris, lower, upper, floor_z=floor_z, ceiling_z=ceiling_z), axis=0)
     height = -box[0][2]
     if not len(points):
         return {"status": "no_support_under_footprint", "points": 0}
