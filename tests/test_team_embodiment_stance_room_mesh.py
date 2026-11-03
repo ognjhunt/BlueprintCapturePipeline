@@ -101,17 +101,26 @@ def _floor(scale: float, keep: Any = None) -> tuple[np.ndarray, np.ndarray]:
     return points, faces
 
 
+def _ceiling(scale: float, height: float) -> tuple[np.ndarray, np.ndarray]:
+    """The floor's tessellation at ``height``, every other row 2 cm low: a scanned ceiling's noise."""
+
+    points, faces = _floor(scale)
+    rows = np.round((points[:, 1] - points[:, 1].min()) / (0.1 * scale)).astype(int)
+    return np.c_[points[:, :2], height - 0.02 * (rows % 2)], faces
+
+
 def write_scanned_room(path: Path, *, name: str = "mesh_0000_GLTF", scale: float = 1.0,
                        parts: list[tuple[np.ndarray, np.ndarray]] | None = None, floor_keep: Any = None,
-                       table: tuple[np.ndarray, np.ndarray] | None = None) -> Path:
+                       table: tuple[np.ndarray, np.ndarray] | None = None, wall_height_m: float = 2.6) -> Path:
     """One collision mesh under ``/Root``, as website normalization writes a reconstructed room."""
 
     from pxr import Usd, UsdGeom, UsdPhysics, Vt
 
     (x0, y0), (x1, y1) = ((v * scale for v in corner) for corner in ROOM)
     rows = [_floor(scale, floor_keep), _table(_oval()) if table is None else table, *(parts or [])]
-    for low, high in (((x0, y0, 0.0), (x0 + 0.05, y1, 2.6)), ((x1 - 0.05, y0, 0.0), (x1, y1, 2.6)),
-                      ((x0, y0, 0.0), (x1, y0 + 0.05, 2.6)), ((x0, y1 - 0.05, 0.0), (x1, y1, 2.6))):
+    h = wall_height_m
+    for low, high in (((x0, y0, 0.0), (x0 + 0.05, y1, h)), ((x1 - 0.05, y0, 0.0), (x1, y1, h)),
+                      ((x0, y0, 0.0), (x1, y0 + 0.05, h)), ((x0, y1 - 0.05, 0.0), (x1, y1, h))):
         rows.append(_box(low, high))
     points, faces, first = [], [], 0
     for p, f in rows:
@@ -269,6 +278,51 @@ def test_a_station_never_stands_inside_furniture_the_scan_never_saw_beneath(tmp_
         samples = footprint_samples(stance, grow_m=0.0)
         assert outside(samples).all() and not _in_oval(samples).any(), stance["position_world_m"]
     assert stances[0]["room_mesh_clearance"]["floor_unobserved_stances"] > 0
+
+
+@pytest.mark.parametrize("side_m", [5.0, 7.0])
+@pytest.mark.parametrize("body", ["franka", "g1", "mobile"])
+def test_a_station_never_stands_inside_closed_furniture_over_rebuilt_floor(tmp_path, side_m, body) -> None:
+    # The same cabinet, 1.8 m tall (a fridge, a pantry), its floor rebuilt by the reconstruction: a footprint
+    # inside it crosses none of its sides, its top is above the task, and the floor under it is observed.
+    low, high = (-0.9, -2.2, 0.0), (0.1, -1.2, 1.8)
+
+    def inside(xy: np.ndarray) -> np.ndarray:
+        return (xy[:, 0] > low[0]) & (xy[:, 0] < high[0]) & (xy[:, 1] > low[1]) & (xy[:, 1] < high[1])
+
+    room = write_scanned_room(tmp_path / "collision.usda", scale=side_m / (ROOM[1][0] - ROOM[0][0]),
+                              parts=[_box(low, high, bottom=False)])
+    stances = _search(room, ranked=24, **({} if body == "franka" else _below_the_table(body)))
+    assert len(stances) == 24
+    for stance in stances:
+        samples = footprint_samples(stance, grow_m=0.0)
+        assert not inside(samples).any() and not _in_oval(samples).any(), stance["position_world_m"]
+        assert stance["floor_z_m"] == pytest.approx(0.0, abs=0.01)
+    measured = stances[0]["room_mesh_clearance"]
+    assert measured["roofed_stances"] > 0 and measured["floor_unobserved_stances"] == 0
+    assert measured["roof_top_above_floor_m"] == pytest.approx(2.05)
+
+
+@pytest.mark.parametrize("overhead", ["low_ceiling", "ceiling_fan", "lamp", "sloped_ceiling"])
+def test_a_ceiling_a_fan_or_a_lamp_never_roofs_the_station(tmp_path, overhead) -> None:
+    # Over open floor: a 2.0 m ceiling with scan noise (below the headroom; it stays 25 cm under the room's
+    # top), a 1 m fan at 2.15 m (above the headroom), a 20 cm lamp at 1.5 m (over part of a footprint at
+    # most) and a ceiling of two triangles sloping from 2.6 m over the search to 2.0 m at the far wall (a
+    # roof only where its own surface is below the headroom) leave every stance of the same room without them.
+    height = 2.0 if overhead == "low_ceiling" else 2.6
+    plain = _search(write_scanned_room(tmp_path / "plain.usda", wall_height_m=height), ranked=24)
+    x, y, _ = plain[0]["position_world_m"]
+    (x0, y0), (x1, y1) = ROOM
+    slope = (np.array([(x0, y0, 2.6), (x1, y0, 2.6), (x1, y1, 2.0), (x0, y1, 2.0)]), np.array([[0, 1, 2], [0, 2, 3]]))
+    parts = {"low_ceiling": [_ceiling(1.0, height)],
+             "ceiling_fan": [_box((x - 0.5, y - 0.5, 2.15), (x + 0.5, y + 0.5, 2.2))],
+             "lamp": [_box((x - 0.1, y - 0.1, 1.45), (x + 0.1, y + 0.1, 1.55))],
+             "sloped_ceiling": [slope]}[overhead]
+    stances = _search(write_scanned_room(tmp_path / "collision.usda", parts=parts, wall_height_m=height), ranked=24)
+    assert [s["position_world_m"] for s in stances] == [s["position_world_m"] for s in plain]
+    measured = stances[0]["room_mesh_clearance"]
+    assert measured["roofed_stances"] == 0
+    assert measured["roof_top_above_floor_m"] == pytest.approx(min(2.05, height - 0.25))
 
 
 def test_a_single_mesh_room_with_no_clear_space_refuses_the_station_by_name(tmp_path) -> None:
