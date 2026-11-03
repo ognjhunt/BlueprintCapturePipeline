@@ -15,7 +15,9 @@ A room scanned as one mesh (a website capture's collider: floor, furniture and
 walls in one prim) has no per-object boxes to clip against, so its own
 triangles are measured instead: nothing of it may rise into the station's
 column above the footprint, from the floor to the higher of the station's root
-and the task's own top, and the floor must be observed under the footprint
+and the task's own top, the floor must be observed under the footprint, and no
+surface of it below the headroom may roof the whole footprint, as a closed
+cabinet's top does over floor the reconstruction rebuilt inside it
 (``_room_mesh_occupancy``).
 A website collider is a USDA text file (capture-447's: 292 MB) that OpenUSD
 parses again at every open finding no stage of it alive, so a search holds it
@@ -57,7 +59,16 @@ ROOM_MESH_FLOOR_CLEARANCE_M = 0.04
 #: between), never headroom; above it (a wall cabinet, a lamp) it stays the
 #: validator's overhead clutter.
 ROOM_MESH_MINIMUM_COLUMN_M = 0.40
-ROOM_MESH_RULE = "footprint_column_clear_of_room_mesh_and_floor_observed"
+#: A footprint whose centre and four corners all stand under room-mesh surfaces
+#: lower than this above the floor is inside furniture (a wardrobe's or a
+#: fridge's top over its side walls, with floor rebuilt beneath it), not on
+#: open floor. A ceiling fan or a lamp hung over a walkway clears it; a lamp, a
+#: shelf or a wall cabinet lower down covers part of a footprint at most.
+ROOM_MESH_HEADROOM_M = 2.05
+#: The headroom stays this far below the room's own top (its ceiling, or its
+#: walls' top), so a low or noisy ceiling never roofs every station.
+ROOM_MESH_CEILING_MARGIN_M = 0.25
+ROOM_MESH_RULE = "footprint_column_clear_of_room_mesh_floor_observed_and_unroofed"
 
 
 def _scene_collision(plan: Mapping[str, Any], packet_dir: Path) -> tuple[Path, str, list[float]]:
@@ -250,7 +261,10 @@ def _room_mesh_occupancy(vertices: Any, faces: Any, meshes: list[tuple[str, int]
     triangles that rise above the floor and start no higher than ``column_top_m`` above it, near the search
     (``reach_m`` around ``centre``), are the obstacles a footprint's column is measured against; the scene's
     triangles at floor height there are the floor it must stand on (``external_scene_robot_placement``'s
-    probe and support sampler).
+    probe and support sampler). Its triangles there that start above the column and below the headroom
+    (``ROOM_MESH_HEADROOM_M``, kept ``ROOM_MESH_CEILING_MARGIN_M`` below the room's top: the height under
+    which 99% of its non-floor area ends, so a floater above a low ceiling cannot lift it) are the roofs a
+    footprint must not stand wholly under.
     """
 
     import numpy as np
@@ -287,9 +301,35 @@ def _room_mesh_occupancy(vertices: Any, faces: Any, meshes: list[tuple[str, int]
     # height band (a scanned floor's noise tilts its small triangles past the horizontal test).
     ground = floor | ((lowest >= floor_z - tolerance) & (highest <= floor_z + tolerance))
     ground[ground] = near(triangles[ground])
+    upper = room[owner] & ~floor & valid
+    order = np.argsort(highest[upper], kind="stable")
+    ends, weights = highest[upper][order], np.cumsum(double_area[upper][order])
+    room_top = float(ends[min(int(np.searchsorted(weights, 0.99 * weights[-1])), len(ends) - 1)]) - floor_z
+    roof_top = min(ROOM_MESH_HEADROOM_M, room_top - ROOM_MESH_CEILING_MARGIN_M)
+    # Plan-degenerate (vertical) triangles cover no point; a roof is what a footprint stands under.
+    roof = (room[owner] & rising & (np.abs(cross[:, 2]) > 1e-12) & (lowest > floor_z + column_top_m)
+            & (lowest <= floor_z + roof_top))
+    roof[roof] = near(triangles[roof])
     return {"prims": [meshes[index][0] for index in np.flatnonzero(room)],
             "obstacles": _PlanBroadPhase(triangles[column, :, :2]), "obstacle_triangles": int(column.sum()),
-            "floor": _PlanBroadPhase(triangles[ground]), "floor_triangles": int(ground.sum())}
+            "floor": _PlanBroadPhase(triangles[ground]), "floor_triangles": int(ground.sum()),
+            "roof": _PlanBroadPhase(triangles[roof, :, :2]) if roof.any() else None,
+            "roof_triangles": int(roof.sum()), "roof_top_above_floor_m": float(roof_top)}
+
+
+def _roofed(roof: Any, point: tuple[float, float]) -> bool:
+    """Whether a roof triangle lies over ``point`` in plan, its edges included."""
+
+    import numpy as np
+
+    rows = roof(point, point)
+    if not len(rows):
+        return False
+    px, py = point
+    sides = np.stack([(b[:, 0] - a[:, 0]) * (py - a[:, 1]) - (b[:, 1] - a[:, 1]) * (px - a[:, 0])
+                      for a, b in ((rows[:, 0], rows[:, 1]), (rows[:, 1], rows[:, 2]), (rows[:, 2], rows[:, 0]))],
+                     axis=1)
+    return bool(((sides >= -1e-12).all(axis=1) | (sides <= 1e-12).all(axis=1)).any())
 
 
 def _room_mesh_refusal(room: Mapping[str, Any], *, x: float, y: float, yaw: float, footprint: list[float],
@@ -299,7 +339,9 @@ def _room_mesh_refusal(room: Mapping[str, Any], *, x: float, y: float, yaw: floa
     ``occupied``: a room-mesh triangle crosses the footprint's column, the footprint grown by the stand
     validator's obstacle clearance (``_triangle_footprint_overlap_count``, conservative). ``floor_unobserved``:
     the footprint's centre or a corner has no floor under it, as inside furniture a scan never saw beneath
-    (``_footprint_support_report``).
+    (``_footprint_support_report``). ``roofed``: a room surface below the headroom lies over the centre and
+    every corner, as inside closed furniture whose floor the reconstruction rebuilt; a lamp or a shelf over
+    part of the footprint is the validator's overhead clutter.
     """
 
     import numpy as np
@@ -320,7 +362,10 @@ def _room_mesh_refusal(room: Mapping[str, Any], *, x: float, y: float, yaw: floa
     nearby = np.concatenate([room["floor"](point, point) for point in points])
     support = _footprint_support_report(support_triangles=nearby, position=(x, y), yaw=yaw, half_extent_xy=(hx, hy),
                                         floor_z=floor_z, height_tolerance=tolerance)
-    return None if support["full_sample_support_candidate"] else "floor_unobserved"
+    if not support["full_sample_support_candidate"]:
+        return "floor_unobserved"
+    roof = room["roof"]
+    return "roofed" if roof is not None and all(_roofed(roof, point) for point in points) else None
 
 
 def _stage_without(path: Path, prims: list[str]) -> Any:
@@ -413,7 +458,7 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
         clearance = {key: np.asarray(motion.get(key, np.zeros((0, 3))), dtype=float).reshape(-1, 3)
                      for key in ("path_points", "fall_points", "limit_points")}
     steps, best, clear, struck = math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9), None, 0, 0
-    refused = {"occupied": 0, "floor_unobserved": 0}
+    refused = {"occupied": 0, "floor_unobserved": 0, "roofed": 0}
     candidates: list[Any] = []
     for ix in range(-steps, steps + 1):
         for iy in range(-steps, steps + 1):
@@ -455,7 +500,9 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
         "column_top_above_floor_m": float(column_top), "floor_clearance_m": ROOM_MESH_FLOOR_CLEARANCE_M,
         "obstacle_clearance_m": clearance_m, "obstacle_triangles": room["obstacle_triangles"],
         "floor_triangles": room["floor_triangles"], "occupied_stances": refused["occupied"],
-        "floor_unobserved_stances": refused["floor_unobserved"]}
+        "floor_unobserved_stances": refused["floor_unobserved"],
+        "roof_top_above_floor_m": room["roof_top_above_floor_m"], "roof_triangles": room["roof_triangles"],
+        "roofed_stances": refused["roofed"]}
     if ranked:
         return [_stance(row, floor_z=floor_z, root=root, footprint_half_extent_m=footprint_half_extent_m, clear=clear,
                         struck=struck, motion=motion, robot_id=robot_id if motion else None,
