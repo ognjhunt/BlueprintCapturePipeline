@@ -25,6 +25,16 @@ cleanly, else the preparation's estimated range widened by the band cubed (mass 
   Scene offsets scale across the band; the tool's length does not.
   A model on an arm the verdict path-checks takes the verdict's own carry for that arm: clear
   passes, blocked fails with its blockers, not tried is ``unknown``. A humanoid's is ``unknown``.
+  A fixed arm whose recipe has a kinematic chain (``robot_arm_chains``, read from its pinned
+  description) is decided by that chain instead. Its base link stands on a station, facing the
+  task; the tool points straight down, turned toward each point, and the arm is solved
+  (``team_body_kinematics.solve``) at the grasp and the place at scales across the band, at most
+  5 cm of travel apart, larger first, each from the last solution. It passes when every scale
+  solves within the joint limits from one station; at most four stations, nearest the task first,
+  are solved. It fails only when the chain's own reach bound rules out every station at every
+  scale, or when no pose was found and the published reach fails as above. Anything else is
+  ``unknown``: a search miss is not a proof. No collision, with the scene or the arm itself, is
+  checked, so such a pass is still a figure-only fit.
 - ``payload``: against the rated payload, it passes only if the heaviest mass plus the default tool
   (on a fixed arm's flange; a mobile base or humanoid lifts with its own hand) is within it, and
   fails only if even the lightest mass alone exceeds it, because a lighter tool may be fitted.
@@ -47,6 +57,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .decision_evidence_contracts import canonical_digest
 from .droid_policy_canary_embodiment import DROID_EMBODIMENT_ID, DROID_POLICY_CANARY_PRESET_ID
 from .robot_spec_catalog import figure_value
@@ -61,6 +73,11 @@ OWNER_WEIGHT_RELATIVE_BAND = 0.10
 #: allowance for grasping and releasing.
 PESSIMISTIC_SPEED_FRACTION = 0.1
 PESSIMISTIC_ALLOWANCE_S = 4.0
+#: An arm with a chain is solved from at most this many stations, nearest the task first.
+CHAIN_STATIONS = 4
+#: Its scales are sampled so a point moves at most this far between them, at most CHAIN_SCALES of them.
+CHAIN_SCALE_STEP_M = 0.05
+CHAIN_SCALES = 25
 #: The recipe (embodiment) id of each robot profile ``robot_arm_path_clearance.ROBOT_PROFILE_ARMS``
 #: names: a catalog model on that recipe takes the capability verdict's carry for the profile's arm.
 PROFILE_RECIPES = {DROID_POLICY_CANARY_PRESET_ID: DROID_EMBODIMENT_ID}
@@ -207,6 +224,106 @@ def _spec_reach(model: Mapping[str, Any], stations: Sequence[Sequence[float]], p
         "unknown": "reach depends on the scene's scale"})
 
 
+def _bound_scales(offset: np.ndarray, origin: np.ndarray, bound: float) -> tuple[float, float] | None:
+    """The scales s at which ``s * offset`` lies within ``bound`` of ``origin``: one interval, or None."""
+    a, b, c = float(offset @ offset), float(offset @ origin), float(origin @ origin) - bound * bound
+    if a <= 0.0:
+        return (-math.inf, math.inf) if c <= 0.0 else None
+    if b * b - a * c < 0.0:
+        return None
+    root = math.sqrt(b * b - a * c)
+    return (b - root) / a, (b + root) / a
+
+
+def _pointing_down(position: np.ndarray) -> np.ndarray:
+    """The tool's pose at ``position`` in the arm's base frame: straight down, turned toward the position."""
+    heading = math.atan2(float(position[1]), float(position[0]))
+    c, s = math.cos(heading), math.sin(heading)
+    pose = np.eye(4)
+    pose[:3, :3] = [[c, s, 0.0], [s, -c, 0.0], [0.0, 0.0, -1.0]]
+    pose[:3, 3] = position
+    return pose
+
+
+def _solve_station(chain: Any, offsets: Sequence[np.ndarray], band: Sequence[float]) -> tuple[int, dict[str, Any] | None]:
+    """The scales sampled, and the first point the arm missed (None when it reached both at every scale).
+
+    ``offsets`` are the grasp and the place in the arm's base frame at scale 1; each solve starts
+    from the last solution, so the arm keeps one configuration, and from fresh starts only on a miss.
+    """
+    from .team_body_kinematics import solve
+
+    span = max(float(np.linalg.norm(offset)) for offset in offsets) * (band[1] - band[0])
+    count = min(CHAIN_SCALES, max(2, math.ceil(span / CHAIN_SCALE_STEP_M) + 1))
+    previous: list[Any] = [None, None]
+    for scale in np.linspace(band[1], band[0], count):
+        for index, offset in enumerate(offsets):
+            target = _pointing_down(scale * offset)
+            seeds = [q for q in (previous[index], previous[1 - index]) if q is not None]
+            result = solve(chain, target, seeds=seeds, extra_seeds=False, classify=False) if seeds else None
+            if result is None or not result.ok:
+                result = solve(chain, target, seeds=seeds, classify=False)
+            if not result.ok:
+                return count, {"point": ("grasp", "place")[index], "scale": _r(scale), "failure": result.failure,
+                               "detail": result.detail}
+            previous[index] = result.joints
+    return count, None
+
+
+def _chain_reach(model: Mapping[str, Any], arm: Mapping[str, Any], stations: Sequence[Sequence[float]],
+                 points: Sequence[Sequence[float]], tool_length: float | None, band: Sequence[float]) -> dict[str, Any]:
+    """Reach decided by the arm's own kinematic chain (``arm``, from ``robot_arm_chains``)."""
+    from .robot_arm_chains import arm_chain
+
+    published = _spec_reach(model, stations, points, tool_length, band)
+    values: dict[str, Any] = {
+        "decided_by": "arm_chain_ik",
+        "chain": {"recipe_id": arm["recipe_id"], "base_link": arm["base_link"], "flange_link": arm["flange_link"],
+                  "urdf_sha256": arm["read_from"]["urdf_sha256"]},
+        "pose": "tool_pointing_down_turned_toward_the_point", "mount": "base_link_on_the_station_facing_the_task",
+        "scale_band": [_r(v) for v in band],
+        "published_reach": {"result": published["result"], **{key: published["values"][key] for key in (
+            "max_reach_m", "required_m") if key in published["values"]}}}
+    if tool_length is None:
+        return _check("reach", "unknown", "the default tool's length is unknown", values)
+    if not stations:
+        return _check("reach", "unknown", "no clear floor station to measure from", values)
+    chain = arm_chain(arm, tool_length_m=tool_length)
+    origin = chain.before[0][:3, 3]
+    middle = [(points[0][axis] + points[1][axis]) / 2.0 for axis in (0, 1)]
+    within, solved, miss = 0, 0, None
+    for station in sorted(stations, key=lambda row: math.dist(row[:2], middle)):
+        yaw = math.atan2(middle[1] - station[1], middle[0] - station[0])
+        c, s = math.cos(yaw), math.sin(yaw)
+        # Each point in the base frame of an arm on this station facing the task, at scale 1.
+        offsets = [np.array([c * dx + s * dy, c * dy - s * dx, dz])
+                   for dx, dy, dz in ([p - q for p, q in zip(point, station)] for point in points)]
+        intervals = [_bound_scales(offset, origin, chain.reach_bound_m) for offset in offsets]
+        if None in intervals or (max(band[0], *(row[0] for row in intervals))
+                                 > min(band[1], *(row[1] for row in intervals))):
+            continue  # No scale puts both points within the chain's reach: provably out from here.
+        within += 1
+        if solved == CHAIN_STATIONS:
+            continue
+        solved += 1
+        count, found = _solve_station(chain, offsets, band)
+        if found is None:
+            values.update(station_world_m=[_r(v) for v in station], base_yaw_rad=_r(yaw), scales_solved=count,
+                          stations_solved=solved)
+            return _check("reach", "pass", "the tool reaches the grasp and the place pointing down, within the arm's "
+                          "joint limits, from one station at every scale tried", values)
+        miss = miss or {**found, "station_world_m": [_r(v) for v in station]}
+    values.update(stations_within_bound=within, stations_solved=solved, first_miss=miss)
+    if not within:
+        return _check("reach", "fail", "the grasp or place point is beyond the arm's own reach bound from every "
+                      "station at every scale", values)
+    if published["result"] == "fail":
+        return _check("reach", "fail", "the grasp or place point is beyond the published reach from every station "
+                      "even at the smaller scale, and no pose reaching it was found", values)
+    return _check("reach", "unknown", "no pose with the tool pointing down that reaches both points at every scale "
+                  "was found from the stations tried; a search miss is not a proof", values)
+
+
 def _payload(model: Mapping[str, Any], mass_range: Sequence[float] | None, tool_mass: float) -> dict[str, Any]:
     payload = figure_value(model, "rated_payload_kg")
     # The default tool goes on a fixed arm's flange; a mobile base or humanoid lifts with its own hand.
@@ -279,11 +396,14 @@ def _cycle_target(preparation: Mapping[str, Any]) -> float | None:
 
 
 def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, verdict: Mapping[str, Any],
-                    catalog: Mapping[str, Any]) -> dict[str, Any]:
+                    catalog: Mapping[str, Any], arm_chains: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Per catalog model, whether it fits this prepared rigid pick-and-place by spec, from CPU geometry only.
 
     ``verdict`` is the capability verdict computed for the same preparation and collision;
-    ``catalog`` a validated spec catalog (``robot_spec_catalog.load_robot_spec_catalog``).
+    ``catalog`` a validated spec catalog (``robot_spec_catalog.load_robot_spec_catalog``);
+    ``arm_chains`` a validated chain catalog (``robot_arm_chains.load_robot_arm_chains``), whose
+    chains decide reach for the fixed arms on their recipes. Without it, every arm is decided by its
+    published reach.
     """
     from .robot_arm_path_clearance import RIGID_CARRY_CLEARANCE_M, ROBOT_PROFILE_ARMS
     from .team_scene_packet import STATION_FOOTPRINT_HALF_EXTENT_M
@@ -294,6 +414,10 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
         raise ValueError("website_robot_fit_verdict_binding_mismatch")
     if catalog.get("catalog_digest") != canonical_digest(catalog, digest_field="catalog_digest"):
         raise ValueError("website_robot_fit_catalog_unsealed")
+    if arm_chains is not None and arm_chains.get("catalog_digest") != canonical_digest(
+            arm_chains, digest_field="catalog_digest"):
+        raise ValueError("website_robot_fit_arm_chains_unsealed")
+    chains = {arm["recipe_id"]: arm for arm in (arm_chains or {}).get("arms") or []}
     fraction = preparation["authoring_inputs"]["metric_envelope"]["maximum_dimension_relative_error"]
     if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) or not 0 <= fraction < 1:
         raise ValueError("website_robot_fit_scale_uncertainty_invalid")
@@ -324,10 +448,13 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
     rows = []
     for model in catalog["models"]:
         body, arm = model["body_type"], recipe_arms.get(model.get("recipe_id"))
+        chain = chains.get(model.get("recipe_id")) if body == "fixed_arm" else None
         if body == "humanoid":
             reach = _check("reach", "unknown", "a humanoid's reach from a station is not modeled")
         elif arm is not None:
             reach = _verdict_reach(verdict, arm)
+        elif chain is not None:
+            reach = _chain_reach(model, chain, stations, (grasp, place), tool_length, band)
         else:
             reach = _spec_reach(model, stations, (grasp, place), tool_length, band)
         stance = _stance(model, stations, source, STATION_FOOTPRINT_HALF_EXTENT_M, path_checked=arm is not None)
@@ -349,7 +476,9 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
                      "checks": checks})
     table: dict[str, Any] = {
         "schema_version": SCHEMA, "preparation_digest": preparation["digest"], "collision_sha256": digest,
-        "catalog_digest": catalog["catalog_digest"], "verdict_digest": verdict.get("verdict_digest"),
+        "catalog_digest": catalog["catalog_digest"],
+        "arm_chains_digest": None if arm_chains is None else arm_chains["catalog_digest"],
+        "verdict_digest": verdict.get("verdict_digest"),
         "evidence_label": EVIDENCE_LABEL, "claim_ceiling": CLAIM_CEILING, "physical_world_truth_claimed": False,
         "inputs": {
             "grasp_point_world_m": [_r(grasp[0]), _r(grasp[1]), _r(grasp[2] + lift)],
