@@ -30,7 +30,7 @@ from blueprint_pipeline.task_evaluation_sam31_prefix_adoption import record
 from blueprint_pipeline.task_evaluation_scene_configuration_output_archive import write_output_archive
 from blueprint_pipeline.task_evaluation_scene_configuration_submission_records import spend_block
 from blueprint_pipeline.task_evaluation_scene_intake import (
-    SceneIntakeError, committed_spend_usd, reserve_scene_attempt, stage_scene_intent,
+    SceneIntakeError, committed_spend_usd, reserve_scene_attempt, scene_intent_status, stage_scene_intent,
 )
 from blueprint_pipeline.task_evaluation_scene_reservation_spend_evidence import scene_reservation_spend_record
 from blueprint_pipeline.task_object_artisan_metering import Meter
@@ -764,3 +764,37 @@ def test_capture_447_restart_refused_for_credit_on_the_cpu_prestage(site):
     assert (hold["basis"], hold["retained_spend_usd"]) == (settlement.PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS, 21.63)
     assert hold["evidence"]["termination"]["kind"] == "provider_credit_refusal"
     assert committed_spend_usd(site["directory"], site["intent"]) == Decimal("21.63")
+
+
+def test_status_reports_each_settled_hold_reservation_counts(site):
+    """The WebApp's job ceiling reads the status, not the reservation (capture-447, 2026-11-03).
+
+    A settled row reads ``cancelled_before_execution`` there, so before this the
+    WebApp counted the restart's $21.63 as nothing while the Pipeline committed it.
+    """
+    row = _prestage_attempt(site, runs=[([2.5, 4.75, 6.0, 5.26, 3.12], 17.95, True)], credit_refusal=REFUSED)
+    successor = reserve_scene_attempt(queue_root=site["root"], intent_id=site["intent"]["intent_id"],
+                                      attempt_id="scene-configuration-restart", source_commit=COMMIT,
+                                      runtime_digest="sha256:" + "e" * 64, input_digest="sha256:" + "f" * 64,
+                                      provider="vast", maximum_spend_usd=18.0, now=300)
+    status = scene_intent_status(queue_root=site["root"], intent_id=site["intent"]["intent_id"], now=300)
+    attempts = {attempt["attempt_id"]: attempt for attempt in status["attempts"]}
+    assert attempts[row.stem] == {**attempts[row.stem], "maximum_spend_usd": 31.0,
+                                  "status": "cancelled_before_execution", "retained_spend_usd": 21.63,
+                                  "retained_spend_basis": settlement.PROVEN_PRESTAGE_AUTHORING_SPEND_BASIS}
+    # A live row keeps its reservation, as before, and carries no settled figure.
+    assert attempts[successor["attempt_id"]]["status"] == "reserved"
+    assert "retained_spend_usd" not in attempts[successor["attempt_id"]]
+    committed = committed_spend_usd(site["directory"], site["intent"])
+    assert committed == Decimal("39.63") == sum(
+        Decimal(str(attempt.get("retained_spend_usd", attempt["maximum_spend_usd"]))) for attempt in attempts.values())
+
+
+def test_status_reports_an_unproven_settlement_at_its_maximum(site):
+    row = _terminal_attempt(site, "only", _request("only", authoring=15.0, total=20.0),
+                            lambda output, request: _artisan_runtime(output, request, runs=[([3.0, 4.0], None, True)]))
+    attempt = scene_intent_status(queue_root=site["root"], intent_id=site["intent"]["intent_id"],
+                                  now=300)["attempts"][0]
+    assert (attempt["attempt_id"], attempt["status"], attempt["retained_spend_usd"], attempt["retained_spend_basis"]) == (
+        row.stem, "cancelled_before_execution", 20.0, "terminal_launch_unreconciled")
+    assert committed_spend_usd(site["directory"], site["intent"]) == Decimal("20.0")

@@ -172,7 +172,9 @@ def test_capture_447_current_attempt_settles_at_zero_once_authority_ends(site, h
     assert all(validated_cancellation(site["directory"], json.loads(path.read_text())) is not None
                for path in (site["directory"] / "attempts").glob("*.json"))
     status = scene_intent_status(queue_root=site["root"], intent_id=site["intent"]["intent_id"], now=now)
-    assert {a["attempt_id"]: a["status"] for a in status["attempts"]}[row_path.stem] == "cancelled_before_execution"
+    settled = {a["attempt_id"]: a for a in status["attempts"]}[row_path.stem]
+    assert (settled["status"], settled["retained_spend_usd"], settled["retained_spend_basis"]) == (
+        "cancelled_before_execution", 0.0, "preallocation_api_budget_upper_bound")
     # Accounting only: no row reserved, nothing queued.
     assert sorted(path.name for path in (site["directory"] / "attempts").glob("*.json")) == rows_before
     assert not [path for name in ("pending", "processing") for path in (site["queue"] / name).iterdir()]
