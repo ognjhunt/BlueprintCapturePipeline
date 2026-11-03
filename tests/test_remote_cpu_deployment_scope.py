@@ -14,13 +14,25 @@ import subprocess
 import pytest
 
 from scripts.remote_cpu_deployment_scope import (
-    ALLOWED_ADDRESSES, APPROVED_BILLING_ACCOUNT, DISPATCH_PROJECT, WORKER_PROJECT, check_plan, check_project_iam, check_state,
+    ALLOWED_ADDRESSES, APPROVED_BILLING_ACCOUNT, DISPATCH_PROJECT, OPTIONAL_ADDRESSES, WORKER_PROJECT, check_plan,
+    check_project_iam, check_state, stage_addresses,
 )
 
+TEAM = "team-scene-packet"
 
-def _plan():
-    resources = [{"address": address, "mode": "managed", "values": {}}
-                 for address in sorted(ALLOWED_ADDRESSES)]
+
+def _team_job(fixture: dict, address: str) -> dict:
+    """The team scene packet job's planned values, derived from the saved episode job's by renaming the stage:
+    the same module and image pipeline, its own name and its 3600 s bound.  Not a saved plan of it; the owner's
+    first scoped plan with the stage in tfvars is that."""
+
+    episode = address.replace(f'["{TEAM}"]', '["episode-compilation"]')
+    return json.loads(json.dumps(fixture["values"][episode]).replace("episode-compilation", TEAM))
+
+
+def _plan(*, team: bool = False):
+    addresses = ALLOWED_ADDRESSES | (stage_addresses(TEAM) if team else frozenset())
+    resources = [{"address": address, "mode": "managed", "values": {}} for address in sorted(addresses)]
     by_address = {row["address"]: row for row in resources}
     # Saved from a real read-only Terraform 1.14 plan of the reviewed scope.
     # These are configuration expressions and computed-identity placeholders.
@@ -44,6 +56,13 @@ def _plan():
     by_address['google_billing_budget.remote_cpu_workers[0]']["values"] = {
         "amount": [{"specified_amount": [{"units": "25", "currency_code": "USD"}]}],
     }
+    if team:
+        for address in stage_addresses(TEAM):
+            by_address[address]["values"] = _team_job(fixture, address)
+        job = deepcopy(by_address['google_cloud_run_v2_job.remote_cpu_worker["episode-compilation"]']["values"])
+        job["name"] = f"blueprint-remote-cpu-{TEAM}"
+        job["template"][0]["template"][0]["timeout"] = "3600s"
+        by_address[f'google_cloud_run_v2_job.remote_cpu_worker["{TEAM}"]']["values"] = job
     return {"configuration": fixture["configuration"],
             "planned_values": {"root_module": {"resources": resources}},
             "resource_changes": [{"address": row["address"], "mode": "managed",
@@ -224,3 +243,46 @@ def test_plan_refuses_paid_compute_limit_drift(field, value):
                if row["address"].startswith("google_cloud_run_v2_job.remote_cpu_worker["))
     job["values"]["template"][0]["template"][0][field] = value
     assert "job_definition_drift" in check_plan(plan)
+
+
+def test_the_team_scene_packet_job_is_optional_and_validated_whole_when_planned():
+    """Plan 14's second stage: absent, the reviewed scope is unchanged; present, its job, dispatcher IAM policy and
+    tag binding come together and its job is the 4 CPU, 16Gi, 3600 s, zero-retry bootstrap job."""
+
+    assert stage_addresses(TEAM) == OPTIONAL_ADDRESSES and not OPTIONAL_ADDRESSES & ALLOWED_ADDRESSES
+    assert check_plan(_plan()) == [] and check_plan(_plan(team=True)) == []
+    job = f'google_cloud_run_v2_job.remote_cpu_worker["{TEAM}"]'
+    for field, value in (("timeout", "1800s"), ("max_retries", 3)):
+        plan = _plan(team=True)
+        row = next(row for row in plan["planned_values"]["root_module"]["resources"] if row["address"] == job)
+        row["values"]["template"][0]["template"][0][field] = value
+        assert check_plan(plan) == [f"job_definition_drift:{TEAM}"], field
+    plan = _plan(team=True)
+    row = next(row for row in plan["planned_values"]["root_module"]["resources"] if row["address"] == job)
+    row["values"]["template"][0]["template"][0]["containers"][0]["resources"] = [{"limits": {"cpu": "8",
+                                                                                         "memory": "32Gi"}}]
+    assert check_plan(plan) == [f"job_definition_drift:{TEAM}"]
+    # A job without its dispatcher policy or isolation tag is refused, as is a policy granting anyone else.
+    plan = _plan(team=True)
+    policy = f'google_cloud_run_v2_job_iam_policy.remote_cpu_dispatcher["{TEAM}"]'
+    plan["planned_values"]["root_module"]["resources"] = [
+        row for row in plan["planned_values"]["root_module"]["resources"] if row["address"] != policy]
+    assert "missing_resource:" + policy in check_plan(plan)
+    plan = _plan(team=True)
+    row = next(row for row in plan["planned_values"]["root_module"]["resources"] if row["address"] == policy)
+    row["values"]["policy_data"] = json.dumps({"bindings": [{
+        "role": f"projects/{WORKER_PROJECT}/roles/remoteCpuDispatcher", "members": ["user:other@example.com"]}]})
+    assert "resource_policy_drift:" + policy in check_plan(plan)
+    # The episode job keeps its own 1800 s bound: 3600 s there is still drift.
+    plan = _plan(team=True)
+    row = next(row for row in plan["planned_values"]["root_module"]["resources"]
+               if row["address"] == 'google_cloud_run_v2_job.remote_cpu_worker["episode-compilation"]')
+    row["values"]["template"][0]["template"][0]["timeout"] = "3600s"
+    assert check_plan(plan) == ["job_definition_drift"]
+    # State and targets know the optional job; nothing else.
+    state = {"values": {"root_module": {"resources": [{"address": address, "mode": "managed"}
+                                                      for address in sorted(stage_addresses(TEAM))]}}}
+    assert check_state(state) == []
+    targets = subprocess.run(["python3", "scripts/remote_cpu_deployment_scope.py", "targets"], check=True,
+                             capture_output=True, text=True, cwd=Path(__file__).resolve().parents[1]).stdout.split()
+    assert {"-target=" + address for address in stage_addresses(TEAM)} <= set(targets)

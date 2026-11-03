@@ -46,12 +46,11 @@ these infrastructure checks remain `development_only`.
 
 A second stage, `team_scene_packet` (the robot-team scene half's compile), uses
 the same lane on its own job, `blueprint-remote-cpu-team-scene-packet` (4 CPU,
-16 GiB, 3600 s, zero retries, same image). This scoped plan does not admit that
-job yet: `scripts/remote_cpu_deployment_scope.py` names only the episode job's
-addresses and 1800 s definition, so a reviewed change must add the team job's
-three addresses and definition check before this command can create it. The
-owner's steps are in `docs/CONTROL_PLANE_STORAGE.md` ("Remote team-scene
-compilation").
+16 GiB, 3600 s, zero retries, same image). The scoped checker admits that job
+as optional: absent from `remote_cpu_worker_stages`, the plan is the reviewed
+scope unchanged; present, its job, dispatcher IAM policy and tag binding must
+all be planned and its definition must be exactly that one. The owner's steps
+are in `docs/CONTROL_PLANE_STORAGE.md` ("Remote team-scene compilation").
 
 Primary references: [deny permission support](https://docs.cloud.google.com/iam/docs/deny-permissions-support),
 [service account tags](https://docs.cloud.google.com/iam/docs/service-accounts-tags),
