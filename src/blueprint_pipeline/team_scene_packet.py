@@ -138,28 +138,58 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
                       profile: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """The first ranked stance the Franka can carry the object from (``robot_arm_path_clearance``).
 
-    With none, the closest stance stands and the bundle's gate refuses the packet by name before any GPU run.
+    The task's own grasp is tried from every stance, then the intake's tilted and side-on grasps
+    (``robot_arm_path_clearance.carry_grasps``), so a carry one of them clears is not missed; the bundle's
+    gate tries the same grasps. With none, the closest stance stands, the record keeps the attempt that
+    got furthest and the measured shortfall of the task's grasp against the arm's reach bound from that
+    stance (``rigid_reach_shortfall``), and the bundle's gate refuses the packet by name before any GPU run.
     """
-    from .robot_arm_path_clearance import NOMINAL_SEED_RAD, REST_SEED_RAD, first_carrying_stance
+    from .robot_arm_path_clearance import (
+        NOMINAL_SEED_RAD,
+        REST_SEED_RAD,
+        RobotArmPathClearanceError,
+        carry_grasps,
+        first_carrying_stance,
+        rigid_reach_shortfall,
+    )
 
     try:
         affordance = task_spec["interaction_affordance"]
         reset = profile["robot_joint_reset_positions_rad"]
-        cleared, _, attempts = first_carrying_stance(stances, collision_path=collision, robot_id="franka_panda",
+        task = {"start_pose_world": task_spec["start_pose_world"],
+                "target_position_world": task_spec["target_position_world_m"],
+                "contact_point_m": affordance["contact_point_scoring_frame_m"],
+                "approach_unit": affordance["approach_unit_scoring_frame"],
+                "gripper_orientation_xyzw": affordance["gripper_orientation_scoring_frame_xyzw"],
+                "pregrasp_clearance_m": float(affordance["pregrasp_clearance_m"])}
+        bounds = task_spec.get("subject_collision_bounds_scoring_frame_m")
+        cleared, furthest, attempts = first_carrying_stance(stances, collision_path=collision, robot_id="franka_panda",
             seeds=[[float(reset[f"panda_joint{i}"]) for i in range(1, 8)], list(NOMINAL_SEED_RAD),
-                   list(REST_SEED_RAD["franka_panda"])],
-            start_pose_world=task_spec["start_pose_world"], target_position_world=task_spec["target_position_world_m"],
-            contact_point_m=affordance["contact_point_scoring_frame_m"],
-            approach_unit=affordance["approach_unit_scoring_frame"],
-            gripper_orientation_xyzw=affordance["gripper_orientation_scoring_frame_xyzw"],
-            pregrasp_clearance_m=float(affordance["pregrasp_clearance_m"]))
+                   list(REST_SEED_RAD["franka_panda"])], grasps=carry_grasps(task, bounds), **task)
     except (KeyError, TypeError, ValueError) as exc:
         raise TeamScenePacketError("team_scene_carry_inputs_invalid") from exc
     station = cleared or stances[0]
-    return station, {"rule": "first_ranked_stance_that_carries", "cleared": cleared is not None,
-                     "chosen_rank": next(i for i, row in enumerate(stances) if row is station),
-                     "results": [{"stance_digest": row["stance_digest"], "status": report["status"],
-                                  "blockers": report["blockers"]} for row, report in attempts]}
+    record: dict[str, Any] = {
+        "rule": "first_ranked_stance_that_carries", "cleared": cleared is not None,
+        "chosen_rank": next(i for i, row in enumerate(stances) if row is station),
+        "grasps_tried": len({report.get("grasp") for _, report in attempts}),
+        "results": [{"stance_digest": row["stance_digest"], "status": report["status"],
+                     "blockers": report["blockers"], **({"grasp": report["grasp"]} if "grasp" in report else {})}
+                    for row, report in attempts]}
+    if cleared is None:
+        best = next(row for row, report in attempts if report is furthest)
+        record["best_attempt"] = {"stance_digest": best["stance_digest"], "grasp": furthest.get("grasp"),
+                                  "blockers": list(furthest["blockers"]),
+                                  "furthest_sample": furthest.get("furthest_sample"),
+                                  "path_samples": furthest.get("path_samples")}
+        try:
+            record["reach_shortfall"] = rigid_reach_shortfall(
+                robot_id="franka_panda", base_pose_world=station, start_pose_world=task["start_pose_world"],
+                target_position_world=task["target_position_world"], contact_point_m=task["contact_point_m"],
+                subject_bounds_m=bounds)
+        except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
+            record["reach_shortfall"] = {"status": "unassessed", "reason": "reach_shortfall_inputs_invalid"}
+    return station, record
 
 
 def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mapping[str, Any],
@@ -271,7 +301,7 @@ def _own_arm_stations(stations: dict[str, dict[str, Any]], ranked: Mapping[str, 
                    "reaching_arms": list(report.get("reaching_arms") or []),
                    "advisories": list(report["advisories"]), "claim_ceiling": report["claim_ceiling"],
                    "report_digest": report["report_digest"],
-                   **({"reason": report["reason"]} if "reason" in report else {})}
+                   **{key: report[key] for key in ("reason", "detail", "beyond_reach") if key in report}}
         reached = found is not None and found["index"] is not None
         if free:
             row["reach"] = {"rule": OWN_ARM_RULE if reached else "closest_clear_floor_stance", "own_arm": arm}
@@ -723,6 +753,25 @@ def recorded_embodiment_stations(path: str | Path | None, *, plan_digest: Any) -
     return dict(stations) if value.get("plan_digest") == plan_digest and isinstance(stations, Mapping) else {}
 
 
+def recorded_station_search(path: str | Path | None, *, plan_digest: Any) -> dict[str, Any]:
+    """The packet station and the carry search that chose it, as the scene half recorded them.
+
+    ``{"robot_station", "robot_station_search"}``; empty when the half has no search (an articulated
+    task, an older half), cannot be read, or was compiled for another scene plan.
+    """
+
+    if not path:
+        return {}
+    try:
+        read_team_scene_inputs(path)
+        value = _read(Path(path), "team_scene_inputs_invalid")
+    except (OSError, ValueError, KeyError):
+        return {}
+    if value.get("plan_digest") != plan_digest or not isinstance(value.get("robot_station_search"), Mapping):
+        return {}
+    return {"robot_station": dict(value["robot_station"]), "robot_station_search": dict(value["robot_station_search"])}
+
+
 def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenario_id: str,
                        output_root: str | Path, fetcher: Callable[[Mapping[str, Any]], bytes] | None = None,
                        **packet_inputs: Any) -> dict[str, Any]:
@@ -790,6 +839,7 @@ __all__ = [
     "prepare_team_scene",
     "read_team_scene_inputs",
     "recorded_embodiment_stations",
+    "recorded_station_search",
 ]
 
 

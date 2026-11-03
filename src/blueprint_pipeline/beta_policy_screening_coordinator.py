@@ -32,7 +32,7 @@ from .beta_policy_screening_result import (
     ACTIVE_STATUSES, QUEUED_STATUSES, candidate_result_summary, campaign_status, money, screening_publication,
 )
 from .decision_evidence_contracts import canonical_digest
-from .website_candidate_feasibility import MEASURED_REFUSALS
+from .website_candidate_feasibility import is_measured_refusal
 
 QUEUE_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT"
 DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening"
@@ -375,7 +375,7 @@ def _initial_state(candidate: Mapping[str, Any]) -> dict[str, Any]:
         # such state yet, so the site sees it unavailable with its reason. Only a
         # measured geometry refusal carries the measured-geometry marker; a GPU
         # floor the screening lane cannot rent is not a fact about the site.
-        measured = bool(blockers) and set(blockers) <= MEASURED_REFUSALS
+        measured = bool(blockers) and all(is_measured_refusal(code) for code in blockers)
         status, blockers = "unavailable", [INFEASIBLE_BLOCKER, *blockers] if measured else list(blockers)
     if status == "waitlisted":
         # The plan's reason: the site allowance, or the website job's ceiling.
