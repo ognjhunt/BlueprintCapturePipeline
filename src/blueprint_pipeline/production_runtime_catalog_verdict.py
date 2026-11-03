@@ -29,9 +29,16 @@ What the fingerprint holds:
   (device, inode, mode, owner, size, nanosecond mtime and kernel-owned ctime);
 * the served catalog: the same identity, and its bytes by digest;
 * everything the pass consulted, recorded at first touch while it ran: every
-  file it opened, every path it stat-ed (``exists``, ``is_file``, ``resolve``
-  ...), absent ones included, so a ``revoked.json`` that appears later moves
-  the verdict, and the names in every directory it listed.
+  file it opened, every path it stat-ed (``exists``, ``is_file`` ...), absent
+  ones included, so a ``revoked.json`` that appears later moves the verdict,
+  and the names in every directory it listed;
+* every path it resolved (``Path.resolve``, ``os.path.realpath``), by what
+  resolving reads of each entry: its type and, for a symlink, the target. The
+  residency check resolves each absolute path in a profile's allocator argv, and
+  one profile names the spend guard's ``latest.json`` there; bound by its full
+  identity, the guard's rewrite every 1-2 minutes moved the verdict on almost
+  every start (2026-11-03: stored 23 times an hour, reused 5). A path the pass
+  also opens or stats stays bound by its bytes too.
 
 Only a pass that ended in a ready guard, found the catalog already consistent
 and wrote nothing is stored. Skipping a later pass therefore skips only a pass
@@ -83,7 +90,7 @@ from .validation_file_digests import sha256_file, touched_files
 from .validation_verdict_store import entry_path, lookup, store, verdict_root
 
 VERDICT_NAME = "production_runtime_env_guard_catalog_phases"
-SCHEMA_VERSION = "production_runtime_catalog_phase_verdict.v1"
+SCHEMA_VERSION = "production_runtime_catalog_phase_verdict.v2"
 KEY_VERSION = 1
 PHASES = ("launch_profile_catalog", "launch_input_residency")
 PACKAGE = "blueprint_pipeline"
@@ -181,6 +188,7 @@ class _Capture:
     catalog: Any = None
     sys_path: list[list[Any]] = field(default_factory=list)
     paths: dict[str, Any] = field(default_factory=dict)  # path -> identity at first touch
+    resolved: dict[str, Any] = field(default_factory=dict)  # path -> type and link target
     listings: dict[str, Any] = field(default_factory=dict)  # directory -> names at first listing
     deadlines: list[float] = field(default_factory=list)  # instants reported by time checks
     started_at: float = 0.0
@@ -194,10 +202,11 @@ class _Capture:
             path == root or path.startswith(root + os.sep) for root in self.ignored
         )
 
-    def note_path(self, raw: Any) -> None:
+    def note_path(self, raw: Any, *, resolving: bool = False) -> None:
+        seen, identity = (self.resolved, _resolution_identity) if resolving else (self.paths, _identity)
         path = _absolute(raw)
-        if path is not None and path not in self.paths and not self.skipped(path):
-            self.paths[path] = _identity(path)
+        if path is not None and path not in seen and not self.skipped(path):
+            seen[path] = identity(path)
 
     def note_listing(self, raw: Any) -> None:
         if isinstance(raw, int):
@@ -269,6 +278,22 @@ def _identity(path: str) -> Any:
         return ["link", observed.st_dev, observed.st_ino, observed.st_ctime_ns, target,
                 _row(followed)]
     return _row(observed)
+
+
+def _resolution_identity(path: str) -> Any:
+    """What resolving a path through ``path`` reads of it: the entry's type and a link's target."""
+    try:
+        observed = _LSTAT(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return _ABSENT
+    except OSError as exc:
+        return ["error", exc.errno]
+    if not stat.S_ISLNK(observed.st_mode):
+        return ["type", stat.S_IFMT(observed.st_mode)]
+    try:
+        return ["link", os.readlink(path)]
+    except OSError as exc:
+        return ["link", ["error", exc.errno]]
 
 
 def _row(observed: os.stat_result) -> list[Any]:
@@ -358,7 +383,7 @@ def _recorded_stat(original: Callable[..., Any]) -> Callable[..., Any]:
                 if kwargs.get("dir_fd") is not None:
                     capture.refuse("unrecordable:stat_relative_to_descriptor")
                 elif not isinstance(path, int):
-                    capture.note_path(path)
+                    capture.note_path(path, resolving=getattr(_BUSY, "resolving", 0) > 0)
             except Exception:  # noqa: BLE001 - recording must never change the probe
                 capture.refuse("capture_error")
             finally:
@@ -378,6 +403,24 @@ def _recorded_open(original: Callable[..., Any]) -> Callable[..., Any]:
         return original(path, flags, *args, **kwargs)
 
     return opened
+
+
+def _recorded_resolution(original: Callable[..., Any]) -> Callable[..., Any]:
+    """``Path.resolve``/``os.path.realpath``: what they stat is read for its type and link target.
+
+    ``realpath`` lstats each component to find links; before Python 3.13,
+    ``Path.resolve`` then stats the result only to raise on a symlink loop.
+    """
+
+    def resolving(*args: Any, **kwargs: Any) -> Any:
+        depth = getattr(_BUSY, "resolving", 0)
+        _BUSY.resolving = depth + 1
+        try:
+            return original(*args, **kwargs)
+        finally:
+            _BUSY.resolving = depth
+
+    return resolving
 
 
 def _recorded_clock(original: Callable[..., Any]) -> Callable[..., Any]:
@@ -429,16 +472,17 @@ def capturing(scope: PhaseScope | None) -> Iterator[_Capture | None]:
     if capture is None:
         yield None
         return
-    saved = (os.stat, os.lstat, os.open, time.time, time.time_ns)
+    saved = (os.stat, os.lstat, os.open, time.time, time.time_ns, os.path.realpath, Path.resolve)
     os.stat, os.lstat, os.open = _recorded_stat(saved[0]), _recorded_stat(saved[1]), _recorded_open(saved[2])
     time.time, time.time_ns = _recorded_clock(saved[3]), _recorded_clock(saved[4])
+    os.path.realpath, Path.resolve = _recorded_resolution(saved[5]), _recorded_resolution(saved[6])
     _ACTIVE = capture
     try:
         with collecting_deadlines() as capture.deadlines:
             yield capture
     finally:
         _ACTIVE = None
-        os.stat, os.lstat, os.open, time.time, time.time_ns = saved
+        os.stat, os.lstat, os.open, time.time, time.time_ns, os.path.realpath, Path.resolve = saved
 
 
 def _entry_unsafe(path: Path) -> str:
@@ -485,8 +529,8 @@ def _payload(stored: Any) -> dict[str, Any] | None:
         isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)
     )):
         return None
-    for rows in (stored.get("paths"), stored.get("listings"), stored.get("sys_path"),
-                 stored.get("code_files")):
+    for rows in (stored.get("paths"), stored.get("resolved"), stored.get("listings"),
+                 stored.get("sys_path"), stored.get("code_files")):
         if not isinstance(rows, list) or not all(
             isinstance(row, list) and len(row) == 2 and isinstance(row[0], str) for row in rows
         ):
@@ -509,6 +553,9 @@ def _moved(payload: Mapping[str, Any], scope: PhaseScope) -> str:
     for path, identity in payload["paths"]:
         if _identity(path) != identity:
             return f"path_changed:{path}"
+    for path, identity in payload["resolved"]:
+        if _resolution_identity(path) != identity:
+            return f"resolution_changed:{path}"
     for directory, names in payload["listings"]:
         if _listing(directory) != names:
             return f"listing_changed:{directory}"
@@ -616,6 +663,9 @@ def _record(capture: _Capture, phases: Mapping[str, Mapping[str, Any]]) -> str:
     for path, identity in capture.paths.items():
         if _identity(path) != identity:
             return f"changed_during_pass:{path}"
+    for path, identity in capture.resolved.items():
+        if _resolution_identity(path) != identity:
+            return f"changed_during_pass:{path}"
     for directory, names in capture.listings.items():
         if _listing(directory) != names:
             return f"changed_during_pass:{directory}"
@@ -642,6 +692,7 @@ def _record(capture: _Capture, phases: Mapping[str, Mapping[str, Any]]) -> str:
         "profile_dir": profile_dir,
         "catalog": catalog,
         "paths": [[path, identity] for path, identity in sorted(capture.paths.items())],
+        "resolved": [[path, identity] for path, identity in sorted(capture.resolved.items())],
         "listings": [[path, names] for path, names in sorted(capture.listings.items())],
         "sys_path": capture.sys_path,
         "code_files": [[path, _identity(path)] for path in sources],

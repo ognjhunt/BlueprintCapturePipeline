@@ -25,9 +25,11 @@ from blueprint_pipeline import host_resident_launch_inputs as residency_module
 from blueprint_pipeline import task_evaluation_launch_catalog as catalog_module
 from blueprint_pipeline.spend_authority_ledger_migration import SpendAuthorityLedgerError
 from blueprint_pipeline.task_evaluation_launch_catalog import build_catalog_payload
+from blueprint_pipeline.task_evaluation_launch_dispatcher import canonical_digest
 from tests.test_task_evaluation_launch_catalog_reconciliation import _profile
 
 ROOT = Path(__file__).resolve().parents[1]
+_RESOLVE, _REALPATH = Path.resolve, os.path.realpath
 PRODUCTION_FLAGS = {
     "BLUEPRINT_LAUNCH_PROOF_MODE": "production",
     "PRIVACY_PIPELINE_ENABLED": "true",
@@ -223,6 +225,88 @@ def test_a_file_read_by_the_pass_that_changes_reruns_the_phases(site: _Site) -> 
     report = site.run()
 
     assert not _reused(report)
+    assert report["launch_profile_catalog"]["status"] == "repaired"
+
+
+def _name_in_argv(site: _Site, profile_id: str, flag: str, path: Path) -> None:
+    """Republish ``profile_id`` with ``flag path`` in its allocator argv."""
+    published = site.profiles / f"{profile_id}.json"
+    profile = json.loads(published.read_text(encoding="utf-8"))
+    profile["allocator"]["argv"] += [flag, str(path)]
+    profile["profile_digest"] = canonical_digest(profile, digest_field="profile_digest")
+    published.write_text(json.dumps(profile, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    site.catalog.write_bytes(build_catalog_payload(site.profiles))
+
+
+def _replace(path: Path, data: bytes) -> None:
+    """How the spend guard writes its report: a new file renamed over the old one."""
+    staged = path.with_name(f".{path.name}.tmp")
+    staged.write_bytes(data)
+    os.replace(staged, path)
+
+
+def test_a_state_file_named_in_argv_binds_where_it_resolves_not_its_bytes(
+    site: _Site, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Live 2026-11-03: a profile passes the spend guard's ``latest.json`` as
+    ``--preflight-bundle``, and the residency check resolves every absolute argv
+    path. Bound by its full identity, each 1-2 minute rewrite moved the verdict:
+    stored 23 times an hour, reused 5. Resolving reads only the entry's type and
+    a link's target, so only a change to those may move it."""
+    report = site.root / "gpu_spend_guard" / "latest.json"
+    report.parent.mkdir()
+    report.write_bytes(b'{"generated_at": "2026-11-03T03:06:00Z"}')
+    _name_in_argv(site, "profile-a", "--preflight-bundle", report)
+    site.recorded()
+
+    for minute in range(3):
+        time.sleep(0.01)
+        _replace(report, json.dumps({"generated_at": f"2026-11-03T03:0{7 + minute}:00Z", "n": minute}).encode())
+        again = site.run()
+        assert _reused(again), again["catalog_phase_verdict"]
+    assert (site.catalog_passes, site.residency_passes) == (1, 1)
+    assert (Path.resolve, os.path.realpath) == (_RESOLVE, _REALPATH)
+
+    # A link out of the control-plane roots is what residency refuses, so it reruns.
+    elsewhere = tmp_path_factory.mktemp("authoring-machine") / "latest.json"
+    elsewhere.write_bytes(report.read_bytes())
+    report.unlink()
+    report.symlink_to(elsewhere)
+
+    moved = site.run()
+
+    assert not _reused(moved)
+    link = os.path.join(os.path.realpath(report.parent), report.name)
+    assert moved["catalog_phase_verdict"]["miss_reason"] == f"resolution_changed:{link}"
+    assert moved["launch_profile_catalog"]["status"] == "repaired"
+    rows = {row["profile_id"]: row for row in json.loads(site.catalog.read_text(encoding="utf-8"))}
+    assert "launch_profile_input_not_host_resident:allocator_argument:preflight-bundle" in (
+        rows["profile-a"]["execution_admission"]["blockers"]
+    )
+
+
+def test_a_file_the_pass_resolves_and_then_reads_stays_bound_by_its_bytes(site: _Site) -> None:
+    """Resolving a path first must not stand in for the read that follows it."""
+    owner_record = site.root / "owner" / "intent.json"
+    owner_record.parent.mkdir()
+    owner_record.write_text('{"window": "open"}', encoding="utf-8")
+    real_validate = catalog_module.validate_launch_profile
+
+    def validate(profile):
+        state = json.loads(owner_record.resolve().read_text(encoding="utf-8"))
+        if profile["profile_id"] == "profile-a" and state["window"] != "open":
+            return ["scene_execution_owner_expired"]
+        return real_validate(profile)
+
+    site.monkeypatch.setattr(catalog_module, "validate_launch_profile", validate)
+    site.recorded()
+    assert _reused(site.run())
+
+    owner_record.write_text('{"window": "lapsed"}', encoding="utf-8")
+    report = site.run()
+
+    assert not _reused(report)
+    assert report["catalog_phase_verdict"]["miss_reason"] == f"path_changed:{owner_record.resolve()}"
     assert report["launch_profile_catalog"]["status"] == "repaired"
 
 
@@ -499,7 +583,7 @@ def test_the_bound_is_a_quarter_hour() -> None:
     assert phase_verdict.MAX_VERDICT_AGE_SECONDS == 15 * 60
 
 
-@pytest.mark.parametrize("broken", ["_reuse", "_record", "_identity"])
+@pytest.mark.parametrize("broken", ["_reuse", "_record", "_identity", "_resolution_identity"])
 def test_a_broken_verdict_layer_falls_back_to_the_full_pass(
     site: _Site, broken: str
 ) -> None:
