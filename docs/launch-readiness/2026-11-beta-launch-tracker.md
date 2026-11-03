@@ -7,7 +7,7 @@ Status: **done** (verified, with evidence) · **in progress** · **owner** (wait
 on an owner decision or action) · **next deploy** (merged, ships with the next
 batched Pipeline deploy) · **not started**.
 
-Last updated: 2026-11-03 03:15Z. Pipeline live: `ceddd0220` (11-03 01:59Z). Door: `c5c3a12ee` (11-02 18:39Z). WebApp live: `25a11a196` (11-03 02:32Z, verified at the exact SHA), which includes #1202. Next Pipeline deploy: see the checklist below.
+Last updated: 2026-11-03 04:15Z. Pipeline live: `2ace7c2d6` (11-03 03:48Z). Door: `c5c3a12ee` (11-02 18:39Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
 
 ## Operating notes (2026-11-02)
 
@@ -19,10 +19,10 @@ Last updated: 2026-11-03 03:15Z. Pipeline live: `ceddd0220` (11-03 01:59Z). Door
 
 ## Next Pipeline deploy (2026-11-03, 15:00 UTC window)
 
-The cloud session deployed `ceddd0220` at 01:59Z (receipt `iteration_ceddd0220a24_door.json`). It shipped #3293,
-[#3294](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3294) (the robot fit table), [#3296](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3296) (E-02: the listener's catalog pass) and #3297.
-The next deploy carries [#3298](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3298) (doctrine) and [#3303](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3303) (the geometry-only Atlas route,
-off by default), and [#3305](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3305) (its scene-preparation side) once it merges.
+The cloud session deployed `ceddd0220` at 01:59Z and `2ace7c2d6` at 03:48Z. Its deploy of `6cec9f9b9` (requested
+03:51Z, waiting for the running paid launch to finish) carries [#3298](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3298) (doctrine), [#3303](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3303)
+and [#3305](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3305) (the geometry-only route and its fit check, off by default) and [#3307](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3307)
+(status v5: the robot fit table for the site). [#3309](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3309) (E-02) merged after it and needs the next one.
 
 Before: follow `AGENTS.md` "Beta Deploy Policy". capture-447's job had a 7.5 h hard TTL ending about 03:06Z;
 at 03:06Z no paid launch lock was held.
@@ -73,7 +73,7 @@ can do it at the best price. It starts with a quick, cheap check of whether a ro
 |---|---|---|
 | Introduction by reply in place of booking | done (live) | See F-09. |
 | Spec-feasibility tier, step 1: robot spec catalog and a fit table per job | live | Pipeline [#3294](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3294), live in `ceddd0220` (01:59Z): 22 robot models from their spec sheets, each figure with its source; 17 sampled figures were checked again at the source. At the website handoff, on the CPU only, each model gets fits, fits on figures, doesn't fit or unknown, with reasons. It gates nothing. On the test room with a 1 kg item, the Franka Panda fits (path-checked) and 9 more arms fit on figures. |
-| Step 2: Atlas geometry-only mode (skips object removal, the refined splat, ARTISAN and the GPU scene build) | in progress | Owner, 11-03 about 02:20Z: "Yes, start step 2". [#3303](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3303) (merged 02:46Z) adds the route behind `BLUEPRINT_WEBSITE_ATLAS_ROUTE`, unset on the host: a geometry-only job keeps the scene as filmed and buys only the pose, its scale review and the $0.50 mesh. [#3305](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3305) adds the scene-preparation side. It cuts the filmed subject out of the collider and fills the counter it hid at the height of the counter around it. It then writes the capability verdict and the fit table, and stops before anything paid. The capture stage and the status sync accept that end (`awaiting_inputs`). On the test scene the real check returned `clear`, with 7 models fitting on spec. Expected cost: about $1.2–1.5 in provider fees per job. The switch stays off until the WebApp shows the fit table (owner decision to turn it on). |
+| Step 2: Atlas geometry-only mode (skips object removal, the refined splat, ARTISAN and the GPU scene build) | built, test job next | Owner, 11-03 about 02:20Z: "Yes, start step 2". [#3303](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3303) adds the route behind `BLUEPRINT_WEBSITE_ATLAS_ROUTE`: the job keeps the scene as filmed and buys only the pose, its scale review and the $0.50 mesh. [#3305](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3305) cuts the filmed object out of the collider, fills the counter it hid at the height of the counter around it, writes the capability verdict and the fit table, and stops before anything paid; the capture stage and the status sync accept that end. On the test scene the real check returned `clear`, with 7 models fitting on spec. [#3307](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3307) (status v5) and WebApp [#1203](https://github.com/ognjhunt/Blueprint-WebApp/pull/1203) (live 04:03Z) show the site a "Robots that may fit this job" card for both routes, send no needs-attention email for a geometry-only end, and word that end as a result. A replay of an old job (c33427c3) cannot spend its $0.50: a finished job keeps its route. Owner, 11-03 about 04:05Z: one fresh test job instead (about $1.50 of Atlas, plus the usual per-upload model steps under the existing $5 upstream cap). Order: `6cec9f9b9` live, then the owner adds `BLUEPRINT_WEBSITE_ATLAS_ROUTE=geometry_only` to `/etc/blueprint/website-atlas-preview.env` (read by both Atlas units, no deploy), uploads one short video, and removes the line after the run. |
 | Step 3: a URDF-chain reach reader for the recipe arms | not started | |
 
 ## A. Prove one website job end to end
