@@ -3,6 +3,10 @@
 Beta: job video to a measurable placement task. A destination mask only locates
 the container. Its floor, four surrounding walls and unobstructed opening must
 exist in the retained collider; no unseen interior is generated here.
+
+The collider is read a block of faces at a time (``triangle_blocks``), never
+whole: one ray against every triangle of a 6.5 M-face room held about 1 GB of
+temporaries.
 """
 from __future__ import annotations
 
@@ -11,38 +15,48 @@ from typing import Any, Sequence
 
 import numpy as np
 
-from .website_support_geometry import support_under
+from .website_support_geometry import support_under, triangle_blocks
 
 
-def _hit(triangles: np.ndarray, origin: np.ndarray, direction: np.ndarray):
-    """Nearest positive two-sided ray/triangle hit, without an optional rtree."""
-    first, second = triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
-    cross = np.cross(np.broadcast_to(direction, second.shape), second)
-    determinant = np.einsum("ij,ij->i", first, cross)
-    safe = np.abs(determinant) > 1e-12
-    inverse = np.divide(1.0, determinant, out=np.zeros_like(determinant), where=safe)
-    offset = origin - triangles[:, 0]
-    u = np.einsum("ij,ij->i", offset, cross) * inverse
-    q = np.cross(offset, first)
-    v = q @ direction * inverse
-    distance = np.einsum("ij,ij->i", second, q) * inverse
-    valid = safe & (u >= -1e-8) & (v >= -1e-8) & (u + v <= 1 + 1e-8) & (distance > 1e-8)
-    indices = np.flatnonzero(valid)
-    if not len(indices):
+def _hit(mesh: Any, origin: np.ndarray, direction: np.ndarray):
+    """Nearest positive two-sided ray/triangle hit, without an optional rtree; the first face among equals."""
+    best = None
+    for block, triangles in triangle_blocks(mesh):
+        first, second = triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]
+        cross = np.cross(np.broadcast_to(direction, second.shape), second)
+        determinant = np.einsum("ij,ij->i", first, cross)
+        safe = np.abs(determinant) > 1e-12
+        inverse = np.divide(1.0, determinant, out=np.zeros_like(determinant), where=safe)
+        offset = origin - triangles[:, 0]
+        u = np.einsum("ij,ij->i", offset, cross) * inverse
+        q = np.cross(offset, first)
+        v = q @ direction * inverse
+        distance = np.einsum("ij,ij->i", second, q) * inverse
+        valid = safe & (u >= -1e-8) & (v >= -1e-8) & (u + v <= 1 + 1e-8) & (distance > 1e-8)
+        indices = np.flatnonzero(valid)
+        if len(indices):
+            index = int(indices[np.argmin(distance[indices])])
+            if best is None or distance[index] < best[0]:
+                best = (distance[index], block.start + index)
+    if best is None:
         return None
-    index = int(indices[np.argmin(distance[indices])])
-    return origin + distance[index] * direction, index
+    return origin + best[0] * direction, best[1]
 
 
-def _wall_covers_rectangle(triangles, *, axis, plane, other, lower, upper, tolerance):
+def _wall_covers_rectangle(mesh, *, axis, plane, other, lower, upper, tolerance):
     """A planar triangle union covers the side: corners covered, no internal boundary.
 
     Ray samples alone could mistake two rails for a wall. A hole in a planar
     triangle mesh necessarily has a boundary in this rectangle. Nonmanifold or
     overlapping triangulations conservatively fail rather than hiding that hole.
     """
-    selected = np.flatnonzero(np.all(np.abs(triangles[:, :, axis] - plane) <= tolerance, axis=1))
-    projected = triangles[selected][:, :, other]
+    selected, kept = [], []
+    for block, triangles in triangle_blocks(mesh):
+        on_plane = np.all(np.abs(triangles[:, :, axis] - plane) <= tolerance, axis=1)
+        selected.append(np.flatnonzero(on_plane) + block.start)
+        kept.append(triangles[on_plane])
+    selected = np.concatenate(selected) if selected else np.zeros(0, dtype=np.int64)
+    projected = (np.concatenate(kept) if kept else np.zeros((0, 3, 3)))[:, :, other]
     if not len(projected):
         return None
     points = [np.asarray(point) for point in product(*zip(lower, upper, strict=True))]
@@ -121,8 +135,7 @@ def container_interior(mesh: Any, lower: Sequence[float], upper: Sequence[float]
                 bounds[lo_key][up], bounds[hi_key][up] = -bounds[hi_key][up], -bounds[lo_key][up]
             value["floor"]["top_runtime_units"] *= -1
         return value
-    triangles = np.asarray(mesh.triangles, dtype=float)
-    if not len(triangles) or not np.isfinite(triangles).all():
+    if not len(mesh.faces) or not all(np.isfinite(triangles).all() for _, triangles in triangle_blocks(mesh)):
         return None
     horizontal = [axis for axis in range(3) if axis != up]
     margin = 0.002 / meters_per_unit
@@ -131,7 +144,7 @@ def container_interior(mesh: Any, lower: Sequence[float], upper: Sequence[float]
     origin[up] = high[up] + margin
     down = np.zeros(3)
     down[up] = -1
-    bottom = _hit(triangles, origin, down)
+    bottom = _hit(mesh, origin, down)
     if bottom is None:
         return None
     floor_height = float(bottom[0][up])
@@ -158,7 +171,7 @@ def container_interior(mesh: Any, lower: Sequence[float], upper: Sequence[float]
                 ray[up] = floor_height + height * depth
                 direction = np.zeros(3)
                 direction[axis] = sign
-                hit = _hit(triangles, ray, direction)
+                hit = _hit(mesh, ray, direction)
                 if hit is None or not low[axis] - margin <= hit[0][axis] <= high[axis] + margin:
                     return None
                 edges.append(float(hit[0][axis]))
@@ -173,7 +186,7 @@ def container_interior(mesh: Any, lower: Sequence[float], upper: Sequence[float]
         other = [next(i for i in horizontal if i != axis), up]
         for sign in (-1, 1):
             plane = interior_low[axis] - margin if sign == -1 else interior_high[axis] + margin
-            faces = _wall_covers_rectangle(triangles, axis=axis, plane=plane, other=other,
+            faces = _wall_covers_rectangle(mesh, axis=axis, plane=plane, other=other,
                 lower=interior_low[other] + margin, upper=interior_high[other] - margin, tolerance=margin / 2)
             if faces is None:
                 return None
@@ -181,8 +194,8 @@ def container_interior(mesh: Any, lower: Sequence[float], upper: Sequence[float]
     # Whole-cavity emptiness is conservative: a triangle's enclosing box may
     # reject awkward geometry, but can never silently accept an obstruction.
     inner_low, inner_high = interior_low + margin, interior_high - margin
-    overlaps = np.all((triangles.max(axis=1) > inner_low) & (triangles.min(axis=1) < inner_high), axis=1)
-    if overlaps.any():
+    if any(np.all((triangles.max(axis=1) > inner_low) & (triangles.min(axis=1) < inner_high), axis=1).any()
+           for _, triangles in triangle_blocks(mesh)):
         return None
     # The measured walls can shift the cavity centre from the mask centre.
     # Bind support under that actual placement rather than reusing a remote patch.
