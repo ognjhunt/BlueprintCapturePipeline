@@ -306,12 +306,17 @@ def _release(release: Any) -> str | None:
 
 
 def _new_release_untried(status: Mapping[str, Any], release: str | None) -> bool:
-    """A deterministic refusal (neither transient nor owner-contract) written by another release, or by none
-    recorded, that this known release has not yet returned to pending."""
+    """A blocked request (any cause but an owner-contract refusal) written by another release, or by none
+    recorded, that this known release has not yet returned to pending.
+
+    A new release may fix any cause, so it gets one try at once, without waiting out a transient block's
+    backoff or after its automatic retries are spent: capture-447ae4f4's compile, killed three times for
+    host memory on 2026-11-03, otherwise waited two hours for its last retry after the memory fix shipped.
+    The transient backoff still governs retries under the same release.
+    """
 
     blockers = status.get("blockers")
     if (release is None or status.get("status") != "blocked" or not isinstance(blockers, list) or not blockers
-            or transient_cause(status) is not None
             or any(str(blocker).startswith(OWNER_CONTRACT_BLOCKER_PREFIX) for blocker in blockers)
             or status.get(RELEASE_COMMIT_FIELD) == release):
         return False
@@ -340,7 +345,7 @@ def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[
             requeued.append({"request_key": path.stem, "reason": "owner_success_confirmation",
                              "confirmation_digests": confirmed})
             continue
-        if cause is None and not target.exists() and _new_release_untried(status, release):
+        if not target.exists() and _new_release_untried(status, release):
             tried = status.get(RELEASE_REQUEUE_FIELD)
             # Recorded before the move, so each release is tried at most once.
             _write_replace(root / "status" / path.name, {

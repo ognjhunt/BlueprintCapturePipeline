@@ -398,7 +398,7 @@ def test_the_timer_pass_returns_a_transient_scene_half_block_to_its_queue_and_na
     # The timer's pass reads the release it runs from; the refusal was written by this same release.
     monkeypatch.setattr(packet_worker, "current_release_commit", lambda: "a" * 40)
     (packets / "status" / f"{request_key(transient)}.json").write_text(json.dumps(
-        {"status": "blocked", "blockers": ["team_scene_offer_publication_failed"]}))
+        {"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": "a" * 40}))
     (packets / "status" / f"{request_key(refused)}.json").write_text(json.dumps(
         {"status": "blocked", "blockers": ["team_scene_capture_withdrawn"], "release_commit": "a" * 40}))
     adopted = worker.enqueue_prepared_scenes(queue_root=world["screening_queue"], packet_queue_root=packets)
