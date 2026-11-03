@@ -442,6 +442,62 @@ def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, A
                             "limit_points": whole}}
 
 
+def _seated_rigid_adapter(*, revision: Mapping[str, Any], references: Mapping[str, Any],
+                          collision: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The rigid task adapted with the replacement seated on the scene's own collider, and the reading.
+
+    The registered support top is the highest face of the whole support, not
+    where the object rests (capture-447ae4f4: the tray spawned 14.7 mm above
+    the start the scorer reads within 2 mm). The collider the episode collides
+    with is read under the replacement's qualified collision footprint at the
+    start, which seats it there, and at the goal, which is recorded against the
+    sealed success window (``rigid_support_seating``). A collider that cannot be
+    read keeps the registered top, by name; nothing here changes the revision,
+    its success document or the owner's confirmation of it.
+    """
+
+    from .rigid_support_seating import SEATING_AGREEMENT_M, collider_support_surface
+    from .task_evaluation_rigid_relocation_native_adapter import (
+        adapt_rigid_relocation_task_template,
+    )
+
+    adapter = adapt_rigid_relocation_task_template(configured_revision=revision, materialized_references=references)
+    spec = adapter["native_task_definition"]["task_spec"]
+    documents = adapter["source_documents"]["documents"]
+    observed = documents["static_qualification"].get("observed_structure") or {}
+    bounds = observed.get("collision_bounds_body_frame_m")
+    try:
+        center = [float(value) for value in observed["center_of_mass_m"]]
+        corners = [(float(x) - center[0], float(y) - center[1])
+                   for x in (bounds["minimum"][0], bounds["maximum"][0])
+                   for y in (bounds["minimum"][1], bounds["maximum"][1])]
+        reach = max(math.hypot(x, y) for x, y in corners)
+        surface = collider_support_surface(
+            collision, points_xy=[spec["start_pose_world"][:2], spec["target_position_world_m"][:2]],
+            reach_m=reach, height_z=float(documents["support_plane"]["top_z_m"]))
+    except Exception as exc:  # noqa: BLE001 - an unread collider keeps the registered top; the compile goes on
+        return adapter, {"status": "registered_support_top", "reason": f"{type(exc).__name__}:{str(exc)[:160]}"}
+    seated = adapt_rigid_relocation_task_template(configured_revision=revision, materialized_references=references,
+                                                  support_surface=surface)
+    definition = seated["native_task_definition"]
+    alignment = definition["task_spec"]["interaction_affordance"]["support_alignment"]
+    reading: dict[str, Any] = {"status": "measured_on_scene_collider", "start": alignment.get("start_support"),
+                               "goal": alignment.get("goal_support")}
+    if (alignment.get("goal_support") or {}).get("within_success_window") is False:
+        # The sealed success document's height window misses where a correct placement rests:
+        # only a corrected success document, confirmed by the owner, can change it.
+        reading["flag"] = "goal_rest_outside_sealed_success_window"
+    rest = (alignment.get("goal_support") or {}).get("rest_scoring_z_m")
+    moved = max(abs(float(definition["task_object_pose_world"]["position_world_m"][2])
+                    - float(adapter["native_task_definition"]["task_object_pose_world"]["position_world_m"][2])),
+                abs(float(rest) - float(spec["target_position_world_m"][2])) if rest is not None else 0.0)
+    if moved <= SEATING_AGREEMENT_M:
+        # The collider agrees with the registered support at both ends: the task stays exactly the
+        # revision's (rigid_task_for_revision), and the reading is kept here only.
+        return adapter, {**reading, "applied": False}
+    return seated, {**reading, "applied": True}
+
+
 def _owner_confirmed(task_spec: Mapping[str, Any], *, revision: Mapping[str, Any],
                      scope: Mapping[str, Any] | None) -> tuple[dict[str, Any], str | None]:
     """The task with a ``proposal_only`` owner authority the owner confirmed, and that confirmation's digest.
@@ -494,7 +550,6 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     from .task_evaluation_rigid_relocation_native_adapter import (
         DEFINITION_CONTRACT_PATH,
         SOURCE_OBJECT_CONTRACT_PATH,
-        adapt_rigid_relocation_task_template,
     )
     from .team_embodiment import TeamEmbodimentError
     from .team_embodiment_stance import ground_stance
@@ -523,7 +578,11 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     references = deferred._materialized_references(revision=revision, documents=documents)
     scene_id, task_id = str(revision["scene_identity"]["id"]), str(revision["task_template"]["identity"]["id"])
     assets = compiler._extract_configured_assets(bundle, output_root=root)
-    owner, motion, destination_asset = None, None, None
+    # Every reader of the room's collider below (the rigid task's seating, the station searches and the
+    # packet steps) opens this one binary copy of a USDA text room (``usd_binary_read_cache``); receipts and
+    # stances name the published file by its digest.
+    collision = binary_copy(assets["collision"], root / ".collider-read-cache")
+    owner, motion, destination_asset, seating = None, None, None, None
     if articulated:
         try:
             task = _articulated_task(revision=revision, references=references, replacement=assets["replacement"],
@@ -536,8 +595,9 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         start, target, support_top = task["start"], task["target"], task["support_top_z_m"]
         subject_bounds = object_bounds = (task["subject_minimum"], task["subject_maximum"])
     else:
-        adapter = adapt_rigid_relocation_task_template(configured_revision=revision,
-                                                       materialized_references=references)
+        adapter, seating = _seated_rigid_adapter(
+            revision=revision, references=references,
+            collision=collision)
         definition = adapter["native_task_definition"]
         task_spec = compiler._runtime_subject_task_spec(definition["task_spec"])
         task_spec["success_criteria"] = adapter["native_success_criteria"].get("criteria")
@@ -607,10 +667,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     from .robot_arm_path_clearance import CARRY_STATIONS
     from .scene_physics_preflight import collision_kept_loaded
 
-    # Every search below reads this collider, and the packet steps after them. A USDA text room is read once,
-    # into a binary copy under this compile's root that they open instead (``usd_binary_read_cache``); the
-    # stances name the published file by its digest. The hold keeps one parse should no copy be made.
-    collision = binary_copy(assets["collision"], root / ".collider-read-cache")
+    # Every search below reads the collider's one binary copy, and the packet steps after them. The hold
+    # keeps one parse should no copy be made.
     with collision_kept_loaded(collision):
         try:
             place = dict(
@@ -707,6 +765,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         "execution_authority": dict(EXECUTION_AUTHORITY), "control_diagnostic": dict(PENDING_CONTROLS),
         "robot_station": station, "camera_layout": camera_layout, "droid_profile_digest": droid_profile_digest,
         **({"robot_station_search": station_search} if station_search is not None else {}),
+        **({"task_support_seating": seating} if seating is not None else {}),
         **({"embodiment_stations": stations} if stations else {}),
         "inputs_digest": ""}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")

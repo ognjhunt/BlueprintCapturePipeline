@@ -24,8 +24,13 @@ touches nothing. Enabled, for each pending capture it:
 2. stops when the receipt is decided (passed or failed, never replaced), the
    task cannot be probed, or the attempt budget is spent (two funded attempts,
    four refusals before funding). An attempt refused while staging (the packet
-   or its plan cannot carry the probe) launched nothing and counts toward
-   neither; the refusal seals the job ``staging_refused``;
+   or its plan cannot carry the probe, or spawns its object off the task's
+   start, so no episode could be scored) launched nothing and counts toward
+   neither; the refusal seals the job ``staging_refused``. The WebApp's own
+   refusal of the grant (an exhausted upstream cap or job ceiling, its provider
+   terms, a refused or expired grant) is a money stop the owner can lift: it
+   counts toward neither, never seals, and no attempt is staged again for
+   ``GRANT_REFUSAL_RETRY_SECONDS``;
 3. otherwise rechecks every precondition it can without spending (enable
    setting, receipt, the capture's retained website grant, driver ceiling,
    launch gate and watchdog scope), stages one attempt (probe input, sealed
@@ -76,7 +81,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -124,6 +131,17 @@ FINAL_STATES = frozenset({"receipt_decided", "unavailable_for_task", "scene_revi
 WAITING_STATES = frozenset({"running", "unknown", "provider_zero_unproven", "retention_pending"})
 # Refused before any grant was reserved: bounded, and never retried within the same pass.
 UNFUNDED_STATES = frozenset({"unfunded_blocked", "not_launched"})
+# The WebApp itself refused the grant (its upstream cap or the job's ceiling exhausted, its provider terms, a
+# refused, expired or missing grant): a money or rights stop the owner can lift, so it counts toward no limit
+# and never seals the job (capture-447ae4f4: four such refusals sealed ``attempts_exhausted``). Nothing was
+# reserved and no paid run is staged for it again until ``GRANT_REFUSAL_RETRY_SECONDS`` pass: the WebApp offers
+# no read of a ledger's headroom, so only a reservation can tell, and each staging re-reads the room collider.
+GRANT_REFUSED_STATE = "website_grant_refused"
+GRANT_REFUSAL_BLOCKERS = ("rigid_robot_free_probe_website_grant_exhausted",
+                          "rigid_robot_free_probe_website_grant_refused:",
+                          "rigid_robot_free_probe_website_grant_expired",
+                          "rigid_robot_free_probe_website_grant_missing")
+GRANT_REFUSAL_RETRY_SECONDS = 3 * 3600
 # Refused while staging, before any argv existed: nothing was launched, funded or allocated, so the
 # attempt counts toward neither limit. Its refusal seals the job, so it cannot loop.
 NOT_STAGED_STATE = "not_staged"
@@ -426,7 +444,8 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
             "estimated_cost_usd": result.get("estimated_cost_usd")}
     if result.get("status") != "completed":
         name = "funded_unallocated" if funded and not allocated else "allocated_blocked" if allocated else (
-            "unfunded_blocked")
+            GRANT_REFUSED_STATE if any(str(item).startswith(GRANT_REFUSAL_BLOCKERS) for item in base[
+                "allocator_blockers"]) else "unfunded_blocked")
         return _record_ingest(attempt, {**base, "state": name})
     request = _read(attempt / INPUTS_FILENAME)["probe_request"]
     try:
@@ -573,6 +592,19 @@ def requeue_new_release(queue_root: str | Path | None, release: str | None, *,
     return requeued
 
 
+def _grant_refusal_wait(settled: Mapping[str, Any], *, now: float) -> int | None:
+    """Seconds until a WebApp grant refusal may be tried again, or None when nothing waits."""
+
+    if settled.get("state") != GRANT_REFUSED_STATE:
+        return None
+    try:
+        refused = datetime.fromisoformat(str(settled["settled_at_iso"])).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return GRANT_REFUSAL_RETRY_SECONDS  # an unreadable time waits the whole interval, never less
+    remaining = refused + GRANT_REFUSAL_RETRY_SECONDS - float(now)
+    return min(GRANT_REFUSAL_RETRY_SECONDS, max(1, int(remaining))) if remaining > 0 else None
+
+
 def _counts(job: Path) -> tuple[int, int]:
     funded = unfunded = 0
     for attempt in _attempts(job):
@@ -696,7 +728,8 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
             return _seal_terminal(root, item, entry, job, "attempts_exhausted",
                                   {"funded_attempts": funded, "unfunded_attempts": unfunded, "last": settled},
                                   release)
-        if attempts and attempts[-1] in staged_now and settled.get("state") in UNFUNDED_STATES:
+        before_funding = settled.get("state") in {*UNFUNDED_STATES, GRANT_REFUSED_STATE}
+        if attempts and attempts[-1] in staged_now and before_funding:
             # Refused before funding; the next wake-up retries, never this pass.
             return {"status": "deferred", "capture_root": state["capture_root"],
                     "blockers": settled.get("allocator_blockers") or [settled.get("reason") or settled["state"]]}
@@ -707,6 +740,11 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
         if state["status"] != "probe_required" or _job_dir(root, state) != job:
             return {"status": "deferred", "capture_root": entry.get("capture_root"),
                     "reason": "request_changed" if state["status"] == "probe_required" else state["status"]}
+        waiting = _grant_refusal_wait(settled, now=hooks.get("now", time.time)())
+        if waiting is not None:
+            # The WebApp refused the grant on the last attempt: nothing is staged until the wait passes.
+            return {"status": "deferred", "capture_root": state["capture_root"], "reason": GRANT_REFUSED_STATE,
+                    "retry_after_seconds": waiting, "blockers": settled.get("allocator_blockers") or []}
         if max_attempts is not None and len(staged_now) >= max_attempts:
             # A capped canary pass: its attempts are settled, and nothing more is sealed or spent.
             return {"status": "deferred", "capture_root": state["capture_root"],

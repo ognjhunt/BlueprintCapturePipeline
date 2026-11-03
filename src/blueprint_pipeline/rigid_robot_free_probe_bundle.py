@@ -136,6 +136,14 @@ def probe_inputs(*, state: Mapping[str, Any]) -> dict[str, Any]:
     nominal = resolved_scene_plan(
         plan, {**NOMINAL_CELL, "control_diagnostic": facts["inputs"]["control_diagnostic"]},
         task_success_contract=contract)
+    from .rigid_support_seating import start_spawn_mismatch
+
+    mismatch = start_spawn_mismatch(nominal)
+    if mismatch is not None:
+        # The scene spawns the object farther from the task's start than the scorer's reset
+        # tolerance: no episode of it can be scored, so no paid run is staged for it. A packet
+        # compiled by a release that seats the object where it starts carries a new request.
+        raise RigidRobotFreeProbeBundleError("rigid_robot_free_probe_" + mismatch)
     value = {"schema_version": INPUTS_SCHEMA, "capture_root": str(state["capture_root"]),
              "robot_free_probe_root": str(state["robot_free_probe_root"]),
              "scene_revision_digest": facts["scene"]["scene_revision_digest"], "probe_request": dict(request),
