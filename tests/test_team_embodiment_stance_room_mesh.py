@@ -303,17 +303,21 @@ def test_a_station_never_stands_inside_closed_furniture_over_rebuilt_floor(tmp_p
     assert measured["roof_top_above_floor_m"] == pytest.approx(2.05)
 
 
-@pytest.mark.parametrize("overhead", ["low_ceiling", "ceiling_fan", "lamp"])
+@pytest.mark.parametrize("overhead", ["low_ceiling", "ceiling_fan", "lamp", "sloped_ceiling"])
 def test_a_ceiling_a_fan_or_a_lamp_never_roofs_the_station(tmp_path, overhead) -> None:
     # Over open floor: a 2.0 m ceiling with scan noise (below the headroom; it stays 25 cm under the room's
-    # top), a 1 m fan at 2.15 m (above the headroom) and a 20 cm lamp at 1.5 m (over part of a footprint at
-    # most) leave every stance of the same room without them.
+    # top), a 1 m fan at 2.15 m (above the headroom), a 20 cm lamp at 1.5 m (over part of a footprint at
+    # most) and a ceiling of two triangles sloping from 2.6 m over the search to 2.0 m at the far wall (a
+    # roof only where its own surface is below the headroom) leave every stance of the same room without them.
     height = 2.0 if overhead == "low_ceiling" else 2.6
     plain = _search(write_scanned_room(tmp_path / "plain.usda", wall_height_m=height), ranked=24)
     x, y, _ = plain[0]["position_world_m"]
+    (x0, y0), (x1, y1) = ROOM
+    slope = (np.array([(x0, y0, 2.6), (x1, y0, 2.6), (x1, y1, 2.0), (x0, y1, 2.0)]), np.array([[0, 1, 2], [0, 2, 3]]))
     parts = {"low_ceiling": [_ceiling(1.0, height)],
              "ceiling_fan": [_box((x - 0.5, y - 0.5, 2.15), (x + 0.5, y + 0.5, 2.2))],
-             "lamp": [_box((x - 0.1, y - 0.1, 1.45), (x + 0.1, y + 0.1, 1.55))]}[overhead]
+             "lamp": [_box((x - 0.1, y - 0.1, 1.45), (x + 0.1, y + 0.1, 1.55))],
+             "sloped_ceiling": [slope]}[overhead]
     stances = _search(write_scanned_room(tmp_path / "collision.usda", parts=parts, wall_height_m=height), ranked=24)
     assert [s["position_world_m"] for s in stances] == [s["position_world_m"] for s in plain]
     measured = stances[0]["room_mesh_clearance"]

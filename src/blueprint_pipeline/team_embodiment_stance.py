@@ -261,10 +261,10 @@ def _room_mesh_occupancy(vertices: Any, faces: Any, meshes: list[tuple[str, int]
     triangles that rise above the floor and start no higher than ``column_top_m`` above it, near the search
     (``reach_m`` around ``centre``), are the obstacles a footprint's column is measured against; the scene's
     triangles at floor height there are the floor it must stand on (``external_scene_robot_placement``'s
-    probe and support sampler). Its triangles there that start above the column and below the headroom
-    (``ROOM_MESH_HEADROOM_M``, kept ``ROOM_MESH_CEILING_MARGIN_M`` below the room's top: the height under
-    which 99% of its non-floor area ends, so a floater above a low ceiling cannot lift it) are the roofs a
-    footprint must not stand wholly under.
+    probe and support sampler). Its triangles there whose surface reaches between the column top and the
+    headroom (``ROOM_MESH_HEADROOM_M``, kept ``ROOM_MESH_CEILING_MARGIN_M`` below the room's top: the height
+    under which 99% of its non-floor area ends, so a floater above a low ceiling cannot lift it) are the
+    roofs a footprint must not stand wholly under, measured at each point beneath them.
     """
 
     import numpy as np
@@ -306,30 +306,39 @@ def _room_mesh_occupancy(vertices: Any, faces: Any, meshes: list[tuple[str, int]
     ends, weights = highest[upper][order], np.cumsum(double_area[upper][order])
     room_top = float(ends[min(int(np.searchsorted(weights, 0.99 * weights[-1])), len(ends) - 1)]) - floor_z
     roof_top = min(ROOM_MESH_HEADROOM_M, room_top - ROOM_MESH_CEILING_MARGIN_M)
-    # Plan-degenerate (vertical) triangles cover no point; a roof is what a footprint stands under.
-    roof = (room[owner] & rising & (np.abs(cross[:, 2]) > 1e-12) & (lowest > floor_z + column_top_m)
+    # Plan-degenerate (vertical) triangles cover no point; a roof is what a footprint stands under. A triangle
+    # reaching into the band is kept whole and measured at each point (``_roofed``): a sloped ceiling roofs
+    # only where its surface is below the headroom, however it is tessellated.
+    roof = (room[owner] & rising & (np.abs(cross[:, 2]) > 1e-12) & (highest > floor_z + column_top_m)
             & (lowest <= floor_z + roof_top))
     roof[roof] = near(triangles[roof])
     return {"prims": [meshes[index][0] for index in np.flatnonzero(room)],
             "obstacles": _PlanBroadPhase(triangles[column, :, :2]), "obstacle_triangles": int(column.sum()),
             "floor": _PlanBroadPhase(triangles[ground]), "floor_triangles": int(ground.sum()),
-            "roof": _PlanBroadPhase(triangles[roof, :, :2]) if roof.any() else None,
+            "roof": _PlanBroadPhase(triangles[roof]) if roof.any() else None,
+            "roof_band_z": (floor_z + column_top_m, floor_z + roof_top),
             "roof_triangles": int(roof.sum()), "roof_top_above_floor_m": float(roof_top)}
 
 
-def _roofed(roof: Any, point: tuple[float, float]) -> bool:
-    """Whether a roof triangle lies over ``point`` in plan, its edges included."""
+def _roofed(roof: Any, band: tuple[float, float], point: tuple[float, float]) -> bool:
+    """Whether a roof triangle's surface lies over ``point`` (its edges included) within the ``band`` heights.
 
-    import numpy as np
+    The band is open below (the column top: lower, a triangle crossing the footprint already refused it)
+    and closed above (the headroom).
+    """
 
     rows = roof(point, point)
     if not len(rows):
         return False
+    (ax, ay, az), (bx, by, bz), (cx, cy, cz) = (rows[:, corner].T for corner in range(3))
     px, py = point
-    sides = np.stack([(b[:, 0] - a[:, 0]) * (py - a[:, 1]) - (b[:, 1] - a[:, 1]) * (px - a[:, 0])
-                      for a, b in ((rows[:, 0], rows[:, 1]), (rows[:, 1], rows[:, 2]), (rows[:, 2], rows[:, 0]))],
-                     axis=1)
-    return bool(((sides >= -1e-12).all(axis=1) | (sides <= 1e-12).all(axis=1)).any())
+    determinant = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+    first = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / determinant
+    second = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / determinant
+    third = 1.0 - first - second
+    over = (first >= -1e-9) & (second >= -1e-9) & (third >= -1e-9)
+    height = first * az + second * bz + third * cz
+    return bool((over & (height > band[0]) & (height <= band[1])).any())
 
 
 def _room_mesh_refusal(room: Mapping[str, Any], *, x: float, y: float, yaw: float, footprint: list[float],
@@ -365,7 +374,8 @@ def _room_mesh_refusal(room: Mapping[str, Any], *, x: float, y: float, yaw: floa
     if not support["full_sample_support_candidate"]:
         return "floor_unobserved"
     roof = room["roof"]
-    return "roofed" if roof is not None and all(_roofed(roof, point) for point in points) else None
+    return ("roofed" if roof is not None and all(_roofed(roof, room["roof_band_z"], point) for point in points)
+            else None)
 
 
 def _stage_without(path: Path, prims: list[str]) -> Any:
