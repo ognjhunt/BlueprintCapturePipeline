@@ -739,7 +739,8 @@ def _probe_descriptor(action: _Action, stage: str, *, source: Mapping[str, Any],
     staged = publish_configured_scene_stream(
         write_stream=lambda sink: sink.write(request), digest=f"sha256:{digest}", size_bytes=len(request),
         filename=name, artifact_kind="remote-cpu-input", client=client, bucket=bucket)
-    limits = stage_limits(action.config, PROBE_STAGE)
+    # The probe runs on the stage's own job, so it is bounded by that stage's phase budget and output bound.
+    limits = stage_limits(action.config, PROBE_STAGE, profile=stage)
     return build_descriptor(
         config=action.config, stage=PROBE_STAGE, mode="shadow", attempt=1,
         queue_row={"queue": STAGES[PROBE_STAGE]["queue"], "name": name, "envelope_digest": f"sha256:{digest}"},
