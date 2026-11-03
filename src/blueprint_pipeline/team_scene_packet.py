@@ -60,6 +60,7 @@ from pathlib import Path
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
+from .usd_binary_read_cache import binary_copy, compile_scoped
 
 SCHEMA = "blueprint.team_scene_inputs.v1"
 CLAIM_CEILING = "diagnostic_policy_execution"
@@ -431,6 +432,7 @@ def _owner_confirmed(task_spec: Mapping[str, Any], *, revision: Mapping[str, Any
     return {**task_spec, "configured_owner_authority": authority}, authority["confirmation_digest"]
 
 
+@compile_scoped
 def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[str, Path],
                            configured_scene_bundle_path: str | Path, droid_profile_path: str | Path,
                            droid_profile_digest: str, runtime_source_receipt_path: str | Path,
@@ -575,12 +577,14 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     from .robot_arm_path_clearance import CARRY_STATIONS
     from .scene_physics_preflight import collision_kept_loaded
 
-    # Every search below reads this collider: held open, a USDA text room is parsed once rather than at each
-    # search and carried stance (``collision_kept_loaded``), and let go before the packet compiles.
-    with collision_kept_loaded(assets["collision"]):
+    # Every search below reads this collider, and the packet steps after them. A USDA text room is read once,
+    # into a binary copy under this compile's root that they open instead (``usd_binary_read_cache``); the
+    # stances name the published file by its digest. The hold keeps one parse should no copy be made.
+    collision = binary_copy(assets["collision"], root / ".collider-read-cache")
+    with collision_kept_loaded(collision):
         try:
             place = dict(
-                collision_path=assets["collision"], collision_sha256=_sha256(assets["collision"]), offset=[0.0, 0.0, 0.0],
+                collision_path=collision, collision_sha256=_sha256(assets["collision"]), offset=[0.0, 0.0, 0.0],
                 subject_center=stance_center if whole_region else start,
                 subject_minimum=[float(v) for v in subject_bounds[0]],
                 subject_maximum=[float(v) for v in subject_bounds[1]],
@@ -592,7 +596,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             raise TeamScenePacketError(",".join(exc.blockers) or "team_scene_station_inputs_invalid") from exc
         except (KeyError, TypeError, ValueError) as exc:
             raise TeamScenePacketError("team_scene_station_inputs_invalid") from exc
-        station, station_search = (_carrying_station(station, task_spec=task_spec, collision=assets["collision"],
+        station, station_search = (_carrying_station(station, task_spec=task_spec, collision=collision,
                                                      profile=profile) if carry else (station, None))
         stations: dict[str, dict[str, Any]] = {}
         ranked: dict[str, list[dict[str, Any]]] = {}

@@ -386,6 +386,10 @@ def descendants(model: AssetModel, joint_id: str) -> set[str]:
     return moving
 
 
+#: Triangles ``load_background_triangles`` measures at once (72 MB of them, about 0.3 GB with temporaries).
+BACKGROUND_TRIANGLE_BLOCK = 1 << 20
+
+
 @contextmanager
 def collision_kept_loaded(usd_path: str | Path) -> Iterator[Any]:
     """``usd_path``'s stage, held open while the block runs, so every open of it inside shares one parse.
@@ -446,10 +450,12 @@ def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], 
         if world_from_stage is not None:
             matrix = world_from_stage @ matrix
         world = points @ matrix[:3, :3].T + matrix[:3, 3]
-        triangles = world[faces]
-        near = np.linalg.norm(triangles.mean(axis=1) - centre, axis=1) <= radius + np.linalg.norm(
-            triangles - triangles.mean(axis=1, keepdims=True), axis=2).max(axis=1)
-        kept.append(triangles[near])
+        # A block of triangles at a time: a scanned room's whole array and its temporaries held 2.1 GB at once.
+        for first in range(0, len(faces), BACKGROUND_TRIANGLE_BLOCK):
+            triangles = world[faces[first:first + BACKGROUND_TRIANGLE_BLOCK]]
+            near = np.linalg.norm(triangles.mean(axis=1) - centre, axis=1) <= radius + np.linalg.norm(
+                triangles - triangles.mean(axis=1, keepdims=True), axis=2).max(axis=1)
+            kept.append(triangles[near])
     if meshes == 0:
         raise ScenePhysicsPreflightError("scene_physics_background_collision_missing")
     return np.concatenate(kept) if kept else np.zeros((0, 3, 3))
