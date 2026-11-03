@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import time
@@ -38,6 +39,8 @@ from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import rigid_robot_free_probe_lane as lane
 from blueprint_pipeline import rigid_robot_free_probe_runner as runner
 from blueprint_pipeline import rigid_robot_free_probe_worker as worker
+from blueprint_pipeline import robot_arm_path_clearance as arm
+from blueprint_pipeline import scene_physics_preflight as physics
 from blueprint_pipeline import robot_free_probe_gate as gate
 from blueprint_pipeline import team_candidate_quick10_registry as registry
 from blueprint_pipeline import website_task_context
@@ -55,6 +58,7 @@ REVISION = "sha256:" + "4" * 64
 COMMIT = "a" * 40
 PLAN = "native_task_arena_scene_plan.v1.json"
 PACKET_RECEIPT = "native_task_arena_packet_receipt.v1.json"
+UNREACHABLE = "robot_rigid_pick_place_unreachable:approach"
 
 
 def _sealed(value: dict[str, Any], field: str) -> dict[str, Any]:
@@ -83,6 +87,25 @@ def retask_packet(packet: Path, task_spec: dict[str, Any]) -> None:
             artifact.update(size_bytes=len(data), sha256="sha256:" + hashlib.sha256(data).hexdigest())
     receipt["arena_scene_plan_digest"] = plan["plan_digest"]
     receipt_path.write_text(json.dumps(_sealed(receipt, "receipt_digest"), indent=2, sort_keys=True) + "\n")
+
+
+def _unreachable_from_the_packets_own_base(packet: Path) -> dict[str, Any]:
+    """The arm-path solver's verdict for this packet's own Franka, at the packet's own base pose, picking
+    its object up and placing it at its target.
+
+    The fixture's task is a planar push the gate does not measure, and its base stands about 3.4 m from
+    the object, so the real solver answers the refusal capture-447ae4f4's probe was sealed with.
+    """
+    plan = json.loads((packet / PLAN).read_text())
+    spec = plan["task_spec"]
+    with pytest.MonkeyPatch.context() as patch:
+        patch.delitem(sys.modules, "torch", raising=False)  # the lane fixture's stand-in, not scipy's torch
+        return arm.rigid_pick_place_clearance(
+            robot_id=plan["robot"]["robot_id"], base_pose_world=plan["robot"]["base_pose_world"],
+            start_pose_world=spec["start_pose_world"], target_position_world=spec["target_position_world_m"],
+            contact_point_m=[0.0, 0.0, 0.0], approach_unit=[0.0, 0.0, 1.0],
+            gripper_orientation_xyzw=[1.0, 0.0, 0.0, 0.0], pregrasp_clearance_m=0.1,
+            seeds=[list(arm.NOMINAL_SEED_RAD)])
 
 
 def website_context() -> dict[str, Any]:
@@ -803,6 +826,152 @@ def test_a_refusal_before_funding_defers_to_the_next_wake_up_and_is_bounded(tmp_
     final = runner.run_queue(world["queue"], hooks=hooks)[0]
     assert final["status"] == "attempts_exhausted" and final["detail"]["unfunded_attempts"] == 4, final
     assert world["transport_calls"] == [] and _receipt(world) is None
+
+
+# --- a staging refusal under an older release is retried once by each newly deployed one -------------
+
+LEGACY_REFUSAL = "native_task_arena_bundle_robot_arm_path_blocked:" + UNREACHABLE
+PHYSICS_REFUSAL = "native_task_arena_bundle_scene_physics_blocked:task_object:scene_physics_rest_overlap:1.3cm"
+
+
+def _legacy_staging_refusal(world: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+    """The queue exactly as the runner left capture-447ae4f4's probe at 2026-11-03T17:54:40Z.
+
+    ``stage_attempt`` made ``attempts/00`` and wrote its probe input; the bundle then refused (the
+    packet's Franka could not reach the approach), so no bundle, authority, argv or intent exists. The
+    runner sealed the job ``staging_refused``, before terminals named their release, and retired the
+    entry to ``done/``.
+    """
+    from blueprint_pipeline.rigid_robot_free_probe_bundle import probe_inputs
+
+    queued = runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    state = current_probe_state(world["capture"])
+    job = runner._job_dir(world["queue"], state)
+    attempt = job / "attempts" / "00"
+    attempt.mkdir(parents=True)
+    (job / "runner.lock").touch()
+    runner._write_exclusive(attempt / worker.INPUTS_FILENAME, probe_inputs(state=state))
+    terminal = _sealed({"schema_version": runner.TERMINAL_SCHEMA, "status": "staging_refused",
+                        "capture_root": state["capture_root"], "probe_request_digest": state["request"]["request_digest"],
+                        "detail": {"reason": LEGACY_REFUSAL}, "sealed_at_iso": "2026-11-03T17:54:40Z"},
+                       "terminal_digest")
+    runner._write_exclusive(job / runner.TERMINAL_FILENAME, terminal)
+    (world["queue"] / "done").mkdir()
+    os.replace(queued["path"], world["queue"] / "done" / Path(queued["path"]).name)
+    return job, terminal
+
+
+def test_the_refused_attempt_of_a_superseded_refusal_counts_toward_no_limit(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    job, terminal = _legacy_staging_refusal(world)
+    attempt = job / "attempts" / "00"
+    assert sorted(path.name for path in attempt.iterdir()) == [worker.INPUTS_FILENAME]
+    name = Path(next((world["queue"] / "done").glob("*.json"))).name
+    # Without a known running release nothing is retried.
+    assert runner.requeue_new_release(world["queue"], None) == []
+    unknown = {**runner_hooks(world), "source_commit": lambda: "not-a-release"}
+    assert runner.run_queue(world["queue"], hooks=unknown) == []
+    # A known release returns the retired entry to pending once ...
+    (moved,) = runner.requeue_new_release(world["queue"], COMMIT)
+    assert moved == {"entry": name, "reason": "new_release", runner.RELEASE_COMMIT_FIELD: COMMIT,
+                     "terminal_status": "staging_refused", "terminal_release_commit": None}
+    assert (world["queue"] / "pending" / name).is_file() and not (world["queue"] / "done" / name).exists()
+    assert runner.requeue_new_release(world["queue"], COMMIT) == []
+    # ... and sets the terminal aside under the job lock; an interrupted pass finishes the move.
+    marker = runner._supersede_for_release(job, COMMIT)
+    (job / runner.SUPERSEDED_DIRNAME / f"{terminal['terminal_digest'][7:23]}.terminal.json").rename(
+        job / runner.TERMINAL_FILENAME)
+    assert runner._supersede_for_release(job, "b" * 40) == marker
+    assert runner._supersede_for_release(job, COMMIT) is None and not (job / runner.TERMINAL_FILENAME).exists()
+    # The refused attempt launched nothing: neither funded nor a refusal before funding, and the next
+    # attempt takes the next index.
+    ingest = json.loads((attempt / runner.INGEST_FILENAME).read_text())
+    assert ingest["state"] == runner.NOT_STAGED_STATE and ingest["funded"] is False and ingest["allocated"] is False
+    assert ingest["reason"] == LEGACY_REFUSAL
+    assert runner.settle_attempt(attempt, state=current_probe_state(world["capture"]))["state"] == "not_staged"
+    assert runner._counts(job) == (0, 0) and runner.NOT_STAGED_STATE not in runner.UNFUNDED_STATES
+    assert runner._attempts(job) == [attempt]
+
+
+def test_a_staging_refusal_sealed_by_an_older_release_is_retried_once_on_a_new_one(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    job, terminal = _legacy_staging_refusal(world)
+    sealed = (job / runner.TERMINAL_FILENAME).read_bytes()
+    # The deployed fix: the packet's arm still cannot reach the tray, and the probe now runs.
+    verdict = _unreachable_from_the_packets_own_base(world["packet"])
+    monkeypatch.setattr(arm, "packet_arm_path_clearance", lambda packet_dir: dict(verdict))
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert row["status"] == "decided" and _receipt(world)["status"] == "passed", row
+    marker = row["superseded_terminal"]
+    assert marker[runner.RELEASE_COMMIT_FIELD] == COMMIT and marker["superseded_release_commit"] is None
+    assert marker["superseded_terminal_digest"] == terminal["terminal_digest"]
+    assert marker["superseded_detail"] == {"reason": LEGACY_REFUSAL}
+    # History is kept: the sealed refusal sits beside its marker, byte for byte.
+    history = job / runner.SUPERSEDED_DIRNAME
+    assert (history / f"{terminal['terminal_digest'][7:23]}.terminal.json").read_bytes() == sealed
+    first, second = runner._attempts(job)
+    assert [first.name, second.name] == ["00", "01"]
+    assert json.loads((first / runner.INGEST_FILENAME).read_text())["state"] == runner.NOT_STAGED_STATE
+    assert json.loads((second / runner.INGEST_FILENAME).read_text())["state"] == "decided"
+    assert runner._counts(job) == (1, 0) and len(world["allocator_calls"]) == 1
+    receipt = json.loads((second / "bundle" / runner.BUNDLE_RECEIPT_FILENAME).read_text())
+    assert receipt["evidence_only_checks"]["robot_arm_path_clearance"] == "blocked"
+    final = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    assert final["status"] == "decided" and final[runner.RELEASE_COMMIT_FIELD] == COMMIT
+    assert final[runner.RELEASE_REQUEUE_FIELD] == [COMMIT]
+    # Decided: neither this release nor a later one retries it.
+    assert runner.run_queue(world["queue"], hooks=runner_hooks(world)) == []
+    assert runner.run_queue(world["queue"], hooks={**runner_hooks(world), "source_commit": lambda: "b" * 40}) == []
+    assert len(world["allocator_calls"]) == 1
+
+
+def test_a_staging_refusal_is_final_under_its_release_and_retried_once_by_a_new_one(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    old, new = "c" * 40, COMMIT
+    admitted = physics.require_scene_physics_admission
+
+    def overlap(packet_dir: Path, **_options: Any) -> dict[str, Any]:
+        raise physics.ScenePhysicsAdmissionBlocked(["task_object:scene_physics_rest_overlap:1.3cm"])
+
+    monkeypatch.setattr(physics, "require_scene_physics_admission", overlap)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    under_old = {**runner_hooks(world), "source_commit": lambda: old}
+    (row,) = runner.run_queue(world["queue"], hooks=under_old)
+    assert row["status"] == "staging_refused" and row[runner.RELEASE_COMMIT_FIELD] == old, row
+    assert row["detail"] == {"reason": PHYSICS_REFUSAL, "attempt": "00"}
+    assert runner.RELEASE_REQUEUE_FIELD not in row
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    # Final under the release that sealed it, however its entry comes back.
+    assert runner.run_queue(world["queue"], hooks=under_old) == []
+    assert runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])["status"] == "queued"
+    (row,) = runner.run_queue(world["queue"], hooks=under_old)
+    assert row["status"] == "staging_refused" and "superseded_terminal" not in row
+    assert [attempt.name for attempt in runner._attempts(job)] == ["00"]
+    # A newly deployed release retries it once; the physics refusal stands, so it seals again under that one.
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert row["status"] == "staging_refused" and row["superseded_terminal"]["superseded_release_commit"] == old
+    assert row[runner.RELEASE_COMMIT_FIELD] == new and row[runner.RELEASE_REQUEUE_FIELD] == [old, new]
+    assert row["detail"] == {"reason": PHYSICS_REFUSAL, "attempt": "01"}
+    assert [json.loads((attempt / runner.INGEST_FILENAME).read_text())["state"]
+            for attempt in runner._attempts(job)] == [runner.NOT_STAGED_STATE] * 2
+    assert runner._counts(job) == (0, 0)
+    # Never twice, even once its cause is gone, and never by a release that already tried it.
+    monkeypatch.setattr(physics, "require_scene_physics_admission", admitted)
+    for hooks in (runner_hooks(world), under_old):
+        assert runner.run_queue(world["queue"], hooks=hooks) == []
+        runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+        (row,) = runner.run_queue(world["queue"], hooks=hooks)
+        assert row["status"] == "staging_refused" and "superseded_terminal" not in row, row
+    assert len(runner._attempts(job)) == 2 and len(list((job / runner.SUPERSEDED_DIRNAME).glob("*.terminal.json"))) == 1
+    # The next release runs it: both refused attempts count toward no limit, and it takes index 02.
+    later = "d" * 40
+    monkeypatch.setattr(allocator, "_control_plane_checkout_blockers",
+                        lambda: ([], {"orchestrator_source_commit": later}))
+    (row,) = runner.run_queue(world["queue"], hooks={**runner_hooks(world), "source_commit": lambda: later})
+    assert row["status"] == "decided" and _receipt(world)["status"] == "passed", row
+    assert [attempt.name for attempt in runner._attempts(job)] == ["00", "01", "02"]
+    assert runner._counts(job) == (1, 0) and len(world["allocator_calls"]) == 1
+    assert row[runner.RELEASE_REQUEUE_FIELD] == [old, new, later]
 
 
 def test_an_allocator_that_cannot_start_allocates_nothing_and_defers(tmp_path, monkeypatch) -> None:
