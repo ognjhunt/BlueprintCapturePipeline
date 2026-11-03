@@ -373,11 +373,14 @@ _PROJECT = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
 _JOB = re.compile(r"blueprint-remote-cpu-[a-z0-9-]{0,40}[a-z0-9]")
 
 
-def config_blockers(config: Mapping[str, Any]) -> list[str]:
+def config_blockers(config: Mapping[str, Any], *, stage: str | None = None) -> list[str]:
     """Every way a host's ``remote_cpu_workers_config.v1`` is unusable (plan 14 §15); its region must be a US one.
 
     Each stage names its ``blueprint-remote-cpu-*`` job, digest-pinned image and resources; the probe stage has no
-    entry of its own, because a probe runs on the job of the stage it probes.
+    entry of its own, because a probe runs on the job of the stage it probes.  With ``stage``, the config is judged
+    for that stage alone: another stage's invalid entry disables that stage, never this one (a missing entry is the
+    caller's ``stage_missing``).  Without it every invalid entry is also named, as
+    ``remote_cpu_config_invalid:stage:<name>``, so an install-time check says which one to fix.
     """
     stages = config.get("stages") if isinstance(config.get("stages"), Mapping) else {}
     rates = config.get("rate_table") if isinstance(config.get("rate_table"), Mapping) else {}
@@ -390,6 +393,7 @@ def config_blockers(config: Mapping[str, Any]) -> list[str]:
                 and minimum_task_timeout_seconds(stage) <= entry["task_timeout_seconds"] <= MAX_TASK_TIMEOUT_SECONDS
                 and entry["memory_bytes"] <= MAX_MEMORY_BYTES)
 
+    invalid = sorted(str(name) for name, entry in stages.items() if not stage_valid(name, entry))
     failed = {
         "keys": set(config) != _CONFIG_KEYS,
         "schema_version": config.get("schema_version") != CONFIG_SCHEMA_VERSION,
@@ -397,7 +401,7 @@ def config_blockers(config: Mapping[str, Any]) -> list[str]:
         "project": not _matches(_PROJECT)(config.get("project")),
         "region": region.startswith("us-") and re.fullmatch(r"us-[a-z]+[0-9]+", region) is None,
         "transport_bucket": not _matches(_BUCKET)(config.get("transport_bucket")),
-        "stages": not stages or not all(stage_valid(stage, entry) for stage, entry in stages.items()),
+        "stages": (not stages or bool(invalid)) if stage is None else stage in invalid,
         "rate_table": set(rates) != {"source", "observed_on", *_RATES}
         or not all(_is_amount(rates[name]) and rates[name] > 0 for name in _RATES) or not _text(rates["source"])
         or not _matches(re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}"))(rates["observed_on"]),
@@ -405,6 +409,8 @@ def config_blockers(config: Mapping[str, Any]) -> list[str]:
         "max_attempts": not _positive(config.get("max_attempts")) or config["max_attempts"] > MAX_ATTEMPTS_CAP,
     }
     blockers = [f"remote_cpu_config_invalid:{name}" for name, failure in failed.items() if failure]
+    if stage is None:
+        blockers += [f"remote_cpu_config_invalid:stage:{safe_label(name)}" for name in invalid]
     if not region.startswith("us-"):
         blockers.append("remote_cpu_config_region_not_us")
     return sorted(blockers)
