@@ -1563,10 +1563,20 @@ def _terminal_index_findings(units: Mapping[str, dict[str, Any]]) -> list[dict[s
     ]
 
 
+# Every unit whose process can allocate a Vast GPU (it reaches the Vast adapter through the canonical
+# allocator); each must set BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true. A unit a lane does not select
+# is not observed, so it is checked where its lane is.
 PAID_ALLOCATION_UNITS: tuple[str, ...] = (
     "blueprint-task-evaluation-launch-dispatcher.service",
     "blueprint-task-evaluation-policy-canary-dispatcher.service",
     "blueprint-task-evaluation-sam31-preparation-execution.service",
+    "blueprint-rigid-robot-free-probe-runner.service",
+    "blueprint-beta-policy-screening.service",
+    "blueprint-pubsub-handoff-listener.service",
+    "blueprint-native-g1-team-campaign-dispatcher.service",
+    "blueprint-team-evaluation-runner.service",
+    "blueprint-embodiment-preparation.service",
+    "blueprint-agent-run-dispatcher.service",
 )
 
 
