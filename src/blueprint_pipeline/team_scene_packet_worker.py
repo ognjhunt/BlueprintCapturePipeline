@@ -35,7 +35,10 @@ no-spend worker, woken by its path unit, does the rest on the CPU:
   only through the owner's sealed confirmation under the request's own intent
   (``owner_success_confirmation_scope``: the intent must be the request's, and
   its progression must have queued this request); otherwise the owner contract
-  refuses as before.
+  refuses as before. The owner confirms either through the operator door or on
+  the website job page: the timer's pass sends each such blocked job's
+  thresholds to the WebApp and records the owner's website confirmation with
+  the door's own writer (``website_owner_success_confirmation``).
 
 The scenario is ``nominal``: the website journey never names one (the WebApp
 copies the offer's scenario into the run request it prepares), and a team
@@ -819,7 +822,27 @@ def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, f
             "automatic_requeue": retried, "provider_mutation_performed": False, "paid_execution_requested": False}
 
 
-def requeue_transient_blocked(*, queue_root: str | Path) -> dict[str, Any]:
+def _record_website_owner_decisions(root: Path, outcomes: Mapping[str, Mapping[str, Any]]) -> None:
+    """Keep each owner-contract-blocked request's latest website exchange in its status (the lock is held).
+
+    Written only when it changed, and only while the request is still blocked
+    on the owner contract, so a request requeued or recompiled meanwhile keeps
+    its own status.
+    """
+
+    from .website_owner_success_confirmation import STATUS_FIELD, _owner_contract_blocked
+
+    for key, outcome in outcomes.items():
+        path = root / "status" / f"{key}.json"
+        status = _read_json(path)
+        if (status is None or not _owner_contract_blocked(status) or not (root / "processed" / f"{key}.json").exists()
+                or status.get(STATUS_FIELD) == dict(outcome)):
+            continue
+        _write_replace(path, {**status, STATUS_FIELD: dict(outcome)})
+
+
+def requeue_transient_blocked(*, queue_root: str | Path,
+                              website_transport: Callable[..., Any] | None = None) -> dict[str, Any]:
     """Recover an interrupted run and return each due transient block to pending, for a timer's pass.
 
     The worker runs only when something is pending, so a request its unit's
@@ -829,20 +852,41 @@ def requeue_transient_blocked(*, queue_root: str | Path) -> dict[str, Any]:
     outside. This pass reads the release it runs from itself
     (``current_release_commit``). When a worker run holds the queue this does
     nothing: that run recovers and requeues the same way.
+
+    First, before taking the queue lock, each request blocked only on an
+    unconfirmed owner contract asks the WebApp for the owner's decision on its
+    thresholds (``website_owner_success_confirmation``); a website confirmation
+    is written under the intent, so the requeue below returns that request to
+    pending in this same pass. ``website_transport`` replaces the signed POST
+    (tests).
     """
+
+    from .website_owner_success_confirmation import exchange_owner_decisions
 
     root = _queue(queue_root)
     release = current_release_commit()
+    try:
+        website = exchange_owner_decisions(root, transport=website_transport)
+    except (OSError, ValueError) as exc:  # a pass never stops on the website exchange
+        from .bounded_error import error_description
+
+        website, website_error = {}, error_description(exc)
+    else:
+        website_error = None
     with _locked(root, wait=False) as held:
         if not held:
             return {"schema_version": RUN_SCHEMA, "status": "busy", "requeued": [], "recovered": [],
+                    "website_owner_decisions": website,
                     "provider_mutation_performed": False, "paid_execution_requested": False}
         now = _utc_now()
         recovered = [_recover_interrupted(root, path, now=now, release=release)["request_key"]
                      for path in sorted((root / "processing").glob("*.json"))]
+        _record_website_owner_decisions(root, website)
         requeued = _requeue_due(root, now, release)
     return {"schema_version": RUN_SCHEMA, "status": "requeued" if requeued else "idle", "requeued": requeued,
-            "recovered": recovered, "provider_mutation_performed": False, "paid_execution_requested": False}
+            "recovered": recovered, "website_owner_decisions": website,
+            **({"website_owner_decisions_error": website_error} if website_error else {}),
+            "provider_mutation_performed": False, "paid_execution_requested": False}
 
 
 def requeue_unfinished(*, queue_root: str | Path) -> dict[str, Any]:

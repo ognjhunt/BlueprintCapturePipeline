@@ -618,6 +618,22 @@ screening timer's (`requeue_transient_blocked`); to run it now,
 `python3 scripts/operator_door.py unit start blueprint-team-scene-packet.service`.
 Screening then reads the contract the team packet sealed.
 
+The owner can also confirm on the website job page, with no operator
+(`website_owner_success_confirmation`). On the screening timer's pass,
+`requeue_transient_blocked` sends each request blocked only on that refusal
+(at most four a pass, rotating) to the WebApp over the signed Pipeline sync
+transport: `POST /api/internal/pipeline/task-evaluation-scene-intents/<intent>/owner-success-proposal`
+carries the published thresholds, their revision and a `proposal_digest`
+sealing the whole binding. The WebApp shows them to the job's owner link only,
+in plain words, with Confirm and "this is wrong" (a typed reason, no numbers),
+and answers with the owner's decision on exactly that proposal. A confirmation
+is written by the door's own writer and validators, with `issuer_channel`
+`website`, and the same pass returns the request to `pending/`. A "wrong"
+answer writes nothing under the intent and leaves the request blocked; its
+status keeps the reason under `website_owner_success`, as it keeps `pending`
+or a `failed` exchange. A republished job has a new proposal digest and needs a
+new decision. The door path above is unchanged.
+
 Every team-packet status names the release that wrote it (`release_commit`,
 the commit of the release checkout the worker or timer runs from). Any other
 deterministic refusal (neither transient nor owner-contract) returns to
