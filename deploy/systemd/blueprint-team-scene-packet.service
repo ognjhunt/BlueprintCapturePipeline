@@ -41,6 +41,9 @@ TimeoutStartSec=1h
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 Environment=BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/team-scene-packets
+# Where a request's own intent is read: an owner's success confirmation lives
+# under it (read only; an env file below may name another root).
+Environment=BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
 # The same registry, capture partition, object store and WebApp bindings the
 # scene progression and handoff listener read.
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
