@@ -51,6 +51,7 @@ from .scene_physics_preflight import (
     _movable_joint,
     _pose_matrix,
     body_poses,
+    collision_kept_loaded,
     descendants,
     load_asset_model,
     load_background_triangles,
@@ -759,24 +760,26 @@ def first_carrying_stance(stances: Sequence[Mapping[str, Any]], *, collision_pat
     is the attempt that got furthest; a pose reached but struck outranks one not reached.
     """
     attempts, nearby = [], {}
-    for grasp in grasps or [None]:
-        held = task if grasp is None else {**task, "approach_unit": grasp["approach_unit"],
-                                           "gripper_orientation_xyzw": grasp["gripper_orientation_xyzw"]}
-        for index, stance in enumerate(stances):
-            centre = stance["position_world_m"]
-            if index not in nearby:
-                radius = scene_radius_m(robot_id)
-                triangles = load_background_triangles(collision_path, centre=centre, radius=radius,
-                                                      world_from_stage=np.eye(4))
-                nearby[index] = sample_scene_obstacles(triangles, centre=centre, radius=radius)
-            report = rigid_pick_place_clearance(robot_id=robot_id, seeds=seeds,
-                base_pose_world={"position_world_m": centre, "orientation_xyzw": stance["orientation_xyzw"]},
-                scene_obstacles=nearby[index], **held)
-            if grasp is not None:
-                report["grasp"] = grasp["name"]
-            attempts.append((stance, report))
-            if report["status"] == "clear":
-                return stance, report, attempts
+    # Each stance loads the scene near it from the same file: held open, a USDA text collider is parsed once.
+    with collision_kept_loaded(collision_path):
+        for grasp in grasps or [None]:
+            held = task if grasp is None else {**task, "approach_unit": grasp["approach_unit"],
+                                               "gripper_orientation_xyzw": grasp["gripper_orientation_xyzw"]}
+            for index, stance in enumerate(stances):
+                centre = stance["position_world_m"]
+                if index not in nearby:
+                    radius = scene_radius_m(robot_id)
+                    triangles = load_background_triangles(collision_path, centre=centre, radius=radius,
+                                                          world_from_stage=np.eye(4))
+                    nearby[index] = sample_scene_obstacles(triangles, centre=centre, radius=radius)
+                report = rigid_pick_place_clearance(robot_id=robot_id, seeds=seeds,
+                    base_pose_world={"position_world_m": centre, "orientation_xyzw": stance["orientation_xyzw"]},
+                    scene_obstacles=nearby[index], **held)
+                if grasp is not None:
+                    report["grasp"] = grasp["name"]
+                attempts.append((stance, report))
+                if report["status"] == "clear":
+                    return stance, report, attempts
     furthest = max(attempts, key=lambda a: (a[1]["furthest_sample"], "scene_strike" in a[1]["blockers"][0]))
     return None, furthest[1], attempts
 

@@ -163,7 +163,9 @@ def _capture447(root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     return configured, references
 
 
-def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_path, monkeypatch) -> None:
+def _compile(tmp_path: Path, monkeypatch: Any, **extra: Any) -> dict[str, Any]:
+    """capture-447's shape through ``materialize_team_scene``; the sealed record."""
+
     from blueprint_pipeline import task_evaluation_scene_rigid_robot_free_readiness as rigid
     from blueprint_pipeline.team_scene_packet import materialize_team_scene
 
@@ -192,8 +194,12 @@ def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_pat
         revision=job.revision, documents=documents, output_root=tmp_path / "team-scene",
         configured_scene_bundle_path=bundle, droid_profile_path=profile_path,
         droid_profile_digest=_sha(profile_path.read_bytes()), runtime_source_receipt_path=runtime,
-        owner_success_confirmation_scope={"intent": job.intent, "directory": job.directory})
-    record = json.loads(Path(compiled["path"]).read_text())
+        owner_success_confirmation_scope={"intent": job.intent, "directory": job.directory}, **extra)
+    return json.loads(Path(compiled["path"]).read_text())
+
+
+def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_path, monkeypatch) -> None:
+    record = _compile(tmp_path, monkeypatch)
     station = record["robot_station"]
     # The mount is level with the support, on floor clear of the table by the validator's clearance.
     assert station["position_world_m"][2] == pytest.approx(SUPPORT_TOP)
@@ -209,3 +215,20 @@ def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_pat
     request = json.loads((Path(record["base_native_packet"]["path"]).parent
                           / "native_task_arena_packet_request.v1.json").read_text())
     assert request["robot_base_pose_world"]["position_world_m"] == station["position_world_m"]
+
+
+def test_the_station_searches_read_a_text_room_collider_from_disk_once(tmp_path, monkeypatch) -> None:
+    # capture-447's collider is a 292 MB USDA text file. OpenUSD parses it again at each open that finds no
+    # stage of it alive, transiently at about twelve times its size: the Franka's search opened it twice,
+    # its carry search once per stance, and each registered body's search twice more.
+    from tests.test_team_embodiment_stance_room_mesh import text_parses
+    from tests.test_team_scene_packet import bodies
+
+    opens, parsed = text_parses(monkeypatch, "/configured-scene/collision.usda")
+    record = _compile(tmp_path, monkeypatch, embodiment_manifests=list(bodies(tmp_path).values()))
+    readers = {"ground_stance", "_world_triangles", "_stage_without", "_walk_stage", "load_background_triangles"}
+    assert sum(1 for caller in opens if caller in readers) > 10  # every search and carried stance re-opened it
+    assert [caller for caller in parsed if caller in readers | {"collision_kept_loaded"}] == ["collision_kept_loaded"]
+    # The same stations, from one parse.
+    assert record["robot_station"]["room_mesh_clearance"]["room_mesh_prims"] == ["/Root/mesh_0000_GLTF"]
+    assert {row["status"] for row in record["embodiment_stations"].values()} <= {"chosen", "out_of_reach"}

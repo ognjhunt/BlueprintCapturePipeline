@@ -573,33 +573,38 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     whole_region = not articulated and destination_support is not None
     carry = not articulated and task_spec.get("manipulation_strategy") == "pick_and_place"
     from .robot_arm_path_clearance import CARRY_STATIONS
-    try:
-        place = dict(
-            collision_path=assets["collision"], collision_sha256=_sha256(assets["collision"]), offset=[0.0, 0.0, 0.0],
-            subject_center=stance_center if whole_region else start,
-            subject_minimum=[float(v) for v in subject_bounds[0]],
-            subject_maximum=[float(v) for v in subject_bounds[1]],
-            footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
-            task_motion=motion)
-        station = ground_stance(**place, ranked=CARRY_STATIONS if carry else 0)
-    except TeamEmbodimentError as exc:
-        # A ValueError itself: caught first, so a named stance refusal keeps its own reason.
-        raise TeamScenePacketError(",".join(exc.blockers) or "team_scene_station_inputs_invalid") from exc
-    except (KeyError, TypeError, ValueError) as exc:
-        raise TeamScenePacketError("team_scene_station_inputs_invalid") from exc
-    station, station_search = (_carrying_station(station, task_spec=task_spec, collision=assets["collision"],
-                                                 profile=profile) if carry else (station, None))
-    stations: dict[str, dict[str, Any]] = {}
-    ranked: dict[str, list[dict[str, Any]]] = {}
-    if embodiment_manifests:
-        # The object a tool holds: a rigid carry's own extent, or an articulated part's handle (its joint's kind).
-        joints = (task_spec.get("articulation_graph") or {}).get("joints") or []
-        grasp = None if not (carry or articulated) else {
-            "dimensions_m": [float(b) - float(a) for a, b in zip(*object_bounds, strict=True)],
-            "joint_type": next((str(row.get("joint_type")) for row in joints if row.get("role") == "target"),
-                               "unknown") if articulated else None}
-        stations = _embodiment_stations(embodiment_manifests, place=place, points=[start, target], grasp=grasp,
-                                        ranked=ranked)
+    from .scene_physics_preflight import collision_kept_loaded
+
+    # Every search below reads this collider: held open, a USDA text room is parsed once rather than at each
+    # search and carried stance (``collision_kept_loaded``), and let go before the packet compiles.
+    with collision_kept_loaded(assets["collision"]):
+        try:
+            place = dict(
+                collision_path=assets["collision"], collision_sha256=_sha256(assets["collision"]), offset=[0.0, 0.0, 0.0],
+                subject_center=stance_center if whole_region else start,
+                subject_minimum=[float(v) for v in subject_bounds[0]],
+                subject_maximum=[float(v) for v in subject_bounds[1]],
+                footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
+                task_motion=motion)
+            station = ground_stance(**place, ranked=CARRY_STATIONS if carry else 0)
+        except TeamEmbodimentError as exc:
+            # A ValueError itself: caught first, so a named stance refusal keeps its own reason.
+            raise TeamScenePacketError(",".join(exc.blockers) or "team_scene_station_inputs_invalid") from exc
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TeamScenePacketError("team_scene_station_inputs_invalid") from exc
+        station, station_search = (_carrying_station(station, task_spec=task_spec, collision=assets["collision"],
+                                                     profile=profile) if carry else (station, None))
+        stations: dict[str, dict[str, Any]] = {}
+        ranked: dict[str, list[dict[str, Any]]] = {}
+        if embodiment_manifests:
+            # The object a tool holds: a rigid carry's own extent, or an articulated part's handle (its joint's kind).
+            joints = (task_spec.get("articulation_graph") or {}).get("joints") or []
+            grasp = None if not (carry or articulated) else {
+                "dimensions_m": [float(b) - float(a) for a, b in zip(*object_bounds, strict=True)],
+                "joint_type": next((str(row.get("joint_type")) for row in joints if row.get("role") == "target"),
+                                   "unknown") if articulated else None}
+            stations = _embodiment_stations(embodiment_manifests, place=place, points=[start, target], grasp=grasp,
+                                            ranked=ranked)
     base = {"position_world_m": station["position_world_m"], "orientation_xyzw": station["orientation_xyzw"]}
     request: dict[str, Any] = {
         "schema_version": "native_task_arena_packet_request.v1", "scene_id": scene_id, "task_id": task_id,
