@@ -592,6 +592,21 @@ def requeue_new_release(queue_root: str | Path | None, release: str | None, *,
     return requeued
 
 
+def final_terminal(state: Mapping[str, Any], *, queue_root: str | Path | None = None,
+                   release: str | None = None) -> dict[str, Any] | None:
+    """The sealed terminal of the capture's current probe request that no pass under ``release`` retries, or None.
+
+    Read only. A staging refusal a newly deployed release has not yet tried is not final: that release's pass
+    sets it aside and stages again (``requeue_new_release``). Every other terminal is final, as it is without a
+    known release. The screening pass names a final one to the website job (``beta_policy_screening_holds``).
+    """
+
+    terminal = _read_optional(_job_dir(_queue_root(queue_root), state) / TERMINAL_FILENAME)
+    if terminal is None or _new_release_untried(terminal, _release(release)):
+        return None
+    return terminal
+
+
 def _grant_refusal_wait(settled: Mapping[str, Any], *, now: float) -> int | None:
     """Seconds until a WebApp grant refusal may be tried again, or None when nothing waits."""
 
@@ -887,6 +902,7 @@ __all__ = [
     "RigidRobotFreeProbeIngestError",
     "allocator_argv",
     "enqueue_rigid_robot_free_probe",
+    "final_terminal",
     "main",
     "precheck_blockers",
     "preflight_capture",

@@ -234,11 +234,16 @@ def test_completion_queues_no_team_scene_request_without_a_website_scene_and_its
         monkeypatch.setenv(worker.QUEUE_ROOT_ENV, str(queue))
     result = reconcile_preparation_completion(**args)
     assert result['status'] == 'completed'
-    assert result['state']['scene_preparation_completion']['team_scene_request'] == {
+    team_scene = result['state']['scene_preparation_completion']['team_scene_request']
+    held = team_scene.pop('hold_request_key', None)
+    assert team_scene == {
         'not_a_website_scene': {'status': 'not_a_website_scene'},
         'probe_failed': {'status': 'not_enqueued', 'reason': 'robot_free_probe_failed'},
         'queue_not_configured': {'status': 'not_configured'}}[case]
     assert not list(queue.glob('pending/*.json'))
+    # A decided failure compiles nothing; its request is kept only so the website job is held by name.
+    assert [path.stem for path in queue.glob('holds/*.json')] == ([held] if case == 'probe_failed' else [])
+    assert (held is not None) == (case == 'probe_failed')
 
 
 def test_a_refused_readiness_score_is_recorded_and_still_queues_the_team_half(tmp_path, monkeypatch):
