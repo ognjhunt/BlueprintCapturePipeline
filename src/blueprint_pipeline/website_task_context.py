@@ -21,6 +21,7 @@ from .safe_outbound_http import pinned_api_policy
 from .safe_outbound_http import request as safe_request
 from .task_evaluation_launch_webapp_sync import load_pipeline_sync_token
 from .webapp_sync import _pipeline_sync_headers, validated_https_sync_url
+from .website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
 from .website_task_context_contracts import validate_website_task_context as validate_website_task_context
 
 
@@ -290,7 +291,8 @@ def load_website_scene_sponsorship(*, task_context: Mapping[str, Any], now: floa
             or issued > now + 60
             or not now < (value["expires_at_epoch"] if valid_until is None else min(
                 max(value["expires_at_epoch"], valid_until), value["expires_at_epoch"] + 7 * 86400))
-            or not 0 < value["expires_at_epoch"] - issued <= 86400):
+            # The grant's issued window, at most the WebApp's mirrored policy bound.
+            or not 0 < value["expires_at_epoch"] - issued <= WEBSITE_JOB_WINDOW_MAX_SECONDS):
         raise ValueError("website_scene_sponsorship_binding_invalid")
     if task_context.get("purpose") == "scene_preparation":
         from .website_preparation_contracts import validate_preparation_authority
