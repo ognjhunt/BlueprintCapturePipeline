@@ -362,6 +362,10 @@ def plan_support_pad(task_spec: Mapping[str, Any], *, support_plane: Mapping[str
     band = scan_band(plane_z, registered_top)
     tris = np.asarray(triangles, dtype=float).reshape(-1, 3, 3)
     selection, reach, capped = _selection(tris, polygon, band)
+    low, high = _vector(support_plane.get("bounds_min_xyz_m"), 3), _vector(support_plane.get("bounds_max_xyz_m"), 3)
+    if low is not None and high is not None:
+        # The support's own faces lie inside its bounds: nothing outside them is its scan.
+        selection = _clipped(selection, low[:2], high[:2])
     moved_points, chosen = planarized_points(tris.reshape(-1, 3), selection=selection, band=band, plane_z=plane_z)
     planarized = moved_points.reshape(-1, 3, 3)
     # Each scanned point once (a soup repeats a point in every triangle it is a corner of).
