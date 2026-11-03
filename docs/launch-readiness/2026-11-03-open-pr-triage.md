@@ -44,7 +44,7 @@ So item 8 waits only on #3196 and #1175, and on your choice for the PRs below.
 
 ## What to close or defer
 
-Recommended: close 33, defer 23. Closing a PR keeps its branch, so the work can
+Recommended: close 33, defer 23. Closing a PR keeps its commits, so the work can
 come back.
 
 | PR | What it does | Do | Why |
@@ -101,3 +101,14 @@ for n in 1136 1085 918 915; do gh pr close "$n" --repo ognjhunt/Blueprint-WebApp
 ```bash
 for n in 93 54 32 31 30 28 27 25 24 23 21 18 16 15 14 13; do gh pr close "$n" --repo ognjhunt/BlueprintCapture --comment "Closed in the 2026-11-03 open PR triage (BlueprintCapturePipeline docs/launch-readiness/2026-11-03-open-pr-triage.md)."; done
 ```
+
+## Done
+
+11-03 10:50–10:52Z, on the owner's OK: the 33 PRs were closed with the comments
+above, and none was merged. The 23 deferred PRs and the cloud session's PRs
+(Pipeline #3196, WebApp #1198 and #1175) stay open.
+
+Dependabot deleted the branches of #265, #266, #267, #269 and #56 when they
+closed, as it does for its own PRs; #268's branch was still there at 10:55Z.
+Every closed PR keeps its commits under `refs/pull/<number>/head`, and its page
+can restore the branch.
