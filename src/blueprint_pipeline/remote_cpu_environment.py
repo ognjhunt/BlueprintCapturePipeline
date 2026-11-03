@@ -49,8 +49,8 @@ DIGESTED_FIELDS = ("python_version_info", "golden_deflate", "golden_simd", "dist
 # Distributions only one stage's compile loads, measured the same way for that stage alone and recorded beside the
 # digest, never in it, so that adding one never invalidates another stage's recorded probe.  A stage's planner
 # compares its own row (``stage_distributions[<stage>]``) between the probed worker and the host.  The team
-# scene packet's compile seals its packets through ``cross_runtime_canonical_digest`` (rfc8785), measured on
-# 2026-11-03 from a real fixture compile in a fresh interpreter
+# scene packet's compile loads rfc8785 (``cross_runtime_canonical_digest``, which ``team_embodiment``'s sealed
+# digests use), measured on 2026-11-03 from a real fixture compile in a fresh interpreter
 # (``tests/test_team_scene_packet_remote.py::test_parity_set_covers_every_distribution_a_team_compile_loads``).
 STAGE_DISTRIBUTIONS = {"team_scene_packet": ("rfc8785",)}
 
