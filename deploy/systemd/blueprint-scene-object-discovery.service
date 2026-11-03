@@ -32,12 +32,11 @@ ReadOnlyPaths=/etc/blueprint/provider-secrets
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries /var/lib/blueprint/task-evaluation-inputs/scene-object-discoveries /var/lib/blueprint/task-evaluation-inputs/scene-object-discovery-outputs
 TasksMax=512
 LimitNOFILE=16384
-# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
-# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
-# before the always-on services, paid work and the money-safety units.
-# Measured: no run on the host since 10-27; reads a whole splat.
-MemoryHigh=3G
-MemoryMax=4G
+# Host memory (8.3 GB, no swap): it reads a whole splat and has not run on the
+# host since 10-27, so MemoryMax stays at main's, with no throttle, until it
+# is. Batch job, retried: +200, so it goes before the always-on services, paid
+# work and the money-safety units.
+MemoryMax=8G
 OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=4h

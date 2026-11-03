@@ -323,6 +323,7 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
         # and a unit this host does not run keep the cap they had.
         memory_limit = (
             HOST_MEMORY[unit.name][2] if unit.name in HOST_MEMORY
+            else HOST_MEMORY_KEPT[unit.name][1] if unit.name in HOST_MEMORY_KEPT
             else "1G" if unit.name == "blueprint-existing-policy-canary-watchdog.service"
             else "8G"
         )
@@ -345,7 +346,7 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
 
 
 #: Money safety, and the door to the host (#3329): the OOM killer passes them over. Never weakened: no
-#: throttle, no pressure kill, the memory cap each had before.
+#: throttle, no pressure kill, the memory cap each had before. G1 campaign settlement settles money too.
 HOST_SAFETY_GUARD_UNITS = (
     "blueprint-gpu-spend-guard.service",
     "blueprint-operator-door.service",
@@ -353,47 +354,56 @@ HOST_SAFETY_GUARD_UNITS = (
     "blueprint-task-evaluation-launch-supervisor.service",
     "blueprint-task-evaluation-launch-reconciler.service",
     "blueprint-task-evaluation-terminal-resource-release.service",
+    "blueprint-native-g1-team-campaign-settlement.service",
 )
-#: Host memory (8.3 GB, no swap), as (OOMScoreAdjust, MemoryHigh, MemoryMax) for every other unit the control
-#: plane runs. MemoryMax binds below the host, so a runaway is killed in its own unit, never host-wide (the
-#: kernel's OOM killer took the whole host's view five times on 2026-11-03). MemoryHigh, 1G under it from 2G
-#: up, reclaims a unit's page cache before the host has to. +200: batch jobs, retried; -200: paid work, money
-#: ledgers and the WebApp's intake, which go after them; -500: the door's own units, as the door.
+#: Host memory (8.3 GB, no swap). Units with a new cap that binds below the host, so a runaway is killed in
+#: its own unit, never host-wide (the kernel's OOM killer took the whole host's view five times on
+#: 2026-11-03): (OOMScoreAdjust, MemoryHigh, MemoryMax, highest recorded peak). The peak is the larger of the
+#: host's journal since 10-27, docs/research/control-plane-host-profile-2026-10-31.md and a local run at
+#: capture-447's scale, and MemoryMax is at least 1.5x it. MemoryHigh, 1G under MemoryMax from 2G up,
+#: reclaims a unit's page cache before the host has to. +200: batch jobs, retried; -200: money ledgers and
+#: the WebApp's intake, which go after them.
 HOST_MEMORY = {
-    "blueprint-team-scene-packet.service": ("200", "4G", "5G"),
-    "blueprint-task-evaluation-launch-activation.service": ("200", "4G", "5G"),
-    "blueprint-task-evaluation-episode-compilation.service": ("200", "3G", "4G"),
-    "blueprint-scene-object-discovery.service": ("200", "3G", "4G"),
-    "blueprint-embodiment-preparation.service": ("200", "3G", "4G"),
-    "blueprint-agent-stage-replay.service": ("200", "3G", "4G"),
-    "blueprint-control-plane-storage-gc.service": ("200", "2G", "3G"),
-    "blueprint-pubsub-handoff-listener.service": ("200", "2G", "3G"),
-    "blueprint-pipeline-control-plane.service": ("200", "2G", "3G"),
-    "blueprint-task-evaluation-scene-progression.service": ("200", "1G", "2G"),
-    "blueprint-task-evaluation-launch-preparation.service": ("200", "1G", "2G"),
-    "blueprint-task-evaluation-configured-controls-progression.service": ("200", "1G", "2G"),
-    "blueprint-agent-execution.service": ("200", "1G", "2G"),
-    "blueprint-website-atlas-provider-poll.service": ("200", "1G", "2G"),
-    "blueprint-control-plane-preflight.service": ("200", None, "1G"),
-    "blueprint-control-plane-capacity.service": ("200", None, "512M"),
-    "blueprint-completed-replay-cache-gc.service": ("200", None, "512M"),
-    "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "4G", "5G"),
-    "blueprint-website-atlas-preview.service": ("-200", "4G", "5G"),
-    "blueprint-provider-billing-reconciler.service": ("-200", "3G", "4G"),
-    "blueprint-team-evaluation-runner.service": ("-200", "3G", "4G"),
-    "blueprint-pipeline-intake.service": ("-200", "2G", "3G"),
-    "blueprint-beta-policy-screening.service": ("-200", "2G", "3G"),
-    "blueprint-rigid-robot-free-probe-runner.service": ("-200", "2G", "3G"),
-    "blueprint-task-evaluation-policy-canary-dispatcher.service": ("-200", "2G", "3G"),
-    "blueprint-native-g1-team-campaign-dispatcher.service": ("-200", "2G", "3G"),
-    "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "2G", "3G"),
-    "blueprint-existing-policy-canary-continuation.service": ("-200", "2G", "3G"),
-    "blueprint-agent-run-dispatcher.service": ("-200", "2G", "3G"),
-    "blueprint-task-evaluation-episode-compilation-remote.service": ("-200", "1G", "2G"),
-    "blueprint-native-g1-team-campaign-settlement.service": ("-200", "1G", "2G"),
-    "blueprint-scene-project-spend-refresh.service": ("-200", None, "512M"),
-    "blueprint-operator-door-runner.service": ("-500", None, "256M"),
-    "blueprint-operator-door-hold-sweep.service": ("-500", None, "256M"),
+    "blueprint-team-scene-packet.service": ("200", "4G", "5G", "1.9G"),
+    "blueprint-task-evaluation-scene-progression.service": ("200", "4G", "5G", "3.2G"),
+    "blueprint-control-plane-storage-gc.service": ("200", "2G", "3G", "722M"),
+    "blueprint-pipeline-control-plane.service": ("200", "2G", "3G", "569M"),
+    "blueprint-task-evaluation-launch-preparation.service": ("200", "1G", "2G", "32M"),
+    "blueprint-task-evaluation-configured-controls-progression.service": ("200", "1G", "2G", "149M"),
+    "blueprint-website-atlas-provider-poll.service": ("200", "1G", "2G", "62M"),
+    "blueprint-agent-execution.service": ("200", "1G", "2G", "202M"),
+    "blueprint-task-evaluation-episode-compilation.service": ("200", "3G", "4G", "60M"),
+    "blueprint-agent-stage-replay.service": ("200", "3G", "4G", "116M"),
+    "blueprint-provider-billing-reconciler.service": ("-200", "3G", "4G", "1.7G"),
+    "blueprint-pipeline-intake.service": ("-200", "2G", "3G", "1.5G"),
+    "blueprint-task-evaluation-episode-compilation-remote.service": ("-200", "1G", "2G", "424M"),
+}
+#: Units that keep the cap main gave them, with no throttle, and only gain an OOM order. Their heavy step at a
+#: full room is not measured on the host (a website capture's preparation in the handoff listener, which
+#: passed 4.8 GB locally; a full Atlas run; an allocator child's bundle reads), or a recorded peak times 1.5 does
+#: not fit below the host (activation and embodiment preparation, 4.2 GB), or the cap is already small.
+#: -500 for the door's own units, as the door.
+HOST_MEMORY_KEPT = {
+    "blueprint-pubsub-handoff-listener.service": ("200", "8G"),
+    "blueprint-task-evaluation-launch-activation.service": ("200", "8G"),
+    "blueprint-embodiment-preparation.service": ("200", "8G"),
+    "blueprint-scene-object-discovery.service": ("200", "8G"),
+    "blueprint-control-plane-preflight.service": ("200", "1G"),
+    "blueprint-control-plane-capacity.service": ("200", "512M"),
+    "blueprint-completed-replay-cache-gc.service": ("200", "512M"),
+    "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "8G"),
+    "blueprint-website-atlas-preview.service": ("-200", "8G"),
+    "blueprint-team-evaluation-runner.service": ("-200", "8G"),
+    "blueprint-beta-policy-screening.service": ("-200", "8G"),
+    "blueprint-rigid-robot-free-probe-runner.service": ("-200", "8G"),
+    "blueprint-task-evaluation-policy-canary-dispatcher.service": ("-200", "8G"),
+    "blueprint-native-g1-team-campaign-dispatcher.service": ("-200", "8G"),
+    "blueprint-task-evaluation-sam31-preparation-execution.service": ("-200", "8G"),
+    "blueprint-existing-policy-canary-continuation.service": ("-200", "8G"),
+    "blueprint-agent-run-dispatcher.service": ("-200", "8G"),
+    "blueprint-scene-project-spend-refresh.service": ("-200", "512M"),
+    "blueprint-operator-door-runner.service": ("-500", "256M"),
+    "blueprint-operator-door-hold-sweep.service": ("-500", "256M"),
 }
 #: Units in deploy/systemd that this host's deploy does not install: GPU workers and their pool, the isolated
 #: staging intake, and the capture reconstruction queue.
@@ -430,17 +440,25 @@ def _deployed_services() -> set[str]:
 
 def test_every_control_plane_unit_is_capped_below_the_host() -> None:
     services = {unit.name for unit in SYSTEMD_DIR.glob("*.service")}
-    assert services == set(HOST_MEMORY) | set(HOST_SAFETY_GUARD_UNITS) | set(NOT_ON_THE_CONTROL_PLANE)
-    assert _deployed_services() <= set(HOST_MEMORY) | set(HOST_SAFETY_GUARD_UNITS)
-    for unit, (adjust, high, maximum) in HOST_MEMORY.items():
+    covered = set(HOST_MEMORY) | set(HOST_MEMORY_KEPT) | set(HOST_SAFETY_GUARD_UNITS)
+    assert not set(HOST_MEMORY) & set(HOST_MEMORY_KEPT)
+    assert services == covered | set(NOT_ON_THE_CONTROL_PLANE)
+    assert _deployed_services() <= covered
+    for unit, (adjust, high, maximum, peak) in HOST_MEMORY.items():
         values = _directives(unit)
         assert values["OOMScoreAdjust"] == [adjust], unit
         assert values["MemoryMax"] == [maximum], unit
         assert values.get("MemoryHigh") == (None if high is None else [high]), unit
-        # Binds below the host's 8.3 GB with the always-on services' 2-3 GB left over.
-        assert _gigabytes(maximum) <= 5, unit
+        # Binds below the host's 8.3 GB with the always-on services' 2-3 GB left over, and never under 1.5x
+        # the unit's highest recorded peak.
+        assert 1.5 * _gigabytes(peak) <= _gigabytes(maximum) <= 5, unit
         assert high == (None if _gigabytes(maximum) < 2 else f"{int(_gigabytes(maximum)) - 1}G"), unit
         assert not {"ManagedOOMMemoryPressure", "ManagedOOMSwap"} & set(values), unit
+    for unit, (adjust, maximum) in HOST_MEMORY_KEPT.items():
+        values = _directives(unit)
+        assert values["OOMScoreAdjust"] == [adjust], unit
+        assert values["MemoryMax"] == [maximum], unit
+        assert not {"MemoryHigh", "ManagedOOMMemoryPressure", "ManagedOOMSwap"} & set(values), unit
     for unit in HOST_SAFETY_GUARD_UNITS:
         values = _directives(unit)
         assert values["OOMScoreAdjust"] == ["-500"], unit

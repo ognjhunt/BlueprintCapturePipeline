@@ -36,12 +36,11 @@ ReadWritePaths=/var/lib/blueprint
 ReadOnlyPaths=/etc/blueprint/provider-secrets
 TasksMax=512
 LimitNOFILE=65536
-# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
-# is killed in this unit, not host-wide. It holds paid work, a money ledger or
-# the WebApp's intake: -200, after batch jobs, before the money-safety units.
-# Measured: up to 30M on the host.
-MemoryHigh=2G
-MemoryMax=3G
+# Host memory (8.3 GB, no swap): its allocator child's bundle reads at a full
+# room are not measured on the host, so MemoryMax stays at main's, with no
+# throttle, until it is. It holds paid work: -200, after batch jobs, before
+# the money-safety units.
+MemoryMax=8G
 OOMScoreAdjust=-200
 CPUQuota=200%
 TimeoutStartSec=5h

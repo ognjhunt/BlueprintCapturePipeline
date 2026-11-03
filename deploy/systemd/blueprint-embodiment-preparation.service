@@ -34,12 +34,12 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
 ReadWritePaths=/var/lib/blueprint /mnt/blueprint-work/embodiment-preparation /var/lib/blueprint/pipeline-control-plane/embodiment-preparation /var/lib/blueprint/robot-models
 TasksMax=512
-# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
-# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
-# before the always-on services, paid work and the money-safety units.
-# Measured: up to 25M on the host; a real robot import is unmeasured.
-MemoryHigh=3G
-MemoryMax=4G
+# Host memory (8.3 GB, no swap): it peaked at 4.2 GB on 2026-10-31
+# (docs/research/control-plane-host-profile-2026-10-31.md), and a cap of 1.5x
+# that would not bind below the host, so MemoryMax stays at main's, with no
+# throttle. Batch job, retried: +200, so it goes before the always-on
+# services, paid work and the money-safety units.
+MemoryMax=8G
 OOMScoreAdjust=200
 CPUQuota=200%
 
