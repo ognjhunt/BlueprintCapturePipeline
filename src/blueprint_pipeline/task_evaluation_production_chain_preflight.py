@@ -1563,21 +1563,12 @@ def _terminal_index_findings(units: Mapping[str, dict[str, Any]]) -> list[dict[s
     ]
 
 
-# Every unit whose process can allocate a Vast GPU (it reaches the Vast adapter through the canonical
-# allocator); each must set BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true. A unit a lane does not select
-# is not observed, so it is checked where its lane is.
-PAID_ALLOCATION_UNITS: tuple[str, ...] = (
-    "blueprint-task-evaluation-launch-dispatcher.service",
-    "blueprint-task-evaluation-policy-canary-dispatcher.service",
-    "blueprint-task-evaluation-sam31-preparation-execution.service",
-    "blueprint-rigid-robot-free-probe-runner.service",
-    "blueprint-beta-policy-screening.service",
-    "blueprint-pubsub-handoff-listener.service",
-    "blueprint-native-g1-team-campaign-dispatcher.service",
-    "blueprint-team-evaluation-runner.service",
-    "blueprint-embodiment-preparation.service",
-    "blueprint-agent-run-dispatcher.service",
-)
+# Every unit that can allocate Vast (it reaches the adapter); a lane checks the ones it selects.
+PAID_ALLOCATION_UNITS: tuple[str, ...] = tuple(f"blueprint-{name}.service" for name in (
+    "task-evaluation-launch-dispatcher", "task-evaluation-policy-canary-dispatcher",
+    "task-evaluation-sam31-preparation-execution", "rigid-robot-free-probe-runner", "beta-policy-screening",
+    "pubsub-handoff-listener", "native-g1-team-campaign-dispatcher", "team-evaluation-runner",
+    "embodiment-preparation", "agent-run-dispatcher"))
 
 
 def _env_usd(name: str, default: float, *environments: Mapping[str, Any]) -> float:
