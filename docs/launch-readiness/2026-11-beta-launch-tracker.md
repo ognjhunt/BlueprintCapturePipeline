@@ -7,35 +7,32 @@ Status: **done** (verified, with evidence) · **in progress** · **owner** (wait
 on an owner decision or action) · **next deploy** (merged, ships with the next
 batched Pipeline deploy) · **not started**.
 
-Last updated: 2026-11-02 21:23Z. Pipeline live: `b04975ca7` (18:38Z). Door: `c5c3a12ee` (18:39Z). WebApp live: `fa335b441`. Next Pipeline deploy: see the checklist below.
+Last updated: 2026-11-03 01:40Z. Pipeline live: `e86f4e545` (11-02 22:31Z). Door: `c5c3a12ee` (11-02 18:39Z). WebApp live: `ffb982850` (11-02 23:10Z). Next Pipeline deploy: see the checklist below.
 
 ## Operating notes (2026-11-02)
 
 - A second operator (the cloud session) uses the shared `cloud-scene-runs` door token. It deployed `b631b23fa` at 14:05:57Z and `ed6d0befb` at 15:18Z. This session makes no Pipeline deploys while it drives capture-447; merged fixes ship with the next deploy. At 15:32Z no paid launch lock was held.
 - 17:23–18:54Z, the cloud session (same door token) deployed `470bf0cc9` (#3277, 17:37Z) and `b04975ca7` (#3284, 18:38Z). Both are B-04 money fixes, which D-08 allows outside the window. It upgraded the door to `c5c3a12ee` (18:39Z). At 18:54Z it applied a $90, 16-attempt execution budget to capture-447's new job, recorded as approved by the owner in that session. The job was admitted at 19:36Z on Vast ($0.80/h, $31 hard cap, 7.5 h TTL) and has been in its CPU prestage since 19:47Z; no GPU was live at 21:04Z.
+- 22:31Z, the cloud session (same door token) deployed `e86f4e545`, `main` through #3292. That deploy shipped everything this session had queued for the 11-03 window (E-02, D-05, the G-02 retry cap, #3285–#3289). The door was not upgraded, so `door status` still lacks the #3288 sections.
 - Five `footage_before_account` emails, the first ever, went to the owner at 14:05–14:08Z about old guest-uploaded test jobs. Each job gets one. The email promises "We email you when that changes", but nothing will change for those jobs (wording follow-up under F-03).
 
 ## Next Pipeline deploy (2026-11-03, 15:00 UTC window)
 
-The cloud session's 18:38Z deploy of `b04975ca7` (`main` at 18:11Z) already shipped #3260–#3277, #3279–#3282
-and #3284. The next deploy carries what merged after 18:11Z: #3278 (E-02), #3283 (G-02 retry cap), #3285, #3286
-(D-05), #3287 and #3289 (E-06), and #3288 (door only, with the `door-upgrade` below).
+The cloud session's 22:31Z deploy of `e86f4e545` already shipped everything merged through #3292: #3278 (E-02),
+#3283 (G-02 retry cap), #3285, #3286 (D-05), #3287, #3288 (its Pipeline side), #3289, #3291 and #3292. The next
+deploy carries #3293 and [#3294](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3294) (the robot fit table, merged 01:17Z).
 
 Before: follow `AGENTS.md` "Beta Deploy Policy". capture-447's new job must have ended. It was admitted at 19:36Z
 with a 7.5 h hard TTL, so it ends by about 03:06Z.
 
-After the deploy:
-1. Confirm `door status` `active_release` and `deploys.recent_receipts`.
-2. E-02: check that the spend guard, billing reconciler and Pub/Sub listener use less CPU than in the 11-02
-   15:00–16:00Z sample.
-3. D-05: expect one `preparation_delivery_stalled` page within about 30 min, until the old deliveries park. It
-   then clears by itself.
-4. G-02: run the withdrawal drill on a test job.
-5. Request `door-upgrade` to `main` so that `door status` shows `provider_spend`, `stall` and `reclaim_outlook`
-   ([#3288](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3288)).
+Checked at 01:15Z, after the 22:31Z deploy: `active_release` is `e86f4e545` with its receipt; E-02 is partly
+effective (see its row); D-05 parked the 7 old deliveries, with 0 due and no stall alert.
 
-Done from the previous list: #1193 merged (F-06), E-01 reclaimed, D-04 summary published, C-04 outcomes written,
-B-08 readings present, and the door upgraded for #3263.
+Still to do:
+1. G-02: run the withdrawal drill on a test job.
+2. Request `door-upgrade` to `main` so that `door status` shows `provider_spend`, `stall` and `reclaim_outlook`
+   ([#3288](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3288)).
+3. After the next deploy, confirm `door status` `active_release` and `deploys.recent_receipts`.
 
 ## Owner decisions (2026-11-02)
 
@@ -62,6 +59,18 @@ Facts and actions only the owner has: counsel status before 2026-11-15 (G-01),
 the on-call backup (D-24), the invitee allowlist (D-13), credential rotation
 (G-05), and repo visibility (both repos are public; making them private moves CI
 onto paid Actions minutes).
+
+## Owner requests beyond the brief (2026-11-02)
+
+The owner's goal: a place where anyone can post a job for a robot, and Blueprint connects them with robots that
+can do it at the best price. It starts with a quick, cheap check of whether a robot model fits a physical job.
+
+| Item | Status | Evidence / next step |
+|---|---|---|
+| Introduction by reply in place of booking | done (live) | See F-09. |
+| Spec-feasibility tier, step 1: robot spec catalog and a fit table per job | next deploy | Pipeline [#3294](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3294): 22 robot models from their spec sheets, each figure with its source; 17 sampled figures were checked again at the source. At the website handoff, on the CPU only, each model gets fits, fits on figures, doesn't fit or unknown, with reasons. It gates nothing. On the test room with a 1 kg item, the Franka Panda fits (path-checked) and 9 more arms fit on figures. |
+| Step 2: Atlas geometry-only mode (skips object removal, the refined splat, ARTISAN and the GPU scene build) | not started | |
+| Step 3: a URDF-chain reach reader for the recipe arms | not started | |
 
 ## A. Prove one website job end to end
 
@@ -107,7 +116,7 @@ onto paid Actions minutes).
 | D-02 | in progress | WebApp [#1176](https://github.com/ognjhunt/Blueprint-WebApp/pull/1176) merged: the external uptime probe also checks the door `/healthz`. Pending: the WebApp deploy, then a manual deploy of the `blueprint-uptime-probe` Render cron (`autoDeploy: false`). Capacity-tick freshness is a follow-up. |
 | D-03 | not started | |
 | D-04 | done (live) | [#3267](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3267) is live: the preflight summary is published again (generated 20:34Z for `b04975ca7`). It lists 186 blocker, 430 warning and 14 info findings, and 17 units have unknown coverage. Most blockers are path checks: `path_read_only` 98, `path_unreadable` 52, `path_permission_denied` 29. The rest: 5 `unit_trigger_inactive`, 1 `activation_intent_missing_for_active_release`, 1 `controls_robot_binding_unresolvable`. The live chain still ran activation and dispatch for capture-447 at 19:06–19:36Z, so most findings look like classifier gaps. Triage is a follow-up; until then the blocker count is not a health signal. |
-| D-05 | next deploy | [#3286](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3286) merged 18:56Z. Root cause, from the host's files: WebApp [#1113](https://github.com/ognjhunt/Blueprint-WebApp/pull/1113) (10-27) changed the digest of unconfirmed job-brief context, so six old test captures can never match the one they saved. After the deploy, a delivery that has failed for 24 h is parked with a typed reason and kept, with a retry every 6 h. A page fires when a live delivery waits more than 1 h. At 21:03Z: 7 hints, 1 due, 1 unavailable, not overloaded. Follow-up: accept the older context digest. |
+| D-05 | done (live) | [#3286](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3286) is live in `e86f4e545` (22:31Z). At 01:11Z the 7 old deliveries were parked with typed reasons, 0 were due, the queue was not overloaded and no stall alert was raised. Root cause, from the host's files: WebApp [#1113](https://github.com/ognjhunt/Blueprint-WebApp/pull/1113) (10-27) changed the digest of unconfirmed job-brief context, so six old test captures can never match the one they saved. Follow-up: accept the older context digest. |
 | D-06 | in progress | `blueprint-provider-billing-reconciler.timer` has been inactive since 2026-09-30 14:14Z, though enabled and in the deploy list. The reconciler still runs, because `blueprint-gpu-spend-guard.service` `Wants=` it: 31 runs an hour (see E-02). `launch-supervisor.timer` (optional OpenAI supervision) and `capture-reconstruction-dispatcher.{timer,path}` are inactive. To decide per unit: re-armed, retired or documented manual. `reset-failed` on the transient failed units is not done; another operator uses the host. |
 | D-07 | owner | Runbooks done: [#3265](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3265) adds `docs/runbooks/beta-operations.md` (stuck job, Vast credit, full work volume, door or host down, deploy rollback). Still needs the on-call backup's name (D-24). |
 | D-08 | not started | |
@@ -118,11 +127,11 @@ onto paid Actions minutes).
 | ID | Status | Evidence / next step |
 |---|---|---|
 | E-01 | done (live) | Live in `b04975ca7`. The first timer run (18:38:35Z) retired the 10-31 claim, and a later GC tick removed its 14.8 GB directory. capture-447's new activation (19:07Z) took about the same space, so `/mnt/blueprint-work` still has 30.75 GB free. That job's running CPU prestage reserves 18.3 GB, which leaves 0 GB above the 15.8 GB floor (21:01Z). Other launches refuse at $0 until it ends, then resume by themselves (C-02). `/var/lib/blueprint` is 92.6% used, 3.7 GB above its floor. The GC still keeps the result registry (17.1 GB, 29 runs), 13 activation pins (6.7 GB) and hot evidence (3.1 GB). Volume growth stays declined (D-10). Orphan scratch (26 GB in the earlier survey) needs the owner's OK. The GC's stranded-rows phase moves off root first (follow-up). |
-| E-02 | next deploy | [#3278](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3278) merged 18:19Z with the review fixes. A cached guard verdict never outlives the earliest grant expiry it evaluated. The billing refresh skips only when its last export covers every live provider. Expected saving: about 1,650–1,950 CPU-s/h. It missed the 18:38Z deploy. Load at 21:04Z: 5.45 / 6.57 / 7.17 on 4 CPUs. A resize to 8 vCPU (D-11) stays with the owner. |
+| E-02 | in progress | [#3278](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3278) is live in `e86f4e545` (22:31Z). In the hour to 01:15Z the billing reconciler ran 6 times for 389 CPU-s (before: 31–44 runs, 1,279–1,511 s), and the chain preflight used 18 s (before: busy 87% of the time). The Pub/Sub listener did not improve: 30 runs, 894 s (before: 862 s). Every run logs `phase_verdict_stored=no:unrecordable:urllib.Request`: a check in the catalog pass makes a web request, so the pass is never cached. Load 4.16 / 4.04 / 4.41 on 4 CPUs (21:04Z: 5.45 / 6.57 / 7.17), with capture-447's job running. Next: find and remove that web request. A resize to 8 vCPU (D-11) stays with the owner. |
 | E-03 | not started | |
 | E-04 | owner | Credential rotation (G-05). |
 | E-05 | not started | |
-| E-06 | in progress | The Full Test Lane run at 18:23Z (`5aa04e713`) failed two tests in shard 1. The import leak from #3277 is fixed by [#3287](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3287) (19:04Z). The bundle CLI contract (`stat_only_toolchain_host_validation`, added by eccf83d9c) is fixed by [#3289](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3289). The earlier two failures were fixed by #3261 and #3263. The door now runs `c5c3a12ee` (18:39Z), so the G1 `stance_reach` contract is live. Next: one green Full Test Lane run, then 7 green nightlies and a documented beta deploy gate. |
+| E-06 | in progress | The Full Test Lane run at 18:23Z (`5aa04e713`) failed two tests in shard 1. The import leak from #3277 is fixed by [#3287](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3287) (19:04Z). The bundle CLI contract (`stat_only_toolchain_host_validation`, added by eccf83d9c) is fixed by [#3289](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3289). The earlier two failures were fixed by #3261 and #3263. The door now runs `c5c3a12ee` (18:39Z), so the G1 `stance_reach` contract is live. A manual Full Test Lane run on `314a0c01e` passed at 21:21Z. Next: 7 green nightlies and a documented beta deploy gate. |
 | E-07 | not started | |
 
 ## F. Website: result delivery, truthfulness, journey
@@ -137,14 +146,15 @@ onto paid Actions minutes).
 | F-06 | done (live) | Pipeline [#3281](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3281) is live in `b04975ca7`: the owner observation accepts exactly `2026-09-18.v1` and `2026-11-02.v2`. WebApp [#1193](https://github.com/ognjhunt/Blueprint-WebApp/pull/1193) merged 21:10Z (`fa335b441`) and deployed at 21:23Z, verified at the exact SHA; the live site bundle carries `2026-11-02.v2`. The site now attests v2 and shows it verbatim where it attests: "I am authorized to record this site and to let Blueprint use the recording to draft the job brief, build a simulation of the work area and run candidate robot policies in it." It restates Terms `2026-11-02.1` section 3. |
 | F-07 | done (mitigated) | WebApp #1068 (10-18) accepts footage only for a saved job, so a new guest upload cannot strand mid-run. Old guest jobs get one `footage_before_account` email; the first five were sent 14:05–14:08Z, all to the owner's test jobs. |
 | F-08 | in progress | WebApp [#1185](https://github.com/ognjhunt/Blueprint-WebApp/pull/1185) documents the 10 website-beta settings in `render.optional.env.example`. Readiness checks are a follow-up. |
-| F-09 … F-11 | not started | |
+| F-09 | in progress | WebApp [#1195](https://github.com/ognjhunt/Blueprint-WebApp/pull/1195) merged 22:52Z (`ffb982850`), and its deploy was verified at 23:10Z. It removes the pilot booking and proposal features (it supersedes #1143, now closed), and outreach framing v5 drops booking. An estimate's result email now ends with one sentence offering an introduction to a deployment company by reply. Replies reach hello@tryblueprint.io, and a person makes any introduction (D-17). Still open: the claims "We usually reply within an hour", "policies served through APIs" and "simulation of your site"; 200 episodes per evaluation in the robot-team guide; "booking records" in `Privacy.tsx` (a policy change needs a version bump); and the shared VISION and WORLD_MODEL blocks, which still mention comparing delivery proposals. |
+| F-10, F-11 | not started | |
 
 ## G. Privacy, rights, legal
 
 | ID | Status | Evidence / next step |
 |---|---|---|
 | G-01 | owner | Counsel status before 2026-11-15 is still open. Add to the counsel packet: Terms §12 and the Privacy Policy's "Changes" section promise an email to account holders before a material change. On 2026-11-02 the owner made the corrected documents effective at once and no one was emailed (G-04). |
-| G-02 | in progress | WebApp [#1178](https://github.com/ognjhunt/Blueprint-WebApp/pull/1178) and [#1194](https://github.com/ognjhunt/Blueprint-WebApp/pull/1194) (a 409 for refusals that will not clear) are live. Pipeline [#3262](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3262) is live in `b04975ca7`. The retry cap [#3283](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3283) (3 fresh attempts per candidate, backoff of 1, 2 and 4 min) merged 18:13Z and ships with the next deploy. Not done: the withdrawal drill on a test job (screening is idle, with no campaign). |
+| G-02 | in progress | WebApp [#1178](https://github.com/ognjhunt/Blueprint-WebApp/pull/1178) and [#1194](https://github.com/ognjhunt/Blueprint-WebApp/pull/1194) (a 409 for refusals that will not clear) are live. Pipeline [#3262](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3262) is live in `b04975ca7`. The retry cap [#3283](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3283) (3 fresh attempts per candidate, backoff of 1, 2 and 4 min) is live in `e86f4e545` (22:31Z). Not done: the withdrawal drill on a test job (screening is idle, with no campaign). |
 | G-03 | superseded | D-16 (owner, 14:15Z): no blurring or person screening. The residual-person check in #1980 is moot; its stage-reuse part can be revisited separately. |
 | G-04 | done | Owner, about 15:45Z and 16:35Z: correct the text, effective today. WebApp [#1183](https://github.com/ognjhunt/Blueprint-WebApp/pull/1183) (the corrected wording) and [#1192](https://github.com/ognjhunt/Blueprint-WebApp/pull/1192) (versions `2026-11-02.1`, effective at once) are live in `282ba6452`, verified in the site bundle. People are not removed from footage, faces are blurred only in the frames sent to World Labs, and Meta is listed. An acceptance of the earlier November 15 pairs no longer counts; the identical `2026-11-15.4`/`.5` text does. The previous versions stay frozen at `/terms/previous` and `/privacy/previous`. Doctrine line replaced ([#3269](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3269), WebApp [#1188](https://github.com/ognjhunt/Blueprint-WebApp/pull/1188)). |
 | G-05 | owner | Rotation is the owner's action. Both repos are public (verified 13:30Z). |
@@ -153,6 +163,6 @@ onto paid Actions minutes).
 
 | ID | Status | Evidence / next step |
 |---|---|---|
-| H-01 | done | Pipeline [#3268](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3268) archives four obsolete launch gates (one moved; three keep their paths with a banner because tests read them). WebApp [#1187](https://github.com/ognjhunt/Blueprint-WebApp/pull/1187) brings the beta guides and README to the 10-28 model. Found false but needing code or an owner call: robot-team copy says 200 episodes per evaluation (screening plans at most 10 per candidate); `main` still has the delivery-proposal screen and booking route (#1143, owner); `docs/beta/ROBOT_TEAM_SUPPLY_AGREEMENTS.md` describes the old evaluate-and-deliver rule. |
+| H-01 | done | Pipeline [#3268](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3268) archives four obsolete launch gates (one moved; three keep their paths with a banner because tests read them). WebApp [#1187](https://github.com/ognjhunt/Blueprint-WebApp/pull/1187) brings the beta guides and README to the 10-28 model. Found false but needing code or an owner call: robot-team copy says 200 episodes per evaluation (screening plans at most 10 per candidate); `main` had the delivery-proposal screen and booking route (removed by WebApp #1195, F-09); `docs/beta/ROBOT_TEAM_SUPPLY_AGREEMENTS.md` describes the old evaluate-and-deliver rule. |
 | H-02 | done | 126 PRs and 3 issues closed (D-23). Also: WebApp #1142 was carried as #1178; #1103 was closed as superseded (main no longer caps Atlas requests, per the owner's 10-30 decision). #3051 is a 59-file tangle that overlaps #3042, so it is left open; its core, truthful worker status, already shows in `door status`. |
 | H-03, H-04 | not started | |
