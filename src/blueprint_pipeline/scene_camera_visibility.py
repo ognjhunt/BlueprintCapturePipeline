@@ -45,6 +45,10 @@ MINIMUM_ASSET_SHARE = 0.25
 MINIMUM_OPACITY = 0.5
 MAXIMUM_DISC_RADIUS_PX = 3
 SILHOUETTE_MARGIN_PX = 2
+#: Ray-plane pairs a hull or box is measured against at once (16 MB per float64 temporary). Every
+#: (ray, plane) pair at once was rays x planes x 8 bytes per temporary: with a detailed task asset's
+#: hull of thousands of planes and a camera's hundred thousand rays, several GB each.
+RAY_PLANE_BLOCK = 1 << 21
 
 
 class SceneCameraVisibilityError(ValueError):
@@ -106,14 +110,17 @@ def _ray_hits(colliders: Sequence[tuple[Any, np.ndarray]], origin: np.ndarray, d
                     offsets = np.concatenate([h, h])
                 else:
                     normals, offsets = collider.planes[:, :3], collider.planes[:, 3]
-                denominator = d @ normals.T
                 numerator = offsets - normals @ o
-                ratio = numerator / denominator
-                entering = np.where(denominator < 0, ratio, -np.inf).max(axis=1)
-                leaving = np.where(denominator > 0, ratio, np.inf).min(axis=1)
-                parallel_outside = ((denominator == 0) & (numerator < 0)).any(axis=1)
-                hit = (entering <= leaving) & (leaving > 0) & ~parallel_outside
-                t = np.where(entering > 0, entering, leaving)
+                t, hit = np.empty(len(d)), np.empty(len(d), dtype=bool)
+                rows = max(1, RAY_PLANE_BLOCK // max(1, len(normals)))
+                for first in range(0, len(d), rows):
+                    denominator = d[first:first + rows] @ normals.T
+                    ratio = numerator / denominator
+                    entering = np.where(denominator < 0, ratio, -np.inf).max(axis=1)
+                    leaving = np.where(denominator > 0, ratio, np.inf).min(axis=1)
+                    parallel_outside = ((denominator == 0) & (numerator < 0)).any(axis=1)
+                    hit[first:first + rows] = (entering <= leaving) & (leaving > 0) & ~parallel_outside
+                    t[first:first + rows] = np.where(entering > 0, entering, leaving)
             elif collider.kind == "sphere":
                 b = d @ o
                 a = (d * d).sum(axis=1)
