@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 
 from .decision_evidence_contracts import canonical_digest
+from .usd_binary_read_cache import read_scoped
 
 SCHEMA = "website_rigid_task_capability_verdict.v1"
 DEFAULT_PREGRASP_CLEARANCE_M = 0.10
@@ -84,6 +85,7 @@ def carry_station_search(preparation: Mapping[str, Any]) -> dict[str, Any]:
             "root_world_z_m": min(float(row["aabb_max_xyz"][2]) for row in supports), "ranked": CARRY_STATIONS}
 
 
+@read_scoped
 def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
                        robot_profiles: Sequence[str] | None = None) -> dict[str, Any]:
     """The station and carry verdict for a prepared rigid pick-and-place, from CPU geometry only.

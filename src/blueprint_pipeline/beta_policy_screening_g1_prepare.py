@@ -22,6 +22,7 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .native_g1_beta_authority import SOURCE_FIELDS
+from .usd_binary_read_cache import read_scoped
 
 SCHEMA = "native_g1_beta_scene_preparation.v1"
 FILENAME = SCHEMA + ".json"
@@ -228,10 +229,15 @@ def _request(*, base_root: Path, base_receipt: Mapping[str, Any], robot_asset: P
     return request, assumptions
 
 
+@read_scoped
 def prepare_native_g1_beta_packet(*, base_packet_record: Mapping[str, Any], source: Mapping[str, Any],
                                   site_id: str, output_root: Path, robot_asset_record: Mapping[str, Any],
                                   task_success_contract: Mapping[str, Any]) -> dict:
-    """Prepare under `<output_root>/native-g1/<base-digest>/<source-digest>/`."""
+    """Prepare under `<output_root>/native-g1/<base-digest>/<source-digest>/`.
+
+    The stance search and the packet read the base packet's scene collider through one read scope: a USDA
+    text room is read into a binary copy each reader opens (``usd_binary_read_cache``), not parsed per open.
+    """
     from .native_g1_arena_robot_configuration import G1_USD_SHA256, G1_USD_SIZE_BYTES
     from .native_task_arena_bundle import verify_native_task_arena_packet
     from .native_task_arena_packet import materialize_native_task_arena_packet
