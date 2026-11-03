@@ -487,8 +487,15 @@ def qualify_native_task_appearance_frame_alignment(
     # dropping its matrix moves the room away from the scene, so
     # ``omitted_containment`` is false and nothing here fires.  A pure
     # translation is admitted too, because its linear part is identity.
+    #
+    # Only a NuRec volume carries that exporter's matrix.  A ParticleField
+    # splat's layer transform is the registration Blueprint authored and
+    # sealed with it (a website room: Y-up to Z-up at metric scale), so
+    # dropping it is not an alternative frame; spawned containment still
+    # decides that asset (capture-447ae4f4, 2026-11-03).
     layer_transform_spurious = bool(
-        not measurement["layer_transform_linear_is_identity"]
+        measurement.get("representation") == "nurec_volume"
+        and not measurement["layer_transform_linear_is_identity"]
         and all(omitted_containment.values())
     )
     if layer_transform_spurious:
