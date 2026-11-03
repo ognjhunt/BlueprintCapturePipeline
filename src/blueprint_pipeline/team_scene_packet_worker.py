@@ -105,6 +105,9 @@ REQUEST_FIELDS = frozenset({"schema_version", "intent_id", "intent_digest", "cap
                             "source_launch_root", "launch_receipt_digest", "scene_revision_digest",
                             "robot_free_readiness_status", "request_digest"})
 QUEUE_STATES = ("pending", "processing", "processed", "status")
+# A request whose scene preparation retained a decided failed probe receipt: never compiled, only read by the
+# screening pass to hold the website job by name.
+HOLDS_DIRNAME = "holds"
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _ATTEMPT = re.compile(r"[0-9a-f]{16}-[0-9a-f]{8}")
@@ -327,6 +330,25 @@ def _new_release_untried(status: Mapping[str, Any], release: str | None) -> bool
     return release not in (tried if isinstance(tried, list) else [])
 
 
+def final_block(status: Mapping[str, Any], *, release: str | None) -> bool:
+    """A blocked status that no pass under ``release`` returns to pending, so the scene's team half stays uncompiled.
+
+    Not final: a transient block with automatic retries left, an owner-contract refusal (the owner's sealed
+    confirmation returns it), one a newly deployed release has not yet tried, or any block when the running
+    release cannot be told. The screening pass names a final one to the website job
+    (``beta_policy_screening_holds``).
+    """
+
+    blockers = status.get("blockers")
+    if (status.get("status") != "blocked" or not isinstance(blockers, list) or not blockers
+            or any(str(blocker).startswith(OWNER_CONTRACT_BLOCKER_PREFIX) for blocker in blockers)
+            or _release(release) is None or _new_release_untried(status, release)):
+        return False
+    retry = status.get("automatic_retry")
+    return (transient_cause(status) is None
+            or _retry_attempts(retry if isinstance(retry, Mapping) else {}) >= len(AUTOMATIC_RETRY_BACKOFF_SECONDS))
+
+
 def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[dict[str, Any]]:
     """Return each due transient block, each owner-contract refusal the owner has since confirmed, and each
     other deterministic refusal once per newly deployed ``release``, to pending, recording the attempt first
@@ -418,9 +440,7 @@ def enqueue_team_scene_request(*, intent: Mapping[str, Any], run_root: str | Pat
         return {"status": "not_a_website_scene"}
     # A receipt that could not be retained (a refused score) does not hold the compile: the compile never
     # reads it, and the probe lane that can still decide it is queued only from the compiled half.
-    if readiness.get("status") == "failed":
-        # A decided failure is sealed for this revision: no team can ever be admitted to it.
-        return {"status": "not_enqueued", "reason": "robot_free_probe_failed"}
+    failed = readiness.get("status") == "failed"
     try:
         from .website_preparation_revision_identity import capture_id
         request = validated_request(_seal({
@@ -432,8 +452,15 @@ def enqueue_team_scene_request(*, intent: Mapping[str, Any], run_root: str | Pat
             "robot_free_readiness_status": str(readiness.get("status") or "")}, "request_digest"))
         root = _queue(raw)
     except TeamScenePacketRequestRefused as exc:
-        return {"status": "not_enqueued", "reason": str(exc)}
+        return {"status": "not_enqueued", "reason": "robot_free_probe_failed" if failed else str(exc)}
     key = request_key(request)
+    if failed:
+        # A decided failure is sealed for this revision: no team can ever be admitted to it, so nothing is
+        # compiled. The request is kept under holds/ instead, where the screening pass reads it to tell the
+        # website job its evaluation is held, by name (``beta_policy_screening_holds``).
+        (root / HOLDS_DIRNAME).mkdir(exist_ok=True, mode=0o750)
+        _write_new(root / HOLDS_DIRNAME / f"{key}.json", request, staging=root)
+        return {"status": "not_enqueued", "reason": "robot_free_probe_failed", "hold_request_key": key}
     for state in ("pending", "processing", "processed"):
         if (root / state / f"{key}.json").exists():
             return {"status": "already_enqueued", "request_key": key, "state": state}
@@ -931,6 +958,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 __all__ = [
     "CAPTURE_PARTITION_ENV",
+    "HOLDS_DIRNAME",
     "PACKET_INPUT_FIELDS",
     "QUEUE_ROOT_ENV",
     "REQUEST_SCHEMA",
@@ -947,6 +975,7 @@ __all__ = [
     "configured_scene_bundle",
     "current_release_commit",
     "enqueue_team_scene_request",
+    "final_block",
     "owner_success_confirmation_scope",
     "packet_inputs",
     "process_team_scene_queue",
