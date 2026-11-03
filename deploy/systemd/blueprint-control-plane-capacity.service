@@ -36,7 +36,12 @@ SystemCallErrorNumber=EPERM
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/capacity
 ReadOnlyPaths=/etc/blueprint/provider-secrets /var/lib/blueprint/pipeline-control-plane/disk-reservations
 TasksMax=64
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: reaches its cap: page cache of the disk walk.
 MemoryMax=512M
+OOMScoreAdjust=200
 TimeoutStartSec=15min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python

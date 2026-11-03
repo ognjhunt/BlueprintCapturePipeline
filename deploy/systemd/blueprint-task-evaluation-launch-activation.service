@@ -50,7 +50,13 @@ ReadWritePaths=-/var/lib/blueprint/task-evaluation-inputs/scene-configuration-to
 Environment=BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_ARCHIVE_CACHE_ROOT=/var/lib/blueprint/task-evaluation-inputs/scene-configuration-toolchain-archives
 TasksMax=512
 LimitNOFILE=8192
+# Host memory (8.3 GB, no swap): it peaked at 4.2 GB on 2026-10-31
+# (docs/research/control-plane-host-profile-2026-10-31.md), and a cap of 1.5x
+# that would not bind below the host, so MemoryMax stays at main's, with no
+# throttle. Batch job, retried: +200, so it goes before the always-on
+# services, paid work and the money-safety units.
 MemoryMax=8G
+OOMScoreAdjust=200
 CPUQuota=200%
 # The worker gives its preparation command four hours; systemd allows a little
 # more so the worker, not a kill, records the outcome. On 2026-10-31 a

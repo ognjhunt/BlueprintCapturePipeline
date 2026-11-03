@@ -49,6 +49,8 @@ from .episode_interpretation_batch_authority import validate_episode_interpretat
 from .host_resident_launch_inputs import launch_profile_residency_blockers
 from .launch_immutable_input_writer import (
     TaskEvaluationLaunchError,
+    copy_and_read_back as _copy_and_read_back,
+    file_sha256_and_size as _file_sha256_and_size,
     stage_directory_projections,
     write_immutable_launch_record,
     write_exclusive_private_bytes as _write_exclusive_private_bytes,
@@ -1042,7 +1044,7 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _file_digest(path: Path) -> str:
-    return _DIGEST_PREFIX + hashlib.sha256(path.read_bytes()).hexdigest()
+    return _DIGEST_PREFIX + _file_sha256_and_size(path)[0]
 
 
 def _artifact(path: Path) -> dict[str, Any]:
@@ -1161,8 +1163,7 @@ def _stage_profile_immutable_inputs_reserved(
         source = source.resolve()
         if source != planned_sources.get(declared_source):
             raise TaskEvaluationLaunchError(f"immutable_input_staging_source_changed:{name}")
-        payload = source.read_bytes()
-        observed_digest = _DIGEST_PREFIX + hashlib.sha256(payload).hexdigest()
+        observed_digest = _DIGEST_PREFIX + _file_sha256_and_size(source)[0]  # in blocks, as every pass
         if observed_digest != expected_digest:
             raise TaskEvaluationLaunchError(
                 f"immutable_input_staging_source_digest_mismatch:{name}"
@@ -1175,9 +1176,9 @@ def _stage_profile_immutable_inputs_reserved(
             # digest checks above already proved this row matches the bytes
             # on disk, so the source keeps its single staged copy instead of
             # colliding with it.
-            readback = already_staged.read_bytes()
-            staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
-            if readback != payload or staged_digest != expected_digest:
+            readback, readback_size = _file_sha256_and_size(already_staged)
+            staged_digest = _DIGEST_PREFIX + readback
+            if staged_digest != observed_digest or staged_digest != expected_digest:
                 raise TaskEvaluationLaunchError(f"immutable_input_staging_duplicate_source:{name}")
             rows.append(
                 {
@@ -1185,18 +1186,15 @@ def _stage_profile_immutable_inputs_reserved(
                     "source_path": str(source),
                     "expected_digest": expected_digest,
                     "staged_path": str(already_staged),
-                    "staged_size_bytes": len(readback),
+                    "staged_size_bytes": readback_size,
                     "staged_digest": staged_digest,
                 }
             )
             continue
         destination = stage_root / f"{index:03d}-{expected_digest[len(_DIGEST_PREFIX) :]}.input"
         _publisher_checkpoint()
-        _write_exclusive_private_bytes(destination, payload)
-        readback = destination.read_bytes()
-        staged_digest = _DIGEST_PREFIX + hashlib.sha256(readback).hexdigest()
-        if readback != payload or staged_digest != expected_digest:
-            raise TaskEvaluationLaunchError(f"immutable_input_staging_readback_mismatch:{name}")
+        staged_digest, readback_size = _copy_and_read_back(
+            destination, source, expected_digest, f"immutable_input_staging_readback_mismatch:{name}")
         prior = replacements.get(str(source))
         if prior is not None and prior != str(destination):
             raise TaskEvaluationLaunchError(f"immutable_input_staging_duplicate_source:{name}")
@@ -1215,7 +1213,7 @@ def _stage_profile_immutable_inputs_reserved(
                 "source_path": str(source),
                 "expected_digest": expected_digest,
                 "staged_path": str(destination),
-                "staged_size_bytes": len(readback),
+                "staged_size_bytes": readback_size,
                 "staged_digest": staged_digest,
             }
         )

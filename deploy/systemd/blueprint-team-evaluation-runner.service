@@ -44,5 +44,9 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
 ReadWritePaths=/var/lib/blueprint
 TasksMax=512
+# Host memory (8.3 GB, no swap): it has not run on the host since 10-27, so
+# MemoryMax stays at main's, with no throttle, until it is. It holds paid
+# work: -200, after batch jobs, before the money-safety units.
 MemoryMax=8G
+OOMScoreAdjust=-200
 CPUQuota=200%

@@ -96,7 +96,8 @@ def rigid_task_verdict(*, preparation: Mapping[str, Any], collision_path: Path,
     start, half = (lower + upper) / 2.0, (upper - lower) / 2.0
     target = np.asarray(destination["position_world_m"], dtype=float) + [0.0, 0.0, half[2]]
     collision = Path(collision_path)
-    digest = "sha256:" + hashlib.sha256(collision.read_bytes()).hexdigest()
+    with collision.open("rb") as stream:  # in blocks: a website collider is hundreds of MB of USDA text
+        digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
     profiles = sorted(enabled_robot_profiles() if robot_profiles is None else robot_profiles)
     arms = sorted({ROBOT_PROFILE_ARMS[p] for p in profiles if p in ROBOT_PROFILE_ARMS})
     unassessed = [p for p in profiles if p not in ROBOT_PROFILE_ARMS]

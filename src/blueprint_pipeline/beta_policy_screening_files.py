@@ -23,9 +23,13 @@ def _read(path: Path) -> dict[str, Any]:
 
 
 def _record(path: Path) -> dict[str, Any]:
-    data = path.read_bytes()
-    return {"path": str(path.resolve()), "size_bytes": len(data),
-            "sha256": "sha256:" + hashlib.sha256(data).hexdigest()}
+    # In blocks: a sealed input can be the room's collider, hundreds of MB of USDA text.
+    digest, size = hashlib.sha256(), 0
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+            size += len(block)
+    return {"path": str(path.resolve()), "size_bytes": size, "sha256": "sha256:" + digest.hexdigest()}
 
 
 def _bound_path(record: Mapping[str, Any]) -> Path:

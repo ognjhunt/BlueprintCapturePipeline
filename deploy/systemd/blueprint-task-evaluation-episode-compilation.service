@@ -31,7 +31,13 @@ ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/prepared-references
 ReadWritePaths=/var/lib/blueprint /var/lib/blueprint/pipeline-control-plane/task-evaluation-episode-compilations /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/task-evaluation-inputs/compiled-episodes /var/lib/blueprint/pipeline-control-plane/storage-pins /var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs
 TasksMax=512
 LimitNOFILE=4096
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 60M on the host.
+MemoryHigh=3G
 MemoryMax=4G
+OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=15m
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
