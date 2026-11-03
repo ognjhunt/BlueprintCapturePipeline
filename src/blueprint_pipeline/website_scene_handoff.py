@@ -13,7 +13,8 @@ from typing import Any, Mapping
 from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as write_json, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .website_task_preparation import (
-    compile_website_scene_preparation, native_task_preparation_gap, native_task_subject_profile,
+    GEOMETRY_ONLY_BLOCKER, compile_website_scene_preparation, native_task_preparation_gap,
+    native_task_subject_profile,
 )
 from .website_scene_runtime_inputs import prepare_website_runtime_inputs
 
@@ -80,6 +81,45 @@ def _robot_fit_table(*, preparation: Mapping[str, Any], verdict: Mapping[str, An
         raise
     except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a job; this is recorded
         return {"status": "failed", "error": type(exc).__name__}
+
+
+def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
+                            native_root: Path) -> dict[str, Any]:
+    """Where a geometry-only job ends: the capability verdict and the robot fit table, CPU only.
+
+    The scene keeps its captured subject (``website_atlas_pipeline.ROUTE_ENV``), its box cut
+    from the collider at compile (``website_subject_excision``), so the job is never
+    registered or enqueued: nothing paid follows. Only a rigid pick-and-place preparation
+    held for nothing but this check, with no uncut subject, is assessed, as the full route
+    assesses only an intake-ready one; anything else is recorded as not run.
+    """
+    if list(preparation.get("blockers") or []) != [GEOMETRY_ONLY_BLOCKER]:
+        return {"status": "not_run", "reason": "preparation_blocked"}
+    if preparation["intake_request"]["task"]["strategy"] != "pick_and_place":
+        return {"status": "not_run", "reason": "task_strategy_not_modelled"}
+    if (preparation["subject"].get("geometry_origin") != "synthetic_design"
+            and (preparation.get("subject_excision") or {}).get("status") != "excised"):
+        # Every robot check would meet the subject itself.
+        return {"status": "not_run", "reason": "subject_not_excised"}
+    from .local_reconstruction_adapters import _sha256_file
+    from .website_scene_runtime_inputs import normalize_runtime_collision
+    if (_sha256_file(Path(base_scene["collision_mesh_path"])) != base_scene["collision_mesh_digest"]
+            or base_scene["collision_mesh_digest"] != preparation["binding"]["collision_mesh_digest"]):
+        raise ValueError("website_native_background_changed")
+    collision_root, normalized = normalize_runtime_collision(preparation=preparation, base_scene=base_scene,
+                                                             output_root=native_root)
+    collision = collision_root / normalized["output"]["relative_path"]
+    from .website_rigid_feasibility import rigid_task_verdict
+    verdict = rigid_task_verdict(preparation=preparation, collision_path=collision)
+    write_json(native_root / "capability_verdict.json", verdict)
+    return {"status": "completed",
+            "collision": {"path": str(collision), "digest": normalized["output"]["sha256"]},
+            "capability_verdict": {"status": verdict["status"], "blockers": verdict["blockers"],
+                                   **({"risks": verdict["risks"]} if "risks" in verdict else {}),
+                                   "path": str(native_root / "capability_verdict.json"),
+                                   "digest": verdict["verdict_digest"]},
+            "robot_fit_table": _robot_fit_table(preparation=preparation, verdict=verdict, native_root=native_root,
+                                                collision_path=collision)}
 
 
 def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[str, Any], preparation_path: Path,
@@ -192,6 +232,11 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         base = dict(atlas["base_scene"])
         write_json(root / "base_scene.json", base)
         result.update(base_scene_path=str(root / "base_scene.json"), visual_reconstruction_ready=True)
+        # A geometry-only job keeps its subject in the scene: it ends at the robot fit
+        # check (geometry_only_fit_check) and is never registered or enqueued.
+        geometry_only = atlas.get("atlas_route") == "geometry_only"
+        if geometry_only:
+            result["atlas_route"] = "geometry_only"
         removal_path = Path(clean_plate["removal_manifest_path"])
         if not removal_path.resolve().is_relative_to(capture_root.resolve() / "pipeline"):
             raise ValueError("website_scene_removal_manifest_outside_capture")
@@ -265,6 +310,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
                 atlas_scene_source={'status': correction['status'], 'reason': correction['reason'],
                                     'stage': 'target_correction'})
             result['digest'] = canonical_digest(result, digest_field='digest')
+            write_json(handoff_path, result)
+            return result
+        if family is not None and geometry_only:
+            # The fit check models one rigid subject; a family task is recorded, never assessed.
+            result.update(status="needs_input", blockers=[GEOMETRY_ONLY_BLOCKER],
+                          fit_check={"status": "not_run", "reason": "task_family_not_modelled"})
+            result["digest"] = canonical_digest(result, digest_field="digest")
             write_json(handoff_path, result)
             return result
         if family is not None:
@@ -352,10 +404,12 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             removal_manifest=removal, source_geometry=clean_plate["source_geometry"],
             base_scene=base, output_root=root, spend=authority, now=now,
             **({"task_semantics": semantics} if semantics is not None else {}),
+            **({"atlas_route": "geometry_only"} if geometry_only else {}),
         )
         preparation = bind_preparation(preparation, output_root=root, capture_root=capture_root, authority=authority)
-        if (preparation.get("collider_conditioning") or {}).get("status") == "conditioned":
-            # Compile sealed a conditioned collider into the base scene; runtime inputs read that one.
+        if ((preparation.get("collider_conditioning") or {}).get("status") == "conditioned"
+                or (preparation.get("subject_excision") or {}).get("status") == "excised"):
+            # Compile sealed a conditioned or cut collider into the base scene; later stages read that one.
             base = json.loads((root / "base_scene.json").read_text())
         result.update(status=preparation["status"], blockers=preparation["blockers"],
                       preparation_path=str(root / "preparation.json"), preparation_digest=preparation["digest"],
@@ -364,6 +418,12 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             # Later source-bound evidence can also reveal a mismatch. A held
             # compiler output has no native intake and must not enter runtime preparation.
             return retain_gap(preparation["native_task_preparation_gap"])
+        if geometry_only:
+            result["fit_check"] = geometry_only_fit_check(preparation=preparation, base_scene=base,
+                                                          native_root=root / "fit_check")
+            result["digest"] = canonical_digest(result, digest_field="digest")
+            write_json(handoff_path, result)
+            return result
         # A missing execution authority must not stop this CPU-only geometry
         # conversion. The object stays in its separate authoring lane.
         try:

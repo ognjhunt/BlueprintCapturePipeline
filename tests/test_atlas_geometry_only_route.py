@@ -7,10 +7,12 @@ mesh, without object removal, image editing, generated completion or the refined
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/website_atlas_pipeline.py
 #   src/blueprint_pipeline/atlas_video_inputs.py
+#   src/blueprint_pipeline/website_atlas_scene_source.py
 
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 
 import pytest
@@ -23,7 +25,7 @@ from blueprint_pipeline import paid_resource_allocator as allocator
 from blueprint_pipeline import website_atlas_pipeline as pipeline
 from blueprint_pipeline.atlas_pricing import final_output_cost
 from tests.test_atlas_scene_planner import fixture as planner_fixture
-from tests.test_website_atlas_scene_source import write
+from tests.test_website_atlas_scene_source import digest, job_fixture, write
 
 
 def test_a_new_job_takes_the_hosts_route_and_keeps_it_once_anything_is_bought(tmp_path, monkeypatch):
@@ -161,3 +163,31 @@ def test_geometry_only_buys_the_pose_and_the_mesh_and_nothing_that_edits_or_comp
     assert result["object_removal_performed"] is False and result["image_inpainting_performed"] is False
     assert result["generated_completion_performed"] is False and "scene_completion" not in result
     assert result["digest"] == pipeline.canonical_digest(result, digest_field="digest")
+
+
+@pytest.mark.parametrize("tamper", [None, "completion", "subject_flag"])
+def test_the_scene_source_hands_on_the_scene_as_filmed_with_its_subject_in_it(tmp_path, tamper):
+    from blueprint_pipeline import website_atlas_scene_source as scene_source
+    root = job_fixture(tmp_path, same_pose=True)
+    result = json.loads((root / "result.json").read_text())
+    background = result.pop("automation")["background"]
+    result.update(subject_origin="captured", atlas_route="geometry_only", subject_in_reconstruction=True,
+        captured_scene_preserved=True, object_removal_performed=False, image_inpainting_performed=False,
+        generated_completion_performed=tamper == "completion", mesh_available=True,
+        splat_manifest_digest=background["splat_manifest_digest"])
+    if tamper == "subject_flag":
+        del result["subject_in_reconstruction"]
+    shutil.move(root / "automation/background_splat", root / "splat")
+    shutil.move(root / "automation/background_mesh", root / "mesh")
+    write(root / "result.json", digest(result))
+    write(root / "preview_job.json", {"state": "ready", "result_digest": result["digest"]})
+    if tamper:
+        # Geometry only never completes the scene, and says whether the subject is still in it.
+        with pytest.raises(ValueError, match="preserved_scene_contract_invalid"):
+            scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+        return
+    value = scene_source.atlas_scene_source(capture_root=tmp_path, output_root=tmp_path / "prep")
+    assert value["status"] == "ready" and value["scene_content"] == "captured_scene_preserved"
+    assert value["atlas_route"] == "geometry_only" and value["subject_in_reconstruction"] is True
+    assert value["subject_origin"] == "captured"
+    assert not (root / "automation/background/prepared_background.json").exists()

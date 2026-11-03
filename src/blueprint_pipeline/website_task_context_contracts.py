@@ -12,6 +12,10 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 
+#: A geometry-only job's preparation (``website_atlas_pipeline.ROUTE_ENV``) ends at the
+#: robot fit check: never an intake.
+GEOMETRY_ONLY_BLOCKER = "website_geometry_only_fit_check"
+
 
 def admits_scene_preparation(value: Mapping[str, Any] | None) -> bool:
     """A site-confirmed task, or the assessment-proposed task of a preparation run.
@@ -253,3 +257,21 @@ def validate_website_task_context(
     return dict(value)
 
 
+def retains_geometry_only_fit(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
+    """A geometry-only job's completed stage, which ends at the robot fit check.
+
+    Its scene keeps the captured subject, so the handoff never registers or enqueues
+    it and nothing paid follows: the stage is accepted rather than retried. This
+    admits no execution and claims nothing beyond the check
+    (``website_scene_handoff.geometry_only_fit_check``).
+    """
+    fit = handoff.get("fit_check") if isinstance(handoff, Mapping) else None
+    return (isinstance(fit, Mapping) and isinstance(task_context, Mapping)
+            and fit.get("status") in {"completed", "not_run"}
+            and handoff.get("schema_version") == "website_scene_handoff.v1"
+            and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+            and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
+            and handoff.get("atlas_route") == "geometry_only" and handoff.get("status") == "needs_input"
+            and GEOMETRY_ONLY_BLOCKER in (handoff.get("blockers") or [])
+            and handoff.get("visual_reconstruction_ready") is True and handoff.get("simulator_ready") is False
+            and not any(key in handoff for key in ("source_registration", "website_intake_outbox", "runtime_inputs")))
