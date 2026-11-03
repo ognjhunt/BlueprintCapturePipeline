@@ -8,7 +8,10 @@ from blueprint_pipeline import beta_policy_screening_worker as worker
 from blueprint_pipeline import rigid_robot_free_probe_bundle as bundle
 from blueprint_pipeline import rigid_robot_free_probe_runner as runner
 from blueprint_pipeline import team_scene_packet_worker as packets
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import (
+    canonical_digest,
+    cross_runtime_canonical_digest,
+)
 from tests.test_beta_policy_screening_worker import prepared_source_queue
 
 RELEASE, NEXT_RELEASE = "a" * 40, "b" * 40
