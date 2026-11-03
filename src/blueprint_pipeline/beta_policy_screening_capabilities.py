@@ -143,10 +143,13 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     each naming a byte-sealed native execution spec and optional inventory.
     No catalog declaration alone grants a runtime capability. ``priority`` is
     the job's retained intake ranking; it orders the plan and removes nothing.
-    A candidate is infeasible only when its registered fixed reach measurably
-    misses this reconstructed scene's station (``website_candidate_feasibility``),
-    or when no GPU the screening lane may rent meets its declared memory floor
-    (``beta_policy_screening_gpu``); a disabled candidate keeps its own reason.
+    A candidate is infeasible only when its reach measurably misses this
+    reconstructed scene's station (``website_candidate_feasibility``: the
+    packet arm's chain reach bound, a registered body's own arm in its model,
+    or its declared fixed reach), or when no GPU the screening lane may rent
+    meets its declared memory floor (``beta_policy_screening_gpu``); a disabled
+    candidate keeps its own reason. Infeasible candidates are never prepared or
+    quoted, so nothing is reserved for a run that cannot reach the task.
     A rigid contract that requires per-cell controls screens under the standing
     control-trial pause (``beta_policy_screening_control_omission``): the
     candidates run the contract without its ``controls`` criterion, and the scene
@@ -296,17 +299,13 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                     from .beta_policy_screening_team import build_registered_team_spec
                     if family:
                         raise ValueError("beta_screening_team_robot_requires_rigid_scene")
-                    from .website_candidate_feasibility import (
-                        own_stance,
-                        own_station,
-                        own_station_reached_by_own_arm,
-                    )
+                    from .website_candidate_feasibility import bound_station, own_stance
                     measured = feasibility["candidates"].get(key) or {}
+                    station, reached = bound_station(measured, scene_plan)
                     spec, model = build_registered_team_spec(candidate_id=key, registration=override["robot_policy"],
                         scene_plan=scene_plan, contract=contract, prompt=facts["prompt"],
                         scene_revision_digest=inputs["scene_revision_digest"],
-                        station=own_station(measured), stance=own_stance(measured),
-                        station_reached_by_own_arm=own_station_reached_by_own_arm(measured))
+                        station=station, stance=own_stance(measured), station_reached_by_own_arm=reached)
                     inventory = None
                 else:
                     spec = _read(_bound_path(override["policy_execution_spec"]))

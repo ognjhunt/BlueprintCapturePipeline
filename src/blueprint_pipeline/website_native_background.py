@@ -520,7 +520,12 @@ def execute_prepared_collision(*, envelope, stage, configuration, configuration_
     candidate = _record(observed_root / observed["candidate"]["path"])
     if any(candidate[key] != authoring["source_candidate"][key] for key in ("digest", "size_bytes")):
         raise ValueError("website_prepared_collision_candidate_mismatch")
-    background = _copy_artifact(collision, output_root / "background_collision.usda")
+    # Named by its format: the transported path has no extension, OpenUSD refuses crate bytes under a
+    # .usda name, and the bundle and publication name the collider by this suffix (``collision.usdc``).
+    # A collider normalized before is text and keeps its name.
+    from .common import usd_payload_suffix
+    suffix = usd_payload_suffix(collision) or ".usda"
+    background = _copy_artifact(collision, output_root / ("background_collision" + suffix))
     receipt = {"schema_version": "website_prepared_background_result.v1", "status": "prepared_background_reused",
                "runtime_inputs_digest": configuration["runtime_inputs_digest"],
                "preparation_digest": value["preparation_digest"], "collision_digest": background["digest"],

@@ -375,13 +375,21 @@ def test_fresh_deploy_provisions_screening_sandbox_before_timer_can_start(tmp_pa
     units = ("blueprint-beta-policy-screening.service", "blueprint-beta-policy-screening.timer")
     assert all(unit in deploy.DEFAULT_DEPLOYED_SYSTEMD_UNITS for unit in units)
     assert units[1] in deploy.DEFAULT_ALWAYS_ARM_TIMER_UNITS
+    # Without the work volume's mount point the deploy refuses rather than create the attempts' root elsewhere.
+    with pytest.raises(deploy.ControlPlaneDeployError, match="beta-policy-screening-work"):
+        deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
+            units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
+    (host / "mnt/blueprint-work").mkdir(parents=True)
     receipt = deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
         units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
     target = host / "var/lib/blueprint/pipeline-control-plane/beta-policy-screening"
     assert target.is_dir() and target.stat().st_mode & 0o777 == 0o750
-    assert receipt["created"] == [{"unit": units[0],
-        "path": "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening", "mode": "0750",
-        "owner_uid": os.getuid(), "owner_gid": os.getgid()}]
+    work = host / "mnt/blueprint-work/beta-policy-screening-work"
+    assert work.is_dir() and work.stat().st_mode & 0o777 == 0o750
+    assert receipt["created"] == [{"unit": units[0], "path": path, "mode": "0750",
+        "owner_uid": os.getuid(), "owner_gid": os.getgid()} for path in (
+        "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening",
+        "/mnt/blueprint-work/beta-policy-screening-work")]
     repeated = deploy._install_unit_sandbox_paths(release_path=Path(__file__).resolve().parents[1],
         units=units, root_prefix=host, owner_ids=(os.getuid(), os.getgid()))
     assert repeated["created"] == []

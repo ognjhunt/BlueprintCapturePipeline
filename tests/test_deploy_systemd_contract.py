@@ -1155,14 +1155,24 @@ def test_paid_units_enable_the_provider_credit_guard_and_the_controller_can_read
     (BLUEPRINT_VAST_CREDIT_GUARD_ENABLED); production turns them on in the unit files
     that reach the Vast adapter, and the chain preflight refuses a paid unit without it."""
 
+    from blueprint_pipeline.task_evaluation_production_chain_preflight import PAID_ALLOCATION_UNITS
+
     flag = "Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true"
-    for name in (
-        "blueprint-pubsub-handoff-listener.service",
-        "blueprint-task-evaluation-launch-dispatcher.service",
-        "blueprint-task-evaluation-policy-canary-dispatcher.service",
-        "blueprint-task-evaluation-sam31-preparation-execution.service",
-    ):
-        assert flag in (SYSTEMD_DIR / name).read_text(encoding="utf-8"), name
+    # The two paid lanes website jobs use, which once ran with the guard off.
+    assert {"blueprint-rigid-robot-free-probe-runner.service",
+            "blueprint-beta-policy-screening.service"} <= set(PAID_ALLOCATION_UNITS)
+    for name in PAID_ALLOCATION_UNITS:
+        text = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
+        assert flag in text, name
+        assert "BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=false" not in text, name
+    # A unit that can launch a Vast instance (it arms the caller-exit watchdog or holds
+    # the instance SSH key) is a paid allocation unit, so the preflight checks its guard.
+    launching = sorted(
+        unit.name for unit in SYSTEMD_DIR.glob("blueprint-*.service")
+        if re.search(r"^Environment=BLUEPRINT_VAST_(WATCHDOG_CALLER_EXIT_SURVIVAL|SSH_IDENTITY_FILE)=",
+                     unit.read_text(encoding="utf-8"), re.M)
+    )
+    assert launching and sorted(set(launching) - set(PAID_ALLOCATION_UNITS)) == []
     capacity = (SYSTEMD_DIR / "blueprint-control-plane-capacity.service").read_text(encoding="utf-8")
     assert flag in capacity
     assert "Environment=VAST_API_KEY_FILE=/etc/blueprint/provider-secrets/vast_api_key" in capacity
@@ -1192,6 +1202,40 @@ def test_volume_admission_units_map_bulk_roles_to_their_writers() -> None:
         encoding="utf-8"
     )
     assert "Environment=BLUEPRINT_CAPACITY_MOUNTS=/:/var/lib/blueprint:/mnt/blueprint-work" in capacity
+
+
+def test_probe_and_screening_attempts_stage_on_the_work_volume_and_stay_watched() -> None:
+    """The root disk sits at its floor, so the probe's and screening's attempt bulk (bundles, the
+    allocator job directory and its policy_canary_output hold) goes to the work volume. The queues
+    stay on the root disk; the spend guard still finds the attempts' owner records; the deploy
+    provisions both roots; the storage table classifies them."""
+
+    from blueprint_pipeline.beta_policy_screening_coordinator import WORK_ROOT_ENV as SCREENING_WORK_ENV
+    from blueprint_pipeline.control_plane_storage_roots import classify_path
+    from blueprint_pipeline.rigid_robot_free_probe_runner import WORK_ENV as PROBE_WORK_ENV
+    from tests.test_deploy_control_plane_commit import deploy
+
+    guard = _read("blueprint-gpu-spend-guard.service")
+    for unit, env, root, queue, storage_class in (
+        ("blueprint-rigid-robot-free-probe-runner.service", PROBE_WORK_ENV,
+         "/mnt/blueprint-work/rigid-robot-free-probe-work",
+         "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE=/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes",
+         "work"),
+        ("blueprint-beta-policy-screening.service", SCREENING_WORK_ENV,
+         "/mnt/blueprint-work/beta-policy-screening-work",
+         "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/beta-policy-screening",
+         "evidence_hot"),
+    ):
+        text = _read(unit)
+        assert f"Environment={env}={root}\n" in text, unit
+        assert f"Environment={queue}\n" in text, unit
+        rw = [token for line in text.splitlines() if line.startswith("ReadWritePaths=")
+              for token in line.removeprefix("ReadWritePaths=").split()]
+        assert root in rw, unit
+        assert f"--output-root {root} " in guard and f"ReadOnlyPaths=-{root}\n" in guard
+        assert root in deploy._WORK_VOLUME_PROVISIONABLE
+        classified = classify_path(root + "/attempts/x")
+        assert classified is not None and classified.path == root and classified.storage_class == storage_class
 
 
 def test_streamed_canary_units_bind_the_b2_artifact_store() -> None:

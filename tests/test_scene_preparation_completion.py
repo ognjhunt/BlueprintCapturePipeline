@@ -40,17 +40,19 @@ def _prepare(tmp_path, monkeypatch, request):
         'task_evaluation_run': {'run_mode': 'scene_configuration', 'configuration_run_id': 'scene-839873-configuration',
                                'task_id': intent['request']['task']['task_id']}}, 'profile_digest')
     reference = {'uri': 's3://test/qualified-scene', 'digest': 'sha256:' + 'c' * 64, 'size_bytes': 100}
+    # The revision's own self-digest: never the sha256 of its file's bytes (``reference['digest']``).
+    revision_digest = 'sha256:' + 'd' * 64
     result = json.loads(result_path.read_text())
     result.update(status='completed', source_commit=SOURCE_CONFIGURATION_COMMIT, configuration_completed=True,
         configured_scene_published=True, full_byte_service_account_readback_passed=True,
         configured_scene_revision_reference=reference, configured_scene_bundle_reference=reference,
-        configured_scene_revision_digest=reference['digest'], publication_result_digest=reference['digest'],
+        configured_scene_revision_digest=revision_digest, publication_result_digest=reference['digest'],
         task_thumbnail_reference=reference, task_thumbnail_selection_receipt_reference=reference)
     offering = {'schema_version': 'task_evaluation_configured_scene_offering.v1', 'status': 'configured_controls_pending',
         'configuration_run_id': result['run_id'], 'catalog_visibility': 'team_only',
         'presentation': {'task_thumbnail': reference, 'selection_receipt': reference},
         'evaluation_preparation_binding': {'configured_scene_revision': reference,
-            'configured_scene_revision_digest': reference['digest'], 'configured_scene_bundle': reference}}
+            'configured_scene_revision_digest': revision_digest, 'configured_scene_bundle': reference}}
     offering['offering_digest'] = canonical_digest(offering, digest_field='offering_digest')
     result['configured_scene_offering'] = offering
     finalization = {'schema_version': 'task_evaluation_scene_construction_finalization.v1', 'status': 'completed',
@@ -85,9 +87,17 @@ def prepared(tmp_path, monkeypatch):
 
 
 def test_scene_preparation_finishes_without_robot_or_policy_result(prepared):
-    args, run, _ = prepared
+    args, run, result_path = prepared
     result = reconcile_preparation_completion(**args)
     assert result['status'] == 'completed' and result['phase'] == 'scene_prepared'
+    # The intent status names the revision file; a screening source names the
+    # revision's self-digest. Only the offering's evaluation_preparation_binding
+    # relates the two, and the website binds screening through it.
+    published = json.loads(result_path.read_text())
+    binding = published['configured_scene_offering']['evaluation_preparation_binding']
+    assert result['result_reference'] == published['configured_scene_revision_reference'] == binding['configured_scene_revision']
+    assert binding['configured_scene_revision_digest'] == published['configured_scene_revision_digest']
+    assert result['result_reference']['digest'] != published['configured_scene_revision_digest']
     assert result['state']['scene_preparation_completion']['robot_evaluation_performed'] is False
     assert not (run / 'policy_canary_result_projection.json').exists()
 

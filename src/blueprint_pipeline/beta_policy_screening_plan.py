@@ -65,6 +65,10 @@ _HOSTED_COST_FIELDS = {"provider_hard_cap_usd", "hosted_inference_maximum_usd", 
                        "hosted_max_cost_per_request_usd", "hosted_http_request_limit", "credential_origin"}
 _UNIT_PRICE = re.compile(r"^(?:0|[1-9][0-9]{0,8})(?:\.[0-9]{1,12})?$")
 _ROOT_POSE_PARAMETERS = {"object_start_x_delta_m", "object_start_y_delta_m", "object_yaw_delta_degrees"}
+_CAPABILITY_REASON = re.compile(r"[a-z][a-z0-9_]{1,127}")
+# A measured refusal carries its numbers, e.g. robot_reach_insufficient:place:1.107m_vs_0.990m; the
+# coordinator publishes the same character set (``beta_policy_screening_coordinator._BLOCKER``).
+_INFEASIBLE_REASON = re.compile(r"[a-z][a-z0-9_:.=-]{1,199}")
 
 
 class BetaPolicyScreeningPlanError(ValueError):
@@ -423,9 +427,10 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
     failures = capabilities.get("candidate_blockers") or {}
     infeasible = capabilities.get("candidate_infeasible") or {}
-    for value, reason_required in ((failures, False), (infeasible, True)):
+    for value, reason_required, pattern in ((failures, False, _CAPABILITY_REASON),
+                                            (infeasible, True, _INFEASIBLE_REASON)):
         if (not isinstance(value, dict) or any(not isinstance(reasons, list) or (reason_required and not reasons)
-                or any(not isinstance(reason, str) or not re.fullmatch(r"[a-z][a-z0-9_]{1,127}", reason)
+                or any(not isinstance(reason, str) or not pattern.fullmatch(reason)
                        for reason in reasons) for reasons in value.values())):
             raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
     available = capabilities.get("credentials_available", [])
