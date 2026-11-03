@@ -71,7 +71,7 @@ registry digest after adding them (the paths are illustrations):
     "droid_profile_path": "/etc/blueprint/team-scene/droid_profile.json",
     "droid_profile_digest": "sha256:<64 lowercase hexadecimal characters>",
     "runtime_source_receipt_path": "/etc/blueprint/team-scene/runtime_source_packet.json",
-    "output_root": "/var/lib/blueprint/task-evaluation-inputs/team-scene-packets"
+    "output_root": "/var/lib/blueprint/task-evaluation-inputs/team-scene-halves"
   }
 }
 ```

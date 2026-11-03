@@ -190,4 +190,8 @@ def test_without_a_provider_every_undispatched_hand_off_still_goes_back(tmp_path
     assert json.loads((host.jobs / collector.SUMMARY_NAME).read_text(encoding="utf-8"))["blockers"] == [
         "remote_cpu_config_invalid:missing"]
     world.remote.assert_untouched()
-    assert _settled(host.process())[0]["status"] == "completed" and world.compiles == ["host"]
+    # A provider outage is a temporary hand-back: the request is planned again after the backoff, not compiled here.
+    [status] = _settled(host.process())
+    assert (status["status"], status["blockers"]) == ("blocked", ["team_scene_remote_compile_deferred"])
+    assert status["remote_compile"]["mode"] == "fallback_deferred" and status["automatic_retry"]["not_before"]
+    assert world.compiles == [] and host.state() == "processed" and lane.markers(host.jobs, "fallback") == []

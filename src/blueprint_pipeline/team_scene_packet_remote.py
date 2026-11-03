@@ -23,8 +23,11 @@ In ``cloud_run`` an eligible request gets a hand-off and stays in ``processing/`
 (``team_scene_packet_collector``) dispatches it through the paid-resource allocator, lands the whole
 ``<attempt>/scene`` tree where the host compile would have written it, and leaves a ``collected`` marker.
 The no-spend worker then records the derived row and republishes the offer exactly as after a host compile.
-A request the paid unit gives up on comes back as a ``fallback`` marker and compiles on the host, from a
-fresh attempt directory; the host never compiles a request while a remote attempt of it may still land.
+A request the paid unit gives up on comes back as a ``fallback`` marker: for a reason that clears by itself
+(``TEMPORARY_FALLBACK_PREFIXES``) it is planned again after the automatic retry backoff, otherwise it compiles
+on the host from a fresh attempt directory, its marker removed first so a killed compile is an ordinary
+interrupted claim. The host never compiles a request while a remote attempt of it may still land, and a marker
+counts only for the attempt the request's claim holds now (a stale or unreadable one is quarantined).
 ``cloud_run`` is authoritative without a shadow-pass gate, unlike episode compilation: the scenes this lane
 exists for cannot compile on the host at all, so shadows could never earn passes for them. In
 ``cloud_run_shadow`` the host compiles every request and a completed, eligible one also gets a shadow
@@ -128,7 +131,9 @@ def load_config(environ: Mapping[str, str] | None = None) -> dict[str, Any] | No
     try:
         config = _read_record(Path(values.get(CONFIG_ENV) or DEFAULT_CONFIG_PATH), forbidden_mode=0o027,
                               maximum=CONFIG_MAX_BYTES)
-        return config if config is not None and not config_blockers(config) else None
+        # Judged for this stage alone: an invalid entry of another stage never turns this one off, nor this
+        # stage's invalid entry another.
+        return config if config is not None and not config_blockers(config, stage=STAGE) else None
     except Exception:  # noqa: BLE001 - deep nesting, a lone surrogate, an I/O error: no config, host
         return None
 
@@ -460,7 +465,8 @@ def plan_remote_team_scene(
     root, attempt, jobs = Path(filesystem_root), Path(attempt_root), Path(jobs_root)
     if not isinstance(source_commit, str) or re.fullmatch(r"[0-9a-f]{40}", source_commit) is None:
         return HostDecision("remote_ineligible:release_unknown")
-    if not isinstance(config, Mapping) or config_blockers(config) or STAGE not in config.get("stages", {}):
+    if (not isinstance(config, Mapping) or config_blockers(config, stage=STAGE)
+            or STAGE not in config.get("stages", {})):
         return HostDecision("remote_ineligible:config_invalid")
     entry = config["stages"][STAGE]
     if _ATTEMPT.fullmatch(attempt.name) is None or Path(arguments["output_root"]) != attempt / "scene":
@@ -616,6 +622,54 @@ def claims(jobs_root: str | Path) -> dict[str, dict[str, tuple[Path, dict[str, A
             if marker is not None and isinstance(marker.get("request_id"), str):
                 held.setdefault(marker["request_id"], {})[kind] = (path, marker)
     return held
+
+
+QUARANTINE = "quarantine"
+# A hand-back for a reason a later re-plan can clear by itself (a daily cap that rolls over, a full slot table,
+# a newer release, a provider or Cloud Run outage): the no-spend unit re-plans the request after the automatic
+# retry backoff rather than compiling on the host, until its automatic retries are spent.
+TEMPORARY_FALLBACK_PREFIXES = (
+    "remote_cpu_daily_cap_exceeded", "remote_cpu_live_execution_cap_reached", "remote_cpu_release_changed",
+    "remote_cpu_provider_unavailable:", "remote_cpu_dispatch_refused:", "remote_cpu_job_unavailable:",
+    "remote_cpu_ambiguous_dispatch_unresolved",
+)
+
+
+def temporary_fallback(reason: Any) -> bool:
+    return isinstance(reason, str) and reason.startswith(TEMPORARY_FALLBACK_PREFIXES)
+
+
+def quarantine_marker(jobs_root: str | Path, kind: str, path: Path, *, reason: str) -> dict[str, Any]:
+    """Move a marker the no-spend unit cannot act on out of its watched directory, with a typed reason, so a
+    ``PathExistsGlob`` watcher never restarts its unit for it. Nothing is deleted."""
+
+    directory = Path(jobs_root) / QUARANTINE / STAGE
+    directory.mkdir(parents=True, exist_ok=True, mode=0o750)
+    target = directory / f"{kind}-{secrets.token_hex(4)}-{path.name}"
+    os.replace(path, target)
+    return {"kind": kind, "marker": path.name, "reason": reason, "quarantined_as": target.name}
+
+
+def quarantine_unreadable(jobs_root: str | Path) -> list[dict[str, Any]]:
+    """Quarantine every collected or fallback marker that does not read as a sealed marker."""
+
+    moved = []
+    for kind in ("collected", "fallback"):
+        for path, marker in markers(jobs_root, kind):
+            if marker is None or not isinstance(marker.get("request_id"), str):
+                moved.append(quarantine_marker(jobs_root, kind, path, reason="team_scene_packet_marker_unreadable"))
+    return moved
+
+
+def read_envelope(jobs_root: str | Path, queue_row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The sealed envelope a queue row names, read back from this host; ``None`` unless its seal is the row's."""
+
+    record = _read_record(envelope_path(jobs_root, str(queue_row.get("name") or "")))
+    if (record is None or record.get("schema_version") != ENVELOPE_SCHEMA_VERSION
+            or record.get("envelope_digest") != canonical_digest(record, digest_field="envelope_digest")
+            or record["envelope_digest"] != queue_row.get("envelope_digest")):
+        return None
+    return record
 
 
 def record_shadow_parity(jobs_root: str | Path, fields: Mapping[str, Any]) -> dict[str, Any]:

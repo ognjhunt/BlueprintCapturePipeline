@@ -17,6 +17,7 @@ import scripts.deploy_control_plane_commit as deploy
 from blueprint_pipeline import remote_cpu_job_contract as contract
 from blueprint_pipeline import team_scene_packet_remote as lane
 from blueprint_pipeline import team_scene_packet_remote_condition as condition
+from blueprint_pipeline.control_plane_storage_roots import classify_path
 from blueprint_pipeline.production_runtime_env_guard import CONTROL_PLANE_ENTRYPOINTS
 from tests.remote_team_scene_packet_support import team_config
 
@@ -79,8 +80,13 @@ def test_the_paid_unit_holds_the_dispatcher_key_narrow_writes_and_a_read_only_au
     assert service.count("LoadCredential=remote-cpu-dispatcher:/etc/blueprint/credentials/remote-cpu-dispatcher.json") == 1
     writable = _paths(service, "ReadWritePaths")
     assert set(writable) == {JOBS, "/var/lib/blueprint/task-evaluation-inputs/team-scene-halves",
+                             "/var/lib/blueprint/pipeline-control-plane/disk-reservations",
                              "/var/lib/blueprint/spend-authority/consumed",
                              "/var/lib/blueprint/spend-authority/remote-cpu-settled"}
+    # Optional, so a host whose registry has not made it yet starts the unit; the landing check refuses before
+    # staging when it cannot be written.
+    assert " -/var/lib/blueprint/task-evaluation-inputs/team-scene-halves " in service
+    assert classify_path("/var/lib/blueprint/task-evaluation-inputs/team-scene-halves").storage_class == "evidence_hot"
     assert "/var/lib/blueprint/spend-authority/authorizations" in _paths(service, "ReadOnlyPaths")
     assert "-m blueprint_pipeline.team_scene_packet_remote_condition'" in service
     assert "-m blueprint_pipeline.team_scene_packet_collector run --source-commit" in service

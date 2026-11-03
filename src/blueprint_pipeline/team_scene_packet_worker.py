@@ -111,7 +111,7 @@ Fetcher = Callable[[Mapping[str, Any]], bytes]
 # the offer post, a failed object-store fetch. An operating-system error (``team_scene_packet_failed:<OSError>``)
 # is one too. Every other blocker is a deterministic refusal and stays blocked.
 TRANSIENT_BLOCKERS = frozenset({"team_scene_packet_interrupted", "team_scene_offer_publication_failed",
-                                "configured_controls_deferred_fetch_failed"})
+                                "configured_controls_deferred_fetch_failed", "team_scene_remote_compile_deferred"})
 # The wait before each automatic retry, in order; once all are used the request stays blocked.
 AUTOMATIC_RETRY_BACKOFF_SECONDS = (300, 1800, 7200)
 # An owner-contract refusal a later run can clear only once the owner confirms the job's thresholds
@@ -679,19 +679,28 @@ def _compile_routed(request: Mapping[str, Any], *, status: Mapping[str, Any], ru
         **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
         **({"embodiment_models": dict(models)} if embodiments and models else {}),
         **({"owner_success_confirmation_scope": owner_scope} if owner_scope is not None else {})}
-    plan = lane.plan_remote_team_scene(
-        request={"request_id": status["request_key"], "request_digest": request["request_digest"],
-                 "scene_revision_digest": request["scene_revision_digest"]},
-        capture_root=capture, attempt_root=attempt, arguments=arguments, source_commit=remote.source_commit,
-        config=remote.config, jobs_root=remote.jobs_root, filesystem_root=remote.filesystem_root,
-        cache_root=remote.cache_root, host_environment=remote.host_environment)
+    try:
+        plan: Any = lane.plan_remote_team_scene(
+            request={"request_id": status["request_key"], "request_digest": request["request_digest"],
+                     "scene_revision_digest": request["scene_revision_digest"]},
+            capture_root=capture, attempt_root=attempt, arguments=arguments, source_commit=remote.source_commit,
+            config=remote.config, jobs_root=remote.jobs_root, filesystem_root=remote.filesystem_root,
+            cache_root=remote.cache_root, host_environment=remote.host_environment)
+    except Exception as exc:  # noqa: BLE001 - a plan that cannot be made (hashing, the census) decides the host
+        lane.discard_attempt_envelopes(remote.jobs_root, attempt)
+        plan = lane.HostDecision(f"remote_ineligible:planner_failed:{type(exc).__name__}")
     route: dict[str, Any] = {"mode": remote.mode}
     if isinstance(plan, lane.HostDecision):
         route["host_decision"] = plan.reason
     else:
         route.update(queue_row=plan.queue_row["name"])
     if isinstance(plan, lane.RemotePlan) and remote.mode == "cloud_run":
-        lane.write_handoff(remote.jobs_root, plan, mode="authoritative", now=remote.clock())
+        try:
+            lane.write_handoff(remote.jobs_root, plan, mode="authoritative", now=remote.clock())
+        except BaseException:
+            # No hand-off names the envelope: it goes, and the attempt with it (``_compile``), as any failure.
+            lane.discard_envelope(remote.jobs_root, plan.queue_row["name"])
+            raise
         raise _HandedOff(attempt, {**route, "handed_off_at_epoch": float(remote.clock())})
     try:
         compiled = materialize_team_scene(**arguments)
@@ -703,12 +712,16 @@ def _compile_routed(request: Mapping[str, Any], *, status: Mapping[str, Any], ru
         raise
     if isinstance(plan, lane.RemotePlan):
         # Shadowed only once the host's own compile is recorded: what the host wrote is all any consumer reads.
-        if (prepared.get("registry") or {}).get("status") == "written":
+        try:
+            if (prepared.get("registry") or {}).get("status") != "written":
+                raise TeamScenePacketRequestRefused("team_scene_shadow_not_written")
             lane.write_handoff(remote.jobs_root, plan, mode="shadow", now=remote.clock(),
                                host={"inputs_digest": compiled["inputs_digest"]})
             route["shadowed"] = True
-        else:
+        except Exception as exc:  # noqa: BLE001 - a shadow is never worth the host's own result
             lane.discard_envelope(remote.jobs_root, plan.queue_row["name"])
+            route["shadow_skipped"] = str(exc)[:200] if isinstance(exc, TeamScenePacketRequestRefused) else (
+                f"team_scene_shadow_handoff_failed:{type(exc).__name__}")
     return prepared, route
 
 
@@ -776,10 +789,18 @@ def _collected_half(request: Mapping[str, Any], *, status: Mapping[str, Any], ca
     result = collected.get("result") or {}
     route = {"mode": "remote", "queue_row": collected["queue_row"]["name"], "attempt_id": collected.get("attempt_id")}
     try:
+        # Bound to what this host sealed: the attempt's own <attempt>/scene, and the envelope this unit wrote for
+        # this request, whose release the result must name.
+        output_root = lane.worker_path(attempt, remote.filesystem_root)
+        envelope = lane.read_envelope(remote.jobs_root, collected["queue_row"])
+        if output_root is None or collected.get("output_root") != f"{output_root}/scene":
+            raise TeamScenePacketRequestRefused("team_scene_remote_result_invalid:output_root")
+        if envelope is None or envelope.get("request_id") != status["request_key"]:
+            raise TeamScenePacketRequestRefused("team_scene_remote_result_invalid:envelope")
         reasons = lane.validate_result(result, request_id=str(status["request_key"]),
                                        envelope_digest=collected["queue_row"]["envelope_digest"],
-                                       source_commit=str(result.get("source_commit") or ""),
-                                       output_root=str(collected.get("output_root") or ""))
+                                       source_commit=str(envelope.get("source_commit") or ""),
+                                       output_root=f"{output_root}/scene")
         if reasons:
             raise TeamScenePacketRequestRefused("team_scene_remote_result_invalid:" + reasons[0])
         if result["status"] != lane.COMPLETED:
@@ -812,13 +833,13 @@ def _blocker(exc: BaseException) -> str:
 
 def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
              offer_transport: Callable[..., Any] | None, remote: Any = None,
-             collected: Mapping[str, Any] | None = None) -> dict[str, Any]:
+             collected: Mapping[str, Any] | None = None, carried: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from . import team_candidate_quick10_registry as registry_module
     from .agent_execution_offer import publish_agent_execution_offer
 
     status: dict[str, Any] = {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem,
                               "scenario_id": SCENARIO_ID, "provider_mutation_performed": False,
-                              "paid_execution_requested": False}
+                              "paid_execution_requested": False, **dict(carried or {})}
     # An automatically retried request keeps its attempt count, and the owner confirmations and releases
     # already tried, whatever this run ends in.
     prior = _read_json(root / "status" / claimed.name) or {}
@@ -922,7 +943,7 @@ def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: s
         discard_attempt_envelopes(jobs_root, prior["attempt_root"])
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
-                                        RELEASE_REQUEUE_FIELD) if key in prior}
+                                        RELEASE_REQUEUE_FIELD, "remote_compile") if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
                                    "scenario_id": SCENARIO_ID, "status": "blocked",
                                    "blockers": ["team_scene_packet_interrupted"],
@@ -955,49 +976,86 @@ def _held(remote: Any) -> dict[str, dict[str, Any]]:
     return claims(remote.jobs_root)
 
 
+def _deferred(root: Path, claimed: Path, prior: Mapping[str, Any], route: Mapping[str, Any]) -> dict[str, Any]:
+    """A hand-back the remote lane can clear by itself: blocked as transient, so the automatic retry backoff
+    returns the request to pending, where it is planned again (remote, if it still can be)."""
+
+    kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
+                                        "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
+                                        RELEASE_REQUEUE_FIELD) if key in prior}
+    return {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept, "scenario_id": SCENARIO_ID,
+            "status": "blocked", "blockers": ["team_scene_remote_compile_deferred"],
+            "remote_compile": {**route, "mode": "fallback_deferred"}, "provider_mutation_performed": False,
+            "paid_execution_requested": False}
+
+
 def _settle_remote(root: Path, held: Mapping[str, Mapping[str, Any]], *, fetcher: Fetcher | None,
                    offer_transport: Callable[..., Any] | None, remote: Any, release: str | None,
-                   limit: int) -> tuple[list[dict[str, Any]], list[str], int]:
-    """Finish each request whose remote compile landed (its offer published as after a host compile), and
-    compile on the host each one the paid unit handed back, at most ``limit`` of those. A marker is consumed
-    once acted on, or at once when its request is no longer claimed, so the path unit never loops on it."""
+                   limit: int) -> tuple[list[dict[str, Any]], list[str], int, list[dict[str, Any]]]:
+    """Finish each request whose remote compile landed (its offer published as after a host compile), and act on
+    each one the paid unit handed back: re-planned after the backoff when the reason is temporary, else compiled
+    on the host, at most ``limit`` of those. A marker counts only for the attempt its request's claim holds now;
+    any other, and any that does not read, is quarantined with a typed reason, so the path unit never loops on it.
 
-    from .team_scene_packet_remote import discard_envelope
+    A handed-back request is recorded on its status, and its marker removed, before its host compile starts: a
+    compile the OOM killer or the unit's timeout ends is then an ordinary interrupted claim, with its backoff and
+    its attempt directory discarded, and its retry is planned again rather than recompiled at once."""
+
+    from . import team_scene_packet_remote as lane
 
     results: list[dict[str, Any]] = []
     deferred: list[str] = []
+    quarantined = lane.quarantine_unreadable(remote.jobs_root)
     compiled = 0
     for request_id, kinds in sorted(held.items()):
         claimed = root / "processing" / f"{request_id}.json"
-        if "collected" in kinds:
-            path, record = kinds["collected"]
-            if claimed.is_file():
-                status = _process(root, claimed, fetcher=fetcher, offer_transport=offer_transport, remote=remote,
-                                  collected=record)
-                results.append(_finish(root, claimed, status, now=_utc_now(), release=release))
-                if status.get("attempt_root") != record.get("attempt_root"):
-                    _discard_unreferenced(record.get("attempt_root"), status.get("capture_root"))
-            discard_envelope(remote.jobs_root, record["queue_row"]["name"])
-            for kind in ("collected", "fallback"):
-                if kind in kinds:
-                    kinds[kind][0].unlink(missing_ok=True)
-        elif "fallback" in kinds:
-            path, record = kinds["fallback"]
-            if claimed.is_file():
-                if compiled >= limit:
-                    deferred.append(request_id)
-                    continue
-                prior = _read_json(root / "status" / claimed.name) or {}
-                # Nothing of the remote attempt landed; the host compiles from a fresh attempt directory.
-                _discard_unreferenced(record.get("attempt_root"), prior.get("capture_root"))
-                status = _process(root, claimed, fetcher=fetcher, offer_transport=offer_transport)
-                status["remote_compile"] = {"mode": "fallback_host", "queue_row": record["queue_row"]["name"],
-                                            "reason": record.get("reason")}
-                results.append(_finish(root, claimed, status, now=_utc_now(), release=release))
-                compiled += 1
-            discard_envelope(remote.jobs_root, record["queue_row"]["name"])
+        prior = _read_json(root / "status" / claimed.name) or {}
+        live: dict[str, tuple[Path, Mapping[str, Any]]] = {}
+        for kind in ("collected", "fallback"):
+            if kind not in kinds:
+                continue
+            path, record = kinds[kind]
+            if claimed.is_file() and record.get("attempt_root") == prior.get("attempt_root"):
+                live[kind] = (path, record)
+                continue
+            # The request was settled, or a newer attempt claims it: this marker is no longer its own.
+            quarantined.append(lane.quarantine_marker(remote.jobs_root, kind, path,
+                                                      reason="team_scene_packet_marker_stale"))
+            lane.discard_envelope(remote.jobs_root, record["queue_row"]["name"])
+            if prior.get("capture_root"):  # without it no derived row can be checked: the directory stays
+                _discard_unreferenced(record.get("attempt_root"), prior["capture_root"])
+        if "collected" in live:
+            path, record = live["collected"]
+            status = _process(root, claimed, fetcher=fetcher, offer_transport=offer_transport, remote=remote,
+                              collected=record)
+            results.append(_finish(root, claimed, status, now=_utc_now(), release=release))
+            if status.get("attempt_root") != record.get("attempt_root"):
+                _discard_unreferenced(record.get("attempt_root"), status.get("capture_root"))
+            lane.discard_envelope(remote.jobs_root, record["queue_row"]["name"])
+            for kind in live:
+                live[kind][0].unlink(missing_ok=True)
+        elif "fallback" in live:
+            path, record = live["fallback"]
+            route = {"mode": "fallback_host", "queue_row": record["queue_row"]["name"], "reason": record.get("reason")}
+            temporary = lane.temporary_fallback(record.get("reason")) and _retry_attempts(
+                dict(prior.get("automatic_retry") or {})) < len(AUTOMATIC_RETRY_BACKOFF_SECONDS)
+            if not temporary and compiled >= limit:
+                deferred.append(request_id)
+                continue
+            # Recorded, and its marker gone, before anything else: nothing of the remote attempt landed.
+            _write_replace(root / "status" / claimed.name, {**prior, "status": "processing", "remote_compile": route})
             path.unlink(missing_ok=True)
-    return results, deferred, compiled
+            lane.discard_envelope(remote.jobs_root, record["queue_row"]["name"])
+            _discard_unreferenced(record.get("attempt_root"), prior.get("capture_root"))
+            if temporary:
+                results.append(_finish(root, claimed, _deferred(root, claimed, prior, route), now=_utc_now(),
+                                       release=release))
+                continue
+            status = _process(root, claimed, fetcher=fetcher, offer_transport=offer_transport,
+                              carried={"remote_compile": route})
+            results.append(_finish(root, claimed, status, now=_utc_now(), release=release))
+            compiled += 1
+    return results, deferred, compiled, quarantined
 
 
 def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, fetcher: Fetcher | None = None,
@@ -1017,8 +1075,9 @@ def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, f
         # lane holds it: a hand-off until it lands or comes back, and then its collected or fallback marker.
         now = _utc_now()
         held = _held(routing)
-        settled, deferred, spent = _settle_remote(root, held, fetcher=fetcher, offer_transport=offer_transport,
-                                                  remote=routing, release=release, limit=max_messages)
+        settled, deferred, spent, quarantined = _settle_remote(
+            root, held, fetcher=fetcher, offer_transport=offer_transport, remote=routing, release=release,
+            limit=max_messages)
         recovered = [_recover_interrupted(root, path, now=now, release=release, jobs_root=routing.jobs_root)
                      for path in sorted((root / "processing").glob("*.json")) if path.stem not in held]
         retried = _requeue_due(root, now, release)
@@ -1033,8 +1092,9 @@ def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, f
                 results.append(_hold(root, claimed, status, release=release))
                 continue
             results.append(_finish(root, claimed, status, now=_utc_now(), release=release))
-    remote_view = {"execution_mode": routing.execution, "remote_settled": settled, "remote_deferred": deferred}
-    shown = routing.mode != "host" or settled or deferred or routing.execution["findings"]
+    remote_view = {"execution_mode": routing.execution, "remote_settled": settled, "remote_deferred": deferred,
+                   "remote_quarantined": quarantined}
+    shown = routing.mode != "host" or settled or deferred or quarantined or routing.execution["findings"]
     return {"schema_version": RUN_SCHEMA, "status": "processed" if results or recovered or settled else "idle",
             "processed_count": len(results), "results": results, "recovered": recovered,
             "automatic_requeue": retried, **(remote_view if shown else {}),

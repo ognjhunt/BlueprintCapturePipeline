@@ -37,9 +37,12 @@ SystemCallErrorNumber=EPERM
 # $CREDENTIALS_DIRECTORY/remote-cpu-dispatcher.  The no-spend team worker never loads it.
 LoadCredential=remote-cpu-dispatcher:/etc/blueprint/credentials/remote-cpu-dispatcher.json
 # Narrow writes instead of /var/lib/blueprint: the remote job records, the team scene halves it lands (the
-# registry's derived_profiles.packet_inputs.output_root), and the spend ledger's consumption and settlement.
+# registry's derived_profiles.packet_inputs.output_root on the production host), the disk ledger its landing
+# reserves, and the spend ledger's consumption and settlement.  The halves root is optional (-): absent, it is
+# created by the first team request's host compile and nothing lands, and a root the registry names elsewhere
+# is refused before anything is staged (remote_cpu_landing_root_unwritable), never after compute is paid.
 # It reads the queue, the inputs it stages and the capture's consent; the standing authority is read-only.
-ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs /var/lib/blueprint/task-evaluation-inputs/team-scene-halves /var/lib/blueprint/spend-authority/consumed /var/lib/blueprint/spend-authority/remote-cpu-settled
+ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs -/var/lib/blueprint/task-evaluation-inputs/team-scene-halves /var/lib/blueprint/pipeline-control-plane/disk-reservations /var/lib/blueprint/spend-authority/consumed /var/lib/blueprint/spend-authority/remote-cpu-settled
 ReadOnlyPaths=/var/lib/blueprint/spend-authority/authorizations
 ReadOnlyPaths=-/etc/blueprint/remote-cpu-workers.json
 TasksMax=512
@@ -52,6 +55,7 @@ Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/Bluepr
 Environment=BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT=/var/lib/blueprint/pipeline-control-plane/team-scene-packets
 Environment=BLUEPRINT_REMOTE_CPU_JOBS_ROOT=/var/lib/blueprint/pipeline-control-plane/remote-cpu-jobs
 Environment=BLUEPRINT_REMOTE_CPU_WORKERS_CONFIG=/etc/blueprint/remote-cpu-workers.json
+Environment=BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT=/var/lib/blueprint/pipeline-control-plane/disk-reservations
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ACCESS_KEY_ID_FILE=/etc/blueprint/provider-secrets/backblaze_b2_key_id
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_SECRET_ACCESS_KEY_FILE=/etc/blueprint/provider-secrets/backblaze_b2_application_key
 Environment=BLUEPRINT_TASK_EVALUATION_ARTIFACT_STORE_ENDPOINT_URL_FILE=/etc/blueprint/provider-secrets/backblaze_b2_s3_endpoint_url

@@ -30,6 +30,8 @@ ROLE_FOOTPRINT_BYTES: Mapping[str, int] = {
     "handoff_staging": 4 * GIB,
     "launch_preparation": 2 * GIB,
     "episode_compilation": 2 * GIB,
+    # A remote team-scene compile's whole tree landing on the host (plan 14's lane, team_scene_packet stage).
+    "team_scene_landing": 2 * GIB,
     "launch_activation": 2 * GIB,
     "launch_dispatch": 2 * GIB,
     "policy_canary_dispatch": 2 * GIB,

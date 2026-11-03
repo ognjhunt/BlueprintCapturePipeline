@@ -217,7 +217,8 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
                 if not control.startswith("ReadWritePaths="):
                     assert control in text, (unit.name, control)
             assert "ReadWritePaths=/var/lib/blueprint " not in text and "ReadWritePaths=/var/lib/blueprint\n" not in text
-            writable = next(line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+            writable = [path.removeprefix("-") for path in next(
+                line for line in text.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()]
             assert "/var/lib/blueprint" not in writable and all(path.startswith("/var/lib/blueprint/") for path in writable)
             assert "ReadOnlyPaths=/var/lib/blueprint/spend-authority/authorizations\n" in text
             assert "LoadCredential=remote-cpu-dispatcher:/etc/blueprint/credentials/remote-cpu-dispatcher.json" in text

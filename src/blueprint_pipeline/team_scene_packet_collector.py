@@ -63,6 +63,9 @@ SUMMARY_SCHEMA_VERSION = "team_scene_packet_remote_summary.v1"
 SUMMARY_NAME = f"summary.{STAGE}.json"
 QUEUE_ROOT_ENV = "BLUEPRINT_TEAM_SCENE_PACKET_QUEUE_ROOT"
 DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/team-scene-packets"
+# Landing a compiled scene half holds this role's disk reservation, as episode landing holds its own.
+DISK_ROLE = "team_scene_landing"
+DISK_RESERVATION_ROOT_ENV = "BLUEPRINT_CONTROL_PLANE_DISK_RESERVATION_ROOT"
 CollectorError, _AttemptFailed = shared.CollectorError, shared._AttemptFailed
 Allocate = Callable[[list[str]], Mapping[str, Any]]
 
@@ -87,6 +90,7 @@ class Collector:
     allocate: Allocate
     stage_release: Callable[[tuple[Any, str, str], str], Mapping[str, Any]]
     filesystem_root: Path = Path("/")
+    disk_reservation_root: Path | None = None
     summary: dict[str, Any] = field(default_factory=dict)
     execution: dict[str, Any] = field(default_factory=dict)
 
@@ -136,7 +140,7 @@ def _row(c: Collector, name: str, queue_row: Mapping[str, Any]) -> dict[str, Any
         return record
     return {"schema_version": ROW_SCHEMA_VERSION, "queue_row": dict(queue_row), "attempt_id": None, "failures": 0,
             "first_failure_at_epoch": None, "last_failure": None, "promoted": None, "gave_up": None,
-            "collected": None, "state_digest": ""}
+            "collected": None, "landed": None, "state_digest": ""}
 
 
 def _save_row(c: Collector, row: dict[str, Any], **changes: Any) -> dict[str, Any]:
@@ -152,7 +156,7 @@ def _for_attempt(c: Collector, row: dict[str, Any], attempt_id: str) -> dict[str
     if row["attempt_id"] == attempt_id:
         return row
     return _save_row(c, row, attempt_id=attempt_id, failures=0, first_failure_at_epoch=None, last_failure=None,
-                     promoted=None)
+                     promoted=None, collected=None, landed=None)
 
 
 def _record_failure(c: Collector, row: dict[str, Any], code: str) -> dict[str, Any]:
@@ -194,6 +198,14 @@ def _job_id(marker: Mapping[str, Any]) -> str:
 
 def _claimed(c: Collector, marker: Mapping[str, Any]) -> Path:
     return c.queue_root / "processing" / f"{marker['request_id']}.json"
+
+
+def _claim_is_ours(c: Collector, marker: Mapping[str, Any]) -> bool:
+    """Whether the request is still claimed for this marker's own attempt: a newer attempt of the same request
+    (planned again after a deferral or an interruption) has another attempt directory, and this marker is stale."""
+
+    status = shared._read_json(c.queue_root / "status" / f"{marker['request_id']}.json") or {}
+    return _claimed(c, marker).is_file() and status.get("attempt_root") == marker["plan"]["attempt_root"]
 
 
 # ---------------------------------------------------------------------------------------------- dispatch
@@ -273,8 +285,9 @@ def _give_up(c: Collector, marker: Mapping[str, Any], *, reason: str, attempts: 
     row = _row(c, name, marker["queue_row"])
     if row["gave_up"] is None:
         row = _save_row(c, row, gave_up={"reason": shared._outcome(reason), "at_epoch": c.now})
-    # Only a request still claimed goes back: one the no-spend unit already finished needs nothing more.
-    if (marker["mode"] == "authoritative" and _claimed(c, marker).is_file()
+    # Only a request still claimed for this attempt goes back: one the no-spend unit already finished, or that a
+    # newer attempt now claims, needs nothing more.
+    if (marker["mode"] == "authoritative" and _claim_is_ours(c, marker)
             and not remote.marker_path(c.jobs_root, "fallback", name).exists()
             and not remote.marker_path(c.jobs_root, "collected", name).exists()):
         attempt = Path(marker["plan"]["attempt_root"])
@@ -322,13 +335,32 @@ def _handed_back(c: Collector, marker: Mapping[str, Any]) -> str | None:
         return row["gave_up"]["reason"]
     if remote.marker_path(c.jobs_root, "fallback", name).exists():
         return "remote_cpu_row_handed_back"
-    if marker["mode"] == "authoritative" and not _claimed(c, marker).is_file():
+    if marker["mode"] == "authoritative" and not _claim_is_ours(c, marker):
         return "remote_cpu_row_not_claimed"
     return None
 
 
 def _dispatchable(c: Collector, marker: Mapping[str, Any]) -> bool:
     return c.mode == "cloud_run" if marker["mode"] == "authoritative" else c.mode in remote.REMOTE_MODES
+
+
+def _landing_refusal(plan: remote.RemotePlan) -> str | None:
+    """Whether this unit can land the attempt's tree: the attempt directory exists and takes a new directory under
+    this unit's own sandbox (its ``ReadWritePaths``). Asked before anything is staged or paid for, so a registry
+    output root the unit cannot write hands the request back instead of failing after the compute is spent."""
+
+    import secrets
+
+    attempt = Path(plan.attempt_root)
+    probe = attempt / f".landing-probe-{secrets.token_hex(8)}"
+    try:
+        if attempt.is_symlink() or not attempt.is_dir():
+            return "remote_cpu_landing_root_missing"
+        probe.mkdir(mode=0o700)
+        probe.rmdir()
+    except OSError:
+        return "remote_cpu_landing_root_unwritable"
+    return None
 
 
 def _refusal(c: Collector, marker: Mapping[str, Any], plan: remote.RemotePlan) -> str | None:
@@ -340,7 +372,10 @@ def _refusal(c: Collector, marker: Mapping[str, Any], plan: remote.RemotePlan) -
         return "remote_cpu_mode_rolled_back"
     if plan.source_commit != c.source_commit:
         return "remote_cpu_release_changed"
-    return _handed_back(c, marker)
+    handed = _handed_back(c, marker)
+    if handed is None and marker["mode"] == "authoritative":
+        return _landing_refusal(plan)
+    return handed
 
 
 # ---------------------------------------------------------------------------------------------- commit
@@ -448,8 +483,24 @@ def _land(c: Collector, plan: remote.RemotePlan, descriptor: dict[str, Any], ind
 
     destination = c.host(descriptor["outputs"]["output_root"])
     sources = {row["digest"]: row["host_path"] for row in plan.inputs}
-    landed = land_subset(index=index, reader=lambda offset, length: shared._range(c, archive["uri"], offset, length),
-                         host_sources=sources, destination_root=destination, selectors=["**"], member_store=None)
+    # What landing copies (archived blobs, one per blob and mode); input-origin blobs are hard-linked from host files.
+    missing = sum({(row["blob"], row["mode"]): row["size_bytes"] for row in index["entries"]
+                   if row["origin"] == "archive" or "input_member" in row["origin"]}.values())
+    reservation = None
+    if c.disk_reservation_root is not None:
+        from .control_plane_disk_budget import reserve_control_plane_disk
+
+        reservation = reserve_control_plane_disk(
+            DISK_ROLE, target_root=destination.parent, expected_bytes=missing + shared.LANDING_MARGIN_BYTES,
+            reservation_root=c.disk_reservation_root, workspace=destination, workload="team_scene_landing")
+    landed = None
+    try:
+        landed = land_subset(index=index, reader=lambda offset, length: shared._range(c, archive["uri"], offset,
+                                                                                    length),
+                             host_sources=sources, destination_root=destination, selectors=["**"], member_store=None)
+    finally:
+        if reservation is not None:
+            reservation.release(outcome="completed" if landed is not None else "failed")
     try:
         read_team_scene_inputs(destination / RECORD_FILENAME)
     except (OSError, ValueError, KeyError):
@@ -469,6 +520,7 @@ def _commit(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.Re
     blocked = receipt["status"] == "blocked"
     terminal = "blocked" if blocked else "completed"
     if _decided(c, plan, lease, descriptor):
+        _deliver(c, marker, lease, receipt)
         return _close(c, path, marker, lease, terminal=terminal, outcome=result["status"])
     if not _compute_zero(c, lease, descriptor):
         return {"status": "collecting", "blocker": "remote_cpu_compute_zero_unproven"}
@@ -489,6 +541,8 @@ def _commit(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.Re
         if reasons:
             raise _AttemptFailed(f"remote_cpu_output_invalid:{reasons[0]}")
         _after_step("validation", attempt_id)
+        if _withdrawn(plan):  # consent read again before any byte of the scene lands (privacy is a hard stop)
+            raise _AttemptFailed("team_scene_capture_withdrawn")
         try:
             landed = _land(c, plan, descriptor, index, promoted["archive"])
         except _AttemptFailed:
@@ -497,9 +551,11 @@ def _commit(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.Re
             row = _record_failure(c, row, shared._failure(exc, "remote_cpu_landing_failed"))
             return {"status": "collecting", "blocker": row["last_failure"]}
         _after_step("landing", attempt_id)
-    # Recorded on the row first, so the attempt stays decided once the no-spend unit consumes the marker.
-    _save_row(c, _for_attempt(c, _row(c, name, plan.queue_row), attempt_id), collected=attempt_id)
-    remote.write_collected(c.jobs_root, marker, attempt_id=attempt_id, result=result, landed=landed, now=c.now)
+    # Recorded on the row first, so the attempt stays decided once the no-spend unit consumes the marker; a marker
+    # that never got written is delivered again from the kept receipt (``_deliver``) before anything is closed.
+    _save_row(c, _for_attempt(c, _row(c, name, plan.queue_row), attempt_id), collected=attempt_id, landed=landed)
+    _after_step("decided", attempt_id)
+    _deliver(c, marker, lease, receipt)
     _after_step("collected", attempt_id)
     return _close(c, path, marker, lease, terminal=terminal, outcome=result["status"])
 
@@ -596,6 +652,20 @@ def _collect(c: Collector, path: Path, marker: Mapping[str, Any], plan: remote.R
         except _AttemptFailed as spent:
             return _abandon_commit(c, path, marker, current, str(spent))
         return {"status": "collecting", "blocker": row["last_failure"]}
+
+
+def _deliver(c: Collector, marker: Mapping[str, Any], lease: Mapping[str, Any], receipt: Mapping[str, Any]) -> None:
+    """Write this decided attempt's collected marker unless it is there, or the request no longer waits for it (the
+    no-spend unit consumed it and settled the request, or a newer attempt claims it)."""
+
+    if marker["mode"] != "authoritative":
+        return
+    name = marker["queue_row"]["name"]
+    if remote.marker_path(c.jobs_root, "collected", name).exists() or not _claim_is_ours(c, marker):
+        return
+    row = _row(c, name, marker["queue_row"])
+    remote.write_collected(c.jobs_root, marker, attempt_id=lease["attempt_id"], result=receipt["result"],
+                           landed=row.get("landed"), now=c.now)
 
 
 def _decided(c: Collector, plan: remote.RemotePlan, lease: Mapping[str, Any], descriptor: Mapping[str, Any]) -> bool:
@@ -724,6 +794,11 @@ def _advance(c: Collector, path: Path, marker: Mapping[str, Any]) -> dict[str, A
         return {"status": str(_allocate(c, "reconcile", descriptor_path, lease["attempt_id"]).get("status"))}
     if state == "dispatching":
         return {"status": state}
+    if state in {"dispatched", "running", "collecting"} and _withdrawn(plan):
+        # Consent withdrawn while the attempt runs: stop it, and its expiry hands the request back (never landed).
+        if state != "collecting":
+            _allocate(c, "cancel", descriptor_path, lease["attempt_id"])
+        return shared._fail(c, lease, "team_scene_capture_withdrawn")
     if state in {"dispatched", "running"}:
         return shared._monitor(c, lease, descriptor)
     if state == "collecting":
@@ -847,7 +922,7 @@ def main(argv: list[str] | None = None) -> int:
     execution = remote.resolve_execution_mode()
     mode, findings = execution["effective"], execution["findings"]
     try:
-        config, blockers = allocator.load_remote_cpu_config()
+        config, blockers = allocator.load_remote_cpu_config(stage=STAGE)
     except Exception as exc:  # noqa: BLE001 - a config no loader can validate is no provider: drain
         config, blockers = {}, [f"remote_cpu_config_invalid:{type(exc).__name__}"]
     if not blockers and STAGE not in config.get("stages", {}):
@@ -862,7 +937,9 @@ def main(argv: list[str] | None = None) -> int:
         queue_root=Path(os.environ.get(QUEUE_ROOT_ENV) or DEFAULT_QUEUE_ROOT), source_commit=args.source_commit or "",
         mode=mode, execution=execution, allocate=shared.subprocess_allocate,
         stage_release=lambda store, commit: publish_release_source(repository=repository, source_commit=commit,
-                                                                   client=store[0], bucket=store[1]))
+                                                                   client=store[0], bucket=store[1]),
+        disk_reservation_root=Path(os.environ[DISK_RESERVATION_ROOT_ENV]) if os.getenv(DISK_RESERVATION_ROOT_ENV)
+        else None)
     if blockers:
         summary = drain_without_provider(collector, blockers)
         print(json.dumps({"status": "blocked", "blockers": blockers, "rows": len(summary["rows"]),
