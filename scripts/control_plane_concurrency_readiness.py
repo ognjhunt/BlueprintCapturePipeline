@@ -76,7 +76,8 @@ def materialize_fixture_placement(
     collision = fetch_bound_reference(
         revision["geometry"]["configured_collision"],
         object_root=object_root,
-        path=output_root / "scene-collision.usda",
+        # ``.usd`` reads crate and text alike, whichever the revision bound.
+        path=output_root / "scene-collision.usd",
     )
     robot = output_root / "fixture-robot-body.usda"
     stage = Usd.Stage.CreateNew(str(robot))

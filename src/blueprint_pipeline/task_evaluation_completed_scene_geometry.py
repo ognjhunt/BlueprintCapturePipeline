@@ -106,7 +106,7 @@ def _usd_copy(source: Path, output: Path, *, scale: float, axis: str) -> dict[st
 def _triangle_copy(source: Path, output: Path, *, suffix: str, scale: float, axis: str) -> dict[str, str]:
     import numpy as np
     import trimesh
-    from pxr import Usd, UsdGeom, UsdPhysics
+    from pxr import Usd, UsdGeom, UsdPhysics, Vt
 
     original = trimesh.load(source, file_type=suffix[1:], force="scene", process=False)
     stage = Usd.Stage.CreateNew(str(output))
@@ -127,14 +127,19 @@ def _triangle_copy(source: Path, output: Path, *, suffix: str, scale: float, axi
             points = points[:, [0, 2, 1]] * ([1, -1, 1] if axis == "Y" else [1, 1, -1])
         path = f"/Root/mesh_{index:04d}_" + re.sub(r"[^A-Za-z0-9_]", "_", str(node))[:80]
         mesh = UsdGeom.Mesh.Define(stage, path)
-        mesh.CreatePointsAttr(points.tolist())
-        mesh.CreateFaceVertexCountsAttr([3] * len(source_mesh.faces))
-        mesh.CreateFaceVertexIndicesAttr(source_mesh.faces.reshape(-1).tolist())
+        # Whole arrays, not Python lists: a website room has 3.25 M points. Each double still rounds to
+        # the nearest float, as OpenUSD converted the list's values.
+        faces = np.asarray(source_mesh.faces, dtype=np.int64)
+        mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(np.asarray(points, dtype=np.float32).reshape(-1, 3)))
+        mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(np.full(len(faces), 3, dtype=np.int32)))
+        mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(faces.reshape(-1).astype(np.int32)))
         mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
         if source_mesh.visual.kind in {"vertex", "face"}:
             colors = np.asarray(source_mesh.visual.vertex_colors, dtype=float) / 255.0
-            mesh.CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex).Set(colors[:, :3].tolist())
-            mesh.CreateDisplayOpacityPrimvar(UsdGeom.Tokens.vertex).Set(colors[:, 3].tolist())
+            mesh.CreateDisplayColorPrimvar(UsdGeom.Tokens.vertex).Set(
+                Vt.Vec3fArray.FromNumpy(np.ascontiguousarray(colors[:, :3], dtype=np.float32)))
+            mesh.CreateDisplayOpacityPrimvar(UsdGeom.Tokens.vertex).Set(
+                Vt.FloatArray.FromNumpy(np.ascontiguousarray(colors[:, 3], dtype=np.float32)))
         UsdPhysics.CollisionAPI.Apply(mesh.GetPrim()).CreateCollisionEnabledAttr(True)
         UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr("none")
         mapping[str(node)] = path
@@ -156,7 +161,10 @@ def _normalize_completed_mesh(*, source: Path, original_filename: str, coordinat
                 "completed_mesh_normalization_conflict")
         checked_file(output_root / prior["output"]["relative_path"], prior["output"])
         return prior
-    output = output_root / "normalized_scene.usda"
+    # Binary crate: every reader opens it without a text parse. capture-447's room as USDA text was
+    # 292 MB, and each open that found no stage of it alive parsed it again at about 3.6 GB. Readers
+    # take the layer's name from this receipt, so a normalization written before keeps its .usda file.
+    output = output_root / "normalized_scene.usdc"
     require(not output.exists(), "completed_mesh_partial_normalization_requires_replay")
     scale, axis = float(coordinate_frame["meters_per_unit"]), coordinate_frame["up_axis"]
     with mesh_filename(source, original_filename) as named:
@@ -165,8 +173,8 @@ def _normalize_completed_mesh(*, source: Path, original_filename: str, coordinat
             mapping = _usd_copy(named, output, scale=scale, axis=axis)
         else:
             mapping = _triangle_copy(named, output, suffix=suffix, scale=scale, axis=axis)
-    # This ASCII layer is several times the admitted source's bytes; its points
-    # and faces are compared exactly with the source inspection below.
+    # The pipeline's own layer, past the source byte cap (a text one written before was several
+    # times its source); its points and faces are compared exactly with the source inspection below.
     observed = inspect_mesh(output, original_filename=output.name,
                             coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"},
                             normalized_output=True)
