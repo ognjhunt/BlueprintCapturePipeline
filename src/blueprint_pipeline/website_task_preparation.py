@@ -150,6 +150,71 @@ def native_task_preparation_gap(task_context: Mapping[str, Any], *,
     }
 
 
+#: Two typed holds for a job whose profile is rigid pick/place or articulated open/close but
+#: whose task object that profile cannot represent. Both are held before assembly coverage,
+#: spec research, registration and authoring, and so before anything is bought for the object.
+MULTI_OBJECT_GAP = "website_multi_object_task_preparation_required"
+DEFORMABLE_OBJECT_GAP = "website_deformable_task_object_preparation_required"
+
+
+def _subject_label(entry: Mapping[str, Any], targets: Mapping[str, Mapping[str, Any]]) -> str | None:
+    target = targets.get(str(entry.get("target_id"))) or {}
+    label = entry.get("semantic_label") or target.get("semantic_label")
+    return label if isinstance(label, str) and label.strip() else None
+
+
+def native_task_subject_gap(task_context: Mapping[str, Any], *, subjects: Sequence[Mapping[str, Any]],
+                            targets: Mapping[str, Mapping[str, Any]],
+                            task_semantics: Mapping[str, Any] | None = None,
+                            source_video_digest: str | None = None) -> dict[str, Any] | None:
+    """Hold a rigid or articulated job whose task object that profile cannot represent.
+
+    Several manipulated objects ("put both mugs on the shelf") are not one rigid
+    relocation or one opening, and a soft object (a towel, a bag, a cable) is not a
+    rigid body. Both previously compiled on, or failed late as an untyped
+    ``website_single_manipulated_subject_required``. Older contexts without an analysis
+    family keep their compatibility path; a family task and an authored synthetic
+    subject never reach this. The hold reports Blueprint's implementation gap only.
+    """
+    if "task_family" not in task_context or len(subjects) < 1:
+        return None
+    family = task_context["task_family"]
+    from .task_profile_contracts import deformable_subject_noun, task_profile_for
+    from .website_task_semantics import effective_task_profile
+    profile = task_profile_for(effective_task_profile(task_context=task_context, task_semantics=task_semantics,
+                                                      source_video_digest=source_video_digest))
+    if profile is None or profile.profile_id not in {"rigid_pick_place", "articulated_open_close"}:
+        return None
+    ids = [str(row.get("target_id")) for row in subjects]
+    label = _subject_label(subjects[0], targets) if len(subjects) == 1 else None
+    if len(subjects) > 1:
+        code, noun = MULTI_OBJECT_GAP, None
+        reason = (f"The task moves {len(subjects)} objects. Blueprint's {profile.profile_id} evaluation represents "
+                  "one task object; the job is held while an evaluation for several objects is prepared. The task "
+                  "is not narrowed to one of them.")
+        missing = ["multi_object_task_profile", "independent_task_scorer", "reset_contract"]
+    else:
+        noun = deformable_subject_noun(label) if profile.profile_id == "rigid_pick_place" else None
+        if noun is None:
+            return None
+        code = DEFORMABLE_OBJECT_GAP
+        reason = (f"The task object is a {noun}, a soft or flexible object. Blueprint's rigid pick-and-place "
+                  "evaluation models a rigid body; the job is held while a deformable-object evaluation is "
+                  "prepared. The object is not authored as a rigid stand-in.")
+        missing = ["deformable_object_asset_authoring", "deformable_native_physics", "independent_task_scorer"]
+    return {
+        "code": code, "task_family": family, "task_context_digest": task_context.get("context_digest"),
+        "job_disposition": "held_for_preparation", "description": task_context.get("description"),
+        "reason": reason, "missing": missing, "inferred_profile_id": profile.profile_id,
+        "subject_target_ids": ids,
+        **({"subject_label": label, "subject_basis": "manipulated_target_label_text_screen",
+            "deformable_noun": noun} if noun is not None else {}),
+        **({"task_semantics": dict(task_semantics), "source_video_digest": source_video_digest}
+           if family == "general_task" and task_semantics is not None else {}),
+        "claim_boundary": "Native evaluation implementation gap only; no robot-team capability verdict.",
+    }
+
+
 def _owner_targets_require_translation(owner_targets: Mapping[str, Any], request: Mapping[str, Any]) -> bool:
     from .task_evaluation_scene_execution_scope import scene_preparation_only
     return owner_targets["status"] != "not_supplied" and not scene_preparation_only(request)
@@ -964,6 +1029,12 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         subject_target = targets[synthetic["start_support_target_id"]]
         subject_entry = {"target_id": "synthetic-" + re.sub(r"[^a-z0-9]+", "-", synthetic["semantic_label"].lower()).strip("-"),
                          "semantic_label": synthetic["semantic_label"], "support_label": subject_target.get("semantic_label")}
+    elif len(removed) > 1:
+        # Several task objects are a held job, not a failed one; the subject is never narrowed to one.
+        gap = native_task_subject_gap(task_context, subjects=removed, targets=targets, **semantics_options)
+        if gap is None:
+            raise ValueError("website_single_manipulated_subject_required")
+        return retain_gap(gap)
     elif len(removed) != 1 or removed[0]["target_id"] not in targets:
         raise ValueError("website_single_manipulated_subject_required")
     else:
@@ -972,6 +1043,9 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         subject_entry, subject_target, synthetic_subject=synthetic)
     articulated = inferred_profile_id == "articulated_open_close"
     gap = native_task_preparation_gap(task_context, inferred_profile_id=inferred_profile_id, **semantics_options)
+    if gap is None and synthetic is None:
+        # A designed primitive is rigid by construction; an observed object may not be.
+        gap = native_task_subject_gap(task_context, subjects=removed, targets=targets, **semantics_options)
     if gap is not None:
         return retain_gap(gap)
     declared_mpu = base_scene.get("meters_per_unit")

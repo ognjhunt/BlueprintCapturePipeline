@@ -10,17 +10,24 @@ No GPU, provider, network or spend.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 import textwrap
 import zipfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from blueprint_pipeline import rigid_robot_free_probe_worker as worker
+from blueprint_pipeline import robot_arm_path_clearance as arm
+from blueprint_pipeline import scene_camera_visibility as camera
+from blueprint_pipeline import scene_physics_preflight as physics
 from blueprint_pipeline import vast_provider_adapter
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.native_task_arena_bundle import NativeTaskArenaBundleError, build_native_task_arena_bundle
 from blueprint_pipeline.native_task_arena_execution_contract import (
     EXECUTION_MODE_CONTRACTS,
     RIGID_ROBOT_FREE_PROBE_RUNTIME_MODULE_NAMES,
@@ -39,7 +46,15 @@ from blueprint_pipeline.rigid_robot_free_probe_bundle import (
     load_verified_rigid_robot_free_probe_bundle,
     main,
 )
-from tests.test_rigid_robot_free_probe_lane import COMMIT, build_world, staged_attempt
+from tests.test_rigid_robot_free_probe_lane import (
+    COMMIT,
+    PACKET_RECEIPT,
+    PLAN,
+    UNREACHABLE,
+    _unreachable_from_the_packets_own_base,
+    build_world,
+    staged_attempt,
+)
 
 PACKAGE = Path(worker.__file__).resolve().parent
 # The worker, the two modules its entrypoint and the Vast bootstrap run by name,
@@ -229,3 +244,134 @@ def test_the_worker_never_launches_isaac_for_inputs_the_manifest_does_not_bind(s
     assert launched == [] and result["candidate_policy_queried"] is False
     sealed_result = json.loads((tmp_path / "out" / worker.RESULT_FILENAME).read_text())
     assert sealed_result == result
+
+
+# --- gates the probe does not bear on are evidence beside it; policy runs still refuse ---------------
+
+def _bundle(world: dict[str, Any], job: Path, mode: str, candidate: str | None = None) -> dict[str, Any]:
+    return build_native_task_arena_bundle(
+        job_dir=job, packet_dir=world["packet"], worker_source=Path(worker.__file__), runtime_module_sources=[],
+        implementation_commit=COMMIT, execution_mode=mode, policy_candidate_id=candidate, generated_at="fixed")
+
+
+def test_the_probe_bundle_builds_where_the_packets_arm_cannot_reach_and_records_the_verdict(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    verdict = _unreachable_from_the_packets_own_base(world["packet"])
+    assert verdict["status"] == "blocked" and verdict["blockers"] == [UNREACHABLE], verdict
+    monkeypatch.setattr(arm, "packet_arm_path_clearance", lambda packet_dir: dict(verdict))
+    staged = staged_attempt(world)
+    bundle = staged["root"] / "bundle"
+    receipt = load_verified_rigid_robot_free_probe_bundle(bundle / BUNDLE_RECEIPT_FILENAME,
+                                                          expected_implementation_commit=COMMIT)
+    assert receipt["status"] == "ready" and receipt["blockers"] == []
+    assert receipt["evidence_only_checks"] == {"scene_camera_visibility": "not_applicable",
+                                               "robot_arm_path_clearance": "blocked",
+                                               "control_search_authority": "absent"}
+    report = json.loads((bundle / arm.PACKET_REPORT_FILENAME).read_text())
+    # The measured verdict, unchanged, beside the run; what would refuse a policy run is an advisory.
+    assert {key: report[key] for key in verdict if key != "blockers"} == {
+        key: value for key, value in verdict.items() if key != "blockers"}
+    assert report["admission"] == "evidence_only" and report["admission_execution_mode"] == worker.EXECUTION_MODE
+    assert report["blockers"] == [] and report["advisories"] == [UNREACHABLE]
+    assert report["report_digest"] == canonical_digest(report, digest_field="report_digest")
+    assert world["allocator_calls"] == [] and world["webapp_calls"] == []
+
+    # A gate that cannot measure the packet is evidence too, with the code its refusal would carry.
+    def unmeasurable(packet_dir: Path) -> dict[str, Any]:
+        raise arm.RobotArmPathClearanceError("robot_arm_path_scene_collision_unbound")
+
+    monkeypatch.setattr(arm, "packet_arm_path_clearance", unmeasurable)
+    bundle = staged_attempt(world, index=1)["root"] / "bundle"
+    receipt = json.loads((bundle / BUNDLE_RECEIPT_FILENAME).read_text())
+    assert receipt["status"] == "ready" and receipt["evidence_only_checks"]["robot_arm_path_clearance"] == "unmeasurable"
+    report = json.loads((bundle / arm.PACKET_REPORT_FILENAME).read_text())
+    assert report["status"] == "unmeasurable" and report["reason"] == "robot_arm_path_scene_collision_unbound"
+    assert report["blockers"] == [] and report["advisories"] == [
+        "robot_arm_path_refused:robot_arm_path_scene_collision_unbound"]
+    assert report["arena_scene_plan_digest"] == json.loads((world["packet"] / PLAN).read_text())["plan_digest"]
+
+
+@pytest.mark.parametrize(("mode", "candidate"), [("policy", "pi05_droid"), ("policy_diagnostic", "pi05_droid"),
+                                                 ("controls", None), ("construction_canary", None)])
+def test_every_other_bundle_still_refuses_where_the_packets_arm_cannot_reach(tmp_path, monkeypatch, mode,
+                                                                            candidate) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    verdict = _unreachable_from_the_packets_own_base(world["packet"])
+    monkeypatch.setattr(arm, "packet_arm_path_clearance", lambda packet_dir: dict(verdict))
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        _bundle(world, tmp_path / "job", mode, candidate)
+    assert error.value.errors == ("native_task_arena_bundle_robot_arm_path_blocked:" + UNREACHABLE,)
+    assert not (tmp_path / "job").exists()
+
+    def unmeasurable(packet_dir: Path) -> dict[str, Any]:
+        raise arm.RobotArmPathClearanceError("robot_arm_path_scene_collision_unbound")
+
+    monkeypatch.setattr(arm, "packet_arm_path_clearance", unmeasurable)
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        _bundle(world, tmp_path / "job", mode, candidate)
+    assert error.value.errors == ("native_task_arena_bundle_robot_arm_path_blocked:"
+                                  "robot_arm_path_refused:robot_arm_path_scene_collision_unbound",)
+
+
+def test_the_probe_keeps_the_physics_gate_and_records_the_policy_camera_gate(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    hidden = {"schema_version": camera.SCHEMA_VERSION, "status": "blocked", "advisories": [],
+              "blockers": ["scene_camera_contact_occluded_by_scene:external:37%"]}
+    monkeypatch.setattr(camera, "scene_camera_visibility", lambda packet_dir, rendered=None, **_options: dict(hidden))
+    # The probe renders nothing, so what a policy camera sees is evidence beside it.
+    bundle = staged_attempt(world)["root"] / "bundle"
+    report = json.loads((bundle / camera.PACKET_REPORT_FILENAME).read_text())
+    assert report["status"] == "blocked" and report["admission"] == "evidence_only" and report["blockers"] == []
+    assert report["advisories"] == hidden["blockers"]
+    receipt = json.loads((bundle / BUNDLE_RECEIPT_FILENAME).read_text())
+    assert receipt["evidence_only_checks"]["scene_camera_visibility"] == "blocked"
+    # A policy reads that camera, so its run is still refused.
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        _bundle(world, tmp_path / "policy-job", "policy", "pi05_droid")
+    assert error.value.errors == (
+        "native_task_arena_bundle_scene_camera_blocked:scene_camera_contact_occluded_by_scene:external:37%",)
+
+    # Physics decides where the untouched and the carried object come to rest, which the probe's
+    # scorer reads: it refuses the probe exactly as it refuses a policy run.
+    def blocked(packet_dir: Path, **_options: Any) -> dict[str, Any]:
+        raise physics.ScenePhysicsAdmissionBlocked(["task_object:scene_physics_rest_overlap:1.3cm"])
+
+    monkeypatch.setattr(physics, "require_scene_physics_admission", blocked)
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        staged_attempt(world, index=1)
+    assert error.value.errors == (
+        "native_task_arena_bundle_scene_physics_blocked:task_object:scene_physics_rest_overlap:1.3cm",)
+
+
+def _reseal_packet_file(packet: Path, relative: str, value: dict[str, Any]) -> None:
+    path = packet / relative
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    data = path.read_bytes()
+    receipt = json.loads((packet / PACKET_RECEIPT).read_text())
+    for artifact in receipt["artifacts"]:
+        if artifact["relative_path"] == relative:
+            artifact.update(size_bytes=len(data), sha256="sha256:" + hashlib.sha256(data).hexdigest())
+    receipt["receipt_digest"] = ""
+    receipt["receipt_digest"] = canonical_digest(receipt, digest_field="receipt_digest")
+    (packet / PACKET_RECEIPT).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+
+
+def test_the_probe_records_a_control_search_authority_it_never_continues(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    name = "native_task_arena_packet_request.v1.json"
+    request = json.loads((world["packet"] / name).read_text())
+    authority = {"enabled": True, "claim_ceiling": "qualified_controls_evaluation", "provider_allocations_performed": 0,
+                 "full_fidelity_replay_required": True, "authority_digest": ""}
+    authority["authority_digest"] = canonical_digest(authority, digest_field="authority_digest")
+    request["native_construction_feedback"] = {**(request.get("native_construction_feedback") or {}),
+                                               "control_search": authority}
+    _reseal_packet_file(world["packet"], name, request)
+    # Only a construction canary continues the packet's control search; it still refuses the claim.
+    with pytest.raises(NativeTaskArenaBundleError) as error:
+        _bundle(world, tmp_path / "canary-job", "construction_canary")
+    assert error.value.errors == ("native_task_arena_bundle_control_search_invalid",)
+    receipt = json.loads((staged_attempt(world)["root"] / "bundle" / BUNDLE_RECEIPT_FILENAME).read_text())
+    assert receipt["status"] == "ready" and receipt["evidence_only_checks"]["control_search_authority"] == "invalid"
+    assert receipt["control_search_authority_digest"] is None
+    assert receipt["warm_control_search_continuation_requested"] is False

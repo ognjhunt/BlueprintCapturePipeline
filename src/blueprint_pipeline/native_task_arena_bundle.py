@@ -22,7 +22,7 @@ import shutil
 import stat
 import zipfile
 import zlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -276,6 +276,31 @@ def _team_arm_path_unassessed(plan: Mapping[str, Any]) -> dict[str, Any]:
               "advisories": ["robot_arm_path_unassessed:" + str(robot.get("embodiment_id"))], "report_digest": ""}
     result["report_digest"] = canonical_digest(result, digest_field="report_digest")
     return result
+
+
+def _evidence_only(measure: Callable[[], Mapping[str, Any]], *, schema_version: str, plan_digest: Any,
+                   refused_prefix: str, execution_mode: str) -> dict[str, Any]:
+    """A gate's verdict, measured as for any run, kept as evidence beside the run and never raised.
+
+    For a run the gate does not bear on (the robot-free probe moves no robot and renders nothing).
+    What would have refused a policy run becomes an advisory with the same code; a gate that could
+    not measure the packet is ``unmeasurable`` with the code its refusal would have carried.
+    """
+    try:
+        report = dict(measure())
+        measured = [str(item) for item in report.get("blockers") or []]
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        reason = str(exc) or type(exc).__name__
+        blockers = getattr(exc, "blockers", None)
+        measured = ([str(item) for item in blockers] if isinstance(blockers, list) and blockers
+                    else [refused_prefix + reason])
+        report = {"schema_version": schema_version, "status": "unmeasurable", "reason": reason[:300],
+                  "arena_scene_plan_digest": plan_digest}
+    report = {**report, "admission": "evidence_only", "admission_execution_mode": execution_mode, "blockers": [],
+              "advisories": [*(str(item) for item in report.get("advisories") or []), *measured],
+              "report_digest": ""}
+    report["report_digest"] = canonical_digest(report, digest_field="report_digest")
+    return report
 
 
 def _rendered_external_views(packet_root: Path,
@@ -657,13 +682,25 @@ def build_native_task_arena_bundle(
     packet_root, packet_receipt, packet_rows = _verified_packet(packet_dir)
     team_plan = _team_scene_plan(packet_root, team_embodiment)
     team_scope = {} if team_plan is None else {"scene_plan": team_plan}
-    # No paid native run starts from a scene the CPU checks block or cannot measure:
+    from .rigid_robot_free_probe_worker import EXECUTION_MODE as ROBOT_FREE_PROBE_MODE
+
+    # The robot-free probe checks the scene's scorer: the task object is left untouched, then
+    # carried to its goal by setting its pose and released, with the robot idle at reset; nothing
+    # is rendered and no policy runs (rigid_robot_free_probe_worker). A gate that only bears on a
+    # policy driving the arm or reading a camera is measured for it and written beside the run as
+    # evidence, never raised: reach and camera view are not privacy, rights or money (AGENTS.md).
+    robot_free_probe = execution_mode == ROBOT_FREE_PROBE_MODE
+    plan_digest = (team_plan or {}).get("plan_digest") or packet_receipt.get("arena_scene_plan_digest")
+    evidence_only_checks: dict[str, Any] = {}
+    # No other paid native run starts from a scene the CPU checks block or cannot measure:
     # rest overlap, background inside the asset, task-range contact, or a contact the
     # policy camera cannot see through the captured scene.
     from .scene_camera_visibility import (
         PACKET_REPORT_FILENAME as CAMERA_REPORT_FILENAME,
+        SCHEMA_VERSION as CAMERA_SCHEMA_VERSION,
         SceneCameraVisibilityBlocked,
         require_scene_camera_admission,
+        scene_camera_visibility,
     )
     from .scene_physics_preflight import (
         PACKET_REPORT_FILENAME,
@@ -671,6 +708,9 @@ def build_native_task_arena_bundle(
         require_scene_physics_admission,
     )
 
+    # Physics refuses every mode, the probe included: a scene that pushes its parts apart at rest,
+    # or strikes a moving part or the idle robot's fixed body in the task's range, changes where the
+    # probe's untouched and carried object come to rest, which is what its scorer reads.
     try:
         physics_report = require_scene_physics_admission(packet_root, **team_scope)
     except ScenePhysicsAdmissionBlocked as exc:
@@ -682,22 +722,37 @@ def build_native_task_arena_bundle(
     # A team's own world-fixed cameras replace that one, measured in each cell as well.
     rendered = _rendered_external_views(packet_root, bound_runtime_inputs,
                                         team_embodiment if team_plan is not None else None)
-    try:
-        camera_report = require_scene_camera_admission(
-            packet_root, **({"rendered_external_views": rendered} if rendered else {}), **team_scope)
-    except SceneCameraVisibilityBlocked as exc:
-        raise NativeTaskArenaBundleError(
-            ["native_task_arena_bundle_scene_camera_blocked:" + item for item in exc.blockers]
-        ) from exc
+    if robot_free_probe:
+        camera_report = _evidence_only(
+            lambda: scene_camera_visibility(packet_root, rendered or None, **team_scope),
+            schema_version=CAMERA_SCHEMA_VERSION, plan_digest=plan_digest,
+            refused_prefix="scene_camera_check_refused:", execution_mode=execution_mode)
+        evidence_only_checks["scene_camera_visibility"] = camera_report["status"]
+    else:
+        try:
+            camera_report = require_scene_camera_admission(
+                packet_root, **({"rendered_external_views": rendered} if rendered else {}), **team_scope)
+        except SceneCameraVisibilityBlocked as exc:
+            raise NativeTaskArenaBundleError(
+                ["native_task_arena_bundle_scene_camera_blocked:" + item for item in exc.blockers]
+            ) from exc
     # Nor from a base where the task's moving part strikes the arm whatever the grip.
     from .robot_arm_path_clearance import (
         PACKET_REPORT_FILENAME as ARM_PATH_REPORT_FILENAME,
+        SCHEMA_VERSION as ARM_PATH_SCHEMA_VERSION,
         RobotArmPathAdmissionBlocked,
+        packet_arm_path_clearance,
         require_robot_arm_path_admission,
     )
 
     try:
-        if team_plan is None:
+        if team_plan is None and robot_free_probe:
+            # The probe never moves the arm, so whether it reaches the task is evidence, not a gate.
+            arm_path_report = _evidence_only(
+                lambda: packet_arm_path_clearance(packet_root), schema_version=ARM_PATH_SCHEMA_VERSION,
+                plan_digest=plan_digest, refused_prefix="robot_arm_path_refused:", execution_mode=execution_mode)
+            evidence_only_checks["robot_arm_path_clearance"] = arm_path_report["status"]
+        elif team_plan is None:
             arm_path_report = require_robot_arm_path_admission(packet_root)
         elif team_robot_model is None:
             arm_path_report = _team_arm_path_unassessed(team_plan)
@@ -730,15 +785,25 @@ def build_native_task_arena_bundle(
         if isinstance(control_search, Mapping)
         else None
     )
-    if control_search is not None and (
-        control_search.get("enabled") is not True
+    control_search_invalid = control_search is not None and (
+        not isinstance(control_search, Mapping)
+        or control_search.get("enabled") is not True
         or control_search.get("claim_ceiling")
         != "development_only_control_search"
         or control_search.get("provider_allocations_performed") != 0
         or control_search.get("full_fidelity_replay_required") is not True
         or control_search_digest
         != canonical_digest(control_search, digest_field="authority_digest")
-    ):
+    )
+    if robot_free_probe:
+        # Only a construction canary continues the packet's control search
+        # (native_task_arena_paid_authority); the probe commands no control, so the
+        # authority's validity is recorded, and an invalid one is never carried.
+        evidence_only_checks["control_search_authority"] = (
+            "absent" if control_search is None else "invalid" if control_search_invalid else "valid")
+        if control_search_invalid:
+            control_search_digest = None
+    elif control_search_invalid:
         raise NativeTaskArenaBundleError(
             ["native_task_arena_bundle_control_search_invalid"]
         )
@@ -1037,6 +1102,8 @@ def build_native_task_arena_bundle(
         "retry_cap": 0,
         "provider_zero_required_after_return": True,
         "blockers": [],
+        # Each gate the run does not bear on, with its verdict; the reports sit beside the receipt.
+        **({"evidence_only_checks": evidence_only_checks} if robot_free_probe else {}),
         "input_digest": "",
     }
     manifest["input_digest"] = canonical_digest(
