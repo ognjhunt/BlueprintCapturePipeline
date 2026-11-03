@@ -32,7 +32,12 @@ ReadOnlyPaths=/etc/blueprint/provider-secrets
 ReadWritePaths=/var/lib/blueprint/pipeline-control-plane/scene-object-discoveries /var/lib/blueprint/task-evaluation-inputs/scene-object-discoveries /var/lib/blueprint/task-evaluation-inputs/scene-object-discovery-outputs
 TasksMax=512
 LimitNOFILE=16384
+# Host memory (8.3 GB, no swap): it reads a whole splat and has not run on the
+# host since 10-27, so MemoryMax stays at main's, with no throttle, until it
+# is. Batch job, retried: +200, so it goes before the always-on services, paid
+# work and the money-safety units.
 MemoryMax=8G
+OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=4h
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane

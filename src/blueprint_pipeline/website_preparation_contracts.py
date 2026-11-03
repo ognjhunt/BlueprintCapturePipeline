@@ -10,6 +10,7 @@ import re
 
 from .decision_deadlines import note_deadline
 from .decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
+from .website_job_window import WEBSITE_JOB_WINDOW_MAX_SECONDS
 from .website_task_context_contracts import validate_website_task_context
 
 from .task_evaluation_scene_execution_scope import scene_preparation_only
@@ -63,7 +64,8 @@ def validate_preparation_authority(*, task_context, authority, now, valid_until=
     """``valid_until`` is the bound intent's effective (owner-extended) expiry.
 
     It moves only the "still valid now" check, never past raw expiry + 7 days;
-    the grant's own issued-to-expiry window is checked unchanged.
+    the grant's own issued-to-expiry window is checked unchanged, at most
+    ``WEBSITE_JOB_WINDOW_MAX_SECONDS`` (the WebApp's policy bound, mirrored).
     """
     validate_website_task_context(
         task_context,
@@ -132,7 +134,7 @@ def validate_preparation_authority(*, task_context, authority, now, valid_until=
         )
         or issued > now + 60
         or not now < current
-        or not 0 < expiry - issued <= 86400
+        or not 0 < expiry - issued <= WEBSITE_JOB_WINDOW_MAX_SECONDS
     ):
         raise ValueError("website_preparation_authority_invalid")
     validate_preparation_proposal(authority, task_context)

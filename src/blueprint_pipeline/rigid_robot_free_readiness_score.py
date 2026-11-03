@@ -100,6 +100,13 @@ def _physics(spec: Mapping[str, Any], context: Mapping[str, Any], trace: Any, *,
     # placement episode starts from the untouched scene's final reading.
     zero = _score(spec, scorer_samples(context, untouched[decimation - 1::decimation]))
     placed = _score(spec, scorer_samples(context, untouched[-1:] + driven[decimation - 1::decimation]))
+    if zero["status"] == "unscorable":
+        # The scorer could not read the untouched scene from its first sample (capture-447ae4f4:
+        # the object spawned 14.7 mm from the task's start): the scene never started where the
+        # task does, the contract was never tested, and this is no verdict on it. Undecided, the
+        # receipt stays replaceable for a corrected scene. An untouched object that later moves
+        # off its start by itself is the scene's own failure and stays decided.
+        raise _Unavailable("physics_episode_unscorable:" + ",".join(sorted(set(zero["errors"])))[:200])
     return {"zero_action": zero, "direct_placement": placed, "physics_hz": PHYSICS_HZ, "control_frequency_hz": hz,
             "plan_digest": trace["plan"]["plan_digest"], "scene_context": recorded.get("scene_context"),
             "scene_collisions_modeled": recorded.get("scene_collisions_modeled"), "drive": proof.get("drive")}

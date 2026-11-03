@@ -24,8 +24,13 @@ touches nothing. Enabled, for each pending capture it:
 2. stops when the receipt is decided (passed or failed, never replaced), the
    task cannot be probed, or the attempt budget is spent (two funded attempts,
    four refusals before funding). An attempt refused while staging (the packet
-   or its plan cannot carry the probe) launched nothing and counts toward
-   neither; the refusal seals the job ``staging_refused``;
+   or its plan cannot carry the probe, or spawns its object off the task's
+   start, so no episode could be scored) launched nothing and counts toward
+   neither; the refusal seals the job ``staging_refused``. The WebApp's own
+   refusal of the grant (an exhausted upstream cap or job ceiling, its provider
+   terms, a refused or expired grant) is a money stop the owner can lift: it
+   counts toward neither, never seals, and no attempt is staged again for
+   ``GRANT_REFUSAL_RETRY_SECONDS``;
 3. otherwise rechecks every precondition it can without spending (enable
    setting, receipt, the capture's retained website grant, driver ceiling,
    launch gate and watchdog scope), stages one attempt (probe input, sealed
@@ -54,6 +59,12 @@ specification, retains the receipt (a decided receipt is never replaced) and
 republishes the job's offer. An undecided receipt leaves the capture queued for
 its one further funded attempt.
 
+Bulk bytes: with ``BLUEPRINT_RIGID_ROBOT_FREE_PROBE_WORK_ROOT`` set (the unit sets the
+work volume), a new attempt writes its sealed bundle and allocator job directory (provider
+staging, output, extraction and its disk hold) under
+``<work root>/jobs/<job>/attempts/<NN>`` and records that directory; every other file stays in
+the queue. An attempt staged without it keeps everything in the queue, as before.
+
 For the capped canary: ``preflight --capture-root X --scratch-dir Y`` stages
 one attempt outside the queue and runs the lane dry (no grant, no GPU), and
 ``run-queue --capture-root X --max-attempts 1`` starts at most one GPU attempt.
@@ -70,7 +81,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +106,12 @@ from .rigid_robot_free_probe_worker import INPUTS_FILENAME, RESULT_SCHEMA_VERSIO
 
 QUEUE_ENV = "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE"
 DEFAULT_QUEUE = "/var/lib/blueprint/pipeline-control-plane/rigid-robot-free-probes"
+# The bulk volume a new attempt stages its sealed bundle and allocator job directory under (the
+# unit sets /mnt/blueprint-work/rigid-robot-free-probe-work). The queue, its ledgers, the attempt
+# records and the allocator receipts stay in the queue root. Unset keeps everything there, as
+# before; an attempt records where its bulk went, so a later setting never moves an existing one.
+WORK_ENV = "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_WORK_ROOT"
+WORK_DIR_FIELD = "work_dir"
 ENTRY_SCHEMA = "blueprint.rigid_robot_free_probe_queue_entry.v1"
 TERMINAL_SCHEMA = "blueprint.rigid_robot_free_probe_terminal.v1"
 INGEST_SCHEMA = "blueprint.rigid_robot_free_probe_ingest.v1"
@@ -112,6 +131,17 @@ FINAL_STATES = frozenset({"receipt_decided", "unavailable_for_task", "scene_revi
 WAITING_STATES = frozenset({"running", "unknown", "provider_zero_unproven", "retention_pending"})
 # Refused before any grant was reserved: bounded, and never retried within the same pass.
 UNFUNDED_STATES = frozenset({"unfunded_blocked", "not_launched"})
+# The WebApp itself refused the grant (its upstream cap or the job's ceiling exhausted, its provider terms, a
+# refused, expired or missing grant): a money or rights stop the owner can lift, so it counts toward no limit
+# and never seals the job (capture-447ae4f4: four such refusals sealed ``attempts_exhausted``). Nothing was
+# reserved and no paid run is staged for it again until ``GRANT_REFUSAL_RETRY_SECONDS`` pass: the WebApp offers
+# no read of a ledger's headroom, so only a reservation can tell, and each staging re-reads the room collider.
+GRANT_REFUSED_STATE = "website_grant_refused"
+GRANT_REFUSAL_BLOCKERS = ("rigid_robot_free_probe_website_grant_exhausted",
+                          "rigid_robot_free_probe_website_grant_refused:",
+                          "rigid_robot_free_probe_website_grant_expired",
+                          "rigid_robot_free_probe_website_grant_missing")
+GRANT_REFUSAL_RETRY_SECONDS = 3 * 3600
 # Refused while staging, before any argv existed: nothing was launched, funded or allocated, so the
 # attempt counts toward neither limit. Its refusal seals the job, so it cannot loop.
 NOT_STAGED_STATE = "not_staged"
@@ -132,8 +162,41 @@ class RigidRobotFreeProbeIngestError(ValueError):
     """The returned run cannot be ingested; the reason names why."""
 
 
+class RigidRobotFreeProbeWorkRootError(RuntimeError):
+    """The configured work root cannot hold a new attempt; nothing is staged (not a staging refusal)."""
+
+
 def _queue_root(queue_root: str | Path | None) -> Path:
     return Path(queue_root or os.environ.get(QUEUE_ENV) or DEFAULT_QUEUE)
+
+
+def new_attempt_work_dir(job: Path, index: int) -> Path | None:
+    """Where a new attempt's bulk goes: ``<work root>/jobs/<job>/attempts/<NN>``, or None for the queue."""
+
+    raw = str(os.environ.get(WORK_ENV) or "").strip()
+    if not raw:
+        return None
+    root = Path(raw)
+    if (not root.is_absolute() or ".." in root.parts or not root.is_dir()
+            or any(path.is_symlink() for path in (root, *root.parents))):
+        raise RigidRobotFreeProbeWorkRootError("rigid_robot_free_probe_work_root_unavailable")
+    return root / "jobs" / job.name / "attempts" / f"{index:02d}"
+
+
+def attempt_work_dir(attempt: Path) -> Path:
+    """Where this attempt's bundle and allocator job directory live: the one it recorded, else itself."""
+
+    recorded = (_read_optional(attempt / ATTEMPT_FILENAME) or {}).get(WORK_DIR_FIELD)
+    if recorded is None:
+        return attempt
+    path = Path(recorded) if isinstance(recorded, str) else Path()
+    if not path.is_absolute() or ".." in path.parts or path.name != attempt.name:
+        raise RigidRobotFreeProbeIngestError("rigid_robot_free_probe_work_dir_invalid")
+    return path
+
+
+def _funded(attempt: Path) -> bool:
+    return (attempt_work_dir(attempt) / "allocator" / FUNDING_FILENAME).is_file()
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -215,13 +278,18 @@ def enqueue_rigid_robot_free_probe(capture_root: str | Path, *, queue_root: str 
 
 
 def allocator_argv(*, attempt: Path, authority: Mapping[str, Any], authority_path: Path,
-                   bundle_receipt_path: Path, machine_avoidlist_path: str | None = None) -> list[str]:
-    """The one canonical allocator invocation for one staged attempt."""
+                   bundle_receipt_path: Path, machine_avoidlist_path: str | None = None,
+                   work: Path | None = None) -> list[str]:
+    """The one canonical allocator invocation for one staged attempt.
+
+    Its job directory (provider staging, output and extraction) is in ``work``, the attempt's
+    bulk directory, when it has one; the admission and result receipts stay in the attempt.
+    """
 
     argv = ["gpu-canary", "--provider", "vast", "--probe-kind", PROBE_KIND,
             "--native-task-arena-bundle-receipt", str(bundle_receipt_path),
             "--native-task-arena-attempt-authority", str(authority_path),
-            "--adp-job-dir", str(attempt / "allocator"),
+            "--adp-job-dir", str((attempt if work is None else work) / "allocator"),
             "--adp-max-hourly-rate-usd", str(authority["max_hourly_rate_usd"]),
             "--adp-max-spend-usd", str(authority["hard_cap_usd"]),
             "--adp-hard-ttl-seconds", str(authority["hard_ttl_seconds"]),
@@ -294,12 +362,14 @@ def _record_ingest(attempt: Path, value: Mapping[str, Any]) -> dict[str, Any]:
 def verified_trace(result: Mapping[str, Any], *, attempt: Path, request: Mapping[str, Any]) -> dict[str, Any]:
     """The trace the GPU host recorded, once its wrapper and binding prove it is this attempt's request."""
 
-    root = attempt.resolve()
+    # The attempt's own directories: itself, and the bulk directory it recorded at staging.
+    roots = {attempt.resolve(), attempt_work_dir(attempt).resolve()}
     staged = _read(attempt / ATTEMPT_FILENAME)
     if result.get("bundle_sha256") != staged.get("bundle_sha256"):
         raise RigidRobotFreeProbeIngestError("rigid_robot_free_probe_result_bundle_mismatch")
     native_path = Path(str(result.get("native_control_result_path") or "")).resolve()
-    if root not in native_path.parents or native_path.is_symlink() or not native_path.is_file():
+    if (not any(root in native_path.parents for root in roots) or native_path.is_symlink()
+            or not native_path.is_file()):
         raise RigidRobotFreeProbeIngestError("rigid_robot_free_probe_result_missing")
     native = _read(native_path)
     if (native.get("result_digest") != result.get("native_control_result_digest")
@@ -359,7 +429,12 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
             # A launched allocator with no result is never followed by a second allocation.
             return {"state": "running" if _allocator_alive(attempt) else "unknown"}
         return _record_ingest(attempt, {"state": "not_launched", "funded": False, "allocated": False})
-    funded = (attempt / "allocator" / FUNDING_FILENAME).is_file()
+    work = attempt_work_dir(attempt)
+    if work != attempt and not work.is_dir():
+        # Its bulk volume is not there: whether it was funded cannot be read. Hold the capture
+        # (never a second allocation) until the volume is back.
+        return {"state": "unknown", "reason": "rigid_robot_free_probe_work_dir_unavailable"}
+    funded = _funded(attempt)
     allocated = not proves_no_provider_allocation(result)
     zero = result.get("continuing_spend_from_this_run") is False and result.get("all_staged_objects_absent") is True
     if allocated and not zero:
@@ -369,7 +444,8 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
             "estimated_cost_usd": result.get("estimated_cost_usd")}
     if result.get("status") != "completed":
         name = "funded_unallocated" if funded and not allocated else "allocated_blocked" if allocated else (
-            "unfunded_blocked")
+            GRANT_REFUSED_STATE if any(str(item).startswith(GRANT_REFUSAL_BLOCKERS) for item in base[
+                "allocator_blockers"]) else "unfunded_blocked")
         return _record_ingest(attempt, {**base, "state": name})
     request = _read(attempt / INPUTS_FILENAME)["probe_request"]
     try:
@@ -531,11 +607,26 @@ def final_terminal(state: Mapping[str, Any], *, queue_root: str | Path | None = 
     return terminal
 
 
+def _grant_refusal_wait(settled: Mapping[str, Any], *, now: float) -> int | None:
+    """Seconds until a WebApp grant refusal may be tried again, or None when nothing waits."""
+
+    if settled.get("state") != GRANT_REFUSED_STATE:
+        return None
+    try:
+        refused = datetime.fromisoformat(str(settled["settled_at_iso"])).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return GRANT_REFUSAL_RETRY_SECONDS  # an unreadable time waits the whole interval, never less
+    remaining = refused + GRANT_REFUSAL_RETRY_SECONDS - float(now)
+    return min(GRANT_REFUSAL_RETRY_SECONDS, max(1, int(remaining))) if remaining > 0 else None
+
+
 def _counts(job: Path) -> tuple[int, int]:
     funded = unfunded = 0
     for attempt in _attempts(job):
         record = _read_optional(attempt / INGEST_FILENAME) or {}
-        if (attempt / "allocator" / FUNDING_FILENAME).is_file() or record.get("allocated") is True:
+        # The ingest record (beside the queue) counts too, so a funded attempt whose bulk volume
+        # cannot be read still counts as funded.
+        if record.get("funded") is True or record.get("allocated") is True or _funded(attempt):
             funded += 1
         elif record.get("state") in UNFUNDED_STATES:
             unfunded += 1
@@ -564,30 +655,40 @@ def precheck_blockers(state: Mapping[str, Any], *, job: Path) -> list[str]:
     return blockers
 
 
-def stage_attempt(job: Path, index: int, *, state: Mapping[str, Any], commit: str) -> dict[str, Any]:
-    """Write one attempt's probe input, sealed bundle, single-use authority and allocator argv."""
+def stage_attempt(job: Path, index: int, *, state: Mapping[str, Any], commit: str,
+                  work_dir: Path | None = None) -> dict[str, Any]:
+    """Write one attempt's probe input, sealed bundle, single-use authority and allocator argv.
+
+    With ``work_dir`` (``new_attempt_work_dir``) the sealed bundle and the allocator job
+    directory are written there, a fresh directory, and the attempt record names it.
+    """
 
     from .rigid_robot_free_probe_bundle import build_rigid_robot_free_probe_bundle, probe_inputs
     from .rigid_robot_free_probe_lane import build_paid_authority
 
     attempt = job / "attempts" / f"{index:02d}"
     attempt.mkdir(parents=True, mode=0o750)
+    work = attempt if work_dir is None else Path(work_dir)
+    if work != attempt:
+        work.mkdir(parents=True, mode=0o750)
     facts = state["facts"]
     inputs_path = _write_exclusive(attempt / INPUTS_FILENAME, probe_inputs(state=state))
     bundle = build_rigid_robot_free_probe_bundle(
-        job_dir=attempt / "bundle", packet_dir=facts["packet_dir"],
+        job_dir=work / "bundle", packet_dir=facts["packet_dir"],
         runtime_source_packet_receipt=facts["runtime_source_packet_receipt"], inputs_path=inputs_path,
         implementation_commit=commit)
-    receipt_path = attempt / "bundle" / BUNDLE_RECEIPT_FILENAME
+    receipt_path = work / "bundle" / BUNDLE_RECEIPT_FILENAME
     authority = build_paid_authority(attempt_id=f"{job.name}-a{index:02d}", inputs_path=inputs_path,
                                      bundle_receipt_path=receipt_path, bundle=bundle, source_commit=commit)
     authority_path = _write_exclusive(attempt / AUTHORITY_FILENAME, authority)
     argv = allocator_argv(attempt=attempt, authority=authority, authority_path=authority_path,
                           bundle_receipt_path=receipt_path,
-                          machine_avoidlist_path=state["profile"].get("machine_avoidlist_path"))
+                          machine_avoidlist_path=state["profile"].get("machine_avoidlist_path"),
+                          work=None if work == attempt else work)
     _write_exclusive(attempt / ATTEMPT_FILENAME, {"attempt_id": authority["attempt_id"], "argv": argv,
                                                   "authority_digest": authority["authority_digest"],
                                                   "bundle_sha256": bundle["bundle_sha256"],
+                                                  **({WORK_DIR_FIELD: str(work)} if work != attempt else {}),
                                                   "staged_at_iso": utc_now_iso()})
     return {"root": attempt, "argv": argv}
 
@@ -642,7 +743,8 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
             return _seal_terminal(root, item, entry, job, "attempts_exhausted",
                                   {"funded_attempts": funded, "unfunded_attempts": unfunded, "last": settled},
                                   release)
-        if attempts and attempts[-1] in staged_now and settled.get("state") in UNFUNDED_STATES:
+        before_funding = settled.get("state") in {*UNFUNDED_STATES, GRANT_REFUSED_STATE}
+        if attempts and attempts[-1] in staged_now and before_funding:
             # Refused before funding; the next wake-up retries, never this pass.
             return {"status": "deferred", "capture_root": state["capture_root"],
                     "blockers": settled.get("allocator_blockers") or [settled.get("reason") or settled["state"]]}
@@ -653,6 +755,11 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
         if state["status"] != "probe_required" or _job_dir(root, state) != job:
             return {"status": "deferred", "capture_root": entry.get("capture_root"),
                     "reason": "request_changed" if state["status"] == "probe_required" else state["status"]}
+        waiting = _grant_refusal_wait(settled, now=hooks.get("now", time.time)())
+        if waiting is not None:
+            # The WebApp refused the grant on the last attempt: nothing is staged until the wait passes.
+            return {"status": "deferred", "capture_root": state["capture_root"], "reason": GRANT_REFUSED_STATE,
+                    "retry_after_seconds": waiting, "blockers": settled.get("allocator_blockers") or []}
         if max_attempts is not None and len(staged_now) >= max_attempts:
             # A capped canary pass: its attempts are settled, and nothing more is sealed or spent.
             return {"status": "deferred", "capture_root": state["capture_root"],
@@ -661,8 +768,11 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
         if blockers:
             return {"status": "deferred", "capture_root": state["capture_root"], "blockers": sorted(set(blockers))}
         index = len(attempts)
+        # Outside the refusal below: an unusable work root is configuration, so the entry stays
+        # pending (the pass reports the error) instead of sealing a staging refusal.
+        work_dir = new_attempt_work_dir(job, index)
         try:
-            staged = stage_attempt(job, index, state=state, commit=hooks["source_commit"]())
+            staged = stage_attempt(job, index, state=state, commit=hooks["source_commit"](), work_dir=work_dir)
         except (RigidRobotFreeProbeBundleError, ValueError) as exc:
             # The packet or its plan cannot carry the probe: deterministic, so never retried under this
             # release. The refused attempt launched nothing and counts toward no limit.

@@ -26,6 +26,7 @@ _GROUP_WORLD_WRITE = stat.S_IWGRP | stat.S_IWOTH
 __all__ = [
     "USD_PAYLOAD_MAGIC",
     "usd_payload_format_matches",
+    "usd_payload_suffix",
     "redacted_failure_detail",
     "GCSUri",
     "MAXIMUM_HIDDEN_ZONE_BOUND",
@@ -454,3 +455,19 @@ def usd_payload_format_matches(path: Path, filename: str) -> bool:
             return stream.read(len(expected)) == expected
     except OSError:
         return False
+
+
+def usd_payload_suffix(path: Path) -> str | None:
+    """The USD suffix these bytes start like (``.usdz``, ``.usdc`` or ``.usda``), or None.
+
+    OpenUSD picks its reader from the filename, and its ``.usda`` reader refuses
+    crate bytes. A layer copied from a content-addressed path, which has no
+    extension, is named by this.
+    """
+
+    try:
+        with Path(path).open("rb") as stream:
+            head = stream.read(max(map(len, USD_PAYLOAD_MAGIC.values())))
+    except OSError:
+        return None
+    return next((suffix for suffix, magic in USD_PAYLOAD_MAGIC.items() if head.startswith(magic)), None)

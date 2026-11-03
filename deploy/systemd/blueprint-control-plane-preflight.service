@@ -35,7 +35,12 @@ ReadOnlyPaths=/etc/blueprint/provider-secrets
 # Blockers are the report's content, not a failure of the unit that found them.
 SuccessExitStatus=2
 TasksMax=128
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 101M on the host.
 MemoryMax=1G
+OOMScoreAdjust=200
 TimeoutStartSec=20min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python

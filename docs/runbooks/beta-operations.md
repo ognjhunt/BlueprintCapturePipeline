@@ -80,12 +80,16 @@ What frequent states mean:
 
 What breaks: Vast stops every instance when the account balance runs out
 (`PAGE_ALERT_CODES` in `src/blueprint_pipeline/control_plane_capacity_controller.py`).
-The launch dispatcher runs with `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true`
-(`deploy/systemd/blueprint-task-evaluation-launch-dispatcher.service`). A Vast
-launch then needs a fresh balance that covers its cap plus a reserve before it
-allocates (`record_vast_credit_admission` in
+Every unit that can allocate Vast runs with `BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true`
+(`PAID_ALLOCATION_UNITS` in
+`src/blueprint_pipeline/task_evaluation_production_chain_preflight.py`; the chain
+preflight refuses one without it). That includes the rigid robot-free probe runner
+and beta policy screening. A Vast launch then needs a fresh balance that covers
+its cap plus a reserve before it allocates (`record_vast_credit_admission` in
 `src/blueprint_pipeline/vast_provider_adapter.py`). If not, the launch stops
-before allocation, at $0, with `provider_credit_insufficient`.
+before allocation, at $0, with `provider_credit_insufficient`. Each launch is
+checked alone: up to 3 launches can hold slots at once, and their caps are not
+added up against the balance.
 
 The alarm (PR #3257, `src/blueprint_pipeline/provider_credit_admission.py`):
 
@@ -258,6 +262,15 @@ reservation ledger could not hold the output's upload ceiling plus 512 MiB
 (`MEASURED_BLOCKER` in
 `src/blueprint_pipeline/task_evaluation_scene_capacity_recovery.py`). Ceiling
 mode uses `scene_configuration_provider_output_disk_capacity_insufficient`.
+
+Beta screening and the rigid robot-free probe stage new attempts on the work
+volume: `/mnt/blueprint-work/beta-policy-screening-work` and
+`/mnt/blueprint-work/rigid-robot-free-probe-work` (each unit's `*_WORK_ROOT`
+setting). Their `policy_canary_output` disk hold therefore draws on this
+volume, not on `/`. Their queues and the screening budget ledger stay on `/`.
+An attempt staged before that setting keeps its queue paths. A screening
+candidate refused with `policy_canary_output_disk_admission_refused` is out
+of room on the disk its attempt directory is on.
 
 The capacity controller pages for disk with these codes: `floor_within_three_days`,
 `floor_within_hours`, `admission_refused`, `critical_admission_refused`,

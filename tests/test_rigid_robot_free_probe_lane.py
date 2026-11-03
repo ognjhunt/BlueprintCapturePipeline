@@ -77,6 +77,14 @@ def retask_packet(packet: Path, task_spec: dict[str, Any]) -> None:
     plan_path = packet / PLAN
     plan = json.loads(plan_path.read_text())
     plan["task_spec"] = task_spec
+    # Its task object spawns where the task starts, as every compiled packet's does (rigid_support_seating).
+    offset = task_spec["interaction_affordance"]["asset_root_from_scoring_frame"]["position_m"]
+    root = {"position_world_m": [a - b for a, b in zip(task_spec["start_pose_world"][:3], offset, strict=True)],
+            "orientation_xyzw": list(task_spec["start_pose_world"][3:])}
+    for row in plan["objects"]:
+        if row.get("task_subject") is True:
+            row["pose_world"] = copy.deepcopy(root)
+            row.setdefault("reset_state", {})["root_pose_world"] = copy.deepcopy(root)
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     receipt_path = packet / PACKET_RECEIPT
@@ -313,7 +321,7 @@ def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options:
     monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
     for name in ("BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT", "BLUEPRINT_GCP_BUDGET_GUARD_CONFIG",
                  "BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "BLUEPRINT_VAST_MAX_ISAAC_DRIVER", runner.QUEUE_ENV,
-                 "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"):
+                 runner.WORK_ENV, "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(lane.ENABLE_ENV, "1")
 
@@ -715,6 +723,69 @@ def test_a_queued_rigid_scene_is_probed_once_and_its_passed_receipt_admits_teams
     assert len(world["allocator_calls"]) == 1
 
 
+def test_with_a_work_root_the_bundle_and_allocator_job_land_there_and_the_queue_keeps_the_records(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    work_root = tmp_path / "work-volume" / "rigid-robot-free-probe-work"
+    work_root.mkdir(parents=True)
+    monkeypatch.setenv(runner.WORK_ENV, str(work_root))
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    rows = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert rows[0]["status"] == "decided", rows
+    assert _receipt(world)["status"] == "passed"
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    [attempt] = runner._attempts(job)
+    work = work_root / "jobs" / job.name / "attempts" / attempt.name
+    record = json.loads((attempt / runner.ATTEMPT_FILENAME).read_text())
+    assert record[runner.WORK_DIR_FIELD] == str(work) and runner.attempt_work_dir(attempt) == work
+    # The bulk is on the work root; the attempt's records and receipts stay in the queue.
+    assert (work / "bundle").is_dir() and (work / "allocator" / lane.FUNDING_FILENAME).is_file()
+    assert not (attempt / "bundle").exists() and not (attempt / "allocator").exists()
+    for name in (runner.ATTEMPT_FILENAME, runner.AUTHORITY_FILENAME, runner.INGEST_FILENAME,
+                 runner.RESULT_FILENAME, "paid_admission.json"):
+        assert (attempt / name).is_file(), name
+    argv = world["allocator_calls"][0]
+    assert argv[argv.index("--adp-job-dir") + 1] == str(work / "allocator")
+    assert argv[argv.index("--adapter-output") + 1] == str(attempt / runner.RESULT_FILENAME)
+    assert json.loads((attempt / runner.INGEST_FILENAME).read_text())["funded"] is True
+    # One funded attempt is counted from the work root, as from the queue before.
+    assert runner._counts(job) == (1, 0)
+
+
+def test_a_work_root_attempt_whose_volume_is_gone_holds_and_a_legacy_attempt_keeps_its_queue_paths(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    legacy = staged_attempt(world)["root"]
+    assert runner.WORK_DIR_FIELD not in json.loads((legacy / runner.ATTEMPT_FILENAME).read_text())
+    assert runner.attempt_work_dir(legacy) == legacy and (legacy / "bundle").is_dir()
+
+    state = current_probe_state(world["capture"])
+    job = runner._job_dir(world["queue"], state)
+    # A configured root that is not there stages nothing (configuration, not a staging refusal).
+    monkeypatch.setenv(runner.WORK_ENV, str(tmp_path / "absent"))
+    with pytest.raises(runner.RigidRobotFreeProbeWorkRootError):
+        runner.new_attempt_work_dir(job, 1)
+    work_root = tmp_path / "work"
+    work_root.mkdir()
+    monkeypatch.setenv(runner.WORK_ENV, str(work_root))
+    work = runner.new_attempt_work_dir(job, 1)
+    staged = runner.stage_attempt(job, 1, state=state, commit=COMMIT, work_dir=work)
+    attempt = staged["root"]
+    assert runner.attempt_work_dir(attempt) == work and (work / "bundle").is_dir()
+    # An allocator ran and returned, but the volume holding its job directory is not mounted:
+    # whether it was funded cannot be read, so the capture waits instead of funding another.
+    (attempt / runner.INTENT_FILENAME).write_text("{}")
+    (attempt / runner.RESULT_FILENAME).write_text(json.dumps({"status": "blocked", "blockers": ["x"]}))
+    work.rename(work.with_name("moved"))
+    assert runner.settle_attempt(attempt, state=state)["state"] in runner.WAITING_STATES
+    assert not (attempt / runner.INGEST_FILENAME).exists()
+    # A recorded work dir that is not this attempt's is refused, never followed.
+    record = json.loads((attempt / runner.ATTEMPT_FILENAME).read_text())
+    (attempt / runner.ATTEMPT_FILENAME).write_text(json.dumps({**record, runner.WORK_DIR_FIELD: str(legacy)}))
+    with pytest.raises(runner.RigidRobotFreeProbeIngestError, match="work_dir_invalid"):
+        runner.attempt_work_dir(attempt)
+
+
 def test_a_scene_that_cannot_hold_its_goal_fails_and_that_receipt_is_final(tmp_path, monkeypatch) -> None:
     world = build_world(tmp_path, monkeypatch, support_max_xy=(3.05, -1.4))
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
@@ -813,15 +884,58 @@ def test_a_launched_allocator_without_a_result_is_never_followed_by_another(tmp_
     assert len(world["allocator_calls"]) == 1 and world["transport_calls"] == []
 
 
-def test_a_refusal_before_funding_defers_to_the_next_wake_up_and_is_bounded(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(("refusal", "blocker"), [
+    # The upstream cap and the job's dollar ceiling share the WebApp's code (websiteSceneSponsorship.ts).
+    ("website_scene_preparation_budget_exhausted", "rigid_robot_free_probe_website_grant_exhausted"),
+    ("provider_terms_not_configured_or_changed",
+     "rigid_robot_free_probe_website_grant_refused:provider_terms_not_configured_or_changed"),
+])
+def test_a_webapp_money_refusal_defers_without_counting_and_stages_nothing_until_its_wait(
+        tmp_path, monkeypatch, refusal, blocker) -> None:
     world = build_world(tmp_path, monkeypatch)
-    world["webapp_refusal"] = "website_scene_preparation_budget_exhausted"
+    world["webapp_refusal"] = refusal
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    hooks = runner_hooks(world)
+    clock = [time.time()]
+    hooks["now"] = lambda: clock[0]
+    row = runner.run_queue(world["queue"], hooks=hooks)[0]
+    assert row["status"] == "deferred" and blocker in row["blockers"], row
+    assert len(world["allocator_calls"]) == 1
+    clock[0] = time.time()
+    # Every later wake-up inside the wait stages nothing, reserves nothing and seals nothing
+    # (capture-447ae4f4: four such refusals sealed attempts_exhausted).
+    for _ in range(runner.MAX_UNFUNDED_ATTEMPTS + 2):
+        row = runner.run_queue(world["queue"], hooks=hooks)[0]
+        assert (row["status"], row["reason"]) == ("deferred", runner.GRANT_REFUSED_STATE), row
+        assert 0 < row["retry_after_seconds"] <= runner.GRANT_REFUSAL_RETRY_SECONDS and blocker in row["blockers"]
+    assert len(world["allocator_calls"]) == 1 and len(world["webapp_calls"]) == 1
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    assert runner._counts(job) == (0, 0) and not (job / runner.TERMINAL_FILENAME).exists()
+    (attempt,) = runner._attempts(job)
+    assert json.loads((attempt / runner.INGEST_FILENAME).read_text())["state"] == runner.GRANT_REFUSED_STATE
+    # After the wait one more attempt asks the WebApp; still refused, still uncounted.
+    clock[0] += runner.GRANT_REFUSAL_RETRY_SECONDS + 1
+    assert runner.run_queue(world["queue"], hooks=hooks)[0]["status"] == "deferred"
+    assert len(world["allocator_calls"]) == 2 and runner._counts(job) == (0, 0)
+    # The owner lifts the stop (a raised cap or ceiling): the next attempt after the wait is funded and decided.
+    world["webapp_refusal"] = None
+    clock[0] += runner.GRANT_REFUSAL_RETRY_SECONDS + 1
+    assert runner.run_queue(world["queue"], hooks=hooks)[0]["status"] == "decided"
+    assert _receipt(world)["status"] == "passed" and len(world["transport_calls"]) == 1
+
+
+def test_a_refusal_before_funding_that_is_not_the_webapps_defers_to_the_next_wake_up_and_is_bounded(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    # The WebApp already holds this exact binding: one binding is never paid twice, and it is not a money stop.
+    monkeypatch.setattr(lane, "reserve_probe_funding", lambda **_kwargs: (
+        None, ["rigid_robot_free_probe_website_grant_already_reserved"]))
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
     hooks = runner_hooks(world)
     for attempt in range(runner.MAX_UNFUNDED_ATTEMPTS - 1):
         row = runner.run_queue(world["queue"], hooks=hooks)[0]
         assert row["status"] == "deferred", row
-        assert "rigid_robot_free_probe_website_grant_exhausted" in row["blockers"]
+        assert "rigid_robot_free_probe_website_grant_already_reserved" in row["blockers"]
         assert len(world["allocator_calls"]) == attempt + 1  # one attempt per wake-up, never a tight loop
     final = runner.run_queue(world["queue"], hooks=hooks)[0]
     assert final["status"] == "attempts_exhausted" and final["detail"]["unfunded_attempts"] == 4, final

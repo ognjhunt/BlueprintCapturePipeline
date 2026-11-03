@@ -63,7 +63,11 @@ goes back once per newly deployed release, on the same passes: a deploy that
 fixes its cause re-drives it, and the status keeps the releases already tried
 (``release_requeued``), so a refusal never loops. Without a known running
 release nothing is requeued on that basis; ``--requeue-unfinished`` retries the
-rest once their cause is fixed. Nothing
+rest once their cause is fixed. A completed rigid half whose own plan spawns its
+task object farther from the task's start than the scorer's reset tolerance
+(``rigid_support_seating.start_spawn_mismatch``; capture-447ae4f4: 14.7 mm) can
+never be scored, so each newly deployed release recompiles it once, on the same
+passes and the CPU, and never reuses it (``unscorable_half_release_requeued``). Nothing
 here allocates a provider, starts a run or spends: the offer publishes facts,
 never authority, and every rights, consent and spend gate after it is unchanged.
 """
@@ -129,6 +133,10 @@ OWNER_CONFIRMATION_REQUEUE_FIELD = "owner_success_confirmation_requeued"
 # each newly deployed release returns the refusal to pending once, and the status keeps the releases tried.
 RELEASE_COMMIT_FIELD = "release_commit"
 RELEASE_REQUEUE_FIELD = "release_requeued"
+# A completed rigid half whose own plan spawns the task object farther from the task's start than the scorer's
+# reset tolerance can never be scored (capture-447ae4f4: 14.7 mm). Each newly deployed release recompiles it once,
+# on the CPU, and the status keeps the releases already tried, so a half that stays unscorable never loops.
+UNSCORABLE_HALF_REQUEUE_FIELD = "unscorable_half_release_requeued"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
@@ -349,6 +357,32 @@ def final_block(status: Mapping[str, Any], *, release: str | None) -> bool:
             or _retry_attempts(retry if isinstance(retry, Mapping) else {}) >= len(AUTOMATIC_RETRY_BACKOFF_SECONDS))
 
 
+def unscorable_half(path: Any) -> str | None:
+    """Why the compiled half at ``path`` can never be scored from its own spawn, or None (also when unreadable)."""
+
+    from .rigid_support_seating import start_spawn_mismatch
+    from .team_scene_packet import read_team_scene_inputs
+
+    try:
+        if not path:
+            return None
+        inputs = read_team_scene_inputs(str(path))
+        plan = _read_json(Path(inputs["base_native_packet"]["path"]).parent / "native_task_arena_scene_plan.v1.json")
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return start_spawn_mismatch(plan) if plan is not None else None
+
+
+def _unscorable_half_untried(status: Mapping[str, Any], release: str | None) -> str | None:
+    """A completed half this known release has not yet recompiled, that no episode of can be scored."""
+
+    tried = status.get(UNSCORABLE_HALF_REQUEUE_FIELD)
+    if (release is None or status.get("status") != "completed" or status.get(RELEASE_COMMIT_FIELD) == release
+            or release in (tried if isinstance(tried, list) else [])):
+        return None
+    return unscorable_half(status.get("team_scene_inputs_path"))
+
+
 def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[dict[str, Any]]:
     """Return each due transient block, each owner-contract refusal the owner has since confirmed, and each
     other deterministic refusal once per newly deployed ``release``, to pending, recording the attempt first
@@ -378,6 +412,16 @@ def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[
             os.replace(path, target)
             requeued.append({"request_key": path.stem, "reason": "new_release", "release_commit": release,
                              "blocked_release_commit": status.get(RELEASE_COMMIT_FIELD)})
+            continue
+        unscorable = None if target.exists() else _unscorable_half_untried(status, release)
+        if unscorable is not None:
+            tried = status.get(UNSCORABLE_HALF_REQUEUE_FIELD)
+            # Recorded before the move, so each release recompiles it at most once.
+            _write_replace(root / "status" / path.name, {
+                **status, UNSCORABLE_HALF_REQUEUE_FIELD: [*(tried if isinstance(tried, list) else []), release]})
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "unscorable_half", "detail": unscorable,
+                             "release_commit": release})
             continue
         retry = dict(status.get("automatic_retry") or {})
         attempts = _retry_attempts(retry)
@@ -643,7 +687,8 @@ def _current_half(profile: Mapping[str, Any] | None, revision: str) -> str | Non
         read_team_scene_inputs(path)
     except (OSError, ValueError, KeyError):
         return None
-    return path
+    # A half no episode can be scored from is compiled again, not reused.
+    return None if unscorable_half(path) is not None else path
 
 
 def _discard_unreferenced(attempt_root: Any, capture_root: Any) -> None:
@@ -733,7 +778,7 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     retry = prior.get("automatic_retry")
     if isinstance(retry, Mapping):
         status["automatic_retry"] = dict(retry)
-    for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD):
+    for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD):
         if isinstance(prior.get(field), list):
             status[field] = list(prior[field])
 
@@ -812,7 +857,7 @@ def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: s
     _discard_unreferenced(prior.get("attempt_root"), prior.get("capture_root"))
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
-                                        RELEASE_REQUEUE_FIELD) if key in prior}
+                                        RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD) if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
                                    "scenario_id": SCENARIO_ID, "status": "blocked",
                                    "blockers": ["team_scene_packet_interrupted"],

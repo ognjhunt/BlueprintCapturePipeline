@@ -399,6 +399,20 @@ def _sha256_bytes(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
+def _member_size_and_sha256(archive: zipfile.ZipFile, name: str) -> tuple[int, str]:
+    """A member's byte count and digest, read in 1 MiB blocks (the CRC is still checked at its end).
+
+    The packet is several GB of dependency wheels; reading one whole held the largest wheel in memory.
+    """
+
+    digest, size = hashlib.sha256(), 0
+    with archive.open(name) as stream:
+        for block in iter(lambda: stream.read(1 << 20), b""):
+            digest.update(block)
+            size += len(block)
+    return size, "sha256:" + digest.hexdigest()
+
+
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -1018,21 +1032,21 @@ def verify_native_task_runtime_source_packet(
                     name = str(row.get("archive_path") or "")
                     expected_names.add(name)
                     try:
-                        data = archive.read(name)
+                        size, digest = _member_size_and_sha256(archive, name)
                     except KeyError:
                         errors.append(f"native_task_runtime_source_member_missing:{name}")
                         continue
-                    if row.get("size_bytes") != len(data) or row.get("sha256") != _sha256_bytes(data):
+                    if row.get("size_bytes") != size or row.get("sha256") != digest:
                         errors.append(f"native_task_runtime_source_member_identity_mismatch:{name}")
             for row in manifest.get("runtime_dependency_wheels") or []:
                 name = str(row.get("archive_path") or "")
                 expected_names.add(name)
                 try:
-                    data = archive.read(name)
+                    size, digest = _member_size_and_sha256(archive, name)
                 except KeyError:
                     errors.append(f"native_task_runtime_dependency_wheel_missing:{name}")
                     continue
-                if row.get("size_bytes") != len(data) or row.get("sha256") != _sha256_bytes(data):
+                if row.get("size_bytes") != size or row.get("sha256") != digest:
                     errors.append(f"native_task_runtime_dependency_wheel_identity_mismatch:{name}")
             if manifest.get("runtime_dependency_wheels") != receipt.get(
                 "runtime_dependency_wheels"

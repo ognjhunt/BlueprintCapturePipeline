@@ -261,8 +261,12 @@ def test_structural_pending_consent_never_crosses_evaluation_scope(change):
         intake.validate_request(value, now=NOW)
 
 
-def retained_source(tmp_path):
-    """Server-owned local reference rehearsal, never production provenance."""
+def retained_source(tmp_path, window_seconds=None):
+    """Server-owned local reference rehearsal, never production provenance.
+
+    ``window_seconds`` re-issues the vector's grant with another window; the
+    prepared intent carries the grant's expiry, as the WebApp requires.
+    """
     from blueprint_pipeline import website_preparation_authority as authority
     from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest
     import hashlib
@@ -270,6 +274,10 @@ def retained_source(tmp_path):
     context_value = copy.deepcopy(VECTOR["task_context_response_preparation"])
     grant = copy.deepcopy(VECTOR["sponsorship_response"])
     request = copy.deepcopy(VECTOR["prepared_scene_body"]["request"])
+    if window_seconds is not None:
+        grant["expires_at_epoch"] = grant["consent"]["accepted_at_epoch"] + window_seconds
+        grant["authority_digest"] = canonical_digest(grant, digest_field="authority_digest")
+        request["execution"]["expires_at_epoch"] = grant["expires_at_epoch"]
     prepared = {
         "schema_version": "SYNTHETIC.retained_preparation",
         "intake_request": request,

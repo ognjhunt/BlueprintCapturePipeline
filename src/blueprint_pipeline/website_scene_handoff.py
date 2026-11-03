@@ -14,7 +14,7 @@ from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as
 from .decision_evidence_contracts import canonical_digest
 from .website_task_preparation import (
     GEOMETRY_ONLY_BLOCKER, compile_website_scene_preparation, native_task_preparation_gap,
-    native_task_subject_gap, native_task_subject_profile,
+    native_task_subject_gap, native_task_subject_profile, subject_rigidity,
 )
 from .website_scene_runtime_inputs import prepare_website_runtime_inputs
 
@@ -235,6 +235,13 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
         atlas = atlas_scene_source(capture_root=capture_root, output_root=root / "atlas")
         handoff_lease_checkpoint("website_scene_handoff_after_source")
         if atlas["status"] != "ready":
+            # The Atlas lane held the task after its review, before buying the scene.
+            from .website_early_task_hold import retain_task_preparation_hold
+            video = clean_plate.get("input_video_path")
+            held = retain_task_preparation_hold(capture_root=capture_root, task_context=context,
+                                                source_video=Path(video) if isinstance(video, str) else None)
+            if held is not None:
+                return held
             result.update(status="awaiting_reconstruction" if atlas["status"] == "pending" else "needs_input",
                 blockers=[atlas["reason"]], geometry_backend=None, provider_mutation_performed=False,
                 visual_reconstruction_ready=False,
@@ -396,6 +403,12 @@ def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate:
             if gap is not None:
                 result["source_geometry_digest"] = geometry["digest"]
                 return retain_gap(gap)
+            # Rigid or unknown goes on; the reading, its source and an unknown's flag stay on the record.
+            rigidity = subject_rigidity(context, subjects=subjects, targets=targets, **semantics_options)
+            if rigidity is not None:
+                result["task_object_rigidity"] = rigidity
+                if "flag" in rigidity:
+                    result["flags"] = [rigidity["flag"]]
         # Each articulated task target needs views of its whole assembly from
         # the full track, not only the geometry frames. Retained receipts and
         # decoded frames make a restart free.

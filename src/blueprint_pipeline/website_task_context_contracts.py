@@ -35,6 +35,28 @@ def sponsors_scene_preparation(metadata: Mapping[str, Any] | None) -> bool:
     return ((metadata or {}).get("website_scene_execution_authority") or {}).get("purpose") == "scene_preparation"
 
 
+def _deformable_subject_rederived(gap: Mapping[str, Any], target_id: str) -> bool:
+    """The soft-object hold follows from the reading it records, by the rule that decides it.
+
+    A hold written before the object analysis classified rigidity carries no reading;
+    its label's head noun alone decided it, and still must.
+    """
+    from .task_profile_contracts import RIGIDITY_BASIS, deformable_subject_noun, task_object_rigidity
+    reading = gap.get("task_object_rigidity")
+    if "task_object_rigidity" not in gap:
+        noun = deformable_subject_noun(gap.get("subject_label"))
+        return noun is not None and gap.get("deformable_noun") == noun
+    if not isinstance(reading, Mapping) or reading.get("source") not in RIGIDITY_BASIS:
+        return False
+    entry = {"target_id": target_id, "semantic_label": gap.get("subject_label"),
+             **({"rigidity": reading.get("rigidity"), "rigidity_reason": reading.get("reason")}
+                if reading["source"] == "object_analysis" else {})}
+    expected = task_object_rigidity(entry)
+    return (dict(reading) == expected and expected["rigidity"] == "deformable"
+            and gap.get("deformable_noun") == expected["label_word_screen"]
+            and gap.get("subject_basis") == RIGIDITY_BASIS[expected["source"]])
+
+
 def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
     """A completed scene-preparation stage may retain an exact native-profile gap.
 
@@ -91,7 +113,6 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
                   "website_deformable_task_object_preparation_required"}:
         # ``website_task_preparation.native_task_subject_gap``: the job's own profile, and a
         # subject that profile cannot represent, re-derived here rather than trusted.
-        from .task_profile_contracts import deformable_subject_noun
         if declared is None and family == "general_task" and isinstance(gap.get("task_semantics"), Mapping):
             from .website_task_semantics import resolved_task_profile
             try:
@@ -106,13 +127,44 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
                 or not isinstance(ids, list) or not all(isinstance(item, str) and item for item in ids)
                 or len(set(ids)) != len(ids) or (len(ids) < 2 if multi else len(ids) != 1)
                 or (not multi and (declared.profile_id != "rigid_pick_place"
-                                   or deformable_subject_noun(gap.get("subject_label")) is None
-                                   or gap.get("deformable_noun") != deformable_subject_noun(gap["subject_label"])))
+                                   or not _deformable_subject_rederived(gap, ids[0])))
+                or ("provider_mutation_performed" in handoff and
+                    type(handoff["provider_mutation_performed"]) is not bool)):
+            return False
+    elif code == "website_task_family_runtime_preparation_required":
+        # ``website_early_task_hold.task_family_runtime_gap``: the job's own family, from its
+        # source-bound reading, re-derived here; the catalog is the one recorded at the hold.
+        from .task_family_scoring import canonical_task_family
+        from .website_early_task_hold import required_task_families
+        from .website_task_semantics import effective_task_profile
+        semantics = gap.get("task_semantics") if family == "general_task" else None
+        runtime = gap.get("runtime_catalog")
+        try:
+            profile = canonical_task_family(effective_task_profile(task_context=task_context,
+                task_semantics=semantics, source_video_digest=gap.get("source_video_digest")))
+            required = required_task_families(profile, semantics) if profile is not None else None
+        except (ValueError, TypeError, KeyError):
+            return False
+        if (profile is None or gap.get("task_family_profile") != profile
+                or gap.get("required_task_families") != required
+                or (family == "general_task" and not isinstance(semantics, Mapping))
+                or not isinstance(runtime, Mapping) or type(runtime.get("configured")) is not bool
+                or not isinstance(runtime.get("task_families"), list)
+                or set(required) <= set(runtime["task_families"])
                 or ("provider_mutation_performed" in handoff and
                     type(handoff["provider_mutation_performed"]) is not bool)):
             return False
     else:
         return False
+    # Held right after the Atlas review (``website_early_task_hold``): no scene was bought.
+    early = (handoff.get("visual_reconstruction_ready") is False
+             and isinstance(handoff.get("task_preparation_hold"), Mapping)
+             and handoff["task_preparation_hold"].get("hold_point") == "after_atlas_review"
+             and code in {"website_native_task_profile_preparation_required",
+                          "website_task_operation_coverage_unresolved",
+                          "website_task_family_runtime_preparation_required"})
+    if code == "website_task_family_runtime_preparation_required" and not early:
+        return False  # Only ever decided before the scene; a bought scene compiles its family.
     return (
         task_context.get("schema_version") == "website_site_task_context.v1"
         and digest == canonical_digest(task_context, digest_field="context_digest")
@@ -122,7 +174,7 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
         and handoff.get("status") == "needs_input"
         and handoff.get("blockers") == [code]
         and handoff.get("simulator_ready") is False
-        and handoff.get("visual_reconstruction_ready") is True
+        and (handoff.get("visual_reconstruction_ready") is True or early)
         and not handoff.get("website_intake_outbox")
         and "runtime_inputs" not in handoff
         and gap.get("code") == code

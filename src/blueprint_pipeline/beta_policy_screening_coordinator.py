@@ -32,10 +32,18 @@ from .beta_policy_screening_result import (
     ACTIVE_STATUSES, QUEUED_STATUSES, candidate_result_summary, campaign_status, money, screening_publication,
 )
 from .decision_evidence_contracts import canonical_digest
-from .website_candidate_feasibility import MEASURED_REFUSALS
+from .website_candidate_feasibility import is_measured_refusal
 
 QUEUE_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT"
 DEFAULT_QUEUE_ROOT = "/var/lib/blueprint/pipeline-control-plane/beta-policy-screening"
+# The bulk volume new attempts are reserved under (the unit sets
+# /mnt/blueprint-work/beta-policy-screening-work): each attempt's sealed bundle, allocator job
+# directory and launch receipts live in ``<work root>/attempts/<attempt id>``. The ledger, plans
+# and publications stay in the queue root, beside a pointer per attempt. The ledger records each
+# attempt's directory, so an attempt reserved without it (unset) keeps ``<queue>/attempts/<id>``.
+WORK_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_WORK_ROOT"
+ATTEMPT_DIR_FIELD = "attempt_dir"
+ATTEMPT_POINTER_SCHEMA = "blueprint.beta_policy_screening_attempt_pointer.v1"
 LEDGER_SCHEMA = "blueprint.beta_policy_screening_ledger.v1"
 LEDGER_FILENAME = "screening_ledger.v1.json"
 SITE_LIMIT = Decimal("15")
@@ -367,7 +375,7 @@ def _initial_state(candidate: Mapping[str, Any]) -> dict[str, Any]:
         # such state yet, so the site sees it unavailable with its reason. Only a
         # measured geometry refusal carries the measured-geometry marker; a GPU
         # floor the screening lane cannot rent is not a fact about the site.
-        measured = bool(blockers) and set(blockers) <= MEASURED_REFUSALS
+        measured = bool(blockers) and all(is_measured_refusal(code) for code in blockers)
         status, blockers = "unavailable", [INFEASIBLE_BLOCKER, *blockers] if measured else list(blockers)
     if status == "waitlisted":
         # The plan's reason: the site allowance, or the website job's ceiling.
@@ -392,13 +400,53 @@ def _quote_current(candidate: Mapping[str, Any]) -> bool:
         return False
 
 
+def _work_root() -> Path | None:
+    raw = str(os.environ.get(WORK_ROOT_ENV) or "").strip()
+    if not raw:
+        return None
+    root = Path(raw)
+    if not root.is_absolute() or ".." in root.parts:
+        raise ScreeningCoordinatorError("beta_screening_work_root_unsafe")
+    return root
+
+
 def _new_attempt(plan: Mapping[str, Any], candidate: Mapping[str, Any], *, generation: int = 0) -> dict[str, Any]:
     identity = f"{plan['campaign_id']}:{candidate['candidate_id']}:{plan['plan_digest']}"
     if generation:
         identity += f":capacity-generation-{generation}"
-    return {"attempt_id": "screen-" + hashlib.sha256(identity.encode()).hexdigest()[:32],
+    attempt_id = "screen-" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+    work = _work_root()
+    return {"attempt_id": attempt_id,
             "generation": generation, "maximum_cost_usd": money(_amount(candidate["max_cost_usd"])),
-            "reservation_status": "reserved", "provider_allocation_observed": False}
+            "reservation_status": "reserved", "provider_allocation_observed": False,
+            **({ATTEMPT_DIR_FIELD: str(work / "attempts" / attempt_id)} if work is not None else {})}
+
+
+def _attempt_path(root: Path, attempt: Mapping[str, Any]) -> Path:
+    """The attempt's directory: the one the ledger recorded when it was reserved, else beside the ledger."""
+    recorded = attempt.get(ATTEMPT_DIR_FIELD)
+    if recorded is None:
+        return root / "attempts" / attempt["attempt_id"]
+    path = Path(recorded) if isinstance(recorded, str) else Path()
+    if (not path.is_absolute() or ".." in path.parts or path.name != attempt["attempt_id"]
+            or path.parent.name != "attempts"):
+        raise ScreeningCoordinatorError("beta_screening_attempt_path_unsafe")
+    return path
+
+
+def _attempt_pointer(root: Path, attempt_id: str, path: Path) -> None:
+    """Name a work-volume attempt beside the ledger, so a lost ledger is still detected."""
+    pointer = root / "attempts" / f"{attempt_id}.attempt_dir.json"
+    payload = json.dumps({"schema_version": ATTEMPT_POINTER_SCHEMA, "attempt_id": attempt_id,
+                          ATTEMPT_DIR_FIELD: str(path)}, sort_keys=True) + "\n"
+    try:
+        descriptor = os.open(pointer, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(payload)
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _retry_after_capacity(earlier_retries: int = 0) -> str:
@@ -434,7 +482,7 @@ def _capacity_refusal_proof(root: Path, attempt: Mapping[str, Any], observation:
     record = observation.get("capacity_refusal_receipt")
     if not isinstance(record, Mapping):
         return False
-    path = root / "attempts" / attempt["attempt_id"] / "allocator_result.json"
+    path = _attempt_path(root, attempt) / "allocator_result.json"
     try:
         if path.is_symlink() or record.get("path") != str(path):
             return False
@@ -561,7 +609,7 @@ def _unstarted_refusal_proof(root: Path, attempt: Mapping[str, Any], observation
     """Reopen bytes from our exact job fence; caller booleans are not evidence."""
     from .allocator_invocation import manifest
     record = observation.get("unstarted_refusal_receipt") or {}
-    directory = root / "attempts" / attempt["attempt_id"] / "invocation"
+    directory = _attempt_path(root, attempt) / "invocation"
     path = directory / "no_create_fence.json"
     if (type(observation.get("retryable_unstarted_refusal")) is not bool
             or observation.get("no_policy_api_calls_proven") is not True
@@ -588,7 +636,7 @@ def _unstarted_refusal_proof(root: Path, attempt: Mapping[str, Any], observation
 
 def _launch_unclaimed(root: Path, attempt: Mapping[str, Any]) -> bool:
     """No launch slot was ever claimed for this attempt, so no allocator can exist for it."""
-    directory = root / "attempts" / attempt["attempt_id"]
+    directory = _attempt_path(root, attempt)
     return not any(path.exists() or path.is_symlink() for path in (
         directory / "allocator_launch_intent.json", directory / "invocation" / "manifest.json",
         directory / "allocator_process.json", directory / "allocator_result.json"))
@@ -714,7 +762,15 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
 
 
 def _attempt_root(root: Path, attempt: Mapping[str, Any]) -> Path:
-    path = root / "attempts" / attempt["attempt_id"]
+    path = _attempt_path(root, attempt)
+    if path.parent != root / "attempts":
+        # On the work volume: its root must already exist (the deploy provisions it). A missing
+        # volume stops here, before any staging, and never re-creates a committed attempt.
+        work = path.parent.parent
+        if not work.is_dir() or any(item.is_symlink() for item in (path, path.parent, work, *work.parents)):
+            raise ScreeningCoordinatorError("beta_screening_work_root_unavailable")
+        path.parent.mkdir(exist_ok=True, mode=0o700)
+        _attempt_pointer(root, attempt["attempt_id"], path)
     if path.is_symlink():
         raise ScreeningCoordinatorError("beta_screening_attempt_path_unsafe")
     path.mkdir(exist_ok=True, mode=0o700)

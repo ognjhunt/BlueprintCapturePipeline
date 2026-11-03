@@ -61,6 +61,18 @@ def run_website_capture_preparation(
             'provider_name': None, 'status': 'not_requested', 'website_scene_preparation': room_limit})
         return {'status': 'completed', 'lane': 'qualification', 'website_scene_preparation': room_limit,
                 'native_execution_complete': False}
+    # The Atlas lane held the task right after its review (no native profile or no
+    # installed runtime): hold here too, before the clean-plate analysis buys anything.
+    from .website_early_task_hold import retain_task_preparation_hold
+    handoff_lease_checkpoint("website_preparation_task_preparation_hold")
+    early_hold = (retain_task_preparation_hold(capture_root=capture_root,
+        task_context=descriptor.metadata.get("site_task_context") or {}, source_video=source_video)
+        if derived_scene_generation_allowed else None)
+    if early_hold is not None:
+        write_json(pipeline_dir / "provider_run_manifest.json", {"schema_version": "v1", "provider_name": None,
+            "status": "not_requested", "website_scene_preparation": early_hold})
+        return {"status": "completed", "lane": "qualification", "website_scene_preparation": early_hold,
+                "native_execution_complete": False}
     privacy_processing = {
         "status": "pending_website_review",
         "mode": "task_aware_prepared_images",

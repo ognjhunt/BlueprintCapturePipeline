@@ -15,6 +15,10 @@ Environment=BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill
 Environment=BLUEPRINT_TEAM_CANDIDATE_QUICK10_REGISTRY=/etc/blueprint/team-evaluation-registry.json
 Environment=BLUEPRINT_SPEND_AUTHORITY_ROOT=/var/lib/blueprint/spend-authority
 Environment=BLUEPRINT_VAST_SSH_IDENTITY_FILE=/etc/blueprint/provider-secrets/vast_ssh_id_ed25519
+# Vast credit admission (provider_credit_admission): each launch needs a fresh
+# balance that covers its own cap plus the reserve, or it stops at $0 before
+# allocating. Off, Vast stops the instance mid-episode when the balance runs out.
+Environment=BLUEPRINT_VAST_CREDIT_GUARD_ENABLED=true
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python
 ExecStart=/bin/bash -lc 'cd -P "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO}" || exit; export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="$${PWD}"; exec env PYTHONPATH=src "$${BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_PYTHON}" -m blueprint_pipeline.deployment_embodiment_preparation_controller run-queue'
@@ -34,11 +38,12 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallFilter=@system-service
 ReadWritePaths=/var/lib/blueprint /mnt/blueprint-work/embodiment-preparation /var/lib/blueprint/pipeline-control-plane/embodiment-preparation /var/lib/blueprint/robot-models
 TasksMax=512
+# Host memory (8.3 GB, no swap): it peaked at 4.2 GB on 2026-10-31
+# (docs/research/control-plane-host-profile-2026-10-31.md), and a cap of 1.5x
+# that would not bind below the host, so MemoryMax stays at main's, with no
+# throttle. Batch job, retried: +200, so it goes before the always-on
+# services, paid work and the money-safety units.
 MemoryMax=8G
-# Host safety net (batch job, retried): the host has 8.3 GB and no swap, so
-# MemoryMax above never binds and the kernel's OOM killer acts on the whole
-# host. It counts this unit 20% of the host larger (+200), so a batch job goes
-# before the always-on services and the money-safety units.
 OOMScoreAdjust=200
 CPUQuota=200%
 

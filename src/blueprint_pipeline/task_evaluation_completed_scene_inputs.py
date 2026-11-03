@@ -55,9 +55,10 @@ def validate_completed_scene_inputs(*, envelope: dict, configurations: dict,
                 and value.get("output", {}).get("sha256") == appearance_row["digest"]
                 and value.get("physical_scale_measured") is False,
                 "completed_scene_appearance_normalization_invalid")
-    # CAS filenames do not necessarily retain the source format. The normalized
-    # layer is always USDA; inspect_mesh keeps its exact bytes under an alias.
-    inspected = inspect_mesh(collision_path, original_filename="normalized_scene.usda",
+    # CAS filenames do not necessarily retain the source format. The receipt names the
+    # normalized layer's (crate .usdc, or text .usda before); inspect_mesh keeps its exact
+    # bytes under an alias of that name.
+    inspected = inspect_mesh(collision_path, original_filename=Path(normalization["output"]["relative_path"]).name,
         coordinate_frame_declaration={"meters_per_unit": 1.0, "up_axis": "Z"},
         normalized_output=True)
     require(inspected == normalization.get("normalized_inspection"), "completed_scene_geometry_readback_changed")

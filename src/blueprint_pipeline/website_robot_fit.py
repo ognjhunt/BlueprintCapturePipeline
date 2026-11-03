@@ -411,7 +411,8 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
     from .team_scene_packet import STATION_FOOTPRINT_HALF_EXTENT_M
 
     collision = Path(collision_path)
-    digest = "sha256:" + hashlib.sha256(collision.read_bytes()).hexdigest()
+    with collision.open("rb") as stream:  # in blocks: a website collider is hundreds of MB of USDA text
+        digest = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
     if verdict.get("preparation_digest") != preparation["digest"] or verdict.get("collision_sha256") != digest:
         raise ValueError("website_robot_fit_verdict_binding_mismatch")
     if catalog.get("catalog_digest") != canonical_digest(catalog, digest_field="catalog_digest"):
