@@ -1676,12 +1676,11 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
                         **({"observed_appearance_object_removal": "not_required_subject_never_captured",
                             "rigid_replacement_authoring": "provided_mesh_rigid_authoring"}
                            if synthetic is not None else {}),
-                        # Geometry only: nothing was erased; a rigid subject's box is cut from the collider.
+                        # Geometry only: nothing was erased; a rigid subject's box is cut from the
+                        # collider, or ``subject_excision`` says why not.
                         **({"observed_appearance_object_removal": "not_performed_geometry_only",
-                            "collision_object_excision": {
-                                "excised": "subject_box_excised_from_captured_reconstruction",
-                                "unchanged": "subject_box_empty_in_captured_reconstruction",
-                            }.get((subject_excision or {}).get("status"), "not_performed_geometry_only")}
+                            "collision_object_excision": "subject_box_excised_from_captured_reconstruction"
+                            if (subject_excision or {}).get("status") == "excised" else "not_performed_geometry_only"}
                            if atlas_route == "geometry_only" else {})},
         "provider_mutation_performed": False,
     }
