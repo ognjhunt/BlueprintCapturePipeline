@@ -64,6 +64,15 @@ SENTINEL_TESTS = (
     "tests/test_materializer_reachability.py::test_unreachable_materializers_only_ever_decrease",
 )
 
+# A change to code that calls Isaac Lab or Arena, or to a test faking them, runs
+# the check of those calls against the sources production pins. Nothing imports
+# the checked files from the test, so no mapping below would select it.
+ISAAC_API_CONTRACT_TEST = "tests/test_isaac_api_contract.py"
+ISAAC_API_SURFACE_NAME = re.compile(
+    r"^(?:native_task_\w*|rigid_robot_free_probe_\w*|\w*_isaac\w*|\w*robot_registry\w*)\.py$"
+)
+ISAAC_API_IMPORT = re.compile(r"^\s*(?:from|import)\s+isaaclab\w*", re.MULTILINE)
+
 CROSS_CUTTING_FILES = {
     ".github/workflows/full-test-lane.yml",
     "pyproject.toml",
@@ -208,6 +217,20 @@ def _matching_tests(
                     and any(re.search(pattern, source) for pattern in module_patterns))):
             candidates.add(test_path)
     return candidates
+
+
+def _touches_isaac_api(root: Path, changed_path: str) -> bool:
+    if not changed_path.endswith(".py") or not changed_path.startswith(("src/", "tests/")):
+        return False
+    if changed_path.startswith("src/") and ISAAC_API_SURFACE_NAME.match(Path(changed_path).name):
+        return True
+    try:
+        source = (root / changed_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return ISAAC_API_IMPORT.search(source) is not None or (
+        changed_path.startswith("tests/") and "isaaclab" in source
+    )
 
 
 def _changes_supply_chain_inputs(changed: Sequence[str]) -> bool:
@@ -400,6 +423,11 @@ def build_plan(root: Path, paths: Sequence[str]) -> dict[str, object]:
                 # A brand-new file nothing references, so nothing can say what it breaks.
                 requires_full_suite = True
                 reasons.append(f"unmapped_executable_surface:{changed_path}")
+
+    isaac_surface = [path for path in changed if _touches_isaac_api(root, path)]
+    if isaac_surface and ISAAC_API_CONTRACT_TEST in test_sources:
+        impacted.add(ISAAC_API_CONTRACT_TEST)
+        reasons.append(f"isaac_api_surface:{len(isaac_surface)}")
 
     requires_wide_impacted = False
     if len(impacted) > MAX_IMPACTED_TEST_FILES:
