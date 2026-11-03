@@ -70,6 +70,7 @@ EVIDENCE_HOT_ON_VOLUME=(
   task-evaluation-inputs/g1-team-campaign-registry.json
   task-evaluation-inputs/g1-sonic-assets                 # retained G1 asset identity; never evicted
   task-evaluation-inputs/g1-team-policy-approvals        # operator approvals read by paid dispatch
+  task-evaluation-inputs/team-scene-halves               # remote team-scene halves awaiting landing
   'pubsub-handoffs/*/scenes/*.retired.v1.json'
 )
 
