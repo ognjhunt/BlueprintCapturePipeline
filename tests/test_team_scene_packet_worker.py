@@ -502,6 +502,53 @@ def test_a_deploy_that_fixes_a_deterministic_refusal_re_drives_it_once_per_relea
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
 
 
+def _spawn_off_start(half: str, offset_m: float) -> None:
+    """Rewrite a compiled half's plan as a release before the seating fix compiled capture-447's (14.7 mm)."""
+
+    plan_path = Path(read_team_scene_inputs(half)["base_native_packet"]["path"]).parent / (
+        "native_task_arena_scene_plan.v1.json")
+    plan = json.loads(plan_path.read_text())
+    (row,) = [row for row in plan["objects"] if row.get("task_subject") is True]
+    row["reset_state"]["root_pose_world"]["position_world_m"][2] += offset_m
+    plan_path.chmod(0o644)
+    plan_path.write_text(json.dumps(plan))
+
+
+def test_a_half_no_episode_can_be_scored_from_is_recompiled_once_per_new_release(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    _release(monkeypatch, RELEASE_1)
+    _at(monkeypatch, 0)
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    first = status["team_scene_inputs_path"]
+    assert worker.unscorable_half(first) is None
+    # As capture-447ae4f4's half was compiled: its tray spawned 14.7 mm from the start the scorer reads.
+    _spawn_off_start(first, 0.0147)
+    assert worker.unscorable_half(first) == "rigid_task_start_pose_not_spawn_pose:14.7mm>2.0mm"
+    # The release that compiled it never recompiles it ...
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    # ... a newly deployed one does, once, on the CPU, recorded before the move.
+    _release(monkeypatch, RELEASE_2)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
+        {"request_key": key, "reason": "unscorable_half",
+         "detail": "rigid_task_start_pose_not_spawn_pose:14.7mm>2.0mm", "release_commit": RELEASE_2}]
+    assert _status(world)[worker.UNSCORABLE_HALF_REQUEUE_FIELD] == [RELEASE_2]
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    assert status["team_scene_inputs_path"] != first and worker.unscorable_half(status["team_scene_inputs_path"]) is None
+    assert profile_for_capture(world["capture"])["team_scene_inputs_path"] == status["team_scene_inputs_path"]
+    assert status[worker.UNSCORABLE_HALF_REQUEUE_FIELD] == [RELEASE_2]
+    # Even were it still unscorable, this release never tries it again: no loop.
+    _spawn_off_start(status["team_scene_inputs_path"], 0.0147)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    assert world["process"]()["automatic_requeue"] == []
+    # A half within the scorer's reset tolerance is reused by every release.
+    _spawn_off_start(status["team_scene_inputs_path"], -0.0147 + 0.0015)
+    _release(monkeypatch, "c" * 40)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+
+
 def test_a_refusal_recorded_without_a_release_requeues_once_under_a_known_release(tmp_path, monkeypatch):
     world = _world(tmp_path, monkeypatch)
     queue, key = world["queue"], world["key"]

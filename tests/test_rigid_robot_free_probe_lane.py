@@ -77,6 +77,14 @@ def retask_packet(packet: Path, task_spec: dict[str, Any]) -> None:
     plan_path = packet / PLAN
     plan = json.loads(plan_path.read_text())
     plan["task_spec"] = task_spec
+    # Its task object spawns where the task starts, as every compiled packet's does (rigid_support_seating).
+    offset = task_spec["interaction_affordance"]["asset_root_from_scoring_frame"]["position_m"]
+    root = {"position_world_m": [a - b for a, b in zip(task_spec["start_pose_world"][:3], offset, strict=True)],
+            "orientation_xyzw": list(task_spec["start_pose_world"][3:])}
+    for row in plan["objects"]:
+        if row.get("task_subject") is True:
+            row["pose_world"] = copy.deepcopy(root)
+            row.setdefault("reset_state", {})["root_pose_world"] = copy.deepcopy(root)
     plan["plan_digest"] = canonical_digest(plan, digest_field="plan_digest")
     plan_path.write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n")
     receipt_path = packet / PACKET_RECEIPT
@@ -876,15 +884,58 @@ def test_a_launched_allocator_without_a_result_is_never_followed_by_another(tmp_
     assert len(world["allocator_calls"]) == 1 and world["transport_calls"] == []
 
 
-def test_a_refusal_before_funding_defers_to_the_next_wake_up_and_is_bounded(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(("refusal", "blocker"), [
+    # The upstream cap and the job's dollar ceiling share the WebApp's code (websiteSceneSponsorship.ts).
+    ("website_scene_preparation_budget_exhausted", "rigid_robot_free_probe_website_grant_exhausted"),
+    ("provider_terms_not_configured_or_changed",
+     "rigid_robot_free_probe_website_grant_refused:provider_terms_not_configured_or_changed"),
+])
+def test_a_webapp_money_refusal_defers_without_counting_and_stages_nothing_until_its_wait(
+        tmp_path, monkeypatch, refusal, blocker) -> None:
     world = build_world(tmp_path, monkeypatch)
-    world["webapp_refusal"] = "website_scene_preparation_budget_exhausted"
+    world["webapp_refusal"] = refusal
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    hooks = runner_hooks(world)
+    clock = [time.time()]
+    hooks["now"] = lambda: clock[0]
+    row = runner.run_queue(world["queue"], hooks=hooks)[0]
+    assert row["status"] == "deferred" and blocker in row["blockers"], row
+    assert len(world["allocator_calls"]) == 1
+    clock[0] = time.time()
+    # Every later wake-up inside the wait stages nothing, reserves nothing and seals nothing
+    # (capture-447ae4f4: four such refusals sealed attempts_exhausted).
+    for _ in range(runner.MAX_UNFUNDED_ATTEMPTS + 2):
+        row = runner.run_queue(world["queue"], hooks=hooks)[0]
+        assert (row["status"], row["reason"]) == ("deferred", runner.GRANT_REFUSED_STATE), row
+        assert 0 < row["retry_after_seconds"] <= runner.GRANT_REFUSAL_RETRY_SECONDS and blocker in row["blockers"]
+    assert len(world["allocator_calls"]) == 1 and len(world["webapp_calls"]) == 1
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    assert runner._counts(job) == (0, 0) and not (job / runner.TERMINAL_FILENAME).exists()
+    (attempt,) = runner._attempts(job)
+    assert json.loads((attempt / runner.INGEST_FILENAME).read_text())["state"] == runner.GRANT_REFUSED_STATE
+    # After the wait one more attempt asks the WebApp; still refused, still uncounted.
+    clock[0] += runner.GRANT_REFUSAL_RETRY_SECONDS + 1
+    assert runner.run_queue(world["queue"], hooks=hooks)[0]["status"] == "deferred"
+    assert len(world["allocator_calls"]) == 2 and runner._counts(job) == (0, 0)
+    # The owner lifts the stop (a raised cap or ceiling): the next attempt after the wait is funded and decided.
+    world["webapp_refusal"] = None
+    clock[0] += runner.GRANT_REFUSAL_RETRY_SECONDS + 1
+    assert runner.run_queue(world["queue"], hooks=hooks)[0]["status"] == "decided"
+    assert _receipt(world)["status"] == "passed" and len(world["transport_calls"]) == 1
+
+
+def test_a_refusal_before_funding_that_is_not_the_webapps_defers_to_the_next_wake_up_and_is_bounded(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    # The WebApp already holds this exact binding: one binding is never paid twice, and it is not a money stop.
+    monkeypatch.setattr(lane, "reserve_probe_funding", lambda **_kwargs: (
+        None, ["rigid_robot_free_probe_website_grant_already_reserved"]))
     runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
     hooks = runner_hooks(world)
     for attempt in range(runner.MAX_UNFUNDED_ATTEMPTS - 1):
         row = runner.run_queue(world["queue"], hooks=hooks)[0]
         assert row["status"] == "deferred", row
-        assert "rigid_robot_free_probe_website_grant_exhausted" in row["blockers"]
+        assert "rigid_robot_free_probe_website_grant_already_reserved" in row["blockers"]
         assert len(world["allocator_calls"]) == attempt + 1  # one attempt per wake-up, never a tight loop
     final = runner.run_queue(world["queue"], hooks=hooks)[0]
     assert final["status"] == "attempts_exhausted" and final["detail"]["unfunded_attempts"] == 4, final
