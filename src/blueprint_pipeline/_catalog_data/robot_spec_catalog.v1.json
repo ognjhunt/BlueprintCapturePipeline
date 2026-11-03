@@ -1,0 +1,546 @@
+{
+  "schema_version": "robot_spec_catalog.v1",
+  "retrieved_on": "2026-11-02",
+  "default_tool": {
+    "tool_id": "robotiq_2f85",
+    "name": "Robotiq 2F-85",
+    "figures": {
+      "stroke_m": {"value": 0.085, "unit": "m", "source_url": "https://robotiq.com/hubfs/Product-sheets/Adaptive%20Grippers/Product-sheet-Adaptive-Grippers-EN.pdf", "quote": "SPECIFICATIONS 2F-85 2F-140 Stroke (adjustable) 85 mm 140 mm", "conversion": "85 mm = 0.085 m"},
+      "mass_kg": {"value": 0.9, "unit": "kg", "source_url": "https://robotiq.com/hubfs/Product-sheets/Adaptive%20Grippers/Product-sheet-Adaptive-Grippers-EN.pdf", "quote": "Gripper mass 0.9 kg 1 kg", "conversion": null},
+      "length_m": {"value": 0.1628, "unit": "m", "source_url": "https://assets.robotiq.com/website-assets/support_documents/document/online/2F-85_2F-140_TM_InstructionManual_HTML5_20190503.zip/2F-85_2F-140_TM_InstructionManual_HTML5/Content/6.%20Specifications.htm", "quote": "Maximum height 162.8 mm", "conversion": "162.8 mm = 0.1628 m"}
+    },
+    "unknown_figures": {}
+  },
+  "models": [
+    {
+      "model_id": "universal_robots_ur5e",
+      "recipe_id": "universal_robots_ur5e",
+      "manufacturer": "Universal Robots",
+      "name": "UR5e",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling", "wall", "table"],
+      "figures": {
+        "max_reach_m": {"value": 0.85, "unit": "m", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur5e/", "quote": "Reach 850 mm / 33.5 in", "conversion": "850 mm = 0.85 m"},
+        "rated_payload_kg": {"value": 5, "unit": "kg", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur5e/", "quote": "Payload 5 kg / 11 lbs", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 4, "unit": "m/s", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur5e/", "quote": "Maximum TCP speed 4 m/s", "conversion": null},
+        "base_footprint_diameter_m": {"value": 0.151, "unit": "m", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur5e/", "quote": "Footprint Ø151 mm", "conversion": "151 mm = 0.151 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 20.7, "unit": "kg", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur5e/", "quote": "Weight including cable 20,7 kg / 45.7 lbs", "conversion": "20,7 kg (decimal comma) = 20.7 kg"},
+        "repeatability_mm": {"value": 0.03, "unit": "mm", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur5e/", "quote": "Pose repeatability per ISO 9283 ± 0.03 mm", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur5e/", "quote": "Degrees of freedom 6 rotating joints", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_l_w_m": "Round base; the datasheet gives a diameter (Ø151 mm), not length x width."
+      },
+      "notes": "All figures from the UR5e Technical specification PDF ('Updated October 2026') served at the source URL. Datasheet says 'Arm mounting: Any orientation'. Mass is the arm weight including cable. The datasheet does not say where reach is measured to. universal-robots.com/products/ur5e/ currently shows no numeric specs."
+    },
+    {
+      "model_id": "universal_robots_ur10e",
+      "recipe_id": "universal_robots_ur10e",
+      "manufacturer": "Universal Robots",
+      "name": "UR10e",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling", "wall", "table"],
+      "figures": {
+        "max_reach_m": {"value": 1.3, "unit": "m", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur10e/", "quote": "Reach 1300 mm / 51.2 in", "conversion": "1300 mm = 1.3 m"},
+        "rated_payload_kg": {"value": 12.5, "unit": "kg", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur10e/", "quote": "Payload 12.5 kg / 27.6 lbs", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 4, "unit": "m/s", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur10e/", "quote": "Maximum TCP speed 4 m/s", "conversion": null},
+        "base_footprint_diameter_m": {"value": 0.19, "unit": "m", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur10e/", "quote": "Footprint Ø190 mm", "conversion": "190 mm = 0.19 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 33.3, "unit": "kg", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur10e/", "quote": "Weight including cable 33.3 kg / 73.5 lbs", "conversion": null},
+        "repeatability_mm": {"value": 0.05, "unit": "mm", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur10e/", "quote": "Pose repeatability per ISO 9283 ± 0.05 mm", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur10e/", "quote": "Degrees of freedom 6 rotating joints", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_l_w_m": "Round base; the datasheet gives a diameter (Ø190 mm), not length x width."
+      },
+      "notes": "All figures from the UR10e Technical specification PDF ('Updated October 2026'). 'Arm mounting: Any orientation'. Mass includes cable. Doubtful drawing content in that same PDF: the payload chart is titled 'UR12e payload curve' and the 'Dimensions and reach of UR10e' drawing shows an R500 envelope; the table values (1300 mm, 12.5 kg) are used. The datasheet does not say where reach is measured to."
+    },
+    {
+      "model_id": "universal_robots_ur20",
+      "recipe_id": null,
+      "manufacturer": "Universal Robots",
+      "name": "UR20",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling", "wall", "table"],
+      "figures": {
+        "max_reach_m": {"value": 1.75, "unit": "m", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur20/", "quote": "Reach 1750 mm / 68.9 in", "conversion": "1750 mm = 1.75 m"},
+        "rated_payload_kg": {"value": 20, "unit": "kg", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur20/", "quote": "20 kg / 44.1 lbs", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 5, "unit": "m/s", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur20/", "quote": "Maximum TCP speed 5 m/s", "conversion": null},
+        "base_footprint_diameter_m": {"value": 0.245, "unit": "m", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur20/", "quote": "Footprint Ø245 mm", "conversion": "245 mm = 0.245 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 64, "unit": "kg", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur20/", "quote": "Weight without cable 64 kg / 141.1 lbs", "conversion": null},
+        "repeatability_mm": {"value": 0.1, "unit": "mm", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur20/", "quote": "Pose repeatability per ISO 9283 ± 0.1 mm", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur20/", "quote": "Degrees of freedom 6 rotating joints", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_l_w_m": "Round base; the datasheet gives a diameter (Ø245 mm), not length x width."
+      },
+      "notes": "Figures from the UR20 Technical specification PDF ('Updated October 2026'). Rated payload is the standard 20 kg; the datasheet also gives '25 kg / 55.1 lbs with boundary conditions according to the manual.' Disagreement: the universal-robots.com/products/ur20/ page lists repeatability '±0.01 mm'; the datasheet value (± 0.1 mm) is used. Mass excludes cable. 'Arm mounting: Any orientation'."
+    },
+    {
+      "model_id": "universal_robots_ur30",
+      "recipe_id": null,
+      "manufacturer": "Universal Robots",
+      "name": "UR30",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling", "wall", "table"],
+      "figures": {
+        "max_reach_m": {"value": 1.3, "unit": "m", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur30/", "quote": "Reach 1300 mm / 51.18 in", "conversion": "1300 mm = 1.3 m"},
+        "rated_payload_kg": {"value": 30, "unit": "kg", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur30/", "quote": "30 kg / 66.1 lbs", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 4, "unit": "m/s", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur30/", "quote": "Maximum TCP speed 4 m/s", "conversion": null},
+        "base_footprint_diameter_m": {"value": 0.245, "unit": "m", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur30/", "quote": "Footprint Ø245 mm", "conversion": "245 mm = 0.245 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 63.5, "unit": "kg", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur30/", "quote": "Weight without cable 63.5 kg / 140.0 lbs", "conversion": null},
+        "repeatability_mm": {"value": 0.1, "unit": "mm", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur30/", "quote": "Pose repeatability per ISO 9283 ± 0.1 mm", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.universal-robots.com/manuals/latest/en/datasheets/ur30/", "quote": "Degrees of freedom 6 rotating joints", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_l_w_m": "Round base; the datasheet gives a diameter (Ø245 mm), not length x width."
+      },
+      "notes": "Figures from the UR30 Technical specification PDF ('Updated October 2026'). Rated payload is the standard 30 kg; the datasheet also gives '35 kg / 77.2 lbs with boundary conditions'. Disagreement: the universal-robots.com/products/ur30/ page lists repeatability '±0.01 mm'; the datasheet value (± 0.1 mm) is used. Mass excludes cable. 'Arm mounting: Any orientation'."
+    },
+    {
+      "model_id": "fanuc_crx_10ia",
+      "recipe_id": "fanuc_crx_10ia",
+      "manufacturer": "FANUC",
+      "name": "CRX-10iA",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling"],
+      "figures": {
+        "max_reach_m": {"value": 1.249, "unit": "m", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-data-sheet.pdf", "quote": "Max. reach (end of flange): 1249 mm", "conversion": "1249 mm = 1.249 m"},
+        "rated_payload_kg": {"value": 10, "unit": "kg", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-data-sheet.pdf", "quote": "Max. load capacity at wrist: 10 kg", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 2.0, "unit": "m/s", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-data-sheet.pdf", "quote": "*Maximum speed (mm/s) High Speed Mode 2000", "conversion": "2000 mm/s = 2.0 m/s"},
+        "base_footprint_diameter_m": {"value": 0.19, "unit": "m", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-data-sheet.pdf", "quote": "φ190", "conversion": "190 mm = 0.19 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 40, "unit": "kg", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-data-sheet.pdf", "quote": "Mechanical weight (kg) 40", "conversion": null},
+        "repeatability_mm": {"value": 0.04, "unit": "mm", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-data-sheet.pdf", "quote": "**Repeatability (mm) ± 0.04", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-data-sheet.pdf", "quote": "Controlled axes 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_l_w_m": "Round base; the datasheet drawing gives a diameter, not length x width."
+      },
+      "notes": "Datasheet PDF (created Aug 2026) linked from the fanucamerica.com CRX-10iA page; table quotes join the column header to the cell. Reach is to the end of the flange (footnote '****At the end of flange'). Speed: FANUC's '*Maximum speed (mm/s)' is 1000 in Collaborative Mode and 2000 in High Speed Mode; it is not labelled 'TCP', and the footnote says short moves may not reach it. Repeatability is based on ISO 9283. Disagreement: the fanucamerica.com product page lists Repeatability ±0.05 mm and Mechanical Weight 39 kg; the datasheet values (± 0.04 mm, 40 kg) are used. Base diameter is read from the 'φ190' dimension on the datasheet side-view drawing (not in the PDF text layer). Product page Mounting Method: 'Floor / Angle / Inverted' (angle mounting has no token here)."
+    },
+    {
+      "model_id": "fanuc_crx_10ia_l",
+      "recipe_id": "fanuc_crx_10ia_l",
+      "manufacturer": "FANUC",
+      "name": "CRX-10iA/L",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling"],
+      "figures": {
+        "max_reach_m": {"value": 1.418, "unit": "m", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-L-data-sheet.pdf", "quote": "Max. reach (end of flange): 1418 mm", "conversion": "1418 mm = 1.418 m"},
+        "rated_payload_kg": {"value": 10, "unit": "kg", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-L-data-sheet.pdf", "quote": "Max. load capacity at wrist: 10 kg", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 2.0, "unit": "m/s", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-L-data-sheet.pdf", "quote": "*Maximum speed (mm/s) High Speed Mode 2000", "conversion": "2000 mm/s = 2.0 m/s"},
+        "base_footprint_diameter_m": {"value": 0.19, "unit": "m", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-L-data-sheet.pdf", "quote": "φ 190", "conversion": "190 mm = 0.19 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 40, "unit": "kg", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-L-data-sheet.pdf", "quote": "Mechanical weight (kg) 40", "conversion": null},
+        "repeatability_mm": {"value": 0.04, "unit": "mm", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-L-data-sheet.pdf", "quote": "**Repeatability (mm) ± 0.04", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/CRX-10iA-L-data-sheet.pdf", "quote": "Controlled axes 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_l_w_m": "Round base; the datasheet drawing gives a diameter, not length x width."
+      },
+      "notes": "Long-arm model. Datasheet PDF (created Aug 2026) linked from the fanucamerica.com CRX-10iA/L page; table quotes join the column header to the cell. Reach is to the end of the flange. Speed: '*Maximum speed (mm/s)' 1000 (Collaborative Mode) / 2000 (High Speed Mode), not labelled 'TCP'. Disagreement: the product page lists Repeatability ±0.05 mm and Mechanical Weight 39 kg; the datasheet values (± 0.04 mm, 40 kg) are used. Base diameter is read from the 'φ 190' dimension on the datasheet drawing. Product page Mounting Method: 'Floor / Angle / Inverted'."
+    },
+    {
+      "model_id": "fanuc_m710ic_45m",
+      "recipe_id": "fanuc_m710ic_45m",
+      "manufacturer": "FANUC",
+      "name": "M-710iC/45M",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling"],
+      "figures": {
+        "max_reach_m": {"value": 2.606, "unit": "m", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/m-710ic-45m-datasheet.pdf", "quote": "Reach (mm) 2606", "conversion": "2606 mm = 2.606 m"},
+        "rated_payload_kg": {"value": 45, "unit": "kg", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/m-710ic-45m-datasheet.pdf", "quote": "Max. load capacity at wrist: 45 kg", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 570, "unit": "kg", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/m-710ic-45m-datasheet.pdf", "quote": "Mechanical weight (kg) 570", "conversion": null},
+        "repeatability_mm": {"value": 0.06, "unit": "mm", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/m-710ic-45m-datasheet.pdf", "quote": "Repeatability (mm) ± 0.06**", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.fanucamerica.com/uploads/files/data-sheets/m-710ic-45m-datasheet.pdf", "quote": "Controlled axes 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "FANUC publishes only per-axis maximum speeds (deg/s) for this model, no TCP speed.",
+        "base_footprint_diameter_m": "No base footprint figure; the base appears only in the operating-space drawing.",
+        "base_footprint_l_w_m": "No base footprint figure; the base appears only in the operating-space drawing."
+      },
+      "notes": "Datasheet PDF (2019; excerpt of FANUC manual B-82274EN/12 'Basic specifications') linked from the fanucamerica.com M-710iC/45M page. Disagreement inside the datasheet: its header says 'Max. reach: 2602 mm' while its table, its drawing and the fanucamerica.com product page give 2606 mm (used). The 2606 mm drawing dimension is to the J5-axis rotation center ('Operating space of J5-axis rotation center'), i.e. the wrist, not the flange. Repeatability is based on ISO 9283. Product page Mounting Method: 'Floor / Angle / Inverted'."
+    },
+    {
+      "model_id": "yaskawa_gp12",
+      "recipe_id": "yaskawa_gp12",
+      "manufacturer": "Yaskawa",
+      "name": "GP12",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "wall", "ceiling"],
+      "figures": {
+        "max_reach_m": {"value": 1.44, "unit": "m", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "1,440 mm horizontal reach", "conversion": "1,440 mm = 1.44 m"},
+        "rated_payload_kg": {"value": 12, "unit": "kg", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "12 kg payload", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 150, "unit": "kg", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "Weight kg 150", "conversion": null},
+        "repeatability_mm": {"value": 0.02, "unit": "mm", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "0.02 mm repeatability", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.motoman.com/getmedia/1d6a21d4-3984-46d7-9159-eb08fedb2ac3/GP12.pdf.aspx", "quote": "Controlled axes 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "Yaskawa publishes only per-axis maximum speeds (deg/s) for the GP12, no TCP speed.",
+        "base_footprint_diameter_m": "No footprint figure; base dimensions appear only in the datasheet drawing.",
+        "base_footprint_l_w_m": "No footprint figure; base dimensions appear only in the datasheet drawing."
+      },
+      "notes": "Yaskawa America datasheet DS-867-A (July 2021), linked from the motoman.com GP12 page. Reach is the horizontal reach; vertical reach is 2,511 mm; the datasheet does not name the reach reference point. Mounting Options: 'Floor, Wall, Tilt or Ceiling' (tilt has no token here)."
+    },
+    {
+      "model_id": "yaskawa_gp20",
+      "recipe_id": "yaskawa_gp20",
+      "manufacturer": "Yaskawa",
+      "name": "GP20",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling", "wall"],
+      "figures": {
+        "max_reach_m": {"value": 1.802, "unit": "m", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "It has a reach of 1,802 mm", "conversion": "1,802 mm = 1.802 m"},
+        "rated_payload_kg": {"value": 20, "unit": "kg", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "Powerful: 20 kg payload", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 250, "unit": "kg", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "Weight [kg] 250", "conversion": null},
+        "repeatability_mm": {"value": 0.02, "unit": "mm", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "Repeatability [mm] ±0.02", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.yaskawa.eu.com/_downloads/download_d17256", "quote": "Controlled axes 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "Yaskawa publishes only per-axis maximum speeds (deg/s) for the GP20, no TCP speed.",
+        "base_footprint_diameter_m": "No footprint figure; base dimensions appear only in the flyer drawing.",
+        "base_footprint_l_w_m": "No footprint figure; base dimensions appear only in the flyer drawing."
+      },
+      "notes": "Yaskawa Europe English flyer 'MOTOMAN GP20' (C-03-2024, A-No. 195934) hosted on yaskawa.eu.com. Reach is the 'Max. working range R', drawn to 'Point P' in the flyer's working-range drawing. 'Mounting options: Floor, ceiling, wall, tilt*' (tilt and steeper installation angles restrict the S-axis range). The GP20 is a Yaskawa Europe model; motoman.com has no GP20 page (404). Do not confuse with the GP20HL (3,124 mm reach)."
+    },
+    {
+      "model_id": "yaskawa_hc20",
+      "recipe_id": null,
+      "manufacturer": "Yaskawa",
+      "name": "HC20DTP",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "wall", "ceiling"],
+      "figures": {
+        "max_reach_m": {"value": 1.9, "unit": "m", "source_url": "https://www.motoman.com/getmedia/1c365c4a-7973-4826-b35e-09ea82ce3b74/ds_HC20DTP.pdf.aspx", "quote": "1,900 mm maximum reach", "conversion": "1,900 mm = 1.9 m"},
+        "rated_payload_kg": {"value": 20, "unit": "kg", "source_url": "https://www.motoman.com/getmedia/1c365c4a-7973-4826-b35e-09ea82ce3b74/ds_HC20DTP.pdf.aspx", "quote": "20 kg payload", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 2.0, "unit": "m/s", "source_url": "https://www.motoman.com/getmedia/1c365c4a-7973-4826-b35e-09ea82ce3b74/ds_HC20DTP.pdf.aspx", "quote": "Non-collaborative mode: 2,000 mm/s", "conversion": "2,000 mm/s = 2.0 m/s"},
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 140, "unit": "kg", "source_url": "https://www.motoman.com/getmedia/1c365c4a-7973-4826-b35e-09ea82ce3b74/ds_HC20DTP.pdf.aspx", "quote": "Weight kg 140", "conversion": null},
+        "repeatability_mm": {"value": 0.05, "unit": "mm", "source_url": "https://www.motoman.com/getmedia/1c365c4a-7973-4826-b35e-09ea82ce3b74/ds_HC20DTP.pdf.aspx", "quote": "0.05 mm repeatability", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.motoman.com/getmedia/1c365c4a-7973-4826-b35e-09ea82ce3b74/ds_HC20DTP.pdf.aspx", "quote": "Controlled axes 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_diameter_m": "No footprint figure; base dimensions appear only in the datasheet drawing.",
+        "base_footprint_l_w_m": "No footprint figure; base dimensions appear only in the datasheet drawing."
+      },
+      "notes": "The current HC20 sold by Yaskawa America is the HC20DTP (Yaskawa Europe lists it as HC20DT). Source: motoman.com HC20DTP datasheet (Jan 2025). Reach: 1,900 mm is the maximum reach to the end flange; the datasheet also gives '1,700 mm effective reach' to the P-point ('R1900 END-FLANGE WORKING ENVELOPE', 'R1700 P-POINT WORKING ENVELOPE'), and the motoman.com product page shows 'Horizontal Reach 1700 mm'. TCP speed is from the row 'Tool Center Point (maximum linear speed)': 2,000 mm/s non-collaborative (based on payload), 1,000 mm/s collaborative (user-defined per safety assessment). Mounting Options: 'Floor, Wall, Tilt or Ceiling'."
+    },
+    {
+      "model_id": "kuka_lbr_iiwa_14",
+      "recipe_id": "kuka_lbr_iiwa_14",
+      "manufacturer": "KUKA",
+      "name": "LBR iiwa 14 R820",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling", "wall"],
+      "figures": {
+        "max_reach_m": {"value": 0.82, "unit": "m", "source_url": "https://www.kuka.com/en-us/products/robotics-systems/industrial-robots/lbr-iiwa", "quote": "Maximum reach 820 mm", "conversion": "820 mm = 0.82 m"},
+        "rated_payload_kg": {"value": 14, "unit": "kg", "source_url": "https://www.kuka.com/en-us/products/robotics-systems/industrial-robots/lbr-iiwa", "quote": "Total load 14 kg", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 29.9, "unit": "kg", "source_url": "https://howtorobot.com/sites/default/files/2023-03/KUKA_LBR_iiwa_brochure_EN.pdf", "quote": "Weight 29.9 kg 23.9 kg", "conversion": null},
+        "repeatability_mm": {"value": 0.15, "unit": "mm", "source_url": "https://howtorobot.com/sites/default/files/2023-03/KUKA_LBR_iiwa_brochure_EN.pdf", "quote": "Pose repeatability ±0.15 mm ±0.1 mm", "conversion": null},
+        "degrees_of_freedom": {"value": 7, "unit": "count", "source_url": "https://www.kuka.com/en-us/products/robotics-systems/industrial-robots/lbr-iiwa", "quote": "LBR iiwa (7 axes) - technical data", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "Neither the kuka.com page nor the KUKA brochure publishes a TCP speed.",
+        "base_footprint_diameter_m": "No base footprint figure in the KUKA page or brochure.",
+        "base_footprint_l_w_m": "No base footprint figure in the KUKA page or brochure."
+      },
+      "notes": "kuka.com gives 'Total load 14 kg', 'Maximum reach 820 mm' and 'Mounting positions: Ceiling, Floor, Wall'. Weight and repeatability come from KUKA's own LBR iiwa brochure (© 2022 KUKA; table columns are LBR iiwa 14 R820 then LBR iiwa 7 R800), fetched from a third-party mirror (howtorobot.com) because kuka.com lists the brochure but exposes no fetchable link. The brochure also states 'Rated payload 14 kg', 'Reach 820 mm', 'Number of axes 7'. Reach reference point not stated."
+    },
+    {
+      "model_id": "abb_gofa_crb15000_5_95",
+      "recipe_id": "abb_gofa_crb15000_5_95",
+      "manufacturer": "ABB",
+      "name": "GoFa CRB 15000-5/0.95",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling", "wall", "table"],
+      "figures": {
+        "max_reach_m": {"value": 1.05, "unit": "m", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "CRB 15000-5/0.95 5 kg 0.95 m 1.05 m", "conversion": null},
+        "rated_payload_kg": {"value": 5, "unit": "kg", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "CRB 15000-5/0.95 5 kg 0.95 m 1.05 m", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 2.2, "unit": "m/s", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=9AKK107991A8564&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "Max TCP Velocity 2,2 m/s 2 m/s 2 m/s", "conversion": "2,2 m/s (decimal comma) = 2.2 m/s"},
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": {"value": [0.165, 0.165], "unit": "m", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=9AKK107991A8564&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "Dimensions robot base 165 x 165 mm 200 x 200 mm 200 x 200 mm", "conversion": "165 mm = 0.165 m"},
+        "robot_mass_kg": {"value": 28, "unit": "kg", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "CRB 15000-5/0.95 28 kg", "conversion": null},
+        "repeatability_mm": {"value": 0.02, "unit": "mm", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "Pose repeatability, RP (mm) 0.02 0.02 0.02", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "a flexible, agile 6-axis articulated robot", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_diameter_m": "Square base; the datasheet gives 165 x 165 mm instead of a diameter."
+      },
+      "notes": "Reach is the flange reach (1.05 m); the 0.95 in the variant name is the wrist reach. Reach, payload, weight and repeatability: ABB Product specification CRB 15000, 3HAC077390-001 Revision Y (2026) (variant table columns: handling capacity, wrist reach, flange reach; repeatability columns: 5/0.95, 10/1.52, 12/1.27). TCP velocity and base size: ABB GoFa datasheet (© 2023), whose columns are GoFa 5, GoFa 12, GoFa 10 (first value used). Datasheet mounting: 'Any angle, including table mounting, wall mounting, and ceiling mounting'."
+    },
+    {
+      "model_id": "abb_gofa_crb15000_12_127",
+      "recipe_id": "abb_gofa_crb15000_12_127",
+      "manufacturer": "ABB",
+      "name": "GoFa CRB 15000-12/1.27",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling", "wall", "table"],
+      "figures": {
+        "max_reach_m": {"value": 1.38, "unit": "m", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "CRB 15000-12/1.27 12 kg 1.27 m 1.38 m", "conversion": null},
+        "rated_payload_kg": {"value": 12, "unit": "kg", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "CRB 15000-12/1.27 12 kg 1.27 m 1.38 m", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 2.0, "unit": "m/s", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=9AKK107991A8564&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "Max TCP Velocity 2,2 m/s 2 m/s 2 m/s", "conversion": null},
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": {"value": [0.2, 0.2], "unit": "m", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=9AKK107991A8564&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "Dimensions robot base 165 x 165 mm 200 x 200 mm 200 x 200 mm", "conversion": "200 mm = 0.2 m"},
+        "robot_mass_kg": {"value": 48, "unit": "kg", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "CRB 15000-12/1.27 48 kg", "conversion": null},
+        "repeatability_mm": {"value": 0.02, "unit": "mm", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "Pose repeatability, RP (mm) 0.02 0.02 0.02", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://search.abb.com/library/Download.aspx?DocumentID=3HAC077390-001&LanguageCode=en&DocumentPartId=&Action=Launch", "quote": "a flexible, agile 6-axis articulated robot", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_diameter_m": "Square base; the datasheet gives 200 x 200 mm instead of a diameter."
+      },
+      "notes": "Reach is the flange reach (1.38 m, Product specification 3HAC077390-001 Rev. Y, 2026); the 1.27 in the variant name is the wrist reach. Disagreements with the older GoFa datasheet (© 2023): it gives '1270 (wrist) 1370 (flange)' (1.37 m) and 'up to 14kg*' payload (*wrist down configuration); the product specification's 12 kg handling capacity and 1.38 m are used. TCP velocity and base size from the datasheet (columns GoFa 5, GoFa 12, GoFa 10; second value used). Repeatability columns in the product spec: 5/0.95, 10/1.52, 12/1.27. Mounting: 'Any angle, including table mounting, wall mounting, and ceiling mounting'."
+    },
+    {
+      "model_id": "kinova_gen3",
+      "recipe_id": "kinova_gen3",
+      "manufacturer": "Kinova",
+      "name": "Gen3 7-DoF",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "table", "wall", "ceiling"],
+      "figures": {
+        "max_reach_m": {"value": 0.902, "unit": "m", "source_url": "https://www.kinovarobotics.com/uploads/User-Guide-Gen3-R07.pdf", "quote": "Maximum reach (fully extended) 7 DoF 902 mm", "conversion": "902 mm = 0.902 m"},
+        "rated_payload_kg": {"value": 2.0, "unit": "kg", "source_url": "https://www.kinovarobotics.com/uploads/User-Guide-Gen3-R07.pdf", "quote": "full-range continuous; no gripper: 2.0 kg", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 0.5, "unit": "m/s", "source_url": "https://www.kinovarobotics.com/uploads/User-Guide-Gen3-R07.pdf", "quote": "Maximum Cartesian translation speed 50 cm/s", "conversion": "50 cm/s = 0.5 m/s"},
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 8.2, "unit": "kg", "source_url": "https://www.kinovarobotics.com/uploads/User-Guide-Gen3-R07.pdf", "quote": "Mass (without gripper and with vision module) 7 DoF 8.2 kg", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": {"value": 7, "unit": "count", "source_url": "https://www.kinovarobotics.com/uploads/User-Guide-Gen3-R07.pdf", "quote": "Degrees of freedom 7 DoF, 6 DoF", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_diameter_m": "The user guide gives no base footprint figure, only bolting-pattern drawings.",
+        "base_footprint_l_w_m": "The user guide gives no base footprint figure, only bolting-pattern drawings.",
+        "repeatability_mm": "No repeatability figure in the user guide's Technical Specifications tables."
+      },
+      "notes": "Kinova Gen3 Ultra lightweight robot User Guide (© 2022, R07) on kinovarobotics.com; the kinovarobotics.com product page rendered no specs. Reach is defined as the distance 'from the shoulder (actuator 2 frame) to the interface module frame' (90.2 cm), i.e. from the shoulder, not the base. Payload: 2.0 kg full-range continuous (used) and 4.0 kg mid-range continuous, both without gripper. Mass excludes gripper, includes vision module. Mounting: tabletop (clamp, or screws on a horizontal surface) and wall or ceiling per the guide's installation sections."
+    },
+    {
+      "model_id": "ufactory_xarm7",
+      "recipe_id": "ufactory_xarm7",
+      "manufacturer": "UFactory",
+      "name": "xArm 7",
+      "body_type": "fixed_arm",
+      "mounting": ["floor", "ceiling", "wall", "table"],
+      "figures": {
+        "max_reach_m": {"value": 0.7, "unit": "m", "source_url": "https://www.ufactory.cc/upfiles/products/202610/FI63GZHEZPW9.pdf", "quote": "Reach 700 mm 700 mm 700 mm", "conversion": "700 mm = 0.7 m"},
+        "rated_payload_kg": {"value": 3.5, "unit": "kg", "source_url": "https://www.ufactory.cc/upfiles/products/202610/FI63GZHEZPW9.pdf", "quote": "Payload 3 kg 5 kg 3.5 kg", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 1, "unit": "m/s", "source_url": "https://www.ufactory.cc/upfiles/products/202610/FI63GZHEZPW9.pdf", "quote": "Maximum TCP speed 1 m/s 1 m/s 1 m/s", "conversion": null},
+        "base_footprint_diameter_m": {"value": 0.126, "unit": "m", "source_url": "https://www.ufactory.cc/upfiles/products/202610/FI63GZHEZPW9.pdf", "quote": "Footprint Ø 126 mm", "conversion": "126 mm = 0.126 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 14.3, "unit": "kg", "source_url": "https://www.ufactory.cc/upfiles/products/202610/FI63GZHEZPW9.pdf", "quote": "Robot arm weight 11.3 kg 12.5 kg 14.3 kg", "conversion": null},
+        "repeatability_mm": {"value": 0.1, "unit": "mm", "source_url": "https://www.ufactory.cc/upfiles/products/202610/FI63GZHEZPW9.pdf", "quote": "Repeatability ±0.1 mm ±0.1 mm ±0.1 mm", "conversion": null},
+        "degrees_of_freedom": {"value": 7, "unit": "count", "source_url": "https://www.ufactory.cc/upfiles/products/202610/FI63GZHEZPW9.pdf", "quote": "Degrees of freedom 5 6 7", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_l_w_m": "Round base; the spec sheet gives a diameter (Ø 126 mm), not length x width."
+      },
+      "notes": "UFACTORY 'xArm Technical Specification' PDF linked from ufactory.cc/xarm-collaborative-robot. Table columns are xArm 5, xArm 6, xArm 7 (third value used). 'Arm mounting: Any orientation'. The ufactory.cc product page repeats 3.5 kg / 700 mm, ±0.1 mm, 1 m/s and 14.3 kg. Reach reference point not stated."
+    },
+    {
+      "model_id": "franka_research_3",
+      "recipe_id": "franka_research_3_robotiq_2f85_sim",
+      "manufacturer": "Franka Robotics",
+      "name": "Franka Research 3 (FR3)",
+      "body_type": "fixed_arm",
+      "mounting": ["floor"],
+      "figures": {
+        "max_reach_m": {"value": 0.855, "unit": "m", "source_url": "https://franka.de/hubfs/Datasheet%20Franka%20Research%203_R02212_2.6_EN_July%202026.pdf", "quote": "Maximum reach 855 mm", "conversion": "855 mm = 0.855 m"},
+        "rated_payload_kg": {"value": 3, "unit": "kg", "source_url": "https://franka.de/hubfs/Datasheet%20Franka%20Research%203_R02212_2.6_EN_July%202026.pdf", "quote": "Rated payload 3 kg", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 2, "unit": "m/s", "source_url": "https://franka.de/hubfs/Datasheet%20Franka%20Research%203_R02212_2.6_EN_July%202026.pdf", "quote": "Cartesian velocity limits up to 2 m/s at TCP", "conversion": null},
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 18.3, "unit": "kg", "source_url": "https://franka.de/hubfs/Datasheet%20Franka%20Research%203_R02212_2.6_EN_July%202026.pdf", "quote": "Weight ~ 18.3 kg", "conversion": null},
+        "repeatability_mm": {"value": 0.1, "unit": "mm", "source_url": "https://franka.de/hubfs/Datasheet%20Franka%20Research%203_R02212_2.6_EN_July%202026.pdf", "quote": "Position repeatability ³ <+/- 0.1 mm (ISO 9283)", "conversion": null},
+        "degrees_of_freedom": {"value": 7, "unit": "count", "source_url": "https://franka.de/hubfs/Datasheet%20Franka%20Research%203_R02212_2.6_EN_July%202026.pdf", "quote": "Degrees of freedom 7", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_diameter_m": "The datasheet gives no base footprint figure, only link-distance and workspace drawings.",
+        "base_footprint_l_w_m": "The datasheet gives no base footprint figure, only link-distance and workspace drawings."
+      },
+      "notes": "Datasheet Franka Research 3, document R02212, release 2.6 (July 2026), Arm v2.1/v2.2, listed on franka.de/documents (the franka.de product page links release 2.5 with the same arm figures). Weight is approximate ('~'). Repeatability is per ISO 9283 Annex A in a 0.4 m cube workspace. 'Installation position: upright' (recorded as 'floor', meaning upright orientation; table mounting is upright too but is not named). Reach reference point not stated in the text. Recipe: the single FR3 with the Robotiq 2F-85 simulation assembly, the catalog's default tool."
+    },
+    {
+      "model_id": "franka_emika_panda",
+      "recipe_id": "droid_franka_robotiq_2f85",
+      "manufacturer": "Franka Robotics",
+      "name": "Panda (FER)",
+      "body_type": "fixed_arm",
+      "mounting": ["floor"],
+      "figures": {
+        "max_reach_m": {"value": 0.855, "unit": "m", "source_url": "https://download.franka.de/documents/100010_Product%20Manual%20Franka%20Emika%20Robot_10.21_EN.pdf", "quote": "Maximum reach 855 mm", "conversion": "855 mm = 0.855 m"},
+        "rated_payload_kg": {"value": 3, "unit": "kg", "source_url": "https://download.franka.de/documents/100010_Product%20Manual%20Franka%20Emika%20Robot_10.21_EN.pdf", "quote": "Payload 3 kg", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 2, "unit": "m/s", "source_url": "https://download.franka.de/documents/100010_Product%20Manual%20Franka%20Emika%20Robot_10.21_EN.pdf", "quote": "Cartesian velocity limits up to 2 m/s end effector speed", "conversion": null},
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 17.8, "unit": "kg", "source_url": "https://download.franka.de/documents/100010_Product%20Manual%20Franka%20Emika%20Robot_10.21_EN.pdf", "quote": "Weight ~ 17.8 kg", "conversion": null},
+        "repeatability_mm": {"value": 0.1, "unit": "mm", "source_url": "https://download.franka.de/documents/100010_Product%20Manual%20Franka%20Emika%20Robot_10.21_EN.pdf", "quote": "Pose repeatabillity <+/- 0.1 mm (ISO 9283)", "conversion": null},
+        "degrees_of_freedom": {"value": 7, "unit": "count", "source_url": "https://download.franka.de/documents/100010_Product%20Manual%20Franka%20Emika%20Robot_10.21_EN.pdf", "quote": "Degrees of freedom 7", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_diameter_m": "The datasheet gives no base footprint figure; the manual gives only a baseplate hole layout.",
+        "base_footprint_l_w_m": "The datasheet gives no base footprint figure; the manual gives only a baseplate hole layout."
+      },
+      "notes": "Discontinued: Franka Robotics (formerly Franka Emika) lists the Franka Emika Robot under end-of-life documents on franka.de/documents. Figures come from the 'DATASHEET ROBOT ARM & CONTROL' page (Release Version: April 2020) inside Franka's official 'Product Manual Franka Emika Robot' (October 2021), still hosted on download.franka.de, so no web archive was needed. The 'repeatabillity' spelling is in the source. Weight is approximate; the manual's handling section says 'The Arm weighs approx. 18kg'. 'Installation position: upright' (recorded as 'floor', meaning upright orientation). Separate model from the FR3, though the headline figures match."
+    },
+    {
+      "model_id": "agilex_piper",
+      "recipe_id": null,
+      "manufacturer": "AgileX",
+      "name": "PiPER",
+      "body_type": "fixed_arm",
+      "mounting": ["table"],
+      "figures": {
+        "max_reach_m": {"value": 0.626, "unit": "m", "source_url": "https://www.agilex.ai/products/piper", "quote": "工作半径 626mm", "conversion": "626 mm = 0.626 m"},
+        "rated_payload_kg": {"value": 1.5, "unit": "kg", "source_url": "https://www.agilex.ai/products/piper", "quote": "有效负载 1.5kg", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 4.2, "unit": "kg", "source_url": "https://www.agilex.ai/products/piper", "quote": "本体重量 4.2kg", "conversion": null},
+        "repeatability_mm": {"value": 0.1, "unit": "mm", "source_url": "https://www.agilex.ai/products/piper", "quote": "重复定位精度 ±.0.1mm", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://www.agilex.ai/products/piper", "quote": "自由度 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "AgileX publishes only per-joint maximum speeds (deg/s), no TCP speed.",
+        "base_footprint_diameter_m": "Only the base mounting size '70mm*70mm*M5*4' (a bolt pattern) is published, not a footprint.",
+        "base_footprint_l_w_m": "Only the base mounting size '70mm*70mm*M5*4' (a bolt pattern) is published, not a footprint."
+      },
+      "notes": "AgileX official product page on www.agilex.ai (Chinese; standard edition 'PiPER（标准版）', not the PiPER X); the English page on global.agilex.ai could not be fetched (blocked by the fetch tool). Label meanings: 工作半径 = working radius, 有效负载 = payload, 本体重量 = arm weight, 重复定位精度 = repeatability, 自由度 = degrees of freedom. Repeatability is printed '±.0.1mm' (stray period), read as ±0.1 mm (doubtful formatting). Mounting: '安装: 台面安装' (tabletop mounting). Recipe: none; the asset catalog has only the two-arm station agilex_piper_bimanual."
+    },
+    {
+      "model_id": "i2rt_yam",
+      "recipe_id": null,
+      "manufacturer": "I2RT",
+      "name": "YAM",
+      "body_type": "fixed_arm",
+      "mounting": ["table"],
+      "figures": {
+        "max_reach_m": {"value": 0.75, "unit": "m", "source_url": "https://i2rt.com/products/yam-6-dof-arm", "quote": "Max. workspace range: 750 mm", "conversion": "750 mm = 0.75 m"},
+        "rated_payload_kg": {"value": 2, "unit": "kg", "source_url": "https://i2rt.com/products/yam-6-dof-arm", "quote": "Nominal Payload: 2 kg", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 5.02, "unit": "kg", "source_url": "https://i2rt.com/products/yam-6-dof-arm", "quote": "Arm weight (including gripper): 5.02 kg", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://doc.i2rt.com/products/yam.html", "quote": "Degrees of Freedom 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "I2RT publishes no TCP or joint speed for the YAM.",
+        "base_footprint_diameter_m": "No footprint figure; the product page only mentions a 'compact footprint'.",
+        "base_footprint_l_w_m": "No footprint figure; the product page only mentions a 'compact footprint'.",
+        "repeatability_mm": "I2RT publishes no repeatability figure for the YAM."
+      },
+      "notes": "Base YAM (6-DoF, 'YAM Standard' in the docs) from the i2rt.com product page; YAM Pro, YAM Ultra, BIG YAM and YAM 7 are separate products. Weight includes the gripper. Reach is I2RT's 'Max. workspace range'. DoF and mounting ('Table-top (standard)') come from doc.i2rt.com, whose per-tier spec pages still list payload/reach/weight as 'TBD — see i2rt.com'. Third-party store listings seen in search quote different reach and weight figures (e.g. 780 mm); not used. Recipe: none; the asset catalog has only the two-arm station i2rt_yam_bimanual."
+    },
+    {
+      "model_id": "standard_bots_ro1",
+      "recipe_id": "standard_bots_ro1",
+      "manufacturer": "Standard Bots",
+      "name": "RO1 (now sold as Core)",
+      "body_type": "fixed_arm",
+      "mounting": ["floor"],
+      "figures": {
+        "max_reach_m": {"value": 1.3, "unit": "m", "source_url": "https://cdn.prod.website-files.com/6a79c2eee1f5842051c44586/6ad0baa701069695bb0452a4_New%20Core%20Specs%20202604.pdf", "quote": "Reach 1.3m (51.2 in)", "conversion": null},
+        "rated_payload_kg": {"value": 18, "unit": "kg", "source_url": "https://cdn.prod.website-files.com/6a79c2eee1f5842051c44586/6ad0baa701069695bb0452a4_New%20Core%20Specs%20202604.pdf", "quote": "Payload capacity 18kg (39 lbs)", "conversion": null},
+        "max_tcp_speed_m_s": {"value": 3, "unit": "m/s", "source_url": "https://corehelp.standardbots.com/2-hardware-overview.html", "quote": "Maximum TCP speed 3 m/sec (No payload)", "conversion": null},
+        "base_footprint_diameter_m": {"value": 0.2, "unit": "m", "source_url": "https://cdn.prod.website-files.com/6a79c2eee1f5842051c44586/6ad0baa701069695bb0452a4_New%20Core%20Specs%20202604.pdf", "quote": "Footprint Ø 200 mm", "conversion": "200 mm = 0.2 m"},
+        "base_footprint_l_w_m": null,
+        "robot_mass_kg": {"value": 32.5, "unit": "kg", "source_url": "https://cdn.prod.website-files.com/6a79c2eee1f5842051c44586/6ad0baa701069695bb0452a4_New%20Core%20Specs%20202604.pdf", "quote": "Weight, including cable 32.5 kg (71.6 lbs)", "conversion": null},
+        "repeatability_mm": {"value": 0.025, "unit": "mm", "source_url": "https://cdn.prod.website-files.com/6a79c2eee1f5842051c44586/6ad0baa701069695bb0452a4_New%20Core%20Specs%20202604.pdf", "quote": "Repeatability +/- 0.025 mm", "conversion": null},
+        "degrees_of_freedom": {"value": 6, "unit": "count", "source_url": "https://cdn.prod.website-files.com/6a79c2eee1f5842051c44586/6ad0baa701069695bb0452a4_New%20Core%20Specs%20202604.pdf", "quote": "Degrees of freedom 6", "conversion": null},
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "base_footprint_l_w_m": "Round base; the spec sheet gives a diameter (Ø 200 mm), not length x width."
+      },
+      "notes": "Standard Bots now sells the RO1 as 'Core': standardbots.com/ro1 serves the Core page, and the help.standardbots.com PDF titled 'RO1 User Manual' points to the 'Core User Manual' (corehelp.standardbots.com). Figures from the Core spec sheet (April 2026; 'Download spec sheet' on standardbots.com/ro1, image-only PDF) and the Core user manual section 2.4. TCP speed is 3 m/sec with no payload; typical TCP speed is 1 m/sec, and above 16 kg payload speed is cut to 25%. The product page lists the footprint as 'Ø <200 mm'. Mounting: 'Floor mount' (spec-sheet footnote: ceiling/wall mount enabled in a software update; manual: 'Floor mount only')."
+    },
+    {
+      "model_id": "unitree_g1",
+      "recipe_id": null,
+      "manufacturer": "Unitree",
+      "name": "G1",
+      "body_type": "humanoid",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": {"value": 0.45, "unit": "m", "source_url": "https://www.unitree.com/g1", "quote": "Arm Span About 0.45M", "conversion": null},
+        "rated_payload_kg": {"value": 2, "unit": "kg", "source_url": "https://www.unitree.com/g1", "quote": "Arm Maximum Load【2】 About 2Kg", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": {"value": [0.45, 0.2], "unit": "m", "source_url": "https://www.unitree.com/g1", "quote": "Height, Width and Thickness（Stand） 1320x450x200mm", "conversion": "450 mm = 0.45 m; 200 mm = 0.2 m"},
+        "robot_mass_kg": {"value": 35, "unit": "kg", "source_url": "https://www.unitree.com/g1", "quote": "Weight (With Battery) About 35kg", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": {"value": 23, "unit": "count", "source_url": "https://www.unitree.com/g1", "quote": "Total Degrees of Freedom（Joint Freedom） 23", "conversion": null},
+        "max_base_speed_m_s": {"value": 2, "unit": "m/s", "source_url": "https://www.elektor.com/products/unitree-g1-humanoid-robot", "quote": "Moving speed of 2 m/s", "conversion": null}
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "Unitree publishes no arm or end-effector speed.",
+        "base_footprint_diameter_m": "Humanoid; the standing envelope is given as width x thickness instead.",
+        "repeatability_mm": "Unitree publishes no repeatability figure."
+      },
+      "notes": "Unitree G1 page (columns G1 and G1 EDU; base G1 values used). Reach is doubtful: Unitree publishes only 'Arm Span: About 0.45M' (approximate, not described as a reach), recorded here as per-arm reach. Arm payload is per arm: about 2 kg (G1) or about 3 kg (G1 EDU); Unitree notes it 'varies greatly under different arm extension postures'. DoF: 23 total for the G1 ('23 - 43' for the G1 EDU), 5 per arm. Footprint is the standing width x thickness (450 x 200 mm); standing height 1320 mm. Mass about 35 kg ('About 35kg+' for EDU). Walking speed: no Unitree page publishes one; 2 m/s is from the Elektor reseller listing ('Moving speed of 2 m/s'), not attributed to Unitree there. Recipe: none; the asset catalog's unitree_g1_dex3_v1 is the 29-DoF body with hands, not the base 23-DoF G1 these figures describe."
+    },
+    {
+      "model_id": "hello_robot_stretch_3",
+      "recipe_id": null,
+      "manufacturer": "Hello Robot",
+      "name": "Stretch 3",
+      "body_type": "mobile_manipulator",
+      "mounting": [],
+      "figures": {
+        "max_reach_m": {"value": 0.52, "unit": "m", "source_url": "https://docs-arch.hello-robot.com/0.3/hardware/hardware_guide_stretch_3/", "quote": "Reach: 0.52m", "conversion": null},
+        "rated_payload_kg": {"value": 2, "unit": "kg", "source_url": "https://docs-arch.hello-robot.com/0.3/hardware/images/Stretch_3_Datasheet_2.2024.png", "quote": "Payload (including gripper) 2 Kg", "conversion": null},
+        "max_tcp_speed_m_s": null,
+        "base_footprint_diameter_m": null,
+        "base_footprint_l_w_m": {"value": [0.33, 0.34], "unit": "m", "source_url": "https://docs-arch.hello-robot.com/0.3/hardware/images/Stretch_3_Datasheet_2.2024.png", "quote": "Size 33 x 34 x 141 cm", "conversion": "33 cm = 0.33 m; 34 cm = 0.34 m"},
+        "robot_mass_kg": {"value": 24.5, "unit": "kg", "source_url": "https://docs-arch.hello-robot.com/0.3/hardware/images/Stretch_3_Datasheet_2.2024.png", "quote": "Weight 24.5 Kg", "conversion": null},
+        "repeatability_mm": null,
+        "degrees_of_freedom": null,
+        "max_base_speed_m_s": null
+      },
+      "unknown_figures": {
+        "max_tcp_speed_m_s": "Hello Robot publishes no end-effector speed for Stretch 3.",
+        "base_footprint_diameter_m": "Rectangular base; size is given as length x width x height.",
+        "repeatability_mm": "Hello Robot publishes no repeatability figure for Stretch 3.",
+        "degrees_of_freedom": "No total DoF count in the Stretch 3 datasheet or archived hardware guide.",
+        "max_base_speed_m_s": "No base speed in Hello Robot's Stretch 3 datasheet or archived docs; only forum posts give figures, which were not used."
+      },
+      "notes": "Stretch 3 has been superseded by Stretch 4 (hello-robot.com now shows Stretch 4 only). Figures come from Hello Robot's archived Stretch 3 docs on docs-arch.hello-robot.com: the 'Stretch 3 - Datasheet' image (Revision 2.14.2024) and the Stretch 3 hardware guide. Reach 0.52 m is the telescoping arm's reach ('Reach: 0.52m'); the guide also says 'Recommended Max payload - 2kg'. Size 33 x 34 x 141 cm is the overall L x W x H; the guide says the retracted arm and wrist fit within the base footprint. The datasheet does not say which of 33 cm and 34 cm is the length. The guide lists base, lift, telescoping arm, a 3-DoF wrist (yaw, pitch, roll), gripper and 2-DoF head but gives no total."
+    }
+  ]
+}

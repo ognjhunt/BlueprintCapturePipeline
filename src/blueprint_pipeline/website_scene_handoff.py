@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .core.handoff_lease import guarded_handoff_write_json as write_json, handoff_lease_checkpoint
+from .core.handoff_lease import HandoffLeaseError, guarded_handoff_write_json as write_json, handoff_lease_checkpoint
 from .decision_evidence_contracts import canonical_digest
 from .website_task_preparation import (
     compile_website_scene_preparation, native_task_preparation_gap, native_task_subject_profile,
@@ -61,6 +61,27 @@ def execute_prepared_task_family(*, preparation_path: Path, runtime: Any, policy
             runtime.close()
 
 
+def _robot_fit_table(*, preparation: Mapping[str, Any], verdict: Mapping[str, Any], collision_path: Path,
+                     native_root: Path) -> dict[str, Any]:
+    """Which catalog robot models fit the job by spec sheet (``website_robot_fit``), beside the verdict.
+
+    Informational: it protects no privacy, rights or money, so it fails open. A failure is recorded
+    and the handoff goes on with its gating unchanged; only a lost handoff lease, which stops every
+    write, stops it here too.
+    """
+    try:
+        from .robot_spec_catalog import load_robot_spec_catalog
+        from .website_robot_fit import FILENAME, robot_fit_table
+        table = robot_fit_table(preparation=preparation, collision_path=collision_path, verdict=verdict,
+                                catalog=load_robot_spec_catalog())
+        write_json(native_root / FILENAME, table)
+        return {"path": str(native_root / FILENAME), "digest": table["table_digest"], "counts": table["counts"]}
+    except HandoffLeaseError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - only privacy, rights and money stop a job; this is recorded
+        return {"status": "failed", "error": type(exc).__name__}
+
+
 def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[str, Any], preparation_path: Path,
                                 native_root: Path, task_context: Mapping[str, Any], now: float,
                                 runtime_inputs: Mapping[str, Any] | None = None,
@@ -71,7 +92,8 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
 
     Runtime inputs (unless the caller already made them), the collision and
     appearance stages, the construction inputs, the rights admission and the
-    capability verdict. The handoff and a renewal re-issue
+    capability verdict, with the informational robot fit table beside it. The
+    handoff and a renewal re-issue
     (``website_preparation_renewal``) share it, so the inputs bound to a
     preparation's digest cannot drift between them. Records into ``result``
     and returns whether the preparation may be registered: intake ready,
@@ -112,6 +134,8 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
         result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
             **({"risks": verdict["risks"]} if "risks" in verdict else {}),
             "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
+        result["robot_fit_table"] = _robot_fit_table(preparation=preparation, verdict=verdict, native_root=native_root,
+                                                     collision_path=Path(runtime_inputs["collision"]["path"]))
         if verdict["status"] == "abstained":
             result.update(status="needs_input", blockers=list(verdict["blockers"]))
     return preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained"
