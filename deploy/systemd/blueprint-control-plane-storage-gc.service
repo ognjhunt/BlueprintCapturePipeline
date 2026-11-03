@@ -56,6 +56,11 @@ ReadOnlyPaths=-/var/lib/blueprint/spend-authority -/var/lib/blueprint/pipeline-c
 TasksMax=512
 LimitNOFILE=4096
 MemoryMax=8G
+# Host safety net (batch job, retried): the host has 8.3 GB and no swap, so
+# MemoryMax above never binds and the kernel's OOM killer acts on the whole
+# host. It counts this unit 20% of the host larger (+200), so a batch job goes
+# before the always-on services and the money-safety units.
+OOMScoreAdjust=200
 CPUQuota=200%
 TimeoutStartSec=3h
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane

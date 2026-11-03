@@ -35,6 +35,10 @@ ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-profile-registry
 TasksMax=512
 LimitNOFILE=4096
 MemoryMax=8G
+# Host safety net (money safety): when the host runs out, the kernel's OOM
+# killer counts this unit half the host smaller (-500) and passes it over
+# unless it is the one holding the memory.
+OOMScoreAdjust=-500
 CPUQuota=200%
 TimeoutStartSec=2min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane

@@ -33,6 +33,10 @@ ReadWritePaths=/var/lib/blueprint
 TasksMax=512
 LimitNOFILE=65536
 MemoryMax=8G
+# Host safety net (money safety): when the host runs out, the kernel's OOM
+# killer counts this unit half the host smaller (-500) and passes it over
+# unless it is the one holding the memory.
+OOMScoreAdjust=-500
 CPUQuota=200%
 Type=oneshot
 # The guard is an admission input for the Task Evaluation allocator. It must
