@@ -745,6 +745,101 @@ def rigid_pick_place_clearance(*, robot_id: str, base_pose_world: Mapping[str, S
 
 #: A carry verdict is the robot's, not one station's: this many of the closest clear stances are tried.
 CARRY_STATIONS = 8
+REACH_RULE = "grasp_point_within_arm_chain_reach_bound_of_shoulder"
+
+
+@lru_cache(maxsize=None)
+def arm_reach_bound(robot_id: str) -> tuple[np.ndarray, float]:
+    """The shoulder in the arm's base frame, and a radius no grasp point leaves at any joint value.
+
+    In the published modified DH (``franka_kinematics``) joints 1, 2 and 3 turn about axes through frame
+    1's origin, the shoulder; frame 4's origin is fixed in frame 3, frame 5's in frame 4, and the grasp
+    point lies on joint 7's axis, which runs through frame 7's origin, fixed in frame 6, whose origin is
+    frame 5's. So the shoulder-to-elbow, elbow-to-wrist and wrist-to-grasp distances never change, and
+    by the triangle inequality their sum bounds the grasp point's distance from the shoulder. Joint limits
+    only shrink the reachable set, so a point beyond the bound is out of reach for every grasp orientation:
+    a proof, not a search result.
+    """
+    model = ARM_LINK_BOUNDS.get(robot_id)
+    if model is None or robot_id != "franka_panda":
+        raise RobotArmPathClearanceError("robot_arm_path_robot_unmeasured:" + str(robot_id))
+    frames = _frames(np.asarray(NOMINAL_SEED_RAD, dtype=float))
+    origins = frames[:, :3, 3]
+    grasp = frames[8][:3, 3] + frames[8][:3, :3] @ np.asarray(model["grasp_point_flange_m"], dtype=float)
+    bound = (float(np.linalg.norm(origins[4] - origins[1])) + float(np.linalg.norm(origins[5] - origins[4]))
+             + float(np.linalg.norm(grasp - origins[5])))
+    return origins[1].copy(), bound
+
+
+def _nearest_box_point(point: np.ndarray, centre: np.ndarray, rotation: np.ndarray,
+                       lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
+    local = np.clip(rotation.T @ (point - centre), lower, upper)
+    return centre + rotation @ local
+
+
+def rigid_reach_shortfall(*, robot_id: str, base_pose_world: Mapping[str, Sequence[float]],
+                          start_pose_world: Sequence[float], target_position_world: Sequence[float],
+                          contact_point_m: Sequence[float],
+                          subject_bounds_m: Mapping[str, Sequence[float]] | None = None) -> dict[str, Any]:
+    """Whether the task's grasp, at the object's start and at its target, lies beyond the arm's reach bound.
+
+    The pick and the place are the two points every carry holds the object at: the task's grasp contact
+    (``contact_point_m``, in the object's scoring frame, as ``rigid_pick_place_clearance`` holds it) with
+    the object at its start and at its target. Each is measured from the shoulder of an arm standing at
+    ``base_pose_world`` against ``arm_reach_bound``, plus the solver's position tolerance. ``beyond`` lists
+    the phases out of reach, farthest first; with any, no grasp orientation, path or policy reaches that
+    contact from this base. ``subject_bounds_m`` (the object's collision box in its scoring frame) adds
+    the object's nearest point to the shoulder at each end: when that too is beyond the bound
+    (``grasp_independent``), no grasp anywhere on the object reaches; otherwise a grasp off the task's
+    contact is not ruled out, and the record says so. No simulator runs; this is CPU geometry.
+    """
+    shoulder_base, bound = arm_reach_bound(robot_id)
+    world_from_base = _pose_matrix(base_pose_world)
+    shoulder = world_from_base[:3, :3] @ shoulder_base + world_from_base[:3, 3]
+    pose = [float(v) for v in start_pose_world]
+    held = _pose_matrix({"position_world_m": pose[:3], "orientation_xyzw": pose[3:7]})[:3, :3]
+    contact = held @ np.asarray(contact_point_m, dtype=float)
+    centres = {"pick": np.asarray(pose[:3], dtype=float), "place": np.asarray(target_position_world, dtype=float)}
+    limit = bound + IK_POSITION_TOLERANCE_M
+    phases = []
+    for phase, centre in centres.items():
+        row: dict[str, Any] = {"phase": phase, "point_world_m": (centre + contact).tolist(),
+                               "distance_m": round(float(np.linalg.norm(centre + contact - shoulder)), 4)}
+        if subject_bounds_m is not None:
+            nearest = _nearest_box_point(shoulder, centre, held, np.asarray(subject_bounds_m["minimum"], dtype=float),
+                                         np.asarray(subject_bounds_m["maximum"], dtype=float))
+            row["object_nearest_distance_m"] = round(float(np.linalg.norm(nearest - shoulder)), 4)
+        phases.append(row)
+    beyond = sorted((row for row in phases if row["distance_m"] > limit), key=lambda row: -row["distance_m"])
+    nearest = [row.get("object_nearest_distance_m") for row in beyond]
+    return {"rule": REACH_RULE, "robot_id": robot_id, "shoulder_world_m": shoulder.tolist(),
+            "reach_bound_m": round(bound, 4), "position_tolerance_m": IK_POSITION_TOLERANCE_M,
+            "grasp_basis": "task_grasp_contact_any_orientation", "phases": phases,
+            "beyond": [row["phase"] for row in beyond], "status": "out_of_reach" if beyond else "within_bound",
+            "grasp_independent": bool(beyond) and all(value is not None and value > limit for value in nearest),
+            "claim_ceiling": "cpu_bounded_estimate", "simulator_executed": False}
+
+
+def reach_insufficient_code(phase: str, distance_m: float, reach_m: float) -> str:
+    """The typed infeasibility reason a measured reach shortfall publishes."""
+    return f"robot_reach_insufficient:{phase}:{distance_m:.3f}m_vs_{reach_m:.3f}m"
+
+
+def carry_grasps(task: Mapping[str, Any], bounds_m: Mapping[str, Sequence[float]] | None) -> list[dict[str, Any]]:
+    """The task's own grasp, then the intake's tilted and side-on grasps (``website_rigid_feasibility``).
+
+    ``task`` holds the task's ``approach_unit`` and ``gripper_orientation_xyzw`` (scoring frame); the
+    intake's grasps close across the narrower side of ``bounds_m`` (the object's collision box in its
+    scoring frame). Each is named, best first, for ``first_carrying_stance``. Without bounds, only the
+    task's own grasp is returned.
+    """
+    own = {"name": "task", "approach_unit": list(task["approach_unit"]),
+           "gripper_orientation_xyzw": list(task["gripper_orientation_xyzw"])}
+    if bounds_m is None:
+        return [own]
+    from .website_rigid_feasibility import _grasps
+
+    return [own, *_grasps(np.asarray(bounds_m["minimum"], dtype=float), np.asarray(bounds_m["maximum"], dtype=float))]
 
 
 @read_scoped
@@ -824,9 +919,21 @@ def _packet_rigid_clearance(root: Path, plan: Mapping[str, Any], spec: Mapping[s
                                               world_from_stage=_pose_matrix(scenes[0]["pose_world"]))
     except (ScenePhysicsPreflightError, KeyError, TypeError, ValueError) as exc:
         raise RobotArmPathClearanceError(f"robot_arm_path_scene_unmeasurable:{exc}") from exc
-    return rigid_pick_place_clearance(robot_id=robot_id, base_pose_world=robot["base_pose_world"], seeds=seeds,
-                                      scene_obstacles=sample_scene_obstacles(triangles, centre=centre, radius=radius),
-                                      **inputs)
+    obstacles = sample_scene_obstacles(triangles, centre=centre, radius=radius)
+    # The station was chosen trying the task's grasp, then the intake's tilted and side-on ones
+    # (team_scene_packet._carrying_station); the gate tries the same, so a carry one of them clears
+    # is not refused here. A pass names the grasp; a refusal is the attempt that got furthest.
+    attempts = []
+    for grasp in carry_grasps(inputs, spec.get("subject_collision_bounds_scoring_frame_m")):
+        report = rigid_pick_place_clearance(robot_id=robot_id, base_pose_world=robot["base_pose_world"], seeds=seeds,
+                                            scene_obstacles=obstacles,
+                                            **{**inputs, "approach_unit": grasp["approach_unit"],
+                                               "gripper_orientation_xyzw": grasp["gripper_orientation_xyzw"]})
+        report["grasp"] = grasp["name"]
+        if report["status"] == "clear":
+            return report
+        attempts.append(report)
+    return max(attempts, key=lambda row: (row["furthest_sample"], "scene_strike" in row["blockers"][0]))
 
 
 def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
@@ -838,6 +945,8 @@ def packet_arm_path_clearance(packet_dir: str | Path) -> dict[str, Any]:
     the plan's reset pose. The static scene is the plan's one scene collision asset, the one the
     simulator loads. A plan that moves no part is not applicable. A robot this module has no arm model of
     (a team's own) is unassessed: never measured with the Franka's model, never refused for lacking one.
+    A rigid carry also tries the intake's tilted and side-on grasps after the task's own
+    (``carry_grasps``), as the packet's station search did, and names the one that cleared.
     """
     import json
 

@@ -111,9 +111,16 @@ def test_unregistered_bodies_stay_unassessed_never_infeasible(tmp_path, monkeypa
     plan, facts = _plan(tmp_path, monkeypatch, scene_half="team_scene")
     feasibility = candidate_feasibility(scene_plan=facts["scene"]["native_scene_plan"], catalog=load_default_catalog(),
                                         profile=profile_for_capture(str(tmp_path / "capture")))
-    # A job with no registered team body (Franka-only) keeps exactly the rows it had: nothing is added.
+    # A job with no registered team body (Franka-only): the candidates on the packet's own arm are measured
+    # at its station as its gate measures them (this packet carries no pick-and-place, so unassessed); the
+    # rest have no body to measure. Nothing is refused for being unknown.
+    droid = {row["candidate_id"] for row in load_default_catalog()["candidates"]
+             if (row.get("interface") or {}).get("robot_profile_id") == "droid_franka_panda_robotiq_2f85_v1"}
+    assert droid and all(feasibility["candidates"][key]["blockers"] == ["packet_arm_reach_task_unmodeled"]
+                         for key in droid)
     assert all(row == {"status": "unassessed", "blockers": ["embodiment_reach_manifest_not_registered"]}
-               for row in feasibility["candidates"].values())
+               for key, row in feasibility["candidates"].items() if key not in droid)
+    assert all(row["status"] == "unassessed" for row in feasibility["candidates"].values())
     # Nothing is measured out of reach; the one refusal is a GPU floor the screening lane cannot rent.
     assert facts["capabilities"]["candidate_infeasible"] == {
         "cosmos3_nano_policy_droid": ["screening_gpu_memory_floor_unrentable"]}
