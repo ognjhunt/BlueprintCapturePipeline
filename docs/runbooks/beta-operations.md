@@ -26,6 +26,8 @@ Before you act:
 | [3. The work volume is full](#3-the-work-volume-is-full) | A launch is refused for disk, or a capacity page arrives. |
 | [4. The operator door or the host is down](#4-the-operator-door-or-the-host-is-down) | The uptime probe pages, or `door` calls fail. |
 | [5. Roll back a bad deploy](#5-roll-back-a-bad-deploy) | A deploy broke production. |
+| [6. Deploy policy (D-08)](#6-deploy-policy-d-08) | You are about to deploy the Pipeline. |
+| [7. Triggers that are off on purpose (D-06)](#7-triggers-that-are-off-on-purpose-d-06) | `door units` shows an enabled timer or path watcher as `inactive`. |
 
 ## 1. A job stops moving
 
@@ -436,3 +438,21 @@ Outside the window:
 WebApp merges are separate. A WebApp merge to `main` deploys to Render through
 its CI-gated workflow, so treat every WebApp merge as a deploy, but it does not
 retire Pipeline attempts.
+
+## 7. Triggers that are off on purpose (D-06)
+
+`door units` shows these timers and path watchers as enabled but `inactive`.
+They are off on purpose. A deploy restores each unit's earlier state unless the
+unit is in `DEFAULT_ALWAYS_ARM_TIMER_UNITS`
+(`scripts/deploy_control_plane_commit.py`), so they stay off. Checked
+2026-11-03 at 01:58Z.
+
+| Unit | What it does | Why it is off | To turn it on |
+|---|---|---|---|
+| `blueprint-provider-billing-reconciler.timer` | Refreshes provider billing evidence every 10 minutes. | Not needed. `blueprint-gpu-spend-guard.service` `Wants=` the reconciler, so the reconciler runs with every guard start. Since #3278 (E-02), it refreshes at most every 10 minutes, and only while a live provider needs it. | Nothing to do. |
+| `blueprint-task-evaluation-launch-supervisor.timer` | Supervises launches with the OpenAI Agents SDK. This is optional. | It spends OpenAI money on every launch. | The owner decides the money first. |
+| `blueprint-task-evaluation-terminal-resource-release.path` | Watches the terminal resource release queue. It releases one terminal Vast record through the canonical allocator. | The queue has been empty since 2026-08-12 (one completed record). When `BLUEPRINT_ALLOW_TASK_EVALUATION_TERMINAL_RESOURCE_RELEASE_TRIGGER` is set, the intake starts the release unit directly (`live_pipeline_intake_runtime_controls.py`). Teardown runs in the paid lane. The launch reconciler files the provider-zero receipt. | Add it to `DEFAULT_ALWAYS_ARM_TIMER_UNITS` if anything writes to its `pending/` folder again. |
+| `blueprint-capture-reconstruction-dispatcher.timer` and `.path` | Advances the legacy capture reconstruction queue. | The website beta reconstructs through Atlas. The queue (`capture-reconstruction-queue/{pending,processing,completed}`) is empty, and no door hold is set. | Retire them in the host cleanup (H-03). |
+
+Not done: `reset-failed` on the transient failed units (O-24). It needs a door
+unit action, and another operator uses the host, so do it in a deploy window.
