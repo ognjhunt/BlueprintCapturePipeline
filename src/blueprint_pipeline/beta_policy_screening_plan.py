@@ -350,8 +350,16 @@ def _validate_coverage_gaps(scenario: Mapping[str, Any]) -> None:
         raise BetaPolicyScreeningPlanError("beta_screening_coverage_gap_invalid")
 
 
-def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
-                        binding: Mapping[str, Any] | None, credentials: set[str]) -> list[str]:
+#: The refusals ``catalog_blockers`` makes for a task kind a candidate does not run.
+TASK_KIND_BLOCKERS = frozenset({"task_kind_not_supported_by_candidate", "task_kind_support_unverified"})
+
+
+def catalog_blockers(candidate: Mapping[str, Any], task_kind: str) -> list[str]:
+    """What the catalog row alone refuses for ``task_kind``: before any runtime binding, credential or quote.
+
+    The plan refuses a candidate with any of these (``_candidate_blockers``). The website robot fit
+    precheck reads the same list before any spend (``website_robot_fit_precheck``), so the two never differ.
+    """
     blockers = list(candidate["eligibility"]["blockers"])
     if not candidate["eligibility"]["enabled"]:
         blockers.append("candidate_disabled")
@@ -366,9 +374,15 @@ def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
         blockers.append("policy_identity_not_verified")
     if not candidate["policy"]["digest"] or not candidate["policy"]["revision"]:
         blockers.append("policy_identity_not_pinned")
-    if scene["task_kind"] not in candidate["supported_task_kinds"]:
+    if task_kind not in candidate["supported_task_kinds"]:
         blockers.append("task_kind_not_supported_by_candidate" if candidate["supported_task_kinds"]
                         else "task_kind_support_unverified")
+    return blockers
+
+
+def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
+                        binding: Mapping[str, Any] | None, credentials: set[str]) -> list[str]:
+    blockers = catalog_blockers(candidate, scene["task_kind"])
     for credential in candidate["eligibility"]["requires_credentials"]:
         if credential not in credentials:
             blockers.append("credential_unavailable:" + credential)
@@ -774,8 +788,9 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
 
 __all__ = ["PLAN_SCHEMA_VERSION", "QUOTE_SCHEMA_VERSION", "EXECUTION_SCHEMA_VERSION", "CLAIM_CEILING",
            "SITE_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
-           "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "WAITLISTED", "WAITLIST_BLOCKER",
-           "BetaPolicyScreeningPlanError", "build_job_ceiling_screening_plan", "build_screening_plan",
+           "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "TASK_KIND_BLOCKERS", "WAITLISTED",
+           "WAITLIST_BLOCKER", "BetaPolicyScreeningPlanError", "build_job_ceiling_screening_plan",
+           "build_screening_plan", "catalog_blockers",
            "execution_cost_floor", "job_ceiling_record", "money", "screening_cells", "validate_cost_quote",
            "validate_execution_descriptor",
            "validate_screening_plan"]

@@ -103,6 +103,31 @@ def _rigid_verdict_and_fit(*, preparation: Mapping[str, Any], collision_path: Pa
                                          collision_path=collision_path)
 
 
+def _robot_fit_precheck(*, preparation: Mapping[str, Any], verdict: Mapping[str, Any] | None,
+                        collision_path: Path, native_root: Path) -> dict[str, Any]:
+    """Whether a robot the screening catalog runs can do the task in this room (``website_robot_fit_precheck``).
+
+    It fails open: a failure is recorded as ``unknown`` and the handoff goes on, since only a ``no_fit``
+    the late checks would also make holds the job. A lost handoff lease stops it, as it stops every write.
+    """
+    try:
+        from .website_robot_fit_precheck import FILENAME, registered_team_bodies, robot_fit_precheck
+        try:
+            bodies, flags = registered_team_bodies(), []
+        except (OSError, ValueError, KeyError, TypeError):
+            # The operator's team registry did not read: its bodies stay unknown, never refused.
+            bodies, flags = {}, ["team_registry_unreadable"]
+        value = robot_fit_precheck(preparation=preparation, collision_path=collision_path, verdict=verdict,
+                                   team_bodies=bodies)
+        write_json(native_root / FILENAME, value)
+        return {"path": str(native_root / FILENAME), "digest": value["precheck_digest"], "status": value["status"],
+                "hold_reason": value["hold_reason"], "counts": value["counts"], **({"flags": flags} if flags else {})}
+    except HandoffLeaseError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - unknown never holds a job; this is recorded
+        return {"status": "unknown", "hold_reason": None, "error": type(exc).__name__}
+
+
 def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
                             native_root: Path) -> dict[str, Any]:
     """Where a geometry-only job ends: the capability verdict and the robot fit table, CPU only.
@@ -149,12 +174,13 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
 
     Runtime inputs (unless the caller already made them), the collision and
     appearance stages, the construction inputs, the rights admission and the
-    capability verdict, with the informational robot fit table beside it. The
+    capability verdict, with the informational robot fit table beside it, and
+    the robot fit precheck (``website_robot_fit_precheck``). The
     handoff and a renewal re-issue
     (``website_preparation_renewal``) share it, so the inputs bound to a
     preparation's digest cannot drift between them. Records into ``result``
     and returns whether the preparation may be registered: intake ready,
-    appearance authored and no abstention.
+    appearance authored, no abstention and no ``website_robot_fit_none`` hold.
     """
     if runtime_inputs is None:
         runtime_inputs = prepare_website_runtime_inputs(preparation=preparation, base_scene=base_scene,
@@ -181,20 +207,35 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
         construction["references"].append({"contract_path": "scene.rights.admission", **_record(rights_path)})
     write_json(native_root / "construction_inputs.json", construction)
     result["runtime_inputs"]["construction_inputs_path"] = str(native_root / "construction_inputs.json")
-    if (preparation["status"] == "intake_ready"
-            and preparation["intake_request"]["task"]["strategy"] == "pick_and_place"):
-        # Abstain before the owner is asked to pay when no enabled embodiment can carry the
-        # task; one the gate cannot model is unassessed and never refused.
-        verdict, fit = _rigid_verdict_and_fit(preparation=preparation,
-                                              collision_path=Path(runtime_inputs["collision"]["path"]),
-                                              native_root=native_root)
-        result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
-            **({"risks": verdict["risks"]} if "risks" in verdict else {}),
-            "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
-        result["robot_fit_table"] = fit
-        if verdict["status"] == "abstained":
-            result.update(status="needs_input", blockers=list(verdict["blockers"]))
-    return preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained"
+    held = False
+    if preparation["status"] == "intake_ready":
+        from .usd_binary_read_cache import read_scope
+        collision = Path(runtime_inputs["collision"]["path"])
+        verdict = None
+        # One read scope for every search below: a USDA text collider is read once (``usd_binary_read_cache``).
+        with read_scope():
+            if preparation["intake_request"]["task"]["strategy"] == "pick_and_place":
+                # Abstain before the owner is asked to pay when no enabled embodiment can carry the
+                # task; one the gate cannot model is unassessed and never refused.
+                verdict, fit = _rigid_verdict_and_fit(preparation=preparation, collision_path=collision,
+                                                      native_root=native_root)
+                result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
+                    **({"risks": verdict["risks"]} if "risks" in verdict else {}),
+                    "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
+                result["robot_fit_table"] = fit
+                if verdict["status"] == "abstained":
+                    result.update(status="needs_input", blockers=list(verdict["blockers"]))
+            # Before ARTISAN and the GPU scene build: hold, never fail, when no catalog robot can do the
+            # task here by a refusal the late checks also make; an unknown is flagged and goes on.
+            precheck = _robot_fit_precheck(preparation=preparation, verdict=verdict, collision_path=collision,
+                                           native_root=native_root)
+        result["robot_fit_precheck"] = precheck
+        if precheck.get("status") == "no_fit" and isinstance(precheck.get("hold_reason"), str):
+            held = True
+            prior = list(result.get("blockers") or []) if result.get("status") == "needs_input" else []
+            result.update(status="needs_input", blockers=prior + [precheck["hold_reason"]])
+    return (preparation["status"] == "intake_ready" and not held
+            and result.get("capability_verdict", {}).get("status") != "abstained")
 
 
 def prepare_website_scene_handoff(*, descriptor: Mapping[str, Any], clean_plate: Mapping[str, Any],

@@ -90,4 +90,19 @@ def gpu_infeasible_blockers(runtime: Any) -> list[str]:
     return [GPU_MEMORY_FLOOR_UNRENTABLE] if parts == [] else []
 
 
-__all__ = ["GPU_MEMORY_FLOOR_UNRENTABLE", "RT_GPU_PARTS", "gpu_infeasible_blockers", "rentable_parts"]
+def candidate_gpu_blockers(candidate: Mapping[str, Any]) -> list[str]:
+    """``gpu_infeasible_blockers`` for a catalog candidate as screening planning applies it.
+
+    G1's candidates rent on their own lane, and a disabled candidate keeps its own reason; neither is
+    measured here. Planning (``beta_policy_screening_capabilities``) and the website robot fit precheck
+    (``website_robot_fit_precheck``) both read this one rule.
+    """
+    from .beta_policy_screening_g1 import CANDIDATES as G1_LANE_CANDIDATES
+
+    if candidate["candidate_id"] in G1_LANE_CANDIDATES or candidate["eligibility"]["enabled"] is not True:
+        return []
+    return gpu_infeasible_blockers(candidate["runtime"])
+
+
+__all__ = ["GPU_MEMORY_FLOOR_UNRENTABLE", "RT_GPU_PARTS", "candidate_gpu_blockers", "gpu_infeasible_blockers",
+           "rentable_parts"]
