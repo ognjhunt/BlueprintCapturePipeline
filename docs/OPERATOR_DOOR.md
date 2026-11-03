@@ -125,9 +125,16 @@ but `healthz` needs `Authorization: Bearer <token>`. Scopes are `read`,
 largest direct children of `system.slice` by `memory.current` (every unit, not
 only `blueprint-*`; a `system-*.slice` row sums its template instances), with
 `count` and `scan_truncated`; `tmpfs` gives total and used bytes (statvfs) for
-`/dev/shm`, `/run` and `/tmp` when each is a tmpfs in the door's view. Only
-numbers and unit names are returned, every read is capped, and anything
-missing or unreadable is `null` rather than an error.
+`/dev/shm`, `/run` and `/tmp` when each is a tmpfs in the door's view;
+`oom_reports` parses the last 4 kernel OOM-killer reports of the past 24 h from
+`journalctl -k` (newest 20000 lines, 8 MiB, 10 s; `count` and `log_truncated`
+say what the window held) into each event's UTC time, invoking task, constraint
+and unit-name cgroups, the killed task (pid, uid, `anon/file/shmem-rss` kB,
+`oom_score_adj`) and the task table's 15 largest rows by rss (pages, with
+`page_size_bytes`) plus per-uid totals, or only row counts when the table's
+header is not recognised. Only numbers, uids and unit or task names are
+returned, every read is capped, and anything missing or unreadable is `null`
+rather than an error.
 
 `status.notifier_binding` is a fixed-target view of the live control-plane
 postcheck binding. It reports safe unit/drop-in paths, an opaque command hash,
