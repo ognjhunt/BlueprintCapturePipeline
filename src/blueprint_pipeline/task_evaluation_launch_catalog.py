@@ -48,6 +48,7 @@ from .task_evaluation_launch_dispatcher import (
     validate_public_launch_profile_descriptor,
     verify_profile_immutable_inputs,
 )
+from .website_preparation_authority import retained_sources_only
 
 SCHEMA_VERSION = "task_evaluation_launch_catalog_reconciliation.v1"
 
@@ -158,7 +159,11 @@ def _project_published_profiles(
             # Once all declared bytes are present and digest-bound, retain the
             # existing fail-closed cross-document validation. An inconsistent
             # or tampered lineage is malformed evidence, not host unavailability.
-            blockers = validate_launch_profile(profile)
+            # A website job's grant is checked from what this host retains: a
+            # WebApp read here made every guarded unit depend on the WebApp, and
+            # every paid path re-reads the grant before it spends.
+            with retained_sources_only():
+                blockers = validate_launch_profile(profile)
             inactive_owner_states = {
                 "scene_execution_owner_revoked",
                 "scene_execution_owner_expired",
