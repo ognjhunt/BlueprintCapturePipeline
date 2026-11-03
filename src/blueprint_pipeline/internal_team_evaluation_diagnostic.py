@@ -292,6 +292,9 @@ def internal_admission(*, facts: dict[str, Any], approval: dict[str, Any], polic
              "task_spec_digest": canonical_digest(facts["scene"]["task_spec"]),
              "task_success_contract_digest": contract["contract_digest"],
              "robot_free_probe_receipt_digest": facts["probe"]["receipt_digest"],
+             # A paused-controls scene (team_candidate_quick10_registry) carries its omission into the run.
+             **({"diagnostic_control_omission_authority": facts["scene"]["diagnostic_control_omission_authority"]}
+                if "diagnostic_control_omission_authority" in facts["scene"] else {}),
              "rights_digest": canonical_digest({"author": "Blueprint", "policy": POLICY_DEFINITION,
                                                 "permission": "owner_authorized_internal_execution_only"}),
              "founder_approval_digest": canonical_digest(approval),

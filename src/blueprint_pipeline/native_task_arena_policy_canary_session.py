@@ -166,8 +166,21 @@ def _team_admission_binding(payload: Mapping[str, Any]) -> None:
     # scores and must pass before any team episode (the worker's cell-0 gate).
     probe_ok = (_digest(row.get("robot_free_probe_receipt_digest"))
                 or row.get("robot_free_probe_receipt_digest") is None)
-    if (set(row) != {"schema_version", "admission_digest", "candidate_id", "evaluation_purpose",
-                     "robot_free_probe_receipt_digest", "scene_revision_digest", "task_success_contract_digest"}
+    fields = {"schema_version", "admission_digest", "candidate_id", "evaluation_purpose",
+              "robot_free_probe_receipt_digest", "scene_revision_digest", "task_success_contract_digest"}
+    omission_ok = True
+    if "diagnostic_control_omission_authority" in row:
+        # Paused controls (team_candidate_quick10_admission): the run's contract has none, and the
+        # typed omission names it, the diagnostic ceiling and no qualified comparison.
+        fields.add("diagnostic_control_omission_authority")
+        try:
+            validate_control_omission_authority(_mapping(row["diagnostic_control_omission_authority"]),
+                                                contract_digest=str(row.get("task_success_contract_digest")))
+        except (ValueError, TypeError):
+            omission_ok = False
+        if "controls" in _mapping(_mapping(payload.get("task_success_contract")).get("criteria")):
+            omission_ok = False
+    if (set(row) != fields or not omission_ok
             or row.get("schema_version") != TEAM_ADMISSION_SCHEMA_VERSION
             or row.get("evaluation_purpose") != "scored" or not probe_ok
             or not all(_digest(row.get(key)) for key in ("admission_digest", "scene_revision_digest"))

@@ -11,6 +11,11 @@ its ``controls`` criterion and nothing else, and the typed
 digests, the diagnostic claim ceiling and that no qualified comparison is
 permitted. The authority travels in the run's ``beta_screening_admission`` into
 its session result. Without the pause nothing is omitted.
+
+Robot-team evaluations apply the same transform
+(``team_candidate_quick10_registry.offer_eligibility``) and carry the authority
+in their sealed ``team_candidate_admission`` into the runtime inputs and the
+team terminal.
 """
 from __future__ import annotations
 

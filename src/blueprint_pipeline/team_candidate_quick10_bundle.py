@@ -13,8 +13,11 @@ Quick-10 runtime, worker and static preflight of the frozen-pair canary
   through the provider's private runtime-secret channel at launch, and
   :func:`assert_secret_absent` refuses a bundle whose bytes contain it.
 
-Strict per-cell controls are refused by name (they are paused by the owner,
-and the admission refuses them too). The result's claim ceiling stays
+Strict per-cell controls are refused by name: no team session runs them.
+While the platform owner's control-trial pause stands, the registry and the
+admission give such a run the contract without its ``controls`` criterion and
+the typed diagnostic omission authority in its sealed inputs; otherwise the
+admission refuses it. The result's claim ceiling stays
 ``diagnostic_policy_execution``.
 """
 
