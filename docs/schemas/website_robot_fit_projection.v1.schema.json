@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tryblueprint.io/contracts/website-robot-fit-projection.v1.schema.json",
+  "title": "Which catalog robot models fit the job, by spec sheet: the website_preparation_status.v5 'robot_fit' field",
+  "description": "robot_fit is null until the scene handoff wrote a fit table for the current task context. route 'full' projects the full route's robot_fit_table; 'geometry_only' projects a geometry-only job's fit check, which ends there. status 'not_run' says why a geometry-only check was not run. Every completed projection is a spec-bounded estimate (evidence_label): fits means a path check passed, fits_spec that the published figures fit, doesnt_fit that a figure or check ruled it out, unknown that the figures or the scene could not settle it. It is never a physical test or a promise that a robot can do the job. models lists robots that fit first; when the projection would exceed 4096 bytes the last rows are dropped and models_truncated is true, while counts stay those of the whole table. open_checks names the checks (stance, reach, payload, cycle_time, access) that failed or stayed unknown.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "route",
+    "status",
+    "reason",
+    "evidence_label",
+    "counts",
+    "models",
+    "models_truncated",
+    "table_digest"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "website_robot_fit_projection.v1"
+    },
+    "route": {
+      "enum": [
+        "full",
+        "geometry_only"
+      ]
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "not_run"
+      ]
+    },
+    "reason": {
+      "enum": [
+        null,
+        "preparation_blocked",
+        "task_strategy_not_modelled",
+        "subject_not_excised",
+        "task_family_not_modelled"
+      ]
+    },
+    "evidence_label": {
+      "enum": [
+        null,
+        "spec_bounded_estimate"
+      ]
+    },
+    "counts": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "fits",
+            "fits_spec",
+            "doesnt_fit",
+            "unknown"
+          ],
+          "properties": {
+            "fits": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "fits_spec": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "doesnt_fit": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "unknown": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "manufacturer",
+          "verdict",
+          "open_checks"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "manufacturer": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verdict": {
+            "enum": [
+              "fits",
+              "fits_spec",
+              "doesnt_fit",
+              "unknown"
+            ]
+          },
+          "open_checks": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "models_truncated": {
+      "type": "boolean"
+    },
+    "table_digest": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      ]
+    }
+  }
+}
