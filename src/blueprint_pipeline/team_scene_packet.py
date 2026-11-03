@@ -74,8 +74,9 @@ EXECUTION_AUTHORITY = {"maximum_provider_allocations": 1, "retry_cap": 0,
                        "single_warm_provider_session_required": True,
                        "caller_surviving_watchdog_required": True,
                        "billing_teardown_provider_zero_required": True}
-# Controls are never run before a team evaluation; a contract that requires them per cell is refused
-# by the registry (``team_candidate_strict_controls_runtime_unavailable``).
+# Controls are never run before a team evaluation. A contract that requires them per cell runs
+# without them under the typed diagnostic omission while the platform owner's control-trial pause
+# stands, and is otherwise refused by the registry (``team_candidate_strict_controls_runtime_unavailable``).
 PENDING_CONTROLS = {"mode": "nonblocking_diagnostic_pending", "typed_gap": "controls_pending_at_submission",
                     "policy_execution_blocked": False}
 RIGID_STRATEGIES = ("pick_and_place", "planar_push")

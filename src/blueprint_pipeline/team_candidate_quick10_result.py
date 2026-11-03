@@ -25,7 +25,9 @@ episodes; ``episodes_succeeded`` counts successes. Nothing the team's service
 returns besides actions is read as an outcome. The claim ceiling stays
 ``diagnostic_policy_execution``: a bounded simulation estimate that never
 certifies physical performance or safety, and never Arm Decision Proof
-evidence.
+evidence. A run admitted under the paused-controls omission
+(``team_candidate_quick10_admission``) carries that typed authority in its
+terminal and says so in its note; it is never qualified.
 """
 
 from __future__ import annotations
@@ -131,6 +133,16 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
     if purpose not in PURPOSES or not session_results:
         raise TeamCandidateResultError("team_candidate_result_purpose_invalid")
     binding = dict(runtime_binding)
+    omission = binding.get("diagnostic_control_omission_authority")
+    if omission is not None:
+        from .native_task_arena_policy_canary_session import validate_control_omission_authority
+        try:
+            omission = validate_control_omission_authority(
+                omission, contract_digest=str(binding.get("task_success_contract_digest")))
+        except (ValueError, TypeError) as exc:
+            raise TeamCandidateResultError("team_candidate_control_omission_invalid") from exc
+        if site_task_qualification_receipt is not None:
+            raise TeamCandidateResultError("team_candidate_control_omission_diagnostic_only")
     qualification = None
     if site_task_qualification_receipt is not None:
         from .site_task_simulation_qualification import validate_receipt
@@ -200,10 +212,13 @@ def team_candidate_terminal(*, session_results: Sequence[Mapping[str, Any]], run
                  + (f", {void} void (simulator failure, not counted)" if void else "")
                  + (". Cycle time is completed-episode simulator duration, including settling"
                     if complete_cycles else ". Cycle time unmeasured")
+                 + (". The contract's per-cell controls were not run (paused by the platform owner);"
+                    " diagnostic only" if omission is not None else "")
                  + ". Simulation estimate; not physical performance or safety."),
         "artifact_uri": None,
         "evaluation_purpose": purpose,
         "episode_outcomes": outcomes,
+        **({"diagnostic_control_omission_authority": omission} if omission is not None else {}),
         "scoring": scoring_statement(
             runtime=TEAM_RUNTIMES[purpose], success_source=SIMULATOR_SCORED,
             scored_episode_count=len(counted), claim_ceiling="site_task_simulation" if qualification else CLAIM_CEILING,
