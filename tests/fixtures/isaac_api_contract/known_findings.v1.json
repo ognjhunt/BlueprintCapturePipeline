@@ -1,14 +1,5 @@
 {
   "schema_version": "isaac_api_contract_known_findings.v1",
   "policy": "A ratchet: entries only leave. Fix the call and delete its entry; never add one to silence a new finding.",
-  "findings": [
-    {
-      "key": "src/blueprint_pipeline/native_task_robot_registry.py::add_droid_exterior_right_slot::missing_attribute::type(..., (DroidCameraCfg,)).set_use_tiled_camera",
-      "note": "The 2026-11-03 rigid probe launch crash: pinned Arena's ArenaCameraCfg has a use_tiled_camera property, no set_use_tiled_camera. Fixed separately on claude/bold-darwin-iketye-probe-camera; that fix deletes this entry."
-    },
-    {
-      "key": "tests/test_droid_exterior_cameras.py::DroidCameraCfg::fake_member_not_pinned::DroidCameraCfg.set_use_tiled_camera",
-      "note": "The fake rig that hid the crash above. Fixed with it on claude/bold-darwin-iketye-probe-camera; that fix deletes this entry."
-    }
-  ]
+  "findings": []
 }
