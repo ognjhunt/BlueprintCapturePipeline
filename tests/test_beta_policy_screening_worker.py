@@ -389,15 +389,18 @@ def test_fresh_deploy_provisions_screening_sandbox_before_timer_can_start(tmp_pa
 
 def test_the_timer_pass_returns_a_transient_scene_half_block_to_its_queue_and_names_a_refusal(
         tmp_path, monkeypatch):
+    from blueprint_pipeline import team_scene_packet_worker as packet_worker
     from blueprint_pipeline.team_scene_packet_worker import request_key
 
     world = prepared_source_queue(tmp_path, monkeypatch, revisions=2)
     transient, refused = sorted(world["requests"], key=request_key)
     packets = world["packet_queue"]
+    # The timer's pass reads the release it runs from; the refusal was written by this same release.
+    monkeypatch.setattr(packet_worker, "current_release_commit", lambda: "a" * 40)
     (packets / "status" / f"{request_key(transient)}.json").write_text(json.dumps(
         {"status": "blocked", "blockers": ["team_scene_offer_publication_failed"]}))
     (packets / "status" / f"{request_key(refused)}.json").write_text(json.dumps(
-        {"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}))
+        {"status": "blocked", "blockers": ["team_scene_capture_withdrawn"], "release_commit": "a" * 40}))
     adopted = worker.enqueue_prepared_scenes(queue_root=world["screening_queue"], packet_queue_root=packets)
     # Recorded before automatic retries existed, the WebApp outage is due at once; the path unit runs it again.
     assert adopted["team_scene_packet_requeue"]["requeued"] == [
@@ -409,6 +412,13 @@ def test_the_timer_pass_returns_a_transient_scene_half_block_to_its_queue_and_na
     assert outcome["blockers"] == ["beta_screening_scene_packet_not_ready"]
     assert outcome["scene_packet"] == {"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}
     assert not world["planning_calls"]
+    # A newly deployed release: the timer's pass returns the deterministic refusal to its queue once.
+    monkeypatch.setattr(packet_worker, "current_release_commit", lambda: "b" * 40)
+    again = worker.enqueue_prepared_scenes(queue_root=world["screening_queue"], packet_queue_root=packets)
+    assert again["team_scene_packet_requeue"]["requeued"] == [
+        {"request_key": request_key(refused), "reason": "new_release", "release_commit": "b" * 40,
+         "blocked_release_commit": "a" * 40}]
+    assert (packets / "pending" / f"{request_key(refused)}.json").is_file()
 
 
 def test_deploy_before_preparation_replans_unprepared_candidates_once(tmp_path, monkeypatch):

@@ -142,6 +142,8 @@ def test_an_owner_contract_refusal_returns_to_pending_once_per_new_confirmation(
     from blueprint_pipeline import task_evaluation_scene_intake as intake
 
     job = publish(tmp_path, monkeypatch)
+    # No known running release: only the owner's confirmation can return this refusal.
+    monkeypatch.setattr(worker, "current_release_commit", lambda: None)
     request = _request(job)
     progression = json.loads((job.directory / "progression.json").read_text())
     progression["state"]["scene_preparation_completion"]["team_scene_request"]["request_digest"] = (
@@ -165,6 +167,10 @@ def test_an_owner_contract_refusal_returns_to_pending_once_per_new_confirmation(
     # Refused again with the same confirmation: it is never retried for that confirmation again.
     (queue / "pending" / f"{key}.json").rename(queue / "processed" / f"{key}.json")
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
-    # Any other deterministic refusal never moves.
+    # A newly deployed release never returns an owner-contract refusal: only a new confirmation does.
+    monkeypatch.setattr(worker, "current_release_commit", lambda: "a" * 40)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    # Without a known release, any other deterministic refusal never moves.
+    monkeypatch.setattr(worker, "current_release_commit", lambda: None)
     (queue / "status" / f"{key}.json").write_text(json.dumps({**blocked, "blockers": ["team_scene_task_invalid"]}))
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []

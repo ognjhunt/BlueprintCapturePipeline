@@ -53,9 +53,14 @@ an operating-system error) goes back to pending automatically, at most
 the status keeps the attempt count and cause under ``automatic_retry``. This
 worker's own pass and the screening timer's pass both do it
 (``requeue_transient_blocked``). An owner-contract refusal goes back once per
-new sealed owner confirmation of its intent, on the same passes. Any other
-deterministic refusal stays blocked by name;
-``--requeue-unfinished`` retries the rest once their cause is fixed. Nothing
+new sealed owner confirmation of its intent, on the same passes. Every status
+records the release that wrote it (``release_commit``, the commit of the
+release checkout this module runs from), so any other deterministic refusal
+goes back once per newly deployed release, on the same passes: a deploy that
+fixes its cause re-drives it, and the status keeps the releases already tried
+(``release_requeued``), so a refusal never loops. Without a known running
+release nothing is requeued on that basis; ``--requeue-unfinished`` retries the
+rest once their cause is fixed. Nothing
 here allocates a provider, starts a run or spends: the offer publishes facts,
 never authority, and every rights, consent and spend gate after it is unchanged.
 """
@@ -114,6 +119,11 @@ AUTOMATIC_RETRY_BACKOFF_SECONDS = (300, 1800, 7200)
 # and the status keeps the confirmations already tried, so a refusal never loops.
 OWNER_CONTRACT_BLOCKER_PREFIX = "team_scene_owner_contract_invalid:"
 OWNER_CONFIRMATION_REQUEUE_FIELD = "owner_success_confirmation_requeued"
+# Any other deterministic refusal a new release may have fixed: each status names the release that wrote it,
+# each newly deployed release returns the refusal to pending once, and the status keeps the releases tried.
+RELEASE_COMMIT_FIELD = "release_commit"
+RELEASE_REQUEUE_FIELD = "release_requeued"
+_COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
 class TeamScenePacketRequestRefused(ValueError):
@@ -271,10 +281,50 @@ def _owner_confirmations_untried(path: Path, status: Mapping[str, Any]) -> list[
     return [row["confirmation_digest"] for row in rows if row["confirmation_digest"] not in tried]
 
 
-def _requeue_due(root: Path, now: datetime) -> list[dict[str, Any]]:
-    """Return each due transient block, and each owner-contract refusal the owner has since confirmed, to
-    pending, recording the attempt first (the lock is held)."""
+def current_release_commit() -> str | None:
+    """The release this module runs from, or None when it cannot be told.
 
+    Units ``cd -P`` into ``BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO``, a detached release worktree named by
+    its commit, and import this module from there; the worker's own pass and the screening timer's pass both do,
+    so each reads the same identity from this file: the checkout's exact ``HEAD``
+    (``task_evaluation_release_identity``), else the release directory's own commit name.
+    """
+
+    try:
+        from .task_evaluation_release_identity import running_release_commit
+
+        commit = running_release_commit(__file__)
+        if not _COMMIT.fullmatch(commit or ""):
+            commit = Path(__file__).resolve().parents[2].name
+    except (OSError, ValueError, IndexError):
+        return None
+    return commit if _COMMIT.fullmatch(commit) else None
+
+
+def _release(release: Any) -> str | None:
+    return release if isinstance(release, str) and _COMMIT.fullmatch(release) else None
+
+
+def _new_release_untried(status: Mapping[str, Any], release: str | None) -> bool:
+    """A deterministic refusal (neither transient nor owner-contract) written by another release, or by none
+    recorded, that this known release has not yet returned to pending."""
+
+    blockers = status.get("blockers")
+    if (release is None or status.get("status") != "blocked" or not isinstance(blockers, list) or not blockers
+            or transient_cause(status) is not None
+            or any(str(blocker).startswith(OWNER_CONTRACT_BLOCKER_PREFIX) for blocker in blockers)
+            or status.get(RELEASE_COMMIT_FIELD) == release):
+        return False
+    tried = status.get(RELEASE_REQUEUE_FIELD)
+    return release not in (tried if isinstance(tried, list) else [])
+
+
+def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[dict[str, Any]]:
+    """Return each due transient block, each owner-contract refusal the owner has since confirmed, and each
+    other deterministic refusal once per newly deployed ``release``, to pending, recording the attempt first
+    (the lock is held)."""
+
+    release = _release(release)
     requeued: list[dict[str, Any]] = []
     for path in sorted((root / "processed").glob("*.json")):
         status = _read_json(root / "status" / path.name) or {}
@@ -289,6 +339,15 @@ def _requeue_due(root: Path, now: datetime) -> list[dict[str, Any]]:
             os.replace(path, target)
             requeued.append({"request_key": path.stem, "reason": "owner_success_confirmation",
                              "confirmation_digests": confirmed})
+            continue
+        if cause is None and not target.exists() and _new_release_untried(status, release):
+            tried = status.get(RELEASE_REQUEUE_FIELD)
+            # Recorded before the move, so each release is tried at most once.
+            _write_replace(root / "status" / path.name, {
+                **status, RELEASE_REQUEUE_FIELD: [*(tried if isinstance(tried, list) else []), release]})
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "new_release", "release_commit": release,
+                             "blocked_release_commit": status.get(RELEASE_COMMIT_FIELD)})
             continue
         retry = dict(status.get("automatic_retry") or {})
         attempts = _retry_attempts(retry)
@@ -633,14 +692,15 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     status: dict[str, Any] = {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem,
                               "scenario_id": SCENARIO_ID, "provider_mutation_performed": False,
                               "paid_execution_requested": False}
-    # An automatically retried request keeps its attempt count, and the owner confirmations already
-    # tried, whatever this run ends in.
+    # An automatically retried request keeps its attempt count, and the owner confirmations and releases
+    # already tried, whatever this run ends in.
     prior = _read_json(root / "status" / claimed.name) or {}
     retry = prior.get("automatic_retry")
     if isinstance(retry, Mapping):
         status["automatic_retry"] = dict(retry)
-    if isinstance(prior.get(OWNER_CONFIRMATION_REQUEUE_FIELD), list):
-        status[OWNER_CONFIRMATION_REQUEUE_FIELD] = list(prior[OWNER_CONFIRMATION_REQUEUE_FIELD])
+    for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD):
+        if isinstance(prior.get(field), list):
+            status[field] = list(prior[field])
 
     def skipped(reason: str) -> dict[str, Any]:
         return {**status, "status": "skipped", "reason": reason, "blockers": []}
@@ -700,23 +760,29 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     return {**status, "status": "completed", "blockers": []}
 
 
-def _finish(root: Path, claimed: Path, status: Mapping[str, Any], *, now: datetime) -> dict[str, Any]:
-    status = _with_retry(status, now=now)
+def _finish(root: Path, claimed: Path, status: Mapping[str, Any], *, now: datetime,
+            release: str | None = None) -> dict[str, Any]:
+    status = {key: value for key, value in _with_retry(status, now=now).items() if key != RELEASE_COMMIT_FIELD}
+    if _release(release) is not None:
+        # The release that wrote this status; a later release returns a deterministic refusal once.
+        status[RELEASE_COMMIT_FIELD] = release
     _write_replace(root / "status" / claimed.name, status)
     os.replace(claimed, root / "processed" / claimed.name)
     return status
 
 
-def _recover_interrupted(root: Path, claimed: Path, *, now: datetime) -> dict[str, Any]:
+def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: str | None = None
+                         ) -> dict[str, Any]:
     prior = _read_json(root / "status" / claimed.name) or {}
     _discard_unreferenced(prior.get("attempt_root"), prior.get("capture_root"))
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
-                                        "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD) if key in prior}
+                                        "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
+                                        RELEASE_REQUEUE_FIELD) if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
                                    "scenario_id": SCENARIO_ID, "status": "blocked",
                                    "blockers": ["team_scene_packet_interrupted"],
                                    "provider_mutation_performed": False, "paid_execution_requested": False},
-                   now=now)
+                   now=now, release=release)
 
 
 def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, fetcher: Fetcher | None = None,
@@ -727,12 +793,13 @@ def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, f
         raise TeamScenePacketRequestRefused("team_scene_packet_max_messages_invalid")
     root = _queue(queue_root)
     results: list[dict[str, Any]] = []
+    release = current_release_commit()
     with _locked(root):
         # The lock is held for the whole run, so anything still processing was interrupted.
         now = _utc_now()
-        recovered = [_recover_interrupted(root, path, now=now)
+        recovered = [_recover_interrupted(root, path, now=now, release=release)
                      for path in sorted((root / "processing").glob("*.json"))]
-        retried = _requeue_due(root, now)
+        retried = _requeue_due(root, now, release)
         for pending in sorted((root / "pending").glob("*.json"))[:max_messages]:
             claimed = root / "processing" / pending.name
             try:
@@ -740,7 +807,8 @@ def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, f
             except FileNotFoundError:
                 continue
             results.append(_finish(root, claimed, _process(root, claimed, fetcher=fetcher,
-                                                           offer_transport=offer_transport), now=_utc_now()))
+                                                           offer_transport=offer_transport), now=_utc_now(),
+                                   release=release))
     return {"schema_version": RUN_SCHEMA, "status": "processed" if results or recovered else "idle",
             "processed_count": len(results), "results": results, "recovered": recovered,
             "automatic_requeue": retried, "provider_mutation_performed": False, "paid_execution_requested": False}
@@ -750,21 +818,24 @@ def requeue_transient_blocked(*, queue_root: str | Path) -> dict[str, Any]:
     """Recover an interrupted run and return each due transient block to pending, for a timer's pass.
 
     The worker runs only when something is pending, so a request its unit's
-    timeout left in ``processing/``, a block waiting out its backoff, or an
-    owner-contract refusal the owner has since confirmed, needs a pass from
-    outside. When a worker run holds the queue this does nothing: that run
-    recovers and requeues the same way.
+    timeout left in ``processing/``, a block waiting out its backoff, an
+    owner-contract refusal the owner has since confirmed, or a deterministic
+    refusal a newly deployed release has not yet tried, needs a pass from
+    outside. This pass reads the release it runs from itself
+    (``current_release_commit``). When a worker run holds the queue this does
+    nothing: that run recovers and requeues the same way.
     """
 
     root = _queue(queue_root)
+    release = current_release_commit()
     with _locked(root, wait=False) as held:
         if not held:
             return {"schema_version": RUN_SCHEMA, "status": "busy", "requeued": [], "recovered": [],
                     "provider_mutation_performed": False, "paid_execution_requested": False}
         now = _utc_now()
-        recovered = [_recover_interrupted(root, path, now=now)["request_key"]
+        recovered = [_recover_interrupted(root, path, now=now, release=release)["request_key"]
                      for path in sorted((root / "processing").glob("*.json"))]
-        requeued = _requeue_due(root, now)
+        requeued = _requeue_due(root, now, release)
     return {"schema_version": RUN_SCHEMA, "status": "requeued" if requeued else "idle", "requeued": requeued,
             "recovered": recovered, "provider_mutation_performed": False, "paid_execution_requested": False}
 
@@ -810,12 +881,15 @@ __all__ = [
     "AUTOMATIC_RETRY_BACKOFF_SECONDS",
     "OWNER_CONFIRMATION_REQUEUE_FIELD",
     "OWNER_CONTRACT_BLOCKER_PREFIX",
+    "RELEASE_COMMIT_FIELD",
+    "RELEASE_REQUEUE_FIELD",
     "SCENARIO_ID",
     "STATUS_SCHEMA",
     "TRANSIENT_BLOCKERS",
     "TeamScenePacketRequestRefused",
     "capture_key",
     "configured_scene_bundle",
+    "current_release_commit",
     "enqueue_team_scene_request",
     "owner_success_confirmation_scope",
     "packet_inputs",
