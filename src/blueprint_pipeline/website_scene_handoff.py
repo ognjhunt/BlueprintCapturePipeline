@@ -85,6 +85,24 @@ def _robot_fit_table(*, preparation: Mapping[str, Any], verdict: Mapping[str, An
         return {"status": "failed", "error": type(exc).__name__}
 
 
+def _rigid_verdict_and_fit(*, preparation: Mapping[str, Any], collision_path: Path,
+                           native_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The capability verdict (written beside the native inputs) and the robot fit table, CPU only.
+
+    One read scope holds both: a USDA text collider (one normalized before 2026-11-03) is read once, into
+    a binary copy every search of both opens, where each search parsed it again at about 3.6 GB
+    (``usd_binary_read_cache``). A binary collider is opened as it is.
+    """
+    from .usd_binary_read_cache import read_scope
+    from .website_rigid_feasibility import rigid_task_verdict
+
+    with read_scope():
+        verdict = rigid_task_verdict(preparation=preparation, collision_path=collision_path)
+        write_json(native_root / "capability_verdict.json", verdict)
+        return verdict, _robot_fit_table(preparation=preparation, verdict=verdict, native_root=native_root,
+                                         collision_path=collision_path)
+
+
 def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mapping[str, Any],
                             native_root: Path) -> dict[str, Any]:
     """Where a geometry-only job ends: the capability verdict and the robot fit table, CPU only.
@@ -111,17 +129,14 @@ def geometry_only_fit_check(*, preparation: Mapping[str, Any], base_scene: Mappi
     collision_root, normalized = normalize_runtime_collision(preparation=preparation, base_scene=base_scene,
                                                              output_root=native_root)
     collision = collision_root / normalized["output"]["relative_path"]
-    from .website_rigid_feasibility import rigid_task_verdict
-    verdict = rigid_task_verdict(preparation=preparation, collision_path=collision)
-    write_json(native_root / "capability_verdict.json", verdict)
+    verdict, fit = _rigid_verdict_and_fit(preparation=preparation, collision_path=collision, native_root=native_root)
     return {"status": "completed",
             "collision": {"path": str(collision), "digest": normalized["output"]["sha256"]},
             "capability_verdict": {"status": verdict["status"], "blockers": verdict["blockers"],
                                    **({"risks": verdict["risks"]} if "risks" in verdict else {}),
                                    "path": str(native_root / "capability_verdict.json"),
                                    "digest": verdict["verdict_digest"]},
-            "robot_fit_table": _robot_fit_table(preparation=preparation, verdict=verdict, native_root=native_root,
-                                                collision_path=collision)}
+            "robot_fit_table": fit}
 
 
 def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[str, Any], preparation_path: Path,
@@ -170,14 +185,13 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
             and preparation["intake_request"]["task"]["strategy"] == "pick_and_place"):
         # Abstain before the owner is asked to pay when no enabled embodiment can carry the
         # task; one the gate cannot model is unassessed and never refused.
-        from .website_rigid_feasibility import rigid_task_verdict
-        verdict = rigid_task_verdict(preparation=preparation, collision_path=Path(runtime_inputs["collision"]["path"]))
-        write_json(native_root / "capability_verdict.json", verdict)
+        verdict, fit = _rigid_verdict_and_fit(preparation=preparation,
+                                              collision_path=Path(runtime_inputs["collision"]["path"]),
+                                              native_root=native_root)
         result["capability_verdict"] = {"status": verdict["status"], "blockers": verdict["blockers"],
             **({"risks": verdict["risks"]} if "risks" in verdict else {}),
             "path": str(native_root / "capability_verdict.json"), "digest": verdict["verdict_digest"]}
-        result["robot_fit_table"] = _robot_fit_table(preparation=preparation, verdict=verdict, native_root=native_root,
-                                                     collision_path=Path(runtime_inputs["collision"]["path"]))
+        result["robot_fit_table"] = fit
         if verdict["status"] == "abstained":
             result.update(status="needs_input", blockers=list(verdict["blockers"]))
     return preparation["status"] == "intake_ready" and result.get("capability_verdict", {}).get("status") != "abstained"

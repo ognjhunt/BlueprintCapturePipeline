@@ -400,12 +400,15 @@ def collision_kept_loaded(usd_path: str | Path) -> Iterator[Any]:
     for a 280 MB synthetic room). A carry search reads it once per stance it tries; a team packet's
     station searches read it 16 times for three registered bodies. Readers inside must only read, so
     each still sees the file's own bytes (an edit to the shared layer would outlive its stage); a file
-    that cannot be opened is left to the reader that needs it to refuse.
+    that cannot be opened is left to the reader that needs it to refuse. Inside a read scope it holds the
+    scope's binary copy (``usd_binary_read_cache.readable``), which no open parses.
     """
     from pxr import Tf, Usd
 
+    from .usd_binary_read_cache import readable
+
     try:
-        stage = Usd.Stage.Open(str(usd_path))
+        stage = Usd.Stage.Open(readable(usd_path))
     except Tf.ErrorException:
         stage = None
     try:
@@ -419,7 +422,9 @@ def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], 
     """World triangles of every static collision mesh within ``radius`` of ``centre``."""
     from pxr import Usd, UsdGeom, UsdPhysics
 
-    stage = Usd.Stage.Open(str(usd_path))
+    from .usd_binary_read_cache import readable
+
+    stage = Usd.Stage.Open(readable(usd_path))
     if not stage or not math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.0) or UsdGeom.GetStageUpAxis(stage) != "Z":
         raise ScenePhysicsPreflightError("scene_physics_background_frame_invalid")
     cache = UsdGeom.XformCache()
