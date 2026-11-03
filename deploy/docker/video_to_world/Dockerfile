@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04@sha256:8aef630a54bc5c5146ae5ce68e6af5caa3df0fb690bb91544175c91f307e4356
+FROM nvidia/cuda:13.4.3-cudnn-runtime-ubuntu24.04@sha256:534ea2e94fd17f053b4422d094f50a43a7e75a03240c4b89cbe9ad42085ec1c3
 
 ARG VIDEO_TO_WORLD_SOURCE_REF=88ac85be18b4532d7cf16fab07f51301d12ab33e
 ARG DEPTH_ANYTHING_3_SOURCE_REF=2c21ea849ceec7b469a3e62ea0c0e270afc3281a
