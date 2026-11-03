@@ -205,6 +205,17 @@ def _beta_admission_binding(payload: Mapping[str, Any]) -> None:
         fields.add("robot_free_probe_receipt_digest")
         family_binding_valid = (row.get("backend") == "robolab.v1"
                                 and _digest(row.get("robot_free_probe_receipt_digest")))
+        if "diagnostic_control_omission_authority" in row:
+            # Paused controls (beta_policy_screening_control_omission): the run's contract has none,
+            # and the typed omission names it, the diagnostic ceiling and no qualified comparison.
+            fields.add("diagnostic_control_omission_authority")
+            try:
+                validate_control_omission_authority(_mapping(row["diagnostic_control_omission_authority"]),
+                                                    contract_digest=str(row.get("task_success_contract_digest")))
+            except (ValueError, TypeError):
+                family_binding_valid = False
+            if "controls" in _mapping(_mapping(payload.get("task_success_contract")).get("criteria")):
+                family_binding_valid = False
     if (set(row) != fields
             or row.get("schema_version") != BETA_ADMISSION_SCHEMA_VERSION
             or row.get("evaluation_purpose") != "screening" or not family_binding_valid

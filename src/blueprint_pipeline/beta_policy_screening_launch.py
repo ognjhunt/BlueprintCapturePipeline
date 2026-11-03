@@ -111,6 +111,7 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
     identity = _identity(plan, candidate)
     _check_quote(plan, candidate)
     family = candidate["execution_spec"].get("backend") == FAMILY_BACKEND
+    omission = None
     previous = root / "prepared.json"
     if previous.exists():
         prepared = _read(previous)
@@ -141,10 +142,17 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
             raise ValueError("beta_screening_family_plan_binding_invalid")
     else:
         from .robot_free_probe_gate import require_robot_free_probe, task_success_contract_binding
+        probed = scene["task_success_contract"]
+        if "diagnostic_control_omission_authority" in scene:
+            # Paused controls: the probe scored the source contract this run omits only controls from.
+            from .beta_policy_screening_control_omission import validate_paused_controls_omission
+            omission = validate_paused_controls_omission(scene["diagnostic_control_omission_authority"],
+                source=scene["source_task_success_contract"], contract=scene["task_success_contract"])
+            probed = scene["source_task_success_contract"]
         probe = require_robot_free_probe(scene.get("beta_robot_free_probe_receipt"),
             scene_revision_digest=scene["scene_revision_digest"], task_kind=scene.get("beta_task_kind"),
             task_spec_digest=scene.get("beta_probe_task_spec_digest"),
-            task_success_contract_digest=task_success_contract_binding(scene.get("beta_task_kind"), scene["task_success_contract"]))
+            task_success_contract_digest=task_success_contract_binding(scene.get("beta_task_kind"), probed))
         if probe["receipt_digest"] != plan["robot_free_probe_digest"]:
             raise ValueError("beta_screening_robot_free_probe_changed")
     for key in (("base_native_packet", "runtime_source") if family else ("base_native_packet", "runtime_source", "construction_result")):
@@ -191,7 +199,9 @@ def prepare_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any],
                "task_success_contract_digest": scene["task_success_contract_digest"],
                **({"pre_policy_site_qualification_required": True,
                    "family_static_readiness_digest": scene["family_static_readiness_digest"]} if family else
-                  {"robot_free_probe_receipt_digest": plan["robot_free_probe_digest"]})}
+                  {"robot_free_probe_receipt_digest": plan["robot_free_probe_digest"]}),
+               # Controls are never dropped silently: the run and its result carry the omission.
+               **({"diagnostic_control_omission_authority": omission} if omission is not None else {})}
     activation = {"schema_version": "task_evaluation_policy_campaign_activation.v1", "run_id": run_id,
                   "run_kind": BETA_RUN_KIND, "claim_ceiling": CLAIM_CEILING,
                   "candidate_ids": [candidate["candidate_id"]],
