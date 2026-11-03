@@ -97,6 +97,9 @@ RUNTIME_RESULT_FILENAMES = (
     "task_evaluation_rigid_destination_native_observation.v1.json",
     "paired_target_native_import_runtime_result.v1.json",
     "task_evaluation_scene_configuration_provider_result.v1.json",
+    # ``rigid_robot_free_probe_worker.RESULT_FILENAME``; without it every probe run, even a
+    # recorded one, was blocked ``provider_runtime_result_missing_from_output_zip`` (capture-447ae4f4).
+    "rigid_robot_free_probe_result.v1.json",
 )
 ENTRYPOINT_DIAGNOSTIC_FILENAME = "provider_entrypoint_diagnostic.json"
 

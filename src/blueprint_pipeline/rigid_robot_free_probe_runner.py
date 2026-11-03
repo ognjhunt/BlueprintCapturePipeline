@@ -44,9 +44,16 @@ release sets it aside once, before the pass: the retired entry goes back to
 pending, the terminal moves under ``superseded_terminals/`` beside a marker
 naming the release that retried it (history is kept, never deleted), and the
 next terminal lists the releases already tried, the ones that sealed it
-included (``release_requeued``), so a refusal never loops. A terminal sealed by the running release stays final, as
-does every other terminal: a decided receipt, a trace conflict, or a spent
-attempt budget. Without a known running release nothing is retried.
+included (``release_requeued``), so a refusal never loops. An ``attempts_exhausted``
+terminal whose every funded attempt failed inside Blueprint's own runtime (the
+worker's typed ``rigid_robot_free_probe_failed_at_*`` crash, or a result the
+transport could not find in the output zip) is set aside the same way: each newly
+deployed release gives it one more funded attempt, at the lane's caps, and at most
+``MAX_RUNTIME_REDRIVES`` ever (owner approval 2026-11-03, after capture-447ae4f4's
+first GPU run crashed on a camera API the pinned Arena lacks). A terminal sealed by
+the running release stays final, as does every other terminal: a decided receipt,
+a trace conflict, or an attempt budget spent on a scene or scorer outcome, a provider
+or a money refusal. Without a known running release nothing is retried.
 
 Ingest happens only once the allocator result is ``completed``, which proves
 teardown, provider zero and staged-object absence. It checks the result
@@ -152,6 +159,14 @@ TERMINAL_STATES = frozenset({"decided", "trace_conflict", "staging_refused"})
 RELEASE_COMMIT_FIELD = "release_commit"
 RELEASE_REQUEUE_FIELD = "release_requeued"
 RELEASE_RETRIED_STATES = frozenset({"staging_refused"})
+# A funded attempt that failed inside our own runtime: the worker's typed crash, or a result the
+# transport could not find (capture-447ae4f4's two attempts). Scene and scorer outcomes, provider
+# capacity and money refusals are none of these. Owner approval 2026-11-03: such an exhausted job gets
+# one more funded attempt per newly deployed release, at the lane's caps, at most two ever.
+RUNTIME_REDRIVE_STATE = "attempts_exhausted"
+MAX_RUNTIME_REDRIVES = 2
+RUNTIME_FAILURE_PREFIX = "rigid_robot_free_probe_failed_at_"
+RUNTIME_FAILURE_BLOCKERS = frozenset({"provider_runtime_result_missing_from_output_zip"})
 SUPERSEDED_DIRNAME = "superseded_terminals"
 SUPERSESSION_SCHEMA = "blueprint.rigid_robot_free_probe_terminal_supersession.v1"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -512,22 +527,64 @@ def _releases_tried(job: Path) -> list[str]:
     return tried
 
 
-def _new_release_untried(terminal: Mapping[str, Any], release: str | None) -> bool:
-    """A staging refusal sealed by another release, or by none recorded, that ``release`` has not yet retried."""
+def _runtime_failure(record: Mapping[str, Any]) -> bool:
+    """A funded, allocated attempt every one of whose blockers is our own runtime's (``RUNTIME_FAILURE_*``)."""
+
+    blockers = record.get("allocator_blockers")
+    return (record.get("state") == "allocated_blocked" and isinstance(blockers, list) and bool(blockers)
+            and all(str(item).startswith(RUNTIME_FAILURE_PREFIX) or str(item) in RUNTIME_FAILURE_BLOCKERS
+                    for item in blockers))
+
+
+def _runtime_redrives(job: Path, *, excluding: str | None = None) -> int:
+    """How many exhausted terminals were already set aside for a runtime re-drive (the marker history)."""
+
+    return sum(1 for row in _supersessions(job) if row.get("superseded_status") == RUNTIME_REDRIVE_STATE
+               and row.get("superseded_terminal_digest") != excluding)
+
+
+def _funded_limit(job: Path, *, excluding: str | None = None) -> int:
+    return MAX_FUNDED_ATTEMPTS + min(_runtime_redrives(job, excluding=excluding), MAX_RUNTIME_REDRIVES)
+
+
+def _runtime_redrive_due(job: Path, terminal: Mapping[str, Any]) -> bool:
+    """An exhausted job whose every funded attempt failed inside our runtime, with a re-drive left."""
+
+    if terminal.get("status") != RUNTIME_REDRIVE_STATE:
+        return False
+    digest = str(terminal.get("terminal_digest") or "") or None
+    try:
+        if _runtime_redrives(job, excluding=digest) >= MAX_RUNTIME_REDRIVES:
+            return False
+        # Counted as ``_counts`` counts: the ingest record, or the funding the attempt's bulk directory holds.
+        funded = [record for attempt in _attempts(job) for record in [_read_optional(attempt / INGEST_FILENAME) or {}]
+                  if record.get("funded") is True or record.get("allocated") is True or _funded(attempt)]
+        limit = _funded_limit(job, excluding=digest)
+    except (OSError, ValueError):
+        return False  # unreadable history: never spend on a guess
+    return len(funded) >= limit and all(_runtime_failure(row) for row in funded)
+
+
+def _new_release_untried(terminal: Mapping[str, Any], release: str | None, job: Path | None = None) -> bool:
+    """A terminal sealed by another release, or by none recorded, that ``release`` has not yet retried:
+    a staging refusal, or (given its ``job``) an attempt budget our own runtime spent."""
 
     tried = terminal.get(RELEASE_REQUEUE_FIELD)
-    return (release is not None and terminal.get("status") in RELEASE_RETRIED_STATES
-            and terminal.get(RELEASE_COMMIT_FIELD) != release
-            and release not in (tried if isinstance(tried, list) else []))
+    if (release is None or terminal.get(RELEASE_COMMIT_FIELD) == release
+            or release in (tried if isinstance(tried, list) else [])):
+        return False
+    return terminal.get("status") in RELEASE_RETRIED_STATES or (
+        job is not None and _runtime_redrive_due(job, terminal))
 
 
 def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | None:
-    """Set the job's staging refusal aside for a newly deployed release, once; return the marker.
+    """Set the job's retried terminal aside for a newly deployed release, once; return the marker.
 
     The marker naming the release is written before the terminal moves beside it, so each release
     sets a terminal aside at most once and a pass interrupted between the two finishes the move.
-    The refused attempt is recorded ``not_staged`` (it launched nothing), so it counts toward no
-    limit and the next attempt takes the next index. Nothing is deleted. The job lock is held.
+    A staging refusal's attempt is recorded ``not_staged`` (it launched nothing), so it counts toward
+    no limit and the next attempt takes the next index; a runtime re-drive's marker raises the funded
+    limit by one (``_funded_limit``), and its settled attempts stay exactly as they are. Nothing is deleted. The job lock is held.
     """
 
     terminal = _read_optional(job / TERMINAL_FILENAME)
@@ -541,7 +598,7 @@ def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | N
     marker_path = history / f"{name}.supersession.json"
     marker = _read_optional(marker_path)
     if marker is None:
-        if not _new_release_untried(terminal, release):
+        if not _new_release_untried(terminal, release, job):
             return None
         marker = {"schema_version": SUPERSESSION_SCHEMA, RELEASE_COMMIT_FIELD: release,
                   "superseded_terminal_digest": digest, "superseded_status": terminal.get("status"),
@@ -562,7 +619,7 @@ def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | N
 
 def requeue_new_release(queue_root: str | Path | None, release: str | None, *,
                         names: set[str] | None = None) -> list[dict[str, Any]]:
-    """Return each retired entry whose staging refusal ``release`` has not yet retried to pending.
+    """Return each retired entry whose retried terminal ``release`` has not yet retried to pending.
 
     The pass that follows sets the terminal aside under the job lock (``_supersede_for_release``).
     An entry already pending is left as it is; it is processed the same way.
@@ -582,7 +639,7 @@ def requeue_new_release(queue_root: str | Path | None, release: str | None, *,
             terminal = _read_optional(job / TERMINAL_FILENAME)
         except (OSError, KeyError, TypeError, ValueError):
             continue
-        if terminal is None or not _new_release_untried(terminal, release):
+        if terminal is None or not _new_release_untried(terminal, release, job):
             continue
         target.parent.mkdir(parents=True, exist_ok=True, mode=0o750)
         os.replace(path, target)
@@ -596,13 +653,15 @@ def final_terminal(state: Mapping[str, Any], *, queue_root: str | Path | None = 
                    release: str | None = None) -> dict[str, Any] | None:
     """The sealed terminal of the capture's current probe request that no pass under ``release`` retries, or None.
 
-    Read only. A staging refusal a newly deployed release has not yet tried is not final: that release's pass
-    sets it aside and stages again (``requeue_new_release``). Every other terminal is final, as it is without a
+    Read only. A staging refusal, or an attempt budget our own runtime spent (``_runtime_redrive_due``), that a
+    newly deployed release has not yet tried is not final: that release's pass sets it aside and stages again
+    (``requeue_new_release``). Every other terminal is final, as it is without a
     known release. The screening pass names a final one to the website job (``beta_policy_screening_holds``).
     """
 
-    terminal = _read_optional(_job_dir(_queue_root(queue_root), state) / TERMINAL_FILENAME)
-    if terminal is None or _new_release_untried(terminal, _release(release)):
+    job = _job_dir(_queue_root(queue_root), state)
+    terminal = _read_optional(job / TERMINAL_FILENAME)
+    if terminal is None or _new_release_untried(terminal, _release(release), job):
         return None
     return terminal
 
@@ -739,7 +798,7 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
             if settled["state"] in TERMINAL_STATES:
                 return _seal_terminal(root, item, entry, job, settled["state"], settled, release)
         funded, unfunded = _counts(job)
-        if funded >= MAX_FUNDED_ATTEMPTS or unfunded >= MAX_UNFUNDED_ATTEMPTS:
+        if funded >= _funded_limit(job) or unfunded >= MAX_UNFUNDED_ATTEMPTS:
             return _seal_terminal(root, item, entry, job, "attempts_exhausted",
                                   {"funded_attempts": funded, "unfunded_attempts": unfunded, "last": settled},
                                   release)
@@ -897,6 +956,7 @@ if __name__ == "__main__":  # pragma: no cover
 __all__ = [
     "DEFAULT_QUEUE",
     "MAX_FUNDED_ATTEMPTS",
+    "MAX_RUNTIME_REDRIVES",
     "MAX_UNFUNDED_ATTEMPTS",
     "QUEUE_ENV",
     "RigidRobotFreeProbeIngestError",
