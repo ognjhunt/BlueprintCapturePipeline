@@ -65,7 +65,9 @@ fixes its cause re-drives it, and the status keeps the releases already tried
 release nothing is requeued on that basis; ``--requeue-unfinished`` retries the
 rest once their cause is fixed. A completed rigid half whose own plan spawns its
 task object farther from the task's start than the scorer's reset tolerance
-(``rigid_support_seating.start_spawn_mismatch``; capture-447ae4f4: 14.7 mm) can
+(``rigid_support_seating.start_spawn_mismatch``; capture-447ae4f4: 14.7 mm), or
+whose support record holds it (the CPU rest check refused it, or it was compiled
+before the support was modelled: ``rigid_support_pad.half_support_hold``), can
 never be scored, so each newly deployed release recompiles it once, on the same
 passes and the CPU, and never reuses it (``unscorable_half_release_requeued``). Nothing
 here allocates a provider, starts a run or spends: the offer publishes facts,
@@ -358,8 +360,14 @@ def final_block(status: Mapping[str, Any], *, release: str | None) -> bool:
 
 
 def unscorable_half(path: Any) -> str | None:
-    """Why the compiled half at ``path`` can never be scored from its own spawn, or None (also when unreadable)."""
+    """Why the compiled half at ``path`` can never be scored from its own spawn, or None (also when unreadable).
 
+    Its object spawns off its start (``rigid_support_seating.start_spawn_mismatch``), or its support
+    record holds it: the CPU rest check refused it, or a rigid half has no record because a release
+    before the support was modelled compiled it (``rigid_support_pad.half_support_hold``).
+    """
+
+    from .rigid_support_pad import half_support_hold
     from .rigid_support_seating import start_spawn_mismatch
     from .team_scene_packet import read_team_scene_inputs
 
@@ -370,7 +378,9 @@ def unscorable_half(path: Any) -> str | None:
         plan = _read_json(Path(inputs["base_native_packet"]["path"]).parent / "native_task_arena_scene_plan.v1.json")
     except (OSError, ValueError, KeyError, TypeError):
         return None
-    return start_spawn_mismatch(plan) if plan is not None else None
+    if plan is None:
+        return None
+    return start_spawn_mismatch(plan) or half_support_hold(path)
 
 
 def _unscorable_half_untried(status: Mapping[str, Any], release: str | None) -> str | None:

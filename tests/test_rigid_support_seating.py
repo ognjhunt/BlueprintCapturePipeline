@@ -327,6 +327,14 @@ def test_a_team_packet_seats_its_object_on_the_rooms_collider_and_reads_its_goal
     # The goal footprint is clear of the bump: a correct push rests inside the sealed window.
     assert record["goal"]["collider_top_z_m"] == pytest.approx(packet_tests.SUPPORT_TOP_Z)
     assert record["goal"]["within_success_window"] is True
+    # The bump stands above the registered support's highest face: something on the support, not its
+    # scan, so it is kept; seated on it the object would tip 0.044 rad, so the half is held before any
+    # probe spends (rigid_support_pad).
+    support = json.loads(Path(compiled["path"]).read_text())["task_support_pad"]
+    assert support["status"] == "held" and support["collider_already_planar"] is True
+    assert support["hold_reason"].startswith("rigid_support_start_rest_off_start:") and support["hold_reason"].endswith(
+        "/0.044rad")
+    assert support["measured_scan_deviation"]["start"]["highest_above_plane_m"] == pytest.approx(0.003, abs=1e-6)
     # Seating moved the start only: the success contract is the one the unseated start gives.
     unseated = copy.deepcopy(plan["task_spec"])
     unseated["start_pose_world"][2] = 0.818319
