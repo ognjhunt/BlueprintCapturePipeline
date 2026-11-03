@@ -41,7 +41,7 @@ from blueprint_pipeline import rigid_robot_free_probe_worker as worker
 from blueprint_pipeline import robot_free_probe_gate as gate
 from blueprint_pipeline import team_candidate_quick10_registry as registry
 from blueprint_pipeline import website_task_context
-from blueprint_pipeline.decision_evidence_contracts import canonical_digest
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
 from blueprint_pipeline.native_task_arena_execution_contract import native_task_arena_execution_transport_completed
 from blueprint_pipeline.native_task_arena_readback import _compose_pose_xyzw
 from blueprint_pipeline.native_task_nurec_render_setup import appearance_render_path_from_plan
@@ -87,16 +87,35 @@ def retask_packet(packet: Path, task_spec: dict[str, Any]) -> None:
 
 def website_context() -> dict[str, Any]:
     return _sealed({"schema_version": "website_site_task_context.v1", "request_id": "req1", "scene_id": "site-req1",
-                    "capture_id": "walkthrough-req1", "description": "Move the mug onto the tray",
+                    "capture_id": "walkthrough-req1", "purpose": "scene_preparation",
+                    "description": "Move the mug onto the tray",
                     "confirmed": True, "confirmed_at": "2026-10-26T01:00:00Z", "operator_answers": {},
-                    "unresolved": []}, "context_digest")
+                    "unresolved": [], "capture_rights": {"derived_scene_generation_allowed": True,
+                                                         "consent_revoked": False}}, "context_digest")
 
 
-def website_sponsorship(context: dict[str, Any], *, expires_in: float = 20 * 3600) -> dict[str, Any]:
-    return _sealed({"schema_version": "website_scene_sponsorship.v1", "sponsor": "blueprint",
-                    **{key: context[key] for key in ("request_id", "scene_id", "capture_id")},
-                    "task_context_digest": context["context_digest"],
-                    "expires_at_epoch": time.time() + expires_in}, "authority_digest")
+GRANT_OWNER = {"user_id": "blueprint-preparation", "organization_id": "blueprint"}
+
+
+def website_sponsorship(context: dict[str, Any], *, expires_in: float = 20 * 3600,
+                        renewal: dict[str, Any] | None = None) -> dict[str, Any]:
+    """A preparation grant as the WebApp's signed read returns it (synthetic caps and terms)."""
+
+    expires = time.time() + expires_in
+    value = {"schema_version": "website_scene_sponsorship.v1", "sponsor": "blueprint", "purpose": "scene_preparation",
+             **{key: context[key] for key in ("request_id", "scene_id", "capture_id")},
+             "task_context_digest": context["context_digest"], "policy_digest": "sha256:" + "8" * 64,
+             "authoring_provider": "openai", "owner": dict(GRANT_OWNER), "preparation_max_total_spend_usd": 25,
+             "upstream_max_spend_usd": 5, "max_total_spend_usd": 20, "max_paid_attempts": 2,
+             "expires_at_epoch": expires,
+             "consent": {"rights_reference": cross_runtime_canonical_digest(context["capture_rights"]),
+                         "provider_terms_reference": "sha256:" + "7" * 64, "accepted_by": GRANT_OWNER["user_id"],
+                         "accepted_at_epoch": expires - 86_000, "private_processing_authorized": True,
+                         "provider_training_authorized": False, "task_confirmed": context["confirmed"],
+                         "spend_authorized": True}}
+    if renewal is not None:
+        value["renewal"] = renewal
+    return _sealed(value, "authority_digest")
 
 
 class _FakeTorch(types.ModuleType):
@@ -242,6 +261,7 @@ def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options:
     (capture / "pipeline").mkdir(parents=True)
     context = website_context()
     (capture / "pipeline" / "website_task_context.json").write_text(json.dumps(context))
+    # The copy written once when preparation started; the precheck reads the WebApp's current grant instead.
     (capture / "pipeline" / "website_scene_sponsorship.json").write_text(json.dumps(website_sponsorship(context)))
     probe_root = tmp_path / "source-launch"
     probe_root.mkdir()
@@ -255,6 +275,7 @@ def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options:
         "tmp": tmp_path, "capture": capture, "probe_root": probe_root, "queue": tmp_path / "queue", "packet": packet,
         "spec": spec, "contract": contract, "scored": scored_task_spec(spec, contract), "profile": profile,
         "facts": facts, "context": context, "webapp_calls": [], "webapp_refusal": None, "transport_calls": [],
+        "grant": website_sponsorship(context), "grant_reads": [], "grant_failure": None, "webapp_window": False,
         "published": [], "launches": [], "host_options": dict(host_options), "continuing_spend": False,
         "allocator_calls": []}
     monkeypatch.setattr(registry, "profile_for_capture", lambda root: dict(profile) if str(
@@ -268,11 +289,24 @@ def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **host_options:
     monkeypatch.setattr(arena_vast, "run_arena_native_control_vast", fake_transport(world))
     monkeypatch.setitem(sys.modules, "torch", _FakeTorch())
     for name in ("BLUEPRINT_GCP_MONTHLY_BUDGET_REPORT", "BLUEPRINT_GCP_BUDGET_GUARD_CONFIG",
-                 "BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "BLUEPRINT_VAST_MAX_ISAAC_DRIVER", runner.QUEUE_ENV):
+                 "BLUEPRINT_ATLAS_OPERATOR_ADMISSION_FILE", "BLUEPRINT_VAST_MAX_ISAAC_DRIVER", runner.QUEUE_ENV,
+                 "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(lane.ENABLE_ENV, "1")
 
     def webapp(*, capture_id: str, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if operation == "scene-sponsorship":
+            # The current grant (the signed non-creating read). Past its own expiry the WebApp
+            # answers only while its own verified intent window covers it.
+            world["grant_reads"].append({"capture_id": capture_id, "payload": dict(payload)})
+            failure = world["grant_failure"]
+            if isinstance(failure, BaseException):
+                raise failure
+            if failure:
+                raise ValueError(f"website_control_scene-sponsorship_http_409:{failure}")
+            if world["grant"]["expires_at_epoch"] <= time.time() and not world["webapp_window"]:
+                raise ValueError("website_control_scene-sponsorship_http_409:consent_expired")
+            return copy.deepcopy(world["grant"])
         world["webapp_calls"].append({"capture_id": capture_id, "operation": operation, "payload": payload})
         if world["webapp_refusal"]:
             raise ValueError(f"website_control_{operation}_http_409:{world['webapp_refusal']}")
@@ -373,8 +407,10 @@ def _with(argv: list[str], flag: str, value: str) -> list[str]:
 
 @pytest.mark.parametrize("case, blocker, reserved", [
     ("disabled", "rigid_robot_free_probe_lane_disabled", False),
+    ("context_missing", "rigid_robot_free_probe_website_grant_missing", False),
     ("grant_missing", "rigid_robot_free_probe_website_grant_missing", False),
     ("grant_expired", "rigid_robot_free_probe_website_grant_expired", False),
+    ("grant_ending", "rigid_robot_free_probe_website_grant_expired", False),
     ("webapp_expired", "rigid_robot_free_probe_website_grant_expired", True),
     ("webapp_exhausted", "rigid_robot_free_probe_website_grant_exhausted", True),
     ("webapp_missing", "rigid_robot_free_probe_website_grant_missing", True),
@@ -392,11 +428,14 @@ def test_the_lane_refuses_before_any_spend(tmp_path, monkeypatch, case, blocker,
     pipeline = world["capture"] / "pipeline"
     if case == "disabled":
         monkeypatch.delenv(lane.ENABLE_ENV)
+    elif case == "context_missing":
+        (pipeline / "website_task_context.json").unlink()
     elif case == "grant_missing":
-        (pipeline / "website_scene_sponsorship.json").unlink()
+        world["grant_failure"] = "website_scene_sponsorship_missing"
     elif case == "grant_expired":
-        (pipeline / "website_scene_sponsorship.json").write_text(
-            json.dumps(website_sponsorship(world["context"], expires_in=600)))
+        world["grant"] = website_sponsorship(world["context"], expires_in=-60)
+    elif case == "grant_ending":
+        world["grant"] = website_sponsorship(world["context"], expires_in=600)
     elif case.startswith("webapp_"):
         world["webapp_refusal"] = {"webapp_expired": "consent_expired",
                                    "webapp_exhausted": "website_scene_preparation_budget_exhausted",
@@ -423,6 +462,139 @@ def test_the_lane_refuses_before_any_spend(tmp_path, monkeypatch, case, blocker,
     assert bool(world["webapp_calls"]) is reserved
     assert not (staged["root"] / "allocator" / lane.FUNDING_FILENAME).exists()
     assert not (staged["root"] / "allocator" / lane.CONSUMPTION_FILENAME).exists()
+
+
+# --- the capture's current website grant ------------------------------------------------------
+
+INTAKE_ROOT_ENV = "BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT"
+
+
+def _stage_intent(root: Path, grant: dict[str, Any], *, name: str) -> dict[str, Any]:
+    """A sealed scene-preparation intent for this capture, issued under ``grant`` (synthetic request)."""
+
+    from blueprint_pipeline.task_evaluation_scene_intent_contracts import INTENT_SCHEMA, _seal
+
+    request = {"submission_id": grant["capture_id"], "owner": dict(grant["owner"]),
+               "consent": copy.deepcopy(grant["consent"]), "task": {"subject": {}},
+               "source": {"content_digest": "sha256:" + "3" * 64},
+               "execution": {"purpose": "scene_preparation", "policy_candidates": [], "max_retries": 0,
+                             "max_total_spend_usd": grant["max_total_spend_usd"],
+                             "max_paid_attempts": grant["max_paid_attempts"],
+                             "expires_at_epoch": grant["expires_at_epoch"]}}
+    intent = _seal({"schema_version": INTENT_SCHEMA, "intent_id": name, "request": request,
+                    "authenticated_issuer": "webapp", "accepted_at_epoch": grant["consent"]["accepted_at_epoch"],
+                    "source_content_digest": request["source"]["content_digest"],
+                    "task_content_digest": "sha256:" + "2" * 64, "provider_mutation_performed": False}, "intent_digest")
+    (root / name).mkdir(parents=True)
+    (root / name / "intent.json").write_text(json.dumps(intent))
+    return intent
+
+
+def _extend(root: Path, intent: dict[str, Any], until: float) -> dict[str, Any]:
+    """The operator door's sealed, time-only extension (the real writer)."""
+
+    from blueprint_pipeline.task_evaluation_scene_execution_window import ACK, extend_scene_execution_window_by_operator
+
+    return extend_scene_execution_window_by_operator(
+        queue_root=root, intent_id=intent["intent_id"], intent_digest=intent["intent_digest"], expires_at_epoch=until,
+        authorization_reference="synthetic owner approval (time only)", ack=ACK, door_caller="operator",
+        door_request_id="20261103T160000Z-extend-scene-execution-window-0123abcd", trusted_clients={"webapp"},
+        capture_rights={"consent_revoked": False, "derived_scene_generation_allowed": True}, apply=True)
+
+
+def test_the_precheck_reads_the_webapps_current_grant_not_the_copy_from_preparation_start(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    pipeline = world["capture"] / "pipeline"
+    # capture-447ae4f4: the copy written when preparation started is the original grant, long expired;
+    # the sponsor has since renewed it on the WebApp.
+    stale = website_sponsorship(world["context"], expires_in=-2 * 86400)
+    (pipeline / "website_scene_sponsorship.json").write_text(json.dumps(stale))
+    world["grant"] = website_sponsorship(world["context"], renewal={
+        "parent_authority_digest": stale["authority_digest"], "parent_expires_at_epoch": stale["expires_at_epoch"],
+        "approved_by": GRANT_OWNER["user_id"], "approval_reference": "synthetic owner approval"})
+    assert lane.retained_website_grant(world["capture"]) == (world["context"], [])
+    (read,) = world["grant_reads"]
+    # The non-creating read: it can never create or renew a grant.
+    assert read == {"capture_id": "walkthrough-req1", "payload": {
+        "request_id": "req1", "scene_id": "site-req1", "purpose": "scene_preparation",
+        "expected_task_context_digest": world["context"]["context_digest"], "create": False}}
+    (pipeline / "website_scene_sponsorship.json").unlink()
+    assert lane.retained_website_grant(world["capture"]) == (world["context"], [])
+    # The queued probe is then funded once from that grant and decided.
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    assert runner.run_queue(world["queue"], hooks=runner_hooks(world))[0]["status"] == "decided"
+    assert [call["operation"] for call in world["webapp_calls"]] == ["preparation-spend"]
+
+
+def test_an_owner_approved_window_of_the_grants_own_intent_keeps_it_funding_the_probe(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    intents = tmp_path / "intents"
+    intents.mkdir()
+    monkeypatch.setenv(INTAKE_ROOT_ENV, str(intents))
+    # The grant's own 24 h window ended an hour ago.
+    grant = world["grant"] = website_sponsorship(world["context"], expires_in=-3600)
+    bound = _stage_intent(intents, grant, name="scene-" + "1" * 64)
+    assert lane.retained_website_grant(world["capture"])[1] == ["rigid_robot_free_probe_website_grant_expired"]
+    # From here the WebApp honours its own mirrored window; the Pipeline still checks its own copy of it.
+    world["webapp_window"] = True
+    # The parent grant's intent carries a longer window, and a revoked intent another: neither extends this grant.
+    parent = _stage_intent(intents, website_sponsorship(world["context"], expires_in=-2 * 86400),
+                           name="scene-" + "2" * 64)
+    _extend(intents, parent, time.time() + 3 * 86400)
+    revoked = _stage_intent(intents, grant, name="scene-" + "3" * 64)
+    _extend(intents, revoked, time.time() + 2 * 86400)
+    (intents / revoked["intent_id"] / "revoked.json").write_text("{}")
+    assert lane.retained_website_grant(world["capture"])[1] == ["rigid_robot_free_probe_website_grant_expired"]
+    # A window ending before the shortest run could finish is still expired.
+    _extend(intents, bound, time.time() + 600)
+    assert lane.retained_website_grant(world["capture"])[1] == ["rigid_robot_free_probe_website_grant_expired"]
+    _extend(intents, bound, time.time() + 6 * 3600)
+    assert lane.retained_website_grant(world["capture"]) == (world["context"], [])
+    # The WebApp's admission follows the window past the grant's own expiry, and so does the run's deadline.
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    assert runner.run_queue(world["queue"], hooks=runner_hooks(world))[0]["status"] == "decided"
+    (attempt,) = runner._attempts(runner._job_dir(world["queue"], current_probe_state(world["capture"])))
+    funding = json.loads((attempt / "allocator" / lane.FUNDING_FILENAME).read_text())
+    assert funding["expires_at_epoch"] > grant["expires_at_epoch"]
+    assert world["transport_calls"][0]["hard_deadline_epoch"] == funding["expires_at_epoch"]
+
+
+@pytest.mark.parametrize("failure, blocker", [
+    ("consent_expired", "rigid_robot_free_probe_website_grant_expired"),
+    ("website_scene_sponsorship_missing", "rigid_robot_free_probe_website_grant_missing"),
+    ("website_task_context_changed", "rigid_robot_free_probe_website_grant_refused:website_task_context_changed"),
+    (ValueError("website_control_scene-sponsorship_http_503:website_scene_sponsorship_unavailable"),
+     "rigid_robot_free_probe_website_grant_unavailable:website_scene_sponsorship_unavailable"),
+    (ValueError("website_control_scene-sponsorship_http_429:unclassified"),
+     "rigid_robot_free_probe_website_grant_unavailable:unclassified"),
+    (ValueError("website_scene_sponsorship_binding_invalid"),
+     "rigid_robot_free_probe_website_grant_invalid:website_scene_sponsorship_binding_invalid"),
+    (OSError("connection refused"), "rigid_robot_free_probe_website_grant_unavailable:connection refused"),
+    (TimeoutError(), "rigid_robot_free_probe_website_grant_unavailable:TimeoutError"),
+])
+def test_a_failed_grant_read_is_a_typed_blocker(tmp_path, monkeypatch, failure, blocker) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    world["grant_failure"] = failure
+    assert lane.retained_website_grant(world["capture"]) == (None, [blocker])
+
+
+def test_an_unreachable_webapp_defers_the_probe_and_stages_nothing(tmp_path, monkeypatch) -> None:
+    from urllib.error import URLError
+
+    world = build_world(tmp_path, monkeypatch)
+    world["grant_failure"] = URLError("connection refused")
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    for _ in range(runner.MAX_UNFUNDED_ATTEMPTS + 1):
+        row = runner.run_queue(world["queue"], hooks=runner_hooks(world))[0]
+        assert row["status"] == "deferred", row
+        assert [code for code in row["blockers"] if code.startswith("rigid_robot_free_probe_website_grant_")] == [
+            "rigid_robot_free_probe_website_grant_unavailable:<urlopen error connection refused>"]
+    # Nothing was staged, so an outage never uses up the scene's bounded attempts.
+    assert runner._attempts(runner._job_dir(world["queue"], current_probe_state(world["capture"]))) == []
+    assert world["allocator_calls"] == [] and world["webapp_calls"] == [] and world["transport_calls"] == []
+    world["grant_failure"] = None
+    assert runner.run_queue(world["queue"], hooks=runner_hooks(world))[0]["status"] == "decided"
 
 
 def test_one_authority_funds_and_allocates_at_most_once(tmp_path, monkeypatch) -> None:
@@ -786,7 +958,9 @@ def test_the_runner_units_are_automatic_under_capture_grants_and_allow_opt_out(m
     assert service.index("ExecCondition=") < service.index("ExecStart=")
     for setting in ("KillMode=process", "User=blueprint", "ProtectSystem=strict", "NoNewPrivileges=true",
                     "BLUEPRINT_VAST_WATCHDOG_CALLER_EXIT_SURVIVAL=systemd_dispatcher_kill_mode_process",
-                    f"BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE={runner.DEFAULT_QUEUE}"):
+                    f"BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE={runner.DEFAULT_QUEUE}",
+                    "Environment=BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT="
+                    "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents"):
         assert setting in service
     # The service default implements the owner's automatic-check direction.
     # Operator env files can disable it; every pass keeps the canary attempt cap.
