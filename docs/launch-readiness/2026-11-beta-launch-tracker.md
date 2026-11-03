@@ -7,7 +7,7 @@ Status: **done** (verified, with evidence) · **in progress** · **owner** (wait
 on an owner decision or action) · **next deploy** (merged, ships with the next
 batched Pipeline deploy) · **not started**.
 
-Last updated: 2026-11-03 04:15Z. Pipeline live: `2ace7c2d6` (11-03 03:48Z). Door: `c5c3a12ee` (11-02 18:39Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
+Last updated: 2026-11-03 11:10Z. Pipeline live: `d2b17f8c9` (11-03 11:03Z). Door: `2ace7c2d6` (11-03 03:49Z). WebApp live: `58677f751` (11-03 04:03Z, verified at the exact SHA), which includes #1203. Next Pipeline deploy: see the checklist below.
 
 ## Operating notes (2026-11-02)
 
@@ -19,24 +19,21 @@ Last updated: 2026-11-03 04:15Z. Pipeline live: `2ace7c2d6` (11-03 03:48Z). Door
 
 ## Next Pipeline deploy (2026-11-03, 15:00 UTC window)
 
-The cloud session deployed `ceddd0220` at 01:59Z and `2ace7c2d6` at 03:48Z. Its deploy of `6cec9f9b9` (requested
-03:51Z, waiting for the running paid launch to finish) carries [#3298](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3298) (doctrine), [#3303](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3303)
-and [#3305](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3305) (the geometry-only route and its fit check, off by default) and [#3307](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3307)
-(status v5: the robot fit table for the site). [#3309](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3309) (E-02) merged after it and needs the next one.
+Deploys through the shared door token on 11-03: `ceddd0220` (01:59Z), `2ace7c2d6` (03:48Z; the door was upgraded
+to it at 03:49Z), `6cec9f9b9` (04:15Z), `6e9141fe5` (04:44Z) and `d2b17f8c9` (11:03Z). They shipped
+[#3298](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3298) (doctrine), [#3303](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3303) and [#3305](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3305) (the geometry-only route and its
+fit check, off by default), [#3307](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3307) (status v5: the robot fit table for the site) and
+[#3309](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3309) (E-02). `d2b17f8c9` is `main` through [#3316](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3316); the next deploy carries what
+merges after it.
 
-Before: follow `AGENTS.md` "Beta Deploy Policy". capture-447's job had a 7.5 h hard TTL ending about 03:06Z;
-at 03:06Z no paid launch lock was held.
+Before: follow `AGENTS.md` "Beta Deploy Policy". At 11:04Z no paid launch lock was held.
 
-Checked at 03:07Z, after the 01:59Z deploy: `active_release` is `ceddd0220` with its receipt. E-02's listener
-now stores its verdict but reuses it on about 1 pass in 5 (see its row).
+Checked at 11:04Z: `active_release` is `d2b17f8c9` with its receipt. Done since 04:15Z: the door upgrade (`door
+status` now shows `capacity.provider_spend`, `capacity.stall` and `capacity.reclaim_outlook`), the post-deploy
+check, and E-02 (the listener reuses its stored verdict on about 9 passes in 10; see its row).
 
 Still to do:
 1. G-02: run the withdrawal drill on a test job.
-2. Request `door-upgrade` to `main` so that `door status` shows `provider_spend`, `stall` and `reclaim_outlook`
-   ([#3288](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3288)).
-3. After the next deploy, confirm `door status` `active_release` and `deploys.recent_receipts`.
-4. E-02: find which read in the listener's catalog pass touches `gpu_spend_guard/latest.json`. That file is
-   rewritten every 1–2 minutes, so the stored verdict rarely matches (see the E-02 row).
 
 ## Owner decisions (2026-11-02)
 
@@ -57,7 +54,7 @@ Money and data-deletion items still need an explicit, specific approval:
 | D-10: evict the SAM-3.1 preparation cache | 22 directories, 10.1 GB, idle 47–51 days, rebuildable. `#2380` requires a separate owner decision | owner |
 | D-09: Vast auto-recharge | owner account setting; suggested: recharge to $50 below $25 | owner |
 | D-01 / D-06 / B-04 defaults | amounts come from the B-03 cost model | not started |
-| D-11: host resize | deferred: remove CPU waste first (E-02) | — |
+| D-11: host resize | E-02 removed the listener's CPU waste (see its row). Load at 10:53Z: 3.88 / 2.88 / 3.00 on 4 CPUs. Resizing to 8 vCPU is the owner's call | owner |
 
 Facts and actions only the owner has: counsel status before 2026-11-15 (G-01),
 the on-call backup (D-24), the invitee allowlist (D-13), credential rotation
@@ -94,7 +91,7 @@ can do it at the best price. It starts with a quick, cheap check of whether a ro
 | B-01 | in progress | Phase 1 merged: [#3256](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3256), `python -m blueprint_pipeline.task_evaluation_downstream_replay` replays completion → readiness → team packet → probe enqueue → screening plan offline, with paid calls, network and WebApp stubbed (18 tests). Phase 2 (stages 3–6) needs a Linux mount namespace (absolute `/workspace` paths); the cloud session's #3253 covers the stage-3/4 ARTISAN export replay. |
 | B-02 | not started | |
 | B-03 | done | [`2026-11-cost-model.md`](2026-11-cost-model.md): capture-447 measured spend $25.08 vs about $83 held across caps (scene holds 2.8× actual). Modelled job: p50 about $27 (plus unread upstream), p90 about $44, $59 with screening. Recommended defaults are listed in section 7; they need owner money approval (D-01/D-06). Found by code reading, not runtime-tested: `max_paid_attempts` never binds website scene-configuration reservations. |
-| B-04 | owner | Accounting policy change; needs owner approval once implemented. |
+| B-04 | owner | Accounting policy change; needs owner approval once implemented. 11-03: the cloud session's Pipeline [#3315](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3315) and WebApp [#1204](https://github.com/ognjhunt/Blueprint-WebApp/pull/1204) (open since 06:01–06:05Z) report the hold that a settled attempt keeps, and count it in the WebApp's job ceiling. For capture-447 the Pipeline commits $39.63, where the ceiling counted $18. |
 | B-05 | done | [#3265](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3265) merged: a "Spend limits" table in `AGENTS.md` lists 18 money ceilings with the file that sets each. Every code value was checked against `main`. Values that live only in Render or on the host are marked unverified. The B-03 defaults are not applied; they wait for the owner (D-01/D-06). |
 | B-06 | not started | |
 | B-07 | not started | `door status` 13:19Z: internal ledger $165.55; billing reconciled DigitalOcean $325.38 + Vast $455.88. The spend guard's RunPod inventory call succeeds (no errors in its journal over the last hour), so the audit's "1,065 failing RunPod calls a day" does not reproduce there; its source is unknown. |
@@ -130,8 +127,8 @@ can do it at the best price. It starts with a quick, cheap check of whether a ro
 
 | ID | Status | Evidence / next step |
 |---|---|---|
-| E-01 | done (live) | Live in `b04975ca7`. The first timer run (18:38:35Z) retired the 10-31 claim, and a later GC tick removed its 14.8 GB directory. capture-447's new activation (19:07Z) took about the same space, so `/mnt/blueprint-work` still has 30.75 GB free. That job's running CPU prestage reserves 18.3 GB, which leaves 0 GB above the 15.8 GB floor (21:01Z). Other launches refuse at $0 until it ends, then resume by themselves (C-02). `/var/lib/blueprint` is 92.6% used, 3.7 GB above its floor. The GC still keeps the result registry (17.1 GB, 29 runs), 13 activation pins (6.7 GB) and hot evidence (3.1 GB). Volume growth stays declined (D-10). Orphan scratch (26 GB in the earlier survey) needs the owner's OK. The GC's stranded-rows phase moves off root first (follow-up). |
-| E-02 | partly live | [#3278](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3278) (22:31Z) cut the billing reconciler to 389 CPU-s an hour (before: 1,279–1,511). [#3296](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3296), live in `ceddd0220` (01:59Z), stopped the catalog pass's WebApp reads: in the hour to 03:07Z the listener's guard stored its catalog verdict 23 times and reused it 5 times (before: never stored). Most passes still run in full (15–17 s) because the verdict binds `gpu_spend_guard/latest.json`, which the spend guard rewrites every 1–2 minutes (`phase_verdict_miss=path_changed`). Cause: two profiles pass that file as `--preflight-bundle`, and the residency check resolves every argv path. [#3309](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3309) (next deploy) binds a resolved path by its type and link target only. After that deploy, most listener passes should log `reused_phases=launch_profile_catalog,launch_input_residency`; any other `phase_verdict_miss=` names the next input. Load at 03:06Z: 3.05 / 3.03 / 3.16 on 4 CPUs (01:15Z: 4.16 / 4.04 / 4.41). A resize to 8 vCPU (D-11) stays with the owner. |
+| E-01 | done (live) | Live in `b04975ca7`. The first timer run (18:38:35Z) retired the 10-31 claim, and a later GC tick removed its 14.8 GB directory. capture-447's new activation (19:07Z) took about the same space, so `/mnt/blueprint-work` still has 30.75 GB free. That job's running CPU prestage reserves 18.3 GB, which leaves 0 GB above the 15.8 GB floor (21:01Z). Other launches refuse at $0 until it ends, then resume by themselves (C-02). `/var/lib/blueprint` is 92.6% used, 3.7 GB above its floor. The GC still keeps the result registry (17.1 GB, 29 runs), 13 activation pins (6.7 GB) and hot evidence (3.1 GB). Volume growth stays declined (D-10). Orphan scratch (26 GB in the earlier survey) needs the owner's OK. The GC's stranded-rows phase moves off root first (follow-up). 11-03 11:04Z: `/var/lib/blueprint` is 93.5% used (10.7 GB free) and `/mnt/blueprint-work` 87.8% (38.6 GB free). `door status` raises `reclaim_ineffective` (page) and names the result registry, hot and pinned data as the top retained reasons. |
+| E-02 | done (live) | [#3278](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3278) (22:31Z) cut the billing reconciler to 389 CPU-s an hour (before: 1,279–1,511). [#3296](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3296), live in `ceddd0220` (01:59Z), stopped the catalog pass's WebApp reads, so the listener's guard could store its catalog verdict. Most passes still ran in full, because the verdict bound `gpu_spend_guard/latest.json`, which the spend guard rewrites every 1–2 minutes. [#3309](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3309), live in `6e9141fe5` (04:44Z), binds a resolved path by its type and link target only. Checked at 10:54Z: since that deploy, 212 of 243 listener passes logged `reused_phases=launch_profile_catalog,launch_input_residency`. The 31 full passes logged `expired` (21), `absent` (8), `path_changed` (1) and `entry_stale_or_invalid` (1). In the hour to 10:54Z the listener used 358 CPU-s over 35 runs (median 7.4 s a run). Before #3296 it used about 950 CPU-s an hour (median 28.6 s a run, 00:34–01:13Z). Host load at 10:53Z: 3.88 / 2.88 / 3.00 on 4 CPUs (01:15Z: 4.16 / 4.04 / 4.41). A resize (D-11) stays with the owner. |
 | E-03 | not started | |
 | E-04 | owner | Credential rotation (G-05). |
 | E-05 | not started | |
@@ -168,5 +165,5 @@ can do it at the best price. It starts with a quick, cheap check of whether a ro
 | ID | Status | Evidence / next step |
 |---|---|---|
 | H-01 | done | Pipeline [#3268](https://github.com/ognjhunt/BlueprintCapturePipeline/pull/3268) archives four obsolete launch gates (one moved; three keep their paths with a banner because tests read them). WebApp [#1187](https://github.com/ognjhunt/Blueprint-WebApp/pull/1187) brings the beta guides and README to the 10-28 model. Found false but needing code or an owner call: robot-team copy says 200 episodes per evaluation (screening plans at most 10 per candidate); `main` had the delivery-proposal screen and booking route (removed by WebApp #1195, F-09); `docs/beta/ROBOT_TEAM_SUPPLY_AGREEMENTS.md` describes the old evaluate-and-deliver rule. BlueprintCapture had not received the owner's 10-28 platform doctrine; BlueprintCapture [#94](https://github.com/ognjhunt/BlueprintCapture/pull/94) synced it (11-03). |
-| H-02 | owner | 126 PRs and 3 issues closed (D-23). Also: WebApp #1142 was carried as #1178; #1103 was closed as superseded (main no longer caps Atlas requests, per the owner's 10-30 decision). 11-03 04:30Z: the other 56 open PRs in the three repos (all but the cloud session's) were checked against `main` by content. None is launch-critical, so DoD item 8 waits only on the cloud session's #3196 and WebApp #1175. **Owner:** close 33 and defer 23, from the table in [`2026-11-03-open-pr-triage.md`](2026-11-03-open-pr-triage.md). |
+| H-02 | in progress | 126 PRs and 3 issues closed (D-23). Also: WebApp #1142 was carried as #1178; #1103 was closed as superseded (main no longer caps Atlas requests, per the owner's 10-30 decision). 11-03 04:30Z: the other 56 open PRs in the three repos (all but the cloud session's) were checked against `main` by content. None is launch-critical ([`2026-11-03-open-pr-triage.md`](2026-11-03-open-pr-triage.md)). 10:50–10:52Z, on the owner's OK: the 33 PRs that the table marks Close were closed (Pipeline 13, WebApp 4, BlueprintCapture 16), and none was merged. The 23 deferred PRs stay open. Dependabot deleted the branches of 5 of its 6 closed PRs, as it does on close; their commits stay under each PR. DoD item 8 now waits only on the cloud session's #3196 and WebApp #1175. Its newer PRs (Pipeline #3315 and WebApp #1204, B-04) are also its to merge. |
 | H-03, H-04 | not started | |
