@@ -17,15 +17,17 @@ cleanly, else the preparation's estimated range widened by the band cubed (mass 
   search made the same way (``carry_station_search``) when the verdict stopped early or never
   searched. Every model stands at those stations (a fixed arm on the station's standard pedestal)
   and passes only if its published base footprint fits the cleared one; a larger or unpublished
-  footprint is ``unknown``. No clear station is ``unknown`` (reconstructed floors have holes), never
-  ``fail``.
+  footprint is ``unknown``. An arm the verdict path-checks passes: the check stood it on that
+  pedestal. No clear station is ``unknown`` (reconstructed floors have holes), never ``fail``.
 - ``reach`` (fixed arms and mobile bases): from some station, the grasp point and the place point,
   each the object's top plus the tool's length (top-down) where it starts and where it ends, both
   lie within the published reach of the shoulder, taken as the station's base at mount height.
   Scene offsets scale across the band; the tool's length does not.
   A model on an arm the verdict path-checks takes the verdict's own carry for that arm: clear
   passes, blocked fails with its blockers, not tried is ``unknown``. A humanoid's is ``unknown``.
-- ``payload``: the object's mass plus the tool's, against the rated payload.
+- ``payload``: against the rated payload, it passes only if the heaviest mass plus the default tool
+  (on a fixed arm's flange; a mobile base or humanoid lifts with its own hand) is within it, and
+  fails only if even the lightest mass alone exceeds it, because a lighter tool may be fitted.
 - ``cycle_time``: only against the owner's target. Two straight-line trips at the published TCP
   speed bound it from below; two carry paths at a tenth of that speed plus 4 s bound it from above,
   because a published TCP speed is a peak that short, acceleration-limited moves never hold.
@@ -139,7 +141,7 @@ def _stations(preparation: Mapping[str, Any], verdict: Mapping[str, Any], collis
 
 
 def _stance(model: Mapping[str, Any], stations: Sequence[Sequence[float]], source: str,
-            footprint_half: Sequence[float]) -> dict[str, Any]:
+            footprint_half: Sequence[float], *, path_checked: bool) -> dict[str, Any]:
     if not stations:
         return _check("stance", "unknown", "no clear floor station was found; reconstructed floors have holes",
                       {"station_source": source})
@@ -153,6 +155,8 @@ def _stance(model: Mapping[str, Any], stations: Sequence[Sequence[float]], sourc
     pair = figure_value(model, "base_footprint_l_w_m")
     sizes = ([[diameter, diameter]] if diameter is not None else []) + ([pair] if pair is not None else [])
     values["base_footprints_m"] = sizes
+    if path_checked:
+        return _check("stance", "pass", "the path check stood this arm on the station's pedestal", values)
     if not sizes:
         return _check("stance", "unknown", "no base footprint figure to compare with the cleared station", values)
     if all(all(a <= b for a, b in zip(sorted(size), cleared)) for size in sizes):
@@ -205,17 +209,22 @@ def _spec_reach(model: Mapping[str, Any], stations: Sequence[Sequence[float]], p
 
 def _payload(model: Mapping[str, Any], mass_range: Sequence[float] | None, tool_mass: float) -> dict[str, Any]:
     payload = figure_value(model, "rated_payload_kg")
-    values: dict[str, Any] = {"rated_payload_kg": payload, "tool_mass_kg": _r(tool_mass)}
+    # The default tool goes on a fixed arm's flange; a mobile base or humanoid lifts with its own hand.
+    tool = tool_mass if model["body_type"] == "fixed_arm" else 0.0
+    values: dict[str, Any] = {"rated_payload_kg": payload, "end_effector": "default_tool" if tool else "own_hand",
+                              "tool_mass_kg": _r(tool)}
     if payload is None:
         return _check("payload", "unknown", "no rated payload figure", values)
     if mass_range is None:
         return _check("payload", "unknown", "no mass for the object", values)
-    need = (mass_range[0] + tool_mass, mass_range[1] + tool_mass)
+    # A lighter tool may replace the default, so only the object's own mass can rule a model out.
+    need = (mass_range[0], mass_range[1] + tool)
+    plus = " plus the tool" if tool else ""
     values["required_kg"] = {"optimistic": _r(need[0]), "pessimistic": _r(need[1])}
     return _within("payload", need, float(payload), values, {
-        "pass": "the heaviest mass plus the tool is within the rated payload",
-        "fail": "even the lightest mass plus the tool exceeds the rated payload",
-        "unknown": "the rated payload falls inside the mass band plus the tool"})
+        "pass": f"the heaviest mass{plus} is within the rated payload",
+        "fail": "even the lightest mass, before any tool, exceeds the rated payload",
+        "unknown": f"the rated payload falls between the lightest mass and the heaviest{plus}"})
 
 
 def _cycle_time(model: Mapping[str, Any], target: float | None, straight_m: float, path_m: float) -> dict[str, Any]:
@@ -321,8 +330,8 @@ def robot_fit_table(*, preparation: Mapping[str, Any], collision_path: Path, ver
             reach = _verdict_reach(verdict, arm)
         else:
             reach = _spec_reach(model, stations, (grasp, place), tool_length, band)
-        checks = [_stance(model, stations, source, STATION_FOOTPRINT_HALF_EXTENT_M), reach,
-                  _payload(model, mass_range, float(figure_value(tool, "mass_kg"))),
+        stance = _stance(model, stations, source, STATION_FOOTPRINT_HALF_EXTENT_M, path_checked=arm is not None)
+        checks = [stance, reach, _payload(model, mass_range, float(figure_value(tool, "mass_kg"))),
                   _cycle_time(model, target, min(straight), max(path))]
         if body != "fixed_arm":
             checks.append(_check("access", "unknown", "path from the entrance not checked"))

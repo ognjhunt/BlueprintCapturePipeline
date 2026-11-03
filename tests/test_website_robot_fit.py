@@ -130,17 +130,17 @@ def _payload(kilograms):
 
 def test_payload_takes_the_owners_weight_with_a_band_else_the_estimate(tmp_path):
     stated = _table(tmp_path, sealed(*[_model(name, rated_payload_kg=_payload(kg))
-                                       for name, kg in (("strong", 7), ("weak", 5), ("close", 6))]),
+                                       for name, kg in (("strong", 7), ("weak", 4), ("close", 6))]),
                     job=_job(weight="5 kg"))
-    # 5 kg +-10% with the 0.9 kg tool needs 5.4 to 6.4 kg.
+    # 5 kg +-10% is 4.5 to 5.5 kg; with the 0.9 kg tool, up to 6.4 kg.
     assert stated["inputs"]["mass_basis"] == "owner_stated" and stated["inputs"]["mass_kg_range"] == [4.5, 5.5]
     assert stated["inputs"]["owner_item_weight"] == {"text": "5 kg", "parsed_kg": 5.0, "used": True}
     assert {name: _check(row, "payload")["result"] for name, row in _rows(stated).items()} == {
         "strong": "pass", "weak": "fail", "close": "unknown"}
     assert _rows(stated)["weak"]["verdict"] == "doesnt_fit"
     # Without a clean statement: the preparation's estimate, 0.2-1.0 kg at the measured volume. Mass
-    # scales with volume, so across the 0.75-1.33x band it is 0.084-2.370 kg: 0.98-3.27 kg with the tool.
-    catalog = sealed(*[_model(name, rated_payload_kg=_payload(kg)) for name, kg in (("strong", 4), ("weak", 0.9),
+    # scales with volume, so across the 0.75-1.33x band it is 0.084-2.370 kg, up to 3.27 kg with the tool.
+    catalog = sealed(*[_model(name, rated_payload_kg=_payload(kg)) for name, kg in (("strong", 4), ("weak", 0.05),
                                                                                     ("close", 2))])
     for job in (_job(), _job(weight="2-3 kg")):
         estimated = _table(tmp_path, catalog, job=job)
@@ -151,6 +151,24 @@ def test_payload_takes_the_owners_weight_with_a_band_else_the_estimate(tmp_path)
         assert {name: _check(row, "payload")["result"] for name, row in _rows(estimated).items()} == {
             "strong": "pass", "weak": "fail", "close": "unknown"}
     assert estimated["inputs"]["owner_item_weight"] == {"text": "2-3 kg", "parsed_kg": None, "used": False}
+
+
+def test_only_the_objects_own_mass_rules_a_model_out_and_only_an_arm_takes_the_tool(tmp_path):
+    # A 2 kg item is 1.8 to 2.2 kg. A lighter tool could replace the 0.9 kg default on an arm's
+    # flange; a humanoid lifts with its own hand, so no tool is added for it.
+    rows = _rows(_table(tmp_path, sealed(_model("arm", rated_payload_kg=_payload(2.5)),
+                                         _model("tiny_arm", rated_payload_kg=_payload(1.5)),
+                                         _model("humanoid", "humanoid", rated_payload_kg=_payload(2.5))),
+                        job=_job(weight="2 kg")))
+    payload = {name: _check(row, "payload") for name, row in rows.items()}
+    assert {name: check["result"] for name, check in payload.items()} == {
+        "arm": "unknown", "tiny_arm": "fail", "humanoid": "pass"}
+    assert payload["arm"]["values"]["required_kg"] == {"optimistic": 1.8, "pessimistic": 3.1}
+    assert payload["humanoid"]["values"]["required_kg"] == {"optimistic": 1.8, "pessimistic": 2.2}
+    assert [(payload[name]["values"]["end_effector"], payload[name]["values"]["tool_mass_kg"])
+            for name in ("arm", "humanoid")] == [("default_tool", 0.9), ("own_hand", 0.0)]
+    assert payload["tiny_arm"]["reason"] == "even the lightest mass, before any tool, exceeds the rated payload"
+    assert payload["arm"]["reason"] == "the rated payload falls between the lightest mass and the heaviest plus the tool"
 
 
 @pytest.mark.parametrize("target, result", [(None, "not_requested"), (0.3, "fail"), (2.0, "unknown"),
@@ -177,9 +195,11 @@ def test_every_path_checked_profile_names_its_recipe():
 
 
 def test_the_franka_takes_the_capability_verdicts_carry(tmp_path, monkeypatch):
-    # A spec reach of 10 cm would fail: the verdict's carry decides for the arm it path-checks.
+    # A spec reach of 10 cm would fail: the verdict's carry decides for the arm it path-checks. Like
+    # the real Panda's sheet, this one publishes no base footprint; the check stood it on the pedestal.
     catalog = validate_robot_spec_catalog(_catalog(_model("droid_franka", recipe_id=FRANKA_RECIPE,
-                                                          max_reach_m=_reach(0.1))), recipe_ids={FRANKA_RECIPE})
+                                                          max_reach_m=_reach(0.1), base_footprint_diameter_m=None)),
+                                          recipe_ids={FRANKA_RECIPE})
     room = _room(tmp_path)
     job = _job(destination={"relation": "on", "position_world_m": [0.3, 0.35, 0.0]},
                subject=([0.2675, -0.0325, 0.0], [0.3325, 0.0325, 0.065]))
@@ -248,17 +268,23 @@ def test_mobile_bases_and_humanoids_are_never_cleared_for_access(tmp_path):
 
 
 def test_a_fixed_arm_passes_stance_only_when_its_published_base_fits_the_station(tmp_path):
-    rows = _rows(_table(tmp_path, sealed(
+    rows = _rows(_table(tmp_path, validate_robot_spec_catalog(_catalog(
         _model("cobot"),
         _model("industrial", base_footprint_diameter_m=None,
                base_footprint_l_w_m=_figure([0.6, 0.6], "m", "600 x 600 mm", "600 mm = 0.6 m")),
-        _model("unpublished", base_footprint_diameter_m=None))))
-    # The standard pedestal clears a 0.3 m square: a 0.2 m base fits; a 0.6 m one or an unknown one is not known to.
+        _model("unpublished", base_footprint_diameter_m=None),
+        _model("path_checked", recipe_id=FRANKA_RECIPE, base_footprint_diameter_m=None)),
+        recipe_ids={FRANKA_RECIPE})))
+    # The standard pedestal clears a 0.3 m square: a 0.2 m base fits; a 0.6 m one or an unknown one is not
+    # known to, unless the path check itself stood that arm on the pedestal.
     assert {name: _check(row, "stance")["result"] for name, row in rows.items()} == {
-        "cobot": "pass", "industrial": "unknown", "unpublished": "unknown"}
+        "cobot": "pass", "industrial": "unknown", "unpublished": "unknown", "path_checked": "pass"}
     assert {name: row["verdict"] for name, row in rows.items()} == {
-        "cobot": "fits_spec", "industrial": "unknown", "unpublished": "unknown"}
+        "cobot": "fits_spec", "industrial": "unknown", "unpublished": "unknown", "path_checked": "unknown"}
     assert _check(rows["unpublished"], "stance")["reason"] == "no base footprint figure to compare with the cleared station"
+    assert _check(rows["path_checked"], "stance")["reason"] == "the path check stood this arm on the station's pedestal"
+    # No carry was recorded for the Franka here, so its reach, not its stance, leaves it unknown.
+    assert rows["path_checked"]["reasons"] == ["reach: the capability verdict did not try a carry with this arm"]
 
 
 def test_the_table_is_bound_to_its_inputs_and_its_digest_is_stable(tmp_path):
