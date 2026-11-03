@@ -1668,6 +1668,44 @@ def test_scene_budget_grant_runs_the_release_module_without_network_or_secrets(c
     assert not any(row[:2] == ["systemctl", "list-units"] for row in runner.calls)
 
 
+def test_owner_success_confirmation_runs_the_release_module_without_network_or_secrets(config: DoorConfig) -> None:
+    body = {"kind": "confirm-owner-success-contract", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner accepted $(touch x)", "apply": True, "apply_ack": "sha256:" + "c" * 64,
+            "ack": "confirm-owner-success-contract"}
+    request_id = _spooled(config, body)
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    [call] = [row for row in runner.calls if row[0] == "systemd-run"]
+    label = hashlib.sha256(body["intent_id"].encode()).hexdigest()[:12]
+    unit = f"blueprint-operator-door-owner-success-{label}-{request_id[-8:]}.service"
+    assert call[1] == f"--unit={unit}" and "--property=RuntimeMaxSec=5min" in call
+    for sandbox in ("ProtectSystem=strict", "PrivateTmp=yes", "NoNewPrivileges=yes", "ProtectHome=yes",
+                    "UMask=0077", "PrivateNetwork=yes"):
+        assert f"--property={sandbox}" in call, sandbox
+    hidden = next(value for value in call if value.startswith("--property=InaccessiblePaths="))
+    assert "-/etc/blueprint/provider-secrets" in hidden and "-/etc/blueprint-operator-door" in hidden
+    writable = next(value for value in call if value.startswith("--property=ReadWritePaths="))
+    assert writable.split("=", 2)[2].split() == ["/var/lib/blueprint/pipeline-control-plane",
+                                                str(Path(config.spool_root) / "results")]
+    assert "--setenv=DOOR_REQUESTED_BY=cloud" in call and "--setenv=DOOR_SERVICE_USER=blueprint" in call
+    assert f"--setenv=DOOR_OWNER_SUCCESS_REQUEST={json.dumps(body, sort_keys=True)}" in call
+    assert call[-1] == "/opt/blueprint/operator-door/door-confirm-owner-success-contract.sh"
+    assert not any(row[:2] == ["systemctl", "list-units"] for row in runner.calls)
+
+
+def test_owner_success_caller_name_is_rechecked_before_launch(config: DoorConfig) -> None:
+    body = {"kind": "confirm-owner-success-contract", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner approval", "apply": False, "apply_ack": "",
+            "ack": "confirm-owner-success-contract"}
+    request_id = enqueue(config, validate_request(body), requested_by="bad caller")
+    runner = FakeRunner()
+    process_spool(config, runner=runner)
+    assert not [row for row in runner.calls if row[0] == "systemd-run"]
+    assert _result(config, request_id)["code"] == "owner_success_caller_invalid"
+
+
 def test_scene_budget_caller_name_is_rechecked_before_launch(config: DoorConfig) -> None:
     body = {"kind": "extend-scene-execution-budget", "intent_id": "scene-" + "a" * 64,
             "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",

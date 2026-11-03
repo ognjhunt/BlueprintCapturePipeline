@@ -53,6 +53,15 @@ budget = {"kind":"extend-scene-execution-budget", "intent_id":"scene-"+"a"*64, "
 assert r.validate_request(budget) == budget
 applied = {**budget, "apply":True, "apply_ack":"sha256:"+"c"*64}
 assert r.validate_request(applied) == applied
+# The owner's success-threshold confirmation is not in this profile: adding it needs the owner's sign-off.
+owner_success = {"kind":"confirm-owner-success-contract", "intent_id":"scene-"+"a"*64, "owner_user_id":"owner-uid",
+          "owner_organization_id":"user:owner-uid", "approved_by":"owner-uid", "approval_evidence":"owner approval fixture",
+          "apply":False, "apply_ack":"", "ack":"confirm-owner-success-contract"}
+for check in (lambda: r.required_scope("confirm-owner-success-contract"), lambda: r.validate_request(owner_success),
+              lambda: r.validate_request_id("20261103T000000Z-confirm-owner-success-contract-0123abcd")):
+    try: check()
+    except r.RequestRefused as e: assert e.code in {"kind_unknown", "request_id_invalid"}, e.code
+    else: raise AssertionError("owner success confirmation admitted through restricted profile")
 assert r.required_scope("public-embodiment-preparation") == "operate"
 assert r.validate_request_id("20261029T000000Z-public-embodiment-preparation-0123abcd")
 commit = "a" * 40
