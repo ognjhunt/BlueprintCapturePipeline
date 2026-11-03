@@ -50,7 +50,13 @@ ReadWritePaths=-/var/lib/blueprint/task-evaluation-inputs/scene-configuration-to
 Environment=BLUEPRINT_SCENE_CONFIGURATION_TOOLCHAIN_ARCHIVE_CACHE_ROOT=/var/lib/blueprint/task-evaluation-inputs/scene-configuration-toolchain-archives
 TasksMax=512
 LimitNOFILE=8192
-MemoryMax=8G
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. Batch job, retried: +200, so it goes
+# before the always-on services, paid work and the money-safety units.
+# Measured: up to 4.2G on the host, mostly the bundle build's page cache.
+MemoryHigh=4G
+MemoryMax=5G
+OOMScoreAdjust=200
 CPUQuota=200%
 # The worker gives its preparation command four hours; systemd allows a little
 # more so the worker, not a kill, records the outcome. On 2026-10-31 a
