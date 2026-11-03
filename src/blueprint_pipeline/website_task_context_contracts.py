@@ -351,3 +351,36 @@ def retains_geometry_only_fit(handoff: Mapping[str, Any], task_context: Mapping[
             and GEOMETRY_ONLY_BLOCKER in (handoff.get("blockers") or [])
             and handoff.get("visual_reconstruction_ready") is True and handoff.get("simulator_ready") is False
             and not any(key in handoff for key in ("source_registration", "website_intake_outbox", "runtime_inputs")))
+
+
+#: A website job no robot the screening catalog runs can do in its room (``website_robot_fit_precheck``).
+ROBOT_FIT_HOLD_PREFIX = "website_robot_fit_none:"
+_ROBOT_FIT_HOLD = re.compile(re.escape(ROBOT_FIT_HOLD_PREFIX) + r"[a-z][a-z0-9_]{0,99}")
+
+
+def retains_robot_fit_hold(handoff: Mapping[str, Any], task_context: Mapping[str, Any]) -> bool:
+    """A completed scene-preparation stage held before any spend because no catalog robot fits the task.
+
+    The robot fit precheck refused every candidate by a refusal the late checks also make, so the
+    handoff registered and enqueued nothing: no ARTISAN authoring and no GPU follow. The stage is
+    accepted, as a hold rather than a failure, and is never retried by redelivery; a change of the
+    screening catalog or the team registry runs it again (``website_robot_fit_hold``). An abstained
+    capability verdict beside it keeps its own blockers, ahead of the hold's.
+    """
+    if not isinstance(handoff, Mapping) or not isinstance(task_context, Mapping):
+        return False
+    precheck = handoff.get("robot_fit_precheck")
+    verdict = handoff.get("capability_verdict")
+    hold = precheck.get("hold_reason") if isinstance(precheck, Mapping) else None
+    earlier = (list(verdict.get("blockers") or []) if isinstance(verdict, Mapping)
+               and verdict.get("status") == "abstained" else [])
+    return (isinstance(hold, str) and _ROBOT_FIT_HOLD.fullmatch(hold) is not None
+            and precheck.get("status") == "no_fit"
+            and isinstance(precheck.get("digest"), str) and isinstance(precheck.get("path"), str)
+            and handoff.get("schema_version") == "website_scene_handoff.v1"
+            and handoff.get("digest") == canonical_digest(handoff, digest_field="digest")
+            and all(handoff.get(key) == task_context.get(key) for key in ("scene_id", "capture_id"))
+            and handoff.get("status") == "needs_input" and handoff.get("blockers") == earlier + [hold]
+            and handoff.get("visual_reconstruction_ready") is True and handoff.get("simulator_ready") is False
+            and isinstance(handoff.get("runtime_inputs"), Mapping)
+            and not any(key in handoff for key in ("source_registration", "website_intake_outbox")))

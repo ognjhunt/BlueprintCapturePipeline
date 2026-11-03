@@ -412,6 +412,37 @@ def test_status_v5_carries_the_jobs_robot_fit_table_and_older_versions_do_not(pr
         == status_reader.STATUS_V5
 
 
+def test_status_v6_carries_the_robot_fit_precheck_and_its_hold_and_v5_does_not(prepared_source):
+    from blueprint_pipeline.website_robot_fit_precheck import HOLD_PREFIX
+    from tests.test_website_robot_fit_precheck import write_precheck
+
+    root, owner, context, selected, ledger, _ = prepared_source
+    value = {"schema_version": "website_robot_fit_precheck.v1", "status": "no_fit",
+             "hold_reason": HOLD_PREFIX + "reach", "task_kind": "rigid_pick_place",
+             "counts": {"fit": 0, "no_fit": 8, "unknown": 0, "unavailable": 128},
+             "embodiments": {"droid_franka_panda_robotiq_2f85_v1": {
+                 "embodiment": "droid_franka_panda_robotiq_2f85_v1", "verdict": "no_fit", "reasons": ["reach"]}},
+             "candidates": [{"candidate_id": "pi05_droid", "embodiment": "droid_franka_panda_robotiq_2f85_v1",
+                             "verdict": "no_fit", "causes": ["reach"], "blockers": ["reach"]}],
+             "physical_world_truth_claimed": False}
+    write_precheck(root, value, context=context["context_digest"])
+    v6 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                              schema_version=status_reader.STATUS_V6)
+    assert v6["robot_fit_precheck"]["status"] == "no_fit"
+    assert v6["robot_fit_precheck"]["hold_reason"] == HOLD_PREFIX + "reach"
+    assert v6["status_digest"] == cross_runtime_canonical_digest(
+        {key: item for key, item in v6.items() if key != "status_digest"})
+    assert len(json.dumps(v6)) < 8192 and "robot_fit" in v6
+    v5 = status_reader.read_preparation_status(capture_root=root, selectors=selected,
+                                              schema_version=status_reader.STATUS_V5)
+    assert "robot_fit_precheck" not in v5 and v5["state"] == v6["state"]
+    acceptance = {"schema_version": "website_preparation_status_acceptance.v6", **selected, "accepted": True,
+                  "state": v6["state"], "status_digest": v6["status_digest"], "native_execution_complete": False,
+                  "correlation_id": "bp-prep-" + v6["status_digest"][7:23]}
+    assert status_reader.accepted_status_version(status_reader.validate_acceptance(acceptance, selected)) \
+        == status_reader.STATUS_V6
+
+
 @pytest.mark.parametrize("fault", ["digest", "source", "context", "family", "description", "code",
                                   "disposition", "simulator_ready", "runtime_inputs", "missing_output_commit"])
 def test_completed_native_gap_requires_exact_current_binding_and_output_commit(prepared_source, fault):

@@ -263,15 +263,13 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     credentials = []
     # Credential presence is intentionally not guessed from a public endpoint.
     # Hosted policies need a separately configured private delivery lane.
-    from .beta_policy_screening_g1 import CANDIDATES as G1_LANE_CANDIDATES
-    from .beta_policy_screening_gpu import gpu_infeasible_blockers
+    from .beta_policy_screening_gpu import candidate_gpu_blockers
     for configured in catalog["candidates"]:
         key = configured["candidate_id"]
         if key in infeasible:
             continue  # The plan shows its measured reason; nothing is prepared or quoted.
         # Every candidate but G1's (its own lane, fixed floor) rents on the policy canary session lane.
-        unrentable = ([] if key in G1_LANE_CANDIDATES or configured["eligibility"]["enabled"] is not True
-                      else gpu_infeasible_blockers(configured["runtime"]))
+        unrentable = candidate_gpu_blockers(configured)
         if unrentable:
             infeasible[key] = unrentable  # Listed with its reason, never funded: the budget goes on in plan order.
             continue

@@ -71,6 +71,8 @@ ROOM_MESH_HEADROOM_M = 2.05
 #: walls' top), so a low or noisy ceiling never roofs every station.
 ROOM_MESH_CEILING_MARGIN_M = 0.25
 ROOM_MESH_RULE = "footprint_column_clear_of_room_mesh_floor_observed_and_unroofed"
+#: Points, or faces, converted at once while a collider's triangles are read (``_world_triangles``).
+POINT_BLOCK = 1 << 18
 
 
 def _scene_collision(plan: Mapping[str, Any], packet_dir: Path) -> tuple[Path, str, list[float]]:
@@ -101,34 +103,51 @@ def _transformed_points(points: Any, matrix: Any, offset: list[float]) -> Any:
 
     import numpy as np
 
-    p = np.asarray(points, dtype=np.float32).reshape(-1, 3).astype(np.float64)
+    single = np.asarray(points, dtype=np.float32).reshape(-1, 3)
     m = [[float(matrix[row][column]) for column in range(4)] for row in range(4)]
-    homogeneous = [p[:, 0] * m[0][column] + p[:, 1] * m[1][column] + p[:, 2] * m[2][column] + m[3][column]
-                   for column in range(4)]
-    w = homogeneous[3]
-    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
-        inverse = np.where(w != 0.0, 1.0 / np.where(w != 0.0, w, 1.0), 1.0)
-        projected = np.stack([inverse * homogeneous[axis] for axis in range(3)], axis=1)
-    return projected + np.asarray(offset[:3], dtype=np.float64)
+    shift = np.asarray(offset[:3], dtype=np.float64)
+    world = np.empty((len(single), 3))
+    # A block of points at a time (the same arithmetic per point): a scanned room's millions of points
+    # never hold their double-precision temporaries all at once.
+    for start in range(0, len(single), POINT_BLOCK):
+        p = single[start:start + POINT_BLOCK].astype(np.float64)
+        homogeneous = [p[:, 0] * m[0][column] + p[:, 1] * m[1][column] + p[:, 2] * m[2][column] + m[3][column]
+                       for column in range(4)]
+        w = homogeneous[3]
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            inverse = np.where(w != 0.0, 1.0 / np.where(w != 0.0, w, 1.0), 1.0)
+            projected = np.stack([inverse * homogeneous[axis] for axis in range(3)], axis=1)
+        world[start:start + len(p)] = projected + shift
+    return world
 
 
 def _fan_triangles(counts: Any, indices: Any, first: int) -> Any:
-    """Each face's fan ``(i0, ik, ik+1)``, in face order, offset by ``first``; None for negative counts."""
+    """Each face's fan ``(i0, ik, ik+1)``, in face order, offset by ``first``; None for negative counts.
+
+    Built a block of faces at a time into one array, with the same values as all at once.
+    """
 
     import numpy as np
 
     sizes = np.asarray(counts, dtype=np.int64).reshape(-1)
     if (sizes < 0).any():
         return None
-    order = np.asarray(indices, dtype=np.int64).reshape(-1)
+    order = np.asarray(indices).reshape(-1)
     starts = np.cumsum(sizes) - sizes
     fans = np.maximum(sizes - 2, 0)
-    face = np.repeat(np.arange(len(sizes)), fans)
-    k = np.arange(int(fans.sum()), dtype=np.int64) - np.repeat(np.cumsum(fans) - fans, fans) + 1
-    corner = starts[face]
-    if len(corner) and int((corner + k + 1).max()) >= len(order):
-        raise IndexError("face vertex index out of range")
-    return np.stack([order[corner], order[corner + k], order[corner + k + 1]], axis=1) + first
+    fan_first = np.cumsum(fans) - fans
+    triangles = np.empty((int(fans.sum()), 3), dtype=np.int64)
+    for begin in range(0, len(sizes), POINT_BLOCK):
+        block = fans[begin:begin + POINT_BLOCK]
+        face = np.repeat(np.arange(begin, begin + len(block)), block)
+        k = np.arange(int(block.sum()), dtype=np.int64) - np.repeat(np.cumsum(block) - block, block) + 1
+        corner = starts[face]
+        if len(corner) and int((corner + k + 1).max()) >= len(order):
+            raise IndexError("face vertex index out of range")
+        rows = np.stack([order[corner], order[corner + k], order[corner + k + 1]], axis=1).astype(np.int64)
+        offset = int(fan_first[begin]) if len(block) else 0
+        triangles[offset:offset + len(rows)] = rows + first
+    return triangles
 
 
 def _world_triangles(path: Path, offset: list[float], meshes: list[tuple[str, int]] | None = None, *,
@@ -178,7 +197,9 @@ def _world_triangles(path: Path, offset: list[float], meshes: list[tuple[str, in
         first += len(points)
     if not faces or not sum(len(rows) for rows in faces):
         raise TeamEmbodimentError(["team_embodiment_scene_collision_unavailable"])
-    return np.concatenate(vertices).astype(float), np.concatenate(faces).astype(np.int64)
+    # One mesh (a scanned room) is returned as built: no concatenated or converted copy of it.
+    return ((vertices[0] if len(vertices) == 1 else np.concatenate(vertices)).astype(float, copy=False),
+            (faces[0] if len(faces) == 1 else np.concatenate(faces)).astype(np.int64, copy=False))
 
 
 def _strikes(points: Any, *, base: Any, yaw: float, root: float, footprint: list[float],
@@ -252,7 +273,7 @@ class _PlanBroadPhase:
 
 def _room_mesh_occupancy(vertices: Any, faces: Any, meshes: list[tuple[str, int]], *, floor_z: float,
                          tolerance: float, column_top_m: float, centre: list[float], subject_top_z: float,
-                         reach_m: float) -> dict[str, Any] | None:
+                         reach_m: float, measures: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     """The collision meshes that are the room itself, and their geometry around the search; None for none.
 
     The obstacle-box index (``UsdSceneSpatialIndex.obstacle_boxes``) sees a scanned room as one box that is
@@ -267,18 +288,21 @@ def _room_mesh_occupancy(vertices: Any, faces: Any, meshes: list[tuple[str, int]
     headroom (``ROOM_MESH_HEADROOM_M``, kept ``ROOM_MESH_CEILING_MARGIN_M`` below the room's top: the height
     under which 99% of its non-floor area ends, so a floater above a low ceiling cannot lift it) are the
     roofs a footprint must not stand wholly under, measured at each point beneath them.
+
+    Every triangle is measured in blocks (``triangle_measures``, or ``measures`` already taken of these
+    ones) and only the ones kept are gathered, so a scanned room's millions of triangles are never held
+    as corners at once: the same values, in bounded memory.
     """
 
     import numpy as np
 
-    triangles = vertices[faces]
-    cross = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
-    double_area = np.linalg.norm(cross, axis=1)
-    valid = np.isfinite(double_area) & (double_area > 1e-12)
-    normal_z = np.divide(np.abs(cross[:, 2]), double_area, out=np.zeros_like(double_area), where=valid)
-    lowest, highest = triangles[:, :, 2].min(axis=1), triangles[:, :, 2].max(axis=1)
+    from .external_scene_robot_placement import TRIANGLE_BLOCK, triangle_measures, triangles_of
+
+    measures = triangle_measures(vertices, faces) if measures is None else measures
+    double_area, valid, normal_z = measures["double_area"], measures["valid"], measures["normal_z"]
+    lowest, highest = measures["lowest_z"], measures["highest_z"]
     # The floor band exactly as the external placement probe excludes it from its obstacles.
-    floor = valid & (normal_z >= 0.9) & (np.abs(triangles[:, :, 2].mean(axis=1) - floor_z) <= tolerance)
+    floor = valid & (normal_z >= 0.9) & (np.abs(measures["centroid_z"] - floor_z) <= tolerance)
     rising = ~floor & (highest >= floor_z + ROOM_MESH_FLOOR_CLEARANCE_M)
     owner = np.repeat(np.arange(len(meshes)), [count for _, count in meshes])
     area = np.bincount(owner[floor], weights=double_area[floor], minlength=len(meshes))
@@ -286,23 +310,33 @@ def _room_mesh_occupancy(vertices: Any, faces: Any, meshes: list[tuple[str, int]
     room = rises & (area >= ROOM_MESH_FLOOR_SHARE * area.sum()) & (area > 0.0)
     first = np.cumsum([count for _, count in meshes]) - [count for _, count in meshes]
     for index in np.flatnonzero(room):
-        points = triangles[first[index]:first[index] + meshes[index][1]].reshape(-1, 3)
-        low, high = points.min(axis=0), points.max(axis=0)
+        low, high = np.full(3, np.inf), np.full(3, -np.inf)
+        for start in range(first[index], first[index] + meshes[index][1], TRIANGLE_BLOCK):
+            points = triangles_of(vertices, faces, slice(start, min(start + TRIANGLE_BLOCK,
+                                                                     first[index] + meshes[index][1]))).reshape(-1, 3)
+            low, high = np.minimum(low, points.min(axis=0)), np.maximum(high, points.max(axis=0))
         room[index] = bool((low[:2] <= centre[:2]).all() and (high[:2] >= centre[:2]).all()
                            and high[2] > subject_top_z)
     if not room.any():
         return None
 
-    def near(rows: Any) -> Any:
-        low, high = rows[:, :, :2].min(axis=1), rows[:, :, :2].max(axis=1)
-        return (high >= np.subtract(centre, reach_m)).all(axis=1) & (low <= np.add(centre, reach_m)).all(axis=1)
+    def near(mask: Any) -> Any:
+        # The masked triangles whose plan bounds reach the search, gathered a block at a time.
+        index = np.flatnonzero(mask)
+        kept = np.zeros(len(index), dtype=bool)
+        for start in range(0, len(index), TRIANGLE_BLOCK):
+            rows = triangles_of(vertices, faces, index[start:start + TRIANGLE_BLOCK])
+            low, high = rows[:, :, :2].min(axis=1), rows[:, :, :2].max(axis=1)
+            kept[start:start + TRIANGLE_BLOCK] = ((high >= np.subtract(centre, reach_m)).all(axis=1)
+                                                  & (low <= np.add(centre, reach_m)).all(axis=1))
+        mask = mask.copy()
+        mask[index] = kept
+        return mask
 
-    column = room[owner] & rising & (lowest <= floor_z + column_top_m)
-    column[column] = near(triangles[column])
+    column = near(room[owner] & rising & (lowest <= floor_z + column_top_m))
     # The floor observed under a footprint: the floor band, and any triangle lying wholly within the floor's
     # height band (a scanned floor's noise tilts its small triangles past the horizontal test).
-    ground = floor | ((lowest >= floor_z - tolerance) & (highest <= floor_z + tolerance))
-    ground[ground] = near(triangles[ground])
+    ground = near(floor | ((lowest >= floor_z - tolerance) & (highest <= floor_z + tolerance)))
     upper = room[owner] & ~floor & valid
     order = np.argsort(highest[upper], kind="stable")
     ends, weights = highest[upper][order], np.cumsum(double_area[upper][order])
@@ -311,13 +345,13 @@ def _room_mesh_occupancy(vertices: Any, faces: Any, meshes: list[tuple[str, int]
     # Plan-degenerate (vertical) triangles cover no point; a roof is what a footprint stands under. A triangle
     # reaching into the band is kept whole and measured at each point (``_roofed``): a sloped ceiling roofs
     # only where its surface is below the headroom, however it is tessellated.
-    roof = (room[owner] & rising & (np.abs(cross[:, 2]) > 1e-12) & (highest > floor_z + column_top_m)
-            & (lowest <= floor_z + roof_top))
-    roof[roof] = near(triangles[roof])
+    roof = near(room[owner] & rising & (np.abs(measures["cross_z"]) > 1e-12) & (highest > floor_z + column_top_m)
+                & (lowest <= floor_z + roof_top))
     return {"prims": [meshes[index][0] for index in np.flatnonzero(room)],
-            "obstacles": _PlanBroadPhase(triangles[column, :, :2]), "obstacle_triangles": int(column.sum()),
-            "floor": _PlanBroadPhase(triangles[ground]), "floor_triangles": int(ground.sum()),
-            "roof": _PlanBroadPhase(triangles[roof]) if roof.any() else None,
+            "obstacles": _PlanBroadPhase(np.ascontiguousarray(triangles_of(vertices, faces, column)[:, :, :2])),
+            "obstacle_triangles": int(column.sum()),
+            "floor": _PlanBroadPhase(triangles_of(vertices, faces, ground)), "floor_triangles": int(ground.sum()),
+            "roof": _PlanBroadPhase(triangles_of(vertices, faces, roof)) if roof.any() else None,
             "roof_band_z": (floor_z + column_top_m, floor_z + roof_top),
             "roof_triangles": int(roof.sum()), "roof_top_above_floor_m": float(roof_top)}
 
@@ -418,6 +452,7 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
     from .external_scene_robot_placement import (
         ExternalSceneRobotPlacementError,
         _infer_horizontal_support_surface,
+        triangle_measures,
     )
     from .scene_placement.types import SceneObject
     from .scene_placement.usd_index import UsdSceneSpatialIndex
@@ -430,8 +465,11 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
     stage = Usd.Stage.Open(str(opened))
     meshes: list[tuple[str, int]] = []
     vertices, faces = _world_triangles(opened, offset, meshes, stage=stage)
+    # Measured once, in blocks, for the floor and the room mesh alike (``triangle_measures``).
+    measures = triangle_measures(vertices, faces)
     try:
-        floor_z, _, floor_fit = _infer_horizontal_support_surface(stage_vertices=vertices, faces=faces)
+        floor_z, _, floor_fit = _infer_horizontal_support_surface(stage_vertices=vertices, faces=faces,
+                                                                  measures=measures, return_support_triangles=False)
     except ExternalSceneRobotPlacementError as exc:
         raise TeamEmbodimentError(["team_embodiment_scene_floor_not_found"]) from exc
     root = float(root_height_m) if root_height_m is not None else float(root_world_z_m) - float(floor_z)
@@ -452,7 +490,8 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
         vertices, faces, meshes, floor_z=float(floor_z), tolerance=tolerance,
         column_top_m=column_top, centre=start[:2], subject_top_z=float(subject_maximum[2]),
         reach_m=SEARCH_RADIUS_M + math.hypot(*(float(v) + clearance_m for v in footprint_half_extent_m[:2]))
-        + GRID_STEP_M)
+        + GRID_STEP_M, measures=measures)
+    del measures
     source = ({"usd_path": str(opened)} if room is None else {"stage": _stage_without(opened, room["prims"])})
     obstacles = [replace(box, bbox_min=shifted(box.bbox_min), bbox_max=shifted(box.bbox_max),
                          centroid=shifted(box.centroid))

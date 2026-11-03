@@ -337,6 +337,27 @@ def _frames(joints: np.ndarray) -> np.ndarray:
     return frames
 
 
+def grasp_reach_bound(robot_id: str) -> tuple[float, float]:
+    """The arm's shoulder height above its base origin, and how far its grasp point can ever be from it.
+
+    In the modified DH chain ``_frames`` walks, joint i moves the next frame's origin by ``a`` along the
+    previous x axis and ``d`` along its own z axis, which are perpendicular: ``hypot(a, d)`` whatever the
+    joint values. The first two origins lie on the base's z axis at ``d1`` (the shoulder), so the grasp
+    point, past the flange offset, is never farther from it than the sum of the remaining steps. A
+    triangle-inequality bound: a pose ``rigid_pick_place_clearance`` reaches is always within it, so a
+    point beyond it from every station is beyond the carry gate's reach on any scene.
+    """
+    _, grasp_point = _arm_model(robot_id)
+    rows = [tuple(float(v) for v in row) for row in FRANKA_MODIFIED_DH]
+    if rows[0][0] != 0.0 or rows[0][2] != 0.0 or rows[1][:2] != (0.0, 0.0):
+        raise RobotArmPathClearanceError("robot_arm_reach_bound_chain_unsupported")
+    gx, gy, gz = (float(v) for v in grasp_point)
+    steps = [math.hypot(a, d) for a, d, _ in rows[2:-1]]
+    last_a, last_d, _ = rows[-1]
+    steps.append(math.hypot(last_a, last_d + FRANKA_FLANGE_OFFSET_M + gz) + math.hypot(gx, gy))
+    return rows[0][1], math.fsum(steps)
+
+
 def _rotation_vector(rotation: np.ndarray) -> np.ndarray:
     """A rotation matrix's axis times its angle."""
     cos = max(-1.0, min(1.0, (float(np.trace(rotation)) - 1.0) / 2.0))

@@ -36,9 +36,39 @@ def _load(path: Path, root: Path, digest_field: str) -> dict[str, Any]:
     return value
 
 
+def _robot_fit_hold(root: Path, handoff: dict[str, Any], task_context_digest: str) -> dict[str, Any] | None:
+    """A verified robot fit hold (``website_robot_fit_precheck``), as status v6 reads it; else None.
+
+    v3 to v5 readers never see it: their outcome vocabulary is closed (the WebApp parses it strictly),
+    and a hold is not the carry refusal or the missing evidence those name.
+    """
+    from .website_robot_fit_precheck import SCHEMA
+    from .website_task_context_contracts import retains_robot_fit_hold
+
+    if not retains_robot_fit_hold(handoff, {"capture_id": root.name, "scene_id": root.parent.parent.name}):
+        return None
+    reference = handoff["robot_fit_precheck"]
+    preparation = _load(Path(handoff["preparation_path"]), root, "digest")
+    precheck = _load(Path(reference["path"]), root, "precheck_digest")
+    if (preparation.get("binding", {}).get("task_context_digest") != task_context_digest
+            or handoff.get("preparation_digest") != preparation["digest"]
+            or precheck.get("schema_version") != SCHEMA or precheck.get("preparation_digest") != preparation["digest"]
+            or precheck["precheck_digest"] != reference["digest"] or precheck.get("status") != "no_fit"
+            or precheck.get("hold_reason") != reference["hold_reason"]
+            or precheck.get("physical_world_truth_claimed") is not False):
+        raise ValueError("preparation_outcome_robot_fit_binding_invalid")
+    return {"category": "robot_incompatibility", "reason": "robot_fit_none",
+            "basis": "conservative_pre_spend_fit_check", "robot_id": None,
+            "evidence_digest": precheck["precheck_digest"]}
+
+
 def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
-                             state: str) -> dict[str, Any] | None:
-    """Only a current stopped attempt may project a verified retained finding."""
+                             state: str, robot_fit_hold: bool = False) -> dict[str, Any] | None:
+    """Only a current stopped attempt may project a verified retained finding.
+
+    ``robot_fit_hold`` (status v6) also projects a job held before spend because no robot the
+    screening catalog runs fits its task (``_robot_fit_hold``).
+    """
     if state not in {"awaiting_inputs", "failed_retryable", "failed_terminal"}:
         return None
     root = capture_root.absolute()
@@ -56,6 +86,10 @@ def read_preparation_outcome(*, capture_root: Path, task_context_digest: str,
     if retains_rejected_selection(handoff, context) or retains_observed_room_limit(handoff, context):
         return {"category": "insufficient_evidence", "reason": "task_evidence_incomplete",
                 "basis": "missing_evidence", "robot_id": None, "evidence_digest": handoff["digest"]}
+    if robot_fit_hold:
+        held = _robot_fit_hold(root, handoff, task_context_digest)
+        if held is not None:
+            return held
     ref = handoff.get("capability_verdict")
     if isinstance(ref, dict) and ref.get("status") == "abstained":
         from .robot_arm_path_clearance import ROBOT_PROFILE_ARMS
