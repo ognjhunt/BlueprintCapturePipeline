@@ -2,13 +2,280 @@
 
 These are estimated collider contacts, never measurements. A surface's AABB
 alone cannot show that it supports the task object: gaps and table edges matter.
+
+A support lookup reads the collider as ``Trimesh.merge_vertices`` leaves it, in
+bounded memory (``MergedCollider``): the merge is worked out once per collider,
+triangles are read a block of faces at a time, and face adjacency is found only
+among the faces a lookup could connect. A whole-mesh copy, merge and
+``face_adjacency`` per lookup took a website preparation past 4.8 GB at
+production density (6.5 M triangles) on an 8.3 GB host with no swap (#3339).
 """
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, NamedTuple, Sequence
+import weakref
+from typing import Any, Iterator, Mapping, NamedTuple, Sequence
 
 import numpy as np
+
+#: Faces read at a time when a lookup scans the collider: one block's triangles are 19 MB of
+#: float64, as #3330 bounds its ray casts (``RAY_PLANE_BLOCK``).
+SUPPORT_FACE_BLOCK = 1 << 18
+#: Vertices merged at a time: equal positions always fall in the same bucket.
+MERGE_BUCKET_VERTICES = 1 << 19
+_BUCKET_MIX = np.array([0x9E3779B97F4A7C15, 0xC2B2AE3D27D4EB4F, 0x165667B19E3779F9,
+                        0xD6E8FEB86659FD93, 0xFF51AFD7ED558CCD], dtype=np.uint64)
+
+
+def _row_blocks(count: int) -> Iterator[slice]:
+    """Slices of at most ``SUPPORT_FACE_BLOCK`` rows (one more at the end), never one row unless ``count`` is 1.
+
+    numpy computes a lone (1, 3) row's ``@`` with another BLAS routine than a block's, which
+    can differ in the last bit; in a block of two or more rows each row gets exactly the value
+    it gets in the whole array.
+    """
+    size, start = max(2, SUPPORT_FACE_BLOCK), 0
+    while start < count:
+        stop = min(count, start + size)
+        if count - stop == 1:
+            stop = count
+        yield slice(start, stop)
+        start = stop
+
+
+def _joined(parts: list[np.ndarray], dtype: Any = np.int64) -> np.ndarray:
+    return np.concatenate(parts) if parts else np.zeros(0, dtype=dtype)
+
+
+class _MergedRead:
+    """What ``Trimesh.merge_vertices`` would make of one collider, worked out once.
+
+    ``representative[v]`` is the vertex ``v`` merges into: the first referenced vertex
+    with the same rounded position (and UV, on a textured mesh), the one
+    ``merge_vertices`` keeps. Each upright frame (``up``, flipped or not) also keeps
+    its faces within 60 degrees of level, their centres, and those within 5 degrees.
+    """
+
+    def __init__(self, mesh: Any):
+        from trimesh import tol, util
+
+        vertices, faces = _arrays(mesh)
+        count = len(vertices)
+        referenced = np.ones(count, dtype=bool)
+        if len(faces):
+            referenced[:] = False
+            for block in _row_blocks(len(faces)):
+                referenced[faces[block]] = True
+        visual = getattr(mesh, "visual", None)
+        uv = None
+        if (visual is not None and visual.defined and visual.kind == "texture"
+                and visual.uv is not None and len(visual.uv) == count):
+            uv = np.asarray(visual.uv)
+        digits = util.decimal_to_digits(tol.merge)
+
+        def keys(index: Any) -> np.ndarray:
+            stacked = [vertices[index] * (10 ** digits)]
+            if uv is not None:
+                stacked.append(uv[index] * (10 ** 4))
+            return np.column_stack(stacked).round().astype(np.int64)
+
+        self.representative = np.arange(count, dtype=np.int64)
+        buckets = max(1, -(-int(np.count_nonzero(referenced)) // MERGE_BUCKET_VERTICES))
+        if buckets > 1:
+            bucket = np.zeros(count, dtype=np.int32)
+            for block in _row_blocks(count):
+                rows = keys(block).view(np.uint64)
+                mixed = (rows * _BUCKET_MIX[:rows.shape[1]]).sum(axis=1, dtype=np.uint64)
+                bucket[block] = (mixed % np.uint64(buckets)).astype(np.int32)
+        for index in range(buckets):
+            members = np.flatnonzero(referenced & (bucket == index)) if buckets > 1 else np.flatnonzero(referenced)
+            if len(members):
+                _, first, inverse = np.unique(keys(members), axis=0, return_index=True, return_inverse=True)
+                self.representative[members] = members[first[inverse.reshape(-1)]]
+        self.frames: dict[tuple[int, bool], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+
+def _arrays(mesh: Any) -> tuple[np.ndarray, np.ndarray]:
+    return (np.asarray(mesh.vertices, dtype=np.float64).view(np.ndarray),
+            np.asarray(mesh.faces, dtype=np.int64).view(np.ndarray).reshape(-1, 3))
+
+
+def _reflection(axis: int) -> np.ndarray:
+    matrix = np.eye(4)
+    matrix[axis, axis] = -1
+    return matrix
+
+
+def _reflected(points: np.ndarray, reflection: np.ndarray) -> np.ndarray:
+    """(n, 3, 3) corners moved as ``Trimesh.apply_transform`` moves vertices."""
+    from trimesh.transformations import transform_points
+
+    return transform_points(points.reshape(-1, 3), reflection).reshape(-1, 3, 3)
+
+
+def triangle_blocks(mesh: Any, *, reflect: int | None = None) -> Iterator[tuple[slice, np.ndarray]]:
+    """``mesh.triangles`` a block of faces at a time, as ``(faces, triangles)``, never cached on ``mesh``.
+
+    With ``reflect`` (an axis), those of ``mesh.copy().apply_transform(...)`` reflecting that
+    axis: the axis negated and every face's winding reversed, as trimesh moves them.
+    """
+    vertices, faces = _arrays(mesh)
+    reflection = None if reflect is None else _reflection(reflect)
+    for block in _row_blocks(len(faces)):
+        if reflection is None:
+            yield block, vertices[faces[block]]
+        else:
+            yield block, _reflected(vertices[faces[block][:, ::-1]], reflection)
+
+
+#: One merged read per live collider, dropped with it (id -> (weak reference, data stamp, read)).
+_MERGED_READS: dict[int, tuple[Any, Any, _MergedRead]] = {}
+
+
+def _merged_read(mesh: Any) -> _MergedRead:
+    """The collider's merged read: computed on its first lookup, reused until its data changes."""
+    visual = getattr(mesh, "visual", None)
+    try:
+        stamp = (hash(mesh), hash(visual) if getattr(visual, "kind", None) == "texture" else None)
+    except TypeError:
+        return _MergedRead(mesh)
+    key = id(mesh)
+    entry = _MERGED_READS.get(key)
+    if entry is not None and entry[0]() is mesh and entry[1] == stamp:
+        return entry[2]
+    read = _MergedRead(mesh)
+    try:
+        reference = weakref.ref(mesh, lambda _, key=key: _MERGED_READS.pop(key, None))
+    except TypeError:
+        return read
+    _MERGED_READS[key] = (reference, stamp, read)
+    return read
+
+
+class MergedCollider:
+    """A collider as support_under reads it, in an upright frame, without copying it.
+
+    The same triangles, face normals and face adjacency as ``mesh.copy()`` with
+    ``merge_vertices()`` (and, ``flipped``, the reflection of ``up`` applied first),
+    read a block of faces at a time.
+    """
+
+    def __init__(self, mesh: Any, *, up: int, flipped: bool = False):
+        self.vertices, self.faces = _arrays(mesh)
+        self.up, self.flipped = up, flipped
+        read = _merged_read(mesh)
+        self.representative = read.representative
+        self.reflection = _reflection(up) if flipped else None
+        if (up, flipped) not in read.frames:
+            read.frames[(up, flipped)] = self._frame()
+        self.gentle, self.centres, self.level = read.frames[(up, flipped)]
+
+    def corners(self, faces: Any) -> np.ndarray:
+        """Merged vertex indices of ``faces`` in this frame's winding (a reflection reverses it)."""
+        corners = self.representative[self.faces[faces]]
+        return np.ascontiguousarray(corners[:, ::-1]) if self.flipped else corners
+
+    def triangles(self, faces: Any) -> np.ndarray:
+        """``mesh.triangles`` of the merged, upright copy, for ``faces`` only."""
+        points = self.vertices[self.corners(faces)]
+        return points if self.reflection is None else _reflected(points, self.reflection)
+
+    def _frame(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        from trimesh import triangles as triangle_math
+
+        gentle, centres, level = [], [np.zeros((0, 3))], []
+        for block in _row_blocks(len(self.faces)):
+            triangles = self.triangles(block)
+            # mesh.face_normals: zero for a face with no area.
+            unit, valid = triangle_math.normals(triangles=triangles, crosses=triangle_math.cross(triangles))
+            normals = np.zeros((len(triangles), 3))
+            normals[valid] = unit
+            tilt = np.abs(normals[:, self.up])
+            keep = tilt >= np.cos(np.deg2rad(FITTED_MAX_FACE_TILT_DEGREES))
+            gentle.append(np.flatnonzero(keep) + block.start)
+            centres.append(triangles[keep].mean(axis=1))
+            level.append(np.flatnonzero(tilt >= np.cos(np.deg2rad(5))) + block.start)
+        return _joined(gentle), np.concatenate(centres), _joined(level)
+
+    def bounds(self, faces: np.ndarray) -> tuple[list[float], list[float]]:
+        """``triangles[faces].reshape(-1, 3)``'s minimum and maximum, a block of faces at a time.
+
+        Equal to one reduction over all of them, unless both signed zeros meet at an
+        extreme (which one a reduction keeps depends on its order): then read whole.
+        """
+        if len(faces) <= SUPPORT_FACE_BLOCK:
+            points = self.triangles(faces).reshape(-1, 3)
+            return points.min(axis=0).tolist(), points.max(axis=0).tolist()
+        lows, highs, signed = [], [], np.zeros((2, 3), dtype=bool)
+        for block in _row_blocks(len(faces)):
+            points = self.triangles(faces[block]).reshape(-1, 3)
+            lows.append(points.min(axis=0))
+            highs.append(points.max(axis=0))
+            zero, negative = points == 0, np.signbit(points)
+            signed[0] |= (zero & negative).any(axis=0)
+            signed[1] |= (zero & ~negative).any(axis=0)
+        low, high = np.min(lows, axis=0), np.max(highs, axis=0)
+        if (signed.all(axis=0) & ((low == 0) | (high == 0))).any():
+            points = self.triangles(faces).reshape(-1, 3)
+            return points.min(axis=0).tolist(), points.max(axis=0).tolist()
+        return low.tolist(), high.tolist()
+
+    def components(self, faces: np.ndarray) -> np.ndarray:
+        """Connected-component labels of ``faces`` (ascending indices) over shared edges.
+
+        Two faces are linked as ``Trimesh.face_adjacency`` links them: the merged
+        collider uses their common edge exactly twice, once by each. Labels number
+        the components in order of their first face.
+        """
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+
+        count = len(faces)
+        if not count:
+            return np.zeros(0, dtype=np.int32)
+        size = np.int64(len(self.vertices))
+        keys = _edge_keys(self.corners(faces), size)
+        order = np.argsort(keys)
+        ordered = keys[order]
+        del keys
+        starts = np.flatnonzero(np.r_[True, ordered[1:] != ordered[:-1]])
+        pairs = starts[np.diff(np.r_[starts, len(ordered)]) == 2]
+        first, second, shared = order[pairs] // 3, order[pairs + 1] // 3, ordered[pairs]
+        del order, ordered, starts
+        distinct = first != second
+        first, second, shared = first[distinct], second[distinct], shared[distinct]
+        alone = ~self._used_elsewhere(shared, faces, size)
+        graph = coo_matrix((np.ones(int(alone.sum())), (first[alone], second[alone])), shape=(count, count))
+        return connected_components(graph, directed=False)[1]
+
+    def _used_elsewhere(self, keys: np.ndarray, faces: np.ndarray, size: np.int64) -> np.ndarray:
+        """Whether a face of the collider outside ``faces`` also uses each edge in ``keys``."""
+        used = np.zeros(len(keys), dtype=bool)
+        if not len(keys):
+            return used
+        order = np.argsort(keys)
+        ordered = keys[order]
+        marked = np.zeros(len(self.vertices), dtype=bool)
+        marked[ordered // size] = True
+        marked[ordered % size] = True
+        member = np.zeros(len(self.faces), dtype=bool)
+        member[faces] = True
+        for block in _row_blocks(len(self.faces)):
+            corners = self.representative[self.faces[block]]
+            touching = (marked[corners].sum(axis=1) >= 2) & ~member[block]
+            if not touching.any():
+                continue
+            edges = _edge_keys(corners[touching], size)
+            position = np.minimum(np.searchsorted(ordered, edges), len(ordered) - 1)
+            found = ordered[position] == edges
+            used[order[position[found]]] = True
+        return used
+
+
+def _edge_keys(corners: np.ndarray, size: np.int64) -> np.ndarray:
+    """Each face's three edges (0-1, 1-2, 2-0), as ``low * size + high`` of their merged vertices."""
+    edges = corners[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    return np.minimum(edges[:, 0], edges[:, 1]) * size + np.maximum(edges[:, 0], edges[:, 1])
 
 
 def search_window_m(placement_residual_m: float | None) -> float:
@@ -34,6 +301,9 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
     within ``placement_residual_m`` (the registration's measured residual near
     the task) when that is larger: an estimate cannot place the bottom closer
     than its own fit (capture-447ae4f4: 7.2 cm, bottom 4 cm into the counter).
+
+    The collider is read as its merged copy would be (``MergedCollider``), never
+    copied: ``mesh`` is not changed.
     """
     window_m = search_window_m(placement_residual_m)
     lower, upper = np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)
@@ -41,85 +311,84 @@ def support_under(mesh: Any, lower: Sequence[float], upper: Sequence[float], *,
             or np.any(upper <= lower) or up not in {1, 2} or up_sign not in {-1, 1}
             or not np.isfinite(meters_per_unit) or meters_per_unit <= 0):
         raise ValueError("website_support_query_invalid")
-    mesh = mesh.copy()
     if up_sign == -1:
-        # Probe in an upright temporary frame; keep output in the source frame.
-        transform = np.eye(4)
-        transform[up, up] = -1
-        mesh.apply_transform(transform)
+        # Probe in an upright frame (the reflection of ``up``); keep output in the source frame.
         low, high = lower.copy(), upper.copy()
         low[up], high[up] = -upper[up], -lower[up]
-        result = support_under(mesh, low, high, up=up, meters_per_unit=meters_per_unit,
-                               placement_residual_m=placement_residual_m)
+        result = _support(MergedCollider(mesh, up=up, flipped=True), low, high, up=up,
+                          meters_per_unit=meters_per_unit, window_m=window_m)
         if result is not None:
             result["top_runtime_units"] *= -1
             result["aabb_min"][up], result["aabb_max"][up] = -result["aabb_max"][up], -result["aabb_min"][up]
         return result
-    mesh.merge_vertices()
-    result = (_level_face_support(mesh, lower, upper, up=up, meters_per_unit=meters_per_unit, window_m=window_m)
-              or _fitted_support(mesh, lower, upper, up=up, meters_per_unit=meters_per_unit, window_m=window_m))
+    return _support(MergedCollider(mesh, up=up), lower, upper, up=up, meters_per_unit=meters_per_unit,
+                    window_m=window_m)
+
+
+def _support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
+             meters_per_unit: float, window_m: float) -> dict[str, Any] | None:
+    result = (_level_face_support(collider, lower, upper, up=up, meters_per_unit=meters_per_unit, window_m=window_m)
+              or _fitted_support(collider, lower, upper, up=up, meters_per_unit=meters_per_unit, window_m=window_m))
     if result is not None:
         result.update(search_window_m=window_m, search_window_basis=(
             "registration_task_region_residual" if window_m > 0.03 else "default"))
     return result
 
 
-def _level_face_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
+def _level_face_support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
                         meters_per_unit: float, window_m: float = 0.03) -> dict[str, Any] | None:
     """Exact level faces (within 5 degrees) under every probe, coplanar and connected."""
     horizontal = [axis for axis in range(3) if axis != up]
-    triangles = np.asarray(mesh.triangles, dtype=float)
-    normals = np.asarray(mesh.face_normals)
-    eligible = np.flatnonzero(np.abs(normals[:, up]) >= np.cos(np.deg2rad(5)))
+    eligible = collider.level
     if not len(eligible):
         return None
-    projected = triangles[eligible][:, :, horizontal]
-    a, b, c = projected[:, 0], projected[:, 1], projected[:, 2]
-    e1, e2 = b - a, c - a
-    determinant = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
-    safe = np.abs(determinant) > 1e-12
     height_tolerance = window_m / meters_per_unit
     flat_tolerance = 0.005 / meters_per_unit
     probes = np.array([[x, y] for x in np.linspace(lower[horizontal[0]], upper[horizontal[0]], 3)
                        for y in np.linspace(lower[horizontal[1]], upper[horizontal[1]], 3)])
-    hits = []
-    for point in probes:
-        offset = point - a
-        u = np.divide(offset[:, 0] * e2[:, 1] - offset[:, 1] * e2[:, 0], determinant,
-                      out=np.zeros_like(determinant), where=safe)
-        v = np.divide(e1[:, 0] * offset[:, 1] - e1[:, 1] * offset[:, 0], determinant,
-                      out=np.zeros_like(determinant), where=safe)
-        heights = (triangles[eligible, 0, up] + u * (triangles[eligible, 1, up] - triangles[eligible, 0, up])
-                   + v * (triangles[eligible, 2, up] - triangles[eligible, 0, up]))
-        valid = (safe & (u >= -1e-7) & (v >= -1e-7) & (u + v <= 1 + 1e-7)
-                 & (np.abs(heights - lower[up]) <= height_tolerance))
-        candidates = np.flatnonzero(valid)
-        if not len(candidates):
-            return None
-        chosen = candidates[np.argmax(heights[candidates])]
-        hits.append((int(eligible[chosen]), float(heights[chosen])))
+    # The highest face under each probe, first by index among equals: a block of faces at a time.
+    hits: list[tuple[int, float] | None] = [None] * len(probes)
+    for block in _row_blocks(len(eligible)):
+        faces = eligible[block]
+        triangles = collider.triangles(faces)
+        projected = triangles[:, :, horizontal]
+        a, b, c = projected[:, 0], projected[:, 1], projected[:, 2]
+        e1, e2 = b - a, c - a
+        determinant = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
+        safe = np.abs(determinant) > 1e-12
+        for index, point in enumerate(probes):
+            offset = point - a
+            u = np.divide(offset[:, 0] * e2[:, 1] - offset[:, 1] * e2[:, 0], determinant,
+                          out=np.zeros_like(determinant), where=safe)
+            v = np.divide(e1[:, 0] * offset[:, 1] - e1[:, 1] * offset[:, 0], determinant,
+                          out=np.zeros_like(determinant), where=safe)
+            heights = (triangles[:, 0, up] + u * (triangles[:, 1, up] - triangles[:, 0, up])
+                       + v * (triangles[:, 2, up] - triangles[:, 0, up]))
+            valid = (safe & (u >= -1e-7) & (v >= -1e-7) & (u + v <= 1 + 1e-7)
+                     & (np.abs(heights - lower[up]) <= height_tolerance))
+            candidates = np.flatnonzero(valid)
+            if len(candidates):
+                chosen = candidates[np.argmax(heights[candidates])]
+                if hits[index] is None or heights[chosen] > hits[index][1]:
+                    hits[index] = (int(faces[chosen]), float(heights[chosen]))
+    if any(hit is None for hit in hits):
+        return None
     top = max(height for _, height in hits)
     if top - min(height for _, height in hits) > flat_tolerance:
         return None
-    coplanar = set(int(i) for i in eligible
-                  if np.max(np.abs(triangles[i, :, up] - top)) <= flat_tolerance)
-    neighbors: dict[int, list[int]] = {}
-    for first, second in mesh.face_adjacency:
-        if int(first) in coplanar and int(second) in coplanar:
-            neighbors.setdefault(int(first), []).append(int(second))
-            neighbors.setdefault(int(second), []).append(int(first))
-    connected, pending = set(), [hits[0][0]]
-    while pending:
-        face = pending.pop()
-        if face in connected or face not in coplanar:
-            continue
-        connected.add(face)
-        pending.extend(neighbors.get(face, ()))
-    if not all(face in connected for face, _ in hits):
+    coplanar = _joined([faces[np.abs(collider.triangles(faces)[:, :, up] - top).max(axis=1) <= flat_tolerance]
+                        for faces in (eligible[block] for block in _row_blocks(len(eligible)))])
+    # Every probe's face is coplanar and connected to the first probe's, over coplanar faces only.
+    hit_faces = np.array([face for face, _ in hits])
+    position = np.searchsorted(coplanar, hit_faces)
+    if np.any(position >= len(coplanar)) or np.any(coplanar[np.minimum(position, len(coplanar) - 1)] != hit_faces):
         return None
-    points = triangles[sorted(connected)].reshape(-1, 3)
-    return {"top_runtime_units": top, "aabb_min": points.min(axis=0).tolist(),
-            "aabb_max": points.max(axis=0).tolist(), "face_indices": sorted(connected),
+    labels = collider.components(coplanar)
+    if np.any(labels[position] != labels[position[0]]):
+        return None
+    connected = coplanar[labels == labels[position[0]]]
+    low, high = collider.bounds(connected)
+    return {"top_runtime_units": top, "aabb_min": low, "aabb_max": high, "face_indices": connected.tolist(),
             "basis": "reconstructed_triangle_footprint_contacts", "physical_measurement": False}
 
 
@@ -154,21 +423,20 @@ def _plane(points: np.ndarray, up: int) -> tuple[np.ndarray, np.ndarray, float]:
     return normal, middle, float(np.sqrt(np.mean(((points - middle) @ normal) ** 2)))
 
 
-def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
+def _fitted_support(collider: MergedCollider, lower: np.ndarray, upper: np.ndarray, *, up: int,
                     meters_per_unit: float, window_m: float = 0.03) -> dict[str, Any] | None:
-    """Fit the bumpy surface under the footprint, grow it over connected faces, and test it."""
-    from scipy.sparse import coo_matrix
-    from scipy.sparse.csgraph import connected_components
+    """Fit the bumpy surface under the footprint, grow it over connected faces, and test it.
 
+    Faces steeper than ``FITTED_MAX_FACE_TILT_DEGREES`` never join, so the fit works on the
+    collider's gentle faces (``collider.gentle``, positions into it until the surface is grown).
+    """
     horizontal = [axis for axis in range(3) if axis != up]
-    triangles = np.asarray(mesh.triangles, dtype=float)
-    centres = triangles.mean(axis=1)
-    gentle = np.abs(np.asarray(mesh.face_normals)[:, up]) >= np.cos(np.deg2rad(FITTED_MAX_FACE_TILT_DEGREES))
+    gentle, centres = collider.gentle, collider.centres
     within = np.ones(len(centres), dtype=bool)
     for axis in horizontal:
         within &= (centres[:, axis] >= lower[axis]) & (centres[:, axis] <= upper[axis])
     tolerance = window_m / meters_per_unit
-    seed = np.flatnonzero(gentle & within & (np.abs(centres[:, up] - lower[up]) <= tolerance))
+    seed = np.flatnonzero(within & (np.abs(centres[:, up] - lower[up]) <= tolerance))
     if window_m > 0.03 and len(seed):
         # A window wider than 3 cm can also reach a second surface under the
         # footprint, such as a counter's edge below its top (capture-447ae4f4:
@@ -178,19 +446,20 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
         seed = seed[np.abs(centres[seed, up] - top) <= 0.03 / meters_per_unit]
     if len(seed) < 3:
         return None
-    adjacency = np.asarray(mesh.face_adjacency, dtype=np.int64).reshape(-1, 2)
     low_band, high_band = (bound / meters_per_unit for bound in FITTED_BAND_BOUNDS_M)
     faces = seed
     for _ in range(FITTED_ITERATIONS):
         normal, middle, rms = _plane(centres[faces], up)
-        near = gentle & (np.abs((centres - middle) @ normal) <= min(max(2.5 * rms, low_band), high_band))
-        linked = adjacency[near[adjacency[:, 0]] & near[adjacency[:, 1]]]
-        graph = coo_matrix((np.ones(len(linked)), (linked[:, 0], linked[:, 1])), shape=(len(centres),) * 2)
-        labels = connected_components(graph, directed=False)[1]
-        seeded = labels[seed[near[seed]]]
+        band = min(max(2.5 * rms, low_band), high_band)
+        near = np.zeros(len(centres), dtype=bool)
+        for block in _row_blocks(len(centres)):
+            near[block] = np.abs((centres[block] - middle) @ normal) <= band
+        candidates = np.flatnonzero(near)
+        labels = collider.components(gentle[candidates])
+        seeded = labels[np.searchsorted(candidates, seed[near[seed]])]
         if not len(seeded):
             return None
-        grown = np.flatnonzero(near & (labels == np.bincount(seeded).argmax()))
+        grown = candidates[labels == np.bincount(seeded).argmax()]
         if np.array_equal(grown, faces):
             break
         faces = grown
@@ -198,21 +467,26 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
     tilt = float(np.degrees(np.arccos(min(1.0, float(normal[up])))))
     if tilt > FITTED_MAX_TILT_DEGREES or rms * meters_per_unit > FITTED_MAX_RMS_M:
         return None
+    faces = gentle[faces]
     # A real triangle of this surface lies under every probe (no gap, no edge),
     # and the triangles around it stand near the plane there; the object rests on the highest.
     widened = window_m > 0.03
     reach = window_m / meters_per_unit
     pad = (max(FITTED_CONTACT_RADIUS_M, window_m) if widened else FITTED_CONTACT_RADIUS_M) / meters_per_unit
-    extent = triangles[faces][:, :, horizontal]
-    local = faces[np.all((extent.max(axis=1) >= lower[horizontal] - pad)
-                         & (extent.min(axis=1) <= upper[horizontal] + pad), axis=1)]
-    a, b, c = (triangles[local][:, corner][:, horizontal] for corner in range(3))
-    za, zb, zc = (triangles[local][:, corner, up] for corner in range(3))
+    local = []
+    for block in _row_blocks(len(faces)):
+        extent = collider.triangles(faces[block])[:, :, horizontal]
+        local.append(faces[block][np.all((extent.max(axis=1) >= lower[horizontal] - pad)
+                                         & (extent.min(axis=1) <= upper[horizontal] + pad), axis=1)])
+    local = _joined(local)
+    triangles = collider.triangles(local)
+    a, b, c = (triangles[:, corner][:, horizontal] for corner in range(3))
+    za, zb, zc = (triangles[:, corner, up] for corner in range(3))
     e1, e2 = b - a, c - a
     determinant = e1[:, 0] * e2[:, 1] - e1[:, 1] * e2[:, 0]
     safe = np.abs(determinant) > 1e-12
     spread = np.linspace(-1.0, 1.0, 5) * FITTED_CONTACT_RADIUS_M / meters_per_unit
-    corners = triangles[local].reshape(-1, 3)
+    corners = triangles.reshape(-1, 3)
 
     def hole(x: float, y: float) -> tuple[float, np.ndarray] | None:
         # Within the registration's residual a probe may sit over a hole in the
@@ -258,9 +532,9 @@ def _fitted_support(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int,
     top = max(contacts)
     if abs(top - lower[up]) > tolerance:
         return None
-    points = triangles[faces].reshape(-1, 3)
-    return {"top_runtime_units": top, "aabb_min": points.min(axis=0).tolist(),
-            "aabb_max": points.max(axis=0).tolist(), "face_indices": faces.tolist(),
+    low, high = collider.bounds(faces)
+    return {"top_runtime_units": top, "aabb_min": low,
+            "aabb_max": high, "face_indices": faces.tolist(),
             "basis": "fitted_surface_under_footprint", "fit_rms_m": rms * meters_per_unit,
             "fit_tilt_degrees": tilt, "physical_measurement": False,
             **({"probe_gaps_m": gaps, "probe_gap_basis": "registration_task_region_residual"} if gaps else {})}
@@ -706,44 +980,69 @@ def ground_on_observed_floor(mesh: Any, lower: Sequence[float], upper: Sequence[
             or not np.isfinite(meters_per_unit) or meters_per_unit <= 0 or not np.isfinite(floor_height)):
         raise ValueError("website_support_query_invalid")
     if up_sign == -1:
-        mesh = mesh.copy()
-        transform = np.eye(4)
-        transform[up, up] = -1
-        mesh.apply_transform(transform)
+        # Ground in an upright frame (the reflection of ``up``); keep output in the source frame.
         low, high = lower.copy(), upper.copy()
         low[up], high[up] = -upper[up], -lower[up]
-        result = ground_on_observed_floor(mesh, low, high, up=up, meters_per_unit=meters_per_unit,
-                                          floor_height=-floor_height)
+        result = _ground_upright(mesh, low, high, up=up, meters_per_unit=meters_per_unit,
+                                 floor_height=-floor_height, reflected=True)
         if result is not None:
             result["top_runtime_units"] *= -1
             result["aabb_min"][up], result["aabb_max"][up] = -result["aabb_max"][up], -result["aabb_min"][up]
         return result
+    return _ground_upright(mesh, lower, upper, up=up, meters_per_unit=meters_per_unit, floor_height=floor_height,
+                           reflected=False)
+
+
+def _ground_upright(mesh: Any, lower: np.ndarray, upper: np.ndarray, *, up: int, meters_per_unit: float,
+                    floor_height: float, reflected: bool) -> dict[str, Any] | None:
+    """``ground_on_observed_floor`` with ``up`` upright, reading the collider a block of faces at a time."""
+    from trimesh import triangles as triangle_math
+
     gap = float(lower[up] - floor_height)
     if not 0.0 < gap * meters_per_unit <= FLOOR_GROUNDING_MAX_GAP_M:
         return None
     horizontal = [axis for axis in range(3) if axis != up]
-    triangles = np.asarray(mesh.triangles, dtype=float)
-    centers = triangles.mean(axis=1)
-    areas = np.asarray(mesh.area_faces) * meters_per_unit ** 2
-    level = np.abs(np.asarray(mesh.face_normals)[:, up]) >= np.cos(np.deg2rad(5))
     tolerance = 0.03 / meters_per_unit
     margin = FLOOR_SEARCH_MARGIN_M / meters_per_unit
-    near = np.ones(len(triangles), dtype=bool)
-    within = np.ones(len(triangles), dtype=bool)
-    for axis in horizontal:
-        near &= (centers[:, axis] >= lower[axis] - margin) & (centers[:, axis] <= upper[axis] + margin)
-        within &= (centers[:, axis] >= lower[axis]) & (centers[:, axis] <= upper[axis])
     footprint_m2 = float(np.prod([(upper[a] - lower[a]) * meters_per_unit for a in horizontal]))
-    between = level & within & (centers[:, up] > floor_height + tolerance) & (centers[:, up] < lower[up] + tolerance)
-    if areas[between].sum() >= INTERMEDIATE_SURFACE_MIN_FOOTPRINT_SHARE * footprint_m2:
+    # Face normals a collider already holds are its own (a mesh may be given them); a reflected copy holds none.
+    cache = getattr(mesh, "_cache", None)
+    given = None if reflected or cache is None or "face_normals" not in cache else np.asarray(mesh.face_normals)
+    rows: dict[str, list[np.ndarray]] = {"between": [], "faces": [], "areas": [], "heights": [], "triangles": []}
+    for block, triangles in triangle_blocks(mesh, reflect=up if reflected else None):
+        centers = triangles.mean(axis=1)
+        crosses = triangle_math.cross(triangles)
+        areas = triangle_math.area(crosses=crosses) * meters_per_unit ** 2
+        if given is None:
+            unit, valid = triangle_math.normals(triangles=triangles, crosses=crosses)
+            normals = np.zeros((len(triangles), 3))
+            normals[valid] = unit
+        else:
+            normals = given[block]
+        level = np.abs(normals[:, up]) >= np.cos(np.deg2rad(5))
+        near = np.ones(len(triangles), dtype=bool)
+        within = np.ones(len(triangles), dtype=bool)
+        for axis in horizontal:
+            near &= (centers[:, axis] >= lower[axis] - margin) & (centers[:, axis] <= upper[axis] + margin)
+            within &= (centers[:, axis] >= lower[axis]) & (centers[:, axis] <= upper[axis])
+        between = (level & within & (centers[:, up] > floor_height + tolerance)
+                   & (centers[:, up] < lower[up] + tolerance))
+        floor = level & near & (np.abs(centers[:, up] - floor_height) <= tolerance)
+        rows["between"].append(areas[between])
+        rows["faces"].append(np.flatnonzero(floor) + block.start)
+        rows["areas"].append(areas[floor])
+        rows["heights"].append(centers[floor, up])
+        rows["triangles"].append(triangles[floor])
+    between_area = float(_joined(rows["between"], np.float64).sum())
+    if between_area >= INTERMEDIATE_SURFACE_MIN_FOOTPRINT_SHARE * footprint_m2:
         return None
-    floor = np.flatnonzero(level & near & (np.abs(centers[:, up] - floor_height) <= tolerance))
+    floor_areas = _joined(rows["areas"], np.float64)
     footprint_min, footprint_max = lower.copy(), upper.copy()
-    if areas[floor].sum() >= FLOOR_MIN_AREA_M2:
-        top = float(np.average(centers[floor, up], weights=areas[floor]))
-        points = triangles[floor].reshape(-1, 3)
+    if floor_areas.sum() >= FLOOR_MIN_AREA_M2:
+        top = float(np.average(_joined(rows["heights"], np.float64), weights=floor_areas))
+        points = np.concatenate(rows["triangles"]).reshape(-1, 3)
         support_min, support_max = points.min(axis=0), points.max(axis=0)
-        basis, faces = "collider_floor_beside_footprint", floor.tolist()
+        basis, faces = "collider_floor_beside_footprint", _joined(rows["faces"]).tolist()
     else:
         top = float(floor_height)
         footprint_min[up] = footprint_max[up] = top
@@ -751,5 +1050,5 @@ def ground_on_observed_floor(mesh: Any, lower: Sequence[float], upper: Sequence[
         basis, faces = "registered_observed_floor_plane", []
     return {"top_runtime_units": top, "aabb_min": support_min.tolist(), "aabb_max": support_max.tolist(),
             "face_indices": faces, "extended_runtime_units": float(lower[up] - top),
-            "collider_floor_area_m2": float(areas[floor].sum()), "basis": basis,
-            "intermediate_surface_area_m2": float(areas[between].sum()), "physical_measurement": False}
+            "collider_floor_area_m2": float(floor_areas.sum()), "basis": basis,
+            "intermediate_surface_area_m2": between_area, "physical_measurement": False}
