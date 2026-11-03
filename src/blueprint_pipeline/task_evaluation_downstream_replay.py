@@ -357,7 +357,9 @@ class _Harness:
 
     def _snapshot(self, operation: str) -> tuple[dict[str, Any], str]:
         retained = {"task-context": "pipeline/website_task_context.json",
-                    "atlas-configuration": "pipeline/atlas/configuration.json"}[operation]
+                    "atlas-configuration": "pipeline/atlas/configuration.json",
+                    # The grant copy written when preparation started; --webapp-snapshots gives the current one.
+                    "scene-sponsorship": "pipeline/website_scene_sponsorship.json"}[operation]
         candidates = [*([self.snapshots / f"{operation}.json"] if self.snapshots else []),
                       *([self.capture / retained] if self.capture else [])]
         for path in candidates:
@@ -373,7 +375,8 @@ class _Harness:
                source_kind: str = "website") -> dict[str, Any]:
         if operation == "agent-execution-offer":
             return self.offer(capture_id=capture_id, operation=operation, payload=payload)
-        if operation == "task-context" or (operation == "atlas-configuration" and payload.get("create") is False):
+        if operation == "task-context" or (operation in {"atlas-configuration", "scene-sponsorship"}
+                                           and payload.get("create") is False):
             value, source = self._snapshot(operation)
             self.webapp_answers.append({"operation": operation, "capture_id": capture_id, "stage": self.stage,
                                         "answered_from": source, "call_site": self.call_site()})
