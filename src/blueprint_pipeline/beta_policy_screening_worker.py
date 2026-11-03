@@ -81,7 +81,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
         raise ValueError("beta_screening_source_queue_invalid")
     try:
         # The packet worker runs only when something is pending: this timer's pass returns a timed-out
-        # compile or a failed offer post to it, bounded and after a wait. Deterministic refusals stay blocked.
+        # compile or a failed offer post to it, bounded and after a wait; a deterministic refusal goes back once
+        # per newly deployed release (the release this pass runs from), so a deploy that fixes it re-drives it.
         packet_requeue = requeue_transient_blocked(queue_root=packet_root)
     except (OSError, ValueError) as exc:
         from .bounded_error import error_description

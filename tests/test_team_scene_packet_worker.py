@@ -439,15 +439,151 @@ def test_the_worker_pass_requeues_a_due_block_recorded_before_automatic_retries(
     assert (status["status"], status["outcome"]) == ("completed", "compiled")
 
 
-def test_a_deterministic_refusal_is_never_retried_automatically(tmp_path, monkeypatch):
+RELEASE_1, RELEASE_2 = "a" * 40, "b" * 40
+
+
+def _release(monkeypatch: pytest.MonkeyPatch, commit: str | None) -> None:
+    monkeypatch.setattr(worker, "current_release_commit", lambda: commit)
+
+
+def test_a_deterministic_refusal_is_never_retried_automatically_under_the_same_release(tmp_path, monkeypatch):
     world = _world(tmp_path, monkeypatch)
+    _release(monkeypatch, RELEASE_1)
     _registry(world["operator"], packet_inputs={**world["inputs"], "droid_profile_digest": "sha256:" + "0" * 64})
     _at(monkeypatch, 0)
     [status] = world["process"]()["results"]
     assert status["blockers"] == ["team_scene_droid_profile_binding_invalid"] and "automatic_retry" not in status
+    assert status[worker.RELEASE_COMMIT_FIELD] == RELEASE_1
     _at(monkeypatch, 10 ** 7)
     assert worker.requeue_transient_blocked(queue_root=world["queue"])["requeued"] == []
+    assert world["process"]()["automatic_requeue"] == []
     assert (world["queue"] / "processed" / f"{world['key']}.json").is_file()
+
+
+def test_a_deploy_that_fixes_a_deterministic_refusal_re_drives_it_once_per_release(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    _release(monkeypatch, RELEASE_1)
+    broken = {**world["inputs"], "droid_profile_digest": "sha256:" + "0" * 64}
+    _registry(world["operator"], packet_inputs=broken)
+    _at(monkeypatch, 0)
+    [status] = world["process"]()["results"]
+    assert (status["blockers"], status[worker.RELEASE_COMMIT_FIELD]) == (
+        ["team_scene_droid_profile_binding_invalid"], RELEASE_1)
+    # A new release is deployed: the timer's pass returns the refusal to pending once, recorded before the move.
+    _release(monkeypatch, RELEASE_2)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
+        {"request_key": key, "reason": "new_release", "release_commit": RELEASE_2,
+         "blocked_release_commit": RELEASE_1}]
+    assert (queue / "pending" / f"{key}.json").is_file()
+    assert _status(world)[worker.RELEASE_REQUEUE_FIELD] == [RELEASE_2]
+    # This release did not fix it: refused again, and never retried again under this release, from either pass.
+    [status] = world["process"]()["results"]
+    assert (status["blockers"], status[worker.RELEASE_COMMIT_FIELD], status[worker.RELEASE_REQUEUE_FIELD]) == (
+        ["team_scene_droid_profile_binding_invalid"], RELEASE_2, [RELEASE_2])
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    assert world["process"]()["automatic_requeue"] == []
+    # Even a status naming an older release is not retried for a release already tried.
+    (queue / "status" / f"{key}.json").write_text(json.dumps({**status, worker.RELEASE_COMMIT_FIELD: RELEASE_1}))
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    # The next release fixes the cause: the worker's own pass re-drives and compiles it.
+    _registry(world["operator"], packet_inputs=world["inputs"])
+    _release(monkeypatch, "c" * 40)
+    run = world["process"]()
+    assert run["automatic_requeue"] == [{"request_key": key, "reason": "new_release", "release_commit": "c" * 40,
+                                         "blocked_release_commit": RELEASE_1}]
+    [status] = run["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    assert status[worker.RELEASE_REQUEUE_FIELD] == [RELEASE_2, "c" * 40]
+    # A completed request is never requeued, by any release.
+    _release(monkeypatch, "d" * 40)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+
+
+def test_a_refusal_recorded_without_a_release_requeues_once_under_a_known_release(tmp_path, monkeypatch):
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    os.replace(queue / "pending" / f"{key}.json", queue / "processed" / f"{key}.json")
+    # As capture-447's request was left: a deterministic refusal written before statuses named their release.
+    legacy = {"schema_version": worker.STATUS_SCHEMA, "request_key": key, "status": "blocked",
+              "blockers": ["native_task_appearance_layer_transform_spurious"],
+              worker.OWNER_CONFIRMATION_REQUEUE_FIELD: ["sha256:" + "4" * 64]}
+    (queue / "status" / f"{key}.json").write_text(json.dumps(legacy))
+    _at(monkeypatch, 0)
+    # Without a known running release nothing is requeued on that basis, from either pass.
+    _release(monkeypatch, None)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    assert world["process"]()["automatic_requeue"] == []
+    assert _status(world) == legacy
+    _release(monkeypatch, RELEASE_1)
+    run = world["process"]()
+    assert run["automatic_requeue"] == [{"request_key": key, "reason": "new_release", "release_commit": RELEASE_1,
+                                         "blocked_release_commit": None}]
+    [status] = run["results"]
+    assert (status["status"], status[worker.RELEASE_COMMIT_FIELD]) == ("completed", RELEASE_1)
+    assert status[worker.RELEASE_REQUEUE_FIELD] == [RELEASE_1]
+    assert status[worker.OWNER_CONFIRMATION_REQUEUE_FIELD] == ["sha256:" + "4" * 64]
+
+
+@pytest.mark.parametrize(("status", "release", "reason"), [
+    ({"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}, RELEASE_2, "new_release"),
+    ({"status": "blocked", "blockers": ["team_scene_capture_withdrawn"], "release_commit": RELEASE_1},
+     RELEASE_2, "new_release"),
+    ({"status": "blocked", "blockers": ["team_scene_capture_withdrawn"], "release_commit": RELEASE_2},
+     RELEASE_2, None),
+    ({"status": "blocked", "blockers": ["team_scene_capture_withdrawn"], "release_requeued": [RELEASE_2]},
+     RELEASE_2, None),
+    ({"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}, None, None),
+    ({"status": "blocked", "blockers": ["team_scene_capture_withdrawn"]}, "not-a-commit", None),
+    ({"status": "completed", "blockers": [], "release_commit": RELEASE_1}, RELEASE_2, None),
+    ({"status": "completed", "blockers": []}, RELEASE_2, None),
+    ({"status": "skipped", "reason": "team_candidate_operator_row_present", "blockers": [],
+      "release_commit": RELEASE_1}, RELEASE_2, None),
+    ({}, RELEASE_2, None),
+    # An owner-contract refusal waits for the owner's confirmation, whatever release is running.
+    ({"status": "blocked", "blockers": [worker.OWNER_CONTRACT_BLOCKER_PREFIX + "authority_missing"],
+      "release_commit": RELEASE_1}, RELEASE_2, None),
+    # A transient block keeps its own bounded backoff: not before its wait, and once due, as a transient retry.
+    ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1,
+      "automatic_retry": {"attempts": 0, "not_before": "2026-10-31T12:05:00+00:00"}}, RELEASE_2, None),
+    ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1,
+      "automatic_retry": {"attempts": 3, "exhausted": True}}, RELEASE_2, None),
+    ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1},
+     RELEASE_2, "team_scene_offer_publication_failed"),
+])
+def test_only_a_deterministic_refusal_is_requeued_by_a_new_release(tmp_path, status, release, reason):
+    queue = worker._queue(tmp_path / "queue")
+    (queue / "processed" / "k.json").write_text("{}")
+    (queue / "status" / "k.json").write_text(json.dumps(status))
+    requeued = worker._requeue_due(queue, T0, release)
+    assert [row["reason"] for row in requeued] == ([reason] if reason else [])
+    assert (queue / ("pending" if reason else "processed") / "k.json").is_file()
+    if reason == "new_release":
+        assert json.loads((queue / "status" / "k.json").read_text())[worker.RELEASE_REQUEUE_FIELD] == [release]
+        # Back in processed with the same status: never twice for one release.
+        os.replace(queue / "pending" / "k.json", queue / "processed" / "k.json")
+        assert worker._requeue_due(queue, T0, release) == []
+
+
+def test_the_running_release_is_the_release_checkouts_commit_or_unknown(monkeypatch):
+    from blueprint_pipeline import task_evaluation_release_identity as identity
+
+    monkeypatch.setattr(identity, "running_release_commit", lambda _path=None: RELEASE_1)
+    assert worker.current_release_commit() == RELEASE_1
+    # A checkout whose HEAD cannot be read falls back to the release directory named by its commit.
+    monkeypatch.setattr(identity, "running_release_commit", lambda _path=None: "")
+    monkeypatch.setattr(worker, "__file__",
+                        f"/opt/blueprint/task-evaluation-control-plane-releases/{RELEASE_2}/src/blueprint_pipeline/"
+                        "team_scene_packet_worker.py")
+    assert worker.current_release_commit() == RELEASE_2
+    monkeypatch.setattr(worker, "__file__", "/srv/checkout/src/blueprint_pipeline/x.py")
+    assert worker.current_release_commit() is None
+
+    def unreadable(_path=None):
+        raise OSError("no checkout")
+
+    monkeypatch.setattr(identity, "running_release_commit", unreadable)
+    assert worker.current_release_commit() is None
 
 
 @pytest.mark.parametrize(("status", "cause"), [

@@ -600,6 +600,18 @@ screening timer's (`requeue_transient_blocked`); to run it now,
 `python3 scripts/operator_door.py unit start blueprint-team-scene-packet.service`.
 Screening then reads the contract the team packet sealed.
 
+Every team-packet status names the release that wrote it (`release_commit`,
+the commit of the release checkout the worker or timer runs from). Any other
+deterministic refusal (neither transient nor owner-contract) returns to
+`pending/` once per newly deployed release, on the same two passes, so a deploy
+that fixes its cause re-drives it with no operator step; a status without
+`release_commit` counts as an older release. The status keeps the releases
+already tried under `release_requeued` (written before the move), so a refusal
+the new release does not fix stays blocked until the next deploy. The pass
+reports it as `{"reason": "new_release", ...}`. When the running release cannot
+be read, nothing is requeued on that basis. Completed and skipped requests never
+move.
+
 A provider-output resume unit may write only the canary dispatch root, the disk
 reservation ledger and its result (`ProtectSystem=strict` and the retirement
 unit's other sandboxing), for at most 2 h. It reads the control-plane
