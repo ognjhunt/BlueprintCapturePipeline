@@ -59,6 +59,25 @@ def _table(outline: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return points, faces
 
 
+def _legged_table(top: float = TABLE_TOP) -> tuple[np.ndarray, np.ndarray]:
+    """The same oval table on four legs, as a camera at standing height scans it.
+
+    Its top and the 3 cm edge of its slab, never the slab's underside, and the floor seen between its legs.
+    """
+
+    outline = _oval()
+    n, centre = len(outline), outline.mean(axis=0)
+    points = np.vstack([np.c_[outline, np.full(n, top - 0.03)], np.c_[outline, np.full(n, top)], [[*centre, top]]])
+    k = np.arange(n)
+    rows = [(points, np.vstack([np.c_[k, (k + 1) % n, n + (k + 1) % n], np.c_[k, n + (k + 1) % n, n + k],
+                                np.c_[np.full(n, 2 * n), n + k, n + (k + 1) % n]]))]
+    rows += [_box((centre[0] + sx * 0.45 - 0.03, centre[1] + sy * 0.55 - 0.03, 0.0),
+                  (centre[0] + sx * 0.45 + 0.03, centre[1] + sy * 0.55 + 0.03, top - 0.03), bottom=False)
+             for sx in (-1, 1) for sy in (-1, 1)]
+    offsets = np.cumsum([0] + [len(p) for p, _ in rows[:-1]])
+    return np.vstack([p for p, _ in rows]), np.vstack([f + first for (_, f), first in zip(rows, offsets, strict=True)])
+
+
 def _box(low: tuple[float, ...], high: tuple[float, ...], *, bottom: bool = True) -> tuple[np.ndarray, np.ndarray]:
     (x0, y0, z0), (x1, y1, z1) = low, high
     points = np.array([(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
@@ -83,13 +102,14 @@ def _floor(scale: float, keep: Any = None) -> tuple[np.ndarray, np.ndarray]:
 
 
 def write_scanned_room(path: Path, *, name: str = "mesh_0000_GLTF", scale: float = 1.0,
-                       parts: list[tuple[np.ndarray, np.ndarray]] | None = None, floor_keep: Any = None) -> Path:
+                       parts: list[tuple[np.ndarray, np.ndarray]] | None = None, floor_keep: Any = None,
+                       table: tuple[np.ndarray, np.ndarray] | None = None) -> Path:
     """One collision mesh under ``/Root``, as website normalization writes a reconstructed room."""
 
     from pxr import Usd, UsdGeom, UsdPhysics, Vt
 
     (x0, y0), (x1, y1) = ((v * scale for v in corner) for corner in ROOM)
-    rows = [_floor(scale, floor_keep), _table(_oval()), *(parts or [])]
+    rows = [_floor(scale, floor_keep), _table(_oval()) if table is None else table, *(parts or [])]
     for low, high in (((x0, y0, 0.0), (x0 + 0.05, y1, 2.6)), ((x1 - 0.05, y0, 0.0), (x1, y1, 2.6)),
                       ((x0, y0, 0.0), (x1, y0 + 0.05, 2.6)), ((x0, y1 - 0.05, 0.0), (x1, y1, 2.6))):
         rows.append(_box(low, high))
@@ -150,10 +170,63 @@ def test_a_single_mesh_room_keeps_every_station_off_its_table(tmp_path, name, sc
         assert stance["position_world_m"][2] == pytest.approx(SUPPORT_TOP)  # the mount level with the support
     measured = stances[0]["room_mesh_clearance"]
     assert measured["room_mesh_prims"] == ["/Root/" + name]
-    assert measured["occupied_stances"] > 0 and measured["column_top_above_floor_m"] == pytest.approx(SUPPORT_TOP)
+    # The column reaches the tray's top, above the mount level with the support.
+    assert measured["occupied_stances"] > 0
+    assert measured["column_top_above_floor_m"] == pytest.approx(START[2] + TRAY_HALF[2])
     # The closest clear stance stands just off the table's near edge, facing the tray.
     x, y, _ = stances[0]["position_world_m"]
     assert math.hypot(x - START[0], y - START[1]) < 0.9
+
+
+BENCH_LOW, BENCH_HIGH = (0.55, -1.00, 0.0), (1.05, -0.50, 0.45)  # a low bench beside the table
+
+
+def _on_bench(xy: np.ndarray) -> np.ndarray:
+    return ((xy[:, 0] >= BENCH_LOW[0]) & (xy[:, 0] <= BENCH_HIGH[0])
+            & (xy[:, 1] >= BENCH_LOW[1]) & (xy[:, 1] <= BENCH_HIGH[1]))
+
+
+def _below_the_table(body: str) -> dict[str, Any]:
+    """A search whose station root stands below the dining table's top."""
+
+    from blueprint_pipeline.scene_placement.robot_profile import UNITREE_G1_PROFILE
+
+    if body == "g1":  # the G1 screening search: its pelvis, 0.79 m, is under a 0.80 m table top
+        return {"root_world_z_m": None, "root_height_m": UNITREE_G1_PROFILE.pelvis_height_m,
+                "footprint_half_extent_m": list(UNITREE_G1_PROFILE.footprint_half_extent_xyz[:2])}
+    if body == "mobile":  # a free base's own low root
+        return {"root_world_z_m": None, "root_height_m": 0.35}
+    # The tray ends on the bench: the mount is level with the lower support, facing the whole region.
+    target = [0.80, -0.75, BENCH_HIGH[2] + TRAY_HALF[2]]
+    lower = [min(START[i], target[i]) - TRAY_HALF[i] for i in range(3)]
+    upper = [max(START[i], target[i]) + TRAY_HALF[i] for i in range(3)]
+    return {"root_world_z_m": BENCH_HIGH[2], "subject_center": [(a + b) / 2 for a, b in zip(lower, upper, strict=True)],
+            "subject_minimum": lower, "subject_maximum": upper}
+
+
+@pytest.mark.parametrize("side_m", [5.0, 7.0])  # the room mesh's box: kept (covers every stance), or dropped
+@pytest.mark.parametrize("body", ["g1", "mobile", "franka_lower_support"])
+def test_a_station_below_the_tables_top_never_stands_under_it(tmp_path, side_m, body) -> None:
+    from blueprint_pipeline.scene_placement.usd_index import UsdSceneSpatialIndex
+
+    # One dense mesh: the floor scanned under the table too, seen between its legs.
+    room = write_scanned_room(tmp_path / "collision.usda", scale=side_m / (ROOM[1][0] - ROOM[0][0]),
+                              table=_legged_table(), parts=[_box(BENCH_LOW, BENCH_HIGH, bottom=False)])
+    sizes = [max(box.size()) for box in UsdSceneSpatialIndex(usd_path=str(room)).obstacle_boxes()]
+    assert sizes == ([pytest.approx(side_m, abs=0.05)] if side_m < 6.0 else [])
+    search = _below_the_table(body)
+    stances = _search(room, ranked=24, **search)
+    assert len(stances) == 24
+    for stance in stances:
+        grown = footprint_samples(stance)
+        assert not _in_oval(grown).any() and not _on_bench(grown).any(), stance["position_world_m"]
+        # On the floor: the scene's own floor, the root at the body's height above it or the mount's level.
+        assert stance["floor_z_m"] == pytest.approx(0.0, abs=0.01)
+        assert stance["position_world_m"][2] == pytest.approx(
+            search["root_world_z_m"] if search["root_world_z_m"] is not None
+            else stance["floor_z_m"] + search["root_height_m"])
+    top = search.get("subject_maximum", [START[i] + TRAY_HALF[i] for i in range(3)])[2]
+    assert stances[0]["room_mesh_clearance"]["column_top_above_floor_m"] == pytest.approx(top - stances[0]["floor_z_m"])
 
 
 def test_a_station_never_stands_inside_furniture_the_scan_never_saw_beneath(tmp_path) -> None:

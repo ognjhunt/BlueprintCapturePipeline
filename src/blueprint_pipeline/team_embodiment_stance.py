@@ -14,7 +14,8 @@ fall gravity carries it through, and a stance it never reaches is preferred.
 A room scanned as one mesh (a website capture's collider: floor, furniture and
 walls in one prim) has no per-object boxes to clip against, so its own
 triangles are measured instead: nothing of it may rise into the station's
-column above the footprint, and the floor must be observed under the footprint
+column above the footprint, from the floor to the higher of the station's root
+and the task's own top, and the floor must be observed under the footprint
 (``_room_mesh_occupancy``).
 Host-side and deterministic (OpenUSD), so a robot with no clear stance is
 refused by name before any GPU time is spent.
@@ -47,7 +48,11 @@ ROOM_MESH_FLOOR_SHARE = 0.5
 #: noise below it does not (the external placement probe's lower obstacle bound).
 ROOM_MESH_FLOOR_CLEARANCE_M = 0.04
 #: The column above a footprint reaches the station's root (a fixed arm's mount
-#: top), and at least the stand validator's own floor-obstacle band.
+#: top) and the task's own top, and at least the stand validator's own
+#: floor-obstacle band. Below the task's top, a room surface over the footprint
+#: is the furniture the task stands at (a table top over legs the scan saw floor
+#: between), never headroom; above it (a wall cabinet, a lamp) it stays the
+#: validator's overhead clutter.
 ROOM_MESH_MINIMUM_COLUMN_M = 0.40
 ROOM_MESH_RULE = "footprint_column_clear_of_room_mesh_and_floor_observed"
 
@@ -238,7 +243,7 @@ def _room_mesh_occupancy(vertices: Any, faces: Any, meshes: list[tuple[str, int]
     never sees the table in it. A mesh is the room when it holds at least ``ROOM_MESH_FLOOR_SHARE`` of the
     floor band's area, rises above the floor, and surrounds the task: its bounds span the subject's
     ``centre`` in plan and rise above the subject's top (a fixture the object rests on ends below it). Its
-    triangles that rise above the floor and reach no higher than ``column_top_m`` above it, near the search
+    triangles that rise above the floor and start no higher than ``column_top_m`` above it, near the search
     (``reach_m`` around ``centre``), are the obstacles a footprint's column is measured against; the scene's
     triangles at floor height there are the floor it must stand on (``external_scene_robot_placement``'s
     probe and support sampler).
@@ -371,7 +376,9 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
     start = [float(v) for v in subject_center[:3]]
     clearance_m = float(DEFAULT_VALIDATION_MIN_OBSTACLE_CLEARANCE_M)
     tolerance = float(floor_fit["height_tolerance_stage_units"])
-    column_top = max(root, ROOM_MESH_MINIMUM_COLUMN_M)
+    # A free base's root, or a mount level with the lower of two supports, sits below the task's table:
+    # the column still reaches the task's top, so no station stands under that table.
+    column_top = max(root, ROOM_MESH_MINIMUM_COLUMN_M, float(subject_maximum[2]) - float(floor_z))
     room = _room_mesh_occupancy(
         vertices, faces, meshes, floor_z=float(floor_z), tolerance=tolerance,
         column_top_m=column_top, centre=start[:2], subject_top_z=float(subject_maximum[2]),
