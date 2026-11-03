@@ -147,8 +147,13 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     misses this reconstructed scene's station (``website_candidate_feasibility``),
     or when no GPU the screening lane may rent meets its declared memory floor
     (``beta_policy_screening_gpu``); a disabled candidate keeps its own reason.
+    A rigid contract that requires per-cell controls screens under the standing
+    control-trial pause (``beta_policy_screening_control_omission``): the
+    candidates run the contract without its ``controls`` criterion, and the scene
+    inputs keep the probed source contract and the typed omission authority.
     """
     from .beta_policy_candidate_catalog import validate_catalog, load_catalog
+    from .beta_policy_screening_control_omission import omit_paused_controls
     from .beta_policy_screening_plan import validate_execution_descriptor
     from .beta_robolab_policy_execution import validate_robolab_policy_execution_spec
     from .robot_free_probe_gate import require_robot_free_probe, retained_probe_receipt, task_success_contract_binding
@@ -177,9 +182,16 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             or Path(capture_root).resolve() != Path(profile["capture_root"]).resolve()):
         raise ValueError("beta_screening_source_scene_mismatch")
     root = Path(inputs_dir).resolve()
+    contract, omission = ((inputs["task_success_contract"], None) if family
+                          else omit_paused_controls(inputs["task_success_contract"]))
     normalized_inputs = ({**inputs, **family_fields} if family else
         {**inputs, "beta_robot_free_probe_receipt": receipt,
          "beta_probe_task_spec_digest": canonical_digest(task), "beta_task_kind": task["task_kind"]})
+    if omission is not None:
+        # The probe was scored with the source contract; the candidates run the result under the omission.
+        normalized_inputs.update(task_success_contract=contract, task_success_contract_digest=contract["contract_digest"],
+                                 source_task_success_contract=inputs["task_success_contract"],
+                                 diagnostic_control_omission_authority=omission)
     normalized_inputs["screening_capture_root"] = str(Path(capture_root).resolve())
     if family:
         normalized_inputs.update(schema_version="blueprint.beta_family_screening_scene_inputs.v1",
@@ -188,7 +200,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     normalized = _retain(root / (canonical_digest(normalized_inputs)[7:] + ".scene_inputs.json"), normalized_inputs)
     scene = {**dict(source), "site_id": str(profile["scene_id"]), "scene_id": str(profile["scene_id"]),
              "task_kind": task["task_kind"], "task_spec": task,
-             "task_success_contract_digest": inputs["task_success_contract_digest"],
+             "task_success_contract_digest": normalized_inputs["task_success_contract_digest"],
              **(family_fields if family else {"robot_free_probe_status": "passed", "robot_free_probe_digest": probe["receipt_digest"]}),
              "scene_inputs": _record(normalized)}
     if profile.get("nominal_dynamic_friction") is not None:
@@ -210,7 +222,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         try:
             templates = _native_templates(repo=repo, scene_plan={**scene_plan,
                 "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
-                contract=inputs["task_success_contract"], commit=commit)
+                contract=contract, commit=commit)
         except (ValueError, OSError, KeyError, TypeError):
             template_failures.update({key: "beta_screening_baseline_runtime_template_unavailable"
                                       for key in ("pi05_droid", "groot_n17_droid", *BETA_POLARIS_VARIANT_CANDIDATE_IDS)})
@@ -221,7 +233,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         try:
             templates[candidate] = (cosmos_profile(candidate).candidate_execution_spec(scene_plan={**scene_plan,
                 "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
-                contract=inputs["task_success_contract"], source_commit=commit), None)
+                contract=contract, source_commit=commit), None)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             code = str(exc).split(":", 1)[0]
             template_failures[candidate] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
@@ -231,7 +243,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
         try:
             templates["molmoact2_droid"] = (candidate_execution_spec(scene_plan={**scene_plan,
                 "scene_id": scene_plan.get("scene_id") or profile["scene_id"]},
-                contract=inputs["task_success_contract"], source_commit=commit), None)
+                contract=contract, source_commit=commit), None)
         except (ValueError, OSError, KeyError, TypeError) as exc:
             code = str(exc).split(":", 1)[0]
             template_failures["molmoact2_droid"] = (code if re.fullmatch(r"[a-z][a-z0-9_]{1,127}", code)
@@ -277,7 +289,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                 resolve_selected_tokenizer([key])
                 spec = candidate_execution_spec(candidate_id=key, registration=override["native_g1"],
                     scene_plan=scene_plan, base_packet=inputs["base_native_packet"], source=source,
-                    contract=inputs["task_success_contract"], site_id=scene["site_id"])
+                    contract=contract, site_id=scene["site_id"])
                 inventory = repo / "configs/g1_humanoidarena_checkpoint_inventory.v1.json"
             elif override:
                 if override.get("robot_policy") is not None:
@@ -291,7 +303,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
                     )
                     measured = feasibility["candidates"].get(key) or {}
                     spec, model = build_registered_team_spec(candidate_id=key, registration=override["robot_policy"],
-                        scene_plan=scene_plan, contract=inputs["task_success_contract"], prompt=facts["prompt"],
+                        scene_plan=scene_plan, contract=contract, prompt=facts["prompt"],
                         scene_revision_digest=inputs["scene_revision_digest"],
                         station=own_station(measured), stance=own_stance(measured),
                         station_reached_by_own_arm=own_station_reached_by_own_arm(measured))
@@ -318,7 +330,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
             else:
                 interface_matches = _interface_matches(configured, spec)
             if (spec["checkpoint_digest"] != configured["policy"]["digest"]
-                    or spec["task_success_contract_digest"] != inputs["task_success_contract_digest"]
+                    or spec["task_success_contract_digest"] != normalized_inputs["task_success_contract_digest"]
                     or not interface_matches):
                 raise ValueError("beta_screening_policy_interface_or_scene_mismatch")
             if spec.get("team_embodiment") is not None:
