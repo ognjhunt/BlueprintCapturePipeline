@@ -337,8 +337,12 @@ def _exterior_right(packet: Path, *, base: Mapping[str, Any],
 
 
 def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, Any],
-                      replacement: Path, root: Path) -> dict[str, Any]:
-    """The revision's open/close task as the website episode compiler builds it, plus its part's motion."""
+                      replacement: Path, root: Path,
+                      owner_success_confirmation_scope: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The revision's open/close task as the website episode compiler builds it, plus its part's motion.
+
+    An owner's confirmation applies before construction, so every binding derived from the task holds it.
+    """
 
     import numpy as np
 
@@ -359,6 +363,7 @@ def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, A
     definition = adapter["native_task_definition"]
     task_spec = compiler._runtime_subject_task_spec(definition["task_spec"])
     task_spec["success_criteria"] = adapter["native_success_criteria"].get("criteria")
+    task_spec, confirmation = _owner_confirmed(task_spec, revision=revision, scope=owner_success_confirmation_scope)
     sources = adapter["source_documents"]["documents"]
     digest, size = compiler._sha256_and_size(replacement)
     trajectory = placement_trajectory_from_native_plan(articulated_placement_plan_from_adapter(
@@ -392,6 +397,7 @@ def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, A
            "object_type": "ARTICULATION", "reset_state": {"root_pose_world": pose, "joint_positions": joint_positions},
            **({"articulation_adaptation": adaptation} if adaptation is not None else {})}
     return {"adapter": adapter, "definition": definition, "task_spec": construction["task_spec"],
+            "owner_success_confirmation": confirmation,
             "task_state_binding": construction["task_state_binding"],
             "kinematic_path": construction["articulated_kinematic_path_receipt"], "row": row,
             "start": [float(v) for v in contact["position_world_m"]],
@@ -404,6 +410,26 @@ def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, A
                             "limit_points": whole}}
 
 
+def _owner_confirmed(task_spec: Mapping[str, Any], *, revision: Mapping[str, Any],
+                     scope: Mapping[str, Any] | None) -> tuple[dict[str, Any], str | None]:
+    """The task with a ``proposal_only`` owner authority the owner confirmed, and that confirmation's digest.
+
+    Only the owner's sealed record for this exact intent, revision, success document, thresholds and
+    proposal confirms it (``task_evaluation_owner_success_confirmation``); without one the task is
+    unchanged and the owner contract refuses as before. No threshold changes either way.
+    """
+
+    if scope is None:
+        return dict(task_spec), None
+    from .task_evaluation_owner_success_confirmation import confirmed_owner_authority
+
+    authority = confirmed_owner_authority(task_spec=task_spec, revision=revision, intent=scope["intent"],
+                                          directory=scope["directory"])
+    if authority is None:
+        return dict(task_spec), None
+    return {**task_spec, "configured_owner_authority": authority}, authority["confirmation_digest"]
+
+
 def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[str, Path],
                            configured_scene_bundle_path: str | Path, droid_profile_path: str | Path,
                            droid_profile_digest: str, runtime_source_receipt_path: str | Path,
@@ -411,13 +437,16 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            destination_placement_qualification_path: str | Path | None = None,
                            native_appearance_materializer: Callable[..., Mapping[str, Any]] | None = None,
                            embodiment_manifests: Sequence[Mapping[str, Any]] = (),
-                           embodiment_models: Mapping[str, str | Path] | None = None) -> dict[str, Any]:
+                           embodiment_models: Mapping[str, str | Path] | None = None,
+                           owner_success_confirmation_scope: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Compile the revision's scene half under ``output_root`` and seal its team scene inputs.
 
     Each of ``embodiment_manifests`` (registered team bodies) also gets its own station on the same scene
     (``_embodiment_stations``); without any, the record is exactly the Franka-only one. A body whose
     robot model is in ``embodiment_models`` (by embodiment digest) has that station chosen with its own
-    arm (``_own_arm_stations``).
+    arm (``_own_arm_stations``). ``owner_success_confirmation_scope`` (``intent`` and its ``directory``,
+    bound to this scene by the caller) is where a ``proposal_only`` owner authority may find the owner's
+    sealed confirmation of these exact thresholds (``_owner_confirmed``).
     """
 
     from . import task_evaluation_configured_controls_deferred_inputs as deferred
@@ -465,10 +494,11 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     if articulated:
         try:
             task = _articulated_task(revision=revision, references=references, replacement=assets["replacement"],
-                                     root=root)
+                                     root=root, owner_success_confirmation_scope=owner_success_confirmation_scope)
         except (KeyError, StopIteration, TypeError, ValueError) as exc:
             raise TeamScenePacketError("team_scene_articulated_task_invalid:" + str(exc)) from exc
         adapter, definition, task_spec = task["adapter"], task["definition"], task["task_spec"]
+        confirmation = task["owner_success_confirmation"]
         task_row, state_binding, motion = task["row"], task["task_state_binding"], task["task_motion"]
         start, target, support_top = task["start"], task["target"], task["support_top_z_m"]
         subject_bounds = object_bounds = (task["subject_minimum"], task["subject_maximum"])
@@ -493,6 +523,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                     support_plane_digest=_sha256(Path(documents[SUPPORT_PLANE_CONTRACT_PATH])))
             except (ValueError, KeyError, TypeError) as exc:
                 raise TeamScenePacketError("team_scene_destination_qualification_invalid:" + str(exc)) from exc
+        task_spec, confirmation = _owner_confirmed(task_spec, revision=revision,
+                                                   scope=owner_success_confirmation_scope)
         try:
             owner = _derive_configured_owner_success_contract(task_spec, site_id=scene_id, task_id=task_id,
                                                              team_namespace=revision.get("team_namespace"))
@@ -642,7 +674,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     path.chmod(0o444)
     return {"path": str(path), "inputs_digest": value["inputs_digest"], "scene_id": scene_id, "task_id": task_id,
-            "robot_station": station}
+            "robot_station": station,
+            **({"owner_success_confirmation": confirmation} if confirmation is not None else {})}
 
 
 def read_team_scene_inputs(path: str | Path) -> dict[str, Any]:

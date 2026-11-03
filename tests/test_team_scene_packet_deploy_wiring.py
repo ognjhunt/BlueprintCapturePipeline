@@ -30,6 +30,9 @@ def test_the_path_unit_wakes_a_hardened_worker_that_holds_no_provider_path() -> 
     assert f"ConditionPathExists=!/var/lib/blueprint-operator-door/requests/holds/{PATH_UNIT}.json" in path
     assert "-m blueprint_pipeline.team_scene_packet_worker --max-messages 1" in service
     assert f"Environment={worker.QUEUE_ROOT_ENV}={QUEUE}" in service
+    # The request's own intent, where an owner's success confirmation is kept, is read from the intake root.
+    assert ("Environment=BLUEPRINT_TASK_EVALUATION_SCENE_INTAKE_ROOT="
+            "/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents\n") in service
     for control in ("User=blueprint", "NoNewPrivileges=true", "ProtectSystem=strict", "CapabilityBoundingSet=\n"):
         assert control in service
     for paid in ("paid_resource_allocator", "provider_adapter", "VAST_API_KEY", "vast_"):

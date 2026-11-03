@@ -30,7 +30,12 @@ no-spend worker, woken by its path unit, does the rest on the CPU:
   keeps this off, by name; an invalid block refuses. Every team body the
   derived defaults register for screening is compiled with the scene too, so
   each gets its own station (``registered_embodiments``), chosen with its own
-  arm where its registered robot model is intact (``registered_embodiment_models``).
+  arm where its registered robot model is intact (``registered_embodiment_models``);
+- a website job's ``proposal_only`` success thresholds compile as the owner's
+  only through the owner's sealed confirmation under the request's own intent
+  (``owner_success_confirmation_scope``: the intent must be the request's, and
+  its progression must have queued this request); otherwise the owner contract
+  refuses as before.
 
 The scenario is ``nominal``: the website journey never names one (the WebApp
 copies the offer's scenario into the run request it prepares), and a team
@@ -47,7 +52,9 @@ an operating-system error) goes back to pending automatically, at most
 ``len(AUTOMATIC_RETRY_BACKOFF_SECONDS)`` times and each only after its wait;
 the status keeps the attempt count and cause under ``automatic_retry``. This
 worker's own pass and the screening timer's pass both do it
-(``requeue_transient_blocked``). A deterministic refusal stays blocked by name;
+(``requeue_transient_blocked``). An owner-contract refusal goes back once per
+new sealed owner confirmation of its intent, on the same passes. Any other
+deterministic refusal stays blocked by name;
 ``--requeue-unfinished`` retries the rest once their cause is fixed. Nothing
 here allocates a provider, starts a run or spends: the offer publishes facts,
 never authority, and every rights, consent and spend gate after it is unchanged.
@@ -102,6 +109,11 @@ TRANSIENT_BLOCKERS = frozenset({"team_scene_packet_interrupted", "team_scene_off
                                 "configured_controls_deferred_fetch_failed"})
 # The wait before each automatic retry, in order; once all are used the request stays blocked.
 AUTOMATIC_RETRY_BACKOFF_SECONDS = (300, 1800, 7200)
+# An owner-contract refusal a later run can clear only once the owner confirms the job's thresholds
+# (``task_evaluation_owner_success_confirmation``): each new sealed confirmation returns it to pending once,
+# and the status keeps the confirmations already tried, so a refusal never loops.
+OWNER_CONTRACT_BLOCKER_PREFIX = "team_scene_owner_contract_invalid:"
+OWNER_CONFIRMATION_REQUEUE_FIELD = "owner_success_confirmation_requeued"
 
 
 class TeamScenePacketRequestRefused(ValueError):
@@ -235,14 +247,49 @@ def _due(retry: Mapping[str, Any], now: datetime) -> bool:
     return not_before.tzinfo is None or not_before <= now
 
 
+def _owner_confirmations_untried(path: Path, status: Mapping[str, Any]) -> list[str]:
+    """The owner's sealed confirmations of an owner-contract refusal's own intent not yet tried, else none.
+
+    Any valid confirmation of the intent's owner counts here; whether it binds this exact task is decided
+    only by the compile (``team_scene_packet._owner_confirmed``).
+    """
+
+    blockers = status.get("blockers")
+    if (status.get("status") != "blocked" or not isinstance(blockers, list) or len(blockers) != 1
+            or not str(blockers[0]).startswith(OWNER_CONTRACT_BLOCKER_PREFIX)):
+        return []
+    from .task_evaluation_owner_success_confirmation import confirmations
+
+    try:
+        request = validated_request(_read_json(path))
+        scope, _unbound = owner_success_confirmation_scope(request)
+        rows = [] if scope is None else confirmations(scope["directory"], scope["intent"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    tried = status.get(OWNER_CONFIRMATION_REQUEUE_FIELD)
+    tried = tried if isinstance(tried, list) else []
+    return [row["confirmation_digest"] for row in rows if row["confirmation_digest"] not in tried]
+
+
 def _requeue_due(root: Path, now: datetime) -> list[dict[str, Any]]:
-    """Return each due transient block to pending, counting the attempt first (the lock is held)."""
+    """Return each due transient block, and each owner-contract refusal the owner has since confirmed, to
+    pending, recording the attempt first (the lock is held)."""
 
     requeued: list[dict[str, Any]] = []
     for path in sorted((root / "processed").glob("*.json")):
         status = _read_json(root / "status" / path.name) or {}
         cause = transient_cause(status)
         target = root / "pending" / path.name
+        confirmed = [] if cause is not None or target.exists() else _owner_confirmations_untried(path, status)
+        if confirmed:
+            tried = status.get(OWNER_CONFIRMATION_REQUEUE_FIELD)
+            tried = [*(tried if isinstance(tried, list) else []), *confirmed]
+            # Recorded before the move, so each confirmation is tried at most once.
+            _write_replace(root / "status" / path.name, {**status, OWNER_CONFIRMATION_REQUEUE_FIELD: tried})
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "owner_success_confirmation",
+                             "confirmation_digests": confirmed})
+            continue
         retry = dict(status.get("automatic_retry") or {})
         attempts = _retry_attempts(retry)
         if (cause is None or target.exists() or attempts >= len(AUTOMATIC_RETRY_BACKOFF_SECONDS)
@@ -444,6 +491,42 @@ def resolve_capture_root(request: Mapping[str, Any], *, partition: str | Path | 
     return capture
 
 
+def owner_success_confirmation_scope(request: Mapping[str, Any], *,
+                                    intent_root: str | Path | None = None) -> tuple[dict[str, Any] | None, str | None]:
+    """The request's own sealed intent, where an owner's success confirmation is kept, or None and why.
+
+    The request names its intent (id and digest, sealed in its own digest). The
+    intent is read from the scene intake root and must be that exact intent, and
+    the intent's progression must have queued this exact request; only then can
+    a ``proposal_only`` owner authority look for the owner's confirmation there
+    (``task_evaluation_owner_success_confirmation``). An unbound request compiles
+    as before, so the owner contract still refuses without a confirmation.
+    """
+
+    from . import task_evaluation_scene_intake as intake
+    from .task_evaluation_scene_intent_contracts import ROOT_ENV
+
+    raw = str(intent_root or os.environ.get(ROOT_ENV, "")).strip()
+    if not raw:
+        return None, "scene_intake_root_not_configured"
+    root = Path(raw)
+    directory = root / str(request["intent_id"])
+    if (not root.is_absolute() or not intake._identifier(request["intent_id"])
+            or any(part.is_symlink() for part in (directory, *directory.parents))):
+        return None, "intent_directory_unsafe"
+    try:
+        intent = intake._read(directory / "intent.json", "intent_digest")
+        progression = intake._read(directory / "progression.json", "progression_digest")
+    except (OSError, ValueError):
+        return None, "intent_unreadable"
+    queued = ((progression.get("state") or {}).get("scene_preparation_completion") or {}).get("team_scene_request")
+    if (intent.get("intent_id") != request["intent_id"] or intent.get("intent_digest") != request["intent_digest"]
+            or progression.get("intent_digest") != request["intent_digest"]
+            or not isinstance(queued, Mapping) or queued.get("request_digest") != request["request_digest"]):
+        return None, "intent_binding_mismatch"
+    return {"intent": intent, "directory": directory}, None
+
+
 def configured_scene_bundle(result: Mapping[str, Any]) -> Path:
     """The configured bundle retained beside the launch's published revision."""
 
@@ -491,7 +574,8 @@ def _discard_unreferenced(attempt_root: Any, capture_root: Any) -> None:
 def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any], capture: Path,
              inputs: Mapping[str, Any], fetcher: Fetcher | None,
              embodiments: Sequence[Mapping[str, Any]] = (),
-             models: Mapping[str, Path] | None = None) -> dict[str, Any]:
+             models: Mapping[str, Path] | None = None,
+             owner_scope: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_scene_packet import prepare_team_scene
 
@@ -516,7 +600,8 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
             droid_profile_digest=inputs["droid_profile_digest"],
             runtime_source_receipt_path=inputs["runtime_source_receipt_path"],
             **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
-            **({"embodiment_models": dict(models)} if embodiments and models else {}))
+            **({"embodiment_models": dict(models)} if embodiments and models else {}),
+            **({"owner_success_confirmation_scope": owner_scope} if owner_scope is not None else {}))
         written = dict(prepared.get("registry") or {})
         if written.get("status") != "written":
             raise TeamScenePacketRequestRefused(
@@ -527,7 +612,10 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
         raise
     return {"outcome": "compiled", "attempt_root": str(attempt), "task_id": prepared["task_id"],
             "team_scene_inputs_path": prepared["path"], "team_scene_inputs_digest": prepared["inputs_digest"],
-            "derived_profile": {key: written[key] for key in ("path", "profile_digest")}}
+            "derived_profile": {key: written[key] for key in ("path", "profile_digest")},
+            **({"owner_success_confirmation": {"status": "applied",
+                                               "confirmation_digest": prepared["owner_success_confirmation"]}}
+               if prepared.get("owner_success_confirmation") else {})}
 
 
 def _blocker(exc: BaseException) -> str:
@@ -545,10 +633,14 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     status: dict[str, Any] = {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem,
                               "scenario_id": SCENARIO_ID, "provider_mutation_performed": False,
                               "paid_execution_requested": False}
-    # An automatically retried request keeps its attempt count, whatever this run ends in.
-    retry = (_read_json(root / "status" / claimed.name) or {}).get("automatic_retry")
+    # An automatically retried request keeps its attempt count, and the owner confirmations already
+    # tried, whatever this run ends in.
+    prior = _read_json(root / "status" / claimed.name) or {}
+    retry = prior.get("automatic_retry")
     if isinstance(retry, Mapping):
         status["automatic_retry"] = dict(retry)
+    if isinstance(prior.get(OWNER_CONFIRMATION_REQUEUE_FIELD), list):
+        status[OWNER_CONFIRMATION_REQUEUE_FIELD] = list(prior[OWNER_CONFIRMATION_REQUEUE_FIELD])
 
     def skipped(reason: str) -> dict[str, Any]:
         return {**status, "status": "skipped", "reason": reason, "blockers": []}
@@ -582,9 +674,14 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
             embodiments, unreadable = registered_embodiments(registry)
             if unreadable:
                 status["embodiment_manifests_unreadable"] = unreadable
+            owner_scope, unbound = owner_success_confirmation_scope(request)
+            if unbound is not None:
+                # Recorded, never a blocker: an unbound request compiles exactly as before.
+                status["owner_success_confirmation"] = {"status": "intent_unbound", "reason": unbound}
             status.update(_compile(root, request, status=status, capture=capture, inputs=inputs, fetcher=fetcher,
                                    embodiments=embodiments,
-                                   models=registered_embodiment_models(registry) if embodiments else None))
+                                   models=registered_embodiment_models(registry) if embodiments else None,
+                                   owner_scope=owner_scope))
     except Exception as exc:  # noqa: BLE001 - every request ends in a typed status; the queue keeps moving
         blocker = _blocker(exc)
         if not blocker.startswith("team_scene_packet_failed:"):
@@ -614,7 +711,7 @@ def _recover_interrupted(root: Path, claimed: Path, *, now: datetime) -> dict[st
     prior = _read_json(root / "status" / claimed.name) or {}
     _discard_unreferenced(prior.get("attempt_root"), prior.get("capture_root"))
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
-                                        "automatic_retry") if key in prior}
+                                        "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD) if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
                                    "scenario_id": SCENARIO_ID, "status": "blocked",
                                    "blockers": ["team_scene_packet_interrupted"],
@@ -653,9 +750,10 @@ def requeue_transient_blocked(*, queue_root: str | Path) -> dict[str, Any]:
     """Recover an interrupted run and return each due transient block to pending, for a timer's pass.
 
     The worker runs only when something is pending, so a request its unit's
-    timeout left in ``processing/``, or a block waiting out its backoff, needs
-    a pass from outside. When a worker run holds the queue this does nothing:
-    that run recovers and requeues the same way.
+    timeout left in ``processing/``, a block waiting out its backoff, or an
+    owner-contract refusal the owner has since confirmed, needs a pass from
+    outside. When a worker run holds the queue this does nothing: that run
+    recovers and requeues the same way.
     """
 
     root = _queue(queue_root)
@@ -710,6 +808,8 @@ __all__ = [
     "QUEUE_ROOT_ENV",
     "REQUEST_SCHEMA",
     "AUTOMATIC_RETRY_BACKOFF_SECONDS",
+    "OWNER_CONFIRMATION_REQUEUE_FIELD",
+    "OWNER_CONTRACT_BLOCKER_PREFIX",
     "SCENARIO_ID",
     "STATUS_SCHEMA",
     "TRANSIENT_BLOCKERS",
@@ -717,6 +817,7 @@ __all__ = [
     "capture_key",
     "configured_scene_bundle",
     "enqueue_team_scene_request",
+    "owner_success_confirmation_scope",
     "packet_inputs",
     "process_team_scene_queue",
     "registered_embodiment_models",

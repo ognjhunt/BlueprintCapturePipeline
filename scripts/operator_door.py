@@ -26,6 +26,10 @@ laptop too. Standard library only.
         --approved-by U --approval-evidence "<owner approval>" --max-total-spend-usd 25 --max-paid-attempts 16 --wait   # preview
     python3 scripts/operator_door.py extend-scene-execution-budget ... --apply --apply-ack sha256:<preview apply_ack> \
         --ack extend-scene-execution-budget --wait
+    python3 scripts/operator_door.py confirm-owner-success-contract <intent_id> --owner-user-id U \
+        --owner-organization-id O --approved-by U --approval-evidence "<owner approval>" --wait   # preview
+    python3 scripts/operator_door.py confirm-owner-success-contract ... --apply --apply-ack sha256:<preview apply_ack> \
+        --ack confirm-owner-success-contract --wait
 
 Authentication: in a cloud session the egress proxy adds the bearer token, so
 nothing is configured in the VM and no header is sent. Elsewhere the token
@@ -70,7 +74,8 @@ MAX_RELEASE_PROVENANCE_BYTES = 16 * 1024
 # A retirement that planned or retired succeeded; "retained" (the scene did not qualify) exits 1
 # and the printed outcome carries the first reason.
 _TERMINAL_OK = {"deployed", "upgraded", "planned", "retired", "restored", "listed", "renewed", "released",
-                "legacy_owner_census_observed", "repaired", "extended", "already_covered", "superseded"}
+                "legacy_owner_census_observed", "repaired", "extended", "already_covered", "superseded",
+                "confirmed", "already_confirmed"}
 GITHUB_API = "https://api.github.com/repos/ognjhunt/BlueprintCapturePipeline"
 # The only job that attests a main commit. Its success is what a deploy's verification needs.
 ATTESTING_JOB = "SBOM, license, and provenance contract"
@@ -80,6 +85,7 @@ ATTESTED_SEARCH_RUNS = 30
 ATTESTED_JOB_READS = 8
 SCENE_WINDOW_ACK = "extend-scene-execution-window"
 SCENE_BUDGET_ACK = "extend-scene-execution-budget"
+OWNER_SUCCESS_ACK = "confirm-owner-success-contract"
 MAX_SCENE_WINDOW_SECONDS = 7 * 86400
 
 
@@ -750,6 +756,30 @@ def _scene_budget_body(args: argparse.Namespace) -> dict[str, Any]:
             "apply_ack": args.apply_ack if args.apply else "", "ack": SCENE_BUDGET_ACK}
 
 
+def _owner_success_body(args: argparse.Namespace) -> dict[str, Any]:
+    """A preview unless --apply; apply repeats the preview's apply_ack and the fixed --ack.
+
+    No threshold is an argument: the owner confirms the job's thresholds exactly as the preview shows them.
+    """
+    if re.fullmatch(r"scene-[0-9a-f]{64}", args.intent_id) is None:
+        raise DoorError(2, "owner_success_intent_id_invalid")
+    for name in ("owner_user_id", "owner_organization_id", "approved_by"):
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}", getattr(args, name)) is None:
+            raise DoorError(2, f"owner_success_{name}_invalid")
+    evidence = args.approval_evidence
+    if evidence != evidence.strip() or not 1 <= len(evidence) <= 500 or not evidence.isprintable():
+        raise DoorError(2, "owner_success_approval_evidence_invalid")
+    if args.apply and (args.ack != OWNER_SUCCESS_ACK
+                       or re.fullmatch(r"sha256:[0-9a-f]{64}", args.apply_ack or "") is None):
+        raise DoorError(2, f"owner_success_apply_requires --apply-ack <preview apply_ack> --ack {OWNER_SUCCESS_ACK}")
+    if not args.apply and (args.apply_ack or args.ack not in (None, OWNER_SUCCESS_ACK)):
+        raise DoorError(2, "owner_success_preview_takes_no_apply_ack")
+    return {"kind": "confirm-owner-success-contract", "intent_id": args.intent_id,
+            "owner_user_id": args.owner_user_id, "owner_organization_id": args.owner_organization_id,
+            "approved_by": args.approved_by, "approval_evidence": evidence, "apply": bool(args.apply),
+            "apply_ack": args.apply_ack if args.apply else "", "ack": OWNER_SUCCESS_ACK}
+
+
 def _hold_duration(value: str) -> int:
     match = re.fullmatch(r"([0-9]+)([hms])", value)
     if match is None:
@@ -882,6 +912,19 @@ def build_parser(*, checked_mode: bool = False) -> argparse.ArgumentParser:
     budget.add_argument("--apply-ack", help="with --apply: the preview's apply_ack digest")
     budget.add_argument("--ack", help=f"required with --apply: {SCENE_BUDGET_ACK}")
     _add_wait(budget, 600)
+    confirmation = commands.add_parser(
+        "confirm-owner-success-contract",
+        help="preview the owner's confirmation of a published website job's built success thresholds; "
+             "--apply records it",
+    )
+    confirmation.add_argument("intent_id", help="scene-<64 hex>, the sealed intent")
+    for flag in ("--owner-user-id", "--owner-organization-id", "--approved-by"):
+        confirmation.add_argument(flag, required=True)
+    confirmation.add_argument("--approval-evidence", required=True, help="names the owner's approval (<= 500 chars)")
+    confirmation.add_argument("--apply", action="store_true", help="record it; without this only a preview is made")
+    confirmation.add_argument("--apply-ack", help="with --apply: the preview's apply_ack digest")
+    confirmation.add_argument("--ack", help=f"required with --apply: {OWNER_SUCCESS_ACK}")
+    _add_wait(confirmation, 600)
     legacy_census = commands.add_parser("legacy-owner-census", help="read current historical owner labels and kept folders")
     _add_wait(legacy_census, 360)
     resume = commands.add_parser(
@@ -1022,6 +1065,8 @@ def run(args: argparse.Namespace) -> int:
         return _submit(_scene_window_body(args), args)
     elif command == "extend-scene-execution-budget":
         return _submit(_scene_budget_body(args), args)
+    elif command == "confirm-owner-success-contract":
+        return _submit(_owner_success_body(args), args)
     elif command == "public-embodiment-preparation":
         request = _embodiment_preparation_request(args.request_file)
         if not args.operation_key:

@@ -640,3 +640,43 @@ def test_scene_budget_requests_are_refused_unless_exact(changes, code):
     from operator_door.requests import RequestRefused, validate_request
     with pytest.raises(RequestRefused, match=code):
         validate_request(_budget_body(**changes))
+
+
+def _owner_success_body(**changes):
+    body = {"kind": "confirm-owner-success-contract", "intent_id": "scene-" + "a" * 64,
+            "owner_user_id": "owner-uid", "owner_organization_id": "org-1", "approved_by": "owner-uid",
+            "approval_evidence": "owner accepted the built thresholds in session X", "apply": False,
+            "apply_ack": "", "ack": "confirm-owner-success-contract"}
+    body.update(changes)
+    return body
+
+
+def test_owner_success_preview_and_apply_are_accepted_with_their_acknowledgements():
+    from operator_door.requests import required_scope, validate_request
+    assert required_scope("confirm-owner-success-contract") == "operate"
+    assert validate_request(_owner_success_body()) == _owner_success_body()
+    applied = _owner_success_body(apply=True, apply_ack="sha256:" + "c" * 64)
+    assert validate_request(applied) == applied
+
+
+@pytest.mark.parametrize(("changes", "code"), [
+    ({"apply": True}, "owner_success_apply_ack_invalid"),
+    ({"apply_ack": "sha256:" + "c" * 64}, "owner_success_apply_ack_invalid"),
+    ({"apply": True, "apply_ack": "c" * 64}, "owner_success_apply_ack_invalid"),
+    ({"ack": "yes"}, "owner_success_unacknowledged"),
+    ({"approval_evidence": " padded "}, "owner_success_approval_evidence_invalid"),
+    ({"approval_evidence": "x" * 501}, "owner_success_approval_evidence_invalid"),
+    ({"approval_evidence": "line\nbreak"}, "owner_success_approval_evidence_invalid"),
+    ({"approval_evidence": ""}, "owner_success_approval_evidence_invalid"),
+    ({"owner_user_id": "a b"}, "owner_success_fields_invalid"),
+    ({"approved_by": "x" * 129}, "owner_success_fields_invalid"),
+    ({"intent_id": "scene-zz"}, "owner_success_fields_invalid"),
+    ({"apply": "yes"}, "owner_success_fields_invalid"),
+    # No threshold is a request field: the owner confirms the preview's thresholds, never new ones.
+    ({"max_task_contact_force_n": 50}, "owner_success_fields_invalid"),
+    ({"extra": 1}, "owner_success_fields_invalid"),
+])
+def test_owner_success_requests_are_refused_unless_exact(changes, code):
+    from operator_door.requests import RequestRefused, validate_request
+    with pytest.raises(RequestRefused, match=code):
+        validate_request(_owner_success_body(**changes))
