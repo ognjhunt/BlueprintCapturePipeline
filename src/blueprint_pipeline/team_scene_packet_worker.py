@@ -635,11 +635,88 @@ def _discard_unreferenced(attempt_root: Any, capture_root: Any) -> None:
         shutil.rmtree(attempt, ignore_errors=True)
 
 
+class _HandedOff(Exception):
+    """The request's compile was handed to the remote CPU lane: it stays in ``processing/`` until it lands."""
+
+    def __init__(self, attempt_root: Path, route: Mapping[str, Any]) -> None:
+        self.attempt_root, self.route = str(attempt_root), dict(route)
+        super().__init__("team_scene_packet_handed_off")
+
+
+class _RemoteBlocked(Exception):
+    """The remote compile refused the request deterministically, with the host worker's own blocker."""
+
+    def __init__(self, blocker: str, error_type: Any) -> None:
+        self.blocker, self.error_type = str(blocker), error_type
+        super().__init__(self.blocker)
+
+
+def _compiled_status(attempt: Path, prepared: Mapping[str, Any], written: Mapping[str, Any]) -> dict[str, Any]:
+    return {"outcome": "compiled", "attempt_root": str(attempt), "task_id": prepared["task_id"],
+            "team_scene_inputs_path": prepared["path"], "team_scene_inputs_digest": prepared["inputs_digest"],
+            "derived_profile": {key: written[key] for key in ("path", "profile_digest")},
+            **({"owner_success_confirmation": {"status": "applied",
+                                               "confirmation_digest": prepared["owner_success_confirmation"]}}
+               if prepared.get("owner_success_confirmation") else {})}
+
+
+def _compile_routed(request: Mapping[str, Any], *, status: Mapping[str, Any], run: Path, capture: Path,
+                    attempt: Path, bundle: Path, inputs: Mapping[str, Any], fetcher: Fetcher | None,
+                    embodiments: Sequence[Mapping[str, Any]], models: Mapping[str, Path] | None,
+                    owner_scope: Mapping[str, Any] | None, remote: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A remote mode's compile: the same three steps as ``prepare_team_scene``, with the compile itself handed
+    to the remote CPU lane (``cloud_run``) or shadowed there (``cloud_run_shadow``) when the plan allows it."""
+
+    from . import team_scene_packet_remote as lane
+    from .team_scene_packet import SCENE_DIRECTORY, fetch_team_scene_sources, materialize_team_scene, record_team_scene
+
+    revision, documents = fetch_team_scene_sources(run_root=run, output_root=attempt, fetcher=fetcher)
+    arguments: dict[str, Any] = {
+        "revision": revision, "documents": documents, "output_root": attempt / SCENE_DIRECTORY,
+        "configured_scene_bundle_path": bundle, "droid_profile_path": inputs["droid_profile_path"],
+        "droid_profile_digest": inputs["droid_profile_digest"],
+        "runtime_source_receipt_path": inputs["runtime_source_receipt_path"],
+        **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
+        **({"embodiment_models": dict(models)} if embodiments and models else {}),
+        **({"owner_success_confirmation_scope": owner_scope} if owner_scope is not None else {})}
+    plan = lane.plan_remote_team_scene(
+        request={"request_id": status["request_key"], "request_digest": request["request_digest"],
+                 "scene_revision_digest": request["scene_revision_digest"]},
+        capture_root=capture, attempt_root=attempt, arguments=arguments, source_commit=remote.source_commit,
+        config=remote.config, jobs_root=remote.jobs_root, filesystem_root=remote.filesystem_root,
+        cache_root=remote.cache_root, host_environment=remote.host_environment)
+    route: dict[str, Any] = {"mode": remote.mode}
+    if isinstance(plan, lane.HostDecision):
+        route["host_decision"] = plan.reason
+    else:
+        route.update(queue_row=plan.queue_row["name"])
+    if isinstance(plan, lane.RemotePlan) and remote.mode == "cloud_run":
+        lane.write_handoff(remote.jobs_root, plan, mode="authoritative", now=remote.clock())
+        raise _HandedOff(attempt, {**route, "handed_off_at_epoch": float(remote.clock())})
+    try:
+        compiled = materialize_team_scene(**arguments)
+        prepared = record_team_scene(compiled, run_root=run, capture_root=capture, scenario_id=SCENARIO_ID,
+                                     scene_revision_digest=revision["revision_digest"])
+    except BaseException:
+        if isinstance(plan, lane.RemotePlan):
+            lane.discard_envelope(remote.jobs_root, plan.queue_row["name"])
+        raise
+    if isinstance(plan, lane.RemotePlan):
+        # Shadowed only once the host's own compile is recorded: what the host wrote is all any consumer reads.
+        if (prepared.get("registry") or {}).get("status") == "written":
+            lane.write_handoff(remote.jobs_root, plan, mode="shadow", now=remote.clock(),
+                               host={"inputs_digest": compiled["inputs_digest"]})
+            route["shadowed"] = True
+        else:
+            lane.discard_envelope(remote.jobs_root, plan.queue_row["name"])
+    return prepared, route
+
+
 def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any], capture: Path,
              inputs: Mapping[str, Any], fetcher: Fetcher | None,
              embodiments: Sequence[Mapping[str, Any]] = (),
              models: Mapping[str, Path] | None = None,
-             owner_scope: Mapping[str, Any] | None = None) -> dict[str, Any]:
+             owner_scope: Mapping[str, Any] | None = None, remote: Any = None) -> dict[str, Any]:
     from .task_evaluation_configured_controls_progression_worker import _validate_source
     from .team_scene_packet import prepare_team_scene
 
@@ -657,29 +734,73 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
                    {**status, "status": "processing", "attempt_root": str(attempt)})
     parent.mkdir(parents=True, exist_ok=True, mode=0o750)
     attempt.mkdir(mode=0o750)
+    route = None
     try:
-        prepared = prepare_team_scene(
-            run_root=run, capture_root=capture, scenario_id=SCENARIO_ID, output_root=attempt, fetcher=fetcher,
-            configured_scene_bundle_path=bundle, droid_profile_path=inputs["droid_profile_path"],
-            droid_profile_digest=inputs["droid_profile_digest"],
-            runtime_source_receipt_path=inputs["runtime_source_receipt_path"],
-            **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
-            **({"embodiment_models": dict(models)} if embodiments and models else {}),
-            **({"owner_success_confirmation_scope": owner_scope} if owner_scope is not None else {}))
+        if remote is None or remote.mode == "host":
+            prepared = prepare_team_scene(
+                run_root=run, capture_root=capture, scenario_id=SCENARIO_ID, output_root=attempt, fetcher=fetcher,
+                configured_scene_bundle_path=bundle, droid_profile_path=inputs["droid_profile_path"],
+                droid_profile_digest=inputs["droid_profile_digest"],
+                runtime_source_receipt_path=inputs["runtime_source_receipt_path"],
+                **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
+                **({"embodiment_models": dict(models)} if embodiments and models else {}),
+                **({"owner_success_confirmation_scope": owner_scope} if owner_scope is not None else {}))
+        else:
+            prepared, route = _compile_routed(
+                request, status=status, run=run, capture=capture, attempt=attempt, bundle=bundle, inputs=inputs,
+                fetcher=fetcher, embodiments=embodiments, models=models, owner_scope=owner_scope, remote=remote)
+        written = dict(prepared.get("registry") or {})
+        if written.get("status") != "written":
+            raise TeamScenePacketRequestRefused(
+                "team_scene_derived_profile_" + str(written.get("status") or "not_written"))
+    except _HandedOff:
+        raise  # the attempt, its documents and its envelope now belong to the hand-off
+    except Exception:
+        # Nothing names this attempt yet (the derived row is the last write), so it goes.
+        shutil.rmtree(attempt, ignore_errors=True)
+        raise
+    return {**_compiled_status(attempt, prepared, written), **({"remote_compile": route} if route else {})}
+
+
+def _collected_half(request: Mapping[str, Any], *, status: Mapping[str, Any], capture: Path,
+                    inputs: Mapping[str, Any], collected: Mapping[str, Any], remote: Any) -> dict[str, Any]:
+    """A remote compile the paid unit landed at this request's attempt: verify it, then record it exactly as the
+    host compile's own result would be recorded (``team_scene_packet.record_team_scene``)."""
+
+    from . import team_scene_packet_remote as lane
+    from .team_scene_packet import read_team_scene_inputs, record_team_scene
+
+    attempt = Path(str(collected.get("attempt_root") or ""))
+    if attempt.parent != Path(inputs["output_root"]) / capture_key(capture) or not _ATTEMPT.fullmatch(attempt.name):
+        raise TeamScenePacketRequestRefused("team_scene_remote_compile_unbound")
+    result = collected.get("result") or {}
+    route = {"mode": "remote", "queue_row": collected["queue_row"]["name"], "attempt_id": collected.get("attempt_id")}
+    try:
+        reasons = lane.validate_result(result, request_id=str(status["request_key"]),
+                                       envelope_digest=collected["queue_row"]["envelope_digest"],
+                                       source_commit=str(result.get("source_commit") or ""),
+                                       output_root=str(collected.get("output_root") or ""))
+        if reasons:
+            raise TeamScenePacketRequestRefused("team_scene_remote_result_invalid:" + reasons[0])
+        if result["status"] != lane.COMPLETED:
+            raise _RemoteBlocked(result["blockers"][0], result.get("error_type"))
+        compiled = dict(result["compiled"])
+        path = Path(remote.filesystem_root) / compiled["path"].lstrip("/")
+        # The landed half re-read on this host: its seal, and its packet and runtime-source records re-hashed.
+        read_team_scene_inputs(path)
+        if json.loads(path.read_text(encoding="utf-8")).get("inputs_digest") != compiled["inputs_digest"]:
+            raise TeamScenePacketRequestRefused("team_scene_remote_result_invalid:inputs_digest")
+        prepared = record_team_scene({**compiled, "path": str(path)}, run_root=Path(request["source_launch_root"]),
+                                     capture_root=capture, scenario_id=SCENARIO_ID,
+                                     scene_revision_digest=request["scene_revision_digest"])
         written = dict(prepared.get("registry") or {})
         if written.get("status") != "written":
             raise TeamScenePacketRequestRefused(
                 "team_scene_derived_profile_" + str(written.get("status") or "not_written"))
     except Exception:
-        # Nothing names this attempt yet (the derived row is the last write), so it goes.
-        shutil.rmtree(attempt, ignore_errors=True)
+        _discard_unreferenced(attempt, capture)
         raise
-    return {"outcome": "compiled", "attempt_root": str(attempt), "task_id": prepared["task_id"],
-            "team_scene_inputs_path": prepared["path"], "team_scene_inputs_digest": prepared["inputs_digest"],
-            "derived_profile": {key: written[key] for key in ("path", "profile_digest")},
-            **({"owner_success_confirmation": {"status": "applied",
-                                               "confirmation_digest": prepared["owner_success_confirmation"]}}
-               if prepared.get("owner_success_confirmation") else {})}
+    return {**_compiled_status(attempt, prepared, written), "remote_compile": route}
 
 
 def _blocker(exc: BaseException) -> str:
@@ -690,7 +811,8 @@ def _blocker(exc: BaseException) -> str:
 
 
 def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
-             offer_transport: Callable[..., Any] | None) -> dict[str, Any]:
+             offer_transport: Callable[..., Any] | None, remote: Any = None,
+             collected: Mapping[str, Any] | None = None) -> dict[str, Any]:
     from . import team_candidate_quick10_registry as registry_module
     from .agent_execution_offer import publish_agent_execution_offer
 
@@ -743,10 +865,23 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
             if unbound is not None:
                 # Recorded, never a blocker: an unbound request compiles exactly as before.
                 status["owner_success_confirmation"] = {"status": "intent_unbound", "reason": unbound}
-            status.update(_compile(root, request, status=status, capture=capture, inputs=inputs, fetcher=fetcher,
-                                   embodiments=embodiments,
-                                   models=registered_embodiment_models(registry) if embodiments else None,
-                                   owner_scope=owner_scope))
+            if collected is not None:
+                # The remote compile already ran with these bodies and this scope; only its landing is recorded.
+                status.update(_collected_half(request, status=status, capture=capture, inputs=inputs,
+                                              collected=collected, remote=remote))
+            else:
+                status.update(_compile(root, request, status=status, capture=capture, inputs=inputs, fetcher=fetcher,
+                                       embodiments=embodiments,
+                                       models=registered_embodiment_models(registry) if embodiments else None,
+                                       owner_scope=owner_scope, remote=remote))
+    except _HandedOff as handed:
+        # Not finished: the request stays claimed until the paid unit's collected or fallback marker returns it.
+        return {**status, "status": "processing", "attempt_root": handed.attempt_root,
+                "remote_compile": handed.route, "blockers": []}
+    except _RemoteBlocked as exc:
+        return {**status, "status": "blocked", "blockers": [exc.blocker],
+                **({"error": {"type": str(exc.error_type or "unknown"), "message": "raised in the remote CPU compile"}}
+                   if exc.blocker.startswith("team_scene_packet_failed:") else {})}
     except Exception as exc:  # noqa: BLE001 - every request ends in a typed status; the queue keeps moving
         blocker = _blocker(exc)
         if not blocker.startswith("team_scene_packet_failed:"):
@@ -776,10 +911,15 @@ def _finish(root: Path, claimed: Path, status: Mapping[str, Any], *, now: dateti
     return status
 
 
-def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: str | None = None
-                         ) -> dict[str, Any]:
+def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: str | None = None,
+                         jobs_root: Path | None = None) -> dict[str, Any]:
     prior = _read_json(root / "status" / claimed.name) or {}
     _discard_unreferenced(prior.get("attempt_root"), prior.get("capture_root"))
+    if jobs_root is not None and prior.get("attempt_root"):
+        from .team_scene_packet_remote import discard_attempt_envelopes
+
+        # A run that died between a remote plan's envelope and its hand-off left the envelope alone.
+        discard_attempt_envelopes(jobs_root, prior["attempt_root"])
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
                                         RELEASE_REQUEUE_FIELD) if key in prior}
@@ -790,33 +930,115 @@ def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: s
                    now=now, release=release)
 
 
+def _hold(root: Path, claimed: Path, status: Mapping[str, Any], *, release: str | None = None) -> dict[str, Any]:
+    """A handed-off request's status: still ``processing``, its claim kept for the remote lane."""
+
+    status = {key: value for key, value in status.items() if key != RELEASE_COMMIT_FIELD}
+    if _release(release) is not None:
+        status[RELEASE_COMMIT_FIELD] = release
+    _write_replace(root / "status" / claimed.name, status)
+    return status
+
+
+def _routing(release: str | None) -> Any:
+    from .team_scene_packet_remote import dispatch_context
+
+    return dispatch_context(source_commit=release)
+
+
+def _held(remote: Any) -> dict[str, dict[str, Any]]:
+    """The requests the remote CPU lane holds (``team_scene_packet_remote.claims``), in every mode: a rollback to
+    ``host`` still finishes what already landed and compiles what came back."""
+
+    from .team_scene_packet_remote import claims
+
+    return claims(remote.jobs_root)
+
+
+def _settle_remote(root: Path, held: Mapping[str, Mapping[str, Any]], *, fetcher: Fetcher | None,
+                   offer_transport: Callable[..., Any] | None, remote: Any, release: str | None,
+                   limit: int) -> tuple[list[dict[str, Any]], list[str], int]:
+    """Finish each request whose remote compile landed (its offer published as after a host compile), and
+    compile on the host each one the paid unit handed back, at most ``limit`` of those. A marker is consumed
+    once acted on, or at once when its request is no longer claimed, so the path unit never loops on it."""
+
+    from .team_scene_packet_remote import discard_envelope
+
+    results: list[dict[str, Any]] = []
+    deferred: list[str] = []
+    compiled = 0
+    for request_id, kinds in sorted(held.items()):
+        claimed = root / "processing" / f"{request_id}.json"
+        if "collected" in kinds:
+            path, record = kinds["collected"]
+            if claimed.is_file():
+                status = _process(root, claimed, fetcher=fetcher, offer_transport=offer_transport, remote=remote,
+                                  collected=record)
+                results.append(_finish(root, claimed, status, now=_utc_now(), release=release))
+                if status.get("attempt_root") != record.get("attempt_root"):
+                    _discard_unreferenced(record.get("attempt_root"), status.get("capture_root"))
+            discard_envelope(remote.jobs_root, record["queue_row"]["name"])
+            for kind in ("collected", "fallback"):
+                if kind in kinds:
+                    kinds[kind][0].unlink(missing_ok=True)
+        elif "fallback" in kinds:
+            path, record = kinds["fallback"]
+            if claimed.is_file():
+                if compiled >= limit:
+                    deferred.append(request_id)
+                    continue
+                prior = _read_json(root / "status" / claimed.name) or {}
+                # Nothing of the remote attempt landed; the host compiles from a fresh attempt directory.
+                _discard_unreferenced(record.get("attempt_root"), prior.get("capture_root"))
+                status = _process(root, claimed, fetcher=fetcher, offer_transport=offer_transport)
+                status["remote_compile"] = {"mode": "fallback_host", "queue_row": record["queue_row"]["name"],
+                                            "reason": record.get("reason")}
+                results.append(_finish(root, claimed, status, now=_utc_now(), release=release))
+                compiled += 1
+            discard_envelope(remote.jobs_root, record["queue_row"]["name"])
+            path.unlink(missing_ok=True)
+    return results, deferred, compiled
+
+
 def process_team_scene_queue(*, queue_root: str | Path, max_messages: int = 2, fetcher: Fetcher | None = None,
-                             offer_transport: Callable[..., Any] | None = None) -> dict[str, Any]:
-    """Advance up to ``max_messages`` pending requests to a terminal status, on the CPU."""
+                             offer_transport: Callable[..., Any] | None = None, remote: Any = None) -> dict[str, Any]:
+    """Advance up to ``max_messages`` pending requests to a terminal status, on the CPU or, where the remote CPU
+    lane is configured (``team_scene_packet_remote``), through it; ``remote`` overrides the routing read from the
+    environment."""
 
     if not isinstance(max_messages, int) or isinstance(max_messages, bool) or not 1 <= max_messages <= 16:
         raise TeamScenePacketRequestRefused("team_scene_packet_max_messages_invalid")
     root = _queue(queue_root)
     results: list[dict[str, Any]] = []
     release = current_release_commit()
+    routing = remote if remote is not None else _routing(release)
     with _locked(root):
-        # The lock is held for the whole run, so anything still processing was interrupted.
+        # The lock is held for the whole run, so anything still processing was interrupted, unless the remote
+        # lane holds it: a hand-off until it lands or comes back, and then its collected or fallback marker.
         now = _utc_now()
-        recovered = [_recover_interrupted(root, path, now=now, release=release)
-                     for path in sorted((root / "processing").glob("*.json"))]
+        held = _held(routing)
+        settled, deferred, spent = _settle_remote(root, held, fetcher=fetcher, offer_transport=offer_transport,
+                                                  remote=routing, release=release, limit=max_messages)
+        recovered = [_recover_interrupted(root, path, now=now, release=release, jobs_root=routing.jobs_root)
+                     for path in sorted((root / "processing").glob("*.json")) if path.stem not in held]
         retried = _requeue_due(root, now, release)
-        for pending in sorted((root / "pending").glob("*.json"))[:max_messages]:
+        for pending in sorted((root / "pending").glob("*.json"))[:max(0, max_messages - spent)]:
             claimed = root / "processing" / pending.name
             try:
                 os.replace(pending, claimed)
             except FileNotFoundError:
                 continue
-            results.append(_finish(root, claimed, _process(root, claimed, fetcher=fetcher,
-                                                           offer_transport=offer_transport), now=_utc_now(),
-                                   release=release))
-    return {"schema_version": RUN_SCHEMA, "status": "processed" if results or recovered else "idle",
+            status = _process(root, claimed, fetcher=fetcher, offer_transport=offer_transport, remote=routing)
+            if status.get("status") == "processing":
+                results.append(_hold(root, claimed, status, release=release))
+                continue
+            results.append(_finish(root, claimed, status, now=_utc_now(), release=release))
+    remote_view = {"execution_mode": routing.execution, "remote_settled": settled, "remote_deferred": deferred}
+    shown = routing.mode != "host" or settled or deferred or routing.execution["findings"]
+    return {"schema_version": RUN_SCHEMA, "status": "processed" if results or recovered or settled else "idle",
             "processed_count": len(results), "results": results, "recovered": recovered,
-            "automatic_requeue": retried, "provider_mutation_performed": False, "paid_execution_requested": False}
+            "automatic_requeue": retried, **(remote_view if shown else {}),
+            "provider_mutation_performed": False, "paid_execution_requested": False}
 
 
 def requeue_transient_blocked(*, queue_root: str | Path) -> dict[str, Any]:
@@ -828,18 +1050,21 @@ def requeue_transient_blocked(*, queue_root: str | Path) -> dict[str, Any]:
     refusal a newly deployed release has not yet tried, needs a pass from
     outside. This pass reads the release it runs from itself
     (``current_release_commit``). When a worker run holds the queue this does
-    nothing: that run recovers and requeues the same way.
+    nothing: that run recovers and requeues the same way. A request the remote
+    CPU lane holds is never recovered here; the worker settles it.
     """
 
     root = _queue(queue_root)
     release = current_release_commit()
-    with _locked(root, wait=False) as held:
-        if not held:
+    with _locked(root, wait=False) as locked:
+        if not locked:
             return {"schema_version": RUN_SCHEMA, "status": "busy", "requeued": [], "recovered": [],
                     "provider_mutation_performed": False, "paid_execution_requested": False}
         now = _utc_now()
-        recovered = [_recover_interrupted(root, path, now=now, release=release)["request_key"]
-                     for path in sorted((root / "processing").glob("*.json"))]
+        routing = _routing(release)
+        held = _held(routing)
+        recovered = [_recover_interrupted(root, path, now=now, release=release, jobs_root=routing.jobs_root)[
+            "request_key"] for path in sorted((root / "processing").glob("*.json")) if path.stem not in held]
         requeued = _requeue_due(root, now, release)
     return {"schema_version": RUN_SCHEMA, "status": "requeued" if requeued else "idle", "requeued": requeued,
             "recovered": recovered, "provider_mutation_performed": False, "paid_execution_requested": False}

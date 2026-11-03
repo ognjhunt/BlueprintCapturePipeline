@@ -723,39 +723,65 @@ def recorded_embodiment_stations(path: str | Path | None, *, plan_digest: Any) -
     return dict(stations) if value.get("plan_digest") == plan_digest and isinstance(stations, Mapping) else {}
 
 
-def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenario_id: str,
-                       output_root: str | Path, fetcher: Callable[[Mapping[str, Any]], bytes] | None = None,
-                       **packet_inputs: Any) -> dict[str, Any]:
-    """Compile a completed source launch's published scene and record it where the team registry reads it.
+SCENE_DIRECTORY = "scene"
+
+
+def fetch_team_scene_sources(*, run_root: str | Path, output_root: str | Path,
+                             fetcher: Callable[[Mapping[str, Any]], bytes] | None = None
+                             ) -> tuple[dict[str, Any], dict[str, Path]]:
+    """A completed source launch's published revision, and its documents fetched under ``output_root``."""
+
+    from .robot_free_readiness_retention import _revision
+    from .task_evaluation_configured_controls_progression_worker import _validate_source
+    from .task_evaluation_scene_rigid_robot_free_readiness import fetch_revision_documents
+
+    result, _receipt, _zero = _validate_source(Path(run_root))
+    revision = _revision(result["configured_scene_revision_reference"],
+                         revision_digest=result["configured_scene_revision_digest"], fetcher=fetcher)
+    documents = fetch_revision_documents(revision=revision, output_root=Path(output_root), fetcher=fetcher)
+    return revision, documents
+
+
+def record_team_scene(compiled: Mapping[str, Any], *, run_root: str | Path, capture_root: str | Path,
+                      scenario_id: str, scene_revision_digest: str) -> dict[str, Any]:
+    """Record a compiled scene half where the team registry reads it, and queue its robot-free probe.
 
     The launch's run root is also where its robot-free probe receipt is retained
     (``robot_free_readiness_retention``), so it is the scene's probe root.
     """
 
-    from .robot_free_readiness_retention import _revision
-    from .task_evaluation_configured_controls_progression_worker import _validate_source
-    from .task_evaluation_scene_rigid_robot_free_readiness import fetch_revision_documents
     from .team_candidate_quick10_registry import write_derived_profile
 
-    result, _receipt, _zero = _validate_source(Path(run_root))
-    revision = _revision(result["configured_scene_revision_reference"],
-                         revision_digest=result["configured_scene_revision_digest"], fetcher=fetcher)
-    root = Path(output_root)
-    documents = fetch_revision_documents(revision=revision, output_root=root, fetcher=fetcher)
-    compiled = materialize_team_scene(revision=revision, documents=documents, output_root=root / "scene",
-                                      **packet_inputs)
     descriptor = _read(Path(capture_root) / "capture_descriptor.json", "team_scene_capture_descriptor_invalid")
     written = write_derived_profile({
         "capture_root": str(Path(capture_root).resolve()), "scene_id": str(descriptor.get("scene_id") or ""),
         "task_id": compiled["task_id"], "scenario_id": scenario_id,
         "robot_free_probe_root": str(Path(run_root).resolve()),
-        "scene_revision_digest": revision["revision_digest"], "team_scene_inputs_path": compiled["path"]})
+        "scene_revision_digest": scene_revision_digest, "team_scene_inputs_path": compiled["path"]})
     probe = {"status": "profile_not_written", "queued": False}
     if written.get("status") == "written":
         from .rigid_robot_free_probe_runner import enqueue_rigid_robot_free_probe
 
         probe = enqueue_rigid_robot_free_probe(capture_root)
     return {**compiled, "registry": written, "robot_free_probe": probe}
+
+
+def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenario_id: str,
+                       output_root: str | Path, fetcher: Callable[[Mapping[str, Any]], bytes] | None = None,
+                       **packet_inputs: Any) -> dict[str, Any]:
+    """Compile a completed source launch's published scene and record it where the team registry reads it.
+
+    Three steps, each its own function so a remote CPU worker can run the middle one
+    (``team_scene_packet_remote``): fetch the revision and its documents under ``output_root``, compile
+    ``output_root/scene``, record the derived row.
+    """
+
+    root = Path(output_root)
+    revision, documents = fetch_team_scene_sources(run_root=run_root, output_root=root, fetcher=fetcher)
+    compiled = materialize_team_scene(revision=revision, documents=documents, output_root=root / SCENE_DIRECTORY,
+                                      **packet_inputs)
+    return record_team_scene(compiled, run_root=run_root, capture_root=capture_root, scenario_id=scenario_id,
+                             scene_revision_digest=revision["revision_digest"])
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -783,12 +809,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "CLAIM_CEILING",
     "RECORD_FILENAME",
+    "SCENE_DIRECTORY",
     "SCHEMA",
     "STATION_FOOTPRINT_HALF_EXTENT_M",
     "TeamScenePacketError",
+    "fetch_team_scene_sources",
     "materialize_team_scene",
     "prepare_team_scene",
     "read_team_scene_inputs",
+    "record_team_scene",
     "recorded_embodiment_stations",
 ]
 
