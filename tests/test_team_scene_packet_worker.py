@@ -546,8 +546,15 @@ def test_a_refusal_recorded_without_a_release_requeues_once_under_a_known_releas
     # A transient block keeps its own bounded backoff: not before its wait, and once due, as a transient retry.
     ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1,
       "automatic_retry": {"attempts": 0, "not_before": "2026-10-31T12:05:00+00:00"}}, RELEASE_2, None),
+    # Once its automatic retries are spent, a transient block gets one try per new release, like a
+    # deterministic one (capture-447ae4f4, 2026-11-03: killed three times for host memory).
     ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1,
-      "automatic_retry": {"attempts": 3, "exhausted": True}}, RELEASE_2, None),
+      "automatic_retry": {"attempts": 3, "exhausted": True}}, RELEASE_2, "new_release"),
+    ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"], "release_commit": RELEASE_1,
+      "automatic_retry": {"attempts": 3, "limit": 3, "reason": "team_scene_packet_interrupted"}},
+     RELEASE_2, "new_release"),
+    ({"status": "blocked", "blockers": ["team_scene_packet_interrupted"], "release_commit": RELEASE_2,
+      "automatic_retry": {"attempts": 3, "limit": 3}}, RELEASE_2, None),
     ({"status": "blocked", "blockers": ["team_scene_offer_publication_failed"], "release_commit": RELEASE_1},
      RELEASE_2, "team_scene_offer_publication_failed"),
 ])
