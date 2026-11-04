@@ -189,6 +189,41 @@ def _validate_provider_manifest(
     return manifest
 
 
+def _verified_current_child(child_root: Path, *, inputs: Mapping[str, Any], index: int) -> dict[str, Any] | None:
+    """The interrupted cell's own sealed result, when it validates as a completed cell; else None."""
+    current = child_root / PROVIDER_RESULT_FILENAME
+    if current.is_file() and not current.is_symlink() and current.stat().st_size <= 128 * 1024**2:
+        try:
+            child = json.loads(current.read_text())
+            if _validate_isolated_cell_result(child=child, inputs=inputs, index=index):
+                return child
+        except (ValueError, TypeError, KeyError, RuntimeError, OSError):
+            pass  # Original bytes remain on disk; unverified content is not execution evidence.
+    return None
+
+
+def seal_beta_interruption(*, inputs: Mapping[str, Any], authority: Mapping[str, Any],
+        children: list[Mapping[str, Any]], child_root: Path, output_root: Path, index: int,
+        reason: str, seal_result: Callable[..., None], seal_prefix: Callable[..., bool]) -> bool:
+    """Seal a timed-out beta run's measured cells as its partial result; True when sealed.
+
+    A scripted run keeps its own interruption record. A learned-policy run keeps
+    every cell measured before the timeout, and the timed-out cell's own sealed
+    result when Isaac hung only while closing. The cells it did not return are
+    not invented: the host counts each unscored (``cell_not_returned``). With no
+    measured episode nothing is sealed here and the existing handling applies.
+    """
+    if seal_scripted_interruption(inputs=inputs, authority=authority, children=children, child_root=child_root,
+                                  output_root=output_root, index=index, reason=reason, seal_result=seal_result):
+        return True
+    if inputs.get("run_kind") != BETA_RUN_KIND:
+        return False
+    current = _verified_current_child(child_root, inputs=inputs, index=index)
+    return seal_prefix(output_root=output_root, inputs=inputs, authority=authority,
+                       children=[*children, *([current] if current is not None else [])],
+                       reason=reason, interrupted_cell_index=index)
+
+
 def seal_scripted_interruption(*, inputs: Mapping[str, Any], authority: Mapping[str, Any],
         children: list[Mapping[str, Any]], child_root: Path, output_root: Path, index: int,
         reason: str, seal_result: Callable[..., None]) -> bool:
@@ -202,16 +237,10 @@ def seal_scripted_interruption(*, inputs: Mapping[str, Any], authority: Mapping[
     if inputs.get("run_kind") != BETA_RUN_KIND or set(kinds.values()) != {SCRIPTED}:
         return False
     retained = list(children)
-    current = child_root / PROVIDER_RESULT_FILENAME
-    verified_current = False
-    if current.is_file() and not current.is_symlink() and current.stat().st_size <= 128 * 1024**2:
-        try:
-            child = json.loads(current.read_text())
-            verified_current = _validate_isolated_cell_result(child=child, inputs=inputs, index=index)
-            if verified_current:
-                retained.append(child)
-        except (ValueError, TypeError, KeyError, RuntimeError, OSError):
-            pass  # Original bytes remain on disk; unverified content is not execution evidence.
+    current = _verified_current_child(child_root, inputs=inputs, index=index)
+    verified_current = current is not None
+    if verified_current:
+        retained.append(current)
     episodes = [_prefix_episode_evidence_paths(row, prefix=f"cell_runs/{ordinal:02d}")
                 for ordinal, child in enumerate(retained) for row in child.get("episodes", [])]
     inventory = [{**row, "relative_path": f"cell_runs/{ordinal:02d}/{row['relative_path']}"}
@@ -274,12 +303,27 @@ def seal_runtime_stop_sidecar(*, guard, output_root: Path, seal_result: Callable
 def seal_team_prefix(*, output_root: Path, inputs: Mapping[str, Any], authority: Mapping[str, Any],
                      children: list[Mapping[str, Any]], construction_lineage_mode: str, reason: str,
                      aggregate: Callable, seal_result: Callable, stopped_before_next_cell: bool = False,
-                     interrupted_cell_index: int | None = None) -> None:
-    if inputs.get("run_kind") != TEAM_RUN_KIND or not children:
-        return
-    result = aggregate(
-        inputs={**inputs, "cells": inputs["cells"][:len(children)]}, authority=authority,
-        child_results=children, output_root=output_root, construction_lineage_mode=construction_lineage_mode)
+                     interrupted_cell_index: int | None = None) -> bool:
+    """Seal a stopped team or beta run's measured prefix as its result; True when sealed.
+
+    A beta prefix is sealed only when it measured at least one episode and its
+    cells validate: the host then counts the planned cells it did not return as
+    unscored. Otherwise nothing is sealed and the run's existing failure stands
+    (its bounded harness retry and sibling hold included).
+    """
+    beta = inputs.get("run_kind") == BETA_RUN_KIND
+    if (inputs.get("run_kind") != TEAM_RUN_KIND and not beta) or not children:
+        return False
+    if beta and not any(child.get("episodes") for child in children):
+        return False
+    try:
+        result = aggregate(
+            inputs={**inputs, "cells": inputs["cells"][:len(children)]}, authority=authority,
+            child_results=children, output_root=output_root, construction_lineage_mode=construction_lineage_mode)
+    except (RuntimeError, ValueError):
+        if not beta:
+            raise
+        return False  # An unverifiable beta prefix is not execution evidence.
     result.update(status="blocked", blockers=[reason], planned_episodes_per_policy=len(inputs["cells"]),
                   execution_stopped_after_cell=len(children),
                   stopped_before_next_cell=stopped_before_next_cell)
@@ -291,6 +335,7 @@ def seal_team_prefix(*, output_root: Path, inputs: Mapping[str, Any], authority:
             result["policy_loads"] = None
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
     seal_result(result_path=output_root / PROVIDER_RESULT_FILENAME, result=result)
+    return True
 
 
 def seal_beta_control_stop(*, output_root: Path, inputs: Mapping[str, Any], authority: Mapping[str, Any],
