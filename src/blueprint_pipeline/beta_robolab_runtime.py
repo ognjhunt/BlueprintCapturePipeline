@@ -172,9 +172,103 @@ def _loaded_dependency_origins(runtime: Path) -> dict[str, Any]:
     return origins
 
 
+#: Every module the upstream episode loop needs once ``robolab.eval`` loads it (its import-time
+#: closure and the two Kit modules ``run_episode`` calls). They are probed together after Isaac
+#: launches, so one paid run names every missing one instead of the first.
+ROBOLAB_RUNTIME_MODULES = (
+    "cv2", "imageio", "numpy", "torch", "tqdm", "h5py", "yaml", "scipy.stats",
+    "omni.usd", "omni.timeline", "omni.kit.app", "pxr.Usd",
+    "isaaclab.sim.utils", "isaaclab.assets", "isaaclab.envs", "isaaclab.utils.math",
+    "isaaclab.sensors.frame_transformer.frame_transformer",
+    "isaacsim.core.prims",
+)
+#: Deprecated in Isaac Sim 6.0.1 and not enabled by the pinned experience. Upstream RoboLab imports
+#: it at module level only to name ``XFormPrim`` in ``isinstance`` checks on scene objects
+#: (``robolab/core/world/world_state.py``), which our native environment never presents.
+_XFORM_PRIM_MODULE = "isaacsim.core.prims"
+_XFORM_PRIM_SUCCESSORS = (("isaacsim.core.experimental.prims", "XformPrim"), ("isaaclab.sim.views", "XformPrimView"))
+
+
+class RobolabRuntimeError(ValueError):
+    """Typed codes the session result keeps (``errors``); never a message."""
+
+    def __init__(self, errors: list[str]):
+        super().__init__(",".join(errors))
+        self.errors = list(errors)
+
+
+def _enable_extension(name: str) -> bool:
+    try:
+        import omni.kit.app
+
+        manager = omni.kit.app.get_app().get_extension_manager()
+        if not manager.is_extension_enabled(name):
+            manager.set_extension_enabled_immediate(name, True)
+        return bool(manager.is_extension_enabled(name))
+    except Exception:  # noqa: BLE001 - an extension Kit cannot enable is reported as missing
+        return False
+
+
+def _xform_prim_compatibility(import_module: Any, enable_extension: Any) -> str | None:
+    """Enable the deprecated extension, else name its successor class under the old import path."""
+    import types
+
+    if enable_extension(_XFORM_PRIM_MODULE):
+        try:
+            import_module(_XFORM_PRIM_MODULE)
+            return "extension_enabled_at_runtime"
+        except Exception:  # noqa: BLE001 - fall through to the successor class
+            pass
+    for module_name, attribute in _XFORM_PRIM_SUCCESSORS:
+        try:
+            successor = getattr(import_module(module_name), attribute)
+        except Exception:  # noqa: BLE001 - try the next successor
+            continue
+        alias = types.ModuleType(_XFORM_PRIM_MODULE)
+        alias.XFormPrim = successor
+        alias.__doc__ = f"Blueprint compatibility alias: XFormPrim is {module_name}.{attribute}."
+        sys.modules[_XFORM_PRIM_MODULE] = alias
+        return f"alias:XFormPrim={module_name}.{attribute}"
+    return None
+
+
+def probe_robolab_runtime_modules(*, import_module: Any = None, enable_extension: Any = None,
+                                  modules: tuple[str, ...] = ROBOLAB_RUNTIME_MODULES) -> dict[str, str]:
+    """Import every module the episode loop needs; raise with every one that is missing."""
+    import importlib
+
+    import_module = import_module or importlib.import_module
+    enable_extension = enable_extension or _enable_extension
+    missing: list[str] = []
+    compatibility: dict[str, str] = {}
+    for name in modules:
+        try:
+            import_module(name)
+            continue
+        except ImportError:
+            pass
+        except Exception:  # noqa: BLE001 - present but broken is its own code
+            missing.append("module_import_failed:" + name)
+            continue
+        if name == _XFORM_PRIM_MODULE and (
+                resolution := _xform_prim_compatibility(import_module, enable_extension)) is not None:
+            compatibility[name] = resolution
+            continue
+        missing.append("module_not_found:" + name)
+    if missing:
+        raise RobolabRuntimeError(missing)
+    return compatibility
+
+
 def preflight_robolab_runtime() -> dict[str, Any]:
     """Resolve real runtime imports after Isaac launch, before policy clients."""
+    import os
+
     verify_loaded_robolab()
+    # RoboLab's progress bar writes one ever-growing line into the cell console, which pushes
+    # the lines that explain a failure out of the retained log tail. tqdm reads this at import.
+    os.environ.setdefault("TQDM_DISABLE", "1")
+    compatibility = probe_robolab_runtime_modules()
     from robolab.eval import InferenceClient, run_episode
     if not isinstance(InferenceClient, type) or not callable(run_episode):
         raise ValueError("beta_robolab_upstream_entrypoints_unavailable")
@@ -182,7 +276,7 @@ def preflight_robolab_runtime() -> dict[str, Any]:
 
     origins = _loaded_dependency_origins(Path(robolab.__file__).resolve().parent.parent)
     return {"backend": BACKEND, "source_commit": ROBOLAB_COMMIT, "status": "passed",
-            "python_dependency_origins": origins,
+            "python_dependency_origins": origins, "compatibility": compatibility,
             "warnings": sorted(f"beta_robolab_dependency_not_from_staged_wheel:{name}"
                                for name, origin in origins.items()
                                if origin["loaded"] and not origin["from_staged_wheel"])}
@@ -319,6 +413,12 @@ def run_robolab_episode(events: Generator, *, policy: Any, prompt: str, maximum_
     config = SimpleNamespace(instruction=prompt, sim=SimpleNamespace(dt=1.0 / control_hz, render_interval=1))
     try:
         if environment.result is None:
+            import omni.timeline
+
+            # Upstream waits for the timeline with ``while not is_playing(): update()`` and no exit:
+            # a stopped timeline would spin until the paid hard TTL. Refuse it by name instead.
+            if not omni.timeline.get_timeline_interface().is_playing():
+                raise ValueError("beta_robolab_timeline_not_playing")
             results, _subtasks, timing = run_episode(environment, config, 0, client, headless=True,
                                                     save_videos=False, video_mode="none", enable_gt_state=False)
         else:

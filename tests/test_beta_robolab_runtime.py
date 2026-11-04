@@ -131,6 +131,8 @@ def test_pinned_opencv_ships_with_robolab_and_is_verified_after_load(stock_robol
 
 
 def test_preflight_records_which_opencv_loaded_without_refusing(stock_robolab, monkeypatch):
+    monkeypatch.setattr(runtime.probe_robolab_runtime_modules, "__kwdefaults__",
+                        {**runtime.probe_robolab_runtime_modules.__kwdefaults__, "modules": ()})
     monkeypatch.setitem(sys.modules, "cv2", ModuleType("cv2"))
     sys.modules["cv2"].__file__ = str(stock_robolab / "cv2/__init__.py")
     result = runtime.preflight_robolab_runtime()
@@ -241,3 +243,54 @@ def test_remote_entrypoint_requires_private_regular_file_without_reading_secret(
     alias.symlink_to(path)
     assert result(alias).returncode == 86
     assert result(tmp_path / "missing").returncode == 86
+
+
+def _importer(available: dict):
+    def import_module(name):
+        if name not in available:
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+        return available[name]
+    return import_module
+
+
+def test_the_runtime_probe_names_every_missing_module_in_one_run():
+    """2026-11-04: each paid run found one missing module (cv2), then stopped. The probe imports the
+    whole episode closure after Isaac launches and names every module that is missing."""
+    present = {name: ModuleType(name) for name in runtime.ROBOLAB_RUNTIME_MODULES
+               if name not in {"cv2", "scipy.stats", "isaacsim.core.prims"}}
+    with pytest.raises(runtime.RobolabRuntimeError) as refused:
+        runtime.probe_robolab_runtime_modules(import_module=_importer(present), enable_extension=lambda _n: False)
+    assert refused.value.errors == ["module_not_found:cv2", "module_not_found:scipy.stats",
+                                    "module_not_found:isaacsim.core.prims"]
+
+
+def test_the_deprecated_xform_prim_module_resolves_by_extension_or_named_successor(monkeypatch):
+    present = {name: ModuleType(name) for name in runtime.ROBOLAB_RUNTIME_MODULES if name != "isaacsim.core.prims"}
+    successor = type("XformPrim", (), {})
+    present["isaacsim.core.experimental.prims"] = SimpleNamespace(XformPrim=successor)
+    monkeypatch.delitem(sys.modules, "isaacsim.core.prims", raising=False)
+    compatibility = runtime.probe_robolab_runtime_modules(import_module=_importer(present),
+                                                         enable_extension=lambda _n: False)
+    assert compatibility == {"isaacsim.core.prims": "alias:XFormPrim=isaacsim.core.experimental.prims.XformPrim"}
+    assert sys.modules["isaacsim.core.prims"].XFormPrim is successor
+    sys.modules.pop("isaacsim.core.prims", None)
+    # When Kit can enable the extension, the real module is used and nothing is aliased.
+    enabled = dict(present, **{"isaacsim.core.prims": ModuleType("isaacsim.core.prims")})
+    calls = []
+    def import_module(name, _first=[True]):
+        if name == "isaacsim.core.prims" and _first[0]:
+            _first[0] = False
+            raise ModuleNotFoundError(name=name)
+        return enabled[name]
+    assert runtime.probe_robolab_runtime_modules(import_module=import_module,
+                                                 enable_extension=lambda n: calls.append(n) or True) == {
+        "isaacsim.core.prims": "extension_enabled_at_runtime"}
+    assert calls == ["isaacsim.core.prims"]
+
+
+def test_a_stopped_timeline_is_refused_instead_of_spinning(stock_robolab, monkeypatch):
+    monkeypatch.setitem(sys.modules, "omni.timeline", ModuleType("omni.timeline"))
+    sys.modules["omni.timeline"].get_timeline_interface = lambda: SimpleNamespace(is_playing=lambda: False)
+    sys.modules["omni"].timeline = sys.modules["omni.timeline"]
+    with pytest.raises(ValueError, match="beta_robolab_timeline_not_playing"):
+        _run(_Environment(), _Policy(), evaluation_backend="robolab.v1")
