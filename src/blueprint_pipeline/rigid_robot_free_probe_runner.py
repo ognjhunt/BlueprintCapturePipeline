@@ -20,10 +20,20 @@ touches nothing. Enabled, for each pending capture it:
 
 1. settles the latest attempt. An allocator still running, or one whose fate
    is unknown, holds that capture (never a second allocation); an allocated run
-   whose provider zero is unproven holds it for an operator;
+   whose provider zero is unproven holds it for an operator. Before any capture
+   is advanced, every funded attempt under the queue whose teardown its own
+   records prove (sealed jobs included) has its website-grant hold settled to its
+   adapter's budget-ledger estimate, once (``rigid_robot_free_probe_settlement``),
+   and every machine an attempt's adapter avoided joins the lane's shared
+   avoidlist, which each new attempt reads with its profile's;
 2. stops when the receipt is decided (passed or failed, never replaced), the
    task cannot be probed, or the attempt budget is spent (two funded attempts,
-   four refusals before funding). An attempt refused while staging (the packet
+   four refusals before funding). A run whose machine never started our
+   container (the adapter's ``pre_execution_provider_null``, avoided for the
+   on-start heartbeat) is a provider no-start: its cost is settled like any
+   other, it counts toward no funded limit, and the second one per request
+   seals the job ``rigid_robot_free_probe_provider_no_start_repeated``, which
+   no release retries. An attempt refused while staging (the packet
    or its plan cannot carry the probe, or spawns its object off the task's
    start, so no episode could be scored) launched nothing and counts toward
    neither; the refusal seals the job ``staging_refused``. The WebApp's own
@@ -109,6 +119,12 @@ from .rigid_robot_free_probe_lane import (
     MAX_HOURLY_RATE_USD,
     lane_enabled,
 )
+from .rigid_robot_free_probe_settlement import (
+    attempt_machine_avoidlist,
+    provider_no_start,
+    refresh_lane_avoidlist,
+    settle_attempt_spend,
+)
 from .rigid_robot_free_probe_worker import INPUTS_FILENAME, RESULT_SCHEMA_VERSION, TRACE_FILENAME
 
 QUEUE_ENV = "BLUEPRINT_RIGID_ROBOT_FREE_PROBE_QUEUE"
@@ -167,6 +183,12 @@ RUNTIME_REDRIVE_STATE = "attempts_exhausted"
 MAX_RUNTIME_REDRIVES = 2
 RUNTIME_FAILURE_PREFIX = "rigid_robot_free_probe_failed_at_"
 RUNTIME_FAILURE_BLOCKERS = frozenset({"provider_runtime_result_missing_from_output_zip"})
+# A funded run whose machine never started our container (``provider_no_start``; capture-447ae4f4's
+# instance 59035045, 2026-11-04 00:48Z): its cost is settled like any other run's, it counts toward no
+# funded limit, and at most this many per request are tried before the job is held by name.
+PROVIDER_NO_START_STATE = "provider_no_start"
+MAX_PROVIDER_NO_STARTS = 2
+NO_START_REPEATED_STATUS = "rigid_robot_free_probe_provider_no_start_repeated"
 SUPERSEDED_DIRNAME = "superseded_terminals"
 SUPERSESSION_SCHEMA = "blueprint.rigid_robot_free_probe_terminal_supersession.v1"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -458,6 +480,9 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
             "allocator_blockers": [str(item) for item in result.get("blockers") or []][:20],
             "estimated_cost_usd": result.get("estimated_cost_usd")}
     if result.get("status") != "completed":
+        no_start = provider_no_start(attempt, work) if funded and allocated else None
+        if no_start is not None:
+            return _record_ingest(attempt, {**base, "state": PROVIDER_NO_START_STATE, "provider_no_start": no_start})
         name = "funded_unallocated" if funded and not allocated else "allocated_blocked" if allocated else (
             GRANT_REFUSED_STATE if any(str(item).startswith(GRANT_REFUSAL_BLOCKERS) for item in base[
                 "allocator_blockers"]) else "unfunded_blocked")
@@ -558,7 +583,7 @@ def _runtime_redrive_due(job: Path, terminal: Mapping[str, Any]) -> bool:
             return False
         # Counted as ``_counts`` counts: the ingest record, or the funding the attempt's bulk directory holds.
         funded = [record for attempt in _attempts(job) for record in [_read_optional(attempt / INGEST_FILENAME) or {}]
-                  if record.get("funded") is True or record.get("allocated") is True or _funded(attempt)]
+                  if _counts_as_funded(attempt, record)]
         limit = _funded_limit(job, excluding=digest)
     except (OSError, ValueError):
         return False  # unreadable history: never spend on a guess
@@ -679,17 +704,89 @@ def _grant_refusal_wait(settled: Mapping[str, Any], *, now: float) -> int | None
     return min(GRANT_REFUSAL_RETRY_SECONDS, max(1, int(remaining))) if remaining > 0 else None
 
 
+def _provider_no_start(attempt: Path, record: Mapping[str, Any]) -> bool:
+    """The run's machine never started our container: recorded so, or (sealed before the rule) proven again."""
+
+    if record.get("state") == PROVIDER_NO_START_STATE:
+        return True
+    if record.get("state") != "allocated_blocked":
+        return False
+    try:
+        return provider_no_start(attempt, attempt_work_dir(attempt)) is not None
+    except (OSError, ValueError):
+        return False  # unreadable evidence: an ordinary funded attempt
+
+
+def _counts_as_funded(attempt: Path, record: Mapping[str, Any]) -> bool:
+    # The ingest record (beside the queue) counts too, so a funded attempt whose bulk volume
+    # cannot be read still counts as funded. A provider no-start counts on its own.
+    return ((record.get("funded") is True or record.get("allocated") is True or _funded(attempt))
+            and not _provider_no_start(attempt, record))
+
+
 def _counts(job: Path) -> tuple[int, int]:
+    """Funded attempts and refusals before funding; a provider no-start is neither (``_provider_no_starts``)."""
+
     funded = unfunded = 0
     for attempt in _attempts(job):
         record = _read_optional(attempt / INGEST_FILENAME) or {}
-        # The ingest record (beside the queue) counts too, so a funded attempt whose bulk volume
-        # cannot be read still counts as funded.
-        if record.get("funded") is True or record.get("allocated") is True or _funded(attempt):
+        if _counts_as_funded(attempt, record):
             funded += 1
         elif record.get("state") in UNFUNDED_STATES:
             unfunded += 1
     return funded, unfunded
+
+
+def _provider_no_starts(job: Path) -> int:
+    return sum(1 for attempt in _attempts(job)
+               if _provider_no_start(attempt, _read_optional(attempt / INGEST_FILENAME) or {}))
+
+
+def settle_attempt_funding(attempt: Path) -> dict[str, Any]:
+    """Settle one attempt's website-grant hold once its teardown is proven (``settle_attempt_spend``)."""
+
+    try:
+        work = attempt_work_dir(attempt)
+    except ValueError as exc:
+        return {"status": "held", "attempt": str(attempt), "reason": str(exc)[:200]}
+    if work != attempt and not work.is_dir():
+        return {"status": "pending", "attempt": str(attempt), "reason": "rigid_robot_free_probe_work_dir_unavailable"}
+    return settle_attempt_spend(attempt, work)
+
+
+def _work_dirs(jobs: list[Path]) -> list[Path]:
+    dirs = []
+    for job in jobs:
+        for attempt in _attempts(job):
+            try:
+                dirs.append(attempt_work_dir(attempt))
+            except ValueError:
+                continue
+    return dirs
+
+
+def settle_spend_under(queue_root: str | Path | None = None) -> list[dict[str, Any]]:
+    """Settle every funded attempt under the queue, sealed jobs included; refresh the lane's avoidlist.
+
+    Accounting only: it never raises, and returns the attempts settled now or still deferred.
+    """
+
+    root = _queue_root(queue_root)
+    jobs = sorted(path for path in (root / "jobs").glob("*") if path.is_dir() and not path.is_symlink())
+    rows = []
+    for job in jobs:
+        for attempt in _attempts(job):
+            try:
+                row = settle_attempt_funding(attempt)
+            except Exception as exc:  # noqa: BLE001 - one attempt's records never stop the others
+                row = {"status": "deferred", "attempt": str(attempt), "reason": f"{type(exc).__name__}:{str(exc)[:200]}"}
+            if row.get("settled_now") or row["status"] == "deferred":
+                rows.append(row)
+    try:
+        refresh_lane_avoidlist(root, _work_dirs(jobs))
+    except (OSError, ValueError) as exc:
+        rows.append({"status": "avoidlist_not_refreshed", "reason": f"{type(exc).__name__}:{str(exc)[:200]}"})
+    return rows
 
 
 def precheck_blockers(state: Mapping[str, Any], *, job: Path) -> list[str]:
@@ -715,11 +812,12 @@ def precheck_blockers(state: Mapping[str, Any], *, job: Path) -> list[str]:
 
 
 def stage_attempt(job: Path, index: int, *, state: Mapping[str, Any], commit: str,
-                  work_dir: Path | None = None) -> dict[str, Any]:
+                  work_dir: Path | None = None, queue_root: Path | None = None) -> dict[str, Any]:
     """Write one attempt's probe input, sealed bundle, single-use authority and allocator argv.
 
     With ``work_dir`` (``new_attempt_work_dir``) the sealed bundle and the allocator job
-    directory are written there, a fresh directory, and the attempt record names it.
+    directory are written there, a fresh directory, and the attempt record names it. With
+    ``queue_root`` the allocator avoids every machine the lane's shared avoidlist names too.
     """
 
     from .rigid_robot_free_probe_bundle import build_rigid_robot_free_probe_bundle, probe_inputs
@@ -740,9 +838,11 @@ def stage_attempt(job: Path, index: int, *, state: Mapping[str, Any], commit: st
     authority = build_paid_authority(attempt_id=f"{job.name}-a{index:02d}", inputs_path=inputs_path,
                                      bundle_receipt_path=receipt_path, bundle=bundle, source_commit=commit)
     authority_path = _write_exclusive(attempt / AUTHORITY_FILENAME, authority)
+    profile_avoidlist = state["profile"].get("machine_avoidlist_path")
+    avoidlist = (profile_avoidlist if queue_root is None
+                 else attempt_machine_avoidlist(queue_root, attempt, profile_avoidlist))
     argv = allocator_argv(attempt=attempt, authority=authority, authority_path=authority_path,
-                          bundle_receipt_path=receipt_path,
-                          machine_avoidlist_path=state["profile"].get("machine_avoidlist_path"),
+                          bundle_receipt_path=receipt_path, machine_avoidlist_path=avoidlist,
                           work=None if work == attempt else work)
     _write_exclusive(attempt / ATTEMPT_FILENAME, {"attempt_id": authority["attempt_id"], "argv": argv,
                                                   "authority_digest": authority["authority_digest"],
@@ -795,13 +895,27 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
             if settled["state"] in WAITING_STATES:
                 return {"status": "waiting", "capture_root": state["capture_root"], "attempt": attempts[-1].name,
                         "reason": settled["state"]}
+            # Its hold settles to what it ran before anything new is reserved (accounting only), and a
+            # machine its adapter avoided joins the lane's avoidlist before the next attempt picks an offer.
+            try:
+                settle_attempt_funding(attempts[-1])
+                refresh_lane_avoidlist(root, _work_dirs([job]))
+            except Exception as exc:  # noqa: BLE001 - accounting and offer narrowing; the next pass's sweep retries both
+                print(json.dumps({"rigid_robot_free_probe_spend_settlement_deferred": str(attempts[-1]),
+                                  "reason": f"{type(exc).__name__}:{str(exc)[:200]}"}), file=sys.stderr)
             if settled["state"] in TERMINAL_STATES:
                 return _seal_terminal(root, item, entry, job, settled["state"], settled, release)
         funded, unfunded = _counts(job)
+        no_starts = _provider_no_starts(job)
         if funded >= _funded_limit(job) or unfunded >= MAX_UNFUNDED_ATTEMPTS:
             return _seal_terminal(root, item, entry, job, "attempts_exhausted",
-                                  {"funded_attempts": funded, "unfunded_attempts": unfunded, "last": settled},
-                                  release)
+                                  {"funded_attempts": funded, "unfunded_attempts": unfunded,
+                                   "provider_no_starts": no_starts, "last": settled}, release)
+        if no_starts >= MAX_PROVIDER_NO_STARTS:
+            # The provider, not the scene or our runtime: held by name, never retried blindly.
+            return _seal_terminal(root, item, entry, job, NO_START_REPEATED_STATUS,
+                                  {"blocker": NO_START_REPEATED_STATUS, "provider_no_starts": no_starts,
+                                   "funded_attempts": funded, "last": settled}, release)
         before_funding = settled.get("state") in {*UNFUNDED_STATES, GRANT_REFUSED_STATE}
         if attempts and attempts[-1] in staged_now and before_funding:
             # Refused before funding; the next wake-up retries, never this pass.
@@ -831,7 +945,8 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
         # pending (the pass reports the error) instead of sealing a staging refusal.
         work_dir = new_attempt_work_dir(job, index)
         try:
-            staged = stage_attempt(job, index, state=state, commit=hooks["source_commit"](), work_dir=work_dir)
+            staged = stage_attempt(job, index, state=state, commit=hooks["source_commit"](), work_dir=work_dir,
+                                   queue_root=root)
         except (RigidRobotFreeProbeBundleError, ValueError) as exc:
             # The packet or its plan cannot carry the probe: deterministic, so never retried under this
             # release. The refused attempt launched nothing and counts toward no limit.
@@ -882,6 +997,11 @@ def run_queue(queue_root: str | Path | None = None, *, capture_root: str | Path 
         return [{"status": "lane_disabled", "pending": len(pending)}]
     bound = {"allocator_runner": run_allocator, "source_commit": source_commit, **dict(hooks or {})}
     release = _running_release(bound)
+    # Every hold whose run is over counts what it ran before anything new is reserved.
+    settled = settle_spend_under(root)
+    if settled:
+        print(json.dumps({"rigid_robot_free_probe_spend_settlement": settled}, sort_keys=True, default=str),
+              file=sys.stderr)
     # A staging refusal this release has not yet retried returns to pending before the pass reads it.
     requeue_new_release(root, release, names=names)
     pending = [item for item in sorted((root / "pending").glob("*.json")) if names is None or item.name in names]
@@ -956,6 +1076,7 @@ if __name__ == "__main__":  # pragma: no cover
 __all__ = [
     "DEFAULT_QUEUE",
     "MAX_FUNDED_ATTEMPTS",
+    "MAX_PROVIDER_NO_STARTS",
     "MAX_RUNTIME_REDRIVES",
     "MAX_UNFUNDED_ATTEMPTS",
     "QUEUE_ENV",
@@ -971,6 +1092,8 @@ __all__ = [
     "run_allocator",
     "run_queue",
     "settle_attempt",
+    "settle_attempt_funding",
+    "settle_spend_under",
     "stage_attempt",
     "verified_trace",
 ]
