@@ -370,7 +370,7 @@ def read_preparation_status(*, capture_root: Path, selectors: Mapping[str, Any],
             from .website_robot_fit_projection import read_robot_fit
             robot_fit = read_robot_fit(capture_root=root, task_context_digest=selected["task_context_digest"])
         if schema_version == STATUS_V6:
-            from .website_robot_fit_precheck import read_robot_fit_precheck
+            from .website_robot_fit_precheck_projection import read_robot_fit_precheck
             precheck = read_robot_fit_precheck(capture_root=root, task_context_digest=selected["task_context_digest"])
         after = _read_job_ledger(root)
         _require(before == after, "ledger_changed")

@@ -7,6 +7,7 @@ from it. The consistency of this early check with the late checks it must never 
 
 # Covers (for impacted-test selection):
 #   src/blueprint_pipeline/website_robot_fit_precheck.py
+#   src/blueprint_pipeline/website_robot_fit_precheck_projection.py
 #   src/blueprint_pipeline/website_scene_handoff.py
 #   src/blueprint_pipeline/robot_arm_path_clearance.py
 #   src/blueprint_pipeline/beta_policy_screening_plan.py
