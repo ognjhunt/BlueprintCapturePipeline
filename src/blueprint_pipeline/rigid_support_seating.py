@@ -28,7 +28,10 @@ the compile's binary read copy, ``usd_binary_read_cache``):
   tolerance no episode of that plan can be scored.
 
 The highest point is an estimate of the rest height: an object on uneven
-triangles can tilt and settle lower. Physics (the robot-free probe) decides.
+triangles can tilt and settle lower (capture-447ae4f4's tray did, 0.044 rad).
+``footprint_points`` gives every point the highest is taken from, so
+``rigid_support_pad`` can also read the plane the object settles on, and a team
+half makes the support it runs on flat first. Physics (the robot-free probe) decides.
 """
 
 from __future__ import annotations
@@ -53,31 +56,34 @@ SEATING_AGREEMENT_M = 1e-4
 SupportSurface = Callable[..., "float | None"]
 
 
-def footprint_top_z(triangles: Any, lower_xy: Sequence[float], upper_xy: Sequence[float], *,
-                    floor_z: float, ceiling_z: float) -> float | None:
-    """The highest triangle point over the rectangle ``lower_xy``..``upper_xy`` with height in the window.
+def footprint_points(triangles: Any, lower_xy: Sequence[float], upper_xy: Sequence[float], *,
+                     floor_z: float, ceiling_z: float) -> np.ndarray:
+    """Every vertex of the triangles clipped to the rectangle ``lower_xy``..``upper_xy``, within the height window.
 
-    ``triangles`` is ``(n, 3, 3)`` world coordinates, Z up. Points outside
-    ``floor_z``..``ceiling_z`` are not read: below is another surface, above is
-    clear of the object. None when no triangle reaches the rectangle there.
+    ``triangles`` is ``(n, 3, 3)`` world coordinates, Z up. A triangle clipped to
+    the rectangle is a polygon whose vertices are its own vertices inside the
+    rectangle, its edges' crossings of the rectangle's sides, and the rectangle's
+    corners inside it (on its plane). The highest of them is the collider's
+    highest point there, and their upper convex hull is the surface a flat-bottomed
+    object can rest on (``rigid_support_pad.box_rest``). ``(0, 3)`` when none.
     """
 
     tris = np.asarray(triangles, dtype=float).reshape(-1, 3, 3)
     x0, y0 = (float(value) for value in lower_xy)
     x1, y1 = (float(value) for value in upper_xy)
     if not (x0 < x1 and y0 < y1 and floor_z <= ceiling_z) or not len(tris):
-        return None
+        return np.zeros((0, 3))
     low, high = tris.min(axis=1), tris.max(axis=1)
     near = ((high[:, 0] >= x0) & (low[:, 0] <= x1) & (high[:, 1] >= y0) & (low[:, 1] <= y1)
             & (high[:, 2] >= floor_z) & (low[:, 2] <= ceiling_z))
     tris = tris[near]
     if not len(tris):
-        return None
-    heights: list[np.ndarray] = []
+        return np.zeros((0, 3))
+    found: list[np.ndarray] = []
     # Triangle vertices inside the rectangle.
     points = tris.reshape(-1, 3)
     inside = (points[:, 0] >= x0) & (points[:, 0] <= x1) & (points[:, 1] >= y0) & (points[:, 1] <= y1)
-    heights.append(points[inside, 2])
+    found.append(points[inside])
     # Edges crossing the rectangle's four sides.
     for first, second in ((0, 1), (1, 2), (2, 0)):
         a, b = tris[:, first], tris[:, second]
@@ -89,7 +95,9 @@ def footprint_top_z(triangles: Any, lower_xy: Sequence[float], upper_xy: Sequenc
             hit = moving & (t >= 0.0) & (t <= 1.0)
             along = a[:, other] + t * (b[:, other] - a[:, other])
             hit &= (along >= lo) & (along <= hi)
-            heights.append((a[:, 2] + t * (b[:, 2] - a[:, 2]))[hit])
+            crossing = a + t[:, None] * (b - a)
+            crossing[:, axis] = value
+            found.append(crossing[hit])
     # Rectangle corners inside a triangle, on its plane.
     a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
     e1, e2 = b[:, :2] - a[:, :2], c[:, :2] - a[:, :2]
@@ -100,10 +108,23 @@ def footprint_top_z(triangles: Any, lower_xy: Sequence[float], upper_xy: Sequenc
         u = np.divide(ox * e2[:, 1] - oy * e2[:, 0], determinant, out=np.full(len(a), -1.0), where=safe)
         v = np.divide(e1[:, 0] * oy - e1[:, 1] * ox, determinant, out=np.full(len(a), -1.0), where=safe)
         hit = safe & (u >= -1e-12) & (v >= -1e-12) & (u + v <= 1.0 + 1e-12)
-        heights.append((a[:, 2] + u * (b[:, 2] - a[:, 2]) + v * (c[:, 2] - a[:, 2]))[hit])
-    values = np.concatenate(heights)
-    values = values[np.isfinite(values) & (values >= floor_z) & (values <= ceiling_z)]
-    return float(values.max()) if len(values) else None
+        heights = (a[:, 2] + u * (b[:, 2] - a[:, 2]) + v * (c[:, 2] - a[:, 2]))[hit]
+        found.append(np.column_stack([np.full(len(heights), x), np.full(len(heights), y), heights]))
+    values = np.concatenate(found)
+    return values[np.all(np.isfinite(values), axis=1) & (values[:, 2] >= floor_z) & (values[:, 2] <= ceiling_z)]
+
+
+def footprint_top_z(triangles: Any, lower_xy: Sequence[float], upper_xy: Sequence[float], *,
+                    floor_z: float, ceiling_z: float) -> float | None:
+    """The highest triangle point over the rectangle ``lower_xy``..``upper_xy`` with height in the window.
+
+    ``triangles`` is ``(n, 3, 3)`` world coordinates, Z up. Points outside
+    ``floor_z``..``ceiling_z`` are not read: below is another surface, above is
+    clear of the object. None when no triangle reaches the rectangle there.
+    """
+
+    points = footprint_points(triangles, lower_xy, upper_xy, floor_z=floor_z, ceiling_z=ceiling_z)
+    return float(points[:, 2].max()) if len(points) else None
 
 
 def triangle_support_surface(triangles: Any) -> SupportSurface:
@@ -127,13 +148,20 @@ def collider_support_surface(collision_path: str | Path, *, points_xy: Sequence[
     collider is not a static Z-up metre stage.
     """
 
+    return triangle_support_surface(collider_triangles(collision_path, points_xy=points_xy, reach_m=reach_m,
+                                                       height_z=height_z))
+
+
+def collider_triangles(collision_path: str | Path, *, points_xy: Sequence[Sequence[float]], reach_m: float,
+                       height_z: float) -> np.ndarray:
+    """The scene collider's own world triangles within ``reach_m`` (plus ``READ_MARGIN_M``) of ``points_xy``."""
+
     from .scene_physics_preflight import load_background_triangles
 
     xy = np.asarray(points_xy, dtype=float).reshape(-1, 2)
     middle = xy.mean(axis=0)
     radius = float(np.max(np.linalg.norm(xy - middle, axis=1))) + float(reach_m) + READ_MARGIN_M
-    triangles = load_background_triangles(collision_path, centre=[*middle.tolist(), float(height_z)], radius=radius)
-    return triangle_support_surface(triangles)
+    return load_background_triangles(collision_path, centre=[*middle.tolist(), float(height_z)], radius=radius)
 
 
 def start_spawn_disagreement_m(plan: Mapping[str, Any]) -> float | None:
@@ -185,6 +213,8 @@ __all__ = [
     "SEARCH_BELOW_SUPPORT_TOP_M",
     "SEATING_AGREEMENT_M",
     "collider_support_surface",
+    "collider_triangles",
+    "footprint_points",
     "footprint_top_z",
     "start_spawn_disagreement_m",
     "start_spawn_mismatch",

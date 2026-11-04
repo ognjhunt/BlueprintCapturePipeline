@@ -69,6 +69,8 @@ PACKET_DIRECTORY = "native-task-packet"
 OWN_ARM_RULE = "closest_clear_stance_own_arm_reaches_every_phase"
 # The same scene compiled with the right exterior camera, when one is placed.
 THREE_VIEW_PACKET_DIRECTORY = "native-task-packet-three-view"
+# The room's collider with the task's support planarized to its success plane (``rigid_support_pad``), when derived.
+SUPPORT_PAD_DIRECTORY = "support-pad"
 # A pedestal for an arm's base: its half extent on the floor, metres.
 STATION_FOOTPRINT_HALF_EXTENT_M = (0.15, 0.15)
 EXECUTION_AUTHORITY = {"maximum_provider_allocations": 1, "retry_cap": 0,
@@ -442,21 +444,50 @@ def _articulated_task(*, revision: Mapping[str, Any], references: Mapping[str, A
                             "limit_points": whole}}
 
 
-def _seated_rigid_adapter(*, revision: Mapping[str, Any], references: Mapping[str, Any],
-                          collision: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The rigid task adapted with the replacement seated on the scene's own collider, and the reading.
+def _with_scoring_bounds(spec: Mapping[str, Any], bounds: Mapping[str, Any] | None) -> dict[str, Any]:
+    """``spec`` with the object's qualified collision bounds in its scoring frame, as a surface target binds them.
+
+    A task without a surface target carries none; they are the qualified body bounds less the scoring
+    frame's offset from the root (``asset_root_from_scoring_frame``), as the goal reading takes them.
+    """
+
+    value = dict(spec)
+    if value.get("subject_collision_bounds_scoring_frame_m") is None and isinstance(bounds, Mapping):
+        transform = (value.get("interaction_affordance") or {}).get("asset_root_from_scoring_frame") or {}
+        offset = [float(item) for item in transform.get("position_m") or []]
+        if len(offset) == 3 and [float(item) for item in transform.get("orientation_xyzw") or []] == [0, 0, 0, 1]:
+            value["subject_collision_bounds_scoring_frame_m"] = {
+                key: [float(bounds[key][axis]) - offset[axis] for axis in range(3)] for key in ("minimum", "maximum")}
+    return value
+
+
+def _seated_rigid_adapter(*, revision: Mapping[str, Any], references: Mapping[str, Any], collision: Path,
+                          staged_destination: bool = False) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """The rigid task adapted with the replacement seated on the support the physics runs on, the reading, the pad.
 
     The registered support top is the highest face of the whole support, not
     where the object rests (capture-447ae4f4: the tray spawned 14.7 mm above
     the start the scorer reads within 2 mm). The collider the episode collides
     with is read under the replacement's qualified collision footprint at the
     start, which seats it there, and at the goal, which is recorded against the
-    sealed success window (``rigid_support_seating``). A collider that cannot be
+    sealed success window (``rigid_support_seating``). Where the task starts and
+    ends on one support, that support is first made the flat one its success
+    contract describes (``rigid_support_pad``; capture-447ae4f4's tray tilted
+    0.044 rad on the scan and settled under the window): the seating then reads
+    the planarized triangles, and the third value is the modelling record with,
+    under ``plan``, what ``_stage_support_pad`` writes (never for a task ending on
+    a ``staged_destination`` asset, or on another surface). A collider that cannot be
     read keeps the registered top, by name; nothing here changes the revision,
     its success document or the owner's confirmation of it.
     """
 
-    from .rigid_support_seating import SEATING_AGREEMENT_M, collider_support_surface
+    from .rigid_support_pad import (
+        MAXIMUM_EDGE_REACH_M,
+        RigidSupportPadError,
+        pad_region,
+        plan_support_pad,
+    )
+    from .rigid_support_seating import SEATING_AGREEMENT_M, collider_triangles, triangle_support_surface
     from .task_evaluation_rigid_relocation_native_adapter import (
         adapt_rigid_relocation_task_template,
     )
@@ -466,23 +497,52 @@ def _seated_rigid_adapter(*, revision: Mapping[str, Any], references: Mapping[st
     documents = adapter["source_documents"]["documents"]
     observed = documents["static_qualification"].get("observed_structure") or {}
     bounds = observed.get("collision_bounds_body_frame_m")
+    other_surface = staged_destination or documents["definition"].get("destination_support_plane") is not None
+    if not isinstance(bounds, Mapping):
+        return adapter, {"status": "registered_support_top", "reason": "qualified_collision_bounds_missing"}, {
+            "status": "unchecked", "reason": "rigid_support_qualified_collision_bounds_missing"}
     try:
         center = [float(value) for value in observed["center_of_mass_m"]]
         corners = [(float(x) - center[0], float(y) - center[1])
                    for x in (bounds["minimum"][0], bounds["maximum"][0])
                    for y in (bounds["minimum"][1], bounds["maximum"][1])]
         reach = max(math.hypot(x, y) for x, y in corners)
-        surface = collider_support_surface(
-            collision, points_xy=[spec["start_pose_world"][:2], spec["target_position_world_m"][:2]],
-            reach_m=reach, height_z=float(documents["support_plane"]["top_z_m"]))
+        points: list[Any] = [spec["start_pose_world"][:2], spec["target_position_world_m"][:2]]
+        if not other_surface:
+            try:
+                # The pad's whole region, and the edges its selection may grow by.
+                points, reach = pad_region(_with_scoring_bounds(spec, bounds),
+                                           support_bounds=documents["support_plane"]).tolist(), (
+                    MAXIMUM_EDGE_REACH_M * math.sqrt(2.0))
+            except RigidSupportPadError:
+                pass
+        triangles = collider_triangles(collision, points_xy=points, reach_m=reach,
+                                       height_z=float(documents["support_plane"]["top_z_m"]))
     except Exception as exc:  # noqa: BLE001 - an unread collider keeps the registered top; the compile goes on
-        return adapter, {"status": "registered_support_top", "reason": f"{type(exc).__name__}:{str(exc)[:160]}"}
+        reason = f"{type(exc).__name__}:{str(exc)[:160]}"
+        return adapter, {"status": "registered_support_top", "reason": reason}, {
+            "status": "unchecked", "reason": "rigid_support_collider_unread", "detail": reason}
+    pad: dict[str, Any] | None = None
+    if other_surface:
+        support: dict[str, Any] = {"status": "not_applicable", "reason": (
+            "rigid_support_destination_is_a_staged_asset" if staged_destination
+            else "rigid_support_destination_on_another_surface")}
+    else:
+        try:
+            pad = plan_support_pad(_with_scoring_bounds(spec, bounds), support_plane=documents["support_plane"],
+                                   triangles=triangles)
+            support = dict(pad["record"])
+        except (KeyError, TypeError, ValueError) as exc:  # RigidSupportPadError names its own reason
+            support = {"status": "not_applicable", "reason": str(exc)[:200]}
+    planar = pad is not None and pad["record"]["plane"]["consistent"] is True
+    physics = pad["planarized_triangles"] if planar else triangles
     seated = adapt_rigid_relocation_task_template(configured_revision=revision, materialized_references=references,
-                                                  support_surface=surface)
+                                                  support_surface=triangle_support_surface(physics))
     definition = seated["native_task_definition"]
     alignment = definition["task_spec"]["interaction_affordance"]["support_alignment"]
     reading: dict[str, Any] = {"status": "measured_on_scene_collider", "start": alignment.get("start_support"),
-                               "goal": alignment.get("goal_support")}
+                               "goal": alignment.get("goal_support"),
+                               **({"support": "planarized_to_success_plane"} if planar else {})}
     if (alignment.get("goal_support") or {}).get("within_success_window") is False:
         # The sealed success document's height window misses where a correct placement rests:
         # only a corrected success document, confirmed by the owner, can change it.
@@ -491,11 +551,79 @@ def _seated_rigid_adapter(*, revision: Mapping[str, Any], references: Mapping[st
     moved = max(abs(float(definition["task_object_pose_world"]["position_world_m"][2])
                     - float(adapter["native_task_definition"]["task_object_pose_world"]["position_world_m"][2])),
                 abs(float(rest) - float(spec["target_position_world_m"][2])) if rest is not None else 0.0)
+    if pad is not None:
+        support["plan"] = {"selection": pad["selection"], "band": pad["record"]["scan_band_z_m"],
+                           "plane_z_m": pad["record"]["plane_z_m"], "planarize": planar,
+                           "triangles": physics, "scan_triangles": triangles, "collision_bounds_body_frame_m": bounds}
+        if not planar:
+            support.update(status="held", reasons=[pad["record"]["plane"]["reason"]],
+                           requires=pad["record"]["plane"].get("requires"))
     if moved <= SEATING_AGREEMENT_M:
         # The collider agrees with the registered support at both ends: the task stays exactly the
         # revision's (rigid_task_for_revision), and the reading is kept here only.
-        return adapter, {**reading, "applied": False}
-    return seated, {**reading, "applied": True}
+        return adapter, {**reading, "applied": False}, support
+    return seated, {**reading, "applied": True}, support
+
+
+def _stage_support_pad(support: dict[str, Any], *, task_spec: Mapping[str, Any], sealed_collision: Path,
+                       root: Path) -> Path | None:
+    """Check where the task's object rests on the support the physics runs on; stage that support when derived.
+
+    ``support`` is ``_seated_rigid_adapter``'s record, completed here in place:
+    its ``rest_check`` (``rigid_support_pad.support_rest_check``), its status
+    (``consistent``, or ``held`` with typed reasons before any probe spends), and,
+    when the plan moved any scanned point, the derived collider it writes and
+    reads back under ``SUPPORT_PAD_DIRECTORY``. Returns that collider, or None.
+    """
+
+    from .rigid_support_pad import (
+        hold_reason,
+        support_rest_check,
+        write_planarized_collider,
+    )
+    from .rigid_support_seating import collider_triangles
+
+    plan = support.pop("plan", None)
+    if plan is None:
+        return None
+    spec = _with_scoring_bounds(task_spec, plan["collision_bounds_body_frame_m"])
+    check = support_rest_check(plan["triangles"], spec)
+    derived = None
+    if plan["planarize"] and support.get("read_points_moved", 0) > 0:
+        derived = root / SUPPORT_PAD_DIRECTORY / "collision.usdc"
+        try:
+            written = write_planarized_collider(sealed_collision, derived, selection=plan["selection"],
+                                                band=plan["band"], plane_z=plan["plane_z_m"])
+            # The physics' own bytes, read back where the object rests.
+            region = support["region_world_xy_m"]
+            readback = support_rest_check(collider_triangles(
+                derived, points_xy=region, reach_m=0.0, height_z=plan["plane_z_m"]), spec)
+        except Exception as exc:  # noqa: BLE001 - a support that cannot be written is named, never guessed at
+            raise TeamScenePacketError(f"team_scene_support_pad_unwritten:{type(exc).__name__}:{str(exc)[:120]}") from exc
+        if readback["status"] != check["status"] or readback["reasons"] != check["reasons"]:
+            raise TeamScenePacketError("team_scene_support_pad_readback_disagrees")
+        digest, size = _sha256(derived), derived.stat().st_size
+        support["derived_collider"] = {
+            "relative_path": derived.relative_to(root).as_posix(), "sha256": digest, "size_bytes": size,
+            "derived_from_sha256": _sha256(sealed_collision), "edit": "point_heights_only", **written,
+            "rest_check_read_back": True}
+    elif plan["planarize"]:
+        support["derived_collider"] = None
+        support["collider_already_planar"] = True
+    if plan["planarize"]:
+        # What the scan as captured would have done with the object seated on its highest point (the
+        # seating before the pad): the reason the pad exists, kept beside the check that replaces it.
+        scan = support_rest_check(plan["scan_triangles"], spec, seated_on_highest_contact=True)
+        support["scan_rest_check"] = {key: scan.get(key) for key in ("status", "reasons", "start", "goal")}
+    support["rest_check"] = check
+    if support.get("status") != "held":
+        support["status"] = check["status"]
+        if check["status"] == "held":
+            support["reasons"] = list(check["reasons"])
+    elif check["status"] == "held":
+        support["reasons"] = [*support.get("reasons", []), *check["reasons"]]
+    support["hold_reason"] = hold_reason(support)
+    return derived
 
 
 def _owner_confirmed(task_spec: Mapping[str, Any], *, revision: Mapping[str, Any],
@@ -582,7 +710,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     # packet steps) opens this one binary copy of a USDA text room (``usd_binary_read_cache``); receipts and
     # stances name the published file by its digest.
     collision = binary_copy(assets["collision"], root / ".collider-read-cache")
-    owner, motion, destination_asset, seating = None, None, None, None
+    physics_collision = assets["collision"]
+    owner, motion, destination_asset, seating, support = None, None, None, None, None
     if articulated:
         try:
             task = _articulated_task(revision=revision, references=references, replacement=assets["replacement"],
@@ -595,9 +724,9 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         start, target, support_top = task["start"], task["target"], task["support_top_z_m"]
         subject_bounds = object_bounds = (task["subject_minimum"], task["subject_maximum"])
     else:
-        adapter, seating = _seated_rigid_adapter(
-            revision=revision, references=references,
-            collision=collision)
+        adapter, seating, support = _seated_rigid_adapter(
+            revision=revision, references=references, collision=collision,
+            staged_destination=destination_declaration is not None)
         definition = adapter["native_task_definition"]
         task_spec = compiler._runtime_subject_task_spec(definition["task_spec"])
         task_spec["success_criteria"] = adapter["native_success_criteria"].get("criteria")
@@ -625,6 +754,11 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             raise TeamScenePacketError("team_scene_owner_contract_invalid:" + ",".join(exc.errors)) from exc
         if owner is not None:
             task_spec.update(task_success_contract=owner, task_success_contract_digest=owner["contract_digest"])
+        # The support the physics runs on: planarized to the success plane when the task is on one
+        # support (a derived collider every reader below and the packet use), and checked either way.
+        derived = _stage_support_pad(support, task_spec=task_spec, sealed_collision=assets["collision"], root=root)
+        if derived is not None:
+            physics_collision = collision = derived
         pose = definition["task_object_pose_world"]
         task_row = {**compiler.evidence_asset_row(assets["replacement"], root=root, semantic_role="task_object",
                                                   pose_world=pose),
@@ -652,7 +786,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     appearance = dict((native_appearance_materializer or compiler._materialize_native_particlefield_appearance)(
         source_path=assets["appearance"], output_root=root / "native-appearance"))
     rows = [compiler.evidence_asset_row(Path(appearance["path"]), root=root, semantic_role="scene_appearance"),
-            compiler.evidence_asset_row(assets["collision"], root=root, semantic_role="scene_collision"), task_row]
+            compiler.evidence_asset_row(physics_collision, root=root, semantic_role="scene_collision"), task_row]
     if destination_asset is not None:
         rows.append({**compiler.evidence_asset_row(destination_asset["path"], root=root, semantic_role="task_support"),
             "asset_id": destination_asset["asset_id"], "source_asset_id": destination_asset["source_asset_id"],
@@ -672,7 +806,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     with collision_kept_loaded(collision):
         try:
             place = dict(
-                collision_path=collision, collision_sha256=_sha256(assets["collision"]), offset=[0.0, 0.0, 0.0],
+                collision_path=collision, collision_sha256=_sha256(physics_collision), offset=[0.0, 0.0, 0.0],
                 subject_center=stance_center if whole_region else start,
                 subject_minimum=[float(v) for v in subject_bounds[0]],
                 subject_maximum=[float(v) for v in subject_bounds[1]],
@@ -766,6 +900,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         "robot_station": station, "camera_layout": camera_layout, "droid_profile_digest": droid_profile_digest,
         **({"robot_station_search": station_search} if station_search is not None else {}),
         **({"task_support_seating": seating} if seating is not None else {}),
+        **({"task_support_pad": support} if support is not None else {}),
         **({"embodiment_stations": stations} if stations else {}),
         "inputs_digest": ""}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")

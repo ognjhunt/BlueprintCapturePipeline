@@ -1093,6 +1093,50 @@ def test_a_staging_refusal_is_final_under_its_release_and_retried_once_by_a_new_
     assert row[runner.RELEASE_REQUEUE_FIELD] == [old, new, later]
 
 
+def _half(world: dict[str, Any], support: dict[str, Any] | None) -> None:
+    """The capture's compiled team half record, as ``team_scene_packet`` writes its support's (or none)."""
+
+    path = world["tmp"] / "team_scene_inputs.v1.json"
+    path.write_text(json.dumps({"base_native_packet": {"path": str(world["packet"] / PACKET_RECEIPT)},
+                                **({"task_support_pad": support} if support is not None else {})}))
+    world["profile"]["team_scene_inputs_path"] = str(path)
+
+
+def test_a_half_its_support_check_holds_stages_nothing_and_its_recompiled_request_runs(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline.rigid_support_pad import UNMODELLED_HALF
+
+    world = build_world(tmp_path, monkeypatch)
+    # As capture-447ae4f4's half was compiled, before its support was modelled: refused while staging.
+    _half(world, None)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert row["status"] == "staging_refused", row
+    assert row["detail"]["reason"] == "rigid_robot_free_probe_" + UNMODELLED_HALF
+    # The CPU rest check's own hold is refused the same way: nothing reserved on the grant, no GPU rented.
+    reason = "rigid_support_start_rest_off_start:0.5mm/0.021rad"
+    _half(world, {"status": "held", "reasons": [reason]})
+    with pytest.raises(runner.RigidRobotFreeProbeBundleError, match="rigid_robot_free_probe_" + reason):
+        staged_attempt(world, 1)
+    assert world["allocator_calls"] == [] and world["webapp_calls"] == []
+    held = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    sealed = json.loads((held / runner.TERMINAL_FILENAME).read_text())
+    # The recompiled half seats its object on the planarized support (this stand-in's support is flat
+    # already): a new task, so a new request and its own job. The old request's sealed terminal stays
+    # where it is and blocks nothing.
+    spec = copy.deepcopy(world["spec"])
+    spec["interaction_affordance"]["support_alignment"]["start_support"] = {
+        "basis": "scene_collider_highest_point_under_collision_footprint", "collider_top_z_m": 0.7545}
+    retask_packet(world["packet"], spec)
+    world["facts"]["scene"]["task_spec"] = scored_task_spec(spec, world["contract"])
+    _half(world, {"status": "consistent", "reasons": []})
+    assert runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])["status"] == "queued"
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    assert job != held and row["status"] == "decided" and _receipt(world)["status"] == "passed", row
+    assert json.loads((held / runner.TERMINAL_FILENAME).read_text()) == sealed
+    assert len(world["allocator_calls"]) == 1
+
+
 # --- an attempt budget our own runtime spent is re-driven once per newly deployed release ------------
 
 # capture-447ae4f4's first GPU run (Vast 59017963, 2026-11-03): Arena's DROID rig has no such setter.

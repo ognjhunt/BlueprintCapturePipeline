@@ -144,6 +144,13 @@ def probe_inputs(*, state: Mapping[str, Any]) -> dict[str, Any]:
         # tolerance: no episode of it can be scored, so no paid run is staged for it. A packet
         # compiled by a release that seats the object where it starts carries a new request.
         raise RigidRobotFreeProbeBundleError("rigid_robot_free_probe_" + mismatch)
+    from .rigid_support_pad import half_support_hold
+
+    held = half_support_hold((state.get("profile") or {}).get("team_scene_inputs_path"))
+    if held is not None:
+        # The compile predicted on the CPU that the object cannot rest where the scorer reads it, at its
+        # start or inside the sealed window at its goal: no paid run is staged for it.
+        raise RigidRobotFreeProbeBundleError("rigid_robot_free_probe_" + held)
     value = {"schema_version": INPUTS_SCHEMA, "capture_root": str(state["capture_root"]),
              "robot_free_probe_root": str(state["robot_free_probe_root"]),
              "scene_revision_digest": facts["scene"]["scene_revision_digest"], "probe_request": dict(request),

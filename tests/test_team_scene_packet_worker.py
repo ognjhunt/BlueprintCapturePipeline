@@ -549,6 +549,49 @@ def test_a_half_no_episode_can_be_scored_from_is_recompiled_once_per_new_release
     assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
 
 
+def _as_compiled_before_the_support_pad(half: str) -> None:
+    """Rewrite a compiled half's record as a release before the support pad wrote capture-447's: no support record."""
+
+    path = Path(half)
+    value = json.loads(path.read_text())
+    value.pop("task_support_pad")
+    value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
+    path.chmod(0o644)
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def test_a_rigid_half_compiled_before_its_support_was_checked_is_recompiled_once_per_new_release(
+        tmp_path, monkeypatch):
+    from blueprint_pipeline.rigid_support_pad import UNMODELLED_HALF
+
+    world = _world(tmp_path, monkeypatch)
+    queue, key = world["queue"], world["key"]
+    _release(monkeypatch, RELEASE_1)
+    _at(monkeypatch, 0)
+    [status] = world["process"]()["results"]
+    first = status["team_scene_inputs_path"]
+    # This fixture's replacement has no qualified collision bounds: its support is recorded unchecked, by name.
+    assert json.loads(Path(first).read_text())["task_support_pad"]["reason"] == (
+        "rigid_support_qualified_collision_bounds_missing")
+    assert worker.unscorable_half(first) is None
+    # As capture-447ae4f4's half was compiled (release 9f47f0466): its tray rested on the scan, unchecked.
+    _as_compiled_before_the_support_pad(first)
+    assert worker.unscorable_half(first) == UNMODELLED_HALF
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+    # The release that models the support recompiles it, once, on the CPU; the new half is reused after.
+    _release(monkeypatch, RELEASE_2)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == [
+        {"request_key": key, "reason": "unscorable_half", "detail": UNMODELLED_HALF, "release_commit": RELEASE_2}]
+    [status] = world["process"]()["results"]
+    assert (status["status"], status["outcome"]) == ("completed", "compiled")
+    second = status["team_scene_inputs_path"]
+    assert second != first and "task_support_pad" in json.loads(Path(second).read_text())
+    assert worker.unscorable_half(second) is None
+    assert profile_for_capture(world["capture"])["team_scene_inputs_path"] == second
+    _release(monkeypatch, "c" * 40)
+    assert worker.requeue_transient_blocked(queue_root=queue)["requeued"] == []
+
+
 def test_a_refusal_recorded_without_a_release_requeues_once_under_a_known_release(tmp_path, monkeypatch):
     world = _world(tmp_path, monkeypatch)
     queue, key = world["queue"], world["key"]
