@@ -50,9 +50,12 @@ DIGESTED_FIELDS = ("python_version_info", "golden_deflate", "golden_simd", "dist
 # digest, never in it, so that adding one never invalidates another stage's recorded probe.  A stage's planner
 # compares its own row (``stage_distributions[<stage>]``) between the probed worker and the host.  The team
 # scene packet's compile loads rfc8785 (``cross_runtime_canonical_digest``, which ``team_embodiment``'s sealed
-# digests use), measured on 2026-11-03 from a real fixture compile in a fresh interpreter
+# digests use), measured on 2026-11-03, and on a rigid task's scanned support scipy (``rigid_support_pad``'s
+# rest check solves its contact plane with ``scipy.optimize.linprog``) and charset-normalizer (scipy's array-API
+# shim star-imports numpy, whose ``numpy.f2py`` imports it when installed), measured on 2026-11-04; each from a
+# real fixture compile in a fresh interpreter
 # (``tests/test_team_scene_packet_remote.py::test_parity_set_covers_every_distribution_a_team_compile_loads``).
-STAGE_DISTRIBUTIONS = {"team_scene_packet": ("rfc8785",)}
+STAGE_DISTRIBUTIONS = {"team_scene_packet": ("charset-normalizer", "rfc8785", "scipy")}
 
 
 def _digest(data: bytes) -> str:

@@ -1748,10 +1748,16 @@ host compile does, and asks the planner whether the compile can run remotely:
   `/var/lib/blueprint`);
 - the probe-recorded worker environment for this stage and image equals the
   host's on every digested field and on this stage's own distribution row
-  (`stage_distributions.team_scene_packet`: rfc8785, which a team compile
-  loads, measured in a fresh interpreter, and the episode census does not
-  measure; it sits outside the digest, so the episode stage's recorded probe
-  stays valid).
+  (`stage_distributions.team_scene_packet`: rfc8785, scipy and
+  charset-normalizer, which a team compile loads and the episode census does
+  not measure, each measured in a fresh interpreter; scipy solves the rigid
+  support pad's rest check and charset-normalizer comes in through its numpy
+  shim. The row sits outside the digest, so the episode stage's recorded
+  probe stays valid. The host venv's scipy is not pinned by
+  `deploy/systemd/production-control-plane-requirements.txt`: if it differs
+  from the worker image's locked one, every request stays on the host,
+  `remote_ineligible:environment_mismatch:stage_distributions`, until the
+  host follows the worker lock).
 
 An ineligible request compiles on the host as before, with the reason under
 `remote_compile.host_decision` in its status. In `cloud_run` an eligible one
@@ -1759,8 +1765,13 @@ gets a hand-off and stays in `processing/` with status `processing`; no
 recovery pass or timer pass touches a request the lane holds. `cloud_run` is
 authoritative without episode compilation's three-shadow gate: the scenes this
 lane exists for cannot compile on the host at all, so their shadows could
-never earn passes. The byte-identical test below is the parity proof, and the
-environment census guards drift. In `cloud_run_shadow` the host compiles
+never earn passes. The byte-identical test
+(`tests/test_team_scene_packet_remote.py::test_a_remote_compile_is_byte_identical_to_the_host_compile`)
+is the parity proof. It covers a Franka-only half, one with registered bodies,
+and a rigid task on a scanned, bumpy support, whose half carries
+`task_support_seating` and `task_support_pad` and the derived planarized
+collider under `support-pad/`; the worker derives that collider itself from
+the shipped bundle. The environment census guards drift. In `cloud_run_shadow` the host compiles
 every request and a completed, eligible one also gets a shadow marker.
 
 The paid unit (`blueprint-team-scene-packet-remote`, 60 s timer and a

@@ -33,13 +33,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("bodies", [False, True], ids=["franka_only", "registered_bodies"])
-def test_a_remote_compile_is_byte_identical_to_the_host_compile(tmp_path: Path, monkeypatch, bodies: bool) -> None:
+@pytest.mark.parametrize(("bodies", "support"), [(False, "flat"), (True, "flat"), (False, "bumpy")],
+                         ids=["franka_only", "registered_bodies", "bumpy_support"])
+def test_a_remote_compile_is_byte_identical_to_the_host_compile(tmp_path: Path, monkeypatch, bodies: bool,
+                                                                support: str) -> None:
     """The host's own compile of a request (``cloud_run_shadow``), then the worker's compile of the same envelope
     at the same paths, from the extracted recipe-v2 archive in a spawned stage child, landed whole: every path,
-    byte and mode agree, and the worker's result names the host's own team scene inputs record."""
+    byte and mode agree, and the worker's result names the host's own team scene inputs record. On a scanned,
+    bumpy support the half also carries its seating and support pad records and the derived planarized collider
+    under ``support-pad/``, which the remote compile writes byte for byte as the host does."""
 
-    host = TeamHost(tmp_path / "host", monkeypatch, mode="cloud_run_shadow", bodies=bodies)
+    host = TeamHost(tmp_path / "host", monkeypatch, mode="cloud_run_shadow", bodies=bodies, support=support)
     [status] = host.process()["results"]
     assert (status["status"], status["outcome"]) == ("completed", "compiled"), status
     assert status["remote_compile"]["shadowed"] is True and host.calls == []
@@ -50,6 +54,15 @@ def test_a_remote_compile_is_byte_identical_to_the_host_compile(tmp_path: Path, 
     snapshot = tree_snapshot(output)
     record = json.loads((output / RECORD_FILENAME).read_text(encoding="utf-8"))
     assert ("embodiment_stations" in record) is bodies
+    if support == "bumpy":
+        # The pad path ran on the host: the object seated on the planarized support, the derived collider staged.
+        pad, seating = record["task_support_pad"], record["task_support_seating"]
+        assert (pad["status"], pad["hold_reason"]) == ("consistent", None), pad
+        assert seating["support"] == "planarized_to_success_plane", seating
+        derived = pad["derived_collider"]
+        assert derived["relative_path"] == "support-pad/collision.usdc" and derived["rest_check_read_back"] is True
+        assert snapshot["files"]["support-pad/collision.usdc"][0] == "sha256:" + derived["sha256"].removeprefix(
+            "sha256:")
     # Every file the compile reads ships, at its host path: bundle, documents, profile, receipt, models.
     shipped = {row["contract_path"] for row in plan.inputs}
     assert {"queue_envelope", "configured_scene_bundle_path", "droid_profile_path",
@@ -86,6 +99,13 @@ def test_a_remote_compile_is_byte_identical_to_the_host_compile(tmp_path: Path, 
     assert tree_snapshot(landed) == snapshot
     # Only new bytes left the worker: the shipped inputs it copied travelled as references.
     assert index["paths_total"] == len(snapshot["files"])
+    if support == "bumpy":
+        # The worker derived the planarized collider itself, from the sealed collider in the shipped bundle: no
+        # shipped input carries its bytes, and the worker's own tree holds them at the host's path.
+        digest = snapshot["files"]["support-pad/collision.usdc"][0]
+        assert digest not in {"sha256:" + str(row["digest"]).removeprefix("sha256:") for row in plan.inputs}
+        worker_scene = tmp_path / "worker-tree" / plan.output_root.lstrip("/")
+        assert tree_snapshot(worker_scene)["files"]["support-pad/collision.usdc"][0] == digest
 
 
 def test_an_unset_mode_is_auto_and_a_set_one_keeps_its_name(tmp_path: Path) -> None:
@@ -257,15 +277,22 @@ Path(sys.argv[3]).write_text(json.dumps({"distributions": sorted(seen), "loaded"
 
 
 @pytest.mark.slow
-def test_parity_set_covers_every_distribution_a_team_compile_loads(tmp_path: Path) -> None:
+@pytest.mark.parametrize("support", ["flat", "bumpy"])
+def test_parity_set_covers_every_distribution_a_team_compile_loads(tmp_path: Path, monkeypatch, support: str) -> None:
     """A real team compile, in a fresh interpreter, loads only distributions the census measures (its digested
     set, or this stage's own row), and no allocation or staging authority: the runtime proof the worker's static
-    closure test defers to for this compiler stage (``tests/test_remote_cpu_worker.py::COMPILER_STAGES``)."""
+    closure test defers to for this compiler stage (``tests/test_remote_cpu_worker.py::COMPILER_STAGES``). On a
+    scanned, bumpy support the compile also plans the support pad (``rigid_support_pad``), whose rest check
+    solves its contact plane with scipy."""
 
     from blueprint_pipeline import remote_cpu_environment as census
-    from tests.test_team_scene_packet import _scene
+    from tests import test_team_scene_packet as packet_tests
 
-    scene = _scene(tmp_path)
+    if support == "bumpy":
+        from tests.test_rigid_support_pad import _scanned_bundle, _with_qualified_bounds
+
+        monkeypatch.setattr(_with_qualified_bounds(monkeypatch), "_bundle", _scanned_bundle)
+    scene = packet_tests._scene(tmp_path)
     inputs = {key: str(value) if isinstance(value, Path) else value for key, value in scene.items()
               if key not in ("profile", "store", "revision_reference")}
     inputs["documents"] = {name: str(path) for name, path in scene["documents"].items()}
@@ -281,6 +308,7 @@ def test_parity_set_covers_every_distribution_a_team_compile_loads(tmp_path: Pat
     measured = {name.replace("_", "-").lower() for name in (
         *census.COMPILE_DISTRIBUTIONS, *census.STAGE_DISTRIBUTIONS[lane.STAGE])}
     assert {"usd-core", "numpy", "rfc8785"} <= normal
+    assert ("scipy" in normal) is (support == "bumpy")
     assert normal <= measured, sorted(normal - measured)
     authority = {"blueprint_pipeline.paid_resource_allocator", "blueprint_pipeline.remote_cpu_job_allocator",
                  "blueprint_pipeline.cloud_run_jobs_client", "blueprint_pipeline.remote_cpu_transport",

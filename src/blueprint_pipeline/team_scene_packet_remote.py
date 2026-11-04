@@ -88,7 +88,9 @@ JOB_IMAGE_SCHEMA_VERSION = "remote_cpu_job_image_observation.v1"
 # returns a request to the no-spend unit; a collected marker says its tree landed. Envelopes are the inputs.
 MARKERS = {"authoritative": "handoffs", "shadow": "shadow", "fallback": "fallback", "collected": "collected"}
 ENVELOPES = "envelopes"
-# Memory-backed /var/lib/blueprint holds the inputs, the extracted assets and the compile's copies of them.
+# Memory-backed /var/lib/blueprint holds the inputs, the extracted assets and the compile's copies of them: the
+# collider's binary read cache, the native appearance and, on a planarized support, the derived support-pad
+# collider (binary, about a fifth of the text collider on the support pad's fixture; the packets hard-link it).
 ASSET_COPIES = 3
 _MAX_RECORD_BYTES = 4 * 1024 * 1024
 _ATTEMPT = re.compile(r"[0-9a-f]{16}-[0-9a-f]{8}")

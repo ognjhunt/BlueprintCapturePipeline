@@ -86,9 +86,18 @@ class TeamHost:
     """The team worker's fixture world on one host, rooted at ``tmp_path/fs``, routed to the remote lane."""
 
     def __init__(self, tmp_path: Path, monkeypatch: Any, *, mode: str = "cloud_run", config: dict[str, Any] | None = None,
-                 bodies: bool = False, clock: Any = None) -> None:
+                 bodies: bool = False, clock: Any = None, support: str = "flat") -> None:
         from tests.test_team_scene_packet_worker import _world
 
+        if support == "bumpy":
+            # The support pad's own end-to-end fixture (tests/test_rigid_support_pad.py): the replacement carries
+            # its qualified collision bounds and the room's support top is a scan with a hump and two hollows, so
+            # the compile planarizes it to the success plane and stages the derived collider under support-pad/.
+            from tests.test_rigid_support_pad import _scanned_bundle, _with_qualified_bounds
+
+            monkeypatch.setattr(_with_qualified_bounds(monkeypatch), "_bundle", _scanned_bundle)
+        elif support != "flat":
+            raise ValueError(f"unknown support fixture {support!r}")
         self.fs = tmp_path / "fs"
         self.base = self.local(BASE)
         self.base.mkdir(parents=True)
