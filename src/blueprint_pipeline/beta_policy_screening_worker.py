@@ -62,6 +62,7 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
     )
     from .beta_policy_screening_holds import RELEASE, packet_hold, probe_hold, settle_hold
     from .beta_policy_screening_job_ceiling import plan_within_job_ceiling
+    from .beta_policy_screening_scene_half import current_half
     from .beta_policy_screening_team import catalog_for_profile
     from .rigid_robot_free_probe_runner import _running_release, source_commit
     from .task_evaluation_configured_controls_progression_worker import _validate_source
@@ -141,7 +142,11 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                     # a commit preparation refuses: plan them again at this one.
                     current = latest_campaign(campaign_id, queue_root=root)
                     commit = implementation_commit()
-                    replan = replan_scope(current, implementation_commit=commit, queue_root=root)
+                    # A completed team half compiled again since planning (a new station, chairs moved on the
+                    # owner's approval) is planned again too, finished campaign or not.
+                    half = (current_half(profile, scene_revision_digest=source["scene_revision_digest"])
+                            if packet_status.get("status") == "completed" else None)
+                    replan = replan_scope(current, implementation_commit=commit, scene_half=half, queue_root=root)
                     if replan is None:
                         outcome.update(enqueue_screening_campaign(_read(root / "plans" / f"{current}.json"),
                                                                   queue_root=root))
@@ -149,7 +154,8 @@ def enqueue_prepared_scenes(*, queue_root: str | Path, packet_queue_root: str | 
                         superseded = current
                         campaign_id = "screening-" + canonical_digest({"source": source,
                             "catalog_digest": catalog["catalog_digest"], "protocol": "beta_policy_screening.v1",
-                            "supersedes": current, "implementation_commit": commit})[7:39]
+                            "supersedes": current, "implementation_commit": commit,
+                            **({"scene_half": half} if half is not None else {})})[7:39]
                 if not existing.exists() or replan is not None:
                     context = require_current_source(source, site_id=retained["scene_id"])
                     result, receipt, _zero = _validate_source(Path(request["source_launch_root"]))

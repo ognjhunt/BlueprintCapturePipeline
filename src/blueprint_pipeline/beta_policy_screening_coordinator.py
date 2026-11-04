@@ -257,7 +257,8 @@ def _spent(row: Mapping[str, Any]) -> bool:
                    for attempt in attempts))
 
 
-def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementation_commit: str) -> list[str] | None:
+def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementation_commit: str,
+                  scene_half: str | None = None) -> list[str] | None:
     state = ledger["campaigns"][plan["campaign_id"]]
     rows = state["candidates"]
     if state.get("superseded_by") or any(row["status"] in ACTIVE_STATUSES for row in rows.values()):
@@ -271,21 +272,33 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
         if (row["status"] in QUEUED_STATUSES and frozen not in (None, implementation_commit)
                 or row["status"] == "blocked" and COMMIT_CHANGED_BLOCKER in row.get("blockers", [])):
             stale = True
+    if not stale and scene_half is not None:
+        from .beta_policy_screening_scene_half import planned_half
+
+        # The scene's team half was compiled again since this plan froze it: a half the plan
+        # cannot read is not known to differ, so it never re-plans on its own.
+        stale = planned_half(plan) not in (None, scene_half)
     if not stale:
         return None
     return [candidate["candidate_id"] for candidate in plan["candidates"]
             if not _spent(rows[candidate["candidate_id"]])] or None
 
 
-def replan_scope(campaign_id: str, *, implementation_commit: str,
+def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: str | None = None,
                  queue_root: str | Path | None = None) -> list[str] | None:
-    """Candidates to plan again because the deployed code changed, or ``None``.
+    """Candidates to plan again because the deployed code or the scene's half changed, or ``None``.
 
     A plan freezes the commit its candidates were prepared against, and
     preparation refuses another. When a deploy lands while some candidate is
     still unprepared (queued, or refused for the changed commit) and the
     campaign holds no reservation, every candidate that never ran or allocated
     is planned again at the new commit. Spent candidates keep their result.
+
+    A plan also freezes the scene half it was built from
+    (``beta_policy_screening_scene_half``). ``scene_half`` is the completed
+    half the source's profile names now; when it differs from the frozen one
+    and the campaign holds no reservation and no active row, every candidate
+    that never ran or allocated is planned again, finished campaign or not.
     """
     if not re.fullmatch(r"[0-9a-f]{40}", implementation_commit):
         raise ScreeningCoordinatorError("beta_screening_implementation_commit_invalid")
@@ -295,7 +308,8 @@ def replan_scope(campaign_id: str, *, implementation_commit: str,
         state = ledger["campaigns"].get(campaign_id)
         if state is None:
             return None
-        return _replan_scope(ledger, _plan(root, campaign_id, state["plan_digest"]), implementation_commit)
+        return _replan_scope(ledger, _plan(root, campaign_id, state["plan_digest"]), implementation_commit,
+                             scene_half)
 
 
 def latest_campaign(campaign_id: str, *, queue_root: str | Path | None = None) -> str:
@@ -319,9 +333,12 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
     One ledger write does both, rechecking under the lock that the old campaign
     holds no reservation and that the new plan covers only unspent candidates
     of the same site and source. The site's budget is shared, so the new plan
-    can never spend what the old one committed.
+    can never spend what the old one committed. A re-plan is admitted for a
+    changed commit, or for a scene half the new plan froze that differs from
+    the old plan's (read from both plans' own sealed scene inputs).
     """
     from .beta_policy_screening_plan import validate_screening_plan
+    from .beta_policy_screening_scene_half import planned_half
 
     value = validate_screening_plan(plan)
     successor = value["campaign_id"]
@@ -340,7 +357,7 @@ def supersede_campaign(campaign_id: str, plan: Mapping[str, Any], *, implementat
             return {"campaign_id": successor, "status": "already_enqueued", "plan_digest": value["plan_digest"],
                     "superseded_campaign_id": campaign_id}
         previous = _plan(root, campaign_id, old["plan_digest"])
-        scope = _replan_scope(ledger, previous, implementation_commit)
+        scope = _replan_scope(ledger, previous, implementation_commit, planned_half(value))
         if (scope is None or successor in ledger["campaigns"] or value["site_id"] != old["site_id"]
                 or value["source"] != previous["source"]
                 or not {row["candidate_id"] for row in value["candidates"]} <= set(scope)):
