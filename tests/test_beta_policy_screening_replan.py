@@ -113,3 +113,58 @@ def test_candidates_refused_before_any_allocation_are_replanned_once_after_a_dep
     assert [row["status"] for row in publication(tmp_path, "campaign-1b")["candidates"]] == ["pending", "pending"]
     # Once per commit: the successor, planned at NEW, is not re-planned again at NEW.
     assert coordinator.replan_scope("campaign-1b", implementation_commit=NEW, queue_root=tmp_path) is None
+
+
+HARNESS_FAILED = {"status": "blocked", "blockers": ["beta_screening_native_result_missing_or_invalid"],
+                  "provider_allocation_performed": True, "provider_zero_verified": True}
+
+
+def test_a_candidate_our_harness_failed_is_planned_again_once_per_site_after_a_deploy(tmp_path):
+    """2026-11-04: three learned policies ran on a rented GPU and our simulation crashed before any
+    episode was scored. Nothing about the policies was measured, so after the fix ships each is
+    planned again once, inside the site's allowance; a second harness failure is final."""
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                        executor=Backend(HARNESS_FAILED), max_launches=2)
+    old = publication(tmp_path)
+    assert old["status"] == "blocked" and old["budget"]["spent_upper_bound_usd"] == "8"
+    # No deploy, no retry: the same code would fail the same way.
+    assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) is None
+    assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
+        "candidate-000", "candidate-001"]
+    coordinator.supersede_campaign("campaign-1", successor(plan(count=2)), implementation_commit=NEW,
+                                   queue_root=tmp_path)
+    retried = publication(tmp_path, "campaign-1b")
+    assert [row["status"] for row in retried["candidates"]] == ["pending", "pending"]
+    # The retry shares the site's allowance with the money the failed runs committed.
+    assert retried["budget"]["spent_upper_bound_usd"] == "8"
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                        executor=Backend(HARNESS_FAILED), max_launches=2)
+    rows = publication(tmp_path, "campaign-1b")["candidates"]
+    # $8 already committed + $4 fits the site's $15; a second $4 would not, so it never launches.
+    assert [row["status"] for row in rows] == ["blocked", "deferred"]
+    assert rows[1]["blockers"] == ["beta_screening_site_budget_exhausted"]
+    # Failed again: never a third paid run, not even after another deploy.
+    assert coordinator.replan_scope("campaign-1b", implementation_commit="c" * 40, queue_root=tmp_path) is None
+
+
+def test_only_harness_failures_with_no_scored_episode_are_retried(tmp_path):
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    # A provider-side stop is not our harness: it keeps its result, spent.
+    stopped = {**HARNESS_FAILED, "blockers": ["vast_instance_hard_ttl_expired"]}
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                        executor=Backend(stopped))
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                        executor=Backend(HARNESS_FAILED))
+    assert [row["status"] for row in publication(tmp_path)["candidates"]] == ["blocked", "blocked"]
+    assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
+        "candidate-001"]
+    with pytest.raises(coordinator.ScreeningCoordinatorError, match="replan_not_admitted"):
+        coordinator.supersede_campaign("campaign-1", successor(plan(count=2)), implementation_commit=NEW,
+                                       queue_root=tmp_path)
+    # A harness code next to any other code is not a pure harness failure.
+    assert not coordinator._harness_failed({"status": "blocked", "blockers": [
+        "beta_screening_native_result_missing_or_invalid", "vast_instance_hard_ttl_expired"]})
+    assert not coordinator._harness_failed({"status": "blocked", "blockers": [
+        "beta_screening_native_result_invalid"], "summary": {"episodes_scored": 3}})
+    assert not coordinator._harness_failed({"status": "completed", "blockers": []})
