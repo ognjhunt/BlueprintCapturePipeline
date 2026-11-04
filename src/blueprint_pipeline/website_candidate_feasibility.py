@@ -33,10 +33,16 @@ registered body or known arm, a free base (its own floor station is recorded,
 its reach is undeclared), or a scene without a station or task points stays
 unassessed and keeps its place in the plan; nothing here is a prior about which
 robot suits which task, and unknown reach never blocks.
+
+The same evidence orders the budget (``reach_rank``): candidates whose own arm
+was solved through the task on this scene and reached it are funded first,
+unmeasured ones next, and ones whose solve searched and did not reach (no proof
+that they cannot) last. Ranking removes nothing.
 """
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
@@ -291,6 +297,72 @@ def infeasible_blockers(feasibility: Mapping[str, Any]) -> dict[str, list[str]]:
             if row["status"] == "infeasible"}
 
 
-__all__ = ["FILENAME", "MEASURED_REFUSALS", "REACH_INSUFFICIENT_PREFIX", "SCHEMA_VERSION", "bound_station",
-           "candidate_feasibility", "infeasible_blockers", "is_measured_refusal", "own_stance", "own_station",
-           "station_scene_plan"]
+#: The budget's order by reach evidence (``beta_policy_screening_plan``): tier by basis, lowest first.
+REACH_TIERS = {"own_arm_solve_passed": 1, "reach_unmeasured": 2, "own_arm_solve_flagged": 3}
+REACH_RANK_FIELDS = frozenset({"tier", "basis", "feasibility_status", "reach_source", "solve_source",
+                               "solve_status", "report_digest", "reasons", "feasibility_digest"})
+_REASONS = 16
+
+
+def _codes(values: Any) -> list[str]:
+    return [value for value in values or [] if isinstance(value, str) and 1 <= len(value) <= 300][:_REASONS]
+
+
+def _name(value: Any) -> str | None:
+    return value if isinstance(value, str) and 1 <= len(value) <= 128 else None
+
+
+def _sha(value: Any) -> str | None:
+    return value if isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) else None
+
+
+def reach_rank(row: Mapping[str, Any] | None, *, feasibility_digest: str | None = None) -> dict[str, Any]:
+    """Where a feasible or unassessed candidate's reach evidence places it in the budget order.
+
+    1 ``own_arm_solve_passed``: its own arm was solved through the task on this scene and reached it:
+      a registered body's model (``team_arm_reach`` ``passed`` at planning, else where its own station
+      was chosen) or the packet's DROID Franka (its recorded station search cleared).
+    2 ``reach_unmeasured``: no solve decided either way: no model or recorded search, an unmodelled task,
+      a free base (it can move from where its solve missed), or a candidate this feasibility never saw.
+    3 ``own_arm_solve_flagged``: a fixed arm's solve searched and did not reach, without the proof that
+      would make it infeasible (``team_arm_reach`` ``flagged``; the packet Franka's search blocked).
+      Its declared reach or chain bound did not refuse it, so it stays eligible and is funded last.
+
+    It only orders: the plan's default order holds within a tier and no candidate is removed.
+    """
+    row = row or {}
+    free = (row.get("own_station") or {}).get("base_mode") == "free"
+    solves = [(source, arm) for source, arm in (
+        ("own_arm_model", row.get("own_arm")),
+        ("own_station_own_arm", ((row.get("own_station") or {}).get("reach") or {}).get("own_arm")))
+        if isinstance(arm, Mapping)]
+    search = row.get("station_search")
+    basis, solve = "reach_unmeasured", None
+    for source, arm in solves:  # A solve at planning decides over the one that chose the station.
+        if arm.get("status") == "passed" or arm.get("status") == "flagged" and not free:
+            basis = "own_arm_solve_passed" if arm["status"] == "passed" else "own_arm_solve_flagged"
+            solve = (source, arm["status"], _codes(arm.get("advisories")), arm.get("report_digest"))
+            break
+    if solve is None and isinstance(search, Mapping) and isinstance(search.get("status"), str):
+        basis = "own_arm_solve_passed" if search["status"] == "clear" else "own_arm_solve_flagged"
+        solve = ("packet_station_search", search["status"], _codes(search.get("blockers")), None)
+    if solve is None:
+        source, arm = solves[0] if solves else (None, {})
+        reasons = _codes([*(row.get("blockers") or []), arm.get("reason"), *(arm.get("advisories") or [])])
+        solve = (source, arm.get("status"), reasons or ["candidate_reach_not_recorded"], arm.get("report_digest"))
+    source, status, reasons, digest = solve
+    return {"tier": REACH_TIERS[basis], "basis": basis,
+            "feasibility_status": row.get("status") if row.get("status") in {"feasible", "unassessed"} else None,
+            "reach_source": _name(row.get("reach_source")), "solve_source": source, "solve_status": _name(status),
+            "report_digest": _sha(digest), "reasons": reasons, "feasibility_digest": _sha(feasibility_digest)}
+
+
+def reach_ranks(feasibility: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Every candidate's reach rank but the measured refusals', which are never funded."""
+    return {key: reach_rank(row, feasibility_digest=feasibility.get("feasibility_digest"))
+            for key, row in feasibility["candidates"].items() if row["status"] != "infeasible"}
+
+
+__all__ = ["FILENAME", "MEASURED_REFUSALS", "REACH_INSUFFICIENT_PREFIX", "REACH_RANK_FIELDS", "REACH_TIERS",
+           "SCHEMA_VERSION", "bound_station", "candidate_feasibility", "infeasible_blockers", "is_measured_refusal",
+           "own_stance", "own_station", "reach_rank", "reach_ranks", "station_scene_plan"]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from decimal import Decimal
 import json
 from pathlib import Path
 
@@ -12,7 +13,8 @@ from blueprint_pipeline import beta_policy_screening_launch as launch
 from blueprint_pipeline import team_embodiment
 from blueprint_pipeline.beta_policy_candidate_catalog import CATALOG_ENV, load_default_catalog, seal_catalog
 from blueprint_pipeline.beta_policy_screening_capabilities import build_planning_inputs
-from blueprint_pipeline.beta_policy_screening_plan import build_screening_plan, validate_screening_plan
+from blueprint_pipeline.beta_policy_screening_plan import (
+    build_job_ceiling_screening_plan, build_screening_plan, job_ceiling_record, validate_screening_plan)
 from blueprint_pipeline.beta_policy_screening_team import build_registered_team_spec, team_policy_interface
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.team_candidate_quick10_registry import profile_for_capture, scene_facts
@@ -337,3 +339,157 @@ def test_only_an_own_station_the_bodys_arm_reached_from_lifts_the_declared_reach
     assert own_station_reached_by_own_arm(row(reached, "passed", basis="scene_packet_station")) is False
     assert own_station_reached_by_own_arm(row(reached, "passed", base_mode="free")) is False
     assert own_station_reached_by_own_arm({}) is False
+
+
+# capture-447ae4f4's lookahead shape: no learned policy runnable, 17 runnable scripted bodies at $4 each against
+# the $15 site budget. By identifier the budget went to GoFa 12/1.27 and to GoFa 5/0.95 and Diana 7, whose own-arm
+# solve was only flagged, while 9 bodies whose solve passed waited behind them.
+GOFA_12, GOFA_5, DIANA = ("blueprint_scripted_abb_gofa_crb15000_12_127_robotiq_2f85_sim",
+                          "blueprint_scripted_abb_gofa_crb15000_5_95_robotiq_2f85_sim",
+                          "blueprint_scripted_agile_robots_diana_7_robotiq_2f85_sim")
+PASSED = ("blueprint_scripted_fanuc_crx_10ia_l_robotiq_2f85_sim", "blueprint_scripted_fanuc_crx_10ia_robotiq_2f85_sim",
+          "blueprint_scripted_fanuc_m10id_12_robotiq_2f85_sim", "blueprint_scripted_franka_research_3_robotiq_2f85_sim",
+          "blueprint_scripted_kuka_lbr_iiwa_14_robotiq_2f85_sim", "blueprint_scripted_ufactory_xarm7",
+          "blueprint_scripted_universal_robots_ur10e_robotiq_2f85_sim",
+          "blueprint_scripted_universal_robots_ur5e_robotiq_2f85_sim", "blueprint_scripted_yaskawa_gp12_robotiq_2f85_sim")
+UNMEASURED = (GOFA_12, "blueprint_scripted_agilex_piper_bimanual", "blueprint_scripted_almond_axol",
+              "blueprint_scripted_kinova_gen3", "blueprint_scripted_yaskawa_gp20_robotiq_2f85_sim",
+              "blueprint_scripted_yaskawa_hc20_robotiq_2f85_sim")
+FLAGGED = (GOFA_5, DIANA)
+FEASIBILITY_DIGEST = "sha256:" + "f" * 64
+
+
+def reach_rows():
+    """Feasibility rows as ``candidate_feasibility`` records them for fixed bodies with a robot model."""
+    def body(status):
+        return {"status": "feasible", "blockers": [], "embodiment_id": "body", "reach_m": 1.0,
+                "station_basis": "scene_packet_station",
+                "reach_source": "own_arm_model" if status == "passed" else "declared_reach_m",
+                "own_arm": {"status": status, "report_digest": "sha256:" + "d" * 64,
+                            "advisories": [] if status == "passed" else
+                            ["robot_arm_task_unreached:arm:place:no_solution:ik_not_converged"]}}
+    rows = {key: body("passed") for key in PASSED}
+    rows.update({key: body("flagged") for key in FLAGGED})
+    rows.update({key: {"status": "unassessed", "blockers": ["embodiment_reach_manifest_not_registered"]}
+                 for key in UNMEASURED})
+    rows["learned_policy"] = {"status": "unassessed", "blockers": ["packet_arm_reach_task_unmodeled"]}
+    return rows
+
+
+def capture_447(*, ranked=True, priority=None, budget_usd="15.00", infeasible=None, ceiling=None):
+    from blueprint_pipeline.beta_policy_candidate_catalog import catalog_candidate
+    from blueprint_pipeline.website_candidate_feasibility import reach_ranks
+    from tests.test_beta_policy_screening_plan import admitted
+
+    catalog = load_default_catalog()
+    template = catalog_candidate(catalog, "pi05_droid")
+    rows = []
+    for key in (*PASSED, *UNMEASURED, *FLAGGED, "learned_policy"):
+        row = {**deepcopy(template), "candidate_id": key, "display_name": key}
+        if key != "learned_policy":
+            row["policy"]["kind"] = "scripted"
+        rows.append(row)
+    catalog = seal_catalog({**catalog, "candidates": rows})
+    bindings, quotes = {}, {}
+    for row in catalog["candidates"]:
+        if row["candidate_id"] != "learned_policy":  # Unavailable, as the job's learned policies were.
+            bindings[row["candidate_id"]], quotes[row["candidate_id"]] = admitted(row, maximum="4.00")
+    capabilities = {"candidate_bindings": bindings, "candidate_infeasible": dict(infeasible or {})}
+    if ranked:
+        capabilities["candidate_reach_rank"] = reach_ranks(
+            {"candidates": reach_rows(), "feasibility_digest": FEASIBILITY_DIGEST})
+    options = {"campaign_id": "campaign1", "capabilities": capabilities, "cost_quotes": quotes, "now": NOW,
+               "budget_usd": budget_usd, "priority": priority}
+    if ceiling is not None:
+        return build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=ceiling, **options)
+    return build_screening_plan(catalog, scene(), **options)
+
+
+def test_capture_447_funds_the_bodies_whose_own_arm_reached_the_task_before_flagged_ones():
+    before, after = capture_447(ranked=False), capture_447()
+    selected = [row["candidate_id"] for row in before["candidates"] if row["status"] == "selected"]
+    # The lookahead's order: GoFa 12/1.27, GoFa 5/0.95, Diana 7 at $4 each.
+    assert selected == [GOFA_12, GOFA_5, DIANA]
+    order = [row["candidate_id"] for row in after["candidates"]]
+    tiers = [row["reach_rank"]["tier"] for row in after["candidates"]]
+    assert tiers == sorted(tiers) and set(tiers) == {1, 2, 3}
+    assert order == [*sorted(PASSED), "learned_policy", *sorted(UNMEASURED), *sorted(FLAGGED)]
+    # The passed bodies take the budget; the flagged ones wait at the back of the waitlist, still runnable.
+    assert [row["candidate_id"] for row in after["candidates"] if row["status"] == "selected"] == sorted(PASSED)[:3]
+    assert after["maximum_planned_cost_usd"] == before["maximum_planned_cost_usd"] == "12.00"
+    shown = {row["candidate_id"]: row for row in after["candidates"]}
+    assert all(shown[key]["status"] == "waitlisted" for key in FLAGGED)
+    # Each row says why it sits where it does, with the evidence that placed it there.
+    assert shown[GOFA_5]["reach_rank"] == {
+        "tier": 3, "basis": "own_arm_solve_flagged", "feasibility_status": "feasible",
+        "reach_source": "declared_reach_m", "solve_source": "own_arm_model", "solve_status": "flagged",
+        "report_digest": "sha256:" + "d" * 64, "feasibility_digest": FEASIBILITY_DIGEST,
+        "reasons": ["robot_arm_task_unreached:arm:place:no_solution:ik_not_converged"]}
+    assert (shown[PASSED[0]]["reach_rank"]["basis"], shown[PASSED[0]]["reach_rank"]["solve_status"]) == (
+        "own_arm_solve_passed", "passed")
+    assert shown[GOFA_12]["reach_rank"]["basis"] == "reach_unmeasured"
+    assert shown[GOFA_12]["reach_rank"]["reasons"] == ["embodiment_reach_manifest_not_registered"]
+    assert validate_screening_plan(after) == after
+    schema = json.loads((Path(__file__).resolve().parents[1]
+                         / "docs/schemas/beta_policy_screening_plan.v1.schema.json").read_text())
+    Draft202012Validator(schema).validate(after)
+
+
+def test_reach_tiers_keep_the_default_priority_within_each_tier():
+    priority = [DIANA, PASSED[5], GOFA_12, PASSED[1], "learned_policy"]
+    for ranking in (None, priority):
+        before, after = capture_447(ranked=False, priority=ranking), capture_447(priority=ranking)
+        default = [row["candidate_id"] for row in before["candidates"]]
+        tier = {row["candidate_id"]: row["reach_rank"]["tier"] for row in after["candidates"]}
+        assert [row["candidate_id"] for row in after["candidates"]] == sorted(default, key=tier.__getitem__)
+    # The intake ranking leads its tier, and the unranked rest follow it in the default order.
+    assert [row["candidate_id"] for row in after["candidates"]][:3] == [PASSED[5], PASSED[1], sorted(PASSED)[0]]
+
+
+def test_ranking_by_reach_makes_nothing_infeasible_or_unfunded_that_was_not():
+    measured = {"learned_policy": ["robot_reach_insufficient:place:1.107m_vs_0.990m"]}
+    for budget in ("15.00", "4.00"):
+        before = capture_447(ranked=False, budget_usd=budget, infeasible=measured)
+        after = capture_447(budget_usd=budget, infeasible=measured)
+        assert len(after["candidates"]) == len(before["candidates"]) == 18
+        status = {row["candidate_id"]: row["status"] for row in before["candidates"]}
+        for row in after["candidates"]:
+            # Only which runnable rows the budget reaches changes; refusals and reasons stay the plan's own.
+            assert row["status"] == status[row["candidate_id"]] or {
+                row["status"], status[row["candidate_id"]]} == {"selected", "waitlisted"}
+            assert ("reach_rank" in row) is (row["status"] != "infeasible")
+        assert [row["candidate_id"] for row in after["candidates"] if row["status"] == "infeasible"] == ["learned_policy"]
+        assert sum(row["status"] == "selected" for row in after["candidates"]) == sum(
+            row["status"] == "selected" for row in before["candidates"])
+    # A job ceiling that defers the waitlist keeps each row's rank, and so does a deferral for no money left.
+    from tests.test_beta_policy_screening_job_ceiling import READ_AT, ceiling_summary
+
+    for remaining, statuses in ((5, {"selected", "waitlisted", "unavailable"}), (0, {"deferred", "unavailable"})):
+        bounded = capture_447(ceiling=job_ceiling_record(ceiling_summary(remaining), local_holds_usd=Decimal(0),
+                                                         read_at=READ_AT))
+        assert {row["status"] for row in bounded["candidates"]} == statuses
+        assert [row["reach_rank"] for row in bounded["candidates"]] == [
+            row["reach_rank"] for row in capture_447()["candidates"]]
+        assert validate_screening_plan(bounded) == bounded
+
+
+def test_planning_inputs_rank_registered_bodies_by_their_own_arm_solve(tmp_path, monkeypatch):
+    from blueprint_pipeline import website_candidate_feasibility as feasibility
+
+    solved = {"team_policy_00": "flagged", "team_policy_01": "passed", "team_policy_03": "passed"}
+
+    def own_arm(scene_plan, manifest, registration, station):
+        status = solved.get(registration["checkpoint_id"])
+        return None if status is None else {"status": status, "advisories": [], "report_digest": "sha256:" + "e" * 64}
+
+    monkeypatch.setattr(feasibility, "_own_arm", own_arm)
+    plan, planning, _, _ = registered(tmp_path, monkeypatch, count=4, short=())
+    digest = planning["candidate_feasibility"]["feasibility_digest"]
+    ranks = planning["capabilities"]["candidate_reach_rank"]
+    assert {key: (row["basis"], row["feasibility_digest"]) for key, row in ranks.items()} == {
+        "team_policy_00": ("own_arm_solve_flagged", digest), "team_policy_01": ("own_arm_solve_passed", digest),
+        "team_policy_02": ("reach_unmeasured", digest), "team_policy_03": ("own_arm_solve_passed", digest)}
+    assert [row["candidate_id"] for row in plan["candidates"]] == [
+        "team_policy_01", "team_policy_03", "team_policy_02", "team_policy_00"]
+    assert {row["status"] for row in plan["candidates"]} == {"selected"}
+    assert [row["reach_rank"] for row in plan["candidates"]] == [ranks[row["candidate_id"]] for row in plan["candidates"]]
