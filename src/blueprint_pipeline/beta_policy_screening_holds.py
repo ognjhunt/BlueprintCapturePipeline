@@ -14,8 +14,11 @@ evaluation ended before the screening queue could plan a campaign kept reading
     The probe could not be completed and nothing retries it under the running
     release: a staging refusal this release already tried
     (``rigid_robot_free_probe_runner``, retried once per new release), a spent
-    attempt budget, a trace conflict, an unbound revision, or a decided receipt
-    bound to another scene revision or task.
+    attempt budget, a trace conflict with the request's own trace (one beside a
+    superseded request's trace is re-ingested once per new release), an unbound
+    revision, or a decided receipt the gate refuses. A receipt bound to another
+    scene revision or task is a superseded request's, never the current one's
+    (``current_probe_state``), so the lane probes the current request.
 ``robot_free_probe_unavailable_for_task``
     The task has no robot-free probe, so no robot can be scored on it.
 ``team_scene_packet_blocked``
@@ -103,7 +106,7 @@ def probe_hold(code: str, capture_root: str | Path, *, queue_root: str | Path | 
     state = current_probe_state(capture_root)
     status = state.get("status")
     if status == "receipt_decided":
-        # Decided receipts are never replaced: a failed one is final, and so is one bound to another revision.
+        # A decided receipt of the current request is never replaced: a failed one is final.
         failed = state.get("receipt_status") == "failed"
         return ("robot_free_probe_failed" if failed else "robot_free_probe_not_completed"), _code(reason)
     if status == "unavailable_for_task":

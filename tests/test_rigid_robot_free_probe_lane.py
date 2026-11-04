@@ -42,6 +42,7 @@ from blueprint_pipeline import rigid_robot_free_probe_worker as worker
 from blueprint_pipeline import robot_arm_path_clearance as arm
 from blueprint_pipeline import scene_physics_preflight as physics
 from blueprint_pipeline import robot_free_probe_gate as gate
+from blueprint_pipeline import robot_free_readiness_retention as retention
 from blueprint_pipeline import team_candidate_quick10_registry as registry
 from blueprint_pipeline import website_task_context
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest
@@ -477,7 +478,10 @@ def test_the_lane_refuses_before_any_spend(tmp_path, monkeypatch, case, blocker,
                                    "webapp_exhausted": "website_scene_preparation_budget_exhausted",
                                    "webapp_missing": "website_scene_sponsorship_missing"}[case]
     elif case == "decided":
-        (world["probe_root"] / gate.RECEIPT_FILENAME).write_text(json.dumps({"status": "failed"}))
+        # Decided for this request: bound to its scene revision and task specification.
+        binding = current_probe_state(world["capture"])["request"]["binding"]
+        (world["probe_root"] / gate.RECEIPT_FILENAME).write_text(json.dumps(
+            {"status": "failed", **{field: binding[field] for field in retention.RECEIPT_BINDING_FIELDS}}))
     elif case == "over_cap":
         argv = _with(argv, "--adp-max-spend-usd", "2.0")
     elif case == "over_rate":
@@ -1338,6 +1342,244 @@ def test_a_different_trace_beside_the_source_launch_is_a_conflict_never_overwrit
     with pytest.raises(runner.RigidRobotFreeProbeIngestError, match="trace_conflict"):
         runner.retain_trace_file(root, {"trace_digest": "sha256:2"})
     assert json.loads((root / worker.TRACE_FILENAME).read_text()) == {"trace_digest": "sha256:1"}
+
+
+# --- the trace and receipt beside the launch are the current request's --------------------------------
+
+
+def _superseded_request_evidence(world: dict[str, Any], *, decided: bool = False) -> dict[str, Any]:
+    """Request A's trace and receipt beside the launch, as the lane retained them before the scene was recompiled.
+
+    capture-447ae4f4, 2026-11-03 22:54Z: request bdfe6a51 (the bumpy-table compile #3349 fixed) recorded a trace
+    whose untouched object rested 14.7 mm off the task's start, scored ``probe_unavailable``, beside the launch
+    request 9319f26e later probed. Request A here is the same task compiled with its start 0.5 mm higher, so
+    its binding and plan are not the current request's.
+    """
+    from blueprint_pipeline.rigid_robot_free_probe_recorder import record_rigid_robot_free_probe
+    from blueprint_pipeline.rigid_robot_free_readiness_score import score_rigid_robot_free_readiness
+    from blueprint_pipeline.team_robot_free_probe import probe_request
+    from tests.test_rigid_support_seating import _OffsetSupport
+
+    spec = copy.deepcopy(world["scored"])
+    start = list(spec["start_pose_world"])
+    spec["start_pose_world"] = [*start[:2], start[2] + 0.0005, *start[3:]]
+    request = probe_request(task_spec=spec, scene_revision_digest=REVISION)
+    current = current_probe_state(world["capture"])["request"]
+    assert request["request_digest"] != current["request_digest"] and request["binding"] != current["binding"]
+    scene = (FlatSupport(spec["start_pose_world"], support_max_xy=(3.05, -1.4)) if decided
+             else _OffsetSupport(spec["start_pose_world"], start_offset=-0.0147))
+    trace = record_rigid_robot_free_probe(scene=scene, plan=request["plan"], binding=request["binding"])
+    receipt = score_rigid_robot_free_readiness(task_spec=spec, physics_probe=trace,
+                                               configured_scene_revision_digest=REVISION)
+    assert trace["status"] == "recorded" and receipt["status"] == ("failed" if decided else "probe_unavailable")
+    assert runner.retain_trace_file(world["probe_root"], trace, request=request) == "written"
+    assert retention.retain_receipt(world["probe_root"], receipt, supersede_other_request=True) == "written"
+    return {"request": request, "trace": trace, "receipt": receipt,
+            "trace_bytes": (world["probe_root"] / worker.TRACE_FILENAME).read_bytes(),
+            "receipt_bytes": (world["probe_root"] / gate.RECEIPT_FILENAME).read_bytes()}
+
+
+def _kept(world: dict[str, Any], name: str, data: bytes) -> dict[str, Any]:
+    """The history copy of ``name`` holding ``data``, byte for byte; return its marker."""
+    digest = hashlib.sha256(data).hexdigest()
+    kept = world["probe_root"] / retention.HISTORY_DIRNAME / f"{digest}.{name}"
+    assert kept.read_bytes() == data
+    marker = json.loads(kept.with_name(kept.name + ".supersession.json").read_text())
+    assert marker["schema_version"] == retention.SUPERSESSION_SCHEMA and marker["file"] == name
+    assert marker["sha256"] == "sha256:" + digest and marker["history_file"] == kept.name
+    assert marker["marker_digest"] == canonical_digest(marker, digest_field="marker_digest")
+    return marker
+
+
+def _admits(world: dict[str, Any], receipt: dict[str, Any]) -> None:
+    gate.require_robot_free_probe(
+        receipt, scene_revision_digest=REVISION, task_spec_digest=canonical_digest(world["scored"]),
+        task_kind="rigid_pick_place",
+        task_success_contract_digest=gate.task_success_contract_binding("rigid_pick_place", world["contract"]))
+
+
+def test_a_completed_run_refused_beside_a_superseded_requests_trace_is_reingested_once_at_no_cost(
+        tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    _work_root(tmp_path, monkeypatch)
+    old, new = "c" * 40, COMMIT
+    superseded = _superseded_request_evidence(world)
+    # The release that sealed capture-447ae4f4's job (88497b47) kept one trace per launch.
+    per_request = runner.retain_trace_file
+    monkeypatch.setattr(runner, "retain_trace_file", lambda root, trace, **_request: per_request(root, trace))
+    # Its attempts, exactly: 00 crashed inside our runtime (funded), 01 the WebApp refused (money,
+    # uncounted), 02 completed with this request's trace and was refused beside request A's.
+    _crashing(world)
+    hooks = _under(world, monkeypatch, old)
+    clock = [time.time()]
+    hooks["now"] = lambda: clock[0]
+    allocate = hooks["allocator_runner"]
+
+    def crash_then_refuse(argv: list[str], *, attempt: Path) -> int:
+        code = allocate(argv, attempt=attempt)
+        _healed(world)
+        world["webapp_refusal"] = "website_scene_preparation_budget_exhausted"
+        return code
+
+    hooks["allocator_runner"] = crash_then_refuse
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=hooks)
+    assert row["status"] == "deferred" and "rigid_robot_free_probe_website_grant_exhausted" in row["blockers"], row
+    hooks["allocator_runner"], world["webapp_refusal"] = allocate, None
+    clock[0] = time.time() + runner.GRANT_REFUSAL_RETRY_SECONDS + 1
+    (row,) = runner.run_queue(world["queue"], hooks=hooks)
+    assert row["status"] == "trace_conflict" and row[runner.RELEASE_COMMIT_FIELD] == old, row
+    assert row["detail"]["ingest_refusal"] == "rigid_robot_free_probe_trace_conflict"
+    assert row["detail"]["allocator_status"] == "completed" and row["detail"]["funded"] is True
+    monkeypatch.setattr(runner, "retain_trace_file", per_request)
+    state = current_probe_state(world["capture"])
+    job = runner._job_dir(world["queue"], state)
+    attempts = runner._attempts(job)
+    assert [attempt.name for attempt in attempts] == ["00", "01", "02"]
+    assert [json.loads((attempt / runner.INGEST_FILENAME).read_text())["state"] for attempt in attempts] == [
+        "allocated_blocked", runner.GRANT_REFUSED_STATE, "trace_conflict"]
+    refused = (attempts[2] / runner.INGEST_FILENAME).read_bytes()
+    terminal = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    native = json.loads(next((runner.attempt_work_dir(attempts[2]) / "allocator").rglob(
+        worker.RESULT_FILENAME)).read_text())
+    # Request A's trace and undecided receipt are still beside the launch; neither is request B's.
+    assert (world["probe_root"] / worker.TRACE_FILENAME).read_bytes() == superseded["trace_bytes"]
+    assert (world["probe_root"] / gate.RECEIPT_FILENAME).read_bytes() == superseded["receipt_bytes"]
+    assert state["status"] == "probe_required" and state["receipt"] is None and state["receipt_status"] is None
+    assert state["superseded_receipt"]["receipt_digest"] == superseded["receipt"]["receipt_digest"]
+    assert not list((world["queue"] / "pending").glob("*.json")) and list((world["queue"] / "done").glob("*.json"))
+    spent = (len(world["allocator_calls"]), len(world["webapp_calls"]), len(world["transport_calls"]))
+    assert spent == (3, 3, 2)  # three allocator runs, three reservations asked (one refused), two GPU runs
+    # Final under the release that sealed it; not under a newly deployed one.
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, old)) == []
+    assert runner.final_terminal(state, queue_root=world["queue"], release=old) == terminal
+    assert runner.final_terminal(state, queue_root=world["queue"], release=new) is None
+    assert runner._superseded_trace_conflict(job, terminal) == attempts[2]
+    # The deployed fix ingests attempt 02's retained result once: nothing is allocated, reserved or run.
+    (row,) = runner.run_queue(world["queue"], hooks={**_under(world, monkeypatch, new), "now": hooks["now"]})
+    assert row["status"] == "decided", row
+    assert (len(world["allocator_calls"]), len(world["webapp_calls"]), len(world["transport_calls"])) == spent
+    assert runner._attempts(job) == attempts and runner._counts(job) == (2, 0)
+    receipt = _receipt(world)
+    assert receipt["status"] == "passed" and receipt["physics_probe_digest"] == native["trace_digest"]
+    assert receipt["checks"]["zero_action_not_success"] is True and receipt["checks"]["direct_placement_success"] is True
+    _admits(world, receipt)
+    # Request B's trace is the one beside the launch now; request A's trace and receipt are kept.
+    assert json.loads((world["probe_root"] / worker.TRACE_FILENAME).read_text()) == native["trace"]
+    trace_marker = _kept(world, worker.TRACE_FILENAME, superseded["trace_bytes"])
+    assert trace_marker["superseded_binding"] == superseded["request"]["binding"]
+    assert trace_marker["superseded_digest"] == superseded["trace"]["trace_digest"]
+    assert trace_marker["superseded_by"] == {"probe_request_digest": state["request"]["request_digest"],
+                                             "trace_digest": native["trace_digest"]}
+    receipt_marker = _kept(world, gate.RECEIPT_FILENAME, superseded["receipt_bytes"])
+    assert receipt_marker["superseded_status"] == "probe_unavailable"
+    assert receipt_marker["superseded_by"]["receipt_digest"] == receipt["receipt_digest"]
+    # The job's history: the marker names the attempt it re-ingested, and its refused record sits beside it.
+    marker = row["superseded_terminal"]
+    assert marker["superseded_status"] == "trace_conflict" and marker["superseded_release_commit"] == old
+    assert marker[runner.RELEASE_COMMIT_FIELD] == new and marker[runner.REINGEST_FIELD] == "02"
+    assert marker["superseded_ingest_digest"] == terminal["detail"]["record_digest"]
+    history, name = job / runner.SUPERSEDED_DIRNAME, terminal["terminal_digest"][7:23]
+    assert (history / f"{name}.attempt-02.ingest.json").read_bytes() == refused
+    assert json.loads((history / f"{name}.terminal.json").read_text()) == terminal
+    reingested = json.loads((attempts[2] / runner.INGEST_FILENAME).read_text())
+    assert reingested["state"] == "decided" and reingested["trace_write"] == "written_superseding"
+    assert reingested["retention"]["write"] == "superseded_other_request"
+    assert reingested["trace_digest"] == native["trace_digest"]
+    final = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    assert final["status"] == "decided" and final[runner.RELEASE_REQUEUE_FIELD] == [old, new]
+    # Once: neither this release nor a later one reads it again, and nothing more is spent.
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, new)) == []
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, "d" * 40)) == []
+    assert (len(world["allocator_calls"]), len(world["webapp_calls"]), len(world["transport_calls"])) == spent
+
+
+def test_a_different_trace_of_the_attempts_own_request_stays_a_final_conflict(tmp_path, monkeypatch) -> None:
+    from blueprint_pipeline.rigid_robot_free_probe_recorder import record_rigid_robot_free_probe
+
+    world = build_world(tmp_path, monkeypatch)
+    old = "c" * 40
+    request = current_probe_state(world["capture"])["request"]
+    # Another recording of this very request (its object falls off the support's edge) is already retained.
+    own = record_rigid_robot_free_probe(scene=FlatSupport(world["spec"]["start_pose_world"], support_max_xy=(3.05, -1.4)),
+                                        plan=request["plan"], binding=request["binding"])
+    assert runner.retain_trace_file(world["probe_root"], own, request=request) == "written"
+    retained = (world["probe_root"] / worker.TRACE_FILENAME).read_bytes()
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, old))
+    assert row["status"] == "trace_conflict" and row["detail"]["ingest_refusal"].endswith("trace_conflict"), row
+    state = current_probe_state(world["capture"])
+    job = runner._job_dir(world["queue"], state)
+    terminal = json.loads((job / runner.TERMINAL_FILENAME).read_text())
+    # A real conflict: no release re-ingests it, and the retained trace is never overwritten or set aside.
+    assert runner._superseded_trace_conflict(job, terminal) is None
+    assert runner.run_queue(world["queue"], hooks=_under(world, monkeypatch, COMMIT)) == []
+    assert runner.final_terminal(state, queue_root=world["queue"], release=COMMIT) == terminal
+    assert (world["probe_root"] / worker.TRACE_FILENAME).read_bytes() == retained
+    assert not (world["probe_root"] / retention.HISTORY_DIRNAME).exists() and _receipt(world) is None
+    assert len(world["allocator_calls"]) == 1
+    with pytest.raises(runner.RigidRobotFreeProbeIngestError, match="trace_binding_mismatch"):
+        runner.retain_trace_file(world["probe_root"], own, request={**request, "plan": {}})
+
+
+def test_a_decided_receipt_of_a_superseded_request_never_shadows_the_current_one(tmp_path, monkeypatch) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    superseded = _superseded_request_evidence(world, decided=True)
+    # Request A's sealed failure is not request B's verdict: B is still to be probed, and the gate never admits A's.
+    state = current_probe_state(world["capture"])
+    assert state["status"] == "probe_required" and state["receipt"] is None and state["receipt_status"] is None
+    assert state["superseded_receipt"] == {
+        "receipt_digest": superseded["receipt"]["receipt_digest"], "status": "failed",
+        "task_spec_digest": superseded["request"]["binding"]["task_spec_digest"],
+        "configured_scene_revision_digest": REVISION}
+    with pytest.raises(gate.RobotFreeProbeGateError):
+        _admits(world, _receipt(world))
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    (row,) = runner.run_queue(world["queue"], hooks=runner_hooks(world))
+    assert row["status"] == "decided" and len(world["allocator_calls"]) == 1, row
+    receipt = _receipt(world)
+    assert receipt["status"] == "passed" and receipt["task_spec_digest"] == canonical_digest(world["scored"])
+    _admits(world, receipt)
+    assert _kept(world, gate.RECEIPT_FILENAME, superseded["receipt_bytes"])["superseded_status"] == "failed"
+    assert _kept(world, worker.TRACE_FILENAME, superseded["trace_bytes"])["superseded_status"] == "recorded"
+    # Decided for request B itself: never replaced, by any writer.
+    retained = (world["probe_root"] / gate.RECEIPT_FILENAME).read_bytes()
+    assert retention.retain_receipt(world["probe_root"], {**superseded["receipt"], **{
+        field: receipt[field] for field in retention.RECEIPT_BINDING_FIELDS}},
+        supersede_other_request=True) == "kept_existing_decided"
+    assert (world["probe_root"] / gate.RECEIPT_FILENAME).read_bytes() == retained
+
+
+def test_only_the_current_requests_writer_sets_a_decided_receipt_of_another_request_aside(tmp_path) -> None:
+    root = tmp_path / "launch"
+    root.mkdir()
+    bound = {"configured_scene_revision_digest": REVISION, "replacement_asset_digest": None}
+    a = {**bound, "status": "failed", "task_spec_digest": "sha256:" + "a" * 64, "receipt_digest": "sha256:1"}
+    b = {**bound, "status": "passed", "task_spec_digest": "sha256:" + "b" * 64, "receipt_digest": "sha256:2"}
+    assert retention.retain_receipt(root, a) == "written"
+    sealed = (root / gate.RECEIPT_FILENAME).read_bytes()
+    # Scene preparation's retention scores the revision, not a probe request: it never sets a decided receipt aside.
+    assert retention.retain_receipt(root, b) == "kept_existing_decided"
+    assert (root / gate.RECEIPT_FILENAME).read_bytes() == sealed
+    assert retention.retain_receipt(root, b, supersede_other_request=True) == "superseded_other_request"
+    assert json.loads((root / gate.RECEIPT_FILENAME).read_text()) == b
+    kept = root / retention.HISTORY_DIRNAME / f"{hashlib.sha256(sealed).hexdigest()}.{gate.RECEIPT_FILENAME}"
+    assert kept.read_bytes() == sealed
+    # An undecided receipt a decided one replaces is kept too; the same bytes set aside twice stay one copy.
+    unavailable = {**b, "status": "probe_unavailable", "receipt_digest": "sha256:3"}
+    other = root / "other"
+    other.mkdir()
+    for _ in range(2):
+        assert retention.retain_receipt(other, unavailable) in {"written", "unchanged"}
+        (other / gate.RECEIPT_FILENAME).chmod(0o640)
+        assert retention.set_aside(other, gate.RECEIPT_FILENAME, superseded_by={"why": "test"})["file"] == (
+            gate.RECEIPT_FILENAME)
+    assert len(list((other / retention.HISTORY_DIRNAME).glob(f"*.{gate.RECEIPT_FILENAME}"))) == 1
+    assert retention.set_aside(other, gate.RECEIPT_FILENAME, superseded_by={}) is None
+    assert retention.retain_receipt(other, unavailable) == "written"
+    assert retention.retain_receipt(other, b) == "replaced_unavailable"
+    assert retention.receipt_bound_to_request(b, {"binding": {**bound, "task_spec_digest": b["task_spec_digest"]}})
+    assert not retention.receipt_bound_to_request(a, {"binding": {**bound, "task_spec_digest": b["task_spec_digest"]}})
 
 
 # --- the hook: enqueue launches nothing --------------------------------------------------------
