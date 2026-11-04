@@ -319,8 +319,14 @@ HARNESS_FAILURE_BLOCKERS = frozenset({"beta_screening_native_result_missing_or_i
                                       "beta_screening_native_result_invalid",
                                       "g1_beta_native_result_missing_or_invalid"})
 #: How many times a site's candidate is planned again after a harness failure. It spent money,
-#: so it is bounded: one retry per site, after a deploy, inside the site's existing allowance.
-HARNESS_RETRY_LIMIT = 1
+#: so it is bounded: only after a deploy, inside the site's existing allowance, and with the
+#: hold below a site pays for at most one harness failure per campaign. Two, because the first
+#: retry is often the run that shows what failed; the fix then needs one more.
+HARNESS_RETRY_LIMIT = 2
+#: A campaign freezes one commit, so a harness failure in it would fail its other candidates the
+#: same way: they are held, unspent, and planned again after the next deploy. Matches the WebApp's
+#: "launch" category ("Could not start in our simulator. This is ours to fix.").
+HARNESS_HOLD_BLOCKER = "beta_screening_held_after_launch_failure"
 
 
 def _harness_failed(row: Mapping[str, Any]) -> bool:
@@ -612,6 +618,12 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         state = ledger["campaigns"][campaign_id]
         row = state["candidates"][candidate_id]
         if row["status"] != "pending":
+            return None
+        if any(_harness_failed(other) for key, other in state["candidates"].items() if key != candidate_id):
+            # Never pay for a run this commit's harness already failed on a sibling.
+            row.update(status="blocked", blockers=[HARNESS_HOLD_BLOCKER])
+            _changed(state)
+            _save(root, ledger)
             return None
         cap = _amount(candidate["max_cost_usd"])
         site = _budget(ledger, plan["site_id"])

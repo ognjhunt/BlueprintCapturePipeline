@@ -17,11 +17,11 @@ class RefusesChangedCommit(Backend):
         raise ValueError("beta_screening_implementation_commit_changed")
 
 
-def successor(value, *, campaign_id="campaign-1b", keep=None):
-    """The same source re-planned at ``NEW`` for the candidates in ``keep``."""
+def successor(value, *, campaign_id="campaign-1b", keep=None, commit=NEW):
+    """The same source re-planned at ``commit`` for the candidates in ``keep``."""
     rows = [row for row in value["candidates"] if keep is None or row["candidate_id"] in keep]
     for row in rows:
-        row["execution_spec"]["implementation_commit"] = NEW
+        row["execution_spec"]["implementation_commit"] = commit
         row["admission_digest"] = canonical_digest(row["execution_spec"])
     total = sum(float(row["max_cost_usd"]) for row in rows if row["status"] == "selected")
     value.update(campaign_id=campaign_id, candidates=rows, maximum_planned_cost_usd=f"{total:.2f}")
@@ -119,15 +119,21 @@ HARNESS_FAILED = {"status": "blocked", "blockers": ["beta_screening_native_resul
                   "provider_allocation_performed": True, "provider_zero_verified": True}
 
 
-def test_a_candidate_our_harness_failed_is_planned_again_once_per_site_after_a_deploy(tmp_path):
+def test_a_candidate_our_harness_failed_is_planned_again_after_a_deploy_at_most_twice(tmp_path):
     """2026-11-04: three learned policies ran on a rented GPU and our simulation crashed before any
     episode was scored. Nothing about the policies was measured, so after the fix ships each is
-    planned again once, inside the site's allowance; a second harness failure is final."""
+    planned again after the deploy, inside the site's allowance, at most twice; the first failure
+    in a campaign holds its siblings unspent."""
     coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
-    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
-                                        executor=Backend(HARNESS_FAILED), max_launches=2)
+    for _ in range(2):  # One launch per pass, as in production.
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                            executor=Backend(HARNESS_FAILED))
     old = publication(tmp_path)
-    assert old["status"] == "blocked" and old["budget"]["spent_upper_bound_usd"] == "8"
+    # The first failure holds the sibling unspent: the same harness would fail it the same way.
+    assert [(row["status"], row["blockers"]) for row in old["candidates"]] == [
+        ("blocked", ["beta_screening_native_result_missing_or_invalid"]),
+        ("blocked", [coordinator.HARNESS_HOLD_BLOCKER])]
+    assert old["status"] == "blocked" and old["budget"]["spent_upper_bound_usd"] == "4"
     # No deploy, no retry: the same code would fail the same way.
     assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) is None
     assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
@@ -136,16 +142,29 @@ def test_a_candidate_our_harness_failed_is_planned_again_once_per_site_after_a_d
                                    queue_root=tmp_path)
     retried = publication(tmp_path, "campaign-1b")
     assert [row["status"] for row in retried["candidates"]] == ["pending", "pending"]
-    # The retry shares the site's allowance with the money the failed runs committed.
-    assert retried["budget"]["spent_upper_bound_usd"] == "8"
-    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
-                                        executor=Backend(HARNESS_FAILED), max_launches=2)
+    # The retry shares the site's allowance with the money the failed run committed.
+    assert retried["budget"]["spent_upper_bound_usd"] == "4"
+    for _ in range(2):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                            executor=Backend(HARNESS_FAILED))
     rows = publication(tmp_path, "campaign-1b")["candidates"]
-    # $8 already committed + $4 fits the site's $15; a second $4 would not, so it never launches.
-    assert [row["status"] for row in rows] == ["blocked", "deferred"]
-    assert rows[1]["blockers"] == ["beta_screening_site_budget_exhausted"]
-    # Failed again: never a third paid run, not even after another deploy.
-    assert coordinator.replan_scope("campaign-1b", implementation_commit="c" * 40, queue_root=tmp_path) is None
+    assert [row["blockers"] for row in rows] == [["beta_screening_native_result_missing_or_invalid"],
+                                                 [coordinator.HARNESS_HOLD_BLOCKER]]
+    assert publication(tmp_path, "campaign-1b")["budget"]["spent_upper_bound_usd"] == "8"
+    # Same commit: no retry. Another deploy: candidate-000 gets its last retry; the held one never ran.
+    assert coordinator.replan_scope("campaign-1b", implementation_commit=NEW, queue_root=tmp_path) is None
+    third = "c" * 40
+    assert coordinator.replan_scope("campaign-1b", implementation_commit=third, queue_root=tmp_path) == [
+        "candidate-000", "candidate-001"]
+    coordinator.supersede_campaign("campaign-1b", successor(plan(count=2), campaign_id="campaign-1c", commit=third),
+                                   implementation_commit=third, queue_root=tmp_path)
+    for _ in range(2):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                            executor=Backend(HARNESS_FAILED))
+    assert publication(tmp_path, "campaign-1c")["budget"]["spent_upper_bound_usd"] == "12"
+    # candidate-000 failed three times: never a fourth paid run, not even after another deploy.
+    assert coordinator.replan_scope("campaign-1c", implementation_commit="d" * 40, queue_root=tmp_path) == [
+        "candidate-001"]
 
 
 def test_only_harness_failures_with_no_scored_episode_are_retried(tmp_path):
