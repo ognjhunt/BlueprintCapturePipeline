@@ -41,15 +41,20 @@ _DISK_FULL = frozenset({errno.ENOSPC, errno.EDQUOT})
 _HTTP_429_CODE = re.compile(r'(?:^|[^a-z0-9])http_429(?![0-9])')
 
 
+def redact_credentials(text: str) -> str:
+    """Apply the credential redactions alone: no trimming, whitespace kept; idempotent."""
+    for pattern, replacement in _ERROR_REDACTIONS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 def bounded_error_text(value) -> str:
     """Redact credential-like text, then trim to ``ERROR_TEXT_LIMIT``; idempotent."""
     text = str(value)
     if len(text) > _ERROR_SCAN_LIMIT:
         # Never keep the fragment of a word the scan limit cut through.
         text = text[:_ERROR_SCAN_LIMIT].rsplit(None, 1)[0]
-    text = ' '.join(re.sub(r'[\x00-\x1f\x7f]', ' ', text).split())
-    for pattern, replacement in _ERROR_REDACTIONS:
-        text = pattern.sub(replacement, text)
+    text = redact_credentials(' '.join(re.sub(r'[\x00-\x1f\x7f]', ' ', text).split()))
     # Redaction precedes trimming, and both are idempotent, so a repeated
     # bound returns the same text.
     return text if len(text) <= ERROR_TEXT_LIMIT else text[:ERROR_TEXT_LIMIT - 3] + '...'
