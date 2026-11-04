@@ -424,14 +424,19 @@ def test_a_task_ending_on_another_surface_faces_the_whole_region_from_the_lower_
 def test_a_pick_and_place_packet_stands_where_the_bundle_gate_finds_a_carry(tmp_path) -> None:
     # The packet's station search and the bundle's own gate measure the same carry: they agree.
     from blueprint_pipeline.robot_arm_path_clearance import packet_arm_path_clearance
+    from blueprint_pipeline.team_scene_packet import STATION_RULE
 
     compiled, request = _compile(tmp_path, _scene(tmp_path, strategy="pick_and_place"))
     record = json.loads(Path(compiled["path"]).read_text())
     search = record["robot_station_search"]
-    assert search["rule"] == "first_ranked_stance_that_carries" and search["results"]
-    assert record["robot_station"]["stance_digest"] == search["results"][search["chosen_rank"]]["stance_digest"]
+    assert search["rule"] == STATION_RULE and search["results"] and search["stances_in_reach"] > 0
+    if search["cleared"]:
+        # The first in-reach stance the scripted carry cleared from stands.
+        assert record["robot_station"]["stance_digest"] == next(
+            row["stance_digest"] for row in search["results"] if row["status"] == "clear")
     gate = packet_arm_path_clearance(Path(compiled["path"]).parent / "native-task-packet")
-    assert gate["status"] == ("clear" if search["cleared"] else "blocked")
+    # A carry the search found clears the gate; with the object in reach, a miss is a flag in both.
+    assert gate["status"] == ("clear" if search["cleared"] else "flagged")
     assert request["robot_base_pose_world"]["position_world_m"] == record["robot_station"]["position_world_m"]
 
 
