@@ -40,7 +40,9 @@ touches nothing. Enabled, for each pending capture it:
    refusal of the grant (an exhausted upstream cap or job ceiling, its provider
    terms, a refused or expired grant) is a money stop the owner can lift: it
    counts toward neither, never seals, and no attempt is staged again for
-   ``GRANT_REFUSAL_RETRY_SECONDS``;
+   ``GRANT_REFUSAL_RETRY_SECONDS``, unless this runner has since settled a hold on
+   the same capture's grant below its reservation: that frees headroom, so the pass
+   asks once more, and a refusal after that waits the whole interval again;
 3. otherwise rechecks every precondition it can without spending (enable
    setting, receipt, the capture's retained website grant, driver ceiling,
    launch gate and watchdog scope), stages one attempt (probe input, sealed
@@ -120,6 +122,7 @@ from .rigid_robot_free_probe_lane import (
     lane_enabled,
 )
 from .rigid_robot_free_probe_settlement import (
+    SETTLEMENT_FILENAME,
     attempt_machine_avoidlist,
     provider_no_start,
     refresh_lane_avoidlist,
@@ -159,6 +162,9 @@ UNFUNDED_STATES = frozenset({"unfunded_blocked", "not_launched"})
 # and never seals the job (capture-447ae4f4: four such refusals sealed ``attempts_exhausted``). Nothing was
 # reserved and no paid run is staged for it again until ``GRANT_REFUSAL_RETRY_SECONDS`` pass: the WebApp offers
 # no read of a ledger's headroom, so only a reservation can tell, and each staging re-reads the room collider.
+# A hold on the same capture's grant this runner settles below its reservation after the refusal frees headroom,
+# so it ends the wait once (``_grant_settled_since``; capture-447ae4f4 refused at 01:07Z, its holds settled at
+# 02:17Z, and the job waited until 04:07Z).
 GRANT_REFUSED_STATE = "website_grant_refused"
 GRANT_REFUSAL_BLOCKERS = ("rigid_robot_free_probe_website_grant_exhausted",
                           "rigid_robot_free_probe_website_grant_refused:",
@@ -704,6 +710,43 @@ def _grant_refusal_wait(settled: Mapping[str, Any], *, now: float) -> int | None
     return min(GRANT_REFUSAL_RETRY_SECONDS, max(1, int(remaining))) if remaining > 0 else None
 
 
+def _when(value: Any) -> float | None:
+    try:
+        return datetime.fromisoformat(str(value)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _grant_settled_since(root: Path, job: Path, refusal: Mapping[str, Any]) -> Path | None:
+    """An attempt whose hold on this capture's grant this runner settled below its reservation after ``refusal``.
+
+    Every job of the capture counts (they reserve on the same grant). Each settlement is recorded once,
+    so it ends one wait: a refusal recorded after it is later than it and waits the whole interval again.
+    A refusal or settlement time that cannot be read ends nothing.
+    """
+
+    refused = _when(refusal.get("settled_at_iso"))
+    capture, _sep, _request = job.name.partition("-")
+    if refused is None or not capture:
+        return None
+    for sibling in sorted((root / "jobs").glob(f"{capture}-*")):
+        if not sibling.is_dir() or sibling.is_symlink():
+            continue
+        for attempt in _attempts(sibling):
+            try:
+                record = _read_optional(attempt / SETTLEMENT_FILENAME)
+            except (OSError, ValueError):
+                continue
+            settled_at = _when((record or {}).get("settled_at_iso"))
+            if record is None or record.get("status") != "settled" or settled_at is None or settled_at <= refused:
+                continue
+            figures = (record.get("settled_cost_usd"), record.get("reserved_maximum_cost_usd"))
+            if all(type(value) in (int, float) for value in figures) and figures[0] >= figures[1]:
+                continue  # settled at its full hold: no headroom freed
+            return attempt
+    return None
+
+
 def _provider_no_start(attempt: Path, record: Mapping[str, Any]) -> bool:
     """The run's machine never started our container: recorded so, or (sealed before the rule) proven again."""
 
@@ -929,10 +972,15 @@ def _advance(root: Path, item: Path, entry: Mapping[str, Any], job: Path, state:
             return {"status": "deferred", "capture_root": entry.get("capture_root"),
                     "reason": "request_changed" if state["status"] == "probe_required" else state["status"]}
         waiting = _grant_refusal_wait(settled, now=hooks.get("now", time.time)())
-        if waiting is not None:
+        freed = _grant_settled_since(root, job, settled) if waiting is not None else None
+        if waiting is not None and freed is None:
             # The WebApp refused the grant on the last attempt: nothing is staged until the wait passes.
             return {"status": "deferred", "capture_root": state["capture_root"], "reason": GRANT_REFUSED_STATE,
                     "retry_after_seconds": waiting, "blockers": settled.get("allocator_blockers") or []}
+        if freed is not None:
+            # A hold on the same grant settled since the refusal: the reservation is asked once more.
+            print(json.dumps({"rigid_robot_free_probe_grant_refusal_wait_ended": str(attempts[-1]),
+                              "settled_since": str(freed)}), file=sys.stderr)
         if max_attempts is not None and len(staged_now) >= max_attempts:
             # A capped canary pass: its attempts are settled, and nothing more is sealed or spent.
             return {"status": "deferred", "capture_root": state["capture_root"],
