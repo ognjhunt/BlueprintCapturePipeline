@@ -376,3 +376,29 @@ def test_remote_diagnostics_stop_at_their_transfer_budget(tmp_path):
     assert transfer["status"] == "completed" and summary["status"] == "partial"
     assert summary["unread_member_counts"]["read_budget_exhausted"] >= 1
     assert summary["transferred_bytes"] <= 2 * 128 * 1024
+
+
+def test_a_gate_verdict_below_the_cell_names_its_integrity_blockers(tmp_path):
+    """2026-11-04: a beta cell stopped at the pre-policy observation gate, and the summary kept
+    neither the gate's verdict files nor the nested ``policy_observation_integrity_blockers``."""
+    gate = {"status": "passed", "passed": True, "frame_structure_passed": True,
+            "policy_observation_integrity_passed": False,
+            "policy_observation_integrity_blockers": ["human_visual_review_not_approved", "not a code!"],
+            "views": [{"view": "external", "blockers": ["external_view_target_occluded"]}]}
+    cell = {"status": "blocked", "selected_cell_index": 0, "session_failure_type": "PolicyCanarySessionError",
+            "preload_observation_gate": gate, "episodes": []}
+    archive = _write_zip(tmp_path / "out.zip", {
+        f"cell_runs/00/{RESULT}": json.dumps(cell).encode(),
+        "cell_runs/00/prepolicy_observation_gate/native_asset_composition_gate/external/verdict.json":
+            json.dumps(gate).encode(),
+        "cell_runs/00/episodes/e0.score_receipt.json": b"{}",
+    })
+    summary = diagnostics.summarize_zip_path(archive)
+    rows = {row["member"]: row for row in summary["results"]}
+    nested = rows[f"cell_runs/00/{RESULT}"]["nested_codes"]
+    assert {"field": "preload_observation_gate.policy_observation_integrity_blockers",
+            "codes": ["human_visual_review_not_approved"]} in nested
+    assert {"field": "preload_observation_gate.views[0].blockers", "codes": ["external_view_target_occluded"]} in nested
+    verdict = rows["cell_runs/00/prepolicy_observation_gate/native_asset_composition_gate/external/verdict.json"]
+    assert verdict["policy_observation_integrity_passed"] is False and verdict["frame_structure_passed"] is True
+    assert summary["unread_member_counts"]["nested_json_member"] == 1
