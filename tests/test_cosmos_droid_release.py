@@ -1,5 +1,9 @@
 """Release bytes, interpreter ABI and money boundaries without model downloads."""
 
+import ast
+import re
+import zipfile
+
 import pytest
 
 from blueprint_pipeline.cosmos_droid_bundle import (
@@ -7,6 +11,7 @@ from blueprint_pipeline.cosmos_droid_bundle import (
     CHECKPOINT_BYTES,
     IMAGE_DOWNLOAD_ALLOWANCE_BYTES,
     MAXIMUM_OUTPUT_BYTES,
+    profile,
     runtime_contract,
     stage_runtime,
     transfer_byte_budget,
@@ -60,6 +65,59 @@ def test_release_stages_verified_source_and_counts_every_external_byte(tmp_path,
     bundle["cosmos_runtime"]["checkpoint_download_bytes"] -= 1
     with pytest.raises(ValueError, match="sealed_runtime_identity"):
         transfer_byte_budget(bundle)
+
+
+_PROCESSORS = "cosmos_framework/data/generator/processors/"
+# Model-directory files the pinned transformers 4.57.6 loaders read for these
+# publisher snapshots (traced on both). Optional probes for files neither
+# publisher ships, such as added_tokens.json, are not required.
+_LOADER_FILES = {
+    "AutoTokenizer": {"tokenizer_config.json", "tokenizer.json", "config.json", "chat_template.jinja"},
+    "AutoProcessor": {"tokenizer_config.json", "tokenizer.json", "config.json", "chat_template.json",
+                      "preprocessor_config.json", "video_preprocessor_config.json"},
+}
+# Edge's processor_config.json names Cosmos3EdgeProcessor, so the pinned
+# dispatch builds the native processor; Nano's snapshot takes AutoProcessor.
+_NATIVE_EDGE_PROCESSOR = {"cosmos3_edge_policy_droid": True, "cosmos3_nano_policy_droid": False}
+_MODEL_FILE = re.compile(r"[\w./-]+\.(?:json|jinja|txt|model)")
+
+
+def _model_files_opened(scope, functions):
+    """Files a pinned source block opens from the model directory, following its local calls."""
+    opened, pending, followed = set(), list(scope), set()
+    while pending:
+        for call in (node for node in ast.walk(pending.pop()) if isinstance(node, ast.Call)):
+            if isinstance(call.func, ast.Attribute) and call.func.attr == "from_pretrained":
+                loader = ast.unparse(call.func.value)
+                assert loader in _LOADER_FILES, f"unaudited processor loader: {loader}"
+                opened |= _LOADER_FILES[loader]
+            name = getattr(call.func, "id", None)
+            if name in functions and name not in followed:
+                followed.add(name)
+                pending.append(functions[name])
+            opened |= {arg.value for arg in call.args if isinstance(arg, ast.Constant)
+                       and isinstance(arg.value, str) and _MODEL_FILE.fullmatch(arg.value)}
+    return opened
+
+
+@pytest.mark.parametrize("candidate", CANDIDATES)
+def test_snapshot_downloads_every_file_the_pinned_processor_opens(tmp_path, candidate):
+    # Provisioning fetches exactly required_files, so a file the pinned processor
+    # opens and the manifest omits stops the policy server at startup.
+    selected = profile(candidate)
+    stage_runtime(tmp_path, candidate)
+    with zipfile.ZipFile(tmp_path / SOURCE_ARCHIVE) as archive:
+        dispatch_module = ast.parse(archive.read(_PROCESSORS + "base.py"))
+        edge_module = ast.parse(archive.read(_PROCESSORS + "cosmos3_edge_processing.py"))
+    functions = {node.name: node for node in edge_module.body if isinstance(node, ast.FunctionDef)}
+    dispatch = next(node for node in ast.walk(dispatch_module) if isinstance(node, ast.If)
+                    and isinstance(node.test, ast.Call)
+                    and getattr(node.test.func, "id", None) == "is_cosmos3_edge_native_snapshot")
+    scope = [dispatch.test, *dispatch.body] if _NATIVE_EDGE_PROCESSOR[candidate] else dispatch.orelse
+    opened = _model_files_opened(scope, functions)
+    manifest = selected.verified_snapshot_manifest(tmp_path / selected.SNAPSHOT_STAGED_NAME)
+    assert opened, "no processor file reads found in the pinned source"
+    assert sorted(opened - {row["path"] for row in manifest["required_files"]}) == []
 
 
 def test_fixed_source_archive_cannot_gain_an_unverified_import(tmp_path):

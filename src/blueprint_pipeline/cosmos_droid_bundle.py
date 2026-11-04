@@ -16,7 +16,7 @@ RUNTIME_MODULES = (
 )
 IMAGE_DOWNLOAD_ALLOWANCE_BYTES = 64 * 1024**3
 MAXIMUM_OUTPUT_BYTES = 8_000_000_000
-CHECKPOINT_BYTES = {"cosmos3_edge_policy_droid": 9154401203, "cosmos3_nano_policy_droid": 32_936_198_308}
+CHECKPOINT_BYTES = {"cosmos3_edge_policy_droid": 9_154_413_361, "cosmos3_nano_policy_droid": 32_936_198_308}
 
 
 def profile(candidate: str):
