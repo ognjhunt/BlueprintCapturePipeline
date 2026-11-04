@@ -9853,8 +9853,8 @@ def test_uploaded_result_survives_log_failure_before_teardown(tmp_path, monkeypa
     assert receipt["transfer"]["status"] == "completed"
     assert receipt["startup_or_scientific_success_claimed"] is False
     # The full summary lives in its own file; the receipt keeps the compact copy.
-    assert "runtime_diagnostics" not in receipt["transfer"]
-    compact = receipt["provider_runtime_diagnostics"]
+    compact = receipt["transfer"]["runtime_diagnostics"]
+    assert "results" not in compact and "logs" not in compact
     assert compact["path"] == str(tmp_path / "provider_runtime_diagnostics.v1.json") and compact["written"]
     assert compact["failing_results"] == [{"member": "native_task_arena_construction_result.v1.json",
                                            "status": "blocked", "blockers": ["pregrasp"]}]

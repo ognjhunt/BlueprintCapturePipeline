@@ -222,6 +222,31 @@ def test_an_unreadable_or_absent_archive_is_recorded_not_raised(tmp_path):
     assert not (tmp_path.parent / "escape.log").exists()
 
 
+def test_the_adapter_keeps_a_summary_only_for_an_archive_it_observed(tmp_path):
+    archive = _write_zip(tmp_path / "local" / diagnostics.OUTPUT_ZIP_NAME, _failed_run_files(cells=1))
+    kept = diagnostics.retain_for_transfer(tmp_path / "local", {"status": "completed"}, archive)
+    assert kept["written"] is True and kept["path"] == str(tmp_path / "local" / diagnostics.FILENAME)
+    assert json.loads((tmp_path / "local" / diagnostics.FILENAME).read_text())["archive_source"] == "local_file"
+
+    # A remote observation carries its own summary; nothing is read from disk.
+    remote = {"status": "completed", "delivery": "remote_only",
+              "runtime_diagnostics": diagnostics.summarize_zip_path(archive)}
+    (tmp_path / "remote").mkdir()
+    compact = diagnostics.retain_for_transfer(tmp_path / "remote", remote, tmp_path / "remote" / "absent.zip")
+    assert compact["failing_results"] and (tmp_path / "remote" / diagnostics.FILENAME).is_file()
+    receipt = diagnostics.receipt_transfer(remote, compact)
+    assert receipt["runtime_diagnostics"] == compact and "results" not in receipt["runtime_diagnostics"]
+    assert remote["runtime_diagnostics"]["results"]  # the caller's transfer is unchanged
+
+    blocked = {"status": "blocked", "blockers": ["provider_output_not_ready"]}
+    assert diagnostics.retain_for_transfer(tmp_path / "local", blocked, archive) is None
+    (tmp_path / "linked").mkdir()
+    (tmp_path / "linked" / diagnostics.OUTPUT_ZIP_NAME).symlink_to(archive)
+    assert diagnostics.retain_for_transfer(tmp_path / "linked", {}, tmp_path / "linked" /
+                                           diagnostics.OUTPUT_ZIP_NAME) is None
+    assert not (tmp_path / "linked" / diagnostics.FILENAME).exists()
+
+
 def _run_dir(root: Path, name: str, *, command_result: bool = True, archive: bool = True) -> Path:
     run = root / name / "vast_provider_run"
     run.mkdir(parents=True)

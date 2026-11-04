@@ -11,8 +11,9 @@ session may read says why it stopped.
 inspection, as a local file (``summarize_zip_path``) or by range
 (``provider_output_remote_collection``). ``vast_provider_adapter`` then writes
 the summary as ``provider_runtime_diagnostics.v1.json`` in the run directory
-(``retain``) and keeps ``compact`` in ``vast_provider_command_result.json``. Both
-happen before anything later can promote or remove the archive.
+(``retain_for_transfer``) and keeps ``compact`` in its preclassification receipt
+and ``vast_provider_command_result.json``. Both happen before teardown and
+before anything later can promote or remove the archive.
 
 Rules:
 
@@ -474,6 +475,38 @@ def retain(run_dir: str | Path, diagnostics: Mapping[str, Any]) -> dict[str, Any
     return {**value, "path": str(path), **written}
 
 
+def retain_for_transfer(run_dir: str | Path, transfer: Mapping[str, Any] | None,
+                        output_zip_path: str | Path) -> dict[str, Any] | None:
+    """Keep a just-inspected archive's summary in ``run_dir``; return ``compact``, or None without an archive.
+
+    The caller is where the archive is inspected, before teardown and before
+    anything can promote or remove it. A remote observation carries the summary
+    it read by range; a local ZIP is read here. A transfer that did not complete
+    has nothing to summarize. Never raises.
+    """
+    try:
+        transfer = transfer if isinstance(transfer, Mapping) else {}
+        if transfer.get("status") not in (None, "completed"):
+            return None
+        summary = transfer.get("runtime_diagnostics")
+        if not isinstance(summary, Mapping) or not summary:
+            zip_path = Path(output_zip_path)
+            if zip_path.is_symlink() or not zip_path.is_file():
+                return None
+            summary = summarize_zip_path(zip_path)
+        return retain(run_dir, summary)
+    except Exception as exc:  # noqa: BLE001 - a paid run's closeout never depends on diagnostics
+        return {"schema_version": SCHEMA_VERSION, "status": "failed", "error": error_description(exc)}
+
+
+def receipt_transfer(transfer: Mapping[str, Any], retained: Mapping[str, Any] | None) -> dict[str, Any]:
+    """A transfer for a receipt: the full summary lives in its own file, so it keeps the compact copy."""
+    value = {key: item for key, item in transfer.items() if key != "runtime_diagnostics"}
+    if retained:
+        value["runtime_diagnostics"] = dict(retained)
+    return value
+
+
 def backfill(run_dirs: Iterable[str | Path], *, max_writes: int = 5) -> dict[str, Any]:
     """Summarize retained runs whose local output archive is still present; idempotent and bounded.
 
@@ -506,7 +539,9 @@ __all__ = [
     "compact",
     "diagnostics_wanted",
     "not_collected",
+    "receipt_transfer",
     "retain",
+    "retain_for_transfer",
     "summarize_archive",
     "summarize_zip_path",
 ]
