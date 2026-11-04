@@ -187,3 +187,21 @@ def test_only_harness_failures_with_no_scored_episode_are_retried(tmp_path):
     assert not coordinator._harness_failed({"status": "blocked", "blockers": [
         "beta_screening_native_result_invalid"], "summary": {"episodes_scored": 3}})
     assert not coordinator._harness_failed({"status": "completed", "blockers": []})
+
+
+@pytest.mark.parametrize("stage", ["runtime_open", "observation_gate", "policy_load"])
+def test_a_named_cell_setup_failure_is_a_harness_failure_for_retry_and_sibling_hold(tmp_path, stage):
+    from blueprint_pipeline.policy_canary_cell_setup_failure import SETUP_FAILURE_BLOCKERS
+    code = f"policy_canary_session_setup_failed:{stage}"
+    assert code in SETUP_FAILURE_BLOCKERS <= coordinator.HARNESS_FAILURE_BLOCKERS
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    for _ in range(2):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                            executor=Backend({**HARNESS_FAILED, "blockers": [code]}))
+    # The named stage reaches the published row; the sibling is held unspent.
+    assert [(row["status"], row["blockers"]) for row in publication(tmp_path)["candidates"]] == [
+        ("blocked", [code]), ("blocked", [coordinator.HARNESS_HOLD_BLOCKER])]
+    assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) is None
+    assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
+        "candidate-000", "candidate-001"]
+    assert not coordinator._harness_failed({"status": "blocked", "blockers": [code, "vast_instance_hard_ttl_expired"]})

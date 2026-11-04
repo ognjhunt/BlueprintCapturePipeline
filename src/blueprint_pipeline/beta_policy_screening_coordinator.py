@@ -42,6 +42,7 @@ from .beta_policy_screening_result import (
 from .beta_policy_screening_settlement import settled_cost
 from .decision_evidence_contracts import canonical_digest
 from .policy_execution_evidence import SCRIPTED
+from .policy_canary_cell_setup_failure import SETUP_FAILURE_BLOCKERS
 from .website_candidate_feasibility import is_measured_refusal
 
 QUEUE_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT"
@@ -314,10 +315,12 @@ def _spent(row: Mapping[str, Any]) -> bool:
 
 #: The launch resolved the provider (zero verified) but our own harness returned no usable
 #: result: no episode was scored, so nothing about the policy was measured. The untyped
-#: fallback for a closed run with no reason is not here: it is not known to be ours.
+#: fallback for a closed run with no reason is not here: it is not known to be ours. A cell
+#: that could not open the runtime, pass the pre-policy gate or load the policy is named.
 HARNESS_FAILURE_BLOCKERS = frozenset({"beta_screening_native_result_missing_or_invalid",
                                       "beta_screening_native_result_invalid",
-                                      "g1_beta_native_result_missing_or_invalid"})
+                                      "g1_beta_native_result_missing_or_invalid",
+                                      *SETUP_FAILURE_BLOCKERS})
 #: How many times a site's candidate is planned again after a harness failure. It spent money,
 #: so it is bounded: only after a deploy, inside the site's existing allowance, and with the
 #: hold below a site pays for at most one harness failure per campaign. Two, because the first

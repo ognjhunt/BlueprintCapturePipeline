@@ -63,14 +63,13 @@ from blueprint_pipeline.native_task_arena_policy_canary_session import (
     validate_runtime_input_manifest,
     validate_session_authority,
 )
+from blueprint_pipeline.policy_canary_cell_setup_failure import (
+    CELL_PROGRESS_STAGES as _CELL_PROGRESS_STAGES, cell_setup_failure, seal_cell_setup_failure,
+)
 
 
 DROID_PARITY_MINIMUM_APPROACH_M = 0.05
 _CELL_PROGRESS_FD_ENV = "BLUEPRINT_POLICY_CANARY_PROGRESS_FD"
-_CELL_PROGRESS_STAGES = frozenset({
-    "static_preflight_passed", "isaac_launch_started", "isaac_launch_completed",
-    "observation_gate_passed", "policy_loaded", "episode_completed",
-})
 # Preserve the existing helper import surface used by retained tooling.
 _write_indexed_telemetry = _write_policy_canary_telemetry
 
@@ -1375,6 +1374,11 @@ def _run_isolated_cell_processes(
         if guard is not None and (stopped := guard.stop_receipt()) is not None:
             _seal_beta_control_stop(output_root=output_root, inputs=inputs, authority=authority, children=child_results, construction_lineage_mode=construction_lineage_mode, receipt=stopped)
             return 1
+        if (setup := cell_setup_failure(child=child_result, inputs=inputs, index=index, child_root=child_root, output_root=output_root)) is not None:
+            # No policy ran in this cell; the next one would fail the same way at full price.
+            seal_cell_setup_failure(output_root=output_root, inputs=inputs, authority=authority, children=child_results, failure=setup,
+                construction_lineage_mode=construction_lineage_mode, aggregate=_aggregate_isolated_cell_results, seal_result=_seal_result)
+            return 1
         if index == 0 and child_results[0].get("robot_free_probe_status") not in (None, "passed"):
             # The scene failed its robot-free check in cell 0: no further team episode runs on it.
             blocked = {"schema_version": "native_task_arena_policy_canary_session_result.v1", "status": "blocked",
@@ -2256,7 +2260,7 @@ def _run_selected_cell(
     result["artifact_inventory_digest"] = _digest(telemetry_artifacts)
     result["matrix_digest"] = inputs.get("matrix_digest") or _digest(inputs["cells"])
     result["result_digest"] = canonical_digest(result, digest_field="result_digest")
-    if family_scene:
+    if family_scene or current_session.get("simulation_app") is None:  # Isaac never started: nothing to close.
         _seal_result(result_path=result_path, result=result)
     else:
         _seal_result_before_simulation_close(

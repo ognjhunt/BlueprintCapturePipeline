@@ -415,3 +415,29 @@ def test_screening_create_intent_runs_only_inside_the_adapter_pre_create_hook(tm
         hard_cap_usd=4.0, hard_ttl_seconds=authority["hard_ttl_seconds"],
         pre_provider_create=lambda: created.append("intent"))
     assert result["status"] == "blocked" and created == ["intent"]
+
+
+def test_beta_cell_that_cannot_open_isaac_seals_a_named_blocker_and_stops(tmp_path, monkeypatch):
+    from blueprint_pipeline import policy_canary_cell_setup_failure as setup_failure
+    from tests.test_native_task_arena_policy_canary_lifecycle_rehearsal import FakeIsaac, _rehearsal_runtime
+    runtime, output, inputs, _authority, _scope, *_ = stage_beta_bundle(tmp_path, monkeypatch)
+    spawned = []
+
+    def launch(*_args, **_kwargs):
+        raise RuntimeError("isaac_kit_failed_to_start")
+
+    def spawn(**kwargs):
+        spawned.append(kwargs["index"])
+        bound = replace(_rehearsal_runtime(FakeIsaac(kwargs["child_root"] / worker.PROVIDER_RESULT_FILENAME)),
+                        launch_isaac=launch)
+        return worker._run_selected_cell(kwargs["index"], runtime_root=runtime, output_root=kwargs["child_root"],
+                                         provider_output_root=output, cell_runtime=bound)
+
+    assert worker._run_isolated_cell_processes(runtime_root=runtime, output_root=output, run_cell_process=spawn) == 1
+    assert spawned == [0] and not (output / "cell_runs/01").exists()
+    result = json.loads((output / worker.PROVIDER_RESULT_FILENAME).read_text())
+    assert result["blockers"] == ["policy_canary_session_setup_failed:runtime_open"]
+    assert result["run_kind"] == inputs["run_kind"] and result["candidate_ids"] == inputs["candidate_ids"]
+    assert result["beta_screening_admission"] == inputs["beta_screening_admission"]
+    assert result["planned_episodes_per_policy"] == len(inputs["cells"])
+    assert setup_failure.sealed_setup_failure_blocker(result) == "policy_canary_session_setup_failed:runtime_open"
