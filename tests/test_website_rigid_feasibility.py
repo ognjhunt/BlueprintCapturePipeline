@@ -82,9 +82,12 @@ def test_a_lip_over_the_object_refuses_top_down_and_a_tilted_grasp_carries_it(tm
                                  subject=([0.52, -0.28, 0.40], [0.58, -0.22, 0.56])),
         collision_path=tmp_path / "collision.usda", robot_profiles=[DROID])
     assert verdict["status"] == "clear" and verdict["reach"]["grasp"] not in (None, "top_down")
+    # Top-down clears from no station: the lip strikes the hand on the way down; the stations a footprint
+    # apart on the table's far side are out of the arm's reach for it.
     top_down = [row for row in verdict["station_results"] if row["grasp"] == "top_down"]
-    assert top_down and {tuple(row["blockers"]) for row in top_down} == {
-        ("robot_rigid_pick_place_scene_strike:robotiq_2f85_body:approach",)}
+    assert top_down and all(row["status"] == "blocked" for row in top_down)
+    assert ("robot_rigid_pick_place_scene_strike:robotiq_2f85_body:approach",) in {
+        tuple(row["blockers"]) for row in top_down}
 
 
 def test_an_embodiment_the_gate_cannot_model_is_unassessed_never_refused(tmp_path):

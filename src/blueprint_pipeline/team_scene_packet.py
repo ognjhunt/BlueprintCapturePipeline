@@ -201,7 +201,8 @@ def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mappi
 
     ``place`` is the Franka station's search (``ground_stance``): the same floor, task and moving part. A fixed
     base stands on the station's pedestal level with the task's support and takes the closest clear stance
-    from which its declared ``reach_m`` covers every task point; with none, the closest stands, out of reach.
+    from which its declared ``reach_m`` covers every task point (a rigid task's search ranks by the farther
+    of them already); with none, the closest stands, out of reach.
     A free base stands on its own footprint at its own root height and declares no reach. No Franka model or
     number enters: a moving part is kept off the mount or footprint, and the body itself, its reach without
     one, and a grip force no manifest declares stay unassessed. Each declared tool is screened against the
@@ -209,7 +210,7 @@ def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mappi
     or free base's clear stances, closest first, are kept in ``ranked`` for ``_own_arm_stations``.
     """
     from .team_embodiment import ROBOT_ID, TeamEmbodimentError, validate_embodiment_manifest
-    from .team_embodiment_stance import GRID_STEP_M, SEARCH_RADIUS_M, ground_stance
+    from .team_embodiment_stance import GRID_STEP_M, PEDESTAL_SEARCH, SEARCH_RADIUS_M, ground_stance
     from .website_task_preparation import embodiment_grippers, screen_articulated_physics, screen_physics
 
     every =(2 * math.floor(SEARCH_RADIUS_M / GRID_STEP_M + 1e-9) + 1) ** 2  # every clear stance searched
@@ -239,7 +240,11 @@ def _embodiment_stations(manifests: Sequence[Mapping[str, Any]], *, place: Mappi
                                   "task_points_world_m": [list(point) for point in points],
                                   "farthest_task_point_m": farthest[index], "clear_stances_measured": len(stances)})
             else:
-                stances = ground_stance(**{**search, "root_world_z_m": None,
+                # A free base stands on its own footprint with the stand validator's clearance and standoff,
+                # closest to the task first: the pedestal's search and ranking are a fixed mount's.
+                own = {key: value for key, value in search.items()
+                       if key not in {*PEDESTAL_SEARCH, "task_points_world_m"}}
+                stances = ground_stance(**{**own, "root_world_z_m": None,
                                            "root_height_m": float(base["root_height_m"]),
                                            "footprint_half_extent_m": list(base["footprint_half_extent_m"])},
                                         ranked=every)
@@ -795,11 +800,14 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
 
     # The station: a mount level with the task's support, on the closest clear floor facing the task,
     # out of a moving part's way. A rigid pick and place takes the first such stance the arm can carry
-    # the object from, measured as the bundle's gate will measure it.
+    # the object from, measured as the bundle's gate will measure it. The pedestal keeps the arm's own
+    # margin from the room and the object (``PEDESTAL_SEARCH``), and a rigid task's stances rank by the
+    # farther of its start and target, a footprint apart, so the carry is tried from several spots.
     whole_region = not articulated and destination_support is not None
     carry = not articulated and task_spec.get("manipulation_strategy") == "pick_and_place"
     from .robot_arm_path_clearance import CARRY_STATIONS
     from .scene_physics_preflight import collision_kept_loaded
+    from .team_embodiment_stance import PEDESTAL_SEARCH
 
     # Every search below reads the collider's one binary copy, and the packet steps after them. The hold
     # keeps one parse should no copy be made.
@@ -811,7 +819,8 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                 subject_minimum=[float(v) for v in subject_bounds[0]],
                 subject_maximum=[float(v) for v in subject_bounds[1]],
                 footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
-                task_motion=motion)
+                task_motion=motion, **PEDESTAL_SEARCH,
+                **({} if articulated else {"task_points_world_m": [start, target]}))
             station = ground_stance(**place, ranked=CARRY_STATIONS if carry else 0)
         except TeamEmbodimentError as exc:
             # A ValueError itself: caught first, so a named stance refusal keeps its own reason.

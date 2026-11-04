@@ -282,7 +282,9 @@ def test_the_franka_takes_the_capability_verdicts_carry(tmp_path, monkeypatch):
     job = _job(destination={"relation": "on", "position_world_m": [0.3, 0.35, 0.0]},
                subject=([0.2675, -0.0325, 0.0], [0.3325, 0.0325, 0.065]))
     clear = rigid_task_verdict(preparation=job, collision_path=room, robot_profiles=[DROID])
-    assert clear["status"] == "clear" and len(clear["station_results"]) == 1
+    # It stopped at the first station that carries (the nearest, 25 cm off the pick on the floor, cannot).
+    assert clear["status"] == "clear" and clear["station_results"][-1]["status"] == "clear"
+    assert all(row["status"] == "blocked" for row in clear["station_results"][:-1])
     table = robot_fit_table(preparation=job, collision_path=room, verdict=clear, catalog=catalog)
     row = table["rows"][0]
     assert row["verdict"] == "fits" and row["reasons"] == []
