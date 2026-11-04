@@ -454,6 +454,28 @@ at risk. Unreadable entries are counted. Paths the unit's sandbox hides
 mounts skipped by the mountinfo rule, and deleted files still held open by a
 process cannot be attributed. These gaps lower `attributed_fraction`.
 
+**A cycle across passes.** The controller's hourly survey is partitioned
+(`control_plane_disk_usage_cursor`). Each pass inventories every root's
+partitions (its entries; a split directory's subdirectories plus a shallow
+partition for its own entries), then walks them in cursor order, alternating
+between roots, each partition with at most a quarter of the time and entry
+budget, until three quarters are spent. Each walked partition's measurement
+(exact class and device totals, its roots, its largest owners) replaces its row
+in a ledger carried by the cursor, and the published mount, class, root and owner
+rows are the composite of every current partition's latest usable row
+(`scope: rolling_partition_composite`). A row is usable while the partition has
+the identity it was measured with. `status` is `complete` only while every
+partition has a complete measurement no older than a day and every inventory is
+complete; otherwise the totals are lower bounds
+(`byte_accounting: rolling_partition_composite_lower_bound`). A partition whose
+walk truncates is split one level on a later pass (at most 8 levels). An inode
+linked from two partitions measured in different passes can count twice;
+`composite.multiply_linked_bytes` bounds that. A root's position depends only on
+that root's identity: an unrelated mount, a departed or replaced partition
+(`partition_churn`) or a symlink (a leaf, never followed) no longer resets or
+stalls it. Before 2026-11-04 any mount-table change reset every root to its
+first four partitions each hour, and the root disk stayed 0.11% surveyed.
+
 **Class and root.** A path takes the storage class and root of its
 `control_plane_storage_roots` row; a row with `*` segments reports the concrete
 directory it matched. A path under a `container`, or under `/var/lib/blueprint`,

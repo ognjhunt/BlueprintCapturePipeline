@@ -629,6 +629,11 @@ def _print_usage(status: dict[str, Any]) -> int:
     lines = [header]
     if usage.get("error"):
         lines.append(f"last survey attempt: {usage['error']}")
+    composite = usage.get("composite")
+    if isinstance(composite, dict) and isinstance(composite.get("partitions"), int):
+        oldest = composite.get("oldest_age_seconds")
+        lines.append(f"partitions measured: {composite.get('measured')} of {composite['partitions']}"
+                     + (f", oldest {oldest / 3600:.1f} h" if isinstance(oldest, (int, float)) else ""))
     if isinstance(usage.get("orphan_scratch_bytes"), int) and isinstance(usage.get("orphan_scratch_count"), int):
         lines.append(f"unowned scratch: {_size(usage['orphan_scratch_bytes'])} "
                      f"in {usage['orphan_scratch_count']} folders")
