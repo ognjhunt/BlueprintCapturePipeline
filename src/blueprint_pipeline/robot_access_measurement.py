@@ -17,7 +17,8 @@ any other preparation analysis call: never a step for the site.
   measurement as due (``measurement_due``) with its most: the analysis call's
   (``clean_plate_removal_analysis_gemini.movable_obstacle_request``) plus the
   segmentation's for at most ``MAXIMUM_SEGMENTATION_PROMPTS`` concepts over every
-  source frame (``meta_sam31``), and the worker runs it once per such binding.
+  source frame (``meta_sam31``), and the worker runs it once per such binding
+  (a held one again, bounded: see Spending).
 - **What is bound.** The intent's own registered preparation, which for a
   renewed job is the renewal's (``current_preparation``: the intent's source
   registration names it, its request is the intent's, and its renewal block
@@ -32,7 +33,11 @@ any other preparation analysis call: never a step for the site.
   preparation-spend path within its already-approved caps, each within its share
   of the recorded most, and keep their admissions in their receipts. A refused
   reservation (caps, window) is the request's typed hold
-  (``team_scene_packet_worker``); the site is never asked. Each piece takes the
+  (``team_scene_packet_worker``); the site is never asked. A held measurement
+  is tried again at most once per release: a transient cause (the network, a
+  timeout, a busy or failing service) after a wait, a refusal only under a
+  newly deployed release. A paid call whose outcome is uncertain needs
+  reconciliation first and is never bought again by a retry. Each piece takes the
   track its own boxes pick; an ambiguous one is left unmeasured, never guessed.
   Its 3-D bounds are lifted on the CPU from the scene's own estimated depth and
   cameras, as the task masks are (``website_task_masks.estimate_target_bounds``),

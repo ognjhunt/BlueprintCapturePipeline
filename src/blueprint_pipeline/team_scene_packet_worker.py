@@ -175,6 +175,17 @@ ROBOT_ACCESS_REQUEUE_FIELD = "robot_access_confirmation_requeued"
 ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD = "robot_access_measurement_requeued"
 #: The typed hold a measurement that could not run leaves on the request's status (with its own reason).
 ROBOT_ACCESS_MEASUREMENT_HOLD = "team_scene_robot_access_measurement_held"
+# A held measurement of the binding still due goes back to pending at most once per release
+# (``_measurement_retry_untried``): a transient cause (the network, a timeout, a busy or failing service:
+# ``measurement_transient``) under the release that held it once ``ROBOT_ACCESS_MEASUREMENT_RETRY_SECONDS`` have
+# passed, and any cause once under each newly deployed release. A refusal (the job's caps or window, a changed
+# binding, an unbound intent) so stays held until a new release. The status keeps the releases already tried,
+# and each try reserves only through the job's preparation-spend path within its approved caps.
+ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD = "robot_access_measurement_retried"
+ROBOT_ACCESS_MEASUREMENT_RETRY_SECONDS = 1800
+# A service's answer a later try can get past: a timeout, too early, throttled, or the service failing.
+_TRANSIENT_HTTP = re.compile(r"_http_(?:408|425|429|5[0-9]{2})(?![0-9])")
+_TRANSIENT_CODES = frozenset({408, 425, 429})
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
@@ -505,10 +516,46 @@ def _measurement_due_untried(status: Mapping[str, Any]) -> str | None:
     return str(due["binding_digest"])
 
 
+def _measurement_retry_untried(status: Mapping[str, Any], release: str | None, now: datetime
+                               ) -> dict[str, Any] | None:
+    """A completed half's held measurement of the binding still due, that this known release may try again.
+
+    Once per release: a transient hold under the release that held it, after its wait; any hold under a
+    newly deployed release (one that did not write the status, or a status that names none). A hold recorded
+    without its cause is read as a refusal. A newly due binding is ``_measurement_due_untried``'s.
+    """
+
+    held = status.get("robot_access_measurement")
+    release = _release(release)
+    if (release is None or status.get("status") != "completed" or not isinstance(held, Mapping)
+            or held.get("status") != "held"):
+        return None
+    tried = status.get(ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD)
+    if release in (tried if isinstance(tried, list) else []):
+        return None
+    from .robot_access_measurement import measurement_due
+
+    due = measurement_due(status.get("team_scene_inputs_path"))
+    if due is None or due["binding_digest"] != held.get("binding_digest"):
+        return None
+    cause = "transient" if held.get("cause") == "transient" else "refusal"
+    if status.get(RELEASE_COMMIT_FIELD) != release:
+        return {"binding_digest": str(due["binding_digest"]), "cause": cause, "trigger": "new_release"}
+    if cause != "transient":
+        return None
+    try:
+        held_at = datetime.fromisoformat(str(held["held_at"]))
+    except (KeyError, ValueError):
+        return None  # a transient hold with no time is tried by the next release
+    if held_at.tzinfo is None or held_at + timedelta(seconds=ROBOT_ACCESS_MEASUREMENT_RETRY_SECONDS) > now:
+        return None
+    return {"binding_digest": str(due["binding_digest"]), "cause": cause, "trigger": "transient_wait_elapsed"}
+
+
 def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[dict[str, Any]]:
-    """Return each due transient block, each owner-contract refusal the owner has since confirmed, and each
-    other deterministic refusal once per newly deployed ``release``, to pending, recording the attempt first
-    (the lock is held)."""
+    """Return each due transient block, each owner-contract refusal the owner has since confirmed, each
+    other deterministic refusal once per newly deployed ``release``, and each held furniture measurement once
+    per release (``_measurement_retry_untried``), to pending, recording the attempt first (the lock is held)."""
 
     release = _release(release)
     requeued: list[dict[str, Any]] = []
@@ -554,6 +601,16 @@ def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[
             os.replace(path, target)
             requeued.append({"request_key": path.stem, "reason": "robot_access_measurement_due",
                              "binding_digest": due})
+            continue
+        again = None if target.exists() else _measurement_retry_untried(status, release, now)
+        if again is not None:
+            tried = status.get(ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD)
+            # Recorded before the move, so each release tries a held measurement at most once.
+            _write_replace(root / "status" / path.name, {
+                **status, ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD: [*(tried if isinstance(tried, list) else []), release]})
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "robot_access_measurement_retry", **again,
+                             "release_commit": release})
             continue
         unscorable = None if target.exists() else _unscorable_half_untried(status, release)
         if unscorable is not None:
@@ -921,7 +978,28 @@ def _hold_code(exc: BaseException) -> str:
     """The typed code a failed measurement holds by: the error's own leading code, else its type."""
 
     text = str(exc).split(":", 1)[0].strip()
-    return text[:120] if re.fullmatch(r"[a-z][a-z0-9_.]{0,119}", text) else type(exc).__name__
+    return text[:120] if re.fullmatch(r"[a-z][a-z0-9_.-]{0,119}", text) else type(exc).__name__
+
+
+def measurement_transient(exc: BaseException) -> bool:
+    """Whether a later try of a failed measurement can succeed with nothing else changed.
+
+    Transient: the network or a timeout (an ``OSError``, a subprocess timeout, a code that says it timed
+    out), or a service that answered too early, throttled or failed (HTTP 408, 425, 429 or 5xx, as a
+    WebApp or provider code ``..._http_<status>`` or a client error's own status). Everything else (the
+    job's caps or window, a changed binding, a call that needs reconciliation first) is a refusal.
+    """
+
+    import subprocess
+
+    if isinstance(exc, (OSError, subprocess.TimeoutExpired)):
+        return True
+    status = next((value for value in (getattr(exc, "code", None), getattr(exc, "status_code", None))
+                   if isinstance(value, int) and not isinstance(value, bool)), None)
+    if status is not None and (status in _TRANSIENT_CODES or 500 <= status <= 599):
+        return True
+    code = str(exc).split(":", 1)[0].strip().lower()
+    return bool(_TRANSIENT_HTTP.search(code)) or "timeout" in code or "timed_out" in code
 
 
 def _measure_furniture(request: Mapping[str, Any], binding_digest: str) -> dict[str, Any]:
@@ -931,22 +1009,26 @@ def _measure_furniture(request: Mapping[str, Any], binding_digest: str) -> dict[
     masks for just those items, reserved through the job's preparation-spend path within its approved
     caps, each call keeping its admission in its receipt. ``measured`` names the sidecar and what was
     reserved; anything else (a refused reservation, the caps or window, a changed binding) is ``held``
-    by ``ROBOT_ACCESS_MEASUREMENT_HOLD`` and its typed reason, and the half is kept as it is.
+    by ``ROBOT_ACCESS_MEASUREMENT_HOLD`` and its typed reason, and the half is kept as it is. A hold names
+    its ``cause`` (``transient`` or ``refusal``, ``measurement_transient``) and when it was held, so a
+    transient one is tried again (``_measurement_retry_untried``).
     """
 
     from .robot_access_measurement import run_measurement
 
+    held_at = _utc_now().isoformat(timespec="seconds")
     try:
         scope, unbound = owner_success_confirmation_scope(request)
         if scope is None:
             return {"status": "held", "hold": f"{ROBOT_ACCESS_MEASUREMENT_HOLD}:intent_unbound",
-                    "binding_digest": binding_digest, "reason": unbound}
+                    "binding_digest": binding_digest, "reason": unbound, "cause": "refusal", "held_at": held_at}
         sidecar = run_measurement(scope, binding_digest=binding_digest, revision_digest=request["scene_revision_digest"])
     except Exception as exc:  # noqa: BLE001 - a measurement that cannot run is a typed hold; the queue goes on
         from .bounded_error import error_description
 
         return {"status": "held", "hold": f"{ROBOT_ACCESS_MEASUREMENT_HOLD}:{_hold_code(exc)}",
-                "binding_digest": binding_digest, "error": error_description(exc)}
+                "binding_digest": binding_digest, "error": error_description(exc),
+                "cause": "transient" if measurement_transient(exc) else "refusal", "held_at": held_at}
     return {"status": "measured", "binding_digest": binding_digest, "sidecar_digest": sidecar["sidecar_digest"],
             "reserved_cost_usd": round(float(sidecar["analysis"]["reserved_cost_usd"])
                                        + float(sidecar["segmentation"]["reserved_cost_usd"]), 4),
@@ -975,7 +1057,8 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     if isinstance(retry, Mapping):
         status["automatic_retry"] = dict(retry)
     for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
-                  ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD):
+                  ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD,
+                  ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD):
         if isinstance(prior.get(field), list):
             status[field] = list(prior[field])
     if isinstance(prior.get(STANCE_SEARCH_REQUEUE_FIELD), list):
@@ -1075,7 +1158,8 @@ def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: s
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
                                         RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
-                                        ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD)
+                                        ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD,
+                                        ROBOT_ACCESS_MEASUREMENT_RETRY_FIELD)
                          if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
                                    "scenario_id": SCENARIO_ID, "status": "blocked",
