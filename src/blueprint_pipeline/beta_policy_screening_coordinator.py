@@ -270,7 +270,11 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
         row = rows[candidate["candidate_id"]]
         frozen = (candidate.get("execution_spec") or {}).get("implementation_commit")
         if (row["status"] in QUEUED_STATUSES and frozen not in (None, implementation_commit)
-                or row["status"] == "blocked" and COMMIT_CHANGED_BLOCKER in row.get("blockers", [])):
+                or row["status"] == "blocked" and COMMIT_CHANGED_BLOCKER in row.get("blockers", [])
+                # Refused before any allocation at an older commit: a deploy may have fixed the
+                # refusal, so the row is planned again once at the new commit, never spent twice.
+                or row["status"] == "blocked" and frozen not in (None, implementation_commit)
+                and not _spent(row)):
             stale = True
     if not stale and scene_half is not None:
         from .beta_policy_screening_scene_half import planned_half

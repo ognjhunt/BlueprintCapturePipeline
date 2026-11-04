@@ -118,17 +118,36 @@ def _claim(value: Mapping[str, Any]) -> Iterator[int]:
         os.close(fd)
 
 
+def invocation_temp_dir(path: Path) -> Path:
+    """The detached allocator's own temporary directory, beside its manifest.
+
+    The allocator outlives the timer pass that spawns it. A unit with PrivateTmp
+    gives that pass a private /tmp and /var/tmp that systemd removes when the
+    pass ends, so a detached child left with them finds no usable temporary
+    directory (2026-11-04: every learned-policy launch was refused in the sealed
+    static preflight before any allocation). The invocation directory is the
+    allocator's own writable root, kept for the life of the attempt.
+    """
+    temp = Path(path).parent / "tmp"
+    temp.mkdir(mode=0o700, exist_ok=True)
+    if temp.is_symlink() or not temp.is_dir():
+        raise ValueError("allocator_invocation_temp_dir_invalid")
+    return temp
+
+
 def start_invocation(path: Path, *, log_path: Path) -> int:
     """A duplicate spawn is harmless: only the queue job's lock holder can run."""
     handoff_lease_checkpoint("allocator_invocation_spawn")
     manifest(path)
+    temp = str(invocation_temp_dir(path))
     with log_path.open("x") as stream:
         log_path.chmod(0o600)
         process = subprocess.Popen(
             [sys.executable, "-m", "blueprint_pipeline.allocator_invocation", "--manifest", str(path)],
             cwd=Path(__file__).resolve().parents[2], stdout=stream, stderr=subprocess.STDOUT,
             start_new_session=True,
-            env={**os.environ, "BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN": "false"},
+            env={**os.environ, "BLUEPRINT_VAST_IGNORE_LOCAL_SIGTERM_DURING_PROVIDER_RUN": "false",
+                 "TMPDIR": temp, "TEMP": temp, "TMP": temp},
         )
     return int(process.pid)
 

@@ -91,3 +91,25 @@ def test_no_replan_while_a_reservation_is_held_or_nothing_is_stale(tmp_path):
     coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=finished)
     assert publication(tmp_path, "campaign-2")["status"] == "blocked"
     assert coordinator.replan_scope("campaign-2", implementation_commit=NEW, queue_root=tmp_path) is None
+
+
+def test_candidates_refused_before_any_allocation_are_replanned_once_after_a_deploy(tmp_path):
+    """2026-11-04: every learned-policy launch was refused before allocation (no usable temporary
+    directory in the detached allocator). The fix ships in a deploy; the refused rows must not stay
+    blocked for good, and a row that never spent is planned again once at the new commit."""
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    refused = Backend({"status": "blocked", "blockers": ["paid_resource_admission_not_admitted"],
+                       "provider_allocation_performed": False, "no_allocation_proven": True})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=refused,
+                                        max_launches=2)
+    old = publication(tmp_path)
+    assert old["status"] == "blocked" and old["budget"]["committed_upper_bound_usd"] == "0"
+    # Same commit: nothing a re-plan would change.
+    assert coordinator.replan_scope("campaign-1", implementation_commit=OLD, queue_root=tmp_path) is None
+    assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
+        "candidate-000", "candidate-001"]
+    coordinator.supersede_campaign("campaign-1", successor(plan(count=2)), implementation_commit=NEW,
+                                   queue_root=tmp_path)
+    assert [row["status"] for row in publication(tmp_path, "campaign-1b")["candidates"]] == ["pending", "pending"]
+    # Once per commit: the successor, planned at NEW, is not re-planned again at NEW.
+    assert coordinator.replan_scope("campaign-1b", implementation_commit=NEW, queue_root=tmp_path) is None
