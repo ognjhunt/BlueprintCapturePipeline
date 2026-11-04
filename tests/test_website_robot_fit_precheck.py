@@ -429,3 +429,16 @@ def test_a_precheck_that_does_not_bind_to_this_job_is_left_out(tmp_path, held, f
         handoff["digest"] = canonical_digest(handoff, digest_field="digest")
         write_json(work / "handoff.json", handoff)
     assert precheck.read_robot_fit_precheck(capture_root=root, task_context_digest=CONTEXT) is None
+
+
+def test_a_scripted_baseline_never_fits_a_website_job(tmp_path):
+    """Owner 2026-11-04: a website job never runs a scripted baseline, so it never keeps a job from holding."""
+    preparation, collision = tray_scene(tmp_path)
+    catalog = copy.deepcopy(load_default_catalog())
+    # An enabled DROID row made a scripted baseline: the rest of its catalog row refuses nothing.
+    scripted = next(row for row in catalog["candidates"] if row["candidate_id"] == "pi05_droid")
+    scripted["policy"]["kind"] = "scripted"
+    value = robot_fit_precheck(preparation=preparation, collision_path=collision, catalog=seal_catalog(catalog))
+    row = next(row for row in value["candidates"] if row["candidate_id"] == scripted["candidate_id"])
+    assert row["verdict"] == "unavailable" and row["blockers"] == ["candidate_disabled"]
+    assert row["embodiment"] == FRANKA and "pi05_droid" not in value["fit_candidates"]
