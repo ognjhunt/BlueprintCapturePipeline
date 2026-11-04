@@ -53,22 +53,6 @@ _POSE_PURCHASE_NAMES = frozenset({"atlas_pose", "atlas_pose_attempts", "controll
                                   "atlas_posed_rgbd_result.json"})
 
 
-def required_task_families(family: str, task_semantics: Mapping[str, Any] | None) -> list[str]:
-    """The families one runtime must register: a multi-step job's stages too."""
-    from .task_family_scoring import canonical_task_family
-    from .task_profile_contracts import task_profile_for
-    families = {family}
-    if family == "multi_step" and task_semantics is not None:
-        clarification = task_semantics.get("operation_coverage_clarification")
-        reading = clarification["operation_coverage"] if clarification else task_semantics["semantics"]
-        for step in reading["steps"]:
-            profile = task_profile_for(step["operation"])
-            stage = canonical_task_family(profile.profile_id) if profile is not None else None
-            if stage is not None:
-                families.add(stage)
-    return sorted(families)
-
-
 def task_family_runtime_gap(task_context: Mapping[str, Any], *, task_semantics: Mapping[str, Any] | None,
                             source_video_digest: str | None,
                             runtimes: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
@@ -79,6 +63,7 @@ def task_family_runtime_gap(task_context: Mapping[str, Any], *, task_semantics: 
     the job goes on and the later family preparation reports what is missing.
     """
     from .task_family_scoring import canonical_task_family
+    from .task_profile_contracts import required_task_families
     from .website_task_semantics import effective_task_profile
     family = canonical_task_family(effective_task_profile(task_context=task_context, task_semantics=task_semantics,
                                                           source_video_digest=source_video_digest))

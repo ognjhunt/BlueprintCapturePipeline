@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .task_family_scoring import FAMILY_ALIASES
+from .task_family_scoring import FAMILY_ALIASES, canonical_task_family
 
 
 @dataclass(frozen=True)
@@ -60,6 +60,24 @@ TASK_PROFILES: tuple[TaskProfile, ...] = (
 def task_profile_for(task_family: str | None) -> TaskProfile | None:
     value = (task_family or "").strip().lower()
     return next((row for row in TASK_PROFILES if value in row.aliases), None)
+
+
+def required_task_families(family: str, task_semantics: Mapping[str, Any] | None) -> list[str]:
+    """The families one runtime must register: a multi-step job's stages too.
+
+    Here, not in ``website_early_task_hold``, so the hold contract that re-derives it
+    (``website_task_context_contracts``) stays off the scene-preparation import graph.
+    """
+    families = {family}
+    if family == "multi_step" and task_semantics is not None:
+        clarification = task_semantics.get("operation_coverage_clarification")
+        reading = clarification["operation_coverage"] if clarification else task_semantics["semantics"]
+        for step in reading["steps"]:
+            profile = task_profile_for(step["operation"])
+            stage = canonical_task_family(profile.profile_id) if profile is not None else None
+            if stage is not None:
+                families.add(stage)
+    return sorted(families)
 
 
 #: Soft objects a rigid body cannot stand in for: the backstop when a task object carries no
