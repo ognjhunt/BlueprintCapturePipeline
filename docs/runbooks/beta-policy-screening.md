@@ -156,11 +156,13 @@ model on this scene and reached it (`team_arm_reach` `passed`, or the packet
 Franka's recorded station search cleared), 3 (`own_arm_solve_flagged`) when a
 fixed arm's solve searched and did not reach, with no proof that it cannot
 (`flagged`), and its declared reach did not refuse it, and 2
-(`reach_unmeasured`) otherwise. The plan orders, in sequence: tier 3 after every
-other candidate; learned policies before scripted baselines, ranked or not; tier
-1 before tier 2; then the intake ranking or default priority, and identifier. So
-a flagged body never spends before an unflagged one, and an unflagged learned
-policy goes before any scripted baseline. Flagged candidates are never excluded.
+(`reach_unmeasured`) otherwise. Tier 3 candidates go after every unflagged
+one, so a flagged body never spends first. When the job has an intake ranking
+(`website_candidate_ranking`), that is the only change: the ranking's order
+stands, with unranked candidates after it as before. On the default-priority
+path (no intake ranking) learned policies then go before scripted baselines,
+ranked or not, and tier 1 before tier 2, each group in the default priority and
+identifier order. Flagged candidates are never excluded.
 Each row but an infeasible one records its `reach_rank`: the tier, the solve's
 source, status, report digest and reasons, and the digest of the retained
 `candidate_feasibility.json`.

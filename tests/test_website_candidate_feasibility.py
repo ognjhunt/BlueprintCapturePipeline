@@ -357,6 +357,8 @@ UNMEASURED = (GOFA_12, "blueprint_scripted_agilex_piper_bimanual", "blueprint_sc
               "blueprint_scripted_yaskawa_hc20_robotiq_2f85_sim")
 FLAGGED = (GOFA_5, DIANA)
 LEARNED = ("cosmos3_edge_policy_droid", "groot_n17_droid", "pi05_droid")
+DEFAULT_PRIORITY = ["pi05_droid", "cosmos3_edge_policy_droid", "groot_n17_droid"]  # D-20, without an intake ranking
+MIXED = {"pi05_droid": "unmeasured", "groot_n17_droid": "passed", "cosmos3_edge_policy_droid": "flagged"}
 FEASIBILITY_DIGEST = "sha256:" + "f" * 64
 OUT_OF_REACH = "robot_reach_insufficient:place:1.107m_vs_0.990m"
 
@@ -390,7 +392,8 @@ def reach_rows(learned):
     return rows
 
 
-def capture_447(*, ranked=True, priority=None, budget_usd="15.00", learned=None, ceiling=None):
+def capture_447(*, ranked=True, priority=DEFAULT_PRIORITY, intake_ranking=False, budget_usd="15.00", learned=None,
+                ceiling=None):
     from blueprint_pipeline.beta_policy_candidate_catalog import catalog_candidate
     from blueprint_pipeline.website_candidate_feasibility import infeasible_blockers, reach_ranks
     from tests.test_beta_policy_screening_plan import admitted
@@ -413,16 +416,19 @@ def capture_447(*, ranked=True, priority=None, budget_usd="15.00", learned=None,
     if ranked:
         capabilities["candidate_reach_rank"] = reach_ranks(feasibility)
     options = {"campaign_id": "campaign1", "capabilities": capabilities, "cost_quotes": quotes, "now": NOW,
-               "budget_usd": budget_usd, "priority": priority}
+               "budget_usd": budget_usd, "priority": priority, "intake_ranking": intake_ranking}
     if ceiling is not None:
         return build_job_ceiling_screening_plan(catalog, scene(), job_ceiling=ceiling, **options)
     return build_screening_plan(catalog, scene(), **options)
 
 
-def reach_group(row):
-    """The plan's order before its default one: flagged last, learned before scripted, passed before unmeasured."""
+def reach_group(row, *, intake_ranking=False):
+    """The plan's order before its default one: flagged last; without an intake ranking, then learned before
+    scripted and passed before unmeasured."""
     tier = (row.get("reach_rank") or {}).get("tier", 2)
-    return tier == 3, row.get("execution_evidence_kind") == "scripted_simulator_state_baseline", tier
+    if intake_ranking:
+        return (tier == 3,)
+    return tier == 3, row.get("execution_evidence_kind") == "scripted_simulator_state_baseline", tier == 2
 
 
 def test_capture_447_funds_the_bodies_whose_own_arm_reached_the_task_and_flagged_ones_last():
@@ -432,7 +438,7 @@ def test_capture_447_funds_the_bodies_whose_own_arm_reached_the_task_and_flagged
     assert selected == [GOFA_12, GOFA_5, DIANA]
     # Every learned policy is infeasible; the passed scripted bodies come first, GoFa 5/0.95 and Diana 7 last.
     order = [row["candidate_id"] for row in after["candidates"]]
-    assert order == [*LEARNED, *sorted(PASSED), *sorted(UNMEASURED), *sorted(FLAGGED)]
+    assert order == [*DEFAULT_PRIORITY, *sorted(PASSED), *sorted(UNMEASURED), *sorted(FLAGGED)]
     assert {row["candidate_id"] for row in after["candidates"] if row["status"] == "infeasible"} == set(LEARNED)
     assert [row["candidate_id"] for row in after["candidates"] if row["status"] == "selected"] == sorted(PASSED)[:3]
     assert after["maximum_planned_cost_usd"] == before["maximum_planned_cost_usd"] == "12.00"
@@ -457,41 +463,56 @@ def test_capture_447_funds_the_bodies_whose_own_arm_reached_the_task_and_flagged
     Draft202012Validator(schema).validate(after)
 
 
-def test_an_unflagged_learned_policy_goes_before_any_scripted_body_and_a_flagged_one_never_spends_first():
-    learned = {"pi05_droid": "unmeasured", "groot_n17_droid": "passed", "cosmos3_edge_policy_droid": "flagged"}
-    # The intake ranking puts a flagged body and a scripted one first; neither overtakes an unflagged learned policy.
-    value = capture_447(learned=learned, priority=[DIANA, PASSED[4], "cosmos3_edge_policy_droid", "pi05_droid"])
+def test_default_priority_path_funds_unflagged_learned_first_then_passed_before_unmeasured():
+    value = capture_447(learned=MIXED)
     order = [row["candidate_id"] for row in value["candidates"]]
-    assert order == ["groot_n17_droid", "pi05_droid", PASSED[4], *sorted(set(PASSED) - {PASSED[4]}),
-                     *sorted(UNMEASURED), "cosmos3_edge_policy_droid", DIANA, GOFA_5]
+    # D-20 puts pi05 first, but groot's Franka search cleared; every scripted body follows the unflagged learned
+    # ones, and the flagged learned policy and bodies go last.
+    assert order == ["groot_n17_droid", "pi05_droid", *sorted(PASSED), *sorted(UNMEASURED),
+                     "cosmos3_edge_policy_droid", *sorted(FLAGGED)]
     assert [row["candidate_id"] for row in value["candidates"] if row["status"] == "selected"] == order[:3]
-    flagged = {row["candidate_id"] for row in value["candidates"] if row["reach_rank"]["tier"] == 3}
-    assert flagged == {"cosmos3_edge_policy_droid", DIANA, GOFA_5} and set(order[-3:]) == flagged
-    assert {key: value["candidates"][order.index(key)]["reach_rank"]["solve_source"] for key in learned} == {
+    assert {key: value["candidates"][order.index(key)]["reach_rank"]["solve_source"] for key in MIXED} == {
         "pi05_droid": None, "groot_n17_droid": "packet_station_search",
         "cosmos3_edge_policy_droid": "packet_station_search"}
     assert validate_screening_plan(value) == value
 
 
+def test_an_intake_ranking_stands_except_that_flagged_candidates_move_after_unflagged_ones():
+    ranking = [DIANA, PASSED[4], GOFA_12, "cosmos3_edge_policy_droid", "pi05_droid"]
+    value = capture_447(learned=MIXED, priority=ranking, intake_ranking=True)
+    order = [row["candidate_id"] for row in value["candidates"]]
+    # The ranking's scripted and unmeasured picks keep their places ahead of groot, whose reach passed; only
+    # Diana 7 and cosmos move back, and the unranked rest follow in the default order, flagged GoFa 5 last.
+    rest = sorted({*PASSED, *UNMEASURED} - {PASSED[4], GOFA_12})
+    assert order == [PASSED[4], GOFA_12, "pi05_droid", "groot_n17_droid", *rest,
+                     DIANA, "cosmos3_edge_policy_droid", GOFA_5]
+    assert [row["candidate_id"] for row in value["candidates"] if row["status"] == "selected"] == order[:3]
+    unranked = capture_447(ranked=False, learned=MIXED, priority=ranking, intake_ranking=True)
+    assert [row["candidate_id"] for row in unranked["candidates"]] == [*ranking, "groot_n17_droid", *sorted(
+        {*PASSED, *UNMEASURED, *FLAGGED} - set(ranking))]
+    assert validate_screening_plan(value) == value
+
+
 def test_reach_groups_keep_the_default_priority_within_each_group():
-    learned = {"pi05_droid": "unmeasured", "groot_n17_droid": "passed", "cosmos3_edge_policy_droid": "flagged"}
-    for ranking in (None, [DIANA, PASSED[5], GOFA_12, PASSED[1], "pi05_droid"]):
-        for shape in (None, learned):
-            before = capture_447(ranked=False, priority=ranking, learned=shape)
-            after = capture_447(priority=ranking, learned=shape)
+    for intake_ranking, ranking in ((False, DEFAULT_PRIORITY), (False, []),
+                                    (True, [DIANA, PASSED[5], GOFA_12, PASSED[1], "pi05_droid"])):
+        for shape in (None, MIXED):
+            options = {"priority": ranking, "learned": shape, "intake_ranking": intake_ranking}
+            before, after = capture_447(ranked=False, **options), capture_447(**options)
             default = [row["candidate_id"] for row in before["candidates"]]
-            group = {row["candidate_id"]: reach_group(row) for row in after["candidates"]}
+            group = {row["candidate_id"]: reach_group(row, intake_ranking=intake_ranking)
+                     for row in after["candidates"]}
             assert [row["candidate_id"] for row in after["candidates"]] == sorted(default, key=group.__getitem__)
-    # The intake ranking leads its group, and the unranked rest follow it in the default order.
-    scripted = [row["candidate_id"] for row in after["candidates"] if reach_group(row) == (False, True, 1)]
-    assert scripted[:3] == [PASSED[5], PASSED[1], sorted(PASSED)[0]]
+    # The intake ranking leads, scripted or not and passed or not; the unranked rest follow in the default order.
+    assert [row["candidate_id"] for row in after["candidates"]][:4] == [PASSED[5], GOFA_12, PASSED[1], "pi05_droid"]
 
 
 def test_ranking_by_reach_makes_nothing_infeasible_or_unfunded_that_was_not():
     learned = {"pi05_droid": "infeasible", "groot_n17_droid": "passed", "cosmos3_edge_policy_droid": "flagged"}
-    for budget in ("15.00", "4.00"):
-        before = capture_447(ranked=False, budget_usd=budget, learned=learned)
-        after = capture_447(budget_usd=budget, learned=learned)
+    for budget, intake_ranking in (("15.00", False), ("4.00", False), ("15.00", True), ("4.00", True)):
+        options = {"budget_usd": budget, "learned": learned, "intake_ranking": intake_ranking,
+                   "priority": [DIANA, *DEFAULT_PRIORITY] if intake_ranking else DEFAULT_PRIORITY}
+        before, after = capture_447(ranked=False, **options), capture_447(**options)
         assert len(after["candidates"]) == len(before["candidates"]) == 20
         status = {row["candidate_id"]: row["status"] for row in before["candidates"]}
         for row in after["candidates"]:

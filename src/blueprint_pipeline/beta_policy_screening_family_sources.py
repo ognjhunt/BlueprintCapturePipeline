@@ -117,7 +117,8 @@ def enqueue_registered_family_scenes(*, queue_root, max_sources=32):
                         queue_root=root, context=context, capture_root=Path(profile['capture_root']),
                         superseding=superseded,
                         capabilities=planning['capabilities'], cost_quotes=planning['cost_quotes'],
-                        candidate_ids=candidate_ids, priority=planning.get('candidate_priority'))
+                        candidate_ids=candidate_ids, priority=planning.get('candidate_priority'),
+                        intake_ranking=bool(priority))
                     retain_campaign_catalog(queue_root=root, campaign_id=campaign_id, catalog=catalog)
                 outcome.update(enqueue_screening_campaign(plan, queue_root=root) if superseded is None else
                                supersede_campaign(superseded, plan, implementation_commit=commit, queue_root=root))

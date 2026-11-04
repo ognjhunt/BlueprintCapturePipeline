@@ -143,10 +143,11 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     each naming a byte-sealed native execution spec and optional inventory.
     No catalog declaration alone grants a runtime capability. ``priority`` is
     the job's retained intake ranking; it orders the plan and removes nothing.
-    Reach evidence orders before it (``website_candidate_feasibility.reach_rank``):
+    Reach evidence orders it too (``website_candidate_feasibility.reach_rank``):
     a candidate whose own-arm solve searched and did not reach is funded after
-    every other, learned policies go before scripted baselines, a solve that
-    reached the task before an unmeasured one, and ``priority`` orders the rest.
+    every unflagged one; without an intake ranking, learned policies then go
+    before scripted baselines and a solve that reached the task before an
+    unmeasured one (``beta_policy_screening_plan.build_screening_plan``).
     A candidate is infeasible only when its reach measurably misses this
     reconstructed scene's station (``website_candidate_feasibility``: the
     packet arm's chain reach bound, a registered body's own arm in its model,
@@ -407,7 +408,7 @@ def build_planning_inputs(*, catalog: Mapping[str, Any], profile: Mapping[str, A
     return {"scene": scene,
             "capabilities": {"candidate_bindings": bindings, "credentials_available": credentials,
                              "candidate_blockers": candidate_blockers, "candidate_infeasible": infeasible,
-                             # Orders the budget: flagged reach last, learned first, passed before unmeasured.
+                             # Orders the budget: a flagged own-arm solve after every unflagged one.
                              "candidate_reach_rank": reach_ranks(feasibility)},
             "cost_quotes": quotes, "candidate_feasibility": feasibility,
             "candidate_priority": [key for key in dict.fromkeys(priority) if key in known]}

@@ -432,7 +432,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                          capabilities: Mapping[str, Any] | None = None,
                          cost_quotes: Mapping[str, Any] | None = None,
                          now: dt.datetime | None = None,
-                         priority: Sequence[str] | None = None) -> dict[str, Any]:
+                         priority: Sequence[str] | None = None, intake_ranking: bool = False) -> dict[str, Any]:
     """Every requested candidate gets a status and reason; the budget decides how many run.
 
     ``priority`` (the job's intake ranking) sets the order the budget is spent
@@ -444,13 +444,14 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     and are never funded or waitlisted. Runnable candidates the budget cannot
     fund yet are ``waitlisted``, in the same order, for money a selected
     candidate releases before spend. With ``candidate_reach_rank`` capabilities
-    (``website_candidate_feasibility.reach_rank``) the order is, in sequence: a
-    candidate whose own-arm solve was flagged after every other; learned
-    policies before scripted baselines, ranked or not; a solve that passed
-    before an unmeasured one; then the order above. So a flagged body never
-    spends before an unflagged one, and an unflagged learned policy goes before
-    any scripted one. Every row but an infeasible one records its
-    ``reach_rank``; ranking removes and refuses nothing.
+    (``website_candidate_feasibility.reach_rank``) a candidate whose own-arm
+    solve was flagged goes after every unflagged one, so it never spends first.
+    When ``priority`` is the job's intake ranking (``intake_ranking``, from
+    ``website_candidate_ranking.retained_priority``) that is the only change to
+    the order above. On the default-priority path learned policies then go
+    before scripted baselines, ranked or not, and a solve that passed before an
+    unmeasured one, each group in the order above. Every row but an infeasible
+    one records its ``reach_rank``; ranking removes and refuses nothing.
     """
     catalog = validate_catalog(catalog)
     scene = _scene(scene)
@@ -490,7 +491,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_selection_invalid")
     if set(requested) - set(by_id):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_not_in_catalog")
-    if isinstance(priority, (str, bytes)) or any(not isinstance(row, str) for row in priority or ()):
+    if (isinstance(priority, (str, bytes)) or any(not isinstance(row, str) for row in priority or ())
+            or type(intake_ranking) is not bool):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_priority_invalid")
     ranked = [row for row in dict.fromkeys(priority or ()) if row in set(requested)]
     cells = screening_cells(scene, episodes_per_candidate)
@@ -500,11 +502,15 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                       key=lambda row: (by_id[row]["policy"]["kind"] == "scripted", row))
     order = ranked + unranked
     if reach is not None:
-        def reach_order(key: str) -> tuple[bool, bool, int]:
+        def reach_order(key: str) -> tuple[bool, ...]:
             # Infeasible rows are never funded and are not ranked by reach.
             tier = (REACH_TIERS["reach_unmeasured"] if key in infeasible
                     else (reach.get(key) or reach_rank(None))["tier"])
-            return (tier == REACH_TIERS["own_arm_solve_flagged"], by_id[key]["policy"]["kind"] == "scripted", tier)
+            flagged = tier == REACH_TIERS["own_arm_solve_flagged"]
+            if intake_ranking:
+                return (flagged,)  # The job's own ranking stands; only a flagged body moves back.
+            return (flagged, by_id[key]["policy"]["kind"] == "scripted",
+                    tier == REACH_TIERS["reach_unmeasured"])
 
         order.sort(key=reach_order)  # Stable: the default order holds within each group.
     for candidate_id in order:

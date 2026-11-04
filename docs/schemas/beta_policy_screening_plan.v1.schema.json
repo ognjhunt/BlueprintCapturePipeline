@@ -391,7 +391,7 @@
     },
     "reach_rank": {
       "additionalProperties": false,
-      "description": "The candidate's reach evidence and the tier it places it in (website_candidate_feasibility.reach_rank): 1 own arm solved through the task and reached it, 2 unmeasured, 3 solve searched and did not reach without a proof. The plan funds tier 3 after every other candidate, then learned policies before scripted baselines, then tier 1 before tier 2, then its default order; ranking removes nothing.",
+      "description": "The candidate's reach evidence and the tier it places it in (website_candidate_feasibility.reach_rank): 1 own arm solved through the task and reached it, 2 unmeasured, 3 solve searched and did not reach without a proof. The plan funds tier 3 after every unflagged candidate; with an intake ranking that is the only change to its order, and without one learned policies go before scripted baselines and tier 1 before tier 2, each group in the default order. Ranking removes nothing.",
       "properties": {
         "basis": {
           "enum": [
