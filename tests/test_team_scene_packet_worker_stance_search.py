@@ -27,7 +27,7 @@ GRASPS = ["task", "top_down", *(f"tilt{tilt}_yaw{yaw}" for tilt in (45, 90) for 
 STALE = f"station_search_not_cleared:stance_search_v1<v{team_embodiment_stance.STANCE_SEARCH_VERSION}"
 
 
-def _as_capture447_before_the_pedestal_search(half: str, *, cleared: bool = False) -> None:
+def _as_capture447_before_the_pedestal_search(half: str, *, cleared: bool = False, in_reach: int | None = None) -> None:
     """Rewrite a compiled half's record as capture-447's was sealed, by a stance search before its version.
 
     Its station records no ``search`` (version 1). Its carry search tried eight stances with every grasp,
@@ -52,7 +52,8 @@ def _as_capture447_before_the_pedestal_search(half: str, *, cleared: bool = Fals
             "reach_shortfall": {"rule": "grasp_point_within_arm_chain_reach_bound_of_shoulder",
                                 "robot_id": "franka_panda", "reach_bound_m": 0.9903, "status": "out_of_reach",
                                 "beyond": ["place", "pick"], "grasp_independent": False,
-                                "claim_ceiling": "cpu_bounded_estimate", "simulator_executed": False}})}
+                                "claim_ceiling": "cpu_bounded_estimate", "simulator_executed": False}}),
+        **({} if in_reach is None else {"stances_in_reach": in_reach})}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
     path.chmod(0o644)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
@@ -133,6 +134,12 @@ def test_a_half_that_carries_or_was_searched_by_this_version_is_never_recompiled
     value["robot_station_search"]["cleared"] = False
     Path(half).write_text(json.dumps(value))
     assert worker.stale_unreached_station(half) is None
+    # A half whose search found the tray in reach from a clear stance, under an older search: its policies are
+    # planned and its scripted carry miss is only a flag, so no later version recompiles it for that miss.
+    _as_capture447_before_the_pedestal_search(half, in_reach=3)
+    assert worker.stale_unreached_station(half) is None
+    _as_capture447_before_the_pedestal_search(half, in_reach=0)
+    assert worker.stale_unreached_station(half) == STALE
 
 
 def test_the_versions_tried_survive_an_interrupted_recompile(tmp_path, monkeypatch) -> None:

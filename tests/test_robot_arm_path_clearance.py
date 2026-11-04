@@ -508,24 +508,41 @@ def _rigid_packet(root, *, target, strategy="pick_and_place", robot_id="franka_p
 
 
 @pytest.mark.parametrize("case, status, reason", [
-    ("floor", "clear", None), ("desk", "blocked", None),
+    ("floor", "clear", None), ("desk", "flagged", None), ("far", "blocked", None),
     ("push", "not_applicable", "no_articulated_object"), ("own_robot", "unassessed", "robot_arm_unmodeled")])
-def test_a_rigid_pick_and_place_packet_is_admitted_only_when_its_carry_exists(tmp_path, case, status, reason):
+def test_a_rigid_pick_and_place_packet_is_refused_only_when_its_object_is_out_of_reach(tmp_path, case, status, reason):
+    import json
+
     from blueprint_pipeline.robot_arm_path_clearance import (
+        SCRIPTED_CARRY_FLAG,
         RobotArmPathAdmissionBlocked,
         packet_arm_path_clearance,
         require_robot_arm_path_admission,
     )
 
-    packet = _rigid_packet(tmp_path / case, target=[0.55, 0.3, 0.7725] if case == "desk" else [0.5, 0.3, 0.0325],
+    target = {"desk": [0.55, 0.3, 0.7725], "far": [1.6, 0.0, 0.0325]}.get(case, [0.5, 0.3, 0.0325])
+    packet = _rigid_packet(tmp_path / case, target=target,
                            strategy="planar_push" if case == "push" else "pick_and_place",
                            robot_id="team_owned_arm" if case == "own_robot" else "franka_panda")
+    if case == "far":
+        plan_path = packet / "native_task_arena_scene_plan.v1.json"
+        plan = json.loads(plan_path.read_text())
+        plan["task_spec"]["subject_collision_bounds_scoring_frame_m"] = {"minimum": [-0.03, -0.03, -0.0325],
+                                                                         "maximum": [0.03, 0.03, 0.0325]}
+        plan_path.write_text(json.dumps(plan))
     report = packet_arm_path_clearance(packet)
     assert report["status"] == status and report.get("reason") == reason
     assert report["report_digest"].startswith("sha256:")
     if case == "desk":
-        assert report["blockers"] == ["robot_rigid_pick_place_unreachable:lift"]
-        with pytest.raises(RobotArmPathAdmissionBlocked, match="unreachable:lift"):
+        # The scripted carry cannot lift it there, but nothing proves no policy can: a flag, never a refusal.
+        assert report["blockers"] == [] and report["flags"] == [SCRIPTED_CARRY_FLAG]
+        assert report["advisories"] == ["robot_rigid_pick_place_unreachable:lift"]
+        assert require_robot_arm_path_admission(packet)["status"] == "flagged"
+    if case == "far":
+        # Every point of the object at its place is beyond the arm's chain reach bound: the hard rule refuses.
+        assert report["blockers"] == ["robot_reach_insufficient:place:1.593m_vs_0.990m"]
+        assert report["object_reach"]["beyond"] == ["place"]
+        with pytest.raises(RobotArmPathAdmissionBlocked, match="robot_reach_insufficient:place"):
             require_robot_arm_path_admission(packet)
     if case == "floor":
         assert report["scene_obstacles_measured"] is True and report["arena_scene_plan_digest"] == "sha256:" + "1" * 64

@@ -217,8 +217,11 @@ def test_the_team_packet_stands_the_franka_off_a_single_mesh_rooms_table(tmp_pat
     x, y, _ = station["position_world_m"]
     assert ROOM[0][0] < x < ROOM[1][0] and ROOM[0][1] < y < ROOM[1][1]
     assert math.hypot(x - START[0], y - START[1]) <= 1.6
-    # The carry search ranked the room-clear stances (it measures the arm, not the footprint).
-    assert record["robot_station_search"]["rule"] == "first_ranked_stance_that_carries"
+    # The carry search measured the room-clear stances (it measures the arm, not the footprint).
+    from blueprint_pipeline.team_scene_packet import STATION_RULE
+
+    assert record["robot_station_search"]["rule"] == STATION_RULE
+    assert record["robot_station_search"]["stances_measured"] >= record["robot_station_search"]["stances_in_reach"]
     # The packet the team runs places the robot where the record says.
     request = json.loads((Path(record["base_native_packet"]["path"]).parent
                           / "native_task_arena_packet_request.v1.json").read_text())

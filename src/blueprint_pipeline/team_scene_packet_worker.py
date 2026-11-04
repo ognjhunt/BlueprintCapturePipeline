@@ -414,7 +414,8 @@ def stale_unreached_station(path: Any) -> str | None:
     stances, all ``unreachable:approach``), or whose reach proof put the task beyond the arm from the station
     (``reach_shortfall`` ``out_of_reach``), and its station was chosen by a stance search older than
     ``STANCE_SEARCH_VERSION`` (a station recorded without a version is version 1). None when unreadable, for a
-    half with no carry search, one that carries, or one this version already searched.
+    half with no carry search, one that carries, one this version already searched, or one whose search found
+    the object in reach from a clear stance (``stances_in_reach``: its scripted carry miss is only a flag).
     """
 
     from .team_embodiment_stance import STANCE_SEARCH_VERSION
@@ -436,6 +437,11 @@ def stale_unreached_station(path: Any) -> str | None:
     if isinstance(recorded, bool) or not isinstance(recorded, int) or recorded >= STANCE_SEARCH_VERSION:
         return None
     shortfall = search.get("reach_shortfall") if isinstance(search.get("reach_shortfall"), Mapping) else {}
+    in_reach = search.get("stances_in_reach")
+    if isinstance(in_reach, int) and not isinstance(in_reach, bool) and in_reach > 0:
+        # Chosen by the hard reach rule with the object in reach: its policies are planned, and a scripted
+        # carry miss is only a flag (``team_scene_packet._carrying_station``), so it is never recompiled for it.
+        return None
     if search.get("cleared") is False:
         return f"station_search_not_cleared:stance_search_v{recorded}<v{STANCE_SEARCH_VERSION}"
     if shortfall.get("status") == "out_of_reach":
