@@ -501,6 +501,10 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     # Retires superseded release and runtime trees behind receipts (its own owner switch).
     "blueprint-control-plane-release-lifecycle.service",
     "blueprint-control-plane-release-lifecycle.timer",
+    # Owner-approved deletions: oneshots an operator starts by hand (plan, then apply);
+    # no timer or path unit starts them. See src/blueprint_pipeline/owner_approved_deletion.py.
+    "blueprint-owner-approved-deletion-plan.service",
+    "blueprint-owner-approved-deletion.service",
     "blueprint-control-plane-capacity.service",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.service",
