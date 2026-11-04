@@ -252,3 +252,80 @@ def test_another_file_with_the_same_bytes_opens_the_same_copy(tmp_path, monkeypa
         assert Path(cache.readable(other)).suffix == ".usdc"
         same.write_text(same.read_text() + "\n")  # changed: no longer the copy's bytes, so a copy of its own
         assert cache.readable(same) not in (copy, str(same)) and cache.readable(source) == copy
+
+
+def _whole_mesh_background_triangles(usd_path, *, centre, radius, world_from_stage=None):
+    """``load_background_triangles`` before it read the file's own arrays a block at a time (verbatim)."""
+    import math
+
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    from blueprint_pipeline.scene_physics_preflight import _usd_matrix
+
+    stage = Usd.Stage.Open(str(usd_path))
+    assert math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.0) and UsdGeom.GetStageUpAxis(stage) == "Z"
+    cache_ = UsdGeom.XformCache()
+    centre = np.asarray(centre, dtype=float)
+    kept = []
+    for prim in stage.Traverse():
+        if not prim.IsA(UsdGeom.Mesh) or not prim.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=float).reshape(-1, 3)
+        counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get() or [], dtype=np.int64)
+        indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get() or [], dtype=np.int64)
+        if not len(points) or not len(counts):
+            continue
+        if np.all(counts == 3):
+            faces = indices.reshape(-1, 3)
+        else:
+            starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+            faces = np.asarray([[indices[s], indices[s + i], indices[s + i + 1]]
+                                for s, c in zip(starts, counts) for i in range(1, c - 1)], dtype=np.int64)
+        matrix = _usd_matrix(cache_, prim)
+        if world_from_stage is not None:
+            matrix = world_from_stage @ matrix
+        world = points @ matrix[:3, :3].T + matrix[:3, 3]
+        triangles = world[faces]
+        near = np.linalg.norm(triangles.mean(axis=1) - centre, axis=1) <= radius + np.linalg.norm(
+            triangles - triangles.mean(axis=1, keepdims=True), axis=2).max(axis=1)
+        kept.append(triangles[near])
+    return np.concatenate(kept) if kept else np.zeros((0, 3, 3))
+
+
+@pytest.mark.parametrize("block", [7, 1 << 18])
+def test_background_triangles_read_from_the_files_own_arrays_are_the_same_triangles(tmp_path, monkeypatch,
+                                                                                     block) -> None:
+    """A room's points and indices are read as stored and made float64 a block at a time (a full room:
+    3-7 M triangles held 0.4 GB more as whole float64/int64 copies): the same bytes, under a mesh's own
+    rotated, scaled and translated transform, and for quads as for triangles."""
+    from pxr import Gf, Usd, UsdGeom, UsdPhysics, Vt
+
+    from blueprint_pipeline import scene_physics_preflight as preflight
+
+    rng = np.random.default_rng(7)
+    stage = Usd.Stage.CreateNew(str(tmp_path / "room.usdc"))
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+    UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+    UsdGeom.Xform.Define(stage, "/Root")
+    for name, sides in (("tris", 3), ("quads", 4)):
+        mesh = UsdGeom.Mesh.Define(stage, f"/Root/{name}")
+        api = UsdGeom.XformCommonAPI(mesh)
+        api.SetTranslate(Gf.Vec3d(0.3, -1.1, 0.25))
+        api.SetRotate(Gf.Vec3f(3.0, -7.0, 31.0))
+        api.SetScale(Gf.Vec3f(1.5, 0.75, 1.0))
+        points = rng.uniform(-2.0, 2.0, (4000, 3)).astype(np.float32)
+        mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(points))
+        mesh.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(np.full(3000, sides, dtype=np.int32)))
+        mesh.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(rng.integers(0, 4000, 3000 * sides).astype(np.int32)))
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+    stage.GetRootLayer().Save()
+    monkeypatch.setattr(preflight, "BACKGROUND_TRIANGLE_BLOCK", block)
+    frame = np.eye(4)
+    frame[:3, 3] = [0.5, 0.0, -0.1]
+    for world_from_stage in (None, frame):
+        expected = _whole_mesh_background_triangles(tmp_path / "room.usdc", centre=[0.2, -0.9, 0.4], radius=1.1,
+                                                    world_from_stage=world_from_stage)
+        read = preflight.load_background_triangles(tmp_path / "room.usdc", centre=[0.2, -0.9, 0.4], radius=1.1,
+                                                   world_from_stage=world_from_stage)
+        assert len(expected) > 100 and read.dtype == expected.dtype and read.tobytes() == expected.tobytes()

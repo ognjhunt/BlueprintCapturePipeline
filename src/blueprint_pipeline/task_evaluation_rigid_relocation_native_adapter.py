@@ -80,6 +80,9 @@ COMPLETED_SCENE_SOURCE_SCHEMAS = {
     SOURCE_OBJECT_CONTRACT_PATH: "task_evaluation_completed_scene_object_selection.v1",
 }
 NATIVE_PHYSICS_FREQUENCY_HZ = 120
+# The scorer reads an episode only when its first sample lies this close to ``start_pose_world``.
+RESET_TRANSLATION_TOLERANCE_M = 0.002
+RESET_ORIENTATION_TOLERANCE_RAD = 0.01
 # Closed-hand geometry of the fixed DROID Robotiq 2F-85 embodiment, measured
 # from paid-run readbacks rather than assumed from the vendor model.  Scene
 # 839873 franka-controls attempt 001 (instance 49506537) established both
@@ -1154,8 +1157,8 @@ def _adapt_rigid_relocation_documents(
         "task_contact_minimum_force_n": 0.5,
         "collision_failure_minimum_force_n": 1.0,
         "robot_scene_collision_minimum_force_n": ROBOT_SCENE_COLLISION_MINIMUM_FORCE_N,
-        "reset_translation_tolerance_m": 0.002,
-        "reset_orientation_tolerance_rad": 0.01,
+        "reset_translation_tolerance_m": RESET_TRANSLATION_TOLERANCE_M,
+        "reset_orientation_tolerance_rad": RESET_ORIENTATION_TOLERANCE_RAD,
         "settle_position_tolerance_m": 0.005,
         "settle_orientation_tolerance_rad": 0.03,
         "relocation_tracking_tolerance_m": target_tolerance,

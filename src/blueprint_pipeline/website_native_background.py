@@ -532,6 +532,15 @@ def execute_prepared_collision(*, envelope, stage, configuration, configuration_
                "background_bytes_unchanged": True, "source_prim_excision_performed": False,
                "source_object_candidate_separate": True, "claim_ceiling": "development_only",
                "physical_measurement_proven": False}
+    if "support_pad" in value["collision"]:
+        # Its support was planarized at the success plane where the collider was produced
+        # (``website_support_pad``): the scene revision seals that model with these bytes
+        # (``geometry.object_excision_result``).
+        pad = dict(value["collision"]["support_pad"])
+        if isinstance(pad.get("derived_collider"), Mapping):
+            # Portable: the sealed bytes are this stage's copy, named by digest, not the control plane's path.
+            pad["derived_collider"] = {key: item for key, item in pad["derived_collider"].items() if key != "path"}
+        receipt["support_pad"] = pad
     receipt["digest"] = canonical_digest(receipt, digest_field="digest")
     receipt_path = output_root / "background_reuse.json"
     write_json(receipt_path, receipt)

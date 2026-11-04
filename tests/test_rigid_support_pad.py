@@ -344,9 +344,10 @@ def _with_qualified_bounds(monkeypatch: pytest.MonkeyPatch) -> Any:
     return packet_tests
 
 
-def _scanned_bundle(tmp_path: Path) -> Path:
+def _scanned_bundle(tmp_path: Path, collision: Path | None = None) -> Path:
     """The fixture room with its support's top scanned: 4 mm under its registered top, a hump to that top
-    beside the start's centre, and hollows 8 mm under it at the start and the goal."""
+    beside the start's centre, and hollows 8 mm under it at the start and the goal. ``collision``, when
+    given, is the room's sealed collider instead (one already planarized, named by its format)."""
 
     import json
     import zipfile
@@ -384,6 +385,9 @@ def _scanned_bundle(tmp_path: Path) -> Path:
     payloads = {"appearance.usda": (tmp_path / "room.usda").read_bytes(),
                 "collision.usda": (tmp_path / "room.usda").read_bytes(),
                 "replacement.usda": (tmp_path / "replacement.usda").read_bytes()}
+    if collision is not None:
+        del payloads["collision.usda"]
+        payloads["collision" + collision.suffix] = collision.read_bytes()
     rows = [{"role": name.split(".")[0], "relative_path": name, "digest": _sha(data), "size_bytes": len(data)}
             for name, data in payloads.items()]
     manifest = _sealed({"schema_version": "task_evaluation_configured_scene_bundle_candidate.v1",
@@ -454,3 +458,46 @@ def test_a_team_half_runs_on_its_support_planarized_and_seats_its_object_on_the_
 def _mkdir(path: Path) -> Path:
     path.mkdir(parents=True)
     return path
+
+
+def test_a_team_half_on_a_sealed_collider_already_planarized_is_a_no_op(tmp_path, monkeypatch) -> None:
+    """A scene whose website preparation sealed its support flat (``website_support_pad``): the half reads
+    nothing to move, derives no collider, and runs and is checked on the sealed bytes themselves."""
+
+    pytest.importorskip("pxr")
+    import json
+
+    from blueprint_pipeline.rigid_support_seating import start_spawn_disagreement_m
+
+    packet_tests = _with_qualified_bounds(monkeypatch)
+    monkeypatch.setattr(packet_tests, "_bundle", _scanned_bundle)
+    scanned, scanned_request = packet_tests._compile(tmp_path / "scanned",
+                                                     packet_tests._scene(_mkdir(tmp_path / "scanned")))
+    scanned_half = json.loads(Path(scanned["path"]).read_text())
+    planarized = Path(scanned["path"]).parent / scanned_half["task_support_pad"]["derived_collider"]["relative_path"]
+    sealed = tmp_path / "sealed" / "collision.usdc"
+    sealed.parent.mkdir()
+    sealed.write_bytes(planarized.read_bytes())
+    monkeypatch.setattr(packet_tests, "_bundle", lambda path: _scanned_bundle(path, collision=sealed))
+    scene = packet_tests._scene(_mkdir(tmp_path / "planar"))
+    compiled, request = packet_tests._compile(tmp_path / "planar", scene)
+    half = json.loads(Path(compiled["path"]).read_text())
+    support = half["task_support_pad"]
+    assert support["status"] == "consistent" and support["hold_reason"] is None
+    assert support["read_points_moved"] == 0 and support["read_points_maximum_shift_m"] < 1e-6
+    assert support["derived_collider"] is None and support["collider_already_planar"] is True
+    assert not (Path(compiled["path"]).parent / "support-pad").exists()
+    # The physics' collider is the sealed one, byte for byte.
+    sealed_sha = packet_tests._sha(sealed.read_bytes())
+    (collision,) = [row for row in request["assets"] if row["semantic_role"] == "scene_collision"]
+    assert collision["source"]["sha256"] == sealed_sha
+    plan = json.loads((Path(compiled["path"]).parent / "native-task-packet"
+                       / "native_task_arena_scene_plan.v1.json").read_text())
+    (staged,) = [row for row in plan["objects"] if row["semantic_role"] == "scene_collision"]
+    assert staged["sha256"] == sealed_sha
+    # The same task as the half that planarized the scan itself: the object starts at rest on the plane.
+    assert request["task_spec"]["start_pose_world"] == scanned_request["task_spec"]["start_pose_world"]
+    assert start_spawn_disagreement_m(plan) == pytest.approx(0.0, abs=1e-9)
+    assert support["rest_check"] == scanned_half["task_support_pad"]["rest_check"]
+    assert support["scan_rest_check"]["status"] == "consistent"  # the sealed collider is what the half reads
+    assert half["task_success_contract_digest"] == scanned_half["task_success_contract_digest"]

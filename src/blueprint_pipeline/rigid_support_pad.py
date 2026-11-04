@@ -36,6 +36,14 @@ collider, its success document and the owner's confirmation of it are
 unchanged. The object's start is then seated on the plane like any other
 support (``rigid_support_seating``).
 
+A website scene prepared by a release that has ``website_support_pad`` is
+sealed this way at the source: it runs the same model (``planarize_support``)
+where the room's collider is first produced, over a region that holds any
+replacement qualification admits at any yaw. A team half on that sealed
+collider finds every point of its own selection on the plane already, derives
+nothing, and runs on the sealed bytes (``collider_already_planar``); a scene
+sealed before keeps the half-level pad.
+
 ``support_rest_check`` predicts on the CPU where a box with the object's
 qualified collision bounds rests, from two readings of the triangles under its
 footprint: the highest contact (the seat) and the three-point support (the
@@ -77,6 +85,8 @@ MAXIMUM_REST_SLOPE = 1.0
 #: The success document's surface target and its contract target agree to this (the bind derives one from
 #: the other).
 PLANE_AGREEMENT_M = 1e-6
+#: Collider points transformed and selected at a time when a derived collider is written (6 MB a block in float64).
+POINT_BLOCK = 262_144
 NEW_REVISION_REQUIRED = "new_success_document_revision_and_owner_reconfirmation"
 #: A rigid team half compiled before its support was modelled (capture-447ae4f4's, 2026-11-03).
 UNMODELLED_HALF = "rigid_task_support_unchecked_compiled_before_support_pad"
@@ -343,13 +353,16 @@ def _deviation(triangles: np.ndarray, lower: Sequence[float], upper: Sequence[fl
 
 
 def plan_support_pad(task_spec: Mapping[str, Any], *, support_plane: Mapping[str, Any],
-                     triangles: Any) -> dict[str, Any]:
+                     triangles: Any, region_spec: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The flat support this task's success contract describes over ``triangles``, and what it changes.
 
     ``triangles`` is the scene collider's own soup around the region
     (``rigid_support_seating.collider_triangles``). The result is the modelling
     record (JSON) and, under ``planarized_triangles``, the soup as the derived
-    collider will hold it.
+    collider will hold it. ``region_spec``, when given, is the task whose
+    footprints the region holds instead of ``task_spec``'s (a website scene's,
+    sealed before its replacement is qualified: ``website_support_pad``); the
+    plane, the band and the scan's deviation stay ``task_spec``'s.
     """
 
     plane = success_plane(task_spec)
@@ -358,7 +371,7 @@ def plan_support_pad(task_spec: Mapping[str, Any], *, support_plane: Mapping[str
         registered_top = float(support_plane["top_z_m"])
     except (KeyError, TypeError, ValueError):
         registered_top = None
-    polygon = pad_region(task_spec, support_bounds=support_plane)
+    polygon = pad_region(task_spec if region_spec is None else region_spec, support_bounds=support_plane)
     band = scan_band(plane_z, registered_top)
     tris = np.asarray(triangles, dtype=float).reshape(-1, 3, 3)
     selection, reach, capped = _selection(tris, polygon, band)
@@ -555,12 +568,16 @@ def half_support_hold(team_scene_inputs_path: Any) -> str | None:
 
 
 def write_planarized_collider(source: str | Path, destination: str | Path, *, selection: Sequence[Sequence[float]],
-                              band: Sequence[float], plane_z: float) -> dict[str, Any]:
+                              band: Sequence[float], plane_z: float, block: int = POINT_BLOCK) -> dict[str, Any]:
     """A derived copy of the scene collider with every collision mesh point in ``selection`` and ``band`` on the plane.
 
     Read from the compile's binary copy (``usd_binary_read_cache.editable``),
     edited in memory only, exported to ``destination`` (``.usdc``). Only point
     heights change (in the world frame, through each mesh's own transform).
+    A mesh's points are held once, as the float32 values the file stores, and
+    transformed, selected and moved ``block`` at a time (a full room holds 3-7 M
+    triangles: #3330, #3346); each point's arithmetic is the one a whole-array
+    pass makes, so the bytes are the same.
     """
 
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics, Vt
@@ -574,6 +591,10 @@ def write_planarized_collider(source: str | Path, destination: str | Path, *, se
     if (not stage or not math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.0)
             or UsdGeom.GetStageUpAxis(stage) != "Z"):
         raise RigidSupportPadError("rigid_support_pad_collider_frame_invalid")
+    polygon = np.asarray(selection, dtype=float).reshape(-1, 2)
+    # Only points over the selection's plan box, inside the band, can move (a hair wider than the polygon's own
+    # tolerance, so the box never decides).
+    box_low, box_high = polygon.min(axis=0) - 1e-6, polygon.max(axis=0) + 1e-6
     cache = UsdGeom.XformCache()
     meshes: list[dict[str, Any]] = []
     moved_total, largest = 0, 0.0
@@ -586,20 +607,34 @@ def write_planarized_collider(source: str | Path, destination: str | Path, *, se
         attribute = mesh.GetPointsAttr()
         if attribute.GetNumTimeSamples():
             raise RigidSupportPadError("rigid_support_pad_collider_points_time_sampled")
-        local = np.asarray(attribute.Get() or [], dtype=float).reshape(-1, 3)
+        stored = attribute.Get()
+        local = np.array(stored if stored is not None else [], dtype=np.float32).reshape(-1, 3)
+        del stored
         if not len(local):
             continue
         matrix = _usd_matrix(cache, prim)
         rotation, translation = matrix[:3, :3], matrix[:3, 3]
-        world = local @ rotation.T + translation
-        planar, chosen = planarized_points(world, selection=selection, band=band, plane_z=plane_z)
-        shift = np.abs(world[chosen, 2] - plane_z)
-        changed = chosen.copy()
-        changed[chosen] = shift > 0.0
-        if not changed.any():
+        inverse = np.linalg.inv(rotation).T
+        shifts: list[np.ndarray] = []
+        for first in range(0, len(local), max(1, int(block))):
+            world = local[first:first + block].astype(float) @ rotation.T + translation
+            near = np.flatnonzero(np.all((world[:, :2] >= box_low) & (world[:, :2] <= box_high), axis=1)
+                                  & (world[:, 2] >= band[0]) & (world[:, 2] <= band[1]))
+            if not len(near):
+                continue
+            near = near[inside_polygon(polygon, world[near, :2])]
+            shift = np.abs(world[near, 2] - plane_z)
+            shifts.append(shift)
+            changed = near[shift > 0.0]
+            if not len(changed):
+                continue
+            planar = world[changed]
+            planar[:, 2] = plane_z
+            local[first + changed] = ((planar - translation) @ inverse).astype(np.float32)
+        shift = np.concatenate(shifts) if shifts else np.zeros(0)
+        if not np.count_nonzero(shift > 0.0):
             continue
-        local[changed] = (planar[changed] - translation) @ np.linalg.inv(rotation).T
-        attribute.Set(Vt.Vec3fArray.FromNumpy(local.astype(np.float32)))
+        attribute.Set(Vt.Vec3fArray.FromNumpy(local))
         extent = mesh.GetExtentAttr()
         if extent.HasAuthoredValue():
             extent.Set(Vt.Vec3fArray.FromNumpy(np.stack([local.min(axis=0), local.max(axis=0)]).astype(np.float32)))
@@ -608,6 +643,7 @@ def write_planarized_collider(source: str | Path, destination: str | Path, *, se
         largest = max(largest, float(shift.max()) if len(shift) else 0.0)
         meshes.append({"prim_path": prim.GetPath().pathString, "points": int(len(local)),
                        "points_moved": count, "maximum_shift_m": float(shift.max()) if len(shift) else 0.0})
+        del local
     output = Path(destination)
     output.parent.mkdir(parents=True, exist_ok=True)
     if not layer.Export(str(output)):
@@ -616,11 +652,79 @@ def write_planarized_collider(source: str | Path, destination: str | Path, *, se
     return {"meshes": meshes, "points_moved": moved_total, "maximum_shift_m": largest}
 
 
+def read_back(derived: str | Path, task_spec: Mapping[str, Any], *, record: Mapping[str, Any],
+              seated_on_highest_contact: bool = False) -> dict[str, Any]:
+    """The rest check on the derived collider's own bytes, read where the object rests (its region)."""
+
+    from .rigid_support_seating import collider_triangles
+
+    return support_rest_check(collider_triangles(derived, points_xy=record["region_world_xy_m"], reach_m=0.0,
+                                                 height_z=record["plane_z_m"]), task_spec,
+                              seated_on_highest_contact=seated_on_highest_contact)
+
+
+def planarize_support(collision: str | Path, derived: str | Path, *, task_spec: Mapping[str, Any],
+                      support_plane: Mapping[str, Any], region_spec: Mapping[str, Any] | None = None,
+                      digest: Any = None) -> tuple[dict[str, Any], Path | None]:
+    """Make the support flat at its success plane in a derived copy of ``collision``, and check where the object rests.
+
+    The whole model where a scene's collider is first produced (``website_support_pad``),
+    the same steps a team half takes on a sealed collider (``team_scene_packet``):
+    the scene's triangles over the region (``region_spec``'s footprints, else
+    ``task_spec``'s), the plan (``plan_support_pad``), the derived collider
+    written and read back when the plan moved a point, and the rest check,
+    with the object seated on the highest point under its footprint as
+    ``rigid_support_seating`` seats it. Returns the record (``status``
+    ``consistent`` or ``held`` with typed ``reasons``, ``hold_reason``) and the
+    derived collider, or None when the collider is flat there already (no file
+    is written). ``digest`` names a file's sha256 (``"sha256:..."``). Raises
+    ``RigidSupportPadError`` when the support cannot be modelled from these
+    inputs, or the derived bytes do not read back to the same verdict.
+    """
+
+    from .rigid_support_seating import collider_triangles
+
+    if digest is None:
+        from .local_reconstruction_adapters import _sha256_file as digest
+    region = pad_region(task_spec if region_spec is None else region_spec, support_bounds=support_plane)
+    triangles = collider_triangles(collision, points_xy=region.tolist(), reach_m=MAXIMUM_EDGE_REACH_M * math.sqrt(2.0),
+                                   height_z=float(support_plane["top_z_m"]))
+    planned = plan_support_pad(task_spec, support_plane=support_plane, triangles=triangles, region_spec=region_spec)
+    record = dict(planned["record"])
+    plane = record["plane"]
+    if plane["consistent"] is not True:
+        # No flat support can make start, goal and window agree: only a new success document can.
+        record.update(status="held", reasons=[plane["reason"]], requires=plane.get("requires"),
+                      derived_collider=None, hold_reason=plane["reason"])
+        return record, None
+    check = support_rest_check(planned["planarized_triangles"], task_spec, seated_on_highest_contact=True)
+    # What the scan as captured would have done (the reason the pad exists), beside the check that replaces it.
+    scan = support_rest_check(triangles, task_spec, seated_on_highest_contact=True)
+    output = None
+    if record["read_points_moved"] > 0:
+        output = Path(derived)
+        written = write_planarized_collider(collision, output, selection=planned["selection"],
+                                            band=record["scan_band_z_m"], plane_z=record["plane_z_m"])
+        readback = read_back(output, task_spec, record=record, seated_on_highest_contact=True)
+        if readback["status"] != check["status"] or readback["reasons"] != check["reasons"]:
+            raise RigidSupportPadError("rigid_support_pad_readback_disagrees")
+        record["derived_collider"] = {"sha256": digest(output), "size_bytes": output.stat().st_size,
+                                      "derived_from_sha256": digest(Path(collision)), "edit": "point_heights_only",
+                                      **written, "rest_check_read_back": True}
+    else:
+        record.update(derived_collider=None, collider_already_planar=True)
+    record.update(rest_check=check, scan_rest_check={key: scan.get(key) for key in ("status", "reasons", "start", "goal")},
+                  status=check["status"], reasons=list(check["reasons"]))
+    record["hold_reason"] = hold_reason(record)
+    return record, output
+
+
 __all__ = [
     "BAND_BOUNDS_M",
     "MODEL",
     "NEW_REVISION_REQUIRED",
     "PAD_MARGIN_M",
+    "POINT_BLOCK",
     "RigidSupportPadError",
     "SCHEMA",
     "box_rest",
@@ -630,7 +734,9 @@ __all__ = [
     "inside_polygon",
     "pad_region",
     "plan_support_pad",
+    "planarize_support",
     "planarized_points",
+    "read_back",
     "scan_band",
     "success_plane",
     "support_rest_check",
