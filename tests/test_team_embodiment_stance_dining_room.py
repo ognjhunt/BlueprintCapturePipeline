@@ -232,3 +232,74 @@ def test_spread_ranked_takes_the_best_first_then_a_footprint_apart() -> None:
     assert [row[1] for row in spread_ranked(rows, separation=0.3, count=3)] == [0.0, 0.4, 0.9, 0.05, 0.1, 0.45]
     assert [row[1] for row in spread_ranked(rows, separation=0.3, count=1)] == [0.0, 0.05, 0.1, 0.4, 0.45, 0.9]
     assert spread_ranked(rows, separation=0.0, count=6) == rows
+
+
+def _tray_spec() -> dict[str, Any]:
+    """capture-447's rigid task on this room: the tray's own grasp at its centre, any turn accepted at its place."""
+
+    return {"manipulation_strategy": "pick_and_place", "start_pose_world": [*PICK, 0.0, 0.0, 0.0, 1.0],
+            "target_position_world_m": PLACE,
+            "subject_collision_bounds_scoring_frame_m": {"minimum": [-v for v in TRAY_HALF], "maximum": list(TRAY_HALF)},
+            "destination_position_bounds_world_m": {"minimum": [PLACE[0] - 0.05, PLACE[1] - 0.05, PLACE[2] - 0.005],
+                                                    "maximum": [PLACE[0] + 0.05, PLACE[1] + 0.05, PLACE[2] + 0.005]},
+            "task_success_contract": {"criteria": {"orientation": {"mode": "ignored", "tolerance_rad": 0.2618}}},
+            "interaction_affordance": {"contact_point_scoring_frame_m": [0.0, 0.0, 0.0225],
+                                       "approach_unit_scoring_frame": [0.0, 0.0, 1.0],
+                                       "gripper_orientation_scoring_frame_xyzw": [0.7071068, 0.7071068, 0.0, 0.0],
+                                       "pregrasp_clearance_m": 0.1}}
+
+
+def test_a_tray_mid_table_is_in_reach_by_its_near_edge_and_its_policies_are_planned_flagged(tmp_path, monkeypatch):
+    # capture-447: no stance the pedestal can take holds the tray's centre within the Franka's reach, and the
+    # scripted carry, which holds it there, found no path. The tray's near edge is in reach: a learned policy
+    # chooses its own grasp, so the station stands, the miss is a flag, and the DROID candidates are planned.
+    from blueprint_pipeline import robot_arm_path_clearance as clearance
+    from blueprint_pipeline import team_scene_packet
+    from blueprint_pipeline.team_embodiment_stance import EVERY_CLEAR_STANCE
+    from blueprint_pipeline.website_candidate_feasibility import candidate_feasibility, infeasible_blockers
+
+    tried: list[dict[str, Any]] = []
+
+    def scripted_misses(stances, *, grasps, **task):
+        tried.extend(stances)
+        attempts = [(stance, {"status": "blocked", "blockers": ["robot_rigid_pick_place_unreachable:approach"],
+                              "furthest_sample": 5, "path_samples": 42, "grasp": "tilt45_yaw0"})
+                    for stance in stances]
+        return None, attempts[0][1], attempts
+    monkeypatch.setattr(clearance, "first_carrying_stance", scripted_misses)
+    room = _room(tmp_path, chairs=True)
+    stances = _search(room, ranked=EVERY_CLEAR_STANCE, task_points_world_m=[PICK, PLACE], **PEDESTAL_SEARCH)
+    spec = _tray_spec()
+    profile = {"robot_joint_reset_positions_rad": {f"panda_joint{i}": 0.0 for i in range(1, 8)}}
+    station, record = team_scene_packet._carrying_station(stances, task_spec=spec, collision=room, profile=profile)
+    reaches = [clearance.rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=stance,
+                                               **clearance.object_reach_inputs(spec)) for stance in stances]
+    # Every clear stance was measured; from the chosen one the tray's centre is beyond the bound at its pick.
+    assert record["stances_measured"] == len(stances) > 8 and record["stances_in_reach"] > 0
+    chosen = reaches[record["chosen_rank"]]
+    assert chosen["task_contact_beyond"] == ["pick"] and chosen["status"] == "within_bound"
+    pick = next(row for row in chosen["phases"] if row["phase"] == "pick")
+    assert pick["distance_m"] > chosen["reach_bound_m"] > pick["object_nearest_distance_m"]
+    # The scripted carry was tried only from stances in reach; it missed, so the stance whose tray is nearest
+    # stands, flagged, and nothing is refused.
+    assert len(tried) == 8 and all(reaches[stances.index(row)]["status"] == "within_bound" for row in tried)
+    assert record["cleared"] is False and record["chosen_basis"] == "nearest_graspable_point_in_reach"
+    assert record["flags"] == [clearance.SCRIPTED_CARRY_FLAG]
+    farthest = [max(row["object_nearest_distance_m"] for row in reach["phases"]) for reach in reaches]
+    assert farthest[record["chosen_rank"]] == min(farthest[i] for i, reach in enumerate(reaches)
+                                                  if reach["status"] == "within_bound")
+    # The plan reads the half: the DROID candidates are feasible, planned, and carry the flag.
+    plan = {"plan_digest": "sha256:" + "d" * 64, "task_kind": "rigid_pick_place",
+            "robot": {"robot_id": "franka_panda", "base_pose_world": {
+                key: station[key] for key in ("position_world_m", "orientation_xyzw")}},
+            "objects": [{"semantic_role": "task_object", "object_type": "RIGID", "task_subject": True}],
+            "task_spec": spec}
+    monkeypatch.setattr(team_scene_packet, "recorded_station_search", lambda *_, **__: {
+        "robot_station": station, "robot_station_search": record})
+    catalog = {"candidates": [{"candidate_id": key, "interface": {"robot_profile_id": "droid_franka_panda_robotiq_2f85_v1"}}
+                              for key in ("pi05_droid", "groot_n17_droid")]}
+    feasibility = candidate_feasibility(scene_plan=plan, catalog=catalog, profile={})
+    assert infeasible_blockers(feasibility) == {}
+    row = feasibility["candidates"]["pi05_droid"]
+    assert (row["status"], row["blockers"], row["flags"]) == ("feasible", [], [clearance.SCRIPTED_CARRY_FLAG])
+    assert row["station_search"]["blockers"] == ["robot_rigid_pick_place_unreachable:approach"]

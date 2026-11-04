@@ -136,22 +136,34 @@ def _runtime_source(path: Path) -> dict[str, Any]:
     return _record(path)
 
 
+#: How the Franka's station is chosen among the clear stances (``_carrying_station``).
+STATION_RULE = "first_in_reach_stance_the_scripted_carry_clears_else_nearest_graspable_point"
+
+
 def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, Any], collision: Path,
                       profile: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The first ranked stance the Franka can carry the object from (``robot_arm_path_clearance``).
+    """The Franka's station among the clear ``stances`` (ranked, best first), and the record of the choice.
 
-    The task's own grasp is tried from every stance, then the intake's tilted and side-on grasps
-    (``robot_arm_path_clearance.carry_grasps``), so a carry one of them clears is not missed; the bundle's
-    gate tries the same grasps. With none, the closest stance stands, the record keeps the attempt that
-    got furthest and the measured shortfall of the task's grasp against the arm's reach bound from that
-    stance (``rigid_reach_shortfall``), and the bundle's gate refuses the packet by name before any GPU run.
+    The hard rule first: from each clear stance, whether any point of the object lies within the arm's
+    reach bound at its start and wherever the task accepts it (``rigid_reach_shortfall``,
+    ``object_reach_inputs``). A learned policy chooses its own grasp, so that is all a station needs.
+    The scripted carry (``robot_arm_path_clearance.first_carrying_stance``: the task's own grasp, then
+    the intake's tilted and side-on ones, ``carry_grasps``) is tried from the first ``CARRY_STATIONS``
+    stances in reach, in rank order, as evidence: the first it clears from is the station. Without one,
+    the stance in reach whose object is nearest (the farther of its pick and place) stands, and the
+    record flags ``SCRIPTED_CARRY_FLAG`` with the attempt that got furthest; nothing is refused for it.
+    Only with no clear stance in reach does the closest stance stand ``out_of_reach``
+    (``reach_shortfall``), and the bundle's gate refuses the packet by name before any GPU run.
     """
     from .robot_arm_path_clearance import (
+        CARRY_STATIONS,
         NOMINAL_SEED_RAD,
         REST_SEED_RAD,
+        SCRIPTED_CARRY_FLAG,
         RobotArmPathClearanceError,
         carry_grasps,
         first_carrying_stance,
+        object_reach_inputs,
         rigid_reach_shortfall,
     )
 
@@ -165,32 +177,56 @@ def _carrying_station(stances: list[dict[str, Any]], *, task_spec: Mapping[str, 
                 "gripper_orientation_xyzw": affordance["gripper_orientation_scoring_frame_xyzw"],
                 "pregrasp_clearance_m": float(affordance["pregrasp_clearance_m"])}
         bounds = task_spec.get("subject_collision_bounds_scoring_frame_m")
-        cleared, furthest, attempts = first_carrying_stance(stances, collision_path=collision, robot_id="franka_panda",
+        reach_inputs = object_reach_inputs(task_spec)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TeamScenePacketError("team_scene_carry_inputs_invalid") from exc
+    reaches: list[dict[str, Any] | None] = []
+    for stance in stances:
+        try:
+            reaches.append(rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=stance, **reach_inputs))
+        except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
+            reaches.append(None)
+    in_reach = [i for i, reach in enumerate(reaches) if reach is not None and reach["status"] == "within_bound"]
+    tried = [stances[i] for i in in_reach[:CARRY_STATIONS]] if in_reach else list(stances[:CARRY_STATIONS])
+    try:
+        cleared, furthest, attempts = first_carrying_stance(tried, collision_path=collision, robot_id="franka_panda",
             seeds=[[float(reset[f"panda_joint{i}"]) for i in range(1, 8)], list(NOMINAL_SEED_RAD),
                    list(REST_SEED_RAD["franka_panda"])], grasps=carry_grasps(task, bounds), **task)
     except (KeyError, TypeError, ValueError) as exc:
         raise TeamScenePacketError("team_scene_carry_inputs_invalid") from exc
-    station = cleared or stances[0]
+
+    def nearest(index: int) -> float:
+        rows = (reaches[index] or {}).get("phases") or []
+        return max((float(row.get("object_nearest_distance_m", row["distance_m"])) for row in rows), default=math.inf)
+
+    if cleared is not None:
+        station, basis = cleared, "scripted_carry_cleared"
+    elif in_reach:
+        station, basis = stances[min(in_reach, key=lambda i: (nearest(i), i))], "nearest_graspable_point_in_reach"
+    else:
+        station, basis = stances[0], "no_clear_stance_in_reach"
+    rank = next(i for i, row in enumerate(stances) if row is station)
     record: dict[str, Any] = {
-        "rule": "first_ranked_stance_that_carries", "cleared": cleared is not None,
-        "chosen_rank": next(i for i, row in enumerate(stances) if row is station),
+        "rule": STATION_RULE, "cleared": cleared is not None, "chosen_basis": basis, "chosen_rank": rank,
+        "stances_measured": len(stances), "stances_in_reach": len(in_reach),
+        "flags": [SCRIPTED_CARRY_FLAG] if cleared is None and in_reach else [],
         "grasps_tried": len({report.get("grasp") for _, report in attempts}),
         "results": [{"stance_digest": row["stance_digest"], "status": report["status"],
                      "blockers": report["blockers"], **({"grasp": report["grasp"]} if "grasp" in report else {})}
                     for row, report in attempts]}
+    if reaches[rank] is not None:
+        reach = reaches[rank]
+        record["object_reach"] = {key: reach[key] for key in ("rule", "status", "reach_bound_m", "beyond")} | {
+            "phases": [{key: row[key] for key in ("phase", "distance_m", "object_nearest_distance_m") if key in row}
+                       for row in reach["phases"]]}
     if cleared is None:
         best = next(row for row, report in attempts if report is furthest)
         record["best_attempt"] = {"stance_digest": best["stance_digest"], "grasp": furthest.get("grasp"),
                                   "blockers": list(furthest["blockers"]),
                                   "furthest_sample": furthest.get("furthest_sample"),
                                   "path_samples": furthest.get("path_samples")}
-        try:
-            record["reach_shortfall"] = rigid_reach_shortfall(
-                robot_id="franka_panda", base_pose_world=station, start_pose_world=task["start_pose_world"],
-                target_position_world=task["target_position_world"], contact_point_m=task["contact_point_m"],
-                subject_bounds_m=bounds)
-        except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
-            record["reach_shortfall"] = {"status": "unassessed", "reason": "reach_shortfall_inputs_invalid"}
+        record["reach_shortfall"] = reaches[rank] if reaches[rank] is not None else {
+            "status": "unassessed", "reason": "reach_shortfall_inputs_invalid"}
     return station, record
 
 
@@ -657,7 +693,8 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
                            task_spec: Mapping[str, Any], support_top: float, revision: Mapping[str, Any],
                            collision_sha256: str, task_id: str, support_label: str,
                            scope: Mapping[str, Any] | None) -> dict[str, Any]:
-    """What the half records when no ranked stance carries: the owner's proposal, a measurement due, or why neither.
+    """What the half records when no clear stance has the object in reach: the owner's proposal, a measurement
+    due, or why neither.
 
     With the scene's movable furniture measured (the sidecar, ``robot_access_measurement``), the Franka's
     search named it as movable obstacles and this reads its counterfactual: the proposal to move the
@@ -689,11 +726,15 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
                 "binding_digest": offer["binding_digest"], "maximum_cost_usd": binding["maximum_cost_usd"],
                 "spend": "website_preparation_spend_within_the_jobs_approved_caps"}
     try:
-        affordance = task_spec["interaction_affordance"]
-        task = {"start_pose_world": task_spec["start_pose_world"],
-                "target_position_world_m": task_spec["target_position_world_m"],
-                "contact_point_m": affordance["contact_point_scoring_frame_m"],
-                "subject_bounds_m": task_spec.get("subject_collision_bounds_scoring_frame_m")}
+        from .robot_arm_path_clearance import object_reach_inputs
+
+        reach_inputs = object_reach_inputs(task_spec)
+        task = {"start_pose_world": reach_inputs["start_pose_world"],
+                "target_position_world_m": reach_inputs["target_position_world"],
+                "contact_point_m": reach_inputs["contact_point_m"],
+                "subject_bounds_m": reach_inputs["subject_bounds_m"],
+                "destination_bounds_world_m": reach_inputs["destination_bounds_world_m"],
+                "place_yaw_free_rad": reach_inputs["place_yaw_free_rad"]}
         proposal = station_proposal(stances=stances, carry=carry, named=named, refused=refused,
                                     subject_center=subject_center, task=task, root_z=float(support_top),
                                     revision_digest=str(revision["revision_digest"]),
@@ -732,9 +773,9 @@ def _robot_access_applied(access: Mapping[str, Any], *, scope: Mapping[str, Any]
         find_confirmation,
         write_collider_without,
     )
-    from .robot_arm_path_clearance import CARRY_STATIONS, RobotArmPathClearanceError, rigid_reach_shortfall
+    from .robot_arm_path_clearance import RobotArmPathClearanceError, object_reach_inputs, rigid_reach_shortfall
     from .team_embodiment import TeamEmbodimentError
-    from .team_embodiment_stance import ground_stance
+    from .team_embodiment_stance import EVERY_CLEAR_STANCE, ground_stance
 
     try:
         confirmation = find_confirmation(scope["directory"], scope["intent"],
@@ -789,26 +830,25 @@ def _robot_access_applied(access: Mapping[str, Any], *, scope: Mapping[str, Any]
         return {"record": record, "collider": derived, "station": None, "place": place, "search": None}
     moved_place = {**place, "collision_path": derived, "collision_sha256": record["derived_collider"]["sha256"]}
     try:
-        stances = ground_stance(**moved_place, ranked=CARRY_STATIONS)
+        stances = ground_stance(**moved_place, ranked=EVERY_CLEAR_STANCE)
     except TeamEmbodimentError as exc:
         record.update(status="held", hold_reason="robot_access_removal_no_clear_stance",
                       blockers=list(exc.blockers))
         return {"record": record, "collider": derived, "station": None, "place": place, "search": None}
     moved_station, search = _carrying_station(stances, task_spec=task_spec, collision=derived, profile=profile)
     try:
-        affordance = task_spec["interaction_affordance"]
         reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=moved_station,
-                                      start_pose_world=task_spec["start_pose_world"],
-                                      target_position_world=task_spec["target_position_world_m"],
-                                      contact_point_m=affordance["contact_point_scoring_frame_m"],
-                                      subject_bounds_m=task_spec.get("subject_collision_bounds_scoring_frame_m"))
+                                      **object_reach_inputs(task_spec))
         record["cpu_checks"]["reach"] = {key: reach[key] for key in ("status", "reach_bound_m", "beyond")}
     except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
         record["cpu_checks"]["reach"] = {"status": "unassessed", "reason": "reach_inputs_invalid"}
     record["cpu_checks"]["carry_cleared"] = bool(search["cleared"])
+    record["cpu_checks"]["stances_in_reach"] = int(search.get("stances_in_reach") or 0)
+    # Only the hard reach rule holds: a scripted carry miss with the object in reach is a flag (``_carrying_station``).
     record.update(status="applied", station_after={"stance_digest": moved_station["stance_digest"],
                                                    "position_world_m": list(moved_station["position_world_m"])},
-                  **({} if search["cleared"] else {"hold_reason": "robot_access_removal_carry_still_blocked"}))
+                  **({} if search["cleared"] or search.get("stances_in_reach")
+                     else {"hold_reason": "robot_access_removal_carry_still_blocked"}))
     return {"record": record, "collider": derived, "station": moved_station, "place": moved_place, "search": search}
 
 
@@ -970,15 +1010,15 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             "reset_state": {"root_pose_world": destination_asset["pose_world"], "joint_positions": {}}})
 
     # The station: a mount level with the task's support, on the closest clear floor facing the task,
-    # out of a moving part's way. A rigid pick and place takes the first such stance the arm can carry
-    # the object from, measured as the bundle's gate will measure it. The pedestal keeps the arm's own
+    # out of a moving part's way. A rigid pick and place is measured from every clear stance: it takes the
+    # first in the object's reach that the scripted carry clears from, else the one in reach whose object is
+    # nearest, the miss flagged (``_carrying_station``), as the bundle's gate will measure it. The pedestal keeps the arm's own
     # margin from the room and the object (``PEDESTAL_SEARCH``), and a rigid task's stances rank by the
     # farther of its start and target, a footprint apart, so the carry is tried from several spots.
     whole_region = not articulated and destination_support is not None
     carry = not articulated and task_spec.get("manipulation_strategy") == "pick_and_place"
-    from .robot_arm_path_clearance import CARRY_STATIONS
     from .scene_physics_preflight import collision_kept_loaded
-    from .team_embodiment_stance import PEDESTAL_SEARCH
+    from .team_embodiment_stance import EVERY_CLEAR_STANCE, PEDESTAL_SEARCH
 
     # Every search below reads the collider's one binary copy, and the packet steps after them. The hold
     # keeps one parse should no copy be made.
@@ -1001,7 +1041,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                 footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
                 task_motion=motion, **PEDESTAL_SEARCH,
                 **({} if articulated else {"task_points_world_m": [start, target]}))
-            station = ground_stance(**place, ranked=CARRY_STATIONS if carry else 0,
+            station = ground_stance(**place, ranked=EVERY_CLEAR_STANCE if carry else 0,
                                     **({"movable_obstacles": search_obstacles(named)} if named else {}))
         except TeamEmbodimentError as exc:
             # A ValueError itself: caught first, so a named stance refusal keeps its own reason.
@@ -1011,7 +1051,10 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         ranked_stances = station if carry else None
         station, station_search = (_carrying_station(station, task_spec=task_spec, collision=collision,
                                                      profile=profile) if carry else (station, None))
-        if carry and station_search is not None and not station_search["cleared"] and movable_furniture is not None:
+        # Moving furniture is proposed only when no clear stance has the object in reach (the hard rule);
+        # a scripted carry miss with the object in reach is a flag, and the half goes on.
+        if (carry and station_search is not None and not station_search["cleared"]
+                and not station_search.get("stances_in_reach") and movable_furniture is not None):
             access = _robot_access_proposal(
                 movable_furniture, stances=ranked_stances, carry=station_search, named=named, refused=refused,
                 subject_center=place["subject_center"], task_spec=task_spec, support_top=support_top,

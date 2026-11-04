@@ -194,6 +194,11 @@ def _verdict_reach(verdict: Mapping[str, Any], arm: str) -> dict[str, Any]:
     values.update(carry_status=entry.get("status"), grasp=entry.get("grasp"), blockers=list(entry.get("blockers") or []))
     if entry.get("status") == "clear":
         return _check("reach", "pass", "the capability verdict's carry clears the reconstructed scene", values)
+    if entry.get("object_reach") == "within_bound":
+        # The hard reach rule passed; the scripted carry's miss is a flag a learned policy is not bound by.
+        values.update(object_reach="within_bound", flags=list(entry.get("flags") or []))
+        return _check("reach", "pass", "the object is within the arm's reach from a clear station; the scripted "
+                      "carry found no path (flagged): " + ", ".join(values["blockers"]), values)
     if entry.get("status") == "blocked" and values["blockers"]:
         return _check("reach", "fail", "the capability verdict's carry was refused from every station tried: "
                       + ", ".join(values["blockers"]), values)

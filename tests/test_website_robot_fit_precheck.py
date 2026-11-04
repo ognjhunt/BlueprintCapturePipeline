@@ -442,3 +442,29 @@ def test_a_scripted_baseline_never_fits_a_website_job(tmp_path):
     row = next(row for row in value["candidates"] if row["candidate_id"] == scripted["candidate_id"])
     assert row["verdict"] == "unavailable" and row["blockers"] == ["candidate_disabled"]
     assert row["embodiment"] == FRANKA and "pi05_droid" not in value["fit_candidates"]
+
+
+def test_a_scripted_carry_miss_with_the_object_in_reach_fits_the_franka_with_the_flag(tmp_path):
+    # The capability verdict found the tray within the Franka's reach from a clear station, and its scripted
+    # carry found no path: a flag, never a refusal. The precheck agrees with the plan: the Franka fits.
+    preparation, collision = tray_scene(tmp_path)
+    verdict = {"schema_version": "website_rigid_task_capability_verdict.v1", "preparation_digest": preparation["digest"],
+               "collision_sha256": "sha256:" + hashlib.sha256(collision.read_bytes()).hexdigest(),
+               "status": "flagged", "blockers": [], "flags": ["scripted_carry_path_not_found"],
+               "embodiments": [{"robot_id": "franka_panda", "status": "blocked", "grasp": "tilt45_yaw0",
+                                "blockers": ["robot_rigid_pick_place_unreachable:approach"],
+                                "object_reach": "within_bound", "stances_in_reach": 12,
+                                "flags": ["scripted_carry_path_not_found"]}]}
+    verdict["verdict_digest"] = canonical_digest(verdict, digest_field="verdict_digest")
+    value = robot_fit_precheck(preparation=preparation, collision_path=collision, verdict=verdict,
+                               catalog=fixed_arm_catalog())
+    franka = by_embodiment(value, FRANKA)
+    assert franka["verdict"] == "fit" and franka["flags"] == ["scripted_carry_path_not_found"]
+    assert franka["carry"]["object_reach"] == "within_bound" and value["status"] == "fit"
+    # The same miss with the object's reach unknown stays unknown, and never holds.
+    del verdict["embodiments"][0]["object_reach"]
+    verdict["verdict_digest"] = canonical_digest({k: v for k, v in verdict.items() if k != "verdict_digest"},
+                                                 digest_field="verdict_digest")
+    unknown = robot_fit_precheck(preparation=preparation, collision_path=collision, verdict=verdict,
+                                 catalog=fixed_arm_catalog())
+    assert by_embodiment(unknown, FRANKA)["verdict"] == "unknown" and unknown["hold_reason"] is None

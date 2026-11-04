@@ -31,7 +31,10 @@ rebuilt), a carry not cleared from the stations tried, a G1 whose span misses (i
 it can walk, lean or crouch), a body whose own arm model may still reach, or a missing input is
 ``unknown``: flagged, and the job goes on. A candidate is ``fit`` when its embodiment's early check
 passed: the Franka's carry cleared, the G1 stands within its nominal span, a fixed body's declared reach
-covers the task from a station found. That is an estimate from the reconstructed room, not a promise.
+covers the task from a station found. The Franka also fits when the capability verdict found the object
+within its reach from a clear station and its scripted carry found no path: that miss is a flag
+(``scripted_carry_path_not_found``), since a learned policy chooses its own grasp. That is an estimate from the
+reconstructed room, not a promise.
 
 When no candidate fits and none is unknown, the job holds before spend with
 ``website_robot_fit_none:<cause>`` (``HOLD_PREFIX``): a hold, never a failure. The handoff's stage is
@@ -168,9 +171,15 @@ def _franka(geometry: Mapping[str, Any], verdict: Mapping[str, Any] | None) -> d
     carry = next((row for row in (verdict or {}).get("embodiments") or [] if row.get("robot_id") == "franka_panda"),
                  None)
     fields["carry"] = None if carry is None else {"status": carry.get("status"), "grasp": carry.get("grasp"),
-                                                  "blockers": list(carry.get("blockers") or [])}
+                                                  "blockers": list(carry.get("blockers") or []),
+                                                  **{key: carry[key] for key in ("object_reach", "flags")
+                                                     if key in carry}}
     if carry is not None and carry.get("status") == "clear":
         return _row("fit", [], **fields)
+    if carry is not None and carry.get("object_reach") == "within_bound":
+        # The object is in the arm's reach from a clear station (the hard reach rule); the scripted carry's
+        # miss is a flag, never a refusal: a learned policy chooses its own grasp.
+        return _row("fit", [], **fields, flags=list(carry.get("flags") or []))
     if verdict is None:
         return _row("unknown", ["carry_not_checked_before_spend"], **fields)
     if any(str(code).startswith("robot_station_") for code in verdict.get("blockers") or []):
