@@ -1,44 +1,47 @@
-"""The site owner's approved measurement of a website scene's movable furniture, kept as a sidecar.
+"""Blueprint's own measurement of a website scene's movable furniture, when it can matter, kept as a sidecar.
 
 Beta journey step: L5 team policy evaluation. A team half whose Franka finds no
 stance it carries from may be blocked by chairs (capture-447ae4f4). Moving one
 in the simulation needs the chairs' 3-D bounds, and a scene's preparation holds
 only the targets its task needed: capture-447's task masks hold the tray and the
 table, and its Atlas scene review names the chairs as one grouped entry with 2-D
-boxes in two frames. Measuring them is a paid step, so it is the owner's
-decision, asked on the job page, and only when it can matter.
+boxes in two frames. Measuring them is Blueprint's own preparation spend, like
+any other preparation analysis call: never a step for the site.
 
-- **When it is asked** (``measurement_offer``, read by ``team_scene_packet``).
-  Only when the carry search found no stance it carries from, the station
-  search refused nearer stances on geometry that is not at the mount's height
-  (a seat below it, a chair's back above it: ``nearer_refusals.blocker_tops``),
-  and the scene's own review names movable furniture (a chair or a stool,
+- **When it runs** (``measurement_offer``, read by ``team_scene_packet``). Only
+  when the carry search found no stance it carries from, the station search
+  refused nearer stances on geometry that is not at the mount's height (a seat
+  below it, a chair's back above it: ``nearer_refusals.blocker_tops``), and the
+  scene's own review names movable furniture (a chair or a stool,
   ``robot_access_furniture.FURNITURE_KINDS``). The half then records the
-  question with its quote: the analysis call's most
+  measurement as due (``measurement_due``) with its most: the analysis call's
   (``clean_plate_removal_analysis_gemini.movable_obstacle_request``) plus the
-  segmentation's most for at most ``MAXIMUM_SEGMENTATION_PROMPTS`` concepts over
-  every source frame (``meta_sam31``). Nothing is spent by asking.
+  segmentation's for at most ``MAXIMUM_SEGMENTATION_PROMPTS`` concepts over every
+  source frame (``meta_sam31``), and the worker runs it once per such binding.
 - **What is bound.** The intent's own registered preparation, which for a
   renewed job is the renewal's (``current_preparation``: the intent's source
   registration names it, its request is the intent's, and its renewal block
   names its parent), its task context, the revision, the review's bytes, the
-  source video and geometry, and the quote. The sealed preparation is only read.
-- **Spending** (``run_measurement``, once the owner's sealed approval of exactly
-  that binding exists). The analysis is asked once more, only for the movable
-  furniture around the support, through the retained paid call
-  (``analyze_movable_obstacles``); SAM masks are made for just those pieces
+  source video and geometry, and the most it may cost. The sealed preparation is
+  only read.
+- **Spending** (``run_measurement``). The binding is recomputed and must be the
+  one the half recorded, or nothing is spent. The analysis is asked once more,
+  only for the movable furniture around the support, through the retained paid
+  call (``analyze_movable_obstacles``); SAM masks are made for just those pieces
   (``meta_sam31.run_meta_sam31``). Both reserve through the job's
-  preparation-spend path under its caps, and neither may exceed the approved
-  figure. Each piece takes the track its own boxes pick; an ambiguous one is
-  left unmeasured, never guessed. Its 3-D bounds are lifted on the CPU from the
-  scene's own estimated depth and cameras, as the task masks are
-  (``website_task_masks.estimate_target_bounds``), into the simulator frame with
-  the preparation's own registration.
+  preparation-spend path within its already-approved caps, each within its share
+  of the recorded most, and keep their admissions in their receipts. A refused
+  reservation (caps, window) is the request's typed hold
+  (``team_scene_packet_worker``); the site is never asked. Each piece takes the
+  track its own boxes pick; an ambiguous one is left unmeasured, never guessed.
+  Its 3-D bounds are lifted on the CPU from the scene's own estimated depth and
+  cameras, as the task masks are (``website_task_masks.estimate_target_bounds``),
+  into the simulator frame with the preparation's own registration.
 - **The sidecar** (``SIDECAR_FILENAME``, under the capture's
   ``pipeline/robot_access/<preparation digest>/``) is sealed and bound to that
-  preparation digest, the intent and the approval. The team half reads it only
-  through the same registration (``furniture_for_scope``); a renewed preparation
-  is a new digest, and a new question.
+  preparation digest, the intent and the measurement's binding, and records
+  what each call reserved. The team half reads it only through the same
+  registration (``furniture_for_scope``); a renewed preparation is a new digest.
 
 Nothing here changes the intent, the preparation, the success contract or the
 probe. Every figure is an estimate; nothing is a physical measurement.
@@ -181,7 +184,7 @@ def _cents(value: float) -> float:
 
 def measurement_binding(*, current: Mapping[str, Any], sources: Mapping[str, Any], review: Mapping[str, Any],
                         revision_digest: str) -> dict[str, Any]:
-    """What the owner approves spending on: these exact inputs, these calls, and at most this many USD."""
+    """What one measurement is: these exact inputs, these calls, and at most this many USD of preparation spend."""
 
     from .clean_plate_removal_analysis_gemini import movable_obstacle_request
     from .meta_sam31 import PRICE_PER_FRAME_USD
@@ -206,7 +209,7 @@ def measurement_binding(*, current: Mapping[str, Any], sources: Mapping[str, Any
 
 def measurement_offer(scope: Mapping[str, Any] | None, *, revision_digest: str,
                       sources: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None) -> dict[str, Any]:
-    """Whether the owner can be asked to approve measuring the furniture, and the exact binding to ask about.
+    """Whether the furniture can be measured, and the exact binding the measurement would be.
 
     ``{"status": "available", "binding", "binding_digest", "review"}``, or ``{"status": <why not>}``. Reads
     only: the registration, the preparation, the review and the video's metadata. ``sources`` replaces
@@ -294,7 +297,7 @@ def _segment(*, video_path: str, source_video_digest: str, prompts: list[dict[st
     registry, video = prepare_continuous_video(source=Path(video_path), source_digest=source_video_digest,
                                                root=output_root / "video")
     unit = max(50, len(registry)) * PRICE_PER_FRAME_USD
-    _require(unit * len(prompts) <= maximum_cost_usd + 1e-9, "segmentation_exceeds_approval")
+    _require(unit * len(prompts) <= maximum_cost_usd + 1e-9, "segmentation_exceeds_binding")
     result = run_meta_sam31(frame_registry=registry, frame_artifacts=[], prompts=prompts,
                             output_root=output_root / "sam", admission={}, task_context=task_context,
                             video_artifact=video)
@@ -345,7 +348,7 @@ def lift(targets: Sequence[Mapping[str, Any]], *, registry: Sequence[Mapping[str
     for target in targets:
         prompt = label.get(str(target.get("segmentation_prompt") or target.get("semantic_label") or "").casefold())
         if prompt is None:
-            left.append({"target_id": target["target_id"], "reason": "segmentation_concept_over_the_approved_count"})
+            left.append({"target_id": target["target_id"], "reason": "segmentation_concept_over_the_bound_count"})
             continue
         candidates = [{**track, "label": target["target_id"]} for track in tracks if track.get("label") == prompt]
         try:
@@ -364,18 +367,17 @@ def lift(targets: Sequence[Mapping[str, Any]], *, registry: Sequence[Mapping[str
     return measured, left
 
 
-def run_measurement(scope: Mapping[str, Any], approval: Mapping[str, Any], *, revision_digest: str,
+def run_measurement(scope: Mapping[str, Any], *, binding_digest: str, revision_digest: str,
                     sources: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None,
                     analyze: Callable[..., Mapping[str, Any]] | None = None,
                     segment: Callable[..., Mapping[str, Any]] | None = None,
                     geometry: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None) -> dict[str, Any]:
-    """Measure the movable furniture the owner approved measuring, once; return the sealed sidecar.
+    """Measure the movable furniture a team half recorded as due, once; return the sealed sidecar.
 
-    ``approval`` is the owner's sealed measurement approval (``robot_access_furniture``, question
-    ``measure``). The binding is recomputed from the current preparation, review and video and must be
-    the approved one, or nothing is spent. An existing sidecar for this preparation is returned as is.
-    ``sources``, ``analyze``, ``segment`` and ``geometry`` replace the host readers and the two paid calls
-    (tests).
+    ``binding_digest`` is the half's ``measurement_due`` binding. It is recomputed from the current
+    preparation, review and video and must be the same, or nothing is spent. An existing sidecar for
+    this preparation is returned as is. ``sources``, ``analyze``, ``segment`` and ``geometry`` replace the
+    host readers and the two paid calls (tests).
     """
 
     from .clean_plate_removal_analysis_gemini import analyze_movable_obstacles, movable_obstacle_request
@@ -390,9 +392,7 @@ def run_measurement(scope: Mapping[str, Any], approval: Mapping[str, Any], *, re
     _require(review["status"] == "named", "review_changed")
     found = (sources or measurement_sources)(current["capture_root"], current)
     binding = measurement_binding(current=current, sources=found, review=review, revision_digest=revision_digest)
-    _require(approval.get("question") == "measure" and approval.get("spend_authorized") is True
-             and approval.get("binding_digest") == canonical_digest(binding) == canonical_digest(approval["binding"]),
-             "approval_not_this_measurement")
+    _require(binding_digest == canonical_digest(binding), "binding_changed")
     work = path.parent
     work.mkdir(parents=True, exist_ok=True, mode=0o750)
     request, analysis_usd = movable_obstacle_request(
@@ -401,7 +401,7 @@ def run_measurement(scope: Mapping[str, Any], approval: Mapping[str, Any], *, re
         review_items=[{key: row[key] for key in ("obstacle_id", "label", "segmentation_prompt")}
                       for row in review["items"]])
     _require(canonical_digest(request) == binding["analysis"]["request_digest"]
-             and analysis_usd <= binding["analysis"]["maximum_cost_usd"], "analysis_exceeds_approval")
+             and analysis_usd <= binding["analysis"]["maximum_cost_usd"], "analysis_exceeds_binding")
     analysis = (analyze or analyze_movable_obstacles)(
         video_path=found["video_path"], task_context=current["task_context"], output_root=work / "analysis",
         binding=request, maximum_cost_usd=analysis_usd)
@@ -426,9 +426,8 @@ def run_measurement(scope: Mapping[str, Any], approval: Mapping[str, Any], *, re
                               prompts=prompts, geometry=(geometry or _geometry)(current["capture_root"], current))
     record = movable_furniture_record(measured, _to_world(current["preparation"]))
     value = {"schema_version": SIDECAR_SCHEMA, "lineage": dict(current["lineage"]),
-             "approval": {"confirmation_digest": approval["confirmation_digest"],
-                          "binding_digest": approval["binding_digest"],
-                          "maximum_cost_usd": approval["maximum_cost_usd"]},
+             "measurement": {"binding_digest": binding_digest, "maximum_cost_usd": binding["maximum_cost_usd"],
+                             "spend": "website_preparation_spend_within_the_jobs_approved_caps"},
              "analysis": {"request_digest": canonical_digest(request), "reserved_cost_usd": analysis_usd,
                           "targets": len(analysis.get("targets") or []), "blockers": list(analysis.get("blockers") or [])},
              "segmentation": {"prompts": [prompt["text"] for prompt in prompts],
@@ -446,6 +445,26 @@ def run_measurement(scope: Mapping[str, Any], approval: Mapping[str, Any], *, re
     return written
 
 
+def measurement_due(path: Any) -> dict[str, Any] | None:
+    """The furniture measurement the compiled half at ``path`` records as due, with its sealed binding; else None."""
+
+    from .robot_access_furniture import MEASUREMENT_DUE
+    from .team_scene_packet import read_team_scene_inputs
+
+    try:
+        if not path:
+            return None
+        read_team_scene_inputs(str(path))
+        value = json.loads(Path(str(path)).read_text(encoding="utf-8"))
+        access = value.get("robot_access_removal") if isinstance(value, Mapping) else None
+        if (not isinstance(access, Mapping) or access.get("status") != MEASUREMENT_DUE
+                or canonical_digest(access["binding"]) != access["binding_digest"]):
+            return None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return json.loads(json.dumps(dict(access)))
+
+
 def furniture_for_scope(scope: Mapping[str, Any] | None, *, revision_digest: str) -> dict[str, Any]:
     """What a team half knows of its scene's movable furniture: the sidecar's measurement, or that none was made.
 
@@ -454,7 +473,7 @@ def furniture_for_scope(scope: Mapping[str, Any] | None, *, revision_digest: str
     measure is read only when a carry fails (``measurement_offer``). ``revision_digest`` is the half's.
     """
 
-    del revision_digest  # the sidecar is the preparation's; the revision binds the owner's question
+    del revision_digest  # the sidecar is the preparation's; the revision is in the measurement's binding
     if scope is None:
         return {"status": "not_measured", "reason": "intent_unbound"}
     try:
@@ -477,6 +496,7 @@ __all__ = [
     "furniture_for_scope",
     "lift",
     "measurement_binding",
+    "measurement_due",
     "measurement_offer",
     "measurement_sources",
     "plausibly_blocked",

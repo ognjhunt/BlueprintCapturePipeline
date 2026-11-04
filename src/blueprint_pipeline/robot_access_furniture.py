@@ -8,19 +8,21 @@ be clear were named obstacles moved (``team_embodiment_stance``
 the robot runs in still holds the obstacle. This module is the option that
 can: off by default, and only for the job's own site owner.
 
-1. **Measure, with the owner's approval** (``robot_access_measurement``). A
-   scene's preparation holds only the targets its task needed, so the
-   furniture's 3-D bounds are usually unknown. When the carry fails and the
-   nearer stances were refused off the support's height, and the scene's review
-   names movable furniture, the half asks the owner first whether Blueprint may
-   measure it, with the most that costs. Only an approval lets the analysis and
-   SAM masks run for just those items, within that figure and the job's caps;
-   the bounds are lifted on the CPU and kept as a sidecar of the intent's
-   current preparation (never written into the sealed preparation). Only items
-   the analysis itself calls movable furniture are kept: a ``movable_object``
-   kept as an obstacle or background whose label names a chair or a stool
-   (``movable_furniture_record``). Walls, fixed counters, fixed clutter, the
-   support, the destination, the task object and people never are.
+1. **Measure, automatically, only when it can matter** (``robot_access_measurement``).
+   A scene's preparation holds only the targets its task needed, so the
+   furniture's 3-D bounds are usually unknown. When the carry fails, the nearer
+   stances were refused off the support's height, and the scene's review names
+   movable furniture, the half records the measurement as due. The worker then
+   runs it as Blueprint's own preparation spend: the analysis and SAM masks for
+   just those items, reserved through the job's preparation-spend path within
+   its already-approved caps, like any other preparation analysis call. A
+   refused reservation holds the request by name; the site is never asked
+   about it. The bounds are lifted on the CPU and kept as a sidecar of the
+   intent's current preparation (never written into the sealed preparation).
+   Only items the analysis itself calls movable furniture are kept: a
+   ``movable_object`` kept as an obstacle or background whose label names a
+   chair or a stool (``movable_furniture_record``). Walls, fixed counters, fixed
+   clutter, the support, the destination, the task object and people never are.
 2. **Never the support.** Inside each support's footprint, nothing reaching
    ``SUPPORT_TOP_BAND_M`` below its top, or higher, is ever part of an item
    (``protected_regions``): a chair pulled up to the table keeps its seat and
@@ -31,16 +33,16 @@ can: off by default, and only for the job's own site owner.
    reach bound (``robot_arm_path_clearance.rigid_reach_shortfall``) is the typed
    proposal (``PROPOSAL_SCHEMA``): which items, why, and the stance it enables.
    Nothing changes: the half compiles exactly as before, with the proposal recorded.
-4. **Ask the owner.** The screening timer's pass sends each open question
-   (``measure`` or ``move``) to the WebApp over the signed Pipeline sync
-   transport, as the success thresholds go (``website_owner_success_confirmation``):
+4. **Ask the owner.** The screening timer's pass sends each proposal to the
+   WebApp over the signed Pipeline sync transport, as the success thresholds go
+   (``website_owner_success_confirmation``):
    ``POST /api/internal/pipeline/task-evaluation-scene-intents/<intent>/robot-access-proposal``.
    The WebApp shows it on the owner's job link only, in plain words, and answers
    with the owner's append-only decision bound to the proposal digest. No
    decision is no change. ``approved`` writes one sealed record under the
-   request's own intent (``QUESTIONS``), bound to the intent, the revision and
-   the exact binding; ``declined`` writes nothing and holds the job by name
-   (``HOLDS``).
+   request's own intent (``CONFIRMATION_DIRECTORY``), bound to the intent, the
+   revision and the exact binding; ``declined`` writes nothing and holds the job
+   by name (``DECLINED_HOLD``).
 5. **Rebuild on approval.** The request is compiled once more. The compile
    finds the record for exactly this binding, writes a derived copy of the
    collider without the faces of the approved items (inside an item's bounds,
@@ -54,10 +56,9 @@ can: off by default, and only for the job's own site owner.
    scene build), so the items still show in the simulation's camera views
    (``APPEARANCE``).
 
-Only a rigid pick and place is covered. A move approval is a modelling
-confirmation, never a spend approval; only a measurement approval authorizes
-spend, at most its own figure. Nothing in this module starts compute, calls a
-provider or moves money.
+Only a rigid pick and place is covered. The owner's approval is a modelling
+confirmation, never a spend approval. Nothing in this module starts compute,
+calls a provider or moves money.
 """
 
 from __future__ import annotations
@@ -88,21 +89,13 @@ DECISION_SCHEMA = "website_robot_access_decision.v1"
 CONFIRMATION_SCHEMA = "task_evaluation_robot_access_removal_confirmation.v1"
 CONFIRMATION_DIRECTORY = "robot-access-removal-confirmations"
 CONFIRMATION_SCOPE = "simulation_collision_modelling_only"
-#: The owner's two questions: may Blueprint measure the furniture (a bounded spend), and may it move it.
-MEASURE, MOVE = "measure", "move"
-#: What each question's sealed approval is (schema, directory, scope, whether it authorizes spend).
-QUESTIONS = {
-    MEASURE: ("task_evaluation_robot_access_measurement_approval.v1", "robot-access-measurement-approvals",
-              "website_preparation_spend_for_movable_furniture_measurement", True),
-    MOVE: (CONFIRMATION_SCHEMA, CONFIRMATION_DIRECTORY, CONFIRMATION_SCOPE, False),
-}
-#: The half's record status that asks each question.
-ASKING = {"measurement_proposed": MEASURE, "proposed": MOVE}
+#: The half's record status that asks the owner to move named items.
+ASKING_STATUS = "proposed"
+#: The half's record status when the furniture should be measured first (Blueprint's own spend, no question).
+MEASUREMENT_DUE = "measurement_due"
 WEBSITE_CHANNEL = "website"
 #: The named hold a declined proposal leaves on the team packet request's status.
 DECLINED_HOLD = "team_scene_robot_access_declined_by_owner"
-MEASUREMENT_DECLINED_HOLD = "team_scene_robot_access_measurement_declined_by_owner"
-HOLDS = {MEASURE: MEASUREMENT_DECLINED_HOLD, MOVE: DECLINED_HOLD}
 #: The team packet status field that keeps the latest exchange for its request.
 STATUS_FIELD = "website_robot_access"
 #: The approvals a completed request was already compiled again for.
@@ -129,14 +122,14 @@ _TARGET = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _INSTANT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\Z")
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,99}\Z")
 DECISION_FIELDS = frozenset({"schema_version", "intent_id", "intent_digest", "request_id", "capture_id",
-                             "proposal_digest", "configured_scene_revision_digest", "question", "binding_digest",
+                             "proposal_digest", "configured_scene_revision_digest", "binding_digest",
                              "decision", "decided_via", "decided_at", "decision_digest"})
-RECORD_FIELDS = frozenset({"schema_version", "scope", "model", "question", "intent_id", "intent_digest", "owner",
+RECORD_FIELDS = frozenset({"schema_version", "scope", "model", "intent_id", "intent_digest", "owner",
                            "authenticated_issuer", "configured_scene_revision_digest", "binding", "binding_digest",
-                           "items", "maximum_cost_usd", "proposal_digest", "decision_digest", "approved_by",
+                           "items", "proposal_digest", "decision_digest", "approved_by",
                            "approval_evidence", "issuer_channel", "operator_uid", "confirmed_at",
                            "spend_authorized", "provider_mutation_performed", "confirmation_digest"})
-#: The most the owner can be asked to approve for one measurement, in USD (within the job's own caps).
+#: The most one automatic furniture measurement may reserve, in USD; the job's own caps still bound it.
 MAXIMUM_MEASUREMENT_USD = 5.0
 MAX_EXCHANGES_PER_PASS = 4
 TIMEOUT_SECONDS = 5
@@ -559,30 +552,25 @@ def _safe(path: Path) -> None:
              and not any(p.is_symlink() for p in (path, *path.parents)), "store_unsafe")
 
 
-def _valid_record(path: Path, intent: Mapping[str, Any], question: str) -> dict[str, Any] | None:
+def _valid_record(path: Path, intent: Mapping[str, Any]) -> dict[str, Any] | None:
     # Sealed by the intake's writer (``task_evaluation_scene_intake._seal``), so checked with its digest.
     from .task_evaluation_scene_intent_contracts import canonical_digest as sealed_digest
 
-    schema, _directory, scope, spends = QUESTIONS[question]
     if path.is_symlink() or not path.is_file() or path.suffix != ".json":
         return None
     try:
         row = json.loads(path.read_bytes())
     except (OSError, ValueError):
         return None
-    cost = row.get("maximum_cost_usd") if isinstance(row, dict) else None
-    if not (isinstance(row, dict) and set(row) == RECORD_FIELDS and row.get("schema_version") == schema
-            and row.get("scope") == scope and row.get("model") == MODEL and row.get("question") == question
+    if not (isinstance(row, dict) and set(row) == RECORD_FIELDS and row.get("schema_version") == CONFIRMATION_SCHEMA
+            and row.get("scope") == CONFIRMATION_SCOPE and row.get("model") == MODEL
             and row.get("confirmation_digest") == sealed_digest(row, digest_field="confirmation_digest")
             and path.name == str(row["confirmation_digest"]).removeprefix("sha256:") + ".json"
             and row["intent_id"] == intent["intent_id"] and row["intent_digest"] == intent["intent_digest"]
             and row["owner"] == intent["request"]["owner"] and row["approved_by"] == row["owner"]["user_id"]
             and row["authenticated_issuer"] == intent["authenticated_issuer"]
             and row["issuer_channel"] == WEBSITE_CHANNEL and type(row["operator_uid"]) is int
-            and row["spend_authorized"] is spends and row["provider_mutation_performed"] is False
-            and ((spends and isinstance(cost, (int, float)) and not isinstance(cost, bool)
-                  and 0 < cost <= MAXIMUM_MEASUREMENT_USD and cost == (row["binding"] or {}).get("maximum_cost_usd"))
-                 or (not spends and cost is None))
+            and row["spend_authorized"] is False and row["provider_mutation_performed"] is False
             and isinstance(row["binding"], dict) and row["binding_digest"] == canonical_digest(row["binding"])
             and row["items"] == row["binding"].get("items")
             and row["configured_scene_revision_digest"] == row["binding"].get("configured_scene_revision_digest")
@@ -591,24 +579,22 @@ def _valid_record(path: Path, intent: Mapping[str, Any], question: str) -> dict[
     return row
 
 
-def confirmations(directory: str | Path, intent: Mapping[str, Any], question: str = MOVE) -> list[dict[str, Any]]:
-    """Every valid sealed approval of this intent's owner for ``question``, earliest first; none once revoked."""
+def confirmations(directory: str | Path, intent: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Every valid sealed approval of this intent's owner, earliest first; none once revoked."""
 
     directory = Path(directory)
     _safe(directory)
-    store = directory / QUESTIONS[question][1]
+    store = directory / CONFIRMATION_DIRECTORY
     if (directory / "revoked.json").exists() or store.is_symlink() or not store.is_dir():
         return []
-    rows = [row for row in (_valid_record(path, intent, question) for path in sorted(store.glob("*.json"))) if row]
+    rows = [row for row in (_valid_record(path, intent) for path in sorted(store.glob("*.json"))) if row]
     return sorted(rows, key=lambda row: (row["confirmed_at"], row["confirmation_digest"]))
 
 
-def find_confirmation(directory: str | Path, intent: Mapping[str, Any], *, binding_digest: str,
-                      question: str = MOVE) -> dict[str, Any] | None:
-    """The earliest valid approval of exactly this binding for this intent and question, else None."""
+def find_confirmation(directory: str | Path, intent: Mapping[str, Any], *, binding_digest: str) -> dict[str, Any] | None:
+    """The earliest valid approval of exactly this binding for this intent, else None."""
 
-    return next((row for row in confirmations(directory, intent, question)
-                 if row["binding_digest"] == binding_digest), None)
+    return next((row for row in confirmations(directory, intent) if row["binding_digest"] == binding_digest), None)
 
 
 def record_website_approval(*, intent_root: str | Path, intent: Mapping[str, Any], proposal: Mapping[str, Any],
@@ -616,19 +602,15 @@ def record_website_approval(*, intent_root: str | Path, intent: Mapping[str, Any
                             now: datetime | None = None) -> dict[str, Any]:
     """Write the owner's approval under the intent, exclusively and under the intake lock.
 
-    ``proposal`` is the team half's recorded question and ``notice`` what the owner saw; the decision
-    must approve exactly that notice. A measurement approval authorizes at most the notice's
-    ``maximum_cost_usd`` through the preparation-spend path; a move approval authorizes no spend. An
-    existing approval of the same binding is returned as is.
+    ``proposal`` is the team half's recorded proposal and ``notice`` what the owner saw; the decision
+    must approve exactly that notice. It authorizes no spend. An existing approval of the same binding
+    is returned as is.
     """
 
     from . import task_evaluation_scene_intake as intake
 
-    question = notice["question"]
-    schema, directory_name, scope, spends = QUESTIONS[question]
     _require(decision.get("decision") == "approved" and decision.get("proposal_digest") == notice["proposal_digest"]
-             and decision.get("question") == question == ASKING.get(proposal.get("status"))
-             and notice["binding_digest"] == proposal["binding_digest"]
+             and proposal.get("status") == ASKING_STATUS and notice["binding_digest"] == proposal["binding_digest"]
              and canonical_digest(proposal["binding"]) == proposal["binding_digest"],
              "decision_not_this_proposal")
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -641,33 +623,31 @@ def record_website_approval(*, intent_root: str | Path, intent: Mapping[str, Any
         current = intake._read(directory / "intent.json", "intent_digest")
         _require(current == dict(intent) and not (directory / "revoked.json").exists(), "intent_changed_or_revoked")
         _require(os.geteuid() == directory.stat().st_uid, "issuer_user_mismatch")
-        existing = find_confirmation(directory, current, binding_digest=proposal["binding_digest"], question=question)
+        existing = find_confirmation(directory, current, binding_digest=proposal["binding_digest"])
         if existing is not None:
             return {"status": "already_approved", **existing}
         owner = dict(current["request"]["owner"])
         binding = json.loads(json.dumps(proposal["binding"]))
-        what = (f"measuring {len(binding['items'])} named item(s) for at most USD {binding['maximum_cost_usd']}"
-                if spends else f"moving {len(binding['items'])} item(s) out of the robot's way in the simulation")
         value = intake._seal({
-            "schema_version": schema, "scope": scope, "model": MODEL, "question": question,
+            "schema_version": CONFIRMATION_SCHEMA, "scope": CONFIRMATION_SCOPE, "model": MODEL,
             "intent_id": current["intent_id"], "intent_digest": current["intent_digest"], "owner": owner,
             "authenticated_issuer": current["authenticated_issuer"],
             "configured_scene_revision_digest": binding["configured_scene_revision_digest"],
             "binding": binding, "binding_digest": proposal["binding_digest"], "items": binding["items"],
-            "maximum_cost_usd": binding["maximum_cost_usd"] if spends else None,
             "proposal_digest": notice["proposal_digest"], "decision_digest": decision["decision_digest"],
             "approved_by": owner["user_id"],
-            "approval_evidence": (f"site owner approved {what} on the website job page (owner link): webapp decision "
+            "approval_evidence": (f"site owner approved moving {len(binding['items'])} item(s) out of the robot's way "
+                                  f"in the simulation on the website job page (owner link): webapp decision "
                                   f"{decision['decision_digest']} at {decision['decided_at']}"),
             "issuer_channel": WEBSITE_CHANNEL, "operator_uid": os.geteuid(),
-            "confirmed_at": moment.strftime("%Y-%m-%dT%H:%M:%SZ"), "spend_authorized": spends,
+            "confirmed_at": moment.strftime("%Y-%m-%dT%H:%M:%SZ"), "spend_authorized": False,
             "provider_mutation_performed": False}, "confirmation_digest")
-        path = directory / directory_name / (value["confirmation_digest"].removeprefix("sha256:") + ".json")
+        path = directory / CONFIRMATION_DIRECTORY / (value["confirmation_digest"].removeprefix("sha256:") + ".json")
         path.parent.mkdir(mode=0o750, exist_ok=True)
         _safe(path.parent)
         intake.write_exclusive(path, value)
-        _require(find_confirmation(directory, current, binding_digest=proposal["binding_digest"], question=question)
-                 is not None, "record_invalid")
+        _require(find_confirmation(directory, current, binding_digest=proposal["binding_digest"]) is not None,
+                 "record_invalid")
     return {"status": "approved", "record_path": str(path), **value}
 
 
@@ -675,22 +655,20 @@ def record_website_approval(*, intent_root: str | Path, intent: Mapping[str, Any
 
 
 def proposal_notice(*, intent: Mapping[str, Any], task_id: str, proposal: Mapping[str, Any]) -> dict[str, Any]:
-    """What the WebApp shows the owner: the question, the items in the analysis's own words, sealed with the binding.
+    """What the WebApp shows the owner: the items to move, in the analysis's own words, sealed with the binding.
 
-    ``question`` is ``measure`` (with the most Blueprint would spend, ``maximum_cost_usd``) or ``move``
-    (``maximum_cost_usd`` null). Measured bounds never leave the Pipeline.
+    Measured bounds never leave the Pipeline, and nothing about spend is ever sent: the furniture's
+    measurement is Blueprint's own preparation spend.
     """
 
-    question = ASKING[proposal["status"]]
     notice = {"schema_version": NOTICE_SCHEMA, "intent_id": intent["intent_id"], "intent_digest": intent["intent_digest"],
               "task_id": str(task_id), "configured_scene_revision_digest":
                   proposal["binding"]["configured_scene_revision_digest"],
-              "question": question, "binding_digest": proposal["binding_digest"],
+              "binding_digest": proposal["binding_digest"],
               "items": [{"target_id": row["obstacle_id"], "label": row["label"], "kind": row["kind"]}
                         for row in proposal["items"]],
               "support_label": proposal["support_label"], "reason": proposal["why"]["reason"],
-              "appearance": proposal["appearance"]["status"],
-              "maximum_cost_usd": proposal["binding"]["maximum_cost_usd"] if question == MEASURE else None}
+              "appearance": proposal["appearance"]["status"]}
     notice["proposal_digest"] = cross_runtime_canonical_digest(notice)
     return notice
 
@@ -746,7 +724,7 @@ def validated_receipt(value: Any, notice: Mapping[str, Any]) -> dict[str, Any]:
              and decision["schema_version"] == DECISION_SCHEMA and decision["decision"] == value["status"]
              and all(decision[field] == notice[field] for field in (
                  "intent_id", "intent_digest", "proposal_digest", "configured_scene_revision_digest",
-                 "question", "binding_digest"))
+                 "binding_digest"))
              and decision["decided_via"] == "owner_job_link"
              and all(isinstance(decision[field], str) and _ID.fullmatch(decision[field])
                      for field in ("request_id", "capture_id"))
@@ -758,7 +736,7 @@ def validated_receipt(value: Any, notice: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def half_proposal(path: Any) -> dict[str, Any] | None:
-    """The question a compiled team half asks the owner (measure, or move), while it is open; else None."""
+    """The proposal a compiled team half asks the owner about, while it is open; else None."""
 
     from .team_scene_packet import read_team_scene_inputs
 
@@ -770,7 +748,7 @@ def half_proposal(path: Any) -> dict[str, Any] | None:
     except (OSError, ValueError, KeyError, TypeError):
         return None
     access = value.get("robot_access_removal") if isinstance(value, Mapping) else None
-    if not isinstance(access, Mapping) or access.get("status") not in ASKING:
+    if not isinstance(access, Mapping) or access.get("status") != ASKING_STATUS:
         return None
     try:
         if canonical_digest(access["binding"]) != access["binding_digest"]:
@@ -793,20 +771,19 @@ def _approval_of(path: Any, request: Mapping[str, Any]) -> dict[str, Any] | None
     try:
         scope, _unbound = owner_success_confirmation_scope(request)
         return None if scope is None else find_confirmation(
-            scope["directory"], scope["intent"], binding_digest=proposal["binding_digest"],
-            question=ASKING[proposal["status"]])
+            scope["directory"], scope["intent"], binding_digest=proposal["binding_digest"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
 def approved_proposal(path: Any, request: Mapping[str, Any]) -> dict[str, Any] | None:
-    """The owner's approval of the question the half at ``path`` asks (it is then compiled again), else None."""
+    """The owner's approval of the proposal the half at ``path`` records (it is then compiled again), else None."""
 
     return _approval_of(path, request)
 
 
 def untried_confirmations(status: Mapping[str, Any], request: Mapping[str, Any]) -> list[str]:
-    """The owner's approvals of a completed half's own open question that no compile has tried yet."""
+    """The owner's approvals of a completed half's own open proposal that no compile has tried yet."""
 
     if not _completed_with_proposal(status):
         return []
@@ -858,11 +835,11 @@ def _error_code(exc: BaseException) -> str:
 
 def exchange_robot_access_decision(packet_root: Path, request_key: str, *, transport: Transport | None = None,
                                    now: float | None = None) -> dict[str, Any] | None:
-    """Ask the WebApp about one completed half's open question (measure, or move), and record an approval.
+    """Ask the WebApp about one completed half's open proposal to move named items, and record an approval.
 
-    None when the request's half holds no open question, or the request is not due. The outcome is
-    what the request's status keeps under ``STATUS_FIELD``; ``declined`` carries the question's named
-    hold (``HOLDS``). Any error is this request's ``failed`` outcome; it never leaves this function.
+    None when the request's half holds no open proposal, or the request is not due. The outcome is
+    what the request's status keeps under ``STATUS_FIELD``; ``declined`` carries ``DECLINED_HOLD``.
+    Any error is this request's ``failed`` outcome; it never leaves this function.
     """
 
     from .team_scene_packet_worker import _read_json, owner_success_confirmation_scope, validated_request
@@ -882,8 +859,7 @@ def exchange_robot_access_decision(packet_root: Path, request_key: str, *, trans
     if (next_check is not None and now < next_check
             and (previous or {}).get("binding_digest") == proposal["binding_digest"]):
         return None
-    question = ASKING[proposal["status"]]
-    base: dict[str, Any] = {"question": question, "binding_digest": proposal["binding_digest"]}
+    base: dict[str, Any] = {"binding_digest": proposal["binding_digest"]}
     try:
         request = validated_request(_read_json(packet_root / "processed" / f"{request_key}.json"))
         scope, unbound = owner_success_confirmation_scope(request)
@@ -894,7 +870,7 @@ def exchange_robot_access_decision(packet_root: Path, request_key: str, *, trans
             return _scheduled({**base, "status": "intent_revoked"}, previous, now)
         notice = proposal_notice(intent=intent, task_id=proposal["task_id"], proposal=proposal)
         base["proposal_digest"] = notice["proposal_digest"]
-        existing = find_confirmation(directory, intent, binding_digest=proposal["binding_digest"], question=question)
+        existing = find_confirmation(directory, intent, binding_digest=proposal["binding_digest"])
         if existing is not None:
             return _scheduled({**base, "status": "already_approved",
                                "confirmation_digest": existing["confirmation_digest"]}, previous, now)
@@ -904,7 +880,7 @@ def exchange_robot_access_decision(packet_root: Path, request_key: str, *, trans
         if decision is not None:
             outcome["decision_digest"] = decision["decision_digest"]
         if receipt["status"] == "declined":
-            outcome["hold"] = HOLDS[question]
+            outcome["hold"] = DECLINED_HOLD
         elif receipt["status"] == "approved":
             written = record_website_approval(intent_root=directory.parent, intent=intent, proposal=proposal,
                                               notice=notice, decision=decision)
@@ -951,10 +927,8 @@ __all__ = [
     "CONFIRMATION_SCHEMA",
     "DECISION_SCHEMA",
     "DECLINED_HOLD",
-    "MEASURE",
-    "MEASUREMENT_DECLINED_HOLD",
-    "MOVE",
-    "QUESTIONS",
+    "ASKING_STATUS",
+    "MEASUREMENT_DUE",
     "FURNITURE_KINDS",
     "MODEL",
     "NOTICE_SCHEMA",

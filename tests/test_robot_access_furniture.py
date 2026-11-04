@@ -1,9 +1,10 @@
-"""Movable chairs measured, then moved out of the Franka's way in the simulation, each only on the owner's approval.
+"""Movable chairs measured when they can matter, then moved out of the Franka's way only on the owner's approval.
 
 capture-447ae4f4's Franka could not stand within reach of its dining table, most likely because of the
 chairs around it (#3355). Its preparation holds no chair: the Atlas scene review names them as one grouped
-entry with 2-D boxes, and nothing has their 3-D bounds. So the half first asks the site owner whether
-Blueprint may measure them (a bounded spend), and only then whether to move the one in the way.
+entry with 2-D boxes, and nothing has their 3-D bounds. So the half records their measurement as due, the
+worker runs it as Blueprint's own preparation spend within the job's caps (the site is never asked), and
+only then does the site owner decide whether to move the one in the way.
 
 These rooms are synthetic: capture-447's oval table in one scanned mesh, as a website collider is, with ten
 chairs around it. The intent is a renewal's, as capture-447's live intent is: its registration names the
@@ -229,7 +230,7 @@ class FakeWebApp:
                     "intent_digest": notice["intent_digest"], "request_id": "req-1", "capture_id": "cap-1",
                     "proposal_digest": notice["proposal_digest"],
                     "configured_scene_revision_digest": notice["configured_scene_revision_digest"],
-                    "question": notice["question"], "binding_digest": notice["binding_digest"], "decision": kind,
+                    "binding_digest": notice["binding_digest"], "decision": kind,
                     "decided_via": "owner_job_link", "decided_at": "2026-11-04T09:00:00.000Z"}
         decision["decision_digest"] = cross_runtime_canonical_digest(decision)
         self.decisions[notice["proposal_digest"]] = decision
@@ -240,8 +241,10 @@ def _status(queue: Path, key: str) -> dict[str, Any]:
     return json.loads((queue / "status" / f"{key}.json").read_text())
 
 
-def test_the_owner_approves_measuring_then_moving_a_chair_and_each_decline_holds_by_name(
+def test_chairs_are_measured_without_asking_the_site_then_moved_only_on_the_owners_approval(
         tmp_path, monkeypatch, chairs_room) -> None:
+    import functools
+
     inputs = single._inputs(tmp_path, monkeypatch)
     scope = inputs["owner_success_confirmation_scope"]
     capture = renewed_lineage(tmp_path, scope, monkeypatch)
@@ -256,13 +259,13 @@ def test_the_owner_approves_measuring_then_moving_a_chair_and_each_decline_holds
         return worker.requeue_transient_blocked(queue_root=queue, website_transport=noop, robot_access_transport=webapp)
 
     # 1. No stance carries, the nearer ones were refused on seats and backs, the review names the chairs, and
-    #    nothing measured them: the half asks whether to measure, with the most it would cost. Nothing is spent.
-    first = _compile(tmp_path, "asks-to-measure", inputs, scope)
-    asked = first["robot_access_removal"]
+    #    nothing measured them: the half records the measurement as due, with the most it may reserve.
+    first = _compile(tmp_path, "measurement-due", inputs, scope)
+    due = first["robot_access_removal"]
     assert first["robot_station_search"]["cleared"] is False
-    assert asked["status"] == "measurement_proposed" and asked["trigger"]["plausible"] is True
-    assert asked["items"] == [{"obstacle_id": "dining_chairs", "label": "dining_chairs", "kind": "chair"}]
-    binding = asked["binding"]
+    assert due["status"] == "measurement_due" and due["trigger"]["plausible"] is True
+    assert due["items"] == [{"obstacle_id": "dining_chairs", "label": "dining_chairs", "kind": "chair"}]
+    binding = due["binding"]
     # Bound to the intent's current preparation: the renewal's, never the root one.
     renewed = json.loads((capture / "pipeline/website_scene_preparation/renewals" / RENEWAL / "preparation.json")
                          .read_text())
@@ -271,50 +274,53 @@ def test_the_owner_approves_measuring_then_moving_a_chair_and_each_decline_holds
     assert binding["lineage"]["intent_id"] == scope["intent"]["intent_id"]
     # At most: one analysis turn (USD 0.04 for 30 s) and two SAM concepts over 900 frames (USD 0.18 each).
     assert binding["analysis"]["maximum_cost_usd"] == 0.04 and binding["segmentation"]["maximum_cost_usd"] == 0.36
-    assert binding["maximum_cost_usd"] == 0.4
+    assert due["maximum_cost_usd"] == binding["maximum_cost_usd"] == 0.4
     assert paid.calls == []
     queue, key, request = _queued(tmp_path, monkeypatch, inputs, first)
 
-    assert passes()["website_robot_access"][key]["status"] == "pending"
-    [notice] = webapp.proposals
-    assert notice["question"] == "measure" and notice["maximum_cost_usd"] == 0.4
-    assert notice["items"] == [{"target_id": "dining_chairs", "label": "dining_chairs", "kind": "chair"}]
+    # 2. The site is asked nothing; the request returns to pending once, for the worker to measure.
+    first_pass = passes()
+    assert webapp.proposals == [] and first_pass["website_robot_access"] == {}
+    assert first_pass["requeued"] == [{"request_key": key, "reason": "robot_access_measurement_due",
+                                       "binding_digest": due["binding_digest"]}]
+    assert _status(queue, key)[worker.ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD] == [due["binding_digest"]]
+    assert measurement.measurement_due(first["_compiled"]["path"])["binding_digest"] == due["binding_digest"]
 
-    # 2. The owner says not now: nothing is written, nothing is bought, and the job holds by name.
-    webapp.decide("declined")
-    assert passes()["requeued"] == []
-    assert _status(queue, key)[access.STATUS_FIELD]["hold"] == access.MEASUREMENT_DECLINED_HOLD
-    assert access.confirmations(scope["directory"], scope["intent"], "measure") == []
-    assert access.approved_proposal(first["_compiled"]["path"], request) is None
+    # 3. The worker measures. A refused reservation (the job's caps or window) holds by name, spends nothing
+    #    and changes nothing; a measurement of anything but the half's binding is refused before any call.
+    def refused(**_: Any) -> Any:
+        raise ValueError("website_preparation_spend_receipt_invalid")
 
-    # 3. Then approves: the approval (a bounded spend) is sealed and the request compiles again.
-    webapp.decide("approved")
-    assert passes()["requeued"][0]["reason"] == "robot_access_confirmation"
-    [spend] = access.confirmations(scope["directory"], scope["intent"], "measure")
-    assert spend["spend_authorized"] is True and spend["maximum_cost_usd"] == 0.4
-    assert access.approved_proposal(first["_compiled"]["path"], request) == spend
-    # A measurement of anything but the approved binding is refused before any call.
-    with pytest.raises(ValueError, match="approval_not_this_measurement"):
-        measurement.run_measurement(scope, {**spend, "binding_digest": "sha256:" + "9" * 64},
-                                    revision_digest=inputs["revision"]["revision_digest"], analyze=paid.analyze,
-                                    segment=paid.segment, geometry=lambda *_: {"frames": []})
-    assert paid.calls == []
-    # The worker measures once, within the approval: one analysis, one SAM concept for the chairs.
-    sidecar = measurement.run_measurement(scope, spend, revision_digest=inputs["revision"]["revision_digest"],
-                                          analyze=paid.analyze, segment=paid.segment,
-                                          geometry=lambda *_: {"frames": []})
+    monkeypatch.setattr(measurement, "run_measurement", functools.partial(
+        measurement.run_measurement, analyze=refused, segment=paid.segment, geometry=lambda *_: {"frames": []}))
+    held = worker._measure_furniture(request, due["binding_digest"])
+    assert held["status"] == "held"
+    assert held["hold"] == "team_scene_robot_access_measurement_held:website_preparation_spend_receipt_invalid"
+    assert held["binding_digest"] == due["binding_digest"]
+    assert worker._measure_furniture(request, "sha256:" + "9" * 64)["hold"] == (
+        "team_scene_robot_access_measurement_held:robot_access_measurement_binding_changed")
+    assert paid.calls == [] and not (capture / "pipeline" / "robot_access" / renewed["digest"][7:23]
+                                     / "movable_furniture.v1.json").exists()
+    # Within the caps: one analysis and one SAM concept for the chairs, kept as a sidecar of the renewal's
+    # preparation with what each call reserved.
+    monkeypatch.setattr(measurement, "run_measurement", functools.partial(
+        measurement.run_measurement.func, analyze=paid.analyze, segment=paid.segment,
+        geometry=lambda *_: {"frames": []}))
+    measured = worker._measure_furniture(request, due["binding_digest"])
+    assert measured["status"] == "measured" and measured["reserved_cost_usd"] == 0.22
     assert paid.calls == [("analysis", 0.04), ("segmentation", 0.36, ["wooden chair"])]
     path = capture / "pipeline" / "robot_access" / renewed["digest"][7:23] / "movable_furniture.v1.json"
-    assert json.loads(path.read_text()) == sidecar and sidecar["lineage"] == binding["lineage"]
-    assert sidecar["approval"]["confirmation_digest"] == spend["confirmation_digest"]
+    sidecar = json.loads(path.read_text())
+    assert sidecar["sidecar_digest"] == measured["sidecar_digest"] and sidecar["lineage"] == binding["lineage"]
+    assert sidecar["measurement"]["binding_digest"] == due["binding_digest"]
+    assert sidecar["analysis"]["reserved_cost_usd"] == 0.04 and sidecar["segmentation"]["reserved_cost_usd"] == 0.18
     assert len(sidecar["movable_furniture"]["items"]) == len(CHAIRS)
     # The sealed preparations are untouched; the sidecar is beside them, read through the registration.
     assert canonical_digest(renewed, digest_field="digest") == renewed["digest"] == json.loads(
         (capture / "pipeline/website_scene_preparation/renewals" / RENEWAL / "preparation.json").read_text())["digest"]
     assert "movable_furniture" not in renewed
     # Measuring again buys nothing.
-    assert measurement.run_measurement(scope, spend, revision_digest=inputs["revision"]["revision_digest"],
-                                       analyze=paid.analyze, segment=paid.segment) == sidecar
+    assert worker._measure_furniture(request, due["binding_digest"])["sidecar_digest"] == sidecar["sidecar_digest"]
     assert len(paid.calls) == 2
 
     # 4. With the chairs measured, the half proposes moving the one chair that opens a stance within reach.
@@ -327,9 +333,9 @@ def test_the_owner_approves_measuring_then_moving_a_chair_and_each_decline_holds
     assert second["robot_station"]["position_world_m"] == first["robot_station"]["position_world_m"]
     _complete(queue, key, second)
     asked_to_move = passes()["website_robot_access"][key]
-    assert asked_to_move["status"] == "pending" and asked_to_move["question"] == "move", asked_to_move
-    move = webapp.proposals[-1]
-    assert move["question"] == "move" and move["maximum_cost_usd"] is None
+    assert asked_to_move["status"] == "pending", asked_to_move
+    [move] = webapp.proposals
+    assert "maximum_cost_usd" not in move and "question" not in move
     assert move["items"] == [{"target_id": BLOCKING, "label": "dining chair", "kind": "chair"}]
     assert "bounds_world_m" not in json.dumps(move)
 
@@ -340,8 +346,8 @@ def test_the_owner_approves_measuring_then_moving_a_chair_and_each_decline_holds
     webapp.decide("approved")
     moved_on = passes()
     assert [row["reason"] for row in moved_on["requeued"]] == ["robot_access_confirmation"], json.dumps(moved_on["website_robot_access"])
-    [approval] = access.confirmations(scope["directory"], scope["intent"], "move")
-    assert approval["spend_authorized"] is False and approval["maximum_cost_usd"] is None
+    [approval] = access.confirmations(scope["directory"], scope["intent"])
+    assert approval["spend_authorized"] is False
     third = _compile(tmp_path, "moves-the-chair", inputs, scope)
     applied = third["robot_access_removal"]
     assert applied["status"] == "applied" and applied["confirmation_digest"] == approval["confirmation_digest"]
@@ -366,16 +372,9 @@ def test_no_proposal_names_what_the_analysis_does_not_call_movable_furniture(tmp
     scope = inputs["owner_success_confirmation_scope"]
     renewed_lineage(tmp_path, scope, monkeypatch)
     offer = measurement.measurement_offer(scope, revision_digest=inputs["revision"]["revision_digest"])
-    proposal = {"status": "measurement_proposed", "binding": offer["binding"], "binding_digest": offer["binding_digest"],
-                "items": offer["binding"]["items"], "support_label": "wooden dining table",
-                "why": {"reason": "no_ranked_stance_carries"}, "appearance": dict(access.APPEARANCE)}
-    notice = access.proposal_notice(intent=scope["intent"], task_id="t", proposal=proposal)
-    decision = {"decision": "approved", "proposal_digest": notice["proposal_digest"], "question": "measure",
-                "decision_digest": "sha256:" + "7" * 64, "decided_at": "2026-11-04T09:00:00.000Z"}
-    spend = access.record_website_approval(intent_root=Path(scope["directory"]).parent, intent=scope["intent"],
-                                           proposal=proposal, notice=notice, decision=decision)
     paid = PaidCalls([{**target, "target_class": "fixed_clutter"} for _, target in CHAIRS])
-    sidecar = measurement.run_measurement(scope, spend, revision_digest=inputs["revision"]["revision_digest"],
+    sidecar = measurement.run_measurement(scope, binding_digest=offer["binding_digest"],
+                                          revision_digest=inputs["revision"]["revision_digest"],
                                           analyze=paid.analyze, segment=paid.segment)
     assert paid.calls == [("analysis", 0.04)] and sidecar["movable_furniture"] is None
     record = _compile(tmp_path, "fixed", inputs, scope)
@@ -480,7 +479,7 @@ def test_the_lift_takes_each_pieces_own_instance_and_never_guesses(tmp_path) -> 
     assert chair["estimated_visible_bounds"] == estimate_target_bounds(
         {**near, "label": "by_the_window"}, geometry["frames"])
     assert left == [{"target_id": "unclear", "reason": "instance_ambiguous"},
-                    {"target_id": "another_kind", "reason": "segmentation_concept_over_the_approved_count"}]
+                    {"target_id": "another_kind", "reason": "segmentation_concept_over_the_bound_count"}]
     # A geometry frame the tracks never saw at that time is refused, not lifted.
     with pytest.raises(ValueError, match="geometry_frame_mapping_invalid"):
         measurement.lift([], registry=registry[:1], tracks=[], prompts=prompts, geometry=geometry)
@@ -525,16 +524,22 @@ def test_the_sidecar_is_the_current_preparations_and_a_stale_one_is_never_read(t
     assert measurement.furniture_for_scope(scope, revision_digest="x")["status"] == "not_measured"
 
 
-def test_the_worker_records_a_failed_measurement_and_never_retries_it_unasked(monkeypatch) -> None:
+def test_a_refused_measurement_is_a_typed_hold_and_never_compiles_the_half_again(monkeypatch) -> None:
     calls: list[Any] = []
 
-    def failing(scope: Any, approval: Any, **_: Any) -> Any:
-        calls.append(approval["confirmation_digest"])
-        raise ValueError("website_gemini_runtime_not_configured")
+    def failing(scope: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs["binding_digest"])
+        raise ValueError("website_preparation_spend_receipt_invalid")
 
     monkeypatch.setattr(measurement, "run_measurement", failing)
     monkeypatch.setattr(worker, "owner_success_confirmation_scope", lambda request: ({"intent": {}, "directory": "/x"}, None))
-    outcome = worker._measure_furniture({"scene_revision_digest": "sha256:" + "1" * 64},
-                                        {"confirmation_digest": "sha256:" + "2" * 64})
-    assert outcome["status"] == "failed" and calls == ["sha256:" + "2" * 64]
-    assert "website_gemini_runtime_not_configured" in json.dumps(outcome["error"])
+    outcome = worker._measure_furniture({"scene_revision_digest": "sha256:" + "1" * 64}, "sha256:" + "2" * 64)
+    assert outcome["status"] == "held" and calls == ["sha256:" + "2" * 64]
+    assert outcome["hold"] == "team_scene_robot_access_measurement_held:website_preparation_spend_receipt_invalid"
+    # The same binding is tried once: a held measurement is not requeued again.
+    status = {"status": "completed", "team_scene_inputs_path": "/nowhere",
+              worker.ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD: ["sha256:" + "2" * 64]}
+    monkeypatch.setattr(measurement, "measurement_due", lambda path: {"binding_digest": "sha256:" + "2" * 64})
+    assert worker._measurement_due_untried(status) is None
+    assert worker._measurement_due_untried({**status, worker.ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD: []}) == (
+        "sha256:" + "2" * 64)

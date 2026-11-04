@@ -39,17 +39,21 @@ no-spend worker, woken by its path unit, does the rest on the CPU:
   the website job page: the timer's pass sends each such blocked job's
   thresholds to the WebApp and records the owner's website confirmation with
   the door's own writer (``website_owner_success_confirmation``).
-- a compiled rigid half no ranked stance carries from asks the site owner, on
-  the same timer pass, first whether to measure the scene's movable furniture
-  (chairs, stools) when it plausibly blocks the carry, with the most that would
-  cost (``robot_access_measurement``), then whether to move the items that would
-  give the Franka room (``robot_access_furniture``). Each approval, sealed under
-  the request's intent, returns the completed request to pending once. A
-  measurement approval is the one spend this worker makes: the analysis call and
-  SAM masks for just those items, reserved through the job's preparation-spend
-  path within the approved figure, kept as a sidecar of the intent's current
-  preparation. A move approval rebuilds the half without those items on a
-  derived collider. A decline holds the request by name in its status
+- a compiled rigid half no ranked stance carries from, whose nearer stances
+  movable furniture plausibly blocks (chairs, stools the scene's review names),
+  records the furniture's measurement as due (``robot_access_measurement``). It
+  returns to pending once per such measurement, and the worker runs it before
+  compiling again: the analysis call and SAM masks for just those items,
+  Blueprint's own preparation spend, reserved through the job's preparation-spend
+  path within its already-approved caps like any other preparation analysis
+  call, kept as a sidecar of the intent's current preparation. A refused
+  reservation (caps, window) or any other failure holds the request by name in
+  its status (``robot_access_measurement``); the site is never asked about it.
+  With the furniture measured, the half proposes moving the items that would
+  give the Franka room (``robot_access_furniture``), and the same timer pass
+  asks the site owner. An approval, sealed under the request's intent, returns
+  the completed request to pending once and rebuilds the half without those
+  items on a derived collider; a decline holds the request by name in its status
   (``website_robot_access``). No decision is no change.
 
 The scenario is ``nominal``: the website journey never names one (the WebApp
@@ -89,8 +93,8 @@ bumped with every change to the search), is compiled again once per stance-searc
 version, on the same passes and the CPU, and never reused meanwhile
 (``stance_search_version_requeued``); a release that leaves the search alone
 recompiles nothing. Nothing here allocates a provider, starts a run or spends, except
-the owner-approved furniture measurement above: the offer publishes facts, never
-authority, and every rights, consent and spend gate after it is unchanged.
+the furniture measurement above, within the job's own caps: the offer publishes facts,
+never authority, and every rights, consent and spend gate after it is unchanged.
 """
 
 from __future__ import annotations
@@ -166,6 +170,11 @@ UNSCORABLE_HALF_REQUEUE_FIELD = "unscorable_half_release_requeued"
 # A completed half that proposes moving named furniture out of the Franka's way is compiled again once per
 # sealed approval of that exact proposal by the site owner (``robot_access_furniture``).
 ROBOT_ACCESS_REQUEUE_FIELD = "robot_access_confirmation_requeued"
+# A completed half whose movable furniture measurement is due goes back to pending once per measurement binding;
+# the worker then measures before compiling again (``_measure_furniture``).
+ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD = "robot_access_measurement_requeued"
+#: The typed hold a measurement that could not run leaves on the request's status (with its own reason).
+ROBOT_ACCESS_MEASUREMENT_HOLD = "team_scene_robot_access_measurement_held"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
@@ -482,6 +491,20 @@ def _robot_access_approvals_untried(path: Path, status: Mapping[str, Any]) -> li
         return []
 
 
+def _measurement_due_untried(status: Mapping[str, Any]) -> str | None:
+    """A completed half's due furniture measurement binding no run has tried yet, else None."""
+
+    if status.get("status") != "completed":
+        return None
+    from .robot_access_measurement import measurement_due
+
+    due = measurement_due(status.get("team_scene_inputs_path"))
+    tried = status.get(ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD)
+    if due is None or due["binding_digest"] in (tried if isinstance(tried, list) else []):
+        return None
+    return str(due["binding_digest"])
+
+
 def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[dict[str, Any]]:
     """Return each due transient block, each owner-contract refusal the owner has since confirmed, and each
     other deterministic refusal once per newly deployed ``release``, to pending, recording the attempt first
@@ -521,6 +544,16 @@ def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[
             os.replace(path, target)
             requeued.append({"request_key": path.stem, "reason": "robot_access_confirmation",
                              "confirmation_digests": approvals})
+            continue
+        due = None if target.exists() else _measurement_due_untried(status)
+        if due is not None:
+            tried = status.get(ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD)
+            # Recorded before the move, so each measurement binding is tried at most once.
+            _write_replace(root / "status" / path.name, {
+                **status, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD: [*(tried if isinstance(tried, list) else []), due]})
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "robot_access_measurement_due",
+                             "binding_digest": due})
             continue
         unscorable = None if target.exists() else _unscorable_half_untried(status, release)
         if unscorable is not None:
@@ -884,13 +917,21 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
                if prepared.get("robot_access_removal") else {})}
 
 
-def _measure_furniture(request: Mapping[str, Any], approval: Mapping[str, Any]) -> dict[str, Any]:
-    """Run the owner-approved movable furniture measurement (``robot_access_measurement``); its outcome, never raised.
+def _hold_code(exc: BaseException) -> str:
+    """The typed code a failed measurement holds by: the error's own leading code, else its type."""
 
-    The only spend this worker makes, and only with the site owner's sealed approval of exactly this
-    measurement: the analysis call and the SAM masks reserve through the job's preparation-spend path,
-    within the approved figure. A failure is recorded; the half is compiled again either way and asks
-    nothing new for the same approval.
+    text = str(exc).split(":", 1)[0].strip()
+    return text[:120] if re.fullmatch(r"[a-z][a-z0-9_.]{0,119}", text) else type(exc).__name__
+
+
+def _measure_furniture(request: Mapping[str, Any], binding_digest: str) -> dict[str, Any]:
+    """Run a half's due movable furniture measurement (``robot_access_measurement``); its outcome, never raised.
+
+    The only spend this worker makes: Blueprint's own preparation spend, the analysis call and the SAM
+    masks for just those items, reserved through the job's preparation-spend path within its approved
+    caps, each call keeping its admission in its receipt. ``measured`` names the sidecar and what was
+    reserved; anything else (a refused reservation, the caps or window, a changed binding) is ``held``
+    by ``ROBOT_ACCESS_MEASUREMENT_HOLD`` and its typed reason, and the half is kept as it is.
     """
 
     from .robot_access_measurement import run_measurement
@@ -898,17 +939,18 @@ def _measure_furniture(request: Mapping[str, Any], approval: Mapping[str, Any]) 
     try:
         scope, unbound = owner_success_confirmation_scope(request)
         if scope is None:
-            return {"status": "intent_unbound", "reason": unbound}
-        sidecar = run_measurement(scope, approval, revision_digest=request["scene_revision_digest"])
-    except Exception as exc:  # noqa: BLE001 - a measurement that fails is recorded; the compile goes on
+            return {"status": "held", "hold": f"{ROBOT_ACCESS_MEASUREMENT_HOLD}:intent_unbound",
+                    "binding_digest": binding_digest, "reason": unbound}
+        sidecar = run_measurement(scope, binding_digest=binding_digest, revision_digest=request["scene_revision_digest"])
+    except Exception as exc:  # noqa: BLE001 - a measurement that cannot run is a typed hold; the queue goes on
         from .bounded_error import error_description
 
-        return {"status": "failed", "confirmation_digest": approval.get("confirmation_digest"),
-                "error": error_description(exc)}
-    return {"status": "measured", "confirmation_digest": approval.get("confirmation_digest"),
-            "sidecar_digest": sidecar["sidecar_digest"],
+        return {"status": "held", "hold": f"{ROBOT_ACCESS_MEASUREMENT_HOLD}:{_hold_code(exc)}",
+                "binding_digest": binding_digest, "error": error_description(exc)}
+    return {"status": "measured", "binding_digest": binding_digest, "sidecar_digest": sidecar["sidecar_digest"],
             "reserved_cost_usd": round(float(sidecar["analysis"]["reserved_cost_usd"])
-                                       + float(sidecar["segmentation"]["reserved_cost_usd"]), 4)}
+                                       + float(sidecar["segmentation"]["reserved_cost_usd"]), 4),
+            "spend": "website_preparation_spend_within_the_jobs_approved_caps"}
 
 
 def _blocker(exc: BaseException) -> str:
@@ -933,7 +975,7 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     if isinstance(retry, Mapping):
         status["automatic_retry"] = dict(retry)
     for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
-                  ROBOT_ACCESS_REQUEUE_FIELD):
+                  ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD):
         if isinstance(prior.get(field), list):
             status[field] = list(prior[field])
     if isinstance(prior.get(STANCE_SEARCH_REQUEUE_FIELD), list):
@@ -966,15 +1008,18 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
             return skipped("team_candidate_frozen_pair_present")
         existing = _current_half(current, request["scene_revision_digest"])
         if existing is not None:
-            from .robot_access_furniture import MEASURE, approved_proposal
+            from .robot_access_furniture import approved_proposal
+            from .robot_access_measurement import measurement_due
 
-            approval = approved_proposal(existing, request)
-            if approval is not None:
-                if approval["question"] == MEASURE:
-                    # The site owner approved measuring the furniture this half asks about: measured once,
-                    # within that approval and the job's caps, before the half is compiled again.
-                    status["robot_access_measurement"] = _measure_furniture(request, approval)
-                # The site owner answered this half's question: it is compiled again with the answer.
+            due = measurement_due(existing)
+            if due is not None:
+                # The furniture this half needs measured is measured first, as preparation spend within the
+                # job's caps; only a measurement that ran compiles the half again, a held one keeps it.
+                status["robot_access_measurement"] = _measure_furniture(request, str(due["binding_digest"]))
+                if status["robot_access_measurement"]["status"] == "measured":
+                    existing = None
+            elif approved_proposal(existing, request) is not None:
+                # The site owner approved moving the furniture this half proposes: it is compiled again.
                 existing = None
         if existing is not None:
             status.update(outcome="already_compiled", team_scene_inputs_path=existing)
@@ -1030,7 +1075,8 @@ def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: s
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
                                         RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
-                                        ROBOT_ACCESS_REQUEUE_FIELD) if key in prior}
+                                        ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD)
+                         if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
                                    "scenario_id": SCENARIO_ID, "status": "blocked",
                                    "blockers": ["team_scene_packet_interrupted"],

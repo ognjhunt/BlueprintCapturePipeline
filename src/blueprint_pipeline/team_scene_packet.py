@@ -657,16 +657,17 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
                            task_spec: Mapping[str, Any], support_top: float, revision: Mapping[str, Any],
                            collision_sha256: str, task_id: str, support_label: str,
                            scope: Mapping[str, Any] | None) -> dict[str, Any]:
-    """What the half records when no ranked stance carries: a question for the site owner, or why there is none.
+    """What the half records when no ranked stance carries: the owner's proposal, a measurement due, or why neither.
 
     With the scene's movable furniture measured (the sidecar, ``robot_access_measurement``), the Franka's
     search named it as movable obstacles and this reads its counterfactual: the proposal to move the
     fewest items (``robot_access_furniture.station_proposal``). Without it, and only when furniture
-    plausibly blocks the nearer stances and the scene's review names some, it is the question whether
-    to measure it, with the quote (``measurement_proposed``). Nothing here spends or changes the scene.
+    plausibly blocks the nearer stances and the scene's review names some, the measurement is due
+    (``measurement_due``, with its binding and most): Blueprint's own preparation spend, which the worker
+    runs; the site is never asked about it. Nothing here spends or changes the scene.
     """
 
-    from .robot_access_furniture import APPEARANCE, MODEL, PROPOSAL_SCHEMA, station_proposal
+    from .robot_access_furniture import MEASUREMENT_DUE, MODEL, PROPOSAL_SCHEMA, station_proposal
     from .robot_access_measurement import measurement_offer, plausibly_blocked
 
     why = {"reason": "no_ranked_stance_carries", "carry_cleared": bool(carry.get("cleared")),
@@ -683,11 +684,10 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
             return {**base, "status": "not_proposed", "reason": "measurement_" + str(offer["status"])[:80],
                     "why": why, "trigger": trigger}
         binding = offer["binding"]
-        return {**base, "status": "measurement_proposed", "why": why, "trigger": trigger,
-                "items": [dict(row) for row in binding["items"]], "support_label": str(support_label or
-                                                                                       "the support")[:160],
-                "binding": binding, "binding_digest": offer["binding_digest"], "appearance": dict(APPEARANCE),
-                "claim_ceiling": "cpu_bounded_estimate"}
+        return {**base, "status": MEASUREMENT_DUE, "why": why, "trigger": trigger,
+                "items": [dict(row) for row in binding["items"]], "binding": binding,
+                "binding_digest": offer["binding_digest"], "maximum_cost_usd": binding["maximum_cost_usd"],
+                "spend": "website_preparation_spend_within_the_jobs_approved_caps"}
     try:
         affordance = task_spec["interaction_affordance"]
         task = {"start_pose_world": task_spec["start_pose_world"],
@@ -738,7 +738,7 @@ def _robot_access_applied(access: Mapping[str, Any], *, scope: Mapping[str, Any]
 
     try:
         confirmation = find_confirmation(scope["directory"], scope["intent"],
-                                         binding_digest=str(access["binding_digest"]), question="move")
+                                         binding_digest=str(access["binding_digest"]))
     except (KeyError, TypeError, ValueError, OSError):
         confirmation = None
     if confirmation is None:
@@ -832,10 +832,10 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     arm (``_own_arm_stations``). ``owner_success_confirmation_scope`` (``intent`` and its ``directory``,
     bound to this scene by the caller) is where a ``proposal_only`` owner authority may find the owner's
     sealed confirmation of these exact thresholds (``_owner_confirmed``).
-    ``movable_furniture`` is what the scene knows of its own movable furniture: the owner-approved
-    measurement's sidecar, or that none was made (``robot_access_measurement.furniture_for_scope``). When
-    none was made and furniture plausibly blocks the carry, the record asks the owner whether to measure it
-    (``measurement_proposed``). When no ranked stance carries a rigid
+    ``movable_furniture`` is what the scene knows of its own movable furniture: its measurement's
+    sidecar, or that none was made (``robot_access_measurement.furniture_for_scope``). When none was made
+    and furniture plausibly blocks the carry, the record says the measurement is due (``measurement_due``),
+    which the worker runs as preparation spend. When no ranked stance carries a rigid
     pick and place, the record proposes moving the fewest of those items that opens a stance within
     the arm's reach (``robot_access_removal``), and nothing else changes. Only the site owner's sealed
     approval of exactly that proposal, found under ``robot_access_scope`` (the request's own intent),
