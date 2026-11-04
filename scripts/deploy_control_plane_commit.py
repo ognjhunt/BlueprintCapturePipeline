@@ -498,6 +498,9 @@ DEFAULT_DEPLOYED_SYSTEMD_UNITS = (
     "blueprint-scene-project-spend-refresh.service",
     "blueprint-control-plane-storage-gc.service",
     "blueprint-control-plane-storage-gc.timer",
+    # Retires superseded release and runtime trees behind receipts (its own owner switch).
+    "blueprint-control-plane-release-lifecycle.service",
+    "blueprint-control-plane-release-lifecycle.timer",
     "blueprint-control-plane-capacity.service",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.service",
@@ -599,6 +602,8 @@ DEFAULT_ALWAYS_ARM_TIMER_UNITS = (
     # website scene workspaces, each behind its own proofs (docs/CONTROL_PLANE_STORAGE.md).
     "blueprint-control-plane-storage-gc.timer",
     "blueprint-completed-replay-cache-gc.timer",
+    # No-spend housekeeping with its own receipts and owner switch; a door hold pauses it.
+    "blueprint-control-plane-release-lifecycle.timer",
     "blueprint-control-plane-capacity.timer",
     "blueprint-control-plane-preflight.timer",
     # Launch liveness and post-teardown provider-zero bookkeeping. It never

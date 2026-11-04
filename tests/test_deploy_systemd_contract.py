@@ -279,6 +279,17 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert "ProtectSystem=strict" in text
             assert "ReadWritePaths=/var/lib/blueprint " not in text
             continue
+        if unit.name == "blueprint-control-plane-release-lifecycle.service":
+            # Root, because release worktrees are root-owned; writes only the managed trees and receipts.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_SYS_PTRACE" in text
+            for control in ("NoNewPrivileges=true", "ProtectSystem=strict", "PrivateNetwork=true",
+                            "RestrictAddressFamilies=AF_UNIX\n", "TasksMax=64", "MemoryMax=512M"):
+                assert control in text, (unit.name, control)
+            assert "ReadWritePaths=/var/lib/blueprint " not in text
+            assert "ReadWritePaths=/var/lib/blueprint\n" not in text
+            continue
         if unit.name == "blueprint-control-plane-preflight.service":
             # Root housekeeping: replays each unit's sandbox through PID 1 and
             # writes one evidence root; blockers are content, so exit 2 is success.
@@ -391,6 +402,7 @@ HOST_MEMORY_KEPT = {
     "blueprint-control-plane-preflight.service": ("200", "1G"),
     "blueprint-control-plane-capacity.service": ("200", "512M"),
     "blueprint-completed-replay-cache-gc.service": ("200", "512M"),
+    "blueprint-control-plane-release-lifecycle.service": ("200", "512M"),
     "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "8G"),
     "blueprint-website-atlas-preview.service": ("-200", "8G"),
     "blueprint-team-evaluation-runner.service": ("-200", "8G"),
