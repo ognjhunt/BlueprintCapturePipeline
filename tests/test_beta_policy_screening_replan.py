@@ -205,3 +205,34 @@ def test_a_named_cell_setup_failure_is_a_harness_failure_for_retry_and_sibling_h
     assert coordinator.replan_scope("campaign-1", implementation_commit=NEW, queue_root=tmp_path) == [
         "candidate-000", "candidate-001"]
     assert not coordinator._harness_failed({"status": "blocked", "blockers": [code, "vast_instance_hard_ttl_expired"]})
+
+
+def test_a_campaign_retrying_a_harness_failure_runs_one_candidate_at_a_time(tmp_path):
+    """2026-11-04: after a retry deploy, all three candidates launched before the first one's result
+    was in, so the same harness failure would have cost each its last retry. Until a run gets
+    through, the next candidate waits for the active one's result, unreserved."""
+    coordinator.enqueue_screening_campaign(plan(count=3, cost="2.00"), queue_root=tmp_path)
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                        executor=Backend(HARNESS_FAILED))
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,
+                                        executor=Backend(HARNESS_FAILED))
+    coordinator.supersede_campaign("campaign-1", successor(plan(count=3, cost="2.00")), implementation_commit=NEW,
+                                   queue_root=tmp_path)
+    running = Backend({"status": "running"})
+    for _ in range(3):
+        coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=running)
+    rows = publication(tmp_path, "campaign-1b")
+    assert [row["status"] for row in rows["candidates"]] == ["running", "pending", "pending"]
+    assert rows["budget"]["reserved_usd"] == "2" and running.launches == 1
+    # The first one completes: the harness is proven at this commit, the rest launch as usual.
+    done = Backend({"status": "completed", "provider_allocation_performed": True, "provider_zero_verified": True})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=done)
+    assert publication(tmp_path, "campaign-1b")["candidates"][0]["status"] != "running"
+
+
+def test_a_campaign_with_no_harness_failure_on_record_launches_as_before(tmp_path):
+    coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
+    running = Backend({"status": "running"})
+    coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path, executor=running,
+                                        max_launches=2)
+    assert [row["status"] for row in publication(tmp_path)["candidates"]] == ["running", "running"]

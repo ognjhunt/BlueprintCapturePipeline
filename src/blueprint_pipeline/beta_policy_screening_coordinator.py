@@ -339,11 +339,29 @@ def _harness_failed(row: Mapping[str, Any]) -> bool:
             and not (row.get("summary") or {}).get("episodes_scored"))
 
 
+def _harness_failures(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> int:
+    return sum(1 for state in ledger["campaigns"].values()
+               if state["site_id"] == site_id and _harness_failed(state["candidates"].get(candidate_id) or {}))
+
+
 def _harness_retry_allowed(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> bool:
     """Whether this site's candidate may be planned again: at most ``HARNESS_RETRY_LIMIT`` retries."""
-    failures = sum(1 for state in ledger["campaigns"].values()
-                   if state["site_id"] == site_id and _harness_failed(state["candidates"].get(candidate_id) or {}))
-    return 0 < failures <= HARNESS_RETRY_LIMIT
+    return 0 < _harness_failures(ledger, site_id, candidate_id) <= HARNESS_RETRY_LIMIT
+
+
+def _unproven_retry_in_flight(ledger: Mapping[str, Any], state: Mapping[str, Any], candidate_id: str) -> bool:
+    """A campaign retrying a harness failure runs one candidate at a time until one completes.
+
+    The fix that prompted the retry is unproven until a run gets through. Another failure
+    would hit every candidate already launched, each spending a bounded retry, so the next
+    one waits (still pending, nothing reserved) for the active one's result.
+    """
+    rows = state["candidates"]
+    if any(row["status"] == "completed" for row in rows.values()):
+        return False
+    if not any(_harness_failures(ledger, state["site_id"], key) for key in rows):
+        return False
+    return any(row["status"] in ACTIVE_STATUSES for key, row in rows.items() if key != candidate_id)
 
 
 def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementation_commit: str,
@@ -621,6 +639,8 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         state = ledger["campaigns"][campaign_id]
         row = state["candidates"][candidate_id]
         if row["status"] != "pending":
+            return None
+        if _unproven_retry_in_flight(ledger, state, candidate_id):
             return None
         if any(_harness_failed(other) for key, other in state["candidates"].items() if key != candidate_id):
             # Never pay for a run this commit's harness already failed on a sibling.
