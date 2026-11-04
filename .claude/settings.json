@@ -9,5 +9,10 @@
   },
   "enabledPlugins": {
     "typesafe@typesafe-ai": true
+  },
+  "permissions": {
+    "allow": [
+      "Bash(python3 scripts/operator_door.py deploy:*)"
+    ]
   }
 }
