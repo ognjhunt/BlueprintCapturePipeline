@@ -79,8 +79,9 @@ def post_start_identity(provisioning_path: Path, *, controller_backend: str) -> 
               "excluded_extensions": {name: manager.is_extension_enabled(name) for name in EXCLUDED_ARCHIVES},
               "controller_backend": controller_backend}
     if controller_backend == "pink_franka":
-        from .native_task_pink_compatibility import readback_pink_runtime
-        result["pink"] = readback_pink_runtime(manager)
+        # The SDK extension is enabled directly (``native_task_isaaclab_launch``); read it back.
+        result["pink"] = {"activation": "sdk_extension_enable",
+                          "sdk_extension_enabled": manager.is_extension_enabled("isaacsim.robot_motion.pink")}
     elif controller_backend == "g1_joint":
         paths = prepare_g1_python_dependencies()
         python_modules = {}
@@ -106,7 +107,7 @@ def validate_post_start_identity(readback: dict, *, controller_backend: str) -> 
     if (gpu.get("torch_device") != "cuda:0" or gpu.get("warp_device") != "cuda:0"
             or gpu.get("cuda_version") != "12.8" or gpu.get("shared_pointer") is not True or gpu.get("sum") != 6.):
         raise ValueError("native_task_post_start_gpu_interop_failed")
-    if controller_backend == "pink_franka" and readback.get("pink", {}).get("controller_constructed") is not True:
+    if controller_backend == "pink_franka" and readback.get("pink", {}).get("sdk_extension_enabled") is not True:
         raise ValueError("native_task_required_pink_controller_unavailable")
     if controller_backend == "g1_joint" and (readback.get("sdk_pink_extension_enabled") is not False
             or any(readback.get("g1_python_dependencies", {}).get(name, {}).get("origin_bound") is not True
