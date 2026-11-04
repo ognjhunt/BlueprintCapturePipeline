@@ -3,6 +3,12 @@
 SDK Python, plugins and robot assets are unchanged. Only the four dependency
 edges naming bundled Warp are redirected to a verified external-Warp provider.
 Explicit Kit extension paths must be read back before controller use.
+
+Not used by the task launcher (2026-11-04): its pinned extension bytes come from GitHub
+source, and the 6.0.1 image's differ (``pink_sdk_extension_config_changed`` on every
+Franka cell). ``native_task_isaaclab_launch`` enables SDK Pink directly, as it did while
+Franka policy episodes ran on GPU. Re-adopting this overlay needs its manifest read from
+the image itself and one bounded GPU run.
 """
 from __future__ import annotations
 
