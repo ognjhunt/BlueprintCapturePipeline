@@ -107,8 +107,11 @@ grew the store to about 80 GB and took root from 55 to 31 GB free within hours.
 
 When the hourly walk reaches them, the survey names both stores as host roots
 and warns `usage_container_runtime_large` above 20 GiB. A truncated walk marks
-their totals as lower bounds (`container_runtime_complete: false`). On this host
-the root walk has been stopping before `/var/lib`. A fast unreserved decline
+their totals as lower bounds (`container_runtime_complete: false`). The survey
+reaches every partition within a few hourly passes and reports the composite of
+their latest measurements (`usage.composite` says how many are measured and how
+old the oldest is); until 2026-11-04 it restarted every hour and never reached
+`/var/lib` or `/opt`. A fast unreserved decline
 pages `floor_within_hours` whatever the writer. The door cannot read these
 paths, so the host owner reads `docker system df` and the store's size directly.
 

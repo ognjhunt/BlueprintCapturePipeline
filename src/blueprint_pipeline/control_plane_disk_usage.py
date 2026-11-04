@@ -437,6 +437,12 @@ class _UsageWalk:
         self.identity_refusals = 0
         self.duplicates = 0
         self.truncated = False
+        # The partition being walked, and what each partition holds, for the cursor's ledger.
+        self.partition: Any = None
+        self.partition_rows: dict[Any, dict[tuple[str, str, str], list[int]]] = {}
+        self.partition_devices: dict[Any, dict[int, list[int]]] = {}
+        self.partition_mtime: dict[Any, dict[str, float]] = {}
+        self.partition_shared: dict[Any, int] = {}
 
     def _exhausted(self) -> bool:
         if self.entries >= self.max_entries or self.clock() >= self.deadline:
@@ -505,6 +511,15 @@ class _UsageWalk:
         device_totals[0] += allocated
         if attribution[0] not in _UNATTRIBUTED_CLASSES:
             device_totals[1] += allocated
+        if self.partition is not None:
+            own = self.partition_rows.setdefault(self.partition, {}).setdefault(attribution, [0, 0, 0])
+            own[0] += allocated
+            own[1] += apparent
+            own[2] += files
+            own_device = self.partition_devices.setdefault(self.partition, {}).setdefault(device, [0, 0])
+            own_device[0] += allocated
+            if attribution[0] not in _UNATTRIBUTED_CLASSES:
+                own_device[1] += allocated
 
     def _record(self, metadata: os.stat_result, attribution: tuple[str, str, str], device: int,
                 parts: tuple[str, ...]) -> None:
@@ -513,6 +528,9 @@ class _UsageWalk:
             if root in self.unclassified_mtime or len(self.unclassified_mtime) < self.buffer_limit:
                 self.unclassified_mtime[root] = max(
                     self.unclassified_mtime.get(root, 0.0), float(metadata.st_mtime))
+                if self.partition is not None:
+                    own = self.partition_mtime.setdefault(self.partition, {})
+                    own[root] = max(own.get(root, 0.0), float(metadata.st_mtime))
             else:
                 self.truncated = True
         directory = stat.S_ISDIR(metadata.st_mode)
@@ -531,14 +549,21 @@ class _UsageWalk:
                 self.truncated = True
                 return
             self.shared[key] = [rank, attribution, allocated_bytes(metadata),
-                                int(metadata.st_size), device, self._reserve_owner(attribution)]
+                                int(metadata.st_size), device, self._reserve_owner(attribution),
+                                self.partition]
             return
         self.duplicates += 1
         if rank < held[0]:
             held[0], held[1] = rank, attribution
             held[5] = self._reserve_owner(attribution)
+            held[6] = self.partition
 
-    def walk(self, path: str, metadata: os.stat_result) -> None:
+    def walk_shallow(self, path: str, metadata: os.stat_result) -> None:
+        """A split directory's own inode and its non-directory entries; its subdirectories are partitions."""
+
+        self.walk(path, metadata, shallow=True)
+
+    def walk(self, path: str, metadata: os.stat_result, *, shallow: bool = False) -> None:
         """Walk one mount within its own filesystem, in ascending name order."""
 
         device = metadata.st_dev
@@ -548,7 +573,7 @@ class _UsageWalk:
         try:
             if stat.S_ISDIR(metadata.st_mode):
                 with anchored_directory(path, metadata) as root:
-                    self._walk_directory(path, root, os.fstat(root.fd))
+                    self._walk_directory(path, root, os.fstat(root.fd), shallow=shallow)
                 return
             parent, name = os.path.split(path)
             with anchored_directory(parent, os.lstat(parent)) as anchor:
@@ -564,7 +589,8 @@ class _UsageWalk:
             self.unreadable += 1
             self.truncated = True
 
-    def _walk_directory(self, path: str, root: UsageDirectory, metadata: os.stat_result) -> None:
+    def _walk_directory(self, path: str, root: UsageDirectory, metadata: os.stat_result, *,
+                        shallow: bool = False) -> None:
         device = metadata.st_dev
         self.entries += 1
         top = self._directory(path, _parts(_canonical(path, self.aliases)))
@@ -605,7 +631,7 @@ class _UsageWalk:
                         if child.st_dev != device or child_path in self.mount_points:
                             continue
                         if stat.S_ISDIR(child.st_mode):
-                            if (child.st_dev, child.st_ino) in self.walk_roots:
+                            if shallow or (child.st_dev, child.st_ino) in self.walk_roots:
                                 continue
                             nested = self._child(directory, entry.name, child_path)
                             self._record(child, self._attribute(nested.parts, nested.match, True), device,
@@ -631,9 +657,13 @@ class _UsageWalk:
             stack.extend(reversed(subdirectories))
 
     def finish(self) -> None:
-        for _rank, attribution, allocated, apparent, device, reserved in self.shared.values():
+        for _rank, attribution, allocated, apparent, device, reserved, partition in self.shared.values():
             if reserved:
+                self.partition = partition
                 self._add(attribution, allocated, apparent, 1, device)
+                if partition is not None:
+                    self.partition_shared[partition] = self.partition_shared.get(partition, 0) + allocated
+        self.partition = None
 
 
 def _mount_row(mount: str, used: int | None, surveyed: int, classified: int) -> dict[str, Any]:
@@ -670,6 +700,42 @@ def _report_safe(value: Any) -> Any:
     return value
 
 
+def _sanitize_value(value: Any) -> Any:
+    if isinstance(value, str):
+        # Path names containing assignment, URL, or JSON syntax can carry
+        # many credential forms (including signed URLs) without a familiar
+        # token prefix. Such names are rare and safe to hide wholesale.
+        unsafe_syntax = any(character in value for character in '?=@"\r\n') or (
+            ":" in value and not (value.count(":") == 1 and value.startswith(
+                ("sha256:", "scene:", "scene-intent:", "run:", "release:", "store:", "lane:")
+            ))
+        )
+        return "<redacted>" if unsafe_syntax or _CREDENTIAL_SHAPED_NAME.search(value) else value
+    if isinstance(value, list):
+        return [_sanitize_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _sanitize_value(item) for key, item in value.items()}
+    return value
+
+
+def _mount_rows(
+    original_walks: Sequence[tuple[str, os.stat_result]], unreadable_mounts: Sequence[str],
+    devices: Mapping[int, Sequence[int]], statvfs: Callable[[str], Any],
+) -> list[dict[str, Any]]:
+    """One row per filesystem: its used bytes, and how much of them the survey saw."""
+
+    filesystems: dict[int, list[str]] = {}
+    for path, metadata in original_walks:
+        filesystems.setdefault(metadata.st_dev, []).append(path)
+    rows = []
+    for device, paths in filesystems.items():
+        label = min(paths, key=lambda item: (len(item), item))
+        surveyed, classified = devices.get(device, [0, 0])
+        rows.append(_mount_row(label, _used_bytes(statvfs, label), surveyed, classified))
+    rows.extend(_mount_row(path, None, 0, 0) for path in unreadable_mounts)
+    return rows
+
+
 def sanitize_public_survey(survey: Mapping[str, Any]) -> dict[str, Any]:
     """Remove credential-shaped names before publishing a survey or projection.
 
@@ -678,24 +744,7 @@ def sanitize_public_survey(survey: Mapping[str, Any]) -> dict[str, Any]:
     previously saved survey when a newer controller reads it.
     """
 
-    def sanitize(value: Any) -> Any:
-        if isinstance(value, str):
-            # Path names containing assignment, URL, or JSON syntax can carry
-            # many credential forms (including signed URLs) without a familiar
-            # token prefix. Such names are rare and safe to hide wholesale.
-            unsafe_syntax = any(character in value for character in '?=@"\r\n') or (
-                ":" in value and not (value.count(":") == 1 and value.startswith(
-                    ("sha256:", "scene:", "scene-intent:", "run:", "release:", "store:", "lane:")
-                ))
-            )
-            return "<redacted>" if unsafe_syntax or _CREDENTIAL_SHAPED_NAME.search(value) else value
-        if isinstance(value, list):
-            return [sanitize(item) for item in value]
-        if isinstance(value, dict):
-            return {key: sanitize(item) for key, item in value.items()}
-        return value
-
-    safe = sanitize(dict(survey))
+    safe = _sanitize_value(dict(survey))
     if "survey_digest" in safe:
         safe["survey_digest"] = canonical_digest(safe, digest_field="survey_digest")
     return safe
@@ -768,16 +817,11 @@ def survey_usage(
             seen.add(key)
             walks.append((path, metadata))
     original_walks = list(walks)
-    partition = None
     if partitions_per_mount is not None:
-        from .control_plane_disk_usage_cursor import select_partitions
-
-        walks, partition = select_partitions(original_walks, continuation=continuation,
-            partitions_per_mount=partitions_per_mount, mount_points=walk.mount_points,
-            deadline=started + max_seconds / 4, clock=clock)
-        # A listed nested mount remains excluded from its parent's traversal,
-        # even when this pass visits only some children of that nested root.
-        seen.update((metadata.st_dev, metadata.st_ino) for _path, metadata in walks)
+        return _partitioned_survey(
+            walk, original_walks, unreadable_mounts, seen=seen, started=started, max_entries=max_entries,
+            max_seconds=max_seconds, clock=clock, statvfs=statvfs, continuation=continuation,
+            partitions_per_mount=partitions_per_mount, scratch_census=scratch_census)
     walk.walk_roots = frozenset(seen)
     root_count = max(1, len(walks))
     entry_share, extra_entries = divmod(max_entries, root_count)
@@ -793,20 +837,7 @@ def survey_usage(
         truncated |= walk.truncated
     walk.truncated = truncated
     walk.finish()
-    if partition is not None and walk.identity_refusals:
-        partition["inventory_complete"] = False
-        partition["continuation_status"] = sorted(
-            set(partition["continuation_status"]) - {"continued", "started"} | {"partition_identity_refused"})
-
-    filesystems: dict[int, list[str]] = {}
-    for path, metadata in original_walks:
-        filesystems.setdefault(metadata.st_dev, []).append(path)
-    rows = []
-    for device, paths in filesystems.items():
-        label = min(paths, key=lambda item: (len(item), item))
-        surveyed, classified = walk.devices.get(device, [0, 0])
-        rows.append(_mount_row(label, _used_bytes(statvfs, label), surveyed, classified))
-    rows.extend(_mount_row(path, None, 0, 0) for path in unreadable_mounts)
+    rows = _mount_rows(original_walks, unreadable_mounts, walk.devices, statvfs)
 
     by_class: dict[str, list[int]] = {}
     by_root: dict[tuple[str, str], int] = {}
@@ -827,14 +858,14 @@ def survey_usage(
                     key=lambda item: (-item[1][0], item[0][2], item[0][1], item[0][0]))
     survey: dict[str, Any] = {
         "schema_version": SURVEY_SCHEMA_VERSION,
-        "status": "truncated" if walk.truncated or partition is not None else "complete",
+        "status": "truncated" if walk.truncated else "complete",
         "observed_at_epoch": started,
         "duration_seconds": round(max(0.0, clock() - started), 3),
         "entries_visited": walk.entries,
         "unreadable": walk.unreadable,
         "path_identity_refusals": walk.identity_refusals,
-        "unreadable_bytes": None if walk.unreadable or partition is not None and not partition["inventory_complete"] else 0,
-        "byte_accounting": "current_snapshot_lower_bound" if walk.truncated or partition is not None or walk.unreadable else "current_snapshot",
+        "unreadable_bytes": None if walk.unreadable else 0,
+        "byte_accounting": "current_snapshot_lower_bound" if walk.truncated or walk.unreadable else "current_snapshot",
         "mounts": rows,
         "by_class": [
             {"storage_class": storage_class, "allocated_bytes": allocated,
@@ -872,7 +903,7 @@ def survey_usage(
         "container_runtime_bytes": sum(allocated for _root, allocated in container_runtime),
         # A truncated walk may stop before these stores: their totals are then
         # lower bounds, and an absent store is unknown rather than empty.
-        "container_runtime_complete": not walk.truncated and partition is None and not walk.unreadable,
+        "container_runtime_complete": not walk.truncated and not walk.unreadable,
         "hardlinks": {
             "shared_inodes": len(walk.shared),
             "shared_bytes": sum(held[2] for held in walk.shared.values()),
@@ -880,9 +911,217 @@ def survey_usage(
         },
         "survey_digest": "",
     }
-    if partition is not None:
-        survey.update(partition)
-        survey["snapshot_observed_at_epoch"] = started
+    survey = sanitize_public_survey(_report_safe(survey))
+    survey["survey_digest"] = canonical_digest(survey, digest_field="survey_digest")
+    return survey
+
+
+#: A pass stops starting partitions once this share of its time or entries is spent,
+#: and gives any one partition at most ``1 / PARTITION_SHARE_DIVISOR`` of the budget.
+PARTITION_PASS_FRACTION = 0.75
+PARTITION_SHARE_DIVISOR = 4
+LEDGER_MAX_ROOTS = 2_000
+LEDGER_OWNER_ROWS = 16
+
+
+def _measurement(walk: _UsageWalk, key: Any, info: os.stat_result, *, complete: bool,
+                 observed_at: float) -> dict[str, Any]:
+    """One partition's ledger row: exact class and device totals, its roots, its largest owners.
+
+    Labels are made report-safe here, so publishing the survey never changes the
+    cursor whose digest covers them.
+    """
+
+    from .control_plane_disk_usage_cursor import _identity
+
+    rows = walk.partition_rows.get(key, {})
+    classes: dict[str, list[int]] = {}
+    roots: dict[tuple[str, str], int] = {}
+    for (storage_class, root, _owner), (allocated, apparent, files) in rows.items():
+        totals = classes.setdefault(storage_class, [0, 0, 0])
+        totals[0] += allocated
+        totals[1] += apparent
+        totals[2] += files
+        roots[(storage_class, root)] = roots.get((storage_class, root), 0) + allocated
+    mtimes = walk.partition_mtime.get(key, {})
+    root_rows = sorted(([storage_class, root, allocated, mtimes.get(root)]
+                        for (storage_class, root), allocated in roots.items()),
+                       key=lambda row: (-row[2], row[1], row[0]))
+    owners = sorted(([storage_class, root, owner, values[0]]
+                     for (storage_class, root, owner), values in rows.items()),
+                    key=lambda row: (-row[3], row[2], row[1], row[0]))[:LEDGER_OWNER_ROWS]
+    return _sanitize_value(_report_safe({
+        "identity": _identity(info),
+        "observed_at_epoch": observed_at,
+        "complete": complete,
+        "classes": [[name, *values] for name, values in sorted(classes.items())],
+        "devices": [[device, *values] for device, values in sorted(walk.partition_devices.get(key, {}).items())],
+        "roots": root_rows[:LEDGER_MAX_ROOTS],
+        "roots_omitted": max(0, len(root_rows) - LEDGER_MAX_ROOTS),
+        "owners": owners,
+        "multiply_linked_bytes": walk.partition_shared.get(key, 0),
+    }))
+
+
+def _composite(plan: Any, cursor: Mapping[str, Any], *, now: float) -> dict[str, Any]:
+    """Merge the latest usable measurement of every current partition."""
+
+    from .control_plane_disk_usage_cursor import measurement_usable
+
+    classes: dict[str, list[int]] = {}
+    devices: dict[int, list[int]] = {}
+    roots: dict[tuple[str, str], int] = {}
+    mtimes: dict[str, float] = {}
+    owners: dict[tuple[str, str, str], int] = {}
+    stats = {"partitions": 0, "measured": 0, "complete_measurements": 0, "unmeasured": 0,
+             "roots_omitted": 0, "multiply_linked_bytes": 0}
+    oldest: float | None = None
+    for root in plan.roots:
+        ledger = cursor["roots"][root.key]["ledger"]
+        for key, candidate in root.candidates.items():
+            stats["partitions"] += 1
+            measurement = ledger.get(key)
+            if not measurement_usable(measurement, candidate):
+                stats["unmeasured"] += 1
+                continue
+            stats["measured"] += 1
+            stats["complete_measurements"] += bool(measurement.get("complete"))
+            stats["roots_omitted"] += int(measurement.get("roots_omitted") or 0)
+            stats["multiply_linked_bytes"] += int(measurement.get("multiply_linked_bytes") or 0)
+            observed = float(measurement.get("observed_at_epoch") or 0.0)
+            oldest = observed if oldest is None else min(oldest, observed)
+            for name, allocated, apparent, files in measurement.get("classes") or []:
+                totals = classes.setdefault(name, [0, 0, 0])
+                totals[0] += allocated
+                totals[1] += apparent
+                totals[2] += files
+            for device, surveyed, classified in measurement.get("devices") or []:
+                totals = devices.setdefault(int(device), [0, 0])
+                totals[0] += surveyed
+                totals[1] += classified
+            for storage_class, root_name, allocated, mtime in measurement.get("roots") or []:
+                roots[(root_name, storage_class)] = roots.get((root_name, storage_class), 0) + allocated
+                if mtime is not None:
+                    mtimes[root_name] = max(mtimes.get(root_name, 0.0), float(mtime))
+            for storage_class, root_name, owner, allocated in measurement.get("owners") or []:
+                owners[(storage_class, root_name, owner)] = owners.get((storage_class, root_name, owner), 0) + allocated
+    stats["oldest_observed_at_epoch"] = oldest
+    stats["oldest_age_seconds"] = None if oldest is None else round(max(0.0, now - oldest), 1)
+    return {"classes": classes, "devices": devices, "roots": roots, "mtimes": mtimes, "owners": owners,
+            "stats": stats}
+
+
+def _partitioned_survey(
+    walk: _UsageWalk, original_walks: Sequence[tuple[str, os.stat_result]], unreadable_mounts: Sequence[str], *,
+    seen: set[tuple[int, int]], started: float, max_entries: int, max_seconds: float,
+    clock: Callable[[], float], statvfs: Callable[[str], Any], continuation: Mapping[str, Any] | None,
+    partitions_per_mount: int, scratch_census: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """One bounded pass over the next partitions, published as the composite of every partition.
+
+    The pass walks partitions in the cursor's order, alternating between mounts,
+    each with at most a quarter of the pass's time and entries, and stops
+    starting new ones once three quarters are spent. Each walked partition's
+    measurement replaces its ledger row. The survey's mount, class, root and
+    owner rows are the composite of every current partition's latest usable
+    row, so attribution covers the whole mount once every partition has been
+    measured; ``status`` is ``complete`` only while every partition has a
+    complete measurement no older than a day and every inventory is complete.
+    Inodes linked from two partitions measured in different passes can count
+    twice; ``composite.multiply_linked_bytes`` bounds that.
+    """
+
+    from .control_plane_disk_usage_cursor import COMPOSITE_MAX_AGE_SECONDS, finish_partitions, plan_partitions
+
+    plan = plan_partitions(original_walks, continuation=continuation, partitions_per_mount=partitions_per_mount,
+                           mount_points=walk.mount_points, deadline=started + max_seconds / 4, clock=clock)
+    # A listed nested mount remains excluded from its parent's traversal,
+    # even when this pass visits only some children of that nested root.
+    seen.update((candidate.info.st_dev, candidate.info.st_ino) for _root, candidate in plan.order)
+    walk.walk_roots = frozenset(seen)
+    buffer_cap, shared_cap = walk.buffer_limit, walk.shared_limit
+    stop_at = started + max_seconds * PARTITION_PASS_FRACTION
+    walked: list[tuple[Any, Any, bool]] = []
+    for root, candidate in plan.order:
+        if (clock() >= stop_at or walk.entries >= max_entries * PARTITION_PASS_FRACTION
+                or len(walk.totals) >= buffer_cap * PARTITION_PASS_FRACTION
+                or len(walk.shared) >= shared_cap * PARTITION_PASS_FRACTION):
+            break
+        walk.partition = (root.key, candidate.key)
+        walk.max_entries = min(max_entries, walk.entries + max(1, max_entries // PARTITION_SHARE_DIVISOR))
+        walk.deadline = min(started + max_seconds, clock() + max_seconds / PARTITION_SHARE_DIVISOR)
+        walk.buffer_limit, walk.shared_limit, walk.truncated = buffer_cap, shared_cap, False
+        before = (walk.unreadable, walk.identity_refusals)
+        (walk.walk_shallow if candidate.shallow else walk.walk)(candidate.path, candidate.info)
+        walked.append((root, candidate, not walk.truncated and (walk.unreadable, walk.identity_refusals) == before))
+    walk.partition = None
+    pass_truncated = len(walked) < len(plan.order) or any(not done for _r, _c, done in walked)
+    walk.finish()
+    observed_at = clock()
+    measurements = {(root.key, candidate.key): _measurement(walk, (root.key, candidate.key), candidate.info,
+                                                            complete=done, observed_at=observed_at)
+                    for root, candidate, done in walked}
+    partition = finish_partitions(plan, measurements=measurements, identity_refused=bool(walk.identity_refusals))
+    composite = _composite(plan, partition["continuation"], now=observed_at)
+    stats = composite["stats"]
+    cycle_complete = (partition["inventory_complete"] and stats["unmeasured"] == 0
+                      and stats["complete_measurements"] == stats["partitions"]
+                      and (stats["oldest_age_seconds"] or 0.0) <= COMPOSITE_MAX_AGE_SECONDS)
+    roots = sorted(composite["roots"].items(), key=lambda item: (-item[1], item[0]))
+    unclassified = [(root, allocated) for (root, storage_class), allocated in roots if storage_class == "unclassified"]
+    orphan_scratch = [(root, allocated) for root, allocated in unclassified if is_orphan_scratch_root(root)]
+    container_runtime = [(root, allocated) for (root, storage_class), allocated in roots
+                         if storage_class == "host" and root in CONTAINER_RUNTIME_ROOTS]
+    owners = sorted(composite["owners"].items(), key=lambda item: (-item[1], item[0][2], item[0][1], item[0][0]))
+    mtimes = composite["mtimes"]
+    survey: dict[str, Any] = {
+        "schema_version": SURVEY_SCHEMA_VERSION,
+        "status": "complete" if cycle_complete else "truncated",
+        "observed_at_epoch": started,
+        "duration_seconds": round(max(0.0, clock() - started), 3),
+        "entries_visited": walk.entries,
+        "unreadable": walk.unreadable,
+        "path_identity_refusals": walk.identity_refusals,
+        "unreadable_bytes": 0 if cycle_complete else None,
+        "byte_accounting": ("rolling_partition_composite" if cycle_complete
+                            else "rolling_partition_composite_lower_bound"),
+        "scope": "rolling_partition_composite",
+        "mounts": _mount_rows(original_walks, unreadable_mounts, composite["devices"], statvfs),
+        "by_class": [
+            {"storage_class": storage_class, "allocated_bytes": allocated,
+             "apparent_bytes": apparent, "files": files}
+            for storage_class, (allocated, apparent, files)
+            in sorted(composite["classes"].items(), key=lambda item: (-item[1][0], item[0]))
+        ],
+        "top_roots": [{"root": root, "storage_class": storage_class, "allocated_bytes": allocated}
+                      for (root, storage_class), allocated in roots[:SURVEY_TOP_ROWS]],
+        "top_owners": [{"owner": owner, "root": root, "storage_class": storage_class, "allocated_bytes": allocated}
+                       for (storage_class, root, owner), allocated in owners[:SURVEY_TOP_ROWS]],
+        "unclassified_roots": [{"root": root, "allocated_bytes": allocated, "newest_mtime_epoch": mtimes.get(root)}
+                               for root, allocated in unclassified[:SURVEY_ORPHAN_ROOT_ROWS]],
+        "unclassified_bytes": sum(allocated for _root, allocated in unclassified),
+        "orphan_scratch_bytes": sum(allocated for _root, allocated in orphan_scratch),
+        "orphan_scratch_count": len(orphan_scratch),
+        "orphan_scratch_largest_bytes": max((allocated for _root, allocated in orphan_scratch), default=0),
+        "orphan_scratch_roots": [
+            {"root": root, "allocated_bytes": allocated, "newest_mtime_epoch": mtimes.get(root),
+             **scratch_lifecycle_disposition(root, scratch_census, now=started)}
+            for root, allocated in orphan_scratch[:SURVEY_ORPHAN_ROOT_ROWS]
+        ],
+        "container_runtime_roots": [{"root": root, "allocated_bytes": allocated} for root, allocated in container_runtime],
+        "container_runtime_bytes": sum(allocated for _root, allocated in container_runtime),
+        "container_runtime_complete": cycle_complete,
+        # This pass's own hardlink accounting; the composite's bound is under ``composite``.
+        "hardlinks": {
+            "shared_inodes": len(walk.shared),
+            "shared_bytes": sum(held[2] for held in walk.shared.values()),
+            "duplicate_names_skipped": walk.duplicates,
+        },
+        "composite": {**stats, "pass_truncated": pass_truncated, "walked_partitions": len(walked)},
+        "survey_digest": "",
+        **partition,
+        "snapshot_observed_at_epoch": started,
+    }
     survey = sanitize_public_survey(_report_safe(survey))
     survey["survey_digest"] = canonical_digest(survey, digest_field="survey_digest")
     return survey
