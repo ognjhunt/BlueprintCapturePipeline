@@ -322,10 +322,11 @@ HARNESS_FAILURE_BLOCKERS = frozenset({"beta_screening_native_result_missing_or_i
                                       "g1_beta_native_result_missing_or_invalid",
                                       *SETUP_FAILURE_BLOCKERS})
 #: How many times a site's candidate is planned again after a harness failure. It spent money,
-#: so it is bounded: only after a deploy, inside the site's existing allowance, and with the
-#: hold below a site pays for at most one harness failure per campaign. Two, because the first
-#: retry is often the run that shows what failed; the fix then needs one more.
-HARNESS_RETRY_LIMIT = 2
+#: so it is bounded: only after a deploy, inside the site's existing allowance, one candidate
+#: at a time until a run gets through, and a run stops at its first cell that ran no policy.
+#: Harness failures are ours, not the policy's: 2026-11-04 took three fixes in a row (Pink
+#: startup, the RoboLab import closure), each shown by the run before it.
+HARNESS_RETRY_LIMIT = 4
 #: A campaign freezes one commit, so a harness failure in it would fail its other candidates the
 #: same way: they are held, unspent, and planned again after the next deploy. Matches the WebApp's
 #: "launch" category ("Could not start in our simulator. This is ours to fix.").
