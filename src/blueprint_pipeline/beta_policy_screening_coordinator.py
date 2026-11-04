@@ -312,6 +312,37 @@ def _spent(row: Mapping[str, Any]) -> bool:
                    for attempt in attempts))
 
 
+#: The launch resolved the provider (zero verified) but our own harness returned no usable
+#: result: no episode was scored, so nothing about the policy was measured. The untyped
+#: fallback for a closed run with no reason is not here: it is not known to be ours.
+HARNESS_FAILURE_BLOCKERS = frozenset({"beta_screening_native_result_missing_or_invalid",
+                                      "beta_screening_native_result_invalid",
+                                      "g1_beta_native_result_missing_or_invalid"})
+#: How many times a site's candidate is planned again after a harness failure. It spent money,
+#: so it is bounded: only after a deploy, inside the site's existing allowance, and with the
+#: hold below a site pays for at most one harness failure per campaign. Two, because the first
+#: retry is often the run that shows what failed; the fix then needs one more.
+HARNESS_RETRY_LIMIT = 2
+#: A campaign freezes one commit, so a harness failure in it would fail its other candidates the
+#: same way: they are held, unspent, and planned again after the next deploy. Matches the WebApp's
+#: "launch" category ("Could not start in our simulator. This is ours to fix.").
+HARNESS_HOLD_BLOCKER = "beta_screening_held_after_launch_failure"
+
+
+def _harness_failed(row: Mapping[str, Any]) -> bool:
+    """A spent row our harness failed: blocked only by a harness code, with no episode scored."""
+    blockers = set(row.get("blockers") or [])
+    return (row.get("status") == "blocked" and bool(blockers) and blockers <= HARNESS_FAILURE_BLOCKERS
+            and not (row.get("summary") or {}).get("episodes_scored"))
+
+
+def _harness_retry_allowed(ledger: Mapping[str, Any], site_id: str, candidate_id: str) -> bool:
+    """Whether this site's candidate may be planned again: at most ``HARNESS_RETRY_LIMIT`` retries."""
+    failures = sum(1 for state in ledger["campaigns"].values()
+                   if state["site_id"] == site_id and _harness_failed(state["candidates"].get(candidate_id) or {}))
+    return 0 < failures <= HARNESS_RETRY_LIMIT
+
+
 def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementation_commit: str,
                   scene_half: str | None = None) -> list[str] | None:
     state = ledger["campaigns"][plan["campaign_id"]]
@@ -329,7 +360,11 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
                 # Refused before any allocation at an older commit: a deploy may have fixed the
                 # refusal, so the row is planned again once at the new commit, never spent twice.
                 or row["status"] == "blocked" and frozen not in (None, implementation_commit)
-                and not _spent(row)):
+                and not _spent(row)
+                # Our harness failed after allocation at an older commit: the deploy may have fixed
+                # it, so the candidate is planned again once per site (bounded, it spent money).
+                or frozen not in (None, implementation_commit) and _harness_failed(row)
+                and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])):
             stale = True
     if not stale and scene_half is not None:
         from .beta_policy_screening_scene_half import planned_half
@@ -340,7 +375,9 @@ def _replan_scope(ledger: Mapping[str, Any], plan: Mapping[str, Any], implementa
     if not stale:
         return None
     return [candidate["candidate_id"] for candidate in plan["candidates"]
-            if not _spent(rows[candidate["candidate_id"]])] or None
+            if not _spent(rows[candidate["candidate_id"]])
+            or _harness_failed(rows[candidate["candidate_id"]])
+            and _harness_retry_allowed(ledger, state["site_id"], candidate["candidate_id"])] or None
 
 
 def replan_scope(campaign_id: str, *, implementation_commit: str, scene_half: str | None = None,
@@ -581,6 +618,12 @@ def _reserve(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any]) 
         state = ledger["campaigns"][campaign_id]
         row = state["candidates"][candidate_id]
         if row["status"] != "pending":
+            return None
+        if any(_harness_failed(other) for key, other in state["candidates"].items() if key != candidate_id):
+            # Never pay for a run this commit's harness already failed on a sibling.
+            row.update(status="blocked", blockers=[HARNESS_HOLD_BLOCKER])
+            _changed(state)
+            _save(root, ledger)
             return None
         cap = _amount(candidate["max_cost_usd"])
         site = _budget(ledger, plan["site_id"])
