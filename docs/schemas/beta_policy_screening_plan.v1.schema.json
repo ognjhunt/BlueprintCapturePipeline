@@ -391,7 +391,7 @@
     },
     "reach_rank": {
       "additionalProperties": false,
-      "description": "Where the candidate's reach evidence placed it in the budget order (website_candidate_feasibility.reach_rank): tier 1 own arm solved through the task and reached it, 2 unmeasured, 3 solve searched and did not reach without a proof; the default order holds within a tier and ranking removes nothing.",
+      "description": "The candidate's reach evidence and the tier it places it in (website_candidate_feasibility.reach_rank): 1 own arm solved through the task and reached it, 2 unmeasured, 3 solve searched and did not reach without a proof. The plan funds tier 3 after every other candidate, then learned policies before scripted baselines, then tier 1 before tier 2, then its default order; ranking removes nothing.",
       "properties": {
         "basis": {
           "enum": [

@@ -443,12 +443,14 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     floor the screening lane cannot rent), which stay listed as ``infeasible``
     and are never funded or waitlisted. Runnable candidates the budget cannot
     fund yet are ``waitlisted``, in the same order, for money a selected
-    candidate releases before spend. ``candidate_reach_rank`` capabilities
-    (``website_candidate_feasibility.reach_rank``) order before all of that: a
-    candidate whose own arm reached the task in its model first, an unmeasured
-    one next, one whose solve searched and did not reach last, each tier in the
-    order above. Every row but an infeasible one then records its ``reach_rank``;
-    ranking removes and refuses nothing.
+    candidate releases before spend. With ``candidate_reach_rank`` capabilities
+    (``website_candidate_feasibility.reach_rank``) the order is, in sequence: a
+    candidate whose own-arm solve was flagged after every other; learned
+    policies before scripted baselines, ranked or not; a solve that passed
+    before an unmeasured one; then the order above. So a flagged body never
+    spends before an unflagged one, and an unflagged learned policy goes before
+    any scripted one. Every row but an infeasible one records its
+    ``reach_rank``; ranking removes and refuses nothing.
     """
     catalog = validate_catalog(catalog)
     scene = _scene(scene)
@@ -498,9 +500,13 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                       key=lambda row: (by_id[row]["policy"]["kind"] == "scripted", row))
     order = ranked + unranked
     if reach is not None:
-        # Stable: the default order holds within a tier. Infeasible rows are never funded and are not ranked.
-        order.sort(key=lambda key: REACH_TIERS["reach_unmeasured"] if key in infeasible
-                   else (reach.get(key) or reach_rank(None))["tier"])
+        def reach_order(key: str) -> tuple[bool, bool, int]:
+            # Infeasible rows are never funded and are not ranked by reach.
+            tier = (REACH_TIERS["reach_unmeasured"] if key in infeasible
+                    else (reach.get(key) or reach_rank(None))["tier"])
+            return (tier == REACH_TIERS["own_arm_solve_flagged"], by_id[key]["policy"]["kind"] == "scripted", tier)
+
+        order.sort(key=reach_order)  # Stable: the default order holds within each group.
     for candidate_id in order:
         candidate = by_id[candidate_id]
         row: dict[str, Any] = {"candidate_id": candidate_id,

@@ -34,10 +34,11 @@ its reach is undeclared), or a scene without a station or task points stays
 unassessed and keeps its place in the plan; nothing here is a prior about which
 robot suits which task, and unknown reach never blocks.
 
-The same evidence orders the budget (``reach_rank``): candidates whose own arm
-was solved through the task on this scene and reached it are funded first,
-unmeasured ones next, and ones whose solve searched and did not reach (no proof
-that they cannot) last. Ranking removes nothing.
+The same evidence orders the budget (``reach_rank``): a candidate whose solve
+searched and did not reach (no proof that it cannot) is funded after every
+other; among the rest, learned policies still go before scripted baselines and
+a solve that reached the task goes before an unmeasured one. Ranking removes
+nothing.
 """
 from __future__ import annotations
 
@@ -297,7 +298,7 @@ def infeasible_blockers(feasibility: Mapping[str, Any]) -> dict[str, list[str]]:
             if row["status"] == "infeasible"}
 
 
-#: The budget's order by reach evidence (``beta_policy_screening_plan``): tier by basis, lowest first.
+#: A row's reach tier by basis. The plan funds tier 3 last, then learned before scripted, then 1 before 2.
 REACH_TIERS = {"own_arm_solve_passed": 1, "reach_unmeasured": 2, "own_arm_solve_flagged": 3}
 REACH_RANK_FIELDS = frozenset({"tier", "basis", "feasibility_status", "reach_source", "solve_source",
                                "solve_status", "report_digest", "reasons", "feasibility_digest"})
@@ -328,7 +329,7 @@ def reach_rank(row: Mapping[str, Any] | None, *, feasibility_digest: str | None 
       would make it infeasible (``team_arm_reach`` ``flagged``; the packet Franka's search blocked).
       Its declared reach or chain bound did not refuse it, so it stays eligible and is funded last.
 
-    It only orders: the plan's default order holds within a tier and no candidate is removed.
+    It only orders (``beta_policy_screening_plan.build_screening_plan``); no candidate is removed.
     """
     row = row or {}
     free = (row.get("own_station") or {}).get("base_mode") == "free"

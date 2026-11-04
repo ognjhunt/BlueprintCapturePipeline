@@ -149,18 +149,20 @@ reservation and no pending row, rows that still do not fit close as `deferred`
 (`beta_screening_site_budget_exhausted`). Plans from before the waitlist keep
 their `deferred` rows and are never funded.
 
-Plan order, which is also the waitlist's funding order, ranks by reach evidence
-before the job's priority (`website_candidate_feasibility.reach_rank`). Tier 1
-(`own_arm_solve_passed`): the candidate's own arm was solved through the task in
-its model on this scene and reached it (`team_arm_reach` `passed`, or the packet
-Franka's recorded station search cleared). Tier 2 (`reach_unmeasured`): nothing
-decided either way. Tier 3 (`own_arm_solve_flagged`): a fixed arm's solve
-searched and did not reach, with no proof that it cannot (`flagged`), and its
-declared reach did not refuse it. The intake ranking, or the default priority,
-then learned policies before scripted baselines, orders each tier. Flagged
-candidates are never excluded; they are funded after the others. Each row but
-an infeasible one records its `reach_rank`: the tier, the solve's source,
-status, report digest and reasons, and the digest of the retained
+Plan order, which is also the waitlist's funding order, uses each candidate's
+reach evidence (`website_candidate_feasibility.reach_rank`). Its tier is 1
+(`own_arm_solve_passed`) when its own arm was solved through the task in its
+model on this scene and reached it (`team_arm_reach` `passed`, or the packet
+Franka's recorded station search cleared), 3 (`own_arm_solve_flagged`) when a
+fixed arm's solve searched and did not reach, with no proof that it cannot
+(`flagged`), and its declared reach did not refuse it, and 2
+(`reach_unmeasured`) otherwise. The plan orders, in sequence: tier 3 after every
+other candidate; learned policies before scripted baselines, ranked or not; tier
+1 before tier 2; then the intake ranking or default priority, and identifier. So
+a flagged body never spends before an unflagged one, and an unflagged learned
+policy goes before any scripted baseline. Flagged candidates are never excluded.
+Each row but an infeasible one records its `reach_rank`: the tier, the solve's
+source, status, report digest and reasons, and the digest of the retained
 `candidate_feasibility.json`.
 
 A plan freezes the commit it was prepared against, and preparation refuses
