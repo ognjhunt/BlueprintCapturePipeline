@@ -918,7 +918,8 @@ def _source_trace(failure: BaseException, *, limit: int = 24, outer: int = 4) ->
         {"file": Path(frame.filename).name, "function": frame.name, "line": frame.lineno}
         for frame in traceback.extract_tb(failure.__traceback__)
         if re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", Path(frame.filename).name)
-        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,159}", frame.name)
+        # ``<module>`` frames name the file whose import failed (a module-level import).
+        and (frame.name == "<module>" or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,159}", frame.name))
     ]
     return frames if len(frames) <= limit else frames[:outer] + frames[outer - limit:]
 
@@ -1126,6 +1127,9 @@ def execute_paired_session(
     raw_failure_codes = getattr(open_failure, "errors", ())
     if not isinstance(raw_failure_codes, (list, tuple)):
         raw_failure_codes = ()
+    if isinstance(open_failure, ImportError) and isinstance(getattr(open_failure, "name", None), str):
+        # A module's dotted name is not a message: it names the missing dependency, never data.
+        raw_failure_codes = (*raw_failure_codes, "module_not_found:" + open_failure.name)
     result: dict[str, Any] = {
         "schema_version": RESULT_SCHEMA_VERSION,
         "status": "blocked",

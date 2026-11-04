@@ -119,11 +119,12 @@ HARNESS_FAILED = {"status": "blocked", "blockers": ["beta_screening_native_resul
                   "provider_allocation_performed": True, "provider_zero_verified": True}
 
 
-def test_a_candidate_our_harness_failed_is_planned_again_after_a_deploy_at_most_twice(tmp_path):
+def test_a_candidate_our_harness_failed_is_planned_again_after_a_deploy_within_the_limit(tmp_path, monkeypatch):
     """2026-11-04: three learned policies ran on a rented GPU and our simulation crashed before any
     episode was scored. Nothing about the policies was measured, so after the fix ships each is
     planned again after the deploy, inside the site's allowance, at most twice; the first failure
     in a campaign holds its siblings unspent."""
+    monkeypatch.setattr(coordinator, "HARNESS_RETRY_LIMIT", 2)  # the bound's behavior, at a small limit
     coordinator.enqueue_screening_campaign(plan(count=2), queue_root=tmp_path)
     for _ in range(2):  # One launch per pass, as in production.
         coordinator.process_screening_queue(require_publication_ack=False, queue_root=tmp_path,

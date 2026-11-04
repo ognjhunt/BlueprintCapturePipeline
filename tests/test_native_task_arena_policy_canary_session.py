@@ -833,3 +833,27 @@ def test_native_initialization_preserves_only_safe_refusal_codes(tmp_path: Path)
     assert trace[-1]["file"] == Path(__file__).name
     assert trace[-1]["line"] > 0
     assert "/private/provider/path" not in json.dumps(trace)
+
+
+def test_a_missing_module_is_named_and_its_import_frames_are_kept(tmp_path: Path, monkeypatch) -> None:
+    """2026-11-04: a beta cell stopped at ``ModuleNotFoundError`` inside a lazy upstream import,
+    and neither the module's name nor the importing file was retained. The dotted name and the
+    ``<module>`` frames are recorded; the exception message still is not."""
+    import sys
+    package = tmp_path / "fixture_lazy_pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "episode.py").write_text("import fixture_absent_dependency_xyz  # secret-value\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    calls = {"open": 0, "close": 0, "loads": []}
+    kwargs = _preload_gate_session_kwargs(tmp_path, calls)
+    def open_session(_inputs):
+        import fixture_lazy_pkg.episode  # noqa: F401
+    kwargs["open_session"] = open_session
+    result = execute_paired_session(**kwargs)
+    sys.modules.pop("fixture_lazy_pkg", None)
+    assert result["session_failure_type"] == "ModuleNotFoundError"
+    assert result["session_failure_codes"] == ["module_not_found:fixture_absent_dependency_xyz"]
+    trace = result["session_failure_source_trace"]
+    assert {"file": "episode.py", "function": "<module>", "line": 1} in trace
+    assert "secret-value" not in json.dumps(result)
