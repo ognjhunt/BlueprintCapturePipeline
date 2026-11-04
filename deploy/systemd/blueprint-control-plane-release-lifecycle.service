@@ -42,7 +42,10 @@ TimeoutStartSec=1h
 CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_CHOWN CAP_SYS_PTRACE
 AmbientCapabilities=CAP_DAC_OVERRIDE CAP_CHOWN CAP_SYS_PTRACE
 ReadWritePaths=/opt/blueprint/task-evaluation-control-plane-releases -/var/lib/blueprint/task-evaluation-inputs/system-runtimes/splat-render -/var/lib/blueprint/task-evaluation-inputs/system-runtimes/scene-configuration /var/lib/blueprint/pipeline-control-plane/release-retention -/var/lib/blueprint/pipeline-control-plane/release-leases
-Environment=PYTHONPATH=/opt/blueprint/task-evaluation-control-plane/src
 EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env
 WorkingDirectory=/
-ExecStart=/opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -m blueprint_pipeline.control_plane_release_lifecycle run --apply --ack retire-superseded-release-trees
+# Import the active release's code as the other control-plane units do: start inside the
+# release checkout with a relative PYTHONPATH set at exec time. An Environment=PYTHONPATH line
+# imported an older blueprint_pipeline (first tick, 2026-11-04 15:43Z: no module
+# control_plane_release_lifecycle).
+ExecStart=/bin/bash -lc 'cd -P /opt/blueprint/task-evaluation-control-plane && exec env PYTHONPATH=src /opt/blueprint/BlueprintCapturePipeline/.venv/bin/python -m blueprint_pipeline.control_plane_release_lifecycle run --apply --ack retire-superseded-release-trees'
