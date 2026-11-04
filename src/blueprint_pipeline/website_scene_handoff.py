@@ -193,6 +193,14 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
             source_geometry=source_geometry, task_masks=task_masks, output_root=native_root)
     result["runtime_inputs"] = {"status": runtime_inputs["status"], "digest": runtime_inputs["digest"],
                                 "path": str(native_root / "runtime_inputs.json")}
+    pad = (runtime_inputs.get("collision") or {}).get("support_pad")
+    support_hold = None
+    if isinstance(pad, Mapping):
+        from .website_support_pad import hold_reason
+        support_hold = hold_reason(pad)
+        result["task_support_pad"] = {key: pad[key] for key in ("status", "reason", "scene_revision_collider")
+                                      if key in pad}
+        result["task_support_pad"]["hold_reason"] = support_hold
     from .website_native_background import prepare_collision_stage, prepare_appearance_stage, prepare_construction_stages
     collision_stage = prepare_collision_stage(native_root / "runtime_inputs.json")
     write_json(native_root / "collision_stage_inputs.json", collision_stage)
@@ -240,6 +248,12 @@ def prepare_rigid_native_inputs(*, result: dict[str, Any], preparation: Mapping[
             held = True
             prior = list(result.get("blockers") or []) if result.get("status") == "needs_input" else []
             result.update(status="needs_input", blockers=prior + [precheck["hold_reason"]])
+        if isinstance(support_hold, str):
+            # The object cannot rest where it is scored on the collider the scene would seal: no stage of it
+            # can be scored, so nothing is registered, enqueued or paid for (``website_support_pad``).
+            held = True
+            prior = list(result.get("blockers") or []) if result.get("status") == "needs_input" else []
+            result.update(status="needs_input", blockers=prior + [support_hold])
     return (preparation["status"] == "intake_ready" and not held
             and result.get("capability_verdict", {}).get("status") != "abstained")
 

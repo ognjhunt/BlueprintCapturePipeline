@@ -72,9 +72,13 @@ def validate_website_native_inputs(*, envelope, configurations, require_render_i
     reference("scene.geometry.collision", runtime["collision"])
     _, normalization_path = reference("scene.geometry.validation")
     normalization = json.loads(normalization_path.read_text())
+    # A support planarized at its success plane (``website_support_pad``) is derived from the normalized bytes.
+    derived = (runtime["collision"].get("support_pad") or {}).get("derived_collider")
+    normalized_digest = (derived["derived_from_sha256"] if isinstance(derived, dict)
+                         and derived.get("sha256") == runtime["collision"]["digest"] else runtime["collision"]["digest"])
     _require(normalization.get("normalization_digest") == canonical_digest(normalization, digest_field="normalization_digest")
              and normalization.get("source_digest") == preparation["binding"]["collision_mesh_digest"]
-             and normalization["output"]["sha256"] == runtime["collision"]["digest"], "collision_normalization_invalid")
+             and normalization["output"]["sha256"] == normalized_digest, "collision_normalization_invalid")
     appearance = runtime["appearance"]
     reference(PREFIX + ".appearance", appearance)
     receipt = appearance.get("receipt", {})

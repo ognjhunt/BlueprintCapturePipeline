@@ -578,10 +578,10 @@ def _stage_support_pad(support: dict[str, Any], *, task_spec: Mapping[str, Any],
 
     from .rigid_support_pad import (
         hold_reason,
+        read_back,
         support_rest_check,
         write_planarized_collider,
     )
-    from .rigid_support_seating import collider_triangles
 
     plan = support.pop("plan", None)
     if plan is None:
@@ -595,9 +595,7 @@ def _stage_support_pad(support: dict[str, Any], *, task_spec: Mapping[str, Any],
             written = write_planarized_collider(sealed_collision, derived, selection=plan["selection"],
                                                 band=plan["band"], plane_z=plan["plane_z_m"])
             # The physics' own bytes, read back where the object rests.
-            region = support["region_world_xy_m"]
-            readback = support_rest_check(collider_triangles(
-                derived, points_xy=region, reach_m=0.0, height_z=plan["plane_z_m"]), spec)
+            readback = read_back(derived, spec, record=support)
         except Exception as exc:  # noqa: BLE001 - a support that cannot be written is named, never guessed at
             raise TeamScenePacketError(f"team_scene_support_pad_unwritten:{type(exc).__name__}:{str(exc)[:120]}") from exc
         if readback["status"] != check["status"] or readback["reasons"] != check["reasons"]:
@@ -608,6 +606,8 @@ def _stage_support_pad(support: dict[str, Any], *, task_spec: Mapping[str, Any],
             "derived_from_sha256": _sha256(sealed_collision), "edit": "point_heights_only", **written,
             "rest_check_read_back": True}
     elif plan["planarize"]:
+        # Flat at the success plane already: a sealed collider the website preparation planarized
+        # (``website_support_pad``) or a flat room. Nothing is derived; the physics runs on the sealed bytes.
         support["derived_collider"] = None
         support["collider_already_planar"] = True
     if plan["planarize"]:

@@ -122,3 +122,38 @@ def admit_surface_target(*, destination: Mapping[str, Any], support: Mapping[str
         require(support_outline.holds(target["surface_position_world_m"][:2], target["radius_m"],
                                       tolerance=2 * REGION_EDGE_ROUNDING_M), "surface_target_outside_support")
     return target
+
+
+def submission_relocates_destination(preparation: Mapping[str, Any], destination: Mapping[str, Any], *,
+                                     subject_min: Sequence[float], subject_max: Sequence[float]) -> bool:
+    """Whether native submission moves this destination off the start before it seals the region.
+
+    A preparation from before the same-surface rule, or one that moved its
+    destination by a smaller clearance than this region's
+    (``website_task_preparation.relocated_destination``). Simulator frame.
+    """
+    from .website_support_geometry import destination_clear_of_start
+
+    size_tolerance = preparation_size_tolerance(preparation)
+    recorded = preparation.get("destination_relocation")
+    return (destination.get("support") is None and destination.get("relation") == "on"
+            and (recorded is not None and recorded.get("replacement_size_tolerance", 0.0) < size_tolerance
+                 or not destination_clear_of_start(subject_min, subject_max, destination["position_world_m"], up=2,
+                     clearance=website_target_radius(subject_min, subject_max, relative_error=size_tolerance))))
+
+
+def sealed_surface_target(preparation: Mapping[str, Any], *, destination: Mapping[str, Any],
+                          support: Mapping[str, Any], subject_min: Sequence[float], subject_max: Sequence[float],
+                          development: bool) -> dict[str, Any]:
+    """The region native submission seals into the success document, from the preparation it was compiled from.
+
+    ``admit_surface_target`` with the preparation's placement uncertainty and
+    replacement size tolerance; ``support`` is the intake task's support under
+    the subject. The website preparation reads the same region to model the
+    support's collider before submission (``website_support_pad``).
+    """
+    return admit_surface_target(destination=destination, support=support, subject_min=subject_min,
+                                subject_max=subject_max,
+                                placement_uncertainty_m=preparation["coordinate_frame"].get("placement_uncertainty_m"),
+                                development_support=bool(development),
+                                relative_error=preparation_size_tolerance(preparation))

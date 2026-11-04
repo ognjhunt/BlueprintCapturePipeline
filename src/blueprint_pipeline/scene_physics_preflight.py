@@ -386,8 +386,9 @@ def descendants(model: AssetModel, joint_id: str) -> set[str]:
     return moving
 
 
-#: Triangles ``load_background_triangles`` measures at once (72 MB of them, about 0.3 GB with temporaries).
-BACKGROUND_TRIANGLE_BLOCK = 1 << 20
+#: Triangles ``load_background_triangles`` measures at once (19 MB of them, about 0.1 GB with temporaries; the
+#: 262 k faces ``website_support_geometry`` reads at a time, #3346).
+BACKGROUND_TRIANGLE_BLOCK = 1 << 18
 
 
 @contextmanager
@@ -440,24 +441,31 @@ def load_background_triangles(usd_path: str | Path, *, centre: Sequence[float], 
             continue
         meshes += 1
         mesh = UsdGeom.Mesh(prim)
-        points = np.asarray(mesh.GetPointsAttr().Get() or [], dtype=float).reshape(-1, 3)
-        counts = np.asarray(mesh.GetFaceVertexCountsAttr().Get() or [], dtype=np.int64)
-        indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get() or [], dtype=np.int64)
+        # The arrays as the file holds them (float32 points, int32 indices), read in place: a block's corners
+        # are made float64 and moved to the world as the block is read. Each corner gets the same arithmetic
+        # a whole-mesh pass gives it; a 7.2 M-triangle room's float64 and int64 copies held 0.4 GB more.
+        stored = [mesh.GetPointsAttr().Get(), mesh.GetFaceVertexCountsAttr().Get(),
+                  mesh.GetFaceVertexIndicesAttr().Get()]
+        points, counts, indices = (np.asarray(value if value is not None else [])
+                                   for value in stored)
+        points = points.reshape(-1, 3)
         if not len(points) or not len(counts):
             continue
         if np.all(counts == 3):
             faces = indices.reshape(-1, 3)
         else:
-            starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+            starts = np.concatenate([[0], np.cumsum(counts, dtype=np.int64)[:-1]])
             faces = np.asarray([[indices[s], indices[s + i], indices[s + i + 1]]
                                 for s, c in zip(starts, counts) for i in range(1, c - 1)], dtype=np.int64)
         matrix = _usd_matrix(cache, prim)
         if world_from_stage is not None:
             matrix = world_from_stage @ matrix
-        world = points @ matrix[:3, :3].T + matrix[:3, 3]
+        rotation, translation = matrix[:3, :3].T, matrix[:3, 3]
         # A block of triangles at a time: a scanned room's whole array and its temporaries held 2.1 GB at once.
         for first in range(0, len(faces), BACKGROUND_TRIANGLE_BLOCK):
-            triangles = world[faces[first:first + BACKGROUND_TRIANGLE_BLOCK]]
+            corners = points[faces[first:first + BACKGROUND_TRIANGLE_BLOCK]].astype(float)
+            triangles = (corners.reshape(-1, 3) @ rotation + translation).reshape(-1, 3, 3)
+            del corners
             near = np.linalg.norm(triangles.mean(axis=1) - centre, axis=1) <= radius + np.linalg.norm(
                 triangles - triangles.mean(axis=1, keepdims=True), axis=2).max(axis=1)
             kept.append(triangles[near])
