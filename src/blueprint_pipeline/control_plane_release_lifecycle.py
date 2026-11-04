@@ -1,4 +1,4 @@
-"""Retire superseded per-commit release and runtime trees on the storage GC tick.
+"""Retire superseded per-commit release and runtime trees on their own hourly unit.
 
 Every deploy publishes a release worktree under
 ``/opt/blueprint/task-evaluation-control-plane-releases/<commit>`` on the root
@@ -10,9 +10,11 @@ tool last ran on 2026-10-28.  On 2026-11-04 the host held 93 release worktrees
 and 88 runtime pairs, about eleven new ones a day, and every step of the root
 disk's ~3 GB/day growth landed at a deploy.
 
-This is the separate, scheduled retirement authority.  It has its own owner
-switch, ``BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT`` (on by default like
-every storage GC switch; ``0`` keeps it planning), and it reuses
+This is the separate, scheduled retirement authority
+(``blueprint-control-plane-release-lifecycle.service``, hourly), sandboxed to
+the release and runtime roots and its receipts. It has its own owner switch,
+``BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT`` (on by default like every
+storage GC switch; ``0`` keeps it planning), and it reuses
 ``control_plane_release_retirement`` unchanged: a commit's trees stay while it
 is the active release, among the newest ``keep_last``, younger than a day, in
 use by a live process, or held by a typed lease or configured runtime, and any
@@ -243,7 +245,7 @@ def run_release_lifecycle(
 ) -> dict[str, Any]:
     """One tick: plan, and when applying and enabled retire, superseded release trees.
 
-    Returns the storage GC phase entry (``status``, ``enabled``,
+    Returns the tick's entry (``status``, ``enabled``,
     ``candidate_bytes``, ``retired_bytes``, ``retained_by_reason``, ...).
     Leftovers of an interrupted retirement are swept first. Without ``apply``
     it writes nothing and migrates no lease; with ``apply`` but not
@@ -383,7 +385,7 @@ def run_release_lifecycle(
     summary = {
         "schema_version": SUMMARY_SCHEMA_VERSION,
         "generated_at_epoch": observed_at,
-        "scheduler": "storage_gc",
+        "scheduler": "release_lifecycle_unit",
         "source_commit": current,
         "status": status,
         "reason": None if enabled else "release_retirement_opted_out",
@@ -403,46 +405,36 @@ def run_release_lifecycle(
     return entry
 
 
-def storage_gc_settings(environ: Mapping[str, str] = os.environ) -> dict[str, Any]:
-    """The GC tick's release phase settings from its unit environment.
+def main(argv: Sequence[str] | None = None) -> int:
+    """``run [--apply --ack ...]``: one tick of the scheduled unit; prints its JSON entry.
 
-    Without ``BLUEPRINT_CONTROL_PLANE_GC_RELEASE_ROOT`` the root is None and no
-    phase runs (a host without release trees); the switch is still reported.
+    Without ``--apply`` it plans and writes nothing. ``--apply`` needs the
+    retirement acknowledgement; the owner switch still decides whether it
+    retires or only plans. Exits 1 only when the tick itself failed.
     """
 
-    root = str(environ.get(RELEASE_ROOT_ENV) or "").strip() or None
-    enabled, alert = release_retirement_setting(environ)
+    import argparse
 
-    def configured(name: str, default: Path) -> str:
-        return str(environ.get(name) or "").strip() or str(default)
-
-    return {
-        "release_root": root,
-        "runtime_root": configured(RELEASE_RUNTIME_ROOT_ENV, DEFAULT_RUNTIME_ROOT),
-        "active_link": configured(RELEASE_ACTIVE_LINK_ENV, DEFAULT_ACTIVE_LINK),
-        "receipt_root": configured(RELEASE_RECEIPT_ROOT_ENV, DEFAULT_RECEIPT_ROOT),
-        "enabled": enabled,
-        "alert": alert,
-    }
-
-
-def storage_gc_phase(
-    settings: Mapping[str, Any], *, apply: bool, now: Callable[[], float], skipped_roots: list[str],
-) -> dict[str, Any] | None:
-    """Run the ``release_trees`` phase; an absent release root is a skipped root, not a phase."""
-
-    if not settings.get("release_root"):
-        return None
-    root = Path(str(settings["release_root"])).expanduser()
-    if not root.is_dir():
-        skipped_roots.append(str(root))
-        return None
-    run = settings.get("run") or run_release_lifecycle
-    return run(
-        release_root=root, runtime_root=settings["runtime_root"], active_link=settings["active_link"],
-        receipt_root=settings["receipt_root"], apply=apply, enabled=bool(settings.get("enabled")),
-        now=now, setting_alert=settings.get("alert"),
+    parser = argparse.ArgumentParser(prog="control_plane_release_lifecycle")
+    parser.add_argument("command", choices=("run",))
+    parser.add_argument("--release-root", default=os.getenv(RELEASE_ROOT_ENV) or str(DEFAULT_RELEASE_ROOT))
+    parser.add_argument("--runtime-root", default=os.getenv(RELEASE_RUNTIME_ROOT_ENV) or str(DEFAULT_RUNTIME_ROOT))
+    parser.add_argument("--active-link", default=os.getenv(RELEASE_ACTIVE_LINK_ENV) or str(DEFAULT_ACTIVE_LINK))
+    parser.add_argument("--receipt-root", default=os.getenv(RELEASE_RECEIPT_ROOT_ENV) or str(DEFAULT_RECEIPT_ROOT))
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--ack", default="")
+    args = parser.parse_args(argv)
+    if args.apply and args.ack != EXECUTE_ACK:
+        print(json.dumps({"status": "refused", "reason": "release_lifecycle_apply_not_authorized"}))
+        return 2
+    enabled, alert = release_retirement_setting()
+    entry = run_release_lifecycle(
+        release_root=args.release_root, runtime_root=args.runtime_root, active_link=args.active_link,
+        receipt_root=args.receipt_root, apply=args.apply, enabled=enabled, setting_alert=alert,
     )
+    print(json.dumps(entry, indent=2, sort_keys=True))
+    return 1 if str(entry.get("status")) == "blocked" and any(
+        str(code).startswith("release_retirement_failed:") for code in entry.get("blockers") or ()) else 0
 
 
 __all__ = [
@@ -462,6 +454,9 @@ __all__ = [
     "release_retirement_setting",
     "release_worktree_local_state",
     "run_release_lifecycle",
-    "storage_gc_phase",
-    "storage_gc_settings",
+    "main",
 ]
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through the module CLI
+    raise SystemExit(main())

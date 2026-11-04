@@ -1108,11 +1108,13 @@ temporary directory and `.<commit>.<random>` publication staging beside the
 runtime trees. That scratch is never a published tree or receipt; the receipt lists
 it under `disk_reservation_estimate.swept_stale_staging`.
 
-Retirement is separate from deployment. It runs on the storage GC tick
-(`blueprint_pipeline.control_plane_release_lifecycle`, phase `release_trees`)
-under its own owner switch, `BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT`: on by
-default like every storage GC switch, and `0` in the operator environment file
-keeps it planning. Without it nothing retired these trees after 2026-10-01: on
+Retirement is separate from deployment. It runs hourly on its own unit,
+`blueprint-control-plane-release-lifecycle.service`
+(`blueprint_pipeline.control_plane_release_lifecycle`), sandboxed to the release
+and runtime roots, `release-retention` and `release-leases`, under its own owner
+switch, `BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT`: on by default like every
+storage GC switch, and `0` in the operator environment file keeps it planning. A
+door hold on its timer pauses it. Without it nothing retired these trees after 2026-10-01: on
 2026-11-04 the host held 93 release worktrees (root disk) and 88 runtime pairs
 (work volume), about eleven new ones a day, and every step of the root disk's
 ~3 GB/day growth landed at a deploy. The explicit plan/apply tools below remain
@@ -1128,7 +1130,7 @@ while the commit is:
 - younger than a day;
 - held by a typed protection row: a lease (`live_queue`, `standing_authorization`,
   `retention_binding`) or current configuration (`configured_runtime`); or, on the
-  scheduled tick,
+  scheduled unit,
 - holding bytes its commit cannot reproduce (`release_worktree_local_state`):
   modified or untracked files, ignored files other than Python bytecode, a
   `HEAD` that is not the commit, or a worktree `git status` cannot read.

@@ -1,0 +1,12 @@
+[Unit]
+Description=Retire superseded release and runtime trees hourly
+
+[Timer]
+OnBootSec=20min
+OnUnitInactiveSec=1h
+RandomizedDelaySec=5min
+Persistent=true
+Unit=blueprint-control-plane-release-lifecycle.service
+
+[Install]
+WantedBy=timers.target

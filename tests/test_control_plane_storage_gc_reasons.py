@@ -36,7 +36,6 @@ _SWITCHES = {
     "BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH": "replay_cache_shared_scratch",
     "BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS": "extended_pin_proofs",
     "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD": "result_residue_offload",
-    "BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT": "release_retirement",
 }
 
 
@@ -324,7 +323,7 @@ def test_storage_gc_writes_a_door_readable_summary(tmp_path, monkeypatch) -> Non
     assert summary["opt_in"] == {
         "evidence_offload": False, "scene_workspace_retirement": False, "replay_cache_retention": False,
         "replay_cache_shared_scratch": False, "extended_pin_proofs": False, "lane_scratch": False,
-        "result_residue_offload": False, "release_retirement": False}
+        "result_residue_offload": False}
     # Both the report-only lane scratch phase and the residue offload phase reach the summary.
     assert summary["phases"]["lane_scratch"]["mode"] == "report_only"
     assert summary["phases"]["result_residue_offload"]["enabled"] is False
@@ -445,7 +444,7 @@ def test_the_summary_stays_small_and_names_only_typed_reasons() -> None:
     assert summary["opt_in"] == {
         "evidence_offload": None, "scene_workspace_retirement": None, "replay_cache_retention": None,
         "replay_cache_shared_scratch": None, "extended_pin_proofs": None, "lane_scratch": None,
-        "result_residue_offload": None, "release_retirement": None}
+        "result_residue_offload": None}
 
 
 def test_summary_ranks_global_reason_totals_before_phase_and_top_ten_caps() -> None:
@@ -495,8 +494,7 @@ def test_the_summary_reports_every_switch_on_unless_the_environment_opts_out(tmp
 
     _quiet_tick(monkeypatch)
     for name in ("BLUEPRINT_CONTROL_PLANE_GC_REPLAY_CACHE_SHARED_SCRATCH", "BLUEPRINT_CONTROL_PLANE_GC_EXTENDED_PIN_PROOFS",
-                 "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD", "BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT",
-                 gc_module.LANE_SCRATCH_ENV,
+                 "BLUEPRINT_CONTROL_PLANE_GC_RESULT_RESIDUE_OFFLOAD", gc_module.LANE_SCRATCH_ENV,
                  gc_module.LANE_SCRATCH_ROOTS_ENV):
         monkeypatch.delenv(name, raising=False)
     report_dir = tmp_path / "storage-gc"

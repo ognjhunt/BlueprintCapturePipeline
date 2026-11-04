@@ -11,8 +11,6 @@ import pytest
 
 from blueprint_pipeline import control_plane_release_lifecycle as lifecycle
 from blueprint_pipeline.control_plane_release_leases import LIVE_QUEUE_STATES, ProtectionSources
-from blueprint_pipeline.control_plane_storage_gc import RUN_ACK, run_storage_gc
-from blueprint_pipeline.control_plane_storage_gc_reasons import build_storage_gc_summary
 
 DAY = 86_400.0
 NOW = 1_800_000_000.0
@@ -232,76 +230,61 @@ def test_owner_switch(raw: str | None, expected: tuple[bool, str | None]) -> Non
     assert lifecycle.release_retirement_setting(environ) == expected
 
 
-def test_storage_gc_tick_runs_the_release_phase_and_summarizes_it(tmp_path: Path) -> None:
+def test_the_module_cli_needs_the_acknowledgement_and_follows_the_owner_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    host = _host(tmp_path)
     calls = []
 
-    def fake_lifecycle(**kwargs: object) -> dict:
+    def run(**kwargs: object) -> dict:
         calls.append(kwargs)
-        return {"status": "applied", "enabled": True, "candidate_bytes": 4096, "retired_bytes": 4096,
-                "retained_by_reason": {"keep_last": {"count": 3, "bytes": None}}}
+        return {"status": "applied" if kwargs["enabled"] else "skipped", "blockers": []}
 
-    releases = tmp_path / "releases"
-    releases.mkdir()
-    pins = tmp_path / "pins"
-    pins.mkdir()
-    settings = lifecycle.storage_gc_settings({lifecycle.RELEASE_ROOT_ENV: str(releases)})
-    assert settings == {
-        "release_root": str(releases), "runtime_root": str(lifecycle.DEFAULT_RUNTIME_ROOT),
-        "active_link": str(lifecycle.DEFAULT_ACTIVE_LINK), "receipt_root": str(lifecycle.DEFAULT_RECEIPT_ROOT),
-        "enabled": True, "alert": None,
-    }
-    report = run_storage_gc(
-        content_store_roots=(), derived_roots=(), queue_roots=(), pins_root=pins, apply=True, ack=RUN_ACK,
-        release_trees={**settings, "run": fake_lifecycle}, now=lambda: NOW,
-    )
-    assert report["opt_in"]["release_retirement"] is True
-    assert report["release_trees"]["status"] == "applied"
-    assert calls[0]["release_root"] == releases and calls[0]["apply"] is True and calls[0]["enabled"] is True
-    summary = build_storage_gc_summary(report)
-    assert summary["opt_in"]["release_retirement"] is True
-    assert summary["phases"]["release_trees"]["removed_or_offloaded_bytes"] == 4096
-    assert summary["phases"]["release_trees"]["retained_by_reason"] == {"keep_last": {"count": 3, "bytes": None}}
-
-
-def test_storage_gc_tick_without_a_release_root_runs_no_phase(tmp_path: Path) -> None:
-    pins = tmp_path / "pins"
-    pins.mkdir()
-    unset = lifecycle.storage_gc_settings({})
-    assert unset["release_root"] is None and unset["enabled"] is True
-    report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(), pins_root=pins,
-                            release_trees={**unset, "run": lambda **_: pytest.fail("ran")}, now=lambda: NOW)
-    assert "release_trees" not in report and report["opt_in"]["release_retirement"] is True
-    assert report["skipped_roots"] == []
-    absent = lifecycle.storage_gc_settings({lifecycle.RELEASE_ROOT_ENV: str(tmp_path / "absent"),
-                                            lifecycle.RELEASE_RETIREMENT_ENV: "0"})
-    report = run_storage_gc(
-        content_store_roots=(), derived_roots=(), queue_roots=(), pins_root=pins,
-        release_trees={**absent, "run": lambda **_: pytest.fail("ran")}, now=lambda: NOW,
-    )
-    assert "release_trees" not in report and report["opt_in"]["release_retirement"] is False
-    assert str(tmp_path / "absent") in report["skipped_roots"]
-    report = run_storage_gc(content_store_roots=(), derived_roots=(), queue_roots=(), pins_root=pins,
-                            now=lambda: NOW)
-    assert "release_trees" not in report and report["opt_in"]["release_retirement"] is False
+    monkeypatch.setattr(lifecycle, "run_release_lifecycle", run)
+    roots = ["--release-root", str(host["releases"]), "--runtime-root", str(host["runtimes"]),
+             "--active-link", str(host["active"]), "--receipt-root", str(host["receipts"])]
+    assert lifecycle.main(["run", "--apply", *roots]) == 2
+    assert calls == [] and "release_lifecycle_apply_not_authorized" in capsys.readouterr().out
+    monkeypatch.setenv(lifecycle.RELEASE_RETIREMENT_ENV, "maybe")
+    assert lifecycle.main(["run", "--apply", "--ack", "retire-superseded-release-trees", *roots]) == 0
+    assert calls[-1]["enabled"] is False and calls[-1]["setting_alert"] == lifecycle.RELEASE_RETIREMENT_INVALID
+    assert calls[-1]["apply"] is True and calls[-1]["release_root"] == str(host["releases"])
+    monkeypatch.delenv(lifecycle.RELEASE_RETIREMENT_ENV)
+    assert lifecycle.main(["run", *roots]) == 0
+    assert calls[-1]["enabled"] is True and calls[-1]["apply"] is False
 
 
 def test_an_invalid_switch_value_keeps_it_planning_and_alerts(tmp_path: Path) -> None:
     host = _host(tmp_path)
-    settings = lifecycle.storage_gc_settings({
-        lifecycle.RELEASE_ROOT_ENV: str(host["releases"]), lifecycle.RELEASE_RETIREMENT_ENV: "maybe",
-        lifecycle.RELEASE_RUNTIME_ROOT_ENV: str(host["runtimes"]),
-        lifecycle.RELEASE_ACTIVE_LINK_ENV: str(host["active"]),
-        lifecycle.RELEASE_RECEIPT_ROOT_ENV: str(host["receipts"]),
-    })
-
-    def run(**kwargs: object) -> dict:
-        return _run(host, **kwargs)
-
-    skipped: list[str] = []
-    entry = lifecycle.storage_gc_phase({**settings, "run": run}, apply=True, now=lambda: NOW,
-                                       skipped_roots=skipped)
-    assert entry["status"] == "skipped" and skipped == []
+    entry = _run(host, enabled=False, setting_alert=lifecycle.RELEASE_RETIREMENT_INVALID)
+    assert entry["status"] == "skipped"
     assert entry["alerts"] == [lifecycle.RELEASE_RETIREMENT_INVALID]
     assert all((host["releases"] / commit).is_dir() for commit in host["commits"])
     summary = json.loads((host["receipts"] / lifecycle.SUMMARY_NAME).read_text(encoding="utf-8"))
     assert summary["alerts"] == [lifecycle.RELEASE_RETIREMENT_INVALID]
+
+
+def test_the_shipped_unit_runs_the_lifecycle_in_its_own_narrow_sandbox() -> None:
+    """Its own unit, so the storage GC unit (a reference-collection input) stays unchanged."""
+
+    from blueprint_pipeline.control_plane_release_retirement import EXECUTE_ACK
+
+    repo = Path(__file__).resolve().parents[1]
+    unit = (repo / "deploy/systemd/blueprint-control-plane-release-lifecycle.service").read_text(encoding="utf-8")
+    timer = (repo / "deploy/systemd/blueprint-control-plane-release-lifecycle.timer").read_text(encoding="utf-8")
+    assert f"-m blueprint_pipeline.control_plane_release_lifecycle run --apply --ack {EXECUTE_ACK}" in unit
+    for control in ("User=root", "NoNewPrivileges=true", "ProtectSystem=strict", "PrivateNetwork=true",
+                    "EnvironmentFile=-/etc/blueprint/pipeline-control-plane.env"):
+        assert control in unit, control
+    writable = next(line for line in unit.splitlines() if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+    assert {path.lstrip("-") for path in writable} == {
+        str(lifecycle.DEFAULT_RELEASE_ROOT),
+        *(f"{lifecycle.DEFAULT_RUNTIME_ROOT}/{component}" for component in ("splat-render", "scene-configuration")),
+        str(lifecycle.DEFAULT_RECEIPT_ROOT), "/var/lib/blueprint/pipeline-control-plane/release-leases",
+    }
+    assert "OnUnitInactiveSec=1h" in timer and "Unit=blueprint-control-plane-release-lifecycle.service" in timer
+    deploy = (repo / "scripts/deploy_control_plane_commit.py").read_text(encoding="utf-8")
+    assert deploy.count('"blueprint-control-plane-release-lifecycle.timer"') == 2  # installed and always armed
+    assert '"blueprint-control-plane-release-lifecycle.service"' in deploy
+    assert "RELEASE" not in (repo / "deploy/systemd/blueprint-control-plane-storage-gc.service").read_text(
+        encoding="utf-8")
