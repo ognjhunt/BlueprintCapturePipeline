@@ -1,10 +1,13 @@
-"""Movable chairs moved out of the Franka's way in the simulation, only on the site owner's approval.
+"""Movable chairs measured, then moved out of the Franka's way in the simulation, each only on the owner's approval.
 
 capture-447ae4f4's Franka could not stand within reach of its dining table, most likely because of the
-chairs around it (#3355). These rooms are synthetic: capture-447's oval table in one scanned mesh, as a
-website collider is, with ten chairs around it. No ranked stance carries; moving one named chair opens
-one that does. The half proposes that chair, the owner decides on the job page, and only an approval
-rebuilds the half without it.
+chairs around it (#3355). Its preparation holds no chair: the Atlas scene review names them as one grouped
+entry with 2-D boxes, and nothing has their 3-D bounds. So the half first asks the site owner whether
+Blueprint may measure them (a bounded spend), and only then whether to move the one in the way.
+
+These rooms are synthetic: capture-447's oval table in one scanned mesh, as a website collider is, with ten
+chairs around it. The intent is a renewal's, as capture-447's live intent is: its registration names the
+renewed preparation, never the root one. The two paid calls are replaced by fakes, and nothing is spent.
 """
 from __future__ import annotations
 
@@ -19,19 +22,22 @@ import pytest
 pytest.importorskip("pxr")
 
 from blueprint_pipeline import robot_access_furniture as access  # noqa: E402
+from blueprint_pipeline import robot_access_measurement as measurement  # noqa: E402
 from blueprint_pipeline import task_evaluation_scene_intake as intake  # noqa: E402
 from blueprint_pipeline import team_scene_packet_worker as worker  # noqa: E402
-from blueprint_pipeline.decision_evidence_contracts import cross_runtime_canonical_digest  # noqa: E402
+from blueprint_pipeline.decision_evidence_contracts import canonical_digest, cross_runtime_canonical_digest  # noqa: E402
 from tests import test_team_scene_packet_single_mesh_room as single  # noqa: E402
-from tests.test_team_embodiment_stance_room_mesh import _box  # noqa: E402
+from tests.test_team_embodiment_stance_room_mesh import SUPPORT_TOP, _box, write_scanned_room  # noqa: E402
 
 SEAT_TOP, BACK_TOP = 0.45, 0.90
-SUPPORT = {"bounds_min_xyz_m": [*single.SUPPORT_MIN[:2], 0.77], "bounds_max_xyz_m": [*single.SUPPORT_MAX[:2], 0.8189]}
+SUPPORT = {"bounds_min_xyz_m": [*single.SUPPORT_MIN[:2], 0.77], "bounds_max_xyz_m": [*single.SUPPORT_MAX[:2], SUPPORT_TOP],
+           "top_z_m": SUPPORT_TOP}
+IDENTITY = np.eye(4).tolist()
+RENEWAL = "ab" * 32
 
 
-def _chair(x0: float, y0: float, back: str, *, kind: str = "dining chair", target_class: str = "movable_object",
-           role: str = "obstacle") -> tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]]:
-    """A 45 cm chair as the scan holds it, and the analysis target the preparation measured for it."""
+def _chair(x0: float, y0: float, back: str) -> tuple[tuple[np.ndarray, np.ndarray], dict[str, Any]]:
+    """A 45 cm chair as the scan holds it, and the analysis target naming it, with its lifted visible bounds."""
 
     x1, y1 = x0 + 0.45, y0 + 0.45
     seat = _box((x0, y0, 0.0), (x1, y1, SEAT_TOP), bottom=False)
@@ -40,8 +46,10 @@ def _chair(x0: float, y0: float, back: str, *, kind: str = "dining chair", targe
     rest = _box((bx0, by0, SEAT_TOP), (bx1, by1, BACK_TOP), bottom=False)
     mesh = (np.vstack([seat[0], rest[0]]), np.vstack([seat[1], rest[1] + len(seat[0])]))
     target = {"target_id": f"chair_{back}_{x0:+.2f}_{y0:+.2f}".replace("+", "p").replace("-", "m").replace(".", "_"),
-              "semantic_label": kind, "segmentation_prompt": "wooden chair", "target_class": target_class,
-              "target_role": role, "disposition": "keep", "task_effect": "static_obstacle",
+              "semantic_label": "dining chair", "segmentation_prompt": "wooden chair", "target_class": "movable_object",
+              "target_role": "obstacle", "disposition": "keep", "task_effect": "static_obstacle",
+              "decision_reason": "stands beside the table", "confidence": 0.9,
+              "spatial_evidence": [{"timestamp_seconds": 1.0, "box_xywh_normalized": [0.1, 0.1, 0.2, 0.2]}],
               "estimated_visible_bounds": {"minimum": [x0 - 0.01, y0 - 0.01, -0.01],
                                            "maximum": [x1 + 0.01, y1 + 0.01, BACK_TOP + 0.01]}}
     return mesh, target
@@ -54,13 +62,97 @@ CHAIRS = [_chair(-1.55, -0.95, "-x"), _chair(-1.55, -0.45, "-x"), _chair(-1.55, 
           _chair(-0.85, -1.62, "-y"), _chair(-0.35, -1.62, "-y"), _chair(-0.85, 0.58, "+y"),
           _chair(-0.35, 0.58, "+y")]
 BLOCKING = CHAIRS[4][1]["target_id"]
+# capture-447's review: the tray, the table, and the chairs grouped as one entry with boxes in two frames.
+REVIEW = {"automation": {"objects": [
+    {"target_id": "wooden_tray", "label": "wooden tray", "segmentation_prompt": "wooden tray", "disposition": "remove",
+     "regions": [{"frame_id": "f1"}]},
+    {"target_id": "dining_table", "label": "dining table", "segmentation_prompt": "wooden table",
+     "disposition": "keep", "regions": [{"frame_id": "f1"}]},
+    {"target_id": "dining_chairs", "label": "dining_chairs", "segmentation_prompt": "wooden chair",
+     "disposition": "keep", "regions": [{"frame_id": "f1"}, {"frame_id": "f2"}]}]}}
 
 
-def _furniture(targets: list[dict[str, Any]]) -> dict[str, Any]:
-    """What the preparation records (sim frame = these bounds), as ``movable_furniture_for_capture`` returns it."""
+def _sha(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
-    record = access.movable_furniture_record(targets, lambda bounds: (bounds["minimum"], bounds["maximum"]))
-    return {"status": "measured", "record": record, "preparation_digest": "sha256:" + "5" * 64}
+
+def _record(path: Path) -> dict[str, Any]:
+    return {"path": str(path), "sha256": _sha(path), "size_bytes": path.stat().st_size}
+
+
+def _write(path: Path, value: dict[str, Any]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value))
+    return path
+
+
+def renewed_lineage(tmp_path: Path, scope: dict[str, Any], monkeypatch: Any) -> Path:
+    """The intent's source registration naming a renewal's preparation, as capture-447's live intent has it."""
+
+    monkeypatch.delenv("BLUEPRINT_WEBSITE_SCENE_BINDING_ROOT", raising=False)
+    intent = scope["intent"]
+    capture = tmp_path / "pubsub" / "scenes" / "site-1" / "captures" / "walkthrough-1"
+    root = capture / "pipeline" / "website_scene_preparation"
+    context = {"schema_version": "website_site_task_context.v1", "request_id": "req-1", "scene_id": "site-1",
+               "capture_id": "walkthrough-1", "description": "Move the wooden tray to the other end of the table.",
+               "confirmed": True}
+    context["context_digest"] = canonical_digest(context, digest_field="context_digest")
+    parent = {"schema_version": "website_scene_preparation.v1", "intake_request": {"submission_id": "the-parent"},
+              "binding": {"task_context_digest": context["context_digest"]}}
+    parent["digest"] = canonical_digest(parent, digest_field="digest")
+    _write(root / "preparation.json", parent)
+    preparation = {"schema_version": "website_scene_preparation.v1", "status": "intake_ready", "blockers": [],
+                   "intake_request": intent["request"],
+                   "binding": {"task_context_digest": context["context_digest"],
+                               "source_geometry_digest": "sha256:" + "6" * 64},
+                   "registration": {"source_to_runtime": IDENTITY},
+                   "coordinate_frame": {"runtime_to_simulator": IDENTITY, "scale_authority": "registration_estimate"},
+                   "website_preparation_renewal": {"parent_preparation_digest": parent["digest"],
+                                                   "parent_intent_id": "the-parent-intent",
+                                                   "authority_digest": "sha256:" + RENEWAL}}
+    preparation["digest"] = canonical_digest(preparation, digest_field="digest")
+    renewal = root / "renewals" / RENEWAL
+    paths = {"preparation": _write(renewal / "preparation.json", preparation),
+             "task_context": _write(renewal / "task_context.json", context),
+             "runtime_inputs": _write(renewal / "native" / "runtime_inputs.json", {"schema_version": "fixture"})}
+    registration = {"schema_version": "website_scene_source_registration.v1",
+                    "request_digest": cross_runtime_canonical_digest(intent["request"]),
+                    "references": {name: _record(path) for name, path in paths.items()},
+                    "provider_mutation_performed": False, "execution_authority_granted": False,
+                    "claim_ceiling": "development_only"}
+    registration["registration_digest"] = canonical_digest(registration, digest_field="registration_digest")
+    bindings = Path(scope["directory"]).parent.parent / "website-source-bindings"
+    _write(bindings / (cross_runtime_canonical_digest(intent["request"])[7:] + ".json"), registration)
+    _write(capture / "pipeline" / "atlas" / "atlas_scene_review.json", REVIEW)
+    video = capture / "raw" / "walkthrough.mov"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"fixture video bytes")
+    # The video's metadata as ffprobe reads it: 30 s, 900 frames, analysed in one static pass.
+    monkeypatch.setattr(measurement, "measurement_sources", lambda capture_root, current: {
+        "video_path": str(video), "source_video_digest": _sha(video), "processing": "static",
+        "duration_seconds": 30.0, "frames": 900})
+    return capture
+
+
+class PaidCalls:
+    """Fakes of the two paid calls, recording whether anything would have been bought."""
+
+    def __init__(self, targets: list[dict[str, Any]]) -> None:
+        self.targets, self.calls = targets, []
+
+    def analyze(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("analysis", kwargs["maximum_cost_usd"]))
+        return {"targets": [{key: value for key, value in row.items() if key != "estimated_visible_bounds"}
+                            for row in self.targets], "blockers": []}
+
+    def segment(self, **kwargs: Any) -> dict[str, Any]:
+        self.calls.append(("segmentation", kwargs["maximum_cost_usd"], [row["text"] for row in kwargs["prompts"]]))
+        return {"registry": [], "tracks": [], "reserved_cost_usd": 0.18 * len(kwargs["prompts"])}
+
+    def lift(self, targets: list[dict[str, Any]], **_: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        by_id = {row["target_id"]: row for row in self.targets}
+        return [{**row, "estimated_visible_bounds": by_id[row["target_id"]]["estimated_visible_bounds"]}
+                for row in targets], []
 
 
 @pytest.fixture
@@ -72,32 +164,227 @@ def chairs_room(monkeypatch) -> None:
                         lambda path, **options: write(path, parts=[mesh for mesh, _ in CHAIRS], **options))
 
 
-def _compile(tmp_path: Path, monkeypatch: Any, name: str, inputs: dict[str, Any], **extra: Any) -> dict[str, Any]:
+def _compile(tmp_path: Path, name: str, inputs: dict[str, Any], scope: dict[str, Any]) -> dict[str, Any]:
     from blueprint_pipeline.team_scene_packet import materialize_team_scene
 
-    compiled = materialize_team_scene(**inputs, output_root=tmp_path / name, **extra)
+    known = measurement.furniture_for_scope(scope, revision_digest=inputs["revision"]["revision_digest"])
+    compiled = materialize_team_scene(**inputs, output_root=tmp_path / name, movable_furniture=known,
+                                      robot_access_scope=scope)
     return {**json.loads(Path(compiled["path"]).read_text()), "_compiled": compiled}
 
 
-def _sha(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+def _queued(tmp_path: Path, monkeypatch: Any, inputs: dict[str, Any], record: dict[str, Any]) -> tuple[Path, str, dict]:
+    """A completed request whose compiled half is ``record``, bound to its own intent."""
+
+    scope = inputs["owner_success_confirmation_scope"]
+    request = worker.validated_request(worker._seal({
+        "schema_version": worker.REQUEST_SCHEMA, "intent_id": scope["intent"]["intent_id"],
+        "intent_digest": scope["intent"]["intent_digest"], "capture_id": "walkthrough-1",
+        "task_id": "website-" + "0" * 20, "source_launch_root": str(tmp_path / "launch"),
+        "launch_receipt_digest": "sha256:" + "1" * 64, "scene_revision_digest": inputs["revision"]["revision_digest"],
+        "robot_free_readiness_status": "refused"}, "request_digest"))
+    progression = json.loads((scope["directory"] / "progression.json").read_text())
+    progression["state"]["scene_preparation_completion"]["team_scene_request"]["request_digest"] = (
+        request["request_digest"])
+    (scope["directory"] / "progression.json").write_text(json.dumps(intake._seal(progression, "progression_digest")))
+    monkeypatch.setattr(worker, "current_release_commit", lambda: None)
+    queue = worker._queue(tmp_path / "queue")
+    key = worker.request_key(request)
+    (queue / "processed" / f"{key}.json").write_text(json.dumps(request))
+    _complete(queue, key, record)
+    return queue, key, request
+
+
+def _complete(queue: Path, key: str, record: dict[str, Any]) -> None:
+    """The request's status after a compile, as the worker writes it."""
+
+    path = queue / "status" / f"{key}.json"
+    prior = json.loads(path.read_text()) if path.is_file() else {}
+    kept = {field: prior[field] for field in (access.REQUEUE_FIELD, access.STATUS_FIELD) if field in prior}
+    path.write_text(json.dumps({"schema_version": worker.STATUS_SCHEMA, "request_key": key, "status": "completed",
+                                "blockers": [], "team_scene_inputs_path": record["_compiled"]["path"], **kept}))
+    # The worker claims a pending request and files it back under processed/ when it finishes.
+    if (queue / "pending" / f"{key}.json").exists():
+        (queue / "pending" / f"{key}.json").replace(queue / "processed" / f"{key}.json")
+
+
+class FakeWebApp:
+    """The WebApp side: it keeps each proposal and answers with the owner's decision on it."""
+
+    def __init__(self) -> None:
+        self.proposals: list[dict[str, Any]] = []
+        self.decisions: dict[str, dict[str, Any]] = {}
+
+    def __call__(self, notice: dict[str, Any]) -> dict[str, Any]:
+        notice = json.loads(json.dumps(notice))
+        assert notice["proposal_digest"] == cross_runtime_canonical_digest(notice, digest_field="proposal_digest")
+        self.proposals.append(notice)
+        decision = self.decisions.get(notice["proposal_digest"])
+        return {"schema_version": access.RECEIPT_SCHEMA, "status": decision["decision"] if decision else "pending",
+                "intent_id": notice["intent_id"], "proposal_digest": notice["proposal_digest"], "decision": decision}
+
+    def decide(self, kind: str) -> dict[str, Any]:
+        notice = self.proposals[-1]
+        decision = {"schema_version": access.DECISION_SCHEMA, "intent_id": notice["intent_id"],
+                    "intent_digest": notice["intent_digest"], "request_id": "req-1", "capture_id": "cap-1",
+                    "proposal_digest": notice["proposal_digest"],
+                    "configured_scene_revision_digest": notice["configured_scene_revision_digest"],
+                    "question": notice["question"], "binding_digest": notice["binding_digest"], "decision": kind,
+                    "decided_via": "owner_job_link", "decided_at": "2026-11-04T09:00:00.000Z"}
+        decision["decision_digest"] = cross_runtime_canonical_digest(decision)
+        self.decisions[notice["proposal_digest"]] = decision
+        return decision
+
+
+def _status(queue: Path, key: str) -> dict[str, Any]:
+    return json.loads((queue / "status" / f"{key}.json").read_text())
+
+
+def test_the_owner_approves_measuring_then_moving_a_chair_and_each_decline_holds_by_name(
+        tmp_path, monkeypatch, chairs_room) -> None:
+    inputs = single._inputs(tmp_path, monkeypatch)
+    scope = inputs["owner_success_confirmation_scope"]
+    capture = renewed_lineage(tmp_path, scope, monkeypatch)
+    paid = PaidCalls([target for _, target in CHAIRS])
+    monkeypatch.setattr(measurement, "lift", paid.lift)
+    clock = iter(1_793_800_000.0 + 2 * 86400.0 * step for step in range(20))
+    monkeypatch.setattr(access, "_now", lambda: next(clock))
+    webapp = FakeWebApp()
+    noop = lambda notice: (_ for _ in ()).throw(AssertionError("no threshold exchange"))  # noqa: E731
+
+    def passes() -> dict[str, Any]:
+        return worker.requeue_transient_blocked(queue_root=queue, website_transport=noop, robot_access_transport=webapp)
+
+    # 1. No stance carries, the nearer ones were refused on seats and backs, the review names the chairs, and
+    #    nothing measured them: the half asks whether to measure, with the most it would cost. Nothing is spent.
+    first = _compile(tmp_path, "asks-to-measure", inputs, scope)
+    asked = first["robot_access_removal"]
+    assert first["robot_station_search"]["cleared"] is False
+    assert asked["status"] == "measurement_proposed" and asked["trigger"]["plausible"] is True
+    assert asked["items"] == [{"obstacle_id": "dining_chairs", "label": "dining_chairs", "kind": "chair"}]
+    binding = asked["binding"]
+    # Bound to the intent's current preparation: the renewal's, never the root one.
+    renewed = json.loads((capture / "pipeline/website_scene_preparation/renewals" / RENEWAL / "preparation.json")
+                         .read_text())
+    assert binding["lineage"]["preparation_digest"] == renewed["digest"]
+    assert binding["lineage"]["renewal"]["parent_intent_id"] == "the-parent-intent"
+    assert binding["lineage"]["intent_id"] == scope["intent"]["intent_id"]
+    # At most: one analysis turn (USD 0.04 for 30 s) and two SAM concepts over 900 frames (USD 0.18 each).
+    assert binding["analysis"]["maximum_cost_usd"] == 0.04 and binding["segmentation"]["maximum_cost_usd"] == 0.36
+    assert binding["maximum_cost_usd"] == 0.4
+    assert paid.calls == []
+    queue, key, request = _queued(tmp_path, monkeypatch, inputs, first)
+
+    assert passes()["website_robot_access"][key]["status"] == "pending"
+    [notice] = webapp.proposals
+    assert notice["question"] == "measure" and notice["maximum_cost_usd"] == 0.4
+    assert notice["items"] == [{"target_id": "dining_chairs", "label": "dining_chairs", "kind": "chair"}]
+
+    # 2. The owner says not now: nothing is written, nothing is bought, and the job holds by name.
+    webapp.decide("declined")
+    assert passes()["requeued"] == []
+    assert _status(queue, key)[access.STATUS_FIELD]["hold"] == access.MEASUREMENT_DECLINED_HOLD
+    assert access.confirmations(scope["directory"], scope["intent"], "measure") == []
+    assert access.approved_proposal(first["_compiled"]["path"], request) is None
+
+    # 3. Then approves: the approval (a bounded spend) is sealed and the request compiles again.
+    webapp.decide("approved")
+    assert passes()["requeued"][0]["reason"] == "robot_access_confirmation"
+    [spend] = access.confirmations(scope["directory"], scope["intent"], "measure")
+    assert spend["spend_authorized"] is True and spend["maximum_cost_usd"] == 0.4
+    assert access.approved_proposal(first["_compiled"]["path"], request) == spend
+    # A measurement of anything but the approved binding is refused before any call.
+    with pytest.raises(ValueError, match="approval_not_this_measurement"):
+        measurement.run_measurement(scope, {**spend, "binding_digest": "sha256:" + "9" * 64},
+                                    revision_digest=inputs["revision"]["revision_digest"], analyze=paid.analyze,
+                                    segment=paid.segment, geometry=lambda *_: {"frames": []})
+    assert paid.calls == []
+    # The worker measures once, within the approval: one analysis, one SAM concept for the chairs.
+    sidecar = measurement.run_measurement(scope, spend, revision_digest=inputs["revision"]["revision_digest"],
+                                          analyze=paid.analyze, segment=paid.segment,
+                                          geometry=lambda *_: {"frames": []})
+    assert paid.calls == [("analysis", 0.04), ("segmentation", 0.36, ["wooden chair"])]
+    path = capture / "pipeline" / "robot_access" / renewed["digest"][7:23] / "movable_furniture.v1.json"
+    assert json.loads(path.read_text()) == sidecar and sidecar["lineage"] == binding["lineage"]
+    assert sidecar["approval"]["confirmation_digest"] == spend["confirmation_digest"]
+    assert len(sidecar["movable_furniture"]["items"]) == len(CHAIRS)
+    # The sealed preparations are untouched; the sidecar is beside them, read through the registration.
+    assert canonical_digest(renewed, digest_field="digest") == renewed["digest"] == json.loads(
+        (capture / "pipeline/website_scene_preparation/renewals" / RENEWAL / "preparation.json").read_text())["digest"]
+    assert "movable_furniture" not in renewed
+    # Measuring again buys nothing.
+    assert measurement.run_measurement(scope, spend, revision_digest=inputs["revision"]["revision_digest"],
+                                       analyze=paid.analyze, segment=paid.segment) == sidecar
+    assert len(paid.calls) == 2
+
+    # 4. With the chairs measured, the half proposes moving the one chair that opens a stance within reach.
+    second = _compile(tmp_path, "proposes-a-move", inputs, scope)
+    proposal = second["robot_access_removal"]
+    assert proposal["status"] == "proposed" and proposal["sidecar_digest"] == sidecar["sidecar_digest"]
+    assert [row["obstacle_id"] for row in proposal["items"]] == [BLOCKING]
+    assert proposal["enabled_stance"]["reach"]["status"] == "within_bound"
+    assert proposal["enabled_stance"]["position_world_m"][:2] == [0.5, -0.42]
+    assert second["robot_station"]["position_world_m"] == first["robot_station"]["position_world_m"]
+    _complete(queue, key, second)
+    asked_to_move = passes()["website_robot_access"][key]
+    assert asked_to_move["status"] == "pending" and asked_to_move["question"] == "move", asked_to_move
+    move = webapp.proposals[-1]
+    assert move["question"] == "move" and move["maximum_cost_usd"] is None
+    assert move["items"] == [{"target_id": BLOCKING, "label": "dining chair", "kind": "chair"}]
+    assert "bounds_world_m" not in json.dumps(move)
+
+    # 5. A decline holds by name; an approval rebuilds the half without that chair, checked on the CPU.
+    webapp.decide("declined")
+    passes()
+    assert _status(queue, key)[access.STATUS_FIELD]["hold"] == access.DECLINED_HOLD
+    webapp.decide("approved")
+    moved_on = passes()
+    assert [row["reason"] for row in moved_on["requeued"]] == ["robot_access_confirmation"], json.dumps(moved_on["website_robot_access"])
+    [approval] = access.confirmations(scope["directory"], scope["intent"], "move")
+    assert approval["spend_authorized"] is False and approval["maximum_cost_usd"] is None
+    third = _compile(tmp_path, "moves-the-chair", inputs, scope)
+    applied = third["robot_access_removal"]
+    assert applied["status"] == "applied" and applied["confirmation_digest"] == approval["confirmation_digest"]
+    assert applied["cpu_checks"]["carry_cleared"] is True and applied["cpu_checks"]["reach"]["status"] == "within_bound"
+    assert applied["cpu_checks"]["rest_check"]["status"] == applied["cpu_checks"]["rest_check_before"]["status"]
+    assert third["robot_station_search"]["cleared"] is True
+    assert third["robot_station"]["position_world_m"][:2] == [0.5, -0.42]
+    sealed = tmp_path / "bundle" / "collision.usda"
+    derived = tmp_path / "moves-the-chair" / applied["derived_collider"]["relative_path"]
+    assert _sha(sealed) == applied["derived_collider"]["derived_from_sha256"]
+    assert _sha(derived) == third["robot_station"]["scene_collision_sha256"]
+    [moved] = applied["derived_collider"]["items"]
+    assert moved["obstacle_id"] == BLOCKING and moved["faces_removed"] == 20  # its seat and back, five sides each
+    assert access.faces_left_inside(derived, items=applied["items"], floor_z=0.0) == 0
+    assert access.half_proposal(third["_compiled"]["path"]) is None
 
 
 def test_no_proposal_names_what_the_analysis_does_not_call_movable_furniture(tmp_path, monkeypatch, chairs_room):
-    # The same chairs, but the analysis kept them as fixed clutter: nothing is named, nothing proposed.
+    # The measuring analysis kept the chairs as fixed clutter: no SAM concept is bought, nothing is named, and
+    # the half proposes nothing.
     inputs = single._inputs(tmp_path, monkeypatch)
-    fixed = [{**target, "target_class": "fixed_clutter"} for _, target in CHAIRS]
-    furniture = _furniture(fixed)
-    assert furniture["record"]["items"] == []
-    assert {row["reason"] for row in furniture["record"]["excluded"]} == {"analysis_class_not_movable_object"}
-    record = _compile(tmp_path, monkeypatch, "fixed", inputs, movable_furniture=furniture,
-                      robot_access_scope=inputs["owner_success_confirmation_scope"])
+    scope = inputs["owner_success_confirmation_scope"]
+    renewed_lineage(tmp_path, scope, monkeypatch)
+    offer = measurement.measurement_offer(scope, revision_digest=inputs["revision"]["revision_digest"])
+    proposal = {"status": "measurement_proposed", "binding": offer["binding"], "binding_digest": offer["binding_digest"],
+                "items": offer["binding"]["items"], "support_label": "wooden dining table",
+                "why": {"reason": "no_ranked_stance_carries"}, "appearance": dict(access.APPEARANCE)}
+    notice = access.proposal_notice(intent=scope["intent"], task_id="t", proposal=proposal)
+    decision = {"decision": "approved", "proposal_digest": notice["proposal_digest"], "question": "measure",
+                "decision_digest": "sha256:" + "7" * 64, "decided_at": "2026-11-04T09:00:00.000Z"}
+    spend = access.record_website_approval(intent_root=Path(scope["directory"]).parent, intent=scope["intent"],
+                                           proposal=proposal, notice=notice, decision=decision)
+    paid = PaidCalls([{**target, "target_class": "fixed_clutter"} for _, target in CHAIRS])
+    sidecar = measurement.run_measurement(scope, spend, revision_digest=inputs["revision"]["revision_digest"],
+                                          analyze=paid.analyze, segment=paid.segment)
+    assert paid.calls == [("analysis", 0.04)] and sidecar["movable_furniture"] is None
+    record = _compile(tmp_path, "fixed", inputs, scope)
     assert record["robot_access_removal"]["status"] == "not_proposed"
     assert record["robot_access_removal"]["reason"] == "no_named_movable_furniture"
     assert "movable_obstacle_counterfactual" not in record["robot_station"]["search"]
 
 
-def test_only_kept_chairs_and_stools_clear_of_the_support_are_ever_named() -> None:
+def test_only_kept_chairs_and_stools_are_named_and_the_support_is_protected_by_height() -> None:
     def target(**row: Any) -> dict[str, Any]:
         return {"target_id": "t", "segmentation_prompt": "", "target_class": "movable_object", "target_role": "obstacle",
                 "disposition": "keep", "task_effect": "static_obstacle",
@@ -116,213 +403,138 @@ def test_only_kept_chairs_and_stools_clear_of_the_support_are_ever_named() -> No
                    task_effect="static_contact"),
             target(target_id="vase", semantic_label="floor vase"),
             target(target_id="bar_stool", semantic_label="tall bar stool by the island", segmentation_prompt="stool"),
-            target(target_id="tucked_chair", semantic_label="chair pushed under the table",
-                   estimated_visible_bounds={"minimum": [0.2, -0.3, 0.0], "maximum": [0.6, 0.1, 0.9]}),
+            target(target_id="pulled_up_chair", semantic_label="chair pulled up to the table",
+                   estimated_visible_bounds={"minimum": [0.1, -0.3, 0.0], "maximum": [0.6, 0.1, 0.9]}),
             target(target_id="chair_unmeasured", semantic_label="armchair", estimated_visible_bounds=None)]
     record = access.movable_furniture_record(rows, lambda bounds: (bounds["minimum"], bounds["maximum"]))
-    assert [row["obstacle_id"] for row in record["items"]] == ["bar_stool", "tucked_chair"]
-    assert record["items"][0]["kind"] == "stool"
-    # The wall, the counter, the table, the tray, the person and the vase are never listed.
+    assert [row["obstacle_id"] for row in record["items"]] == ["bar_stool", "pulled_up_chair"]
     assert {row["target_id"]: row["reason"] for row in record["excluded"]} == {
         "fixed_seat": "analysis_class_not_movable_object", "chair_on_support": "analysis_role_not_obstacle_or_background",
         "chair_unmeasured": "bounds_unmeasured"}
+    # A chair pulled up to the table meets it in plan, and is still named: the table is protected by height.
     named, refused = access.eligible_obstacles(record, supports=[SUPPORT])
-    assert [row["obstacle_id"] for row in named] == ["bar_stool"]
-    assert refused == [{"obstacle_id": "tucked_chair", "reason": "overlaps_task_support"}]
-    assert access.eligible_obstacles(record, supports=[])[0] == []
+    assert [row["obstacle_id"] for row in named] == ["bar_stool", "pulled_up_chair"] and refused == []
+    assert named[1]["protected_world_m"] == [{"minimum": [*single.SUPPORT_MIN[:2], SUPPORT_TOP - 0.05],
+                                              "maximum": [*single.SUPPORT_MAX[:2], SUPPORT_TOP + 3.0]}]
+    assert access.eligible_obstacles(record, supports=[])[1][0]["reason"] == "support_unknown"
 
 
-def _queued(tmp_path: Path, monkeypatch: Any) -> tuple[dict[str, Any], Path, str, dict[str, Any]]:
-    """A completed request whose compiled half proposes moving a chair, bound to its own intent."""
+def test_a_chair_pulled_up_to_the_table_moves_without_any_of_the_table(tmp_path) -> None:
+    # The chair's seat reaches under the table's edge and its measured box takes in the table's side. Its seat
+    # and its back outside the table go; nothing of the table at its own height inside its footprint does, and
+    # the station search's counterfactual holds exactly the same faces.
+    from blueprint_pipeline.team_embodiment_stance import _inside, _world_triangles
 
-    inputs = single._inputs(tmp_path, monkeypatch)
-    scope = inputs["owner_success_confirmation_scope"]
-    request = worker.validated_request(worker._seal({
-        "schema_version": worker.REQUEST_SCHEMA, "intent_id": scope["intent"]["intent_id"],
-        "intent_digest": scope["intent"]["intent_digest"], "capture_id": "walkthrough-1",
-        "task_id": "website-" + "0" * 20, "source_launch_root": str(tmp_path / "launch"),
-        "launch_receipt_digest": "sha256:" + "1" * 64, "scene_revision_digest": inputs["revision"]["revision_digest"],
-        "robot_free_readiness_status": "refused"}, "request_digest"))
-    progression = json.loads((scope["directory"] / "progression.json").read_text())
-    progression["state"]["scene_preparation_completion"]["team_scene_request"]["request_digest"] = (
-        request["request_digest"])
-    (scope["directory"] / "progression.json").write_text(json.dumps(intake._seal(progression, "progression_digest")))
-    record = _compile(tmp_path, monkeypatch, "proposed", inputs,
-                      movable_furniture=_furniture([target for _, target in CHAIRS]), robot_access_scope=scope)
-    monkeypatch.setattr(worker, "current_release_commit", lambda: None)
-    queue = worker._queue(tmp_path / "queue")
-    key = worker.request_key(request)
-    (queue / "processed" / f"{key}.json").write_text(json.dumps(request))
-    (queue / "status" / f"{key}.json").write_text(json.dumps({
-        "schema_version": worker.STATUS_SCHEMA, "request_key": key, "status": "completed", "blockers": [],
-        "team_scene_inputs_path": record["_compiled"]["path"]}))
-    return inputs, queue, key, record
-
-
-class FakeWebApp:
-    """The WebApp side: it keeps each proposal and answers with the owner's decision on it."""
-
-    def __init__(self) -> None:
-        self.proposals: list[dict[str, Any]] = []
-        self.decision: dict[str, Any] | None = None
-
-    def __call__(self, notice: dict[str, Any]) -> dict[str, Any]:
-        notice = json.loads(json.dumps(notice))
-        assert notice["proposal_digest"] == cross_runtime_canonical_digest(notice, digest_field="proposal_digest")
-        self.proposals.append(notice)
-        return {"schema_version": access.RECEIPT_SCHEMA, "status": self.decision["decision"] if self.decision else "pending",
-                "intent_id": notice["intent_id"], "proposal_digest": notice["proposal_digest"], "decision": self.decision}
-
-    def decide(self, kind: str) -> None:
-        notice = self.proposals[-1]
-        decision = {"schema_version": access.DECISION_SCHEMA, "intent_id": notice["intent_id"],
-                    "intent_digest": notice["intent_digest"], "request_id": "req-1", "capture_id": "cap-1",
-                    "proposal_digest": notice["proposal_digest"],
-                    "configured_scene_revision_digest": notice["configured_scene_revision_digest"],
-                    "removal_binding_digest": notice["removal_binding_digest"], "decision": kind,
-                    "decided_via": "owner_job_link", "decided_at": "2026-11-04T09:00:00.000Z"}
-        decision["decision_digest"] = cross_runtime_canonical_digest(decision)
-        self.decision = decision
+    x0, y0, x1, y1 = 0.10, -0.30, 0.55, 0.15
+    seat = _box((x0, y0, 0.0), (x1, y1, SEAT_TOP), bottom=False)
+    back = _box((x1 - 0.05, y0, SEAT_TOP), (x1, y1, BACK_TOP), bottom=False)
+    room = write_scanned_room(tmp_path / "pulled-up.usda", parts=[seat, back])
+    item = {"obstacle_id": "pulled_up", "label": "chair", "kind": "chair",
+            "bounds_world_m": {"minimum": [x0 - 0.01, y0 - 0.01, -0.01], "maximum": [x1 + 0.01, y1 + 0.01, BACK_TOP + 0.01]}}
+    [named], _ = access.eligible_obstacles({"items": [item]}, supports=[SUPPORT])
+    vertices, faces = _world_triangles(room, [0.0, 0.0, 0.0])
+    corners = vertices[faces]
+    low, high = corners.min(axis=1), corners.max(axis=1)
+    inside = (low >= named["bounds_world_m"]["minimum"]).all(axis=1) & (high <= named["bounds_world_m"]["maximum"]).all(axis=1)
+    table = inside & (high[:, 2] >= SUPPORT_TOP - 0.05) & (low[:, 0] <= single.SUPPORT_MAX[0])
+    assert table.sum() > 0  # the table's side lies wholly inside the chair's measured box
+    # The search measures what rises above the floor band; the floor under the chair is never an obstacle.
+    rises = high[:, 2] >= access.FLOOR_BAND_M
+    held = (_inside([named], low, high) >= 0) & rises
+    assert not (held & table).any() and held.sum() == 20
+    written = access.write_collider_without(room, tmp_path / "derived.usdc", items=[named], floor_z=0.0)
+    assert written["faces_removed"] == 20
+    derived_vertices, derived_faces = _world_triangles(tmp_path / "derived.usdc", [0.0, 0.0, 0.0])
+    assert len(derived_faces) == len(faces) - 20
+    kept = {tuple(np.round(row, 6).ravel()) for row in derived_vertices[derived_faces]}
+    assert all(tuple(np.round(row, 6).ravel()) in kept for row in corners[table])
+    assert access.faces_left_inside(tmp_path / "derived.usdc", items=[named], floor_z=0.0) == 0
 
 
-def _status(queue: Path, key: str) -> dict[str, Any]:
-    return json.loads((queue / "status" / f"{key}.json").read_text())
+def test_the_lift_takes_each_pieces_own_instance_and_never_guesses(tmp_path) -> None:
+    from blueprint_pipeline.website_task_masks import estimate_target_bounds
+    from tests.test_website_task_preparation import HEIGHT, WIDTH, _source_geometry
+
+    geometry = _source_geometry(tmp_path)
+    registry = [{"source_frame_id": frame["frame_id"], "decoded_pts_seconds": frame["timestamp_seconds"],
+                 "width": WIDTH, "height": HEIGHT} for frame in geometry["frames"]]
+
+    def track(track_id: str, rows: range, columns: range) -> dict[str, Any]:
+        runs = [{"start": row * WIDTH + columns.start, "length": len(columns), "probability": 0.9} for row in rows]
+        return {"track_id": track_id, "label": "chair-a", "observations": [
+            {"source_frame_id": "frame-0", "height": HEIGHT, "width": WIDTH, "runs": runs}]}
+
+    near, far = track("near", range(20, 25), range(21, 25)), track("far", range(2, 6), range(2, 6))
+    prompts = [{"prompt_id": "chair-a", "text": "wooden chair", "output_label": "chair-a", "anchor_frame_index": 0}]
+
+    def piece(target_id: str, box: list[float], prompt: str = "wooden chair") -> dict[str, Any]:
+        return {"target_id": target_id, "segmentation_prompt": prompt, "semantic_label": "chair",
+                "spatial_evidence": [{"timestamp_seconds": 0.0, "box_xywh_normalized": box}]}
+
+    measured, left = measurement.lift(
+        [piece("by_the_window", [21 / WIDTH, 20 / HEIGHT, 4 / WIDTH, 5 / HEIGHT]),
+         piece("unclear", [0.0, 0.0, 1.0, 1.0]), piece("another_kind", [0.1, 0.1, 0.1, 0.1], prompt="black stool")],
+        registry=registry, tracks=[near, far], prompts=prompts, geometry=geometry)
+    [chair] = measured
+    assert chair["target_id"] == "by_the_window" and chair["track_id"] == "near"
+    assert chair["estimated_visible_bounds"] == estimate_target_bounds(
+        {**near, "label": "by_the_window"}, geometry["frames"])
+    assert left == [{"target_id": "unclear", "reason": "instance_ambiguous"},
+                    {"target_id": "another_kind", "reason": "segmentation_concept_over_the_approved_count"}]
+    # A geometry frame the tracks never saw at that time is refused, not lifted.
+    with pytest.raises(ValueError, match="geometry_frame_mapping_invalid"):
+        measurement.lift([], registry=registry[:1], tracks=[], prompts=prompts, geometry=geometry)
 
 
-def test_a_chair_in_the_way_is_proposed_held_by_name_on_a_decline_and_moved_only_on_approval(
-        tmp_path, monkeypatch, chairs_room) -> None:
-    inputs, queue, key, record = _queued(tmp_path, monkeypatch)
-    scope = inputs["owner_success_confirmation_scope"]
-    sealed = tmp_path / "bundle" / "collision.usda"
-    sealed_digest = _sha(sealed)
+def test_measuring_is_asked_only_when_something_off_the_supports_height_blocks_the_nearer_stances() -> None:
+    def stances(**refusals: Any) -> list[dict[str, Any]]:
+        return [{"search": {"nearer_refusals": refusals}}]
 
-    # No ranked stance carries: the half proposes the one chair that opens a stance within reach, and
-    # changes nothing else. The station is the carry search's first, on the sealed collider, chair and all.
-    search = record["robot_station_search"]
-    assert search["cleared"] is False and search["chosen_rank"] == 0
-    assert record["robot_station"]["stance_digest"] == search["results"][0]["stance_digest"]
-    assert record["robot_station"]["scene_collision_sha256"] == sealed_digest
-    assert not (tmp_path / "proposed" / access.DIRECTORY).exists()
-    proposal = record["robot_access_removal"]
-    assert proposal["status"] == "proposed" and proposal["model"] == access.MODEL and proposal["chosen"] is False
-    assert [row["obstacle_id"] for row in proposal["items"]] == [BLOCKING]
-    assert proposal["items"][0]["kind"] == "chair" and proposal["support_label"] == "wooden dining table"
-    assert proposal["why"] == {"reason": "no_ranked_stance_carries", "carry_cleared": False,
-                               "stances_tried": len(search["results"]),
-                               "reach_shortfall": search["reach_shortfall"]["status"]}
-    enabled = proposal["enabled_stance"]
-    assert enabled["reach"]["status"] == "within_bound" and enabled["position_world_m"][:2] == [0.5, -0.42]
-    assert proposal["removal_binding"]["scene_collision_sha256"] == sealed_digest
-    assert proposal["appearance"]["status"] == "unchanged"
-
-    clock = iter(1_793_800_000.0 + 2 * 86400.0 * step for step in range(10))
-    monkeypatch.setattr(access, "_now", lambda: next(clock))
-    webapp = FakeWebApp()
-    noop = lambda notice: (_ for _ in ()).throw(AssertionError("no threshold exchange"))  # noqa: E731
-
-    # The first pass sends the proposal in plain terms; no decision means no change.
-    first = worker.requeue_transient_blocked(queue_root=queue, website_transport=noop, robot_access_transport=webapp)
-    assert first["requeued"] == [] and first["website_robot_access"][key]["status"] == "pending"
-    [notice] = webapp.proposals
-    assert notice["items"] == [{"target_id": BLOCKING, "label": "dining chair", "kind": "chair"}]
-    assert notice["support_label"] == "wooden dining table" and notice["appearance"] == "unchanged"
-    assert "bounds_world_m" not in json.dumps(notice)
-    assert _status(queue, key)[access.STATUS_FIELD]["status"] == "pending"
-
-    # The owner keeps the chair where it is: nothing is written under the intent, and the job holds by name.
-    webapp.decide("declined")
-    declined = worker.requeue_transient_blocked(queue_root=queue, website_transport=noop, robot_access_transport=webapp)
-    assert declined["requeued"] == []
-    kept = _status(queue, key)[access.STATUS_FIELD]
-    assert kept["status"] == "declined" and kept["hold"] == access.DECLINED_HOLD
-    assert access.confirmations(scope["directory"], scope["intent"]) == []
-    assert not (queue / "pending" / f"{key}.json").exists()
-
-    # The owner changes their mind: the approval is sealed under the intent and the request compiles again.
-    webapp.decide("approved")
-    approved = worker.requeue_transient_blocked(queue_root=queue, website_transport=noop, robot_access_transport=webapp)
-    [approval] = access.confirmations(scope["directory"], scope["intent"])
-    assert approval["removal_binding_digest"] == proposal["removal_binding_digest"]
-    assert approval["items"] == proposal["removal_binding"]["items"]
-    assert approval["issuer_channel"] == "website" and approval["spend_authorized"] is False
-    assert approved["requeued"] == [{"request_key": key, "reason": "robot_access_confirmation",
-                                     "confirmation_digests": [approval["confirmation_digest"]]}]
-    assert (queue / "pending" / f"{key}.json").exists()
-    assert _status(queue, key)[access.REQUEUE_FIELD] == [approval["confirmation_digest"]]
-    assert access.approved_proposal(record["_compiled"]["path"], json.loads(
-        (queue / "pending" / f"{key}.json").read_text()))
-    # A decision for another binding is refused and applies nothing.
-    with pytest.raises(ValueError, match="robot_access_decision_invalid"):
-        access.validated_receipt({"schema_version": access.RECEIPT_SCHEMA, "status": "approved",
-                                  "intent_id": notice["intent_id"], "proposal_digest": notice["proposal_digest"],
-                                  "decision": {**webapp.decision, "removal_binding_digest": "sha256:" + "9" * 64}},
-                                 notice)
-
-    # The half is rebuilt without that chair, and only that chair, then searched and carried on the CPU again.
-    rebuilt = _compile(tmp_path, monkeypatch, "approved", inputs,
-                       movable_furniture=_furniture([target for _, target in CHAIRS]), robot_access_scope=scope)
-    applied = rebuilt["robot_access_removal"]
-    assert applied["status"] == "applied" and applied["confirmation_digest"] == approval["confirmation_digest"]
-    assert applied["proposal_digest"] == notice["proposal_digest"]
-    assert applied["assumption"] == access.ASSUMPTION and "hold_reason" not in applied
-    assert applied["cpu_checks"]["carry_cleared"] is True
-    assert applied["cpu_checks"]["reach"]["status"] == "within_bound"
-    assert applied["cpu_checks"]["rest_check"]["status"] == applied["cpu_checks"]["rest_check_before"]["status"]
-    assert rebuilt["robot_station_search"]["cleared"] is True
-    assert rebuilt["robot_station"]["position_world_m"][:2] == [0.5, -0.42]
-    # A named, derived collider: the sealed file is untouched, the chair's own faces are gone, nothing else.
-    derived = tmp_path / "approved" / applied["derived_collider"]["relative_path"]
-    assert _sha(sealed) == sealed_digest == applied["derived_collider"]["derived_from_sha256"]
-    assert _sha(derived) == applied["derived_collider"]["sha256"] == rebuilt["robot_station"]["scene_collision_sha256"]
-    [moved] = applied["derived_collider"]["items"]
-    assert moved["obstacle_id"] == BLOCKING and moved["faces_removed"] == 20  # its seat and back, five sides each
-    assert applied["derived_collider"]["faces_removed"] == 20
-    assert access.faces_left_inside(derived, items=applied["items"], floor_z=0.0) == 0
-    plan = json.loads((Path(rebuilt["base_native_packet"]["path"]).parent
-                       / "native_task_arena_scene_plan.v1.json").read_text())
-    [collision] = [row for row in plan["objects"] if row["semantic_role"] == "scene_collision"]
-    assert collision["sha256"] == applied["derived_collider"]["sha256"]
-    # The rebuilt half holds no open proposal, so nothing more is asked.
-    assert access.half_proposal(rebuilt["_compiled"]["path"]) is None
+    assert measurement.plausibly_blocked(stances(stances=40, blocker_tops={"below_mount": 3, "at_mount": 37,
+                                                                           "above_mount": 0}))["plausible"]
+    assert not measurement.plausibly_blocked(stances(stances=40, by_reason={"occupied": 40},
+                                                     blocker_tops={"below_mount": 0, "at_mount": 40,
+                                                                   "above_mount": 0}))["plausible"]
+    assert measurement.plausibly_blocked(stances(stances=4, by_reason={"clips": 4}))["plausible"]
+    assert not measurement.plausibly_blocked([])["plausible"]
 
 
-def test_the_preparation_measures_the_analysis_chairs_in_the_simulator_frame_and_the_half_reads_them(tmp_path):
-    from blueprint_pipeline import website_task_preparation as preparation
-    from blueprint_pipeline.decision_evidence_contracts import canonical_digest
-    from tests import test_website_task_preparation as fixture
+def test_the_sidecar_is_the_current_preparations_and_a_stale_one_is_never_read(tmp_path, monkeypatch) -> None:
+    from tests.test_task_evaluation_owner_success_confirmation import publish
 
-    def with_chair(geometry: dict[str, Any]) -> dict[str, Any]:
-        masks = fixture._masks(geometry)
-        masks["targets"].append({
-            "target_id": "chair-1", "semantic_label": "dining chair by the window", "segmentation_prompt": "chair",
-            "target_class": "movable_object", "target_role": "obstacle", "disposition": "keep",
-            "task_effect": "static_obstacle", "track": masks["targets"][0]["track"],
-            "estimated_visible_bounds": fixture._bounds([0.7, 0.0, 1.2], [0.9, 0.45, 1.4])})
-        masks["digest"] = canonical_digest(masks, digest_field="digest")
-        return {"task_masks": masks}
+    job = publish(tmp_path, monkeypatch)
+    scope = {"intent": job.intent, "directory": job.directory}
+    assert measurement.furniture_for_scope(scope, revision_digest="x")["reason"].startswith("preparation_unresolved")
+    capture = renewed_lineage(tmp_path, scope, monkeypatch)
+    current = measurement.current_preparation(scope)
+    assert current["preparation_path"].endswith(f"renewals/{RENEWAL}/preparation.json")
+    assert current["capture_root"] == str(capture)
+    # A sidecar written for the root preparation (another digest) is not this intent's.
+    root = json.loads((capture / "pipeline/website_scene_preparation/preparation.json").read_text())
+    stale = capture / "pipeline" / "robot_access" / root["digest"][7:23] / "movable_furniture.v1.json"
+    value = {"schema_version": measurement.SIDECAR_SCHEMA, "lineage": {**current["lineage"],
+                                                                       "preparation_digest": root["digest"]},
+             "movable_furniture": {"items": []}, "sidecar_digest": ""}
+    value["sidecar_digest"] = canonical_digest(value, digest_field="sidecar_digest")
+    _write(stale, value)
+    assert measurement.furniture_for_scope(scope, revision_digest="x") == {
+        "status": "not_measured", "reason": "no_sidecar_for_the_current_preparation"}
+    # Nor is one for this preparation bound to another intent.
+    other = capture / "pipeline" / "robot_access" / current["lineage"]["preparation_digest"][7:23] / "movable_furniture.v1.json"
+    _write(other, {**value, "lineage": {**current["lineage"], "intent_id": "another-intent"}})
+    assert measurement.furniture_for_scope(scope, revision_digest="x")["status"] == "not_measured"
 
-    value = preparation.compile_website_scene_preparation(**fixture._arguments(tmp_path, with_chair))
-    assert value["status"] == "intake_ready", value["blockers"]
-    [item] = value["movable_furniture"]["items"]
-    matrix = np.asarray(value["registration"]["source_to_runtime"])
-    to_sim = np.asarray(value["coordinate_frame"]["runtime_to_simulator"])
-    low, high = preparation._runtime_bounds(fixture._bounds([0.7, 0.0, 1.2], [0.9, 0.45, 1.4]), matrix)
-    assert item["bounds_world_m"] == dict(zip(("minimum", "maximum"), preparation._runtime_bounds(
-        {"minimum": low, "maximum": high}, to_sim)))
-    assert item["obstacle_id"] == "chair-1" and item["kind"] == "chair"
-    assert value["movable_furniture"]["physical_measurement_proven"] is False
-    # A preparation with no chair or stool records nothing, as before.
-    (tmp_path / "plain").mkdir()
-    assert "movable_furniture" not in fixture._compile(tmp_path / "plain")
 
-    # The team half reads the record only from this task's own preparation.
-    capture = tmp_path / "capture"
-    (capture / "pipeline" / "website_scene_preparation").mkdir(parents=True)
-    context = fixture._task_context()
-    (capture / "pipeline" / "website_task_context.json").write_text(json.dumps(context))
-    (capture / "pipeline" / "website_scene_preparation" / "preparation.json").write_text(json.dumps(value))
-    task_id = "website-" + context["context_digest"][7:27]
-    read = access.movable_furniture_for_capture(capture, task_id=task_id)
-    assert read["status"] == "measured" and read["record"] == value["movable_furniture"]
-    assert access.movable_furniture_for_capture(capture, task_id="website-other")["status"] == "preparation_not_this_task"
-    assert access.movable_furniture_for_capture(tmp_path / "none", task_id=task_id)["status"] == "preparation_unreadable"
+def test_the_worker_records_a_failed_measurement_and_never_retries_it_unasked(monkeypatch) -> None:
+    calls: list[Any] = []
+
+    def failing(scope: Any, approval: Any, **_: Any) -> Any:
+        calls.append(approval["confirmation_digest"])
+        raise ValueError("website_gemini_runtime_not_configured")
+
+    monkeypatch.setattr(measurement, "run_measurement", failing)
+    monkeypatch.setattr(worker, "owner_success_confirmation_scope", lambda request: ({"intent": {}, "directory": "/x"}, None))
+    outcome = worker._measure_furniture({"scene_revision_digest": "sha256:" + "1" * 64},
+                                        {"confirmation_digest": "sha256:" + "2" * 64})
+    assert outcome["status"] == "failed" and calls == ["sha256:" + "2" * 64]
+    assert "website_gemini_runtime_not_configured" in json.dumps(outcome["error"])

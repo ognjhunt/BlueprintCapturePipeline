@@ -655,20 +655,39 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
                            carry: Mapping[str, Any], named: Sequence[Mapping[str, Any]],
                            refused: Sequence[Mapping[str, Any]], subject_center: Sequence[float],
                            task_spec: Mapping[str, Any], support_top: float, revision: Mapping[str, Any],
-                           collision_sha256: str, task_id: str, support_label: str) -> dict[str, Any]:
-    """What the half records when no ranked stance carries: the owner's proposal, or why there is none.
+                           collision_sha256: str, task_id: str, support_label: str,
+                           scope: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What the half records when no ranked stance carries: a question for the site owner, or why there is none.
 
-    The Franka's search named the preparation's movable furniture as movable obstacles; this reads
-    its counterfactual (``robot_access_furniture.station_proposal``). A preparation that measured no
-    furniture says so, by name. Nothing here changes the station or the scene.
+    With the scene's movable furniture measured (the sidecar, ``robot_access_measurement``), the Franka's
+    search named it as movable obstacles and this reads its counterfactual: the proposal to move the
+    fewest items (``robot_access_furniture.station_proposal``). Without it, and only when furniture
+    plausibly blocks the nearer stances and the scene's review names some, it is the question whether
+    to measure it, with the quote (``measurement_proposed``). Nothing here spends or changes the scene.
     """
 
-    from .robot_access_furniture import MODEL, PROPOSAL_SCHEMA, station_proposal
+    from .robot_access_furniture import APPEARANCE, MODEL, PROPOSAL_SCHEMA, station_proposal
+    from .robot_access_measurement import measurement_offer, plausibly_blocked
 
+    why = {"reason": "no_ranked_stance_carries", "carry_cleared": bool(carry.get("cleared")),
+           "stances_tried": len(carry.get("results") or []),
+           "reach_shortfall": (carry.get("reach_shortfall") or {}).get("status")}
+    base = {"schema_version": PROPOSAL_SCHEMA, "model": MODEL, "chosen": False, "task_id": task_id}
     if movable_furniture.get("status") != "measured":
-        return {"schema_version": PROPOSAL_SCHEMA, "model": MODEL, "status": "not_proposed", "chosen": False,
-                "reason": "movable_furniture_" + str(movable_furniture.get("status") or "unknown")[:80],
-                "task_id": task_id}
+        trigger = plausibly_blocked(stances)
+        if not trigger["plausible"]:
+            return {**base, "status": "not_proposed", "reason": "nearer_stances_not_blocked_off_the_support",
+                    "why": why, "trigger": trigger}
+        offer = measurement_offer(scope, revision_digest=str(revision["revision_digest"]))
+        if offer["status"] != "available":
+            return {**base, "status": "not_proposed", "reason": "measurement_" + str(offer["status"])[:80],
+                    "why": why, "trigger": trigger}
+        binding = offer["binding"]
+        return {**base, "status": "measurement_proposed", "why": why, "trigger": trigger,
+                "items": [dict(row) for row in binding["items"]], "support_label": str(support_label or
+                                                                                       "the support")[:160],
+                "binding": binding, "binding_digest": offer["binding_digest"], "appearance": dict(APPEARANCE),
+                "claim_ceiling": "cpu_bounded_estimate"}
     try:
         affordance = task_spec["interaction_affordance"]
         task = {"start_pose_world": task_spec["start_pose_world"],
@@ -680,9 +699,9 @@ def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Seq
                                     revision_digest=str(revision["revision_digest"]),
                                     collision_sha256=collision_sha256, support_label=support_label)
     except (KeyError, TypeError, ValueError) as exc:
-        return {"schema_version": PROPOSAL_SCHEMA, "model": MODEL, "status": "not_proposed", "chosen": False,
-                "reason": "robot_access_proposal_inputs_invalid", "detail": type(exc).__name__, "task_id": task_id}
-    return {**proposal, "task_id": task_id,
+        return {**base, "status": "not_proposed", "reason": "robot_access_proposal_inputs_invalid",
+                "detail": type(exc).__name__}
+    return {**proposal, "task_id": task_id, "sidecar_digest": movable_furniture.get("sidecar_digest"),
             "preparation_digest": movable_furniture.get("preparation_digest")}
 
 
@@ -719,7 +738,7 @@ def _robot_access_applied(access: Mapping[str, Any], *, scope: Mapping[str, Any]
 
     try:
         confirmation = find_confirmation(scope["directory"], scope["intent"],
-                                         removal_binding_digest=str(access["removal_binding_digest"]))
+                                         binding_digest=str(access["binding_digest"]), question="move")
     except (KeyError, TypeError, ValueError, OSError):
         confirmation = None
     if confirmation is None:
@@ -735,7 +754,8 @@ def _robot_access_applied(access: Mapping[str, Any], *, scope: Mapping[str, Any]
         raise TeamScenePacketError("team_scene_robot_access_readback_disagrees")
     record: dict[str, Any] = {
         **{key: access[key] for key in ("schema_version", "rule", "why", "items", "support_label", "removal_binding",
-                                        "removal_binding_digest", "enabled_stance", "task_id") if key in access},
+                                        "removal_binding_digest", "binding", "binding_digest", "enabled_stance",
+                                        "task_id", "sidecar_digest", "preparation_digest") if key in access},
         "model": MODEL, "assumption": ASSUMPTION, "appearance": dict(APPEARANCE),
         "confirmation_digest": confirmation["confirmation_digest"], "proposal_digest": confirmation["proposal_digest"],
         "approved_by": confirmation["approved_by"], "issuer_channel": confirmation["issuer_channel"],
@@ -812,8 +832,10 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     arm (``_own_arm_stations``). ``owner_success_confirmation_scope`` (``intent`` and its ``directory``,
     bound to this scene by the caller) is where a ``proposal_only`` owner authority may find the owner's
     sealed confirmation of these exact thresholds (``_owner_confirmed``).
-    ``movable_furniture`` is the scene preparation's own movable furniture
-    (``robot_access_furniture.movable_furniture_for_capture``). When no ranked stance carries a rigid
+    ``movable_furniture`` is what the scene knows of its own movable furniture: the owner-approved
+    measurement's sidecar, or that none was made (``robot_access_measurement.furniture_for_scope``). When
+    none was made and furniture plausibly blocks the carry, the record asks the owner whether to measure it
+    (``measurement_proposed``). When no ranked stance carries a rigid
     pick and place, the record proposes moving the fewest of those items that opens a stance within
     the arm's reach (``robot_access_removal``), and nothing else changes. Only the site owner's sealed
     approval of exactly that proposal, found under ``robot_access_scope`` (the request's own intent),
@@ -963,7 +985,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     # The scene's own movable furniture, named to the Franka's search only for a carry (it is only reported).
     named, refused = [], []
     if carry and movable_furniture is not None and movable_furniture.get("status") == "measured":
-        from .robot_access_furniture import eligible_obstacles
+        from .robot_access_furniture import eligible_obstacles, search_obstacles
 
         documents_in = adapter["source_documents"]["documents"]
         named, refused = eligible_obstacles(movable_furniture.get("record"), supports=[
@@ -980,7 +1002,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                 task_motion=motion, **PEDESTAL_SEARCH,
                 **({} if articulated else {"task_points_world_m": [start, target]}))
             station = ground_stance(**place, ranked=CARRY_STATIONS if carry else 0,
-                                    **({"movable_obstacles": named} if named else {}))
+                                    **({"movable_obstacles": search_obstacles(named)} if named else {}))
         except TeamEmbodimentError as exc:
             # A ValueError itself: caught first, so a named stance refusal keeps its own reason.
             raise TeamScenePacketError(",".join(exc.blockers) or "team_scene_station_inputs_invalid") from exc
@@ -995,7 +1017,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                 subject_center=place["subject_center"], task_spec=task_spec, support_top=support_top,
                 revision=revision, collision_sha256=place["collision_sha256"], task_id=task_id,
                 support_label=str(adapter["source_documents"]["documents"]["support_plane"].get("publisher_label")
-                                  or ""))
+                                  or ""), scope=robot_access_scope)
             if access["status"] == "proposed" and robot_access_scope is not None:
                 applied = _robot_access_applied(
                     access, scope=robot_access_scope, physics_collision=physics_collision, root=root, place=place,
@@ -1100,7 +1122,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
             "robot_station": station,
             **({"owner_success_confirmation": confirmation} if confirmation is not None else {}),
             **({"robot_access_removal": {key: access[key] for key in ("status", "reason", "confirmation_digest",
-                                                                      "removal_binding_digest") if key in access}}
+                                                                      "binding_digest") if key in access}}
                if access is not None else {})}
 
 
@@ -1165,8 +1187,8 @@ def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenar
 
     The launch's run root is also where its robot-free probe receipt is retained
     (``robot_free_readiness_retention``), so it is the scene's probe root. A compile given the request's
-    own intent as ``robot_access_scope`` also reads the capture's website preparation's movable furniture
-    (``robot_access_furniture.movable_furniture_for_capture``).
+    own intent as ``robot_access_scope`` also reads what that intent's current preparation knows of its
+    movable furniture (``robot_access_measurement.furniture_for_scope``: the owner-approved sidecar, if any).
     """
 
     from .robot_free_readiness_retention import _revision
@@ -1180,10 +1202,12 @@ def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenar
     root = Path(output_root)
     documents = fetch_revision_documents(revision=revision, output_root=root, fetcher=fetcher)
     if packet_inputs.get("robot_access_scope") is not None and "movable_furniture" not in packet_inputs:
-        from .robot_access_furniture import movable_furniture_for_capture
+        from .robot_access_measurement import furniture_for_scope
 
-        packet_inputs = {**packet_inputs, "movable_furniture": movable_furniture_for_capture(
-            capture_root, task_id=str(revision["task_template"]["identity"]["id"]))}
+        known = furniture_for_scope(packet_inputs["robot_access_scope"], revision_digest=str(revision["revision_digest"]))
+        # The offer to measure is made only when a carry fails, so it is read then (``_robot_access_proposal``).
+        packet_inputs = {**packet_inputs, "movable_furniture": {key: value for key, value in known.items()
+                                                                if key != "offer"}}
     compiled = materialize_team_scene(revision=revision, documents=documents, output_root=root / "scene",
                                       **packet_inputs)
     descriptor = _read(Path(capture_root) / "capture_descriptor.json", "team_scene_capture_descriptor_invalid")

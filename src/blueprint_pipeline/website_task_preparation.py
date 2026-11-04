@@ -1729,12 +1729,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
     composed["entries"] = [dict(row, compose_back=compose_back) if row["target_id"] == subject_entry["target_id"] else dict(row)
                            for row in removal_manifest["entries"]]
     write_json(output_root / "removal_manifest.composed.json", composed)
-    # The items the analysis labels movable furniture (chairs, stools), measured in the simulator frame like
-    # the subject: a team half may propose moving them for the robot, only with the site owner's approval
-    # (``robot_access_furniture``). An object-local frame is not the room's, so nothing is measured there.
-    from .robot_access_furniture import movable_furniture_record
-    furniture = None if independent_object else movable_furniture_record(task_masks["targets"], lambda bounds: (
-        _runtime_bounds(dict(zip(("minimum", "maximum"), _runtime_bounds(bounds, matrix))), runtime_to_sim)))
     value = {
         "schema_version": SCHEMA_VERSION, "status": "needs_input" if blockers else "intake_ready",
         "blockers": blockers, "claim_ceiling": CLAIM_CEILING,
@@ -1765,7 +1759,6 @@ def compile_website_scene_preparation(*, task_context: Mapping[str, Any], task_m
         **({"synthetic_subject": {"design": dict(synthetic), "start": start}} if synthetic is not None else {}),
         **({"collider_conditioning": collider_conditioning} if collider_conditioning is not None else {}),
         **({"subject_excision": subject_excision} if subject_excision is not None else {}),
-        **({"movable_furniture": furniture} if furniture is not None else {}),
         "authoring_inputs": {"adapter": "astra_articulated_replacement" if articulated
                              else "provided_mesh_rigid_authoring" if synthetic is not None
                              else "content_agents_rigid_replacement",

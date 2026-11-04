@@ -39,13 +39,18 @@ no-spend worker, woken by its path unit, does the rest on the CPU:
   the website job page: the timer's pass sends each such blocked job's
   thresholds to the WebApp and records the owner's website confirmation with
   the door's own writer (``website_owner_success_confirmation``).
-- a compiled rigid half no ranked stance carries from may propose moving the
-  scene's own movable furniture (chairs, stools) out of the Franka's way
-  (``robot_access_furniture``). The same timer pass sends the proposal to the
-  WebApp for the site owner; an approval, sealed under the request's intent,
-  returns the completed request to pending once, and its compile rebuilds the
-  half without those items on a derived collider; a decline holds it by name
-  in its status (``website_robot_access``). No decision is no change.
+- a compiled rigid half no ranked stance carries from asks the site owner, on
+  the same timer pass, first whether to measure the scene's movable furniture
+  (chairs, stools) when it plausibly blocks the carry, with the most that would
+  cost (``robot_access_measurement``), then whether to move the items that would
+  give the Franka room (``robot_access_furniture``). Each approval, sealed under
+  the request's intent, returns the completed request to pending once. A
+  measurement approval is the one spend this worker makes: the analysis call and
+  SAM masks for just those items, reserved through the job's preparation-spend
+  path within the approved figure, kept as a sidecar of the intent's current
+  preparation. A move approval rebuilds the half without those items on a
+  derived collider. A decline holds the request by name in its status
+  (``website_robot_access``). No decision is no change.
 
 The scenario is ``nominal``: the website journey never names one (the WebApp
 copies the offer's scenario into the run request it prepares), and a team
@@ -77,8 +82,9 @@ whose support record holds it (the CPU rest check refused it, or it was compiled
 before the support was modelled: ``rigid_support_pad.half_support_hold``), can
 never be scored, so each newly deployed release recompiles it once, on the same
 passes and the CPU, and never reuses it (``unscorable_half_release_requeued``). Nothing
-here allocates a provider, starts a run or spends: the offer publishes facts,
-never authority, and every rights, consent and spend gate after it is unchanged.
+here allocates a provider, starts a run or spends, except the owner-approved furniture
+measurement above: the offer publishes facts, never authority, and every rights,
+consent and spend gate after it is unchanged.
 """
 
 from __future__ import annotations
@@ -804,6 +810,33 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
                if prepared.get("robot_access_removal") else {})}
 
 
+def _measure_furniture(request: Mapping[str, Any], approval: Mapping[str, Any]) -> dict[str, Any]:
+    """Run the owner-approved movable furniture measurement (``robot_access_measurement``); its outcome, never raised.
+
+    The only spend this worker makes, and only with the site owner's sealed approval of exactly this
+    measurement: the analysis call and the SAM masks reserve through the job's preparation-spend path,
+    within the approved figure. A failure is recorded; the half is compiled again either way and asks
+    nothing new for the same approval.
+    """
+
+    from .robot_access_measurement import run_measurement
+
+    try:
+        scope, unbound = owner_success_confirmation_scope(request)
+        if scope is None:
+            return {"status": "intent_unbound", "reason": unbound}
+        sidecar = run_measurement(scope, approval, revision_digest=request["scene_revision_digest"])
+    except Exception as exc:  # noqa: BLE001 - a measurement that fails is recorded; the compile goes on
+        from .bounded_error import error_description
+
+        return {"status": "failed", "confirmation_digest": approval.get("confirmation_digest"),
+                "error": error_description(exc)}
+    return {"status": "measured", "confirmation_digest": approval.get("confirmation_digest"),
+            "sidecar_digest": sidecar["sidecar_digest"],
+            "reserved_cost_usd": round(float(sidecar["analysis"]["reserved_cost_usd"])
+                                       + float(sidecar["segmentation"]["reserved_cost_usd"]), 4)}
+
+
 def _blocker(exc: BaseException) -> str:
     text = str(exc).strip()
     if isinstance(exc, (ValueError, RuntimeError)) and text:
@@ -857,10 +890,15 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
             return skipped("team_candidate_frozen_pair_present")
         existing = _current_half(current, request["scene_revision_digest"])
         if existing is not None:
-            from .robot_access_furniture import approved_proposal
+            from .robot_access_furniture import MEASURE, approved_proposal
 
-            if approved_proposal(existing, request):
-                # The site owner approved moving the furniture this half proposes: it is compiled again.
+            approval = approved_proposal(existing, request)
+            if approval is not None:
+                if approval["question"] == MEASURE:
+                    # The site owner approved measuring the furniture this half asks about: measured once,
+                    # within that approval and the job's caps, before the half is compiled again.
+                    status["robot_access_measurement"] = _measure_furniture(request, approval)
+                # The site owner answered this half's question: it is compiled again with the answer.
                 existing = None
         if existing is not None:
             status.update(outcome="already_compiled", team_scene_inputs_path=existing)

@@ -8,47 +8,55 @@ be clear were named obstacles moved (``team_embodiment_stance``
 the robot runs in still holds the obstacle. This module is the option that
 can: off by default, and only for the job's own site owner.
 
-1. **Measure.** The scene preparation lists the items its own removal analysis
-   labels movable furniture: a ``movable_object`` the analysis kept as an
-   obstacle or background (never a task object, the support, the destination
-   or a person) whose label names a chair or a stool (``FURNITURE_KINDS``).
-   Their bounds are the visible masked surfaces lifted with the model's
-   estimated depth and cameras (``website_task_masks.estimate_target_bounds``)
-   in the simulator frame (``movable_furniture_record``). A wall, a fixed
-   counter, fixed clutter or anything else is never listed. An item whose
-   bounds meet the task's support in plan is refused (``eligible_obstacles``),
-   so the table, its legs and the task object can never go with it.
-2. **Propose.** When the team half's carry search finds no stance the Franka
-   carries from, the first search names those items as movable obstacles. Of
-   the stances it reports clear were some of them moved, the one needing the
-   fewest items whose pick and place pass the arm's CPU reach bound
-   (``robot_arm_path_clearance.rigid_reach_shortfall``) is the typed proposal
-   (``PROPOSAL_SCHEMA``): which items, why, and the stance it enables. Nothing
-   changes: the half compiles exactly as before, with the proposal recorded.
-3. **Ask the owner.** The screening timer's pass sends each such proposal to
-   the WebApp over the signed Pipeline sync transport, as the success
-   thresholds go (``website_owner_success_confirmation``):
+1. **Measure, with the owner's approval** (``robot_access_measurement``). A
+   scene's preparation holds only the targets its task needed, so the
+   furniture's 3-D bounds are usually unknown. When the carry fails and the
+   nearer stances were refused off the support's height, and the scene's review
+   names movable furniture, the half asks the owner first whether Blueprint may
+   measure it, with the most that costs. Only an approval lets the analysis and
+   SAM masks run for just those items, within that figure and the job's caps;
+   the bounds are lifted on the CPU and kept as a sidecar of the intent's
+   current preparation (never written into the sealed preparation). Only items
+   the analysis itself calls movable furniture are kept: a ``movable_object``
+   kept as an obstacle or background whose label names a chair or a stool
+   (``movable_furniture_record``). Walls, fixed counters, fixed clutter, the
+   support, the destination, the task object and people never are.
+2. **Never the support.** Inside each support's footprint, nothing reaching
+   ``SUPPORT_TOP_BAND_M`` below its top, or higher, is ever part of an item
+   (``protected_regions``): a chair pulled up to the table keeps its seat and
+   legs movable and never takes the table's top, slab or upper legs.
+3. **Propose.** With the sidecar, the Franka's first search names the items as
+   movable obstacles. Of the stances it reports clear were some of them moved,
+   the one needing the fewest items whose pick and place pass the arm's CPU
+   reach bound (``robot_arm_path_clearance.rigid_reach_shortfall``) is the typed
+   proposal (``PROPOSAL_SCHEMA``): which items, why, and the stance it enables.
+   Nothing changes: the half compiles exactly as before, with the proposal recorded.
+4. **Ask the owner.** The screening timer's pass sends each open question
+   (``measure`` or ``move``) to the WebApp over the signed Pipeline sync
+   transport, as the success thresholds go (``website_owner_success_confirmation``):
    ``POST /api/internal/pipeline/task-evaluation-scene-intents/<intent>/robot-access-proposal``.
    The WebApp shows it on the owner's job link only, in plain words, and answers
    with the owner's append-only decision bound to the proposal digest. No
    decision is no change. ``approved`` writes one sealed record under the
-   request's own intent (``<intent>/robot-access-removal-confirmations/<digest>.json``),
-   bound to the intent, the revision, the collider and the exact items;
-   ``declined`` writes nothing and holds the job by name (``DECLINED_HOLD``).
-4. **Rebuild on approval.** The request is compiled once more. The compile
+   request's own intent (``QUESTIONS``), bound to the intent, the revision and
+   the exact binding; ``declined`` writes nothing and holds the job by name
+   (``HOLDS``).
+5. **Rebuild on approval.** The request is compiled once more. The compile
    finds the record for exactly this binding, writes a derived copy of the
-   collider without the faces lying wholly inside the approved items' bounds
-   and rising above the floor band (``write_collider_without``; the sealed
-   collider is never edited), reads it back, searches the stance again on it,
-   tries the carry again on the CPU and checks the object still rests where the
-   flat-support check found it, all before any GPU time. The half records the
-   named model (``MODEL``) and the assumption. The visual scene is unchanged:
-   the existing removal path erases objects from the frames before
-   reconstruction (a new paid Atlas edit and scene build), so the items still
-   show in the simulation's camera views (``APPEARANCE``).
+   collider without the faces of the approved items (inside an item's bounds,
+   clear of its protected regions, rising above the floor band:
+   ``write_collider_without``; the sealed collider is never edited), reads it
+   back, searches the stance again on it, tries the carry again on the CPU and
+   checks the object still rests where the flat-support check found it, all
+   before any GPU time. The half records the named model (``MODEL``) and the
+   assumption. The visual scene is unchanged: the existing removal path erases
+   objects from the frames before reconstruction (a new paid Atlas edit and
+   scene build), so the items still show in the simulation's camera views
+   (``APPEARANCE``).
 
-Only a rigid pick and place is covered. The owner's approval is a modelling
-confirmation, never a spend approval; nothing here starts compute, calls a
+Only a rigid pick and place is covered. A move approval is a modelling
+confirmation, never a spend approval; only a measurement approval authorizes
+spend, at most its own figure. Nothing in this module starts compute, calls a
 provider or moves money.
 """
 
@@ -80,9 +88,21 @@ DECISION_SCHEMA = "website_robot_access_decision.v1"
 CONFIRMATION_SCHEMA = "task_evaluation_robot_access_removal_confirmation.v1"
 CONFIRMATION_DIRECTORY = "robot-access-removal-confirmations"
 CONFIRMATION_SCOPE = "simulation_collision_modelling_only"
+#: The owner's two questions: may Blueprint measure the furniture (a bounded spend), and may it move it.
+MEASURE, MOVE = "measure", "move"
+#: What each question's sealed approval is (schema, directory, scope, whether it authorizes spend).
+QUESTIONS = {
+    MEASURE: ("task_evaluation_robot_access_measurement_approval.v1", "robot-access-measurement-approvals",
+              "website_preparation_spend_for_movable_furniture_measurement", True),
+    MOVE: (CONFIRMATION_SCHEMA, CONFIRMATION_DIRECTORY, CONFIRMATION_SCOPE, False),
+}
+#: The half's record status that asks each question.
+ASKING = {"measurement_proposed": MEASURE, "proposed": MOVE}
 WEBSITE_CHANNEL = "website"
 #: The named hold a declined proposal leaves on the team packet request's status.
 DECLINED_HOLD = "team_scene_robot_access_declined_by_owner"
+MEASUREMENT_DECLINED_HOLD = "team_scene_robot_access_measurement_declined_by_owner"
+HOLDS = {MEASURE: MEASUREMENT_DECLINED_HOLD, MOVE: DECLINED_HOLD}
 #: The team packet status field that keeps the latest exchange for its request.
 STATUS_FIELD = "website_robot_access"
 #: The approvals a completed request was already compiled again for.
@@ -109,13 +129,15 @@ _TARGET = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _INSTANT = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?Z\Z")
 _CODE = re.compile(r"[a-z][a-z0-9_]{0,99}\Z")
 DECISION_FIELDS = frozenset({"schema_version", "intent_id", "intent_digest", "request_id", "capture_id",
-                             "proposal_digest", "configured_scene_revision_digest", "removal_binding_digest",
+                             "proposal_digest", "configured_scene_revision_digest", "question", "binding_digest",
                              "decision", "decided_via", "decided_at", "decision_digest"})
-RECORD_FIELDS = frozenset({"schema_version", "scope", "model", "intent_id", "intent_digest", "owner",
-                           "authenticated_issuer", "configured_scene_revision_digest", "removal_binding",
-                           "removal_binding_digest", "items", "proposal_digest", "decision_digest", "approved_by",
+RECORD_FIELDS = frozenset({"schema_version", "scope", "model", "question", "intent_id", "intent_digest", "owner",
+                           "authenticated_issuer", "configured_scene_revision_digest", "binding", "binding_digest",
+                           "items", "maximum_cost_usd", "proposal_digest", "decision_digest", "approved_by",
                            "approval_evidence", "issuer_channel", "operator_uid", "confirmed_at",
                            "spend_authorized", "provider_mutation_performed", "confirmation_digest"})
+#: The most the owner can be asked to approve for one measurement, in USD (within the job's own caps).
+MAXIMUM_MEASUREMENT_USD = 5.0
 MAX_EXCHANGES_PER_PASS = 4
 TIMEOUT_SECONDS = 5
 #: (first wait, longest wait) in seconds before a request is asked again, by its last outcome; the wait
@@ -207,61 +229,82 @@ def movable_furniture_record(targets: Sequence[Mapping[str, Any]],
             "excluded": excluded, "complete_object_dimensions": False, "physical_measurement_proven": False}
 
 
-def movable_furniture_for_capture(capture_root: str | Path, *, task_id: str) -> dict[str, Any]:
-    """The capture's website preparation's movable furniture, when it is the preparation of this task.
+#: Inside a support's footprint, geometry whose top reaches this far below the support's top, or higher, is
+#: the support itself (its top, the slab's edge, the upper legs) or rests on it (the task object): it never
+#: moves with an item, whatever the item's measured bounds.
+SUPPORT_TOP_BAND_M = 0.05
+#: How high above a support's top its protected region reaches (a finite box; nothing moved stands higher).
+PROTECTED_HEIGHT_M = 3.0
 
-    ``{"status": "measured", "record": ...}``, or ``{"status": <why not>}``: a preparation made before
-    the measurement existed, or one that names no chair or stool, has none, and nothing is proposed.
-    """
 
-    root = Path(capture_root) / "pipeline"
-    try:
-        context = json.loads((root / "website_task_context.json").read_text(encoding="utf-8"))
-        preparation = json.loads((root / "website_scene_preparation" / "preparation.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {"status": "preparation_unreadable"}
-    digest = str(context.get("context_digest") or "")
-    if (not isinstance(preparation, dict) or preparation.get("digest") != canonical_digest(preparation, digest_field="digest")
-            or (preparation.get("binding") or {}).get("task_context_digest") != digest
-            or task_id != "website-" + digest[7:27]):
-        return {"status": "preparation_not_this_task"}
-    record = preparation.get("movable_furniture")
-    if not isinstance(record, Mapping) or record.get("schema_version") != FURNITURE_SCHEMA:
-        return {"status": "not_recorded_by_preparation"}
-    return {"status": "measured", "record": json.loads(json.dumps(record)),
-            "preparation_digest": preparation["digest"]}
+def protected_regions(supports: Sequence[Mapping[str, Any]]) -> list[dict[str, list[float]]]:
+    """Each support's footprint from ``SUPPORT_TOP_BAND_M`` below its top upwards: geometry no item takes."""
+
+    boxes = []
+    for support in supports:
+        box = _bounds({"minimum": support.get("bounds_min_xyz_m"), "maximum": support.get("bounds_max_xyz_m")})
+        try:
+            top = float(support.get("top_z_m", box[1][2] if box else math.nan))
+        except (TypeError, ValueError):
+            top = math.nan
+        if box is not None and math.isfinite(top):
+            boxes.append({"minimum": [box[0][0], box[0][1], top - SUPPORT_TOP_BAND_M],
+                          "maximum": [box[1][0], box[1][1], top + PROTECTED_HEIGHT_M]})
+    return boxes
 
 
 def eligible_obstacles(record: Mapping[str, Any] | None, *, supports: Sequence[Mapping[str, Any]]
                        ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """The measured items a station search may name as movable, and those it may not, with why.
+    """The measured items a station search may name as movable, each with the regions it never takes; and why not.
 
-    ``supports`` are the task's support planes (``bounds_min_xyz_m``/``bounds_max_xyz_m``): an item
-    whose bounds meet one in plan is refused, so the support, its legs and the object on it can never
-    be inside the bounds of anything moved.
+    A chair pulled up to a table always meets the table in plan, so plan overlap refuses nothing. Height
+    decides instead, face by face: inside each support's footprint (``supports``: ``bounds_min_xyz_m``,
+    ``bounds_max_xyz_m``, ``top_z_m``), nothing that reaches ``SUPPORT_TOP_BAND_M`` below the support's
+    top, or higher, is ever part of an item (``protected_regions``). That is the support's own top, the
+    slab's edge, the upper part of its legs, and the task object on it. A chair's seat and legs under the
+    table's edge are lower and go with the chair; anything of it reaching the table's height inside the
+    table's footprint stays, and a stance it still blocks stays refused. The station search's
+    counterfactual (``team_embodiment_stance._inside``) and the derived collider (``write_collider_without``)
+    use exactly this membership. Without a known support nothing is named.
     """
 
-    named: list[dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     refused: list[dict[str, Any]] = []
-    boxes = []
-    for support in supports:
-        box = _bounds({"minimum": support.get("bounds_min_xyz_m"), "maximum": support.get("bounds_max_xyz_m")})
-        if box is not None:
-            boxes.append(box)
+    guards = protected_regions(supports)
     for row in (record or {}).get("items") or []:
         bounds = _bounds(row.get("bounds_world_m")) if isinstance(row, Mapping) else None
         name = str(row.get("obstacle_id") or "") if isinstance(row, Mapping) else ""
         if bounds is None or not _TARGET.fullmatch(name) or row.get("kind") not in set(FURNITURE_KINDS.values()):
             refused.append({"obstacle_id": name[:128], "reason": "item_invalid"})
             continue
-        low, high = bounds
-        if not boxes or any(low[0] <= b[1][0] and high[0] >= b[0][0] and low[1] <= b[1][1] and high[1] >= b[0][1]
-                            for b in boxes):
-            refused.append({"obstacle_id": name, "reason": "overlaps_task_support" if boxes else "support_unknown"})
+        if not guards:
+            refused.append({"obstacle_id": name, "reason": "support_unknown"})
             continue
-        named.append({"obstacle_id": name, "label": str(row.get("label") or row["kind"])[:160], "kind": row["kind"],
-                      "bounds_world_m": {"minimum": low, "maximum": high}, "basis": str(row.get("basis") or "")})
-    return named, refused
+        items.append({"obstacle_id": name, "label": str(row.get("label") or row["kind"])[:160], "kind": row["kind"],
+                      "bounds_world_m": {"minimum": bounds[0], "maximum": bounds[1]},
+                      "protected_world_m": [dict(box) for box in guards], "basis": str(row.get("basis") or "")})
+    return items, refused
+
+
+def search_obstacles(items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The station search's named movable obstacles (``team_embodiment_stance.ground_stance``)."""
+
+    return [{key: row[key] for key in ("obstacle_id", "label", "bounds_world_m", "protected_world_m", "basis")}
+            for row in items]
+
+
+def _held(low: Any, high: Any, item: Mapping[str, Any]) -> Any:
+    """Which boxes (rows of world corners) lie inside the item's bounds and clear of its protected regions."""
+
+    import numpy as np
+
+    bounds = item["bounds_world_m"]
+    held = (low >= np.asarray(bounds["minimum"], dtype=float)).all(axis=1) & (
+        high <= np.asarray(bounds["maximum"], dtype=float)).all(axis=1)
+    for guard in item.get("protected_world_m") or ():
+        held &= ~((low <= np.asarray(guard["maximum"], dtype=float)).all(axis=1)
+                  & (high >= np.asarray(guard["minimum"], dtype=float)).all(axis=1))
+    return held
 
 
 # ----------------------------------------------------------------------------- propose
@@ -275,7 +318,8 @@ def _base_pose(x: float, y: float, z: float, centre: Sequence[float]) -> dict[st
 def removal_binding(*, revision_digest: str, collision_sha256: str, items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """What an approval binds in the scene: the revision, the collider the items are taken from, and the items."""
 
-    rows = [{key: json.loads(json.dumps(row[key])) for key in ("obstacle_id", "label", "kind", "bounds_world_m")}
+    rows = [{key: json.loads(json.dumps(row[key])) for key in ("obstacle_id", "label", "kind", "bounds_world_m",
+                                                                "protected_world_m")}
             for row in items]
     return {"configured_scene_revision_digest": revision_digest, "scene_collision_sha256": collision_sha256,
             "items": rows, "model": MODEL}
@@ -308,8 +352,8 @@ def station_proposal(*, stances: Sequence[Mapping[str, Any]], carry: Mapping[str
     by_id = {row["obstacle_id"]: row for row in named}
     tried: list[dict[str, Any]] = []
     for rank, row in enumerate(counterfactual.get("stances") or []):
-        moved = [name for name in row.get("moved") or [] if name in by_id]
-        if not moved or len(moved) != len(row.get("moved") or []) or len(moved) > MAXIMUM_ITEMS:
+        moved = list(dict.fromkeys(row.get("moved") or []))
+        if not moved or any(name not in by_id for name in moved) or len(moved) > MAXIMUM_ITEMS:
             continue
         x, y = (float(v) for v in row["position_world_m"])
         pose = _base_pose(x, y, root_z, subject_center)
@@ -337,6 +381,7 @@ def station_proposal(*, stances: Sequence[Mapping[str, Any]], carry: Mapping[str
             "support_label": str(support_label or "the support")[:160],
             "enabled_stance": {key: chosen[key] for key in ("position_world_m", "farthest_task_point_m", "reach")},
             "removal_binding": binding, "removal_binding_digest": canonical_digest(binding),
+            "binding": binding, "binding_digest": canonical_digest(binding),
             "appearance": dict(APPEARANCE), "claim_ceiling": "cpu_bounded_estimate"}
 
 
@@ -347,8 +392,9 @@ def write_collider_without(source: str | Path, destination: str | Path, *, items
                            floor_z: float) -> dict[str, Any]:
     """A derived copy of the scene collider without the faces of ``items`` (the sealed file is never edited).
 
-    A collision mesh face goes when every one of its points lies inside one item's bounds (the
-    station search's own membership, ``triangle_or_box_bounds_within_named_bounds``) and it rises
+    A collision mesh face goes when every one of its points lies inside one item's bounds, it touches
+    none of the item's protected regions (the support's height inside its footprint, ``eligible_obstacles``:
+    the station search's own membership, ``_held``) and it rises
     ``FLOOR_BAND_M`` above ``floor_z`` (the floor under an item always stays). Points are kept; face
     counts and indices, and any uniform or face-varying primvar, normals, hole index or face subset,
     are cut or renumbered with them. Read from the compile's binary copy, edited in memory and
@@ -367,8 +413,7 @@ def write_collider_without(source: str | Path, destination: str | Path, *, items
     if (not stage or not math.isclose(UsdGeom.GetStageMetersPerUnit(stage), 1.0)
             or UsdGeom.GetStageUpAxis(stage) != "Z"):
         raise ValueError("robot_access_collider_frame_invalid")
-    boxes = [(np.asarray(row["bounds_world_m"]["minimum"], dtype=float),
-              np.asarray(row["bounds_world_m"]["maximum"], dtype=float)) for row in items]
+
     removed_by_item = [0] * len(items)
     removed_low = [np.full(3, np.inf) for _ in items]
     removed_high = [np.full(3, -np.inf) for _ in items]
@@ -396,23 +441,36 @@ def write_collider_without(source: str | Path, destination: str | Path, *, items
         if len(indices) and (indices.min() < 0 or indices.max() >= len(world)):
             raise ValueError("robot_access_collider_faces_invalid")
         starts = np.cumsum(counts) - counts
-        rises = np.maximum.reduceat(world[indices, 2], starts) >= float(floor_z) + FLOOR_BAND_M
+        # Only a face whose every point lies inside some item's bounds can go: found point-wise first (one
+        # flag per point and per corner), so a scanned room's millions of faces are never gathered as corners.
+        inside = np.zeros(len(world), dtype=bool)
+        for item in items:
+            bounds = item["bounds_world_m"]
+            inside |= np.all((world >= np.asarray(bounds["minimum"], dtype=float))
+                             & (world <= np.asarray(bounds["maximum"], dtype=float)), axis=1)
+        candidates = np.flatnonzero(np.logical_and.reduceat(inside[indices], starts))
+        del inside
         owner = np.full(len(counts), -1, dtype=np.int64)
-        for index, (low, high) in reversed(list(enumerate(boxes))):
-            inside = np.all((world >= low) & (world <= high), axis=1)
-            held = np.logical_and.reduceat(inside[indices], starts) & rises
-            owner[held] = index
+        if len(candidates):
+            sizes = counts[candidates]
+            first = np.cumsum(sizes) - sizes
+            corners = world[indices[np.repeat(starts[candidates], sizes)
+                                    + np.arange(int(sizes.sum())) - np.repeat(first, sizes)]]
+            # Each candidate face's own bounds, and the item membership the search's counterfactual used.
+            face_low = np.minimum.reduceat(corners, first, axis=0)
+            face_high = np.maximum.reduceat(corners, first, axis=0)
+            rises = face_high[:, 2] >= float(floor_z) + FLOOR_BAND_M
+            for index, item in reversed(list(enumerate(items))):
+                owner[candidates[_held(face_low, face_high, item) & rises]] = index
+            for index in range(len(items)):
+                mine = owner[candidates] == index
+                if mine.any():
+                    removed_by_item[index] += int(mine.sum())
+                    removed_low[index] = np.minimum(removed_low[index], face_low[mine].min(axis=0))
+                    removed_high[index] = np.maximum(removed_high[index], face_high[mine].max(axis=0))
         remove = owner >= 0
         if not remove.any():
             continue
-        for index in range(len(items)):
-            faces = np.flatnonzero(owner == index)
-            if not len(faces):
-                continue
-            removed_by_item[index] += int(len(faces))
-            corners = world[indices[np.concatenate([np.arange(starts[f], starts[f] + counts[f]) for f in faces])]]
-            removed_low[index] = np.minimum(removed_low[index], corners.min(axis=0))
-            removed_high[index] = np.maximum(removed_high[index], corners.max(axis=0))
         keep = ~remove
         keep_corner = np.repeat(keep, counts)
         renumber = np.cumsum(keep) - 1
@@ -477,7 +535,7 @@ def write_collider_without(source: str | Path, destination: str | Path, *, items
 
 
 def faces_left_inside(collider: str | Path, *, items: Sequence[Mapping[str, Any]], floor_z: float) -> int:
-    """How many of the derived collider's own triangles still lie inside an item's bounds above the floor band."""
+    """How many of the derived collider's triangles still belong to an item (``_held``) above the floor band."""
 
     import numpy as np
 
@@ -489,9 +547,7 @@ def faces_left_inside(collider: str | Path, *, items: Sequence[Mapping[str, Any]
     rises = high[:, 2] >= float(floor_z) + FLOOR_BAND_M
     left = np.zeros(len(faces), dtype=bool)
     for row in items:
-        minimum = np.asarray(row["bounds_world_m"]["minimum"], dtype=float)
-        maximum = np.asarray(row["bounds_world_m"]["maximum"], dtype=float)
-        left |= (low >= minimum).all(axis=1) & (high <= maximum).all(axis=1)
+        left |= _held(low, high, row)
     return int((left & rises).sum())
 
 
@@ -503,49 +559,56 @@ def _safe(path: Path) -> None:
              and not any(p.is_symlink() for p in (path, *path.parents)), "store_unsafe")
 
 
-def _valid_record(path: Path, intent: Mapping[str, Any]) -> dict[str, Any] | None:
+def _valid_record(path: Path, intent: Mapping[str, Any], question: str) -> dict[str, Any] | None:
+    # Sealed by the intake's writer (``task_evaluation_scene_intake._seal``), so checked with its digest.
+    from .task_evaluation_scene_intent_contracts import canonical_digest as sealed_digest
+
+    schema, _directory, scope, spends = QUESTIONS[question]
     if path.is_symlink() or not path.is_file() or path.suffix != ".json":
         return None
     try:
         row = json.loads(path.read_bytes())
     except (OSError, ValueError):
         return None
-    if not (isinstance(row, dict) and set(row) == RECORD_FIELDS and row.get("schema_version") == CONFIRMATION_SCHEMA
-            and row.get("scope") == CONFIRMATION_SCOPE and row.get("model") == MODEL
-            and row.get("confirmation_digest") == canonical_digest(row, digest_field="confirmation_digest")
+    cost = row.get("maximum_cost_usd") if isinstance(row, dict) else None
+    if not (isinstance(row, dict) and set(row) == RECORD_FIELDS and row.get("schema_version") == schema
+            and row.get("scope") == scope and row.get("model") == MODEL and row.get("question") == question
+            and row.get("confirmation_digest") == sealed_digest(row, digest_field="confirmation_digest")
             and path.name == str(row["confirmation_digest"]).removeprefix("sha256:") + ".json"
             and row["intent_id"] == intent["intent_id"] and row["intent_digest"] == intent["intent_digest"]
             and row["owner"] == intent["request"]["owner"] and row["approved_by"] == row["owner"]["user_id"]
             and row["authenticated_issuer"] == intent["authenticated_issuer"]
             and row["issuer_channel"] == WEBSITE_CHANNEL and type(row["operator_uid"]) is int
-            and row["spend_authorized"] is False and row["provider_mutation_performed"] is False
-            and isinstance(row["removal_binding"], dict)
-            and row["removal_binding_digest"] == canonical_digest(row["removal_binding"])
-            and row["items"] == row["removal_binding"].get("items")
-            and row["configured_scene_revision_digest"] == row["removal_binding"].get("configured_scene_revision_digest")
+            and row["spend_authorized"] is spends and row["provider_mutation_performed"] is False
+            and ((spends and isinstance(cost, (int, float)) and not isinstance(cost, bool)
+                  and 0 < cost <= MAXIMUM_MEASUREMENT_USD and cost == (row["binding"] or {}).get("maximum_cost_usd"))
+                 or (not spends and cost is None))
+            and isinstance(row["binding"], dict) and row["binding_digest"] == canonical_digest(row["binding"])
+            and row["items"] == row["binding"].get("items")
+            and row["configured_scene_revision_digest"] == row["binding"].get("configured_scene_revision_digest")
             and isinstance(row["approval_evidence"], str) and bool(row["approval_evidence"].strip())):
         return None
     return row
 
 
-def confirmations(directory: str | Path, intent: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Every valid sealed approval of this intent's owner, earliest first; none once revoked."""
+def confirmations(directory: str | Path, intent: Mapping[str, Any], question: str = MOVE) -> list[dict[str, Any]]:
+    """Every valid sealed approval of this intent's owner for ``question``, earliest first; none once revoked."""
 
     directory = Path(directory)
     _safe(directory)
-    store = directory / CONFIRMATION_DIRECTORY
+    store = directory / QUESTIONS[question][1]
     if (directory / "revoked.json").exists() or store.is_symlink() or not store.is_dir():
         return []
-    rows = [row for row in (_valid_record(path, intent) for path in sorted(store.glob("*.json"))) if row]
+    rows = [row for row in (_valid_record(path, intent, question) for path in sorted(store.glob("*.json"))) if row]
     return sorted(rows, key=lambda row: (row["confirmed_at"], row["confirmation_digest"]))
 
 
-def find_confirmation(directory: str | Path, intent: Mapping[str, Any], *,
-                      removal_binding_digest: str) -> dict[str, Any] | None:
-    """The earliest valid approval of exactly this removal binding for this intent, else None."""
+def find_confirmation(directory: str | Path, intent: Mapping[str, Any], *, binding_digest: str,
+                      question: str = MOVE) -> dict[str, Any] | None:
+    """The earliest valid approval of exactly this binding for this intent and question, else None."""
 
-    return next((row for row in confirmations(directory, intent)
-                 if row["removal_binding_digest"] == removal_binding_digest), None)
+    return next((row for row in confirmations(directory, intent, question)
+                 if row["binding_digest"] == binding_digest), None)
 
 
 def record_website_approval(*, intent_root: str | Path, intent: Mapping[str, Any], proposal: Mapping[str, Any],
@@ -553,15 +616,20 @@ def record_website_approval(*, intent_root: str | Path, intent: Mapping[str, Any
                             now: datetime | None = None) -> dict[str, Any]:
     """Write the owner's approval under the intent, exclusively and under the intake lock.
 
-    ``proposal`` is the team half's recorded proposal and ``notice`` what the owner saw; the decision
-    must approve exactly that notice. An existing approval of the same binding is returned as is.
+    ``proposal`` is the team half's recorded question and ``notice`` what the owner saw; the decision
+    must approve exactly that notice. A measurement approval authorizes at most the notice's
+    ``maximum_cost_usd`` through the preparation-spend path; a move approval authorizes no spend. An
+    existing approval of the same binding is returned as is.
     """
 
     from . import task_evaluation_scene_intake as intake
 
+    question = notice["question"]
+    schema, directory_name, scope, spends = QUESTIONS[question]
     _require(decision.get("decision") == "approved" and decision.get("proposal_digest") == notice["proposal_digest"]
-             and notice["removal_binding_digest"] == proposal["removal_binding_digest"]
-             and canonical_digest(proposal["removal_binding"]) == proposal["removal_binding_digest"],
+             and decision.get("question") == question == ASKING.get(proposal.get("status"))
+             and notice["binding_digest"] == proposal["binding_digest"]
+             and canonical_digest(proposal["binding"]) == proposal["binding_digest"],
              "decision_not_this_proposal")
     moment = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     root = Path(intent_root)
@@ -573,30 +641,32 @@ def record_website_approval(*, intent_root: str | Path, intent: Mapping[str, Any
         current = intake._read(directory / "intent.json", "intent_digest")
         _require(current == dict(intent) and not (directory / "revoked.json").exists(), "intent_changed_or_revoked")
         _require(os.geteuid() == directory.stat().st_uid, "issuer_user_mismatch")
-        existing = find_confirmation(directory, current, removal_binding_digest=proposal["removal_binding_digest"])
+        existing = find_confirmation(directory, current, binding_digest=proposal["binding_digest"], question=question)
         if existing is not None:
             return {"status": "already_approved", **existing}
         owner = dict(current["request"]["owner"])
-        binding = json.loads(json.dumps(proposal["removal_binding"]))
+        binding = json.loads(json.dumps(proposal["binding"]))
+        what = (f"measuring {len(binding['items'])} named item(s) for at most USD {binding['maximum_cost_usd']}"
+                if spends else f"moving {len(binding['items'])} item(s) out of the robot's way in the simulation")
         value = intake._seal({
-            "schema_version": CONFIRMATION_SCHEMA, "scope": CONFIRMATION_SCOPE, "model": MODEL,
+            "schema_version": schema, "scope": scope, "model": MODEL, "question": question,
             "intent_id": current["intent_id"], "intent_digest": current["intent_digest"], "owner": owner,
             "authenticated_issuer": current["authenticated_issuer"],
             "configured_scene_revision_digest": binding["configured_scene_revision_digest"],
-            "removal_binding": binding, "removal_binding_digest": proposal["removal_binding_digest"],
-            "items": binding["items"], "proposal_digest": notice["proposal_digest"],
-            "decision_digest": decision["decision_digest"], "approved_by": owner["user_id"],
-            "approval_evidence": (f"site owner approved moving {len(binding['items'])} item(s) out of the robot's way "
-                                  f"in the simulation on the website job page (owner link): webapp decision "
+            "binding": binding, "binding_digest": proposal["binding_digest"], "items": binding["items"],
+            "maximum_cost_usd": binding["maximum_cost_usd"] if spends else None,
+            "proposal_digest": notice["proposal_digest"], "decision_digest": decision["decision_digest"],
+            "approved_by": owner["user_id"],
+            "approval_evidence": (f"site owner approved {what} on the website job page (owner link): webapp decision "
                                   f"{decision['decision_digest']} at {decision['decided_at']}"),
             "issuer_channel": WEBSITE_CHANNEL, "operator_uid": os.geteuid(),
-            "confirmed_at": moment.strftime("%Y-%m-%dT%H:%M:%SZ"), "spend_authorized": False,
+            "confirmed_at": moment.strftime("%Y-%m-%dT%H:%M:%SZ"), "spend_authorized": spends,
             "provider_mutation_performed": False}, "confirmation_digest")
-        path = directory / CONFIRMATION_DIRECTORY / (value["confirmation_digest"].removeprefix("sha256:") + ".json")
+        path = directory / directory_name / (value["confirmation_digest"].removeprefix("sha256:") + ".json")
         path.parent.mkdir(mode=0o750, exist_ok=True)
         _safe(path.parent)
         intake.write_exclusive(path, value)
-        _require(find_confirmation(directory, current, removal_binding_digest=proposal["removal_binding_digest"])
+        _require(find_confirmation(directory, current, binding_digest=proposal["binding_digest"], question=question)
                  is not None, "record_invalid")
     return {"status": "approved", "record_path": str(path), **value}
 
@@ -605,16 +675,22 @@ def record_website_approval(*, intent_root: str | Path, intent: Mapping[str, Any
 
 
 def proposal_notice(*, intent: Mapping[str, Any], task_id: str, proposal: Mapping[str, Any]) -> dict[str, Any]:
-    """What the WebApp shows the owner: the items, by the analysis's own words, sealed with the binding."""
+    """What the WebApp shows the owner: the question, the items in the analysis's own words, sealed with the binding.
 
+    ``question`` is ``measure`` (with the most Blueprint would spend, ``maximum_cost_usd``) or ``move``
+    (``maximum_cost_usd`` null). Measured bounds never leave the Pipeline.
+    """
+
+    question = ASKING[proposal["status"]]
     notice = {"schema_version": NOTICE_SCHEMA, "intent_id": intent["intent_id"], "intent_digest": intent["intent_digest"],
               "task_id": str(task_id), "configured_scene_revision_digest":
-                  proposal["removal_binding"]["configured_scene_revision_digest"],
-              "removal_binding_digest": proposal["removal_binding_digest"],
+                  proposal["binding"]["configured_scene_revision_digest"],
+              "question": question, "binding_digest": proposal["binding_digest"],
               "items": [{"target_id": row["obstacle_id"], "label": row["label"], "kind": row["kind"]}
                         for row in proposal["items"]],
               "support_label": proposal["support_label"], "reason": proposal["why"]["reason"],
-              "appearance": proposal["appearance"]["status"]}
+              "appearance": proposal["appearance"]["status"],
+              "maximum_cost_usd": proposal["binding"]["maximum_cost_usd"] if question == MEASURE else None}
     notice["proposal_digest"] = cross_runtime_canonical_digest(notice)
     return notice
 
@@ -670,7 +746,7 @@ def validated_receipt(value: Any, notice: Mapping[str, Any]) -> dict[str, Any]:
              and decision["schema_version"] == DECISION_SCHEMA and decision["decision"] == value["status"]
              and all(decision[field] == notice[field] for field in (
                  "intent_id", "intent_digest", "proposal_digest", "configured_scene_revision_digest",
-                 "removal_binding_digest"))
+                 "question", "binding_digest"))
              and decision["decided_via"] == "owner_job_link"
              and all(isinstance(decision[field], str) and _ID.fullmatch(decision[field])
                      for field in ("request_id", "capture_id"))
@@ -682,7 +758,7 @@ def validated_receipt(value: Any, notice: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def half_proposal(path: Any) -> dict[str, Any] | None:
-    """The robot-access proposal a compiled team half recorded, when it is still only proposed; else None."""
+    """The question a compiled team half asks the owner (measure, or move), while it is open; else None."""
 
     from .team_scene_packet import read_team_scene_inputs
 
@@ -694,10 +770,10 @@ def half_proposal(path: Any) -> dict[str, Any] | None:
     except (OSError, ValueError, KeyError, TypeError):
         return None
     access = value.get("robot_access_removal") if isinstance(value, Mapping) else None
-    if not isinstance(access, Mapping) or access.get("status") != "proposed":
+    if not isinstance(access, Mapping) or access.get("status") not in ASKING:
         return None
     try:
-        if canonical_digest(access["removal_binding"]) != access["removal_binding_digest"]:
+        if canonical_digest(access["binding"]) != access["binding_digest"]:
             return None
     except (KeyError, TypeError, ValueError):
         return None
@@ -717,19 +793,20 @@ def _approval_of(path: Any, request: Mapping[str, Any]) -> dict[str, Any] | None
     try:
         scope, _unbound = owner_success_confirmation_scope(request)
         return None if scope is None else find_confirmation(
-            scope["directory"], scope["intent"], removal_binding_digest=proposal["removal_binding_digest"])
+            scope["directory"], scope["intent"], binding_digest=proposal["binding_digest"],
+            question=ASKING[proposal["status"]])
     except (OSError, ValueError, KeyError, TypeError):
         return None
 
 
-def approved_proposal(path: Any, request: Mapping[str, Any]) -> bool:
-    """Whether the site owner approved the proposal the half at ``path`` records (it is then compiled again)."""
+def approved_proposal(path: Any, request: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The owner's approval of the question the half at ``path`` asks (it is then compiled again), else None."""
 
-    return _approval_of(path, request) is not None
+    return _approval_of(path, request)
 
 
 def untried_confirmations(status: Mapping[str, Any], request: Mapping[str, Any]) -> list[str]:
-    """The owner's approvals of a completed half's own proposal that no compile has tried yet."""
+    """The owner's approvals of a completed half's own open question that no compile has tried yet."""
 
     if not _completed_with_proposal(status):
         return []
@@ -781,11 +858,11 @@ def _error_code(exc: BaseException) -> str:
 
 def exchange_robot_access_decision(packet_root: Path, request_key: str, *, transport: Transport | None = None,
                                    now: float | None = None) -> dict[str, Any] | None:
-    """Ask the WebApp about one completed half's robot-access proposal, and record an approval.
+    """Ask the WebApp about one completed half's open question (measure, or move), and record an approval.
 
-    None when the request's half holds no open proposal, or the request is not due. The outcome is
-    what the request's status keeps under ``STATUS_FIELD``; ``declined`` carries ``DECLINED_HOLD``.
-    Any error is this request's ``failed`` outcome; it never leaves this function.
+    None when the request's half holds no open question, or the request is not due. The outcome is
+    what the request's status keeps under ``STATUS_FIELD``; ``declined`` carries the question's named
+    hold (``HOLDS``). Any error is this request's ``failed`` outcome; it never leaves this function.
     """
 
     from .team_scene_packet_worker import _read_json, owner_success_confirmation_scope, validated_request
@@ -803,9 +880,10 @@ def exchange_robot_access_decision(packet_root: Path, request_key: str, *, trans
     previous = status.get(STATUS_FIELD) if isinstance(status.get(STATUS_FIELD), dict) else None
     next_check = _next_check(previous)
     if (next_check is not None and now < next_check
-            and (previous or {}).get("removal_binding_digest") == proposal["removal_binding_digest"]):
+            and (previous or {}).get("binding_digest") == proposal["binding_digest"]):
         return None
-    base: dict[str, Any] = {"removal_binding_digest": proposal["removal_binding_digest"]}
+    question = ASKING[proposal["status"]]
+    base: dict[str, Any] = {"question": question, "binding_digest": proposal["binding_digest"]}
     try:
         request = validated_request(_read_json(packet_root / "processed" / f"{request_key}.json"))
         scope, unbound = owner_success_confirmation_scope(request)
@@ -816,7 +894,7 @@ def exchange_robot_access_decision(packet_root: Path, request_key: str, *, trans
             return _scheduled({**base, "status": "intent_revoked"}, previous, now)
         notice = proposal_notice(intent=intent, task_id=proposal["task_id"], proposal=proposal)
         base["proposal_digest"] = notice["proposal_digest"]
-        existing = find_confirmation(directory, intent, removal_binding_digest=proposal["removal_binding_digest"])
+        existing = find_confirmation(directory, intent, binding_digest=proposal["binding_digest"], question=question)
         if existing is not None:
             return _scheduled({**base, "status": "already_approved",
                                "confirmation_digest": existing["confirmation_digest"]}, previous, now)
@@ -826,7 +904,7 @@ def exchange_robot_access_decision(packet_root: Path, request_key: str, *, trans
         if decision is not None:
             outcome["decision_digest"] = decision["decision_digest"]
         if receipt["status"] == "declined":
-            outcome["hold"] = DECLINED_HOLD
+            outcome["hold"] = HOLDS[question]
         elif receipt["status"] == "approved":
             written = record_website_approval(intent_root=directory.parent, intent=intent, proposal=proposal,
                                               notice=notice, decision=decision)
@@ -873,6 +951,10 @@ __all__ = [
     "CONFIRMATION_SCHEMA",
     "DECISION_SCHEMA",
     "DECLINED_HOLD",
+    "MEASURE",
+    "MEASUREMENT_DECLINED_HOLD",
+    "MOVE",
+    "QUESTIONS",
     "FURNITURE_KINDS",
     "MODEL",
     "NOTICE_SCHEMA",
@@ -883,13 +965,14 @@ __all__ = [
     "approved_proposal",
     "confirmations",
     "eligible_obstacles",
+    "protected_regions",
+    "search_obstacles",
     "exchange_robot_access_decision",
     "exchange_robot_access_decisions",
     "faces_left_inside",
     "find_confirmation",
     "furniture_kind",
     "half_proposal",
-    "movable_furniture_for_capture",
     "movable_furniture_record",
     "proposal_notice",
     "record_website_approval",
