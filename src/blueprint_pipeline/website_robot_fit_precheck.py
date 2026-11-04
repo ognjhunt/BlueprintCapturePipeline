@@ -8,7 +8,8 @@ of the screening catalog (``config/beta_policy_candidates.v1.json``, or the inst
 with the late checks' own rules and code, on the CPU:
 
 - the catalog row: what the screening plan refuses from the row alone (``catalog_blockers``: disabled,
-  commercial use, an unpinned policy, a task kind it does not run), and a GPU memory floor the screening
+  a scripted baseline, which a website job never runs, commercial use, an unpinned policy, a task kind
+  it does not run), and a GPU memory floor the screening
   lane cannot rent (``candidate_gpu_blockers``), read with the lane's compute-capability ceiling lifted,
   since planning reads that ceiling in another process: refused only when no ceiling would rent it;
 - the DROID Franka, on the station pedestal level with the lower of the task's supports, as the team
@@ -309,7 +310,8 @@ def robot_fit_precheck(*, preparation: Mapping[str, Any], collision_path: str | 
     rows = []
     for candidate in catalog["candidates"]:
         key = candidate["candidate_id"]
-        refused = catalog_blockers(candidate, task_kind or "")
+        # A website job's own refusals: a scripted baseline is switched off there, so it never fits.
+        refused = catalog_blockers(candidate, task_kind or "", website=True)
         kind = sorted(code for code in refused if code in TASK_KIND_BLOCKERS)
         other = sorted(set(refused) - set(kind))
         embodiment = _embodiment(candidate, team)

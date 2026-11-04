@@ -32,6 +32,7 @@ from .beta_policy_screening_result import (
     ACTIVE_STATUSES, QUEUED_STATUSES, candidate_result_summary, campaign_status, money, screening_publication,
 )
 from .decision_evidence_contracts import canonical_digest
+from .policy_execution_evidence import SCRIPTED
 from .website_candidate_feasibility import is_measured_refusal
 
 QUEUE_ROOT_ENV = "BLUEPRINT_BETA_POLICY_SCREENING_QUEUE_ROOT"
@@ -605,6 +606,41 @@ def _refill_waitlist(root: Path) -> int:
     return changed
 
 
+def _switch_off_website_scripted(root: Path) -> int:
+    """Close a website plan's queued scripted baselines before they reserve money.
+
+    Website jobs never fund a scripted baseline (``beta_policy_screening_plan.website_switched_off``,
+    owner decision 2026-11-04). Plans frozen before that decision still list some as selected or
+    waitlisted: a row that never reserved money closes ``unavailable`` with the plan's own
+    ``candidate_disabled``, the same reason a newer plan lists. One already preparing, launched
+    or finished is left to its end. Returns the number of rows closed.
+    """
+    from .beta_policy_screening_plan import DISABLED_BLOCKER, JOB_CEILING_BASIS
+
+    closed = 0
+    with _lock(root):
+        ledger = _ledger(root)
+        for campaign_id, state in ledger["campaigns"].items():
+            if not any(row["status"] in QUEUED_STATUSES for row in state["candidates"].values()):
+                continue
+            plan = _plan(root, campaign_id, state["plan_digest"])
+            if plan.get("budget_basis") != JOB_CEILING_BASIS:
+                continue
+            touched = False
+            for candidate in plan["candidates"]:
+                row = state["candidates"][candidate["candidate_id"]]
+                if (row["status"] in QUEUED_STATUSES and "attempt" not in row
+                        and candidate.get("execution_evidence_kind") == SCRIPTED):
+                    row.update(status="unavailable", blockers=[DISABLED_BLOCKER])
+                    touched = True
+                    closed += 1
+            if touched:
+                _changed(state)
+        if closed:
+            _save(root, ledger)
+    return closed
+
+
 def _unstarted_refusal_proof(root: Path, attempt: Mapping[str, Any], observation: Mapping[str, Any]) -> bool:
     """Reopen bytes from our exact job fence; caller booleans are not evidence."""
     from .allocator_invocation import manifest
@@ -905,6 +941,9 @@ def process_screening_queue(
     root = _root(queue_root)
     try:
         with _lock(root, ".worker.lock", nonblocking=True):
+            # A website plan's queued scripted baselines close first, so the
+            # waitlist below never funds one.
+            _switch_off_website_scripted(root)
             # Money a candidate released before spend funds the next waitlisted
             # one. A funded row is pending and still needs the website's
             # acknowledgment of that revision before it is reserved.

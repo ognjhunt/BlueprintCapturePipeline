@@ -48,6 +48,8 @@ DEFAULT_EPISODES = 10
 # One dollar ceiling per website job (owner decision 2026-10-30, WebApp #1168).
 # A plan sized to it records the read it was sized from.
 JOB_CEILING_BASIS = "website_job_ceiling"
+#: A catalog row switched off: disabled in the catalog, or a scripted baseline on a website job.
+DISABLED_BLOCKER = "candidate_disabled"
 JOB_CEILING_SCHEMA_VERSION = "beta_policy_screening_job_ceiling.v1"
 JOB_CEILING_SUMMARY_SCHEMA = "website_job_ceiling.v1"
 JOB_CEILING_DEFERRED = "website_job_ceiling_insufficient"
@@ -374,15 +376,28 @@ def _validate_coverage_gaps(scenario: Mapping[str, Any]) -> None:
 TASK_KIND_BLOCKERS = frozenset({"task_kind_not_supported_by_candidate", "task_kind_support_unverified"})
 
 
-def catalog_blockers(candidate: Mapping[str, Any], task_kind: str) -> list[str]:
+def website_switched_off(candidate: Mapping[str, Any]) -> bool:
+    """A scripted simulator-state baseline: never run for a website job (owner decision 2026-11-04).
+
+    It reads the object's pose from the simulator, so it never answers which policy can do the
+    site's task and never gives the site an estimate (``reference_only`` at best). With the
+    controls step removed (2026-09-21) nothing a website job decides rests on one, so its money
+    is never spent on one. Internal (non-website) plans still list them.
+    """
+    return candidate["policy"]["kind"] == "scripted"
+
+
+def catalog_blockers(candidate: Mapping[str, Any], task_kind: str, *, website: bool = False) -> list[str]:
     """What the catalog row alone refuses for ``task_kind``: before any runtime binding, credential or quote.
 
     The plan refuses a candidate with any of these (``_candidate_blockers``). The website robot fit
     precheck reads the same list before any spend (``website_robot_fit_precheck``), so the two never differ.
+    ``website``: a website job's plan or precheck, where a scripted baseline is switched off
+    (``website_switched_off``) like a disabled row.
     """
     blockers = list(candidate["eligibility"]["blockers"])
-    if not candidate["eligibility"]["enabled"]:
-        blockers.append("candidate_disabled")
+    if not candidate["eligibility"]["enabled"] or website and website_switched_off(candidate):
+        blockers.append(DISABLED_BLOCKER)
     if candidate["eligibility"]["commercial_use"] not in {"allowed", "allowed_with_conditions"}:
         blockers.append("commercial_use_not_admitted")
     pinned_runtime = (candidate["policy"]["digest_kind"] == "pinned_runtime_file_inventory"
@@ -401,8 +416,8 @@ def catalog_blockers(candidate: Mapping[str, Any], task_kind: str) -> list[str]:
 
 
 def _candidate_blockers(candidate: Mapping[str, Any], scene: Mapping[str, Any],
-                        binding: Mapping[str, Any] | None, credentials: set[str]) -> list[str]:
-    blockers = catalog_blockers(candidate, scene["task_kind"])
+                        binding: Mapping[str, Any] | None, credentials: set[str], *, website: bool = False) -> list[str]:
+    blockers = catalog_blockers(candidate, scene["task_kind"], website=website)
     for credential in candidate["eligibility"]["requires_credentials"]:
         if credential not in credentials:
             blockers.append("credential_unavailable:" + credential)
@@ -432,8 +447,14 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                          capabilities: Mapping[str, Any] | None = None,
                          cost_quotes: Mapping[str, Any] | None = None,
                          now: dt.datetime | None = None,
-                         priority: Sequence[str] | None = None, intake_ranking: bool = False) -> dict[str, Any]:
+                         priority: Sequence[str] | None = None, intake_ranking: bool = False,
+                         website: bool = False) -> dict[str, Any]:
     """Every requested candidate gets a status and reason; the budget decides how many run.
+
+    ``website``: a website job's plan (``build_job_ceiling_screening_plan``). A scripted
+    baseline is listed ``unavailable`` (``candidate_disabled``) and never funded there
+    (``website_switched_off``), so the site's money only goes to policies that can give it
+    an estimate.
 
     ``priority`` (the job's intake ranking) sets the order the budget is spent
     in; unranked candidates follow by identifier, learned policies before
@@ -492,7 +513,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     if set(requested) - set(by_id):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_not_in_catalog")
     if (isinstance(priority, (str, bytes)) or any(not isinstance(row, str) for row in priority or ())
-            or type(intake_ranking) is not bool):
+            or type(intake_ranking) is not bool or type(website) is not bool):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_priority_invalid")
     ranked = [row for row in dict.fromkeys(priority or ()) if row in set(requested)]
     cells = screening_cells(scene, episodes_per_candidate)
@@ -532,7 +553,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         if reach is not None:
             row["reach_rank"] = deepcopy(reach.get(candidate_id) or reach_rank(None))
         binding = bindings.get(candidate_id)
-        row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials)
+        row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials, website=website)
         row["blockers"] = sorted(set(row["blockers"] + failures.get(candidate_id, [])))
         if row["blockers"]:
             candidates.append(row)
@@ -821,7 +842,8 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
     budget = min(requested, _job_ceiling_available(job_ceiling))
     # The planner needs a positive budget. With none left it plans at the
     # requested one, and every selection is deferred below.
-    plan = build_screening_plan(catalog, scene, budget_usd=f"{budget:.2f}" if budget > 0 else budget_usd, **options)
+    plan = build_screening_plan(catalog, scene, budget_usd=f"{budget:.2f}" if budget > 0 else budget_usd,
+                                website=True, **options)
     if budget < requested:
         for row in plan["candidates"]:
             if (row["status"] in {"selected", WAITLISTED} and budget == 0
@@ -842,10 +864,10 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
 
 
 __all__ = ["PLAN_SCHEMA_VERSION", "QUOTE_SCHEMA_VERSION", "EXECUTION_SCHEMA_VERSION", "CLAIM_CEILING",
-           "SITE_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
+           "DISABLED_BLOCKER", "SITE_BUDGET_USD", "DEFAULT_EPISODES", "JOB_CEILING_BASIS", "JOB_CEILING_DEFERRED",
            "JOB_CEILING_SCHEMA_VERSION", "JOB_CEILING_SUMMARY_SCHEMA", "TASK_KIND_BLOCKERS", "WAITLISTED",
            "WAITLIST_BLOCKER", "BetaPolicyScreeningPlanError", "build_job_ceiling_screening_plan",
            "build_screening_plan", "catalog_blockers",
            "execution_cost_floor", "job_ceiling_record", "money", "screening_cells", "validate_cost_quote",
            "validate_execution_descriptor",
-           "validate_screening_plan"]
+           "validate_screening_plan", "website_switched_off"]
