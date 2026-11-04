@@ -95,6 +95,7 @@ from .control_plane_storage_gc_reasons import (
 )
 from .control_plane_storage_pins import PINS_ROOT_ENV, live_pinned_paths
 from .control_plane_lane_scratch_retention import LaneScratchRetentionError, observe_lane_scratch_retention
+from .control_plane_release_lifecycle import storage_gc_phase, storage_gc_settings
 # Kept under their old names for every existing caller.
 from .control_plane_storage_references import (  # noqa: F401 - re-exported
     MAX_QUEUE_MESSAGE_BYTES as _MAX_QUEUE_MESSAGE_BYTES,
@@ -1315,6 +1316,7 @@ def run_storage_gc(
     lane_scratch_enabled: bool = False,
     lane_scratch_alert: str | None = None,
     lane_reference_target: str | Path | None = None,
+    release_trees: Mapping[str, Any] | None = None,  # control_plane_release_lifecycle.storage_gc_settings
     _experiment_config_path: str | Path = "/etc/blueprint-operator-door/door.json",
     now: Callable[[], float] = time.time,
     publisher: Callable[..., Any] | None = None,
@@ -1349,6 +1351,7 @@ def run_storage_gc(
             "replay_cache_shared_scratch": bool(replay_cache_shared_scratch_enabled),
             "extended_pin_proofs": bool(extended_pin_proofs_enabled),
             "lane_scratch": lane_scratch_enabled if type(lane_scratch_enabled) is bool else False,
+            "release_retirement": bool((release_trees or {}).get("enabled")),
         },
         "skipped_roots": [],
     }
@@ -1593,6 +1596,9 @@ def run_storage_gc(
         _isolated(report, "scene_workspaces", scene_phase)
         if scene_workspace_retirement_alert and isinstance(report.get("scene_workspaces"), dict):
             report["scene_workspaces"]["alerts"] = [scene_workspace_retirement_alert]
+    if release_trees is not None:  # superseded per-commit release and runtime trees, behind receipts
+        _isolated(report, "release_trees", lambda: storage_gc_phase(
+            release_trees, apply=apply, now=clock, skipped_roots=report["skipped_roots"]))
     def lane_phase() -> Any:
         try:
             if (lane_scratch_alert or not isinstance(lane_scratch_roots, Sequence)
@@ -1921,6 +1927,7 @@ def _run_main(argv: list[str]) -> int:
         lane_scratch_enabled=lane_enabled,
         lane_scratch_alert=lane_alert,
         lane_reference_target=args.lane_reference_target,
+        release_trees=storage_gc_settings(),  # no phase without BLUEPRINT_CONTROL_PLANE_GC_RELEASE_ROOT
         # Where launch admission records consumed standing authorizations; unset, no activation is unlaunched.
         standing_authorization_dir=str(os.getenv(STANDING_AUTHORIZATION_DIR_ENV) or "").strip() or None,
         # Per-file digests, so an hourly plan re-reads only what changed.

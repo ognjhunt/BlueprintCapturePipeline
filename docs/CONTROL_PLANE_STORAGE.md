@@ -1108,8 +1108,15 @@ temporary directory and `.<commit>.<random>` publication staging beside the
 runtime trees. That scratch is never a published tree or receipt; the receipt lists
 it under `disk_reservation_estimate.swept_stale_staging`.
 
-Retirement remains a separate explicit operation. The existing plan/apply tools
-and their protection checks are unchanged. A commit's trees (release,
+Retirement is separate from deployment. It runs on the storage GC tick
+(`blueprint_pipeline.control_plane_release_lifecycle`, phase `release_trees`)
+under its own owner switch, `BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT`: on by
+default like every storage GC switch, and `0` in the operator environment file
+keeps it planning. Without it nothing retired these trees after 2026-10-01: on
+2026-11-04 the host held 93 release worktrees (root disk) and 88 runtime pairs
+(work volume), about eleven new ones a day, and every step of the root disk's
+~3 GB/day growth landed at a deploy. The explicit plan/apply tools below remain
+for review by hand. A commit's trees (release,
 `splat-render`, `scene-configuration` and their publication receipts) are kept
 while the commit is:
 
@@ -1118,9 +1125,22 @@ while the commit is:
 - in use by a live process (its cwd, executable or an argv path lies in the
   commit's release or runtime tree), checked when planning and again just before
   each commit's paths are removed;
-- younger than a day; or
+- younger than a day;
 - held by a typed protection row: a lease (`live_queue`, `standing_authorization`,
-  `retention_binding`) or current configuration (`configured_runtime`).
+  `retention_binding`) or current configuration (`configured_runtime`); or, on the
+  scheduled tick,
+- holding bytes its commit cannot reproduce (`release_worktree_local_state`):
+  modified or untracked files, ignored files other than Python bytecode, a
+  `HEAD` that is not the commit, or a worktree `git status` cannot read.
+
+Every tick that retires anything writes an immutable 0644 receipt,
+`release-retention/release-lifecycle-<UTC>-<hex>.json`, naming each commit, its
+paths, the measured freed bytes and its restore step: staging the commit again
+(`scripts/stage_task_evaluation_control_plane_release.py`, which every deploy
+runs) prunes the stale worktree registration and checks the exact commit out,
+and deploying it re-provisions its runtime trees. Each applying tick rewrites
+`release-retention/latest-deploy-retirement.json`, whose status and alerts the
+capacity controller turns into `release_retirement_attention`.
 
 Protection comes from typed leases and configuration, rather than searching
 all JSON files for commit-like tokens. Every lease has an owner, a reason, the

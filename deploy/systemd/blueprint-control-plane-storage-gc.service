@@ -52,6 +52,10 @@ ReadOnlyPaths=/var/lib/blueprint/task-evaluation-inputs/sam31-preparations
 ReadWritePaths=-/var/lib/blueprint/pipeline-control-plane/task-evaluation-configured-controls/scene-configuration-activations
 # Finished website scene workspaces are retired here, and their receipts written beside them.
 ReadWritePaths=-/var/lib/blueprint/pubsub-handoffs
+# Superseded per-commit release worktrees and runtime trees (control_plane_release_lifecycle):
+# retired behind receipts in release-retention/, legacy binding leases migrated in release-leases/.
+# BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT=0 in the operator environment file opts out; it then only plans.
+ReadWritePaths=-/opt/blueprint/task-evaluation-control-plane-releases -/var/lib/blueprint/task-evaluation-inputs/system-runtimes/splat-render -/var/lib/blueprint/task-evaluation-inputs/system-runtimes/scene-configuration -/var/lib/blueprint/pipeline-control-plane/release-retention -/var/lib/blueprint/pipeline-control-plane/release-leases
 ReadOnlyPaths=-/var/lib/blueprint/spend-authority -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-derived -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-queue -/var/lib/blueprint/pipeline-control-plane/capture-reconstruction-runs -/var/lib/blueprint/pipeline-control-plane/gpu_spend_guard/billing-audit -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases -/var/lib/blueprint/pipeline-control-plane/task-evaluation-terminal-resource-releases-state
 TasksMax=512
 LimitNOFILE=4096
@@ -108,6 +112,14 @@ Environment=BLUEPRINT_CONTROL_PLANE_GC_SETTLED_ACTIVATION_BUNDLE_ROOTS=/var/lib/
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_WORKSPACE_ROOTS=/var/lib/blueprint/pubsub-handoffs
 Environment=BLUEPRINT_CONTROL_PLANE_GC_SCENE_INTENT_ROOT=/var/lib/blueprint/pipeline-control-plane/task-evaluation-scene-intents
 Environment=BLUEPRINT_CONTROL_PLANE_STORAGE_PINS_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-pins
+# Every deploy adds one release worktree (root disk) and two runtime trees (work volume),
+# about eleven a day on 2026-11-04, and deployment never retires them. Each tick keeps the
+# active release, the newest three, anything younger than a day, in use by a process, leased,
+# configured, or holding files its commit cannot reproduce, and retires the rest.
+Environment=BLUEPRINT_CONTROL_PLANE_GC_RELEASE_ROOT=/opt/blueprint/task-evaluation-control-plane-releases
+Environment=BLUEPRINT_CONTROL_PLANE_GC_RELEASE_RUNTIME_ROOT=/var/lib/blueprint/task-evaluation-inputs/system-runtimes
+Environment=BLUEPRINT_CONTROL_PLANE_GC_RELEASE_ACTIVE_LINK=/opt/blueprint/task-evaluation-control-plane
+Environment=BLUEPRINT_CONTROL_PLANE_GC_RELEASE_RECEIPT_ROOT=/var/lib/blueprint/pipeline-control-plane/release-retention
 # Read only: launch admission's consumed standing authorizations are evidence an activation launched.
 Environment=BLUEPRINT_TASK_EVALUATION_STANDING_AUTHORIZATION_DIR=/var/lib/blueprint/pipeline-control-plane/standing-authorizations
 Environment=BLUEPRINT_CONTROL_PLANE_GC_REPORT_ROOT=/var/lib/blueprint/pipeline-control-plane/storage-gc

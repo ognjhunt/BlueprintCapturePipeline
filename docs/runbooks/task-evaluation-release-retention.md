@@ -217,7 +217,17 @@ leaves the last actual retirement summary unchanged. Disk admission still fails
 closed when space is insufficient. Release identity, paid-launch gates, automation
 state and owned holds retain their existing deployment safeguards.
 
-Use the separate reviewed two-step operation below for retirement. Its checks
+Retirement runs on the storage GC tick instead
+(`control_plane_release_lifecycle`, phase `release_trees` in
+`storage-gc/summary.json`), with the protections below plus one more: a release
+worktree holding files its commit cannot reproduce is kept. Opt out with
+`BLUEPRINT_CONTROL_PLANE_RELEASE_RETIREMENT=0` in the operator environment file;
+the tick then only plans and the summary says `release_retirement_opted_out`.
+Its receipts are `release-retention/release-lifecycle-*.json`. To restore a
+retired commit, stage it again (`scripts/stage_task_evaluation_control_plane_release.py
+--source-commit <commit>`, or deploy it), which recreates the exact worktree.
+
+The separate reviewed two-step operation below remains for retirement by hand. Its checks
 and explicit apply acknowledgment are unchanged. Review deletion authority and
 actual recovery availability separately from code reproducibility; a Git commit
 alone does not reconstruct generated or untracked state.
