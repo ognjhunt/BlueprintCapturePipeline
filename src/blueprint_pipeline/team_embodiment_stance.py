@@ -110,6 +110,12 @@ NEARER_REFUSALS = 8
 #: beside a mount level with it); lower is under it (a seat), higher over it (a chair's back, a wall).
 BLOCKER_MOUNT_BAND_M = 0.05
 MOVABLE_RULE = "clear_if_named_obstacles_moved_never_chosen"
+#: The stance search's own version, recorded in every stance (``search.stance_search_version``). Bump it with
+#: every change to which stances a search returns or in what order: a completed team half whose carry search found
+#: no stance the Franka carries from is then compiled again, once, by the release that brings the new version
+#: (``team_scene_packet_worker``), and a release that leaves the search alone recompiles nothing. A stance recorded
+#: without it is version 1: every one before the pedestal search (2026-11-04).
+STANCE_SEARCH_VERSION = 2
 #: Counterfactual stances recorded, best first.
 MOVABLE_STANCES = 8
 #: Points, or faces, converted at once while a collider's triangles are read (``_world_triangles``).
@@ -759,7 +765,7 @@ def ground_stance(*, collision_path: Path, collision_sha256: str, offset: list[f
         "floor_unobserved_stances": refused["floor_unobserved"],
         "roof_top_above_floor_m": room["roof_top_above_floor_m"], "roof_triangles": room["roof_triangles"],
         "roofed_stances": refused["roofed"]}
-    search = {"obstacle_clearance_m": clearance,
+    search = {"stance_search_version": STANCE_SEARCH_VERSION, "obstacle_clearance_m": clearance,
               "standoff_range_m": None if standoff is None else list(standoff),
               "ranking": ({"rule": RANK_BY_SUBJECT} if points is None else
                           {"rule": RANK_BY_TASK_POINTS, "task_points_world_m": points.tolist(),
@@ -910,5 +916,5 @@ def free_base_stance(manifest: Mapping[str, Any], *, scene_plan: Mapping[str, An
         footprint_half_extent_m=list(base["footprint_half_extent_m"]), root_height_m=float(base["root_height_m"]))
 
 
-__all__ = ["PEDESTAL_CLEARANCE_M", "PEDESTAL_SEARCH", "SCHEMA", "free_base_stance", "ground_stance",
-           "spread_ranked"]
+__all__ = ["PEDESTAL_CLEARANCE_M", "PEDESTAL_SEARCH", "SCHEMA", "STANCE_SEARCH_VERSION", "free_base_stance",
+           "ground_stance", "spread_ranked"]

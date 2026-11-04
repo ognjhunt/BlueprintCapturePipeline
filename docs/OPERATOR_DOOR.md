@@ -651,7 +651,19 @@ already tried under `release_requeued` (written before the move), so a refusal
 the new release does not fix stays blocked until the next deploy. The pass
 reports it as `{"reason": "new_release", ...}`. When the running release cannot
 be read, nothing is requeued on that basis. Completed and skipped requests never
-move.
+move, except as follows.
+
+A completed rigid half whose recorded carry search found no stance the Franka
+carries from (`robot_station_search.cleared` false, or `reach_shortfall`
+`out_of_reach`: capture-447ae4f4's eight stances, all `unreachable:approach`)
+is compiled again once per stance-search version, on the same two passes and
+the CPU, when its station was chosen by an older stance search than the running
+release's (`team_embodiment_stance.STANCE_SEARCH_VERSION`, recorded in every
+stance as `search.stance_search_version`; a station without one is version 1).
+The status keeps the versions tried under `stance_search_version_requeued`
+(written before the move); the pass reports `{"reason": "stance_search_version", ...}`.
+A release that leaves the stance search unchanged recompiles nothing, and a
+half the new search still cannot carry from is kept until the next version.
 
 A provider-output resume unit may write only the canary dispatch root, the disk
 reservation ledger and its result (`ProtectSystem=strict` and the retirement
