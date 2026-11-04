@@ -47,7 +47,15 @@ ReadOnlyPaths=/var/lib/blueprint/spend-authority/authorizations
 ReadOnlyPaths=-/etc/blueprint/remote-cpu-workers.json
 TasksMax=512
 LimitNOFILE=4096
+# Host memory (8.3 GB, no swap): MemoryMax binds below the host, so a runaway
+# is killed in this unit, not host-wide. It holds paid work and a money ledger:
+# -200, after batch jobs, before the money-safety units. Not yet measured on the
+# host: its dispatch, promotion and teardown are the episode remote unit's code
+# (up to 424M there), and landing a capture-447-scale half (1.07 GB) in 1 MiB
+# blocks peaked at 69M locally.
+MemoryHigh=1G
 MemoryMax=2G
+OOMScoreAdjust=-200
 CPUQuota=200%
 TimeoutStartSec=30min
 Environment=BLUEPRINT_TASK_EVALUATION_CONTROL_PLANE_REPO=/opt/blueprint/task-evaluation-control-plane

@@ -379,6 +379,9 @@ HOST_MEMORY = {
     "blueprint-provider-billing-reconciler.service": ("-200", "3G", "4G", "1.7G"),
     "blueprint-pipeline-intake.service": ("-200", "2G", "3G", "1.5G"),
     "blueprint-task-evaluation-episode-compilation-remote.service": ("-200", "1G", "2G", "424M"),
+    # Not yet run on the host: the episode remote unit's host peak, on the same allocator, promotion and landing
+    # code; landing a capture-447-scale half (1.07 GB) in 1 MiB blocks peaked at 69M locally.
+    "blueprint-team-scene-packet-remote.service": ("-200", "1G", "2G", "424M"),
 }
 #: Units that keep the cap main gave them, with no throttle, and only gain an OOM order. Their heavy step at a
 #: full room is not measured on the host (a website capture's preparation in the handoff listener, which
