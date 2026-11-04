@@ -1084,7 +1084,10 @@ def analyze_movable_obstacles(*, video_path: str | Path, task_context: Mapping[s
     from .website_gemini_receipts import retained_gemini_call
 
     path = Path(video_path)
-    if not path.is_file() or sha256_file(path) != binding.get("source_digest"):
+    # The measurement binds the video as ``sha256:<hex>`` (``robot_access_measurement._sha``);
+    # this module's own digests are bare hex. Compare the hex either way.
+    expected = str(binding.get("source_digest") or "").removeprefix("sha256:")
+    if not path.is_file() or not expected or sha256_file(path) != expected:
         raise ValueError("website_gemini_retained_source_required")
 
     def preflight() -> None:
