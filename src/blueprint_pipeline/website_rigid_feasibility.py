@@ -51,10 +51,13 @@ def carry_station_search(preparation: Mapping[str, Any]) -> dict[str, Any]:
     """The ``ground_stance`` arguments the verdict's stations come from, less the collision binding.
 
     A mount level with the lower of the task's supports, facing the subject or, when the object ends
-    on another surface, the whole region from its start to its target; the closest
-    ``CARRY_STATIONS`` clear stances. The robot fit table (``website_robot_fit``) searches the same way.
+    on another surface, the whole region from its start to its target; the ``CARRY_STATIONS`` clear
+    stances nearest the farther of the start and the target, a footprint apart, with the pedestal's
+    own clearance (``team_embodiment_stance.PEDESTAL_SEARCH``), as the team packet searches. The robot
+    fit table (``website_robot_fit``) searches the same way.
     """
     from .robot_arm_path_clearance import CARRY_STATIONS
+    from .team_embodiment_stance import PEDESTAL_SEARCH
     from .team_scene_packet import STATION_FOOTPRINT_HALF_EXTENT_M
 
     task, destination = preparation["intake_request"]["task"], preparation["destination"]
@@ -68,7 +71,8 @@ def carry_station_search(preparation: Mapping[str, Any]) -> dict[str, Any]:
     return {"offset": [0.0, 0.0, 0.0], "subject_center": ((region_lower + region_upper) / 2.0).tolist(),
             "subject_minimum": region_lower.tolist(), "subject_maximum": region_upper.tolist(),
             "footprint_half_extent_m": list(STATION_FOOTPRINT_HALF_EXTENT_M),
-            "root_world_z_m": min(float(row["aabb_max_xyz"][2]) for row in supports), "ranked": CARRY_STATIONS}
+            "root_world_z_m": min(float(row["aabb_max_xyz"][2]) for row in supports), "ranked": CARRY_STATIONS,
+            "task_points_world_m": [((lower + upper) / 2.0).tolist(), target.tolist()], **PEDESTAL_SEARCH}
 
 
 @read_scoped
