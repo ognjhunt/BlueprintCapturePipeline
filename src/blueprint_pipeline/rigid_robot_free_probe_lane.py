@@ -29,7 +29,9 @@ every check below runs before any provider mutation:
   valid until its own expiry or an owner-approved, time-only window of the
   scene intent sealed under it. A missing, expired or exhausted grant is a
   typed refusal and nothing is allocated; the run's watchdog deadline never
-  outlives the WebApp's admission.
+  outlives the WebApp's admission. Once the run's teardown is proven, the
+  runner settles that reservation to the run's budget-ledger estimate
+  (``rigid_robot_free_probe_settlement``).
 
 The transport is the shared native Arena Vast path with the existing
 ``native_task_arena`` bundle kind: zero retry and one allocation, US-only
