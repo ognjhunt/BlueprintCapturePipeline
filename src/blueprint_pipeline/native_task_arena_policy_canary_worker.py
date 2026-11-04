@@ -31,7 +31,7 @@ from blueprint_pipeline.policy_execution_evidence import (
 from blueprint_pipeline.beta_screening_runtime_control import begin_runtime_processing, RuntimeControlStopped
 from blueprint_pipeline.team_evaluation_worker_retention import (
     _compact_team_child_result, _prefix_episode_evidence_paths, _validate_isolated_cell_result,
-    _validate_provider_manifest, seal_scripted_interruption,
+    _validate_provider_manifest, seal_beta_interruption,
     _team_checkpoint as _retention_checkpoint,
     write_team_status_sidecar as _retained_status_sidecar, seal_before_simulation_close as _retained_before_simulation_close,
     seal_team_prefix as _retained_team_prefix, seal_beta_control_stop as _retained_beta_stop,
@@ -1230,8 +1230,8 @@ def _team_checkpoint(**kwargs) -> None:
     _retention_checkpoint(**kwargs, seal_result=_seal_result)
 
 
-def _seal_team_prefix(**kwargs) -> None:
-    _retained_team_prefix(**kwargs, aggregate=_aggregate_isolated_cell_results, seal_result=_seal_result)
+def _seal_team_prefix(**kwargs) -> bool:
+    return _retained_team_prefix(**kwargs, aggregate=_aggregate_isolated_cell_results, seal_result=_seal_result)
 
 
 def _seal_beta_control_stop(**kwargs) -> None:
@@ -1318,8 +1318,9 @@ def _run_isolated_cell_processes(
             reason = ("policy_canary_export_deadline_reached"
                       if _HARD_DEADLINE_ENV in os.environ and _isolated_cell_timeout_seconds() <= 0
                       else "policy_canary_isolated_cell_process_timeout")
-            if seal_scripted_interruption(inputs=inputs, authority=authority, children=child_results,
-                    child_root=child_root, output_root=output_root, index=index, reason=reason, seal_result=_seal_result):
+            if seal_beta_interruption(inputs=inputs, authority=authority, children=child_results,
+                    child_root=child_root, output_root=output_root, index=index, reason=reason, seal_result=_seal_result,
+                    seal_prefix=lambda **kw: _seal_team_prefix(**kw, construction_lineage_mode=construction_lineage_mode)):
                 return 1
             try:
                 child_result_path = child_root / PROVIDER_RESULT_FILENAME

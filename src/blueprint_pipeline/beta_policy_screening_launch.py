@@ -562,9 +562,12 @@ def reconcile_candidate(*, plan: Mapping[str, Any], candidate: Mapping[str, Any]
             setup = scoped_setup_failure_blocker(inner=native, adapter=adapter, prepared=prepared,
                                                  receipt=absence, adapter_path=result_path)
             admission = native.get("beta_screening_admission")
-            if setup is not None and isinstance(admission, Mapping) and admission.get("plan_digest") == plan["plan_digest"]:
+            if (setup is not None and isinstance(admission, Mapping) and admission.get("plan_digest") == plan["plan_digest"]
+                    and not native.get("episodes")):
                 # A cell could not open the runtime, pass the pre-policy gate or load
                 # the policy, and the matrix stopped there: our harness, no score.
+                # With cells measured before it, that prefix is the result instead and
+                # the cells it never reached count unscored (``cell_not_returned``).
                 return {"status": "blocked", "provider_allocation_performed": True,
                         "provider_zero_verified": True, "no_allocation_proven": False, "blockers": [setup]}
             joined = join_scoped_session_closeout(inner=native, adapter=adapter, prepared=prepared,
