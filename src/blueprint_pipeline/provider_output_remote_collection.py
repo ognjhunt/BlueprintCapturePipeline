@@ -18,17 +18,19 @@ inspection reports as ``zip_path``; no file exists there.
 
 When the inspection does not show a clean completion, the collector also reads
 the archive's bounded diagnostics (``provider_runtime_diagnostics``: cell
-results, worker and policy-server log tails) over the same pinned reader, within
-``diagnostics_transfer_bytes`` of extra transfer. This is the only moment the
-host can read them, since the archive never lands here. A transport failure
-while reading them is recorded in the diagnostics and never refuses the
+results, worker and policy-server log tails) over the same pinned reader. It
+starts no new member read once they have added ``diagnostics_transfer_bytes``
+of transfer (the member in progress may finish past it). This is the only
+moment the host can read them, since the archive never lands here. A transport
+failure while reading them is recorded in the diagnostics and never refuses the
 observation already made.
 
 A completed collection returns the download transfer's keys, so the adapter
 needs no new branch, plus ``delivery: "remote_only"``, ``remote_object``
 {``size_bytes``, ``etag``}, ``inspection``, ``structured_policy_canary``,
-``runtime_diagnostics``, ``transferred_bytes`` and ``http_request_count``. The same observation stays on
-``collector.observation`` for the promotion that follows.
+``runtime_diagnostics``, ``transferred_bytes`` and ``http_request_count``. The
+same observation stays on ``collector.observation`` for the promotion that
+follows.
 
 Download-manifest zeros. Because nothing is downloaded, the adapter's download
 manifest records ``output_zip_present_after_download: false`` and
