@@ -1,23 +1,37 @@
-"""Exact-scene, development-only cabinet prior; never a measured source repair."""
+"""Development-only depth prior for a drawer cabinet or mobile pedestal; never a measured source repair.
+
+A video often shows only the closed front of a drawer cabinet, so its visible
+box is far too shallow to build from. Public specifications of comparable
+office pedestals and drawer units give a broad depth and mass interval instead.
+
+The prior is category knowledge, so it is general: every task subject the
+articulated planner builds as a stacked drawer cabinet (``assembly_family``:
+a declared ``stacked_drawer_cabinet``, or a legacy prismatic configuration)
+gets it, in any scene. A mobile pedestal is one of those. A hinged door, any
+other family and every rigid subject get ``None``.
+
+Each record is bound when it is made to the identity its caller supplies: the
+configuration's scene and subject, and the preparation, observation manifest and
+observed frames the caller checked. No identity is ever a constant, so a record
+always says which scene and observations it was applied to and cannot carry
+another capture's identity. A field the caller does not know stays ``None``.
+
+The record keeps the shape, values and ``schema_version`` of the exact-scene
+records it replaces (``website_drawer_depth_prior.v1``). Retained depth
+hypotheses carry that version and the category values, and nothing digests the
+record itself, so they still validate and a hypothesis re-derived from the same
+inputs is byte-identical.
+"""
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+import copy
+from typing import Any, Iterable, Mapping
 
-PRIOR = {
-    "schema_version": "website_drawer_depth_prior.v1",
-    "claim_ceiling": "development_only",
-    "scene_id": "site-capture-7d655e25-34f2-4961-ae9c-6da11621ce8f-development",
-    "preparation_digest": "sha256:cfec5e38e056748c73d2d93660aae81c1f703e81f6bf8041dd88a3914d64cdb6",
-    "observation_manifest_digest": "sha256:028cc3a1ff6c0093d13850859e3220bede6b2ef919a0a985570d858b56e91681",
-    "subject_identity": {"id": "website-subject-0300250645e1def96386", "version": "v1"},
-    "original_frame_sha256s": [
-        "sha256:0205303c4faa9892114349af39bc5908b07c145dcc58eaeedd9b5fb74e4336af",
-        "sha256:7c711762f672a41fd90803b4c5c658a81ee23e9dc3b0fcc71dd57ed243bfcc4a",
-        "sha256:afba0d20718721e00312255a4be823a42af42f36e6640598008eee2e2bbe01f9",
-        "sha256:aba7b9e216a351510bf07b16bc8362ec0a68306c94306bbf705f60a0e8874157",
-        "sha256:b6f03d21cf7d274c7cc4228fca289e242e9eeb347f97986c4af39d2e00812a25",
-    ],
+SCHEMA_VERSION = "website_drawer_depth_prior.v1"
+
+#: Public comparisons for an office drawer cabinet or mobile pedestal, retrieved 2026-09-23.
+CABINET_PRIOR: Mapping[str, Any] = {
     "nominal_depth_m": 0.55,
     "depth_interval_m": [0.45, 0.65],
     "whole_assembly_mass_interval_kg": [15.0, 50.0],
@@ -41,51 +55,42 @@ PRIOR = {
     "limitations": "Comparison models differ from the filmed cabinet; rear geometry and physical mass remain unmeasured.",
 }
 
-# Each entry is bound to its own scene, preparation, observed frames and object
-# identity. A later capture of the same video still needs a new entry: the old
-# capture's identity and authority cannot be borrowed for the new run.
-BC15_PRIOR = {
-    # This capture contains the same source video as PRIOR, so the observed
-    # original-frame hashes and public comparison examples are the same. Its
-    # preparation and observation receipts, object identity and scene are new.
-    **PRIOR,
-    "scene_id": "site-capture-bc15f409-09b7-438c-9891-519ba24d728f-development",
-    "preparation_digest": "sha256:2e1254a642a9a3a77de7f4ae421cc59e68ca8ef8b75da6d14617207afaba1f59",
-    "observation_manifest_digest": "sha256:5d780038e8d92460645b15bccf2146a3dcc2436dd230ea1b236dfdb07a494e73",
-    "subject_identity": {"id": "website-subject-cc9b93603a73eb7cbace", "version": "v1"},
-    "original_frame_sha256s": [
-        "sha256:0205303c4faa9892114349af39bc5908b07c145dcc58eaeedd9b5fb74e4336af",
-        "sha256:7c711762f672a41fd90803b4c5c658a81ee23e9dc3b0fcc71dd57ed243bfcc4a",
-        "sha256:afba0d20718721e00312255a4be823a42af42f36e6640598008eee2e2bbe01f9",
-        "sha256:aba7b9e216a351510bf07b16bc8362ec0a68306c94306bbf705f60a0e8874157",
-        "sha256:b6f03d21cf7d274c7cc4228fca289e242e9eeb347f97986c4af39d2e00812a25",
-    ],
-}
 
-CC48_PRIOR = {
-    # Same original video and public cabinet comparisons, with this website
-    # scene's own fixture packet, object identity and observed-frame receipt.
-    **PRIOR,
-    "scene_id": "site-capture-cc484026-f6ba-4b9e-9a16-aca0a0163b8d-development",
-    "preparation_digest": "sha256:6943e1f45cab6f7764a52a60e00ad4e24c8d974ab40c1161e0b878f7a2caabf7",
-    "observation_manifest_digest": "sha256:4d3d7498376ca741fe0a11dcf1b80a0a9fe4d1a39a0f6fa788892d34a45475c2",
-    "subject_identity": {"id": "website-subject-aa9aaf64b6fe08ffe2bd", "version": "v1"},
-    "original_frame_sha256s": [
-        "sha256:0205303c4faa9892114349af39bc5908b07c145dcc58eaeedd9b5fb74e4336af",
-        "sha256:7c711762f672a41fd90803b4c5c658a81ee23e9dc3b0fcc71dd57ed243bfcc4a",
-        "sha256:aba7b9e216a351510bf07b16bc8362ec0a68306c94306bbf705f60a0e8874157",
-        "sha256:afba0d20718721e00312255a4be823a42af42f36e6640598008eee2e2bbe01f9",
-        "sha256:b6f03d21cf7d274c7cc4228fca289e242e9eeb347f97986c4af39d2e00812a25",
-    ],
-}
+def is_drawer_cabinet(configuration: Mapping[str, Any]) -> bool:
+    """Whether the planner builds this task subject as a stacked drawer cabinet."""
+    from .task_object_articulated_packaging import DRAWER_FAMILY, AssetAuthoringError, assembly_family
 
-ADDITIONAL_PRIORS: tuple[Mapping[str, Any], ...] = (BC15_PRIOR, CC48_PRIOR)
+    try:
+        return assembly_family(configuration) == DRAWER_FAMILY
+    except (AssetAuthoringError, AttributeError, TypeError):
+        return False
 
 
-def prior_for(*, scene_id: str, subject_identity: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    matches = [prior for prior in (PRIOR, *ADDITIONAL_PRIORS)
-               if prior.get("scene_id") == scene_id
-               and prior.get("subject_identity") == subject_identity]
-    if len(matches) > 1:
-        raise ValueError("website_drawer_depth_prior_ambiguous")
-    return matches[0] if matches else None
+def prior_for(configuration: Mapping[str, Any], *,
+              preparation_digest: str | None = None,
+              observation_manifest_digest: str | None = None,
+              original_frame_sha256s: Iterable[str] = ()) -> dict[str, Any] | None:
+    """The cabinet prior bound to this configuration's own scene and subject, or ``None``.
+
+    ``None`` for a subject that is not a drawer cabinet, or for a configuration
+    without a scene id and subject identity to bind the record to.
+    """
+    scene_id = configuration.get("scene_id")
+    subject = configuration.get("replacement_identity")
+    if (not isinstance(scene_id, str) or not scene_id
+            or not isinstance(subject, Mapping) or not isinstance(subject.get("id"), str) or not subject["id"]
+            or not is_drawer_cabinet(configuration)):
+        return None
+    values = copy.deepcopy(dict(CABINET_PRIOR))
+    limitations = values.pop("limitations")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "claim_ceiling": "development_only",
+        "scene_id": scene_id,
+        "preparation_digest": preparation_digest,
+        "observation_manifest_digest": observation_manifest_digest,
+        "subject_identity": copy.deepcopy(dict(subject)),
+        "original_frame_sha256s": sorted({str(digest) for digest in original_frame_sha256s}),
+        **values,
+        "limitations": limitations,
+    }

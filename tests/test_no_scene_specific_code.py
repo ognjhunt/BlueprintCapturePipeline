@@ -54,16 +54,8 @@ RECORDED_PROVENANCE = {
 
 #: Scene-specific logic that predates this guard: the defect it exists to stop. An
 #: entry may only be removed (an entry nothing matches fails below), never added.
-SCENE_SPECIFIC_DEBT = {
-    ("src/blueprint_pipeline/website_drawer_depth_prior.py", "scene_id", scene_id):
-        "prior_for() selects the development cabinet depth prior by exact scene id; replace it"
-        " with a cabinet category prior and delete these entries."
-    for scene_id in (
-        "site-capture-7d655e25-34f2-4961-ae9c-6da11621ce8f-development",
-        "site-capture-bc15f409-09b7-438c-9891-519ba24d728f-development",
-        "site-capture-cc484026-f6ba-4b9e-9a16-aca0a0163b8d-development",
-    )
-}
+#: Empty since the drawer depth prior became a cabinet category prior.
+SCENE_SPECIFIC_DEBT: dict[tuple[str, str | None, str], str] = {}
 
 
 @dataclass(frozen=True)
