@@ -651,6 +651,167 @@ def _owner_confirmed(task_spec: Mapping[str, Any], *, revision: Mapping[str, Any
     return {**task_spec, "configured_owner_authority": authority}, authority["confirmation_digest"]
 
 
+def _robot_access_proposal(movable_furniture: Mapping[str, Any], *, stances: Sequence[Mapping[str, Any]],
+                           carry: Mapping[str, Any], named: Sequence[Mapping[str, Any]],
+                           refused: Sequence[Mapping[str, Any]], subject_center: Sequence[float],
+                           task_spec: Mapping[str, Any], support_top: float, revision: Mapping[str, Any],
+                           collision_sha256: str, task_id: str, support_label: str,
+                           scope: Mapping[str, Any] | None) -> dict[str, Any]:
+    """What the half records when no ranked stance carries: the owner's proposal, a measurement due, or why neither.
+
+    With the scene's movable furniture measured (the sidecar, ``robot_access_measurement``), the Franka's
+    search named it as movable obstacles and this reads its counterfactual: the proposal to move the
+    fewest items (``robot_access_furniture.station_proposal``). Without it, and only when furniture
+    plausibly blocks the nearer stances and the scene's review names some, the measurement is due
+    (``measurement_due``, with its binding and most): Blueprint's own preparation spend, which the worker
+    runs; the site is never asked about it. Nothing here spends or changes the scene.
+    """
+
+    from .robot_access_furniture import MEASUREMENT_DUE, MODEL, PROPOSAL_SCHEMA, station_proposal
+    from .robot_access_measurement import measurement_offer, plausibly_blocked
+
+    why = {"reason": "no_ranked_stance_carries", "carry_cleared": bool(carry.get("cleared")),
+           "stances_tried": len(carry.get("results") or []),
+           "reach_shortfall": (carry.get("reach_shortfall") or {}).get("status")}
+    base = {"schema_version": PROPOSAL_SCHEMA, "model": MODEL, "chosen": False, "task_id": task_id}
+    if movable_furniture.get("status") != "measured":
+        trigger = plausibly_blocked(stances)
+        if not trigger["plausible"]:
+            return {**base, "status": "not_proposed", "reason": "nearer_stances_not_blocked_off_the_support",
+                    "why": why, "trigger": trigger}
+        offer = measurement_offer(scope, revision_digest=str(revision["revision_digest"]))
+        if offer["status"] != "available":
+            return {**base, "status": "not_proposed", "reason": "measurement_" + str(offer["status"])[:80],
+                    "why": why, "trigger": trigger}
+        binding = offer["binding"]
+        return {**base, "status": MEASUREMENT_DUE, "why": why, "trigger": trigger,
+                "items": [dict(row) for row in binding["items"]], "binding": binding,
+                "binding_digest": offer["binding_digest"], "maximum_cost_usd": binding["maximum_cost_usd"],
+                "spend": "website_preparation_spend_within_the_jobs_approved_caps"}
+    try:
+        affordance = task_spec["interaction_affordance"]
+        task = {"start_pose_world": task_spec["start_pose_world"],
+                "target_position_world_m": task_spec["target_position_world_m"],
+                "contact_point_m": affordance["contact_point_scoring_frame_m"],
+                "subject_bounds_m": task_spec.get("subject_collision_bounds_scoring_frame_m")}
+        proposal = station_proposal(stances=stances, carry=carry, named=named, refused=refused,
+                                    subject_center=subject_center, task=task, root_z=float(support_top),
+                                    revision_digest=str(revision["revision_digest"]),
+                                    collision_sha256=collision_sha256, support_label=support_label)
+    except (KeyError, TypeError, ValueError) as exc:
+        return {**base, "status": "not_proposed", "reason": "robot_access_proposal_inputs_invalid",
+                "detail": type(exc).__name__}
+    return {**proposal, "task_id": task_id, "sidecar_digest": movable_furniture.get("sidecar_digest"),
+            "preparation_digest": movable_furniture.get("preparation_digest")}
+
+
+def _robot_access_applied(access: Mapping[str, Any], *, scope: Mapping[str, Any], physics_collision: Path, root: Path,
+                          place: Mapping[str, Any], floor_z: float, station: Mapping[str, Any],
+                          task_spec: Mapping[str, Any], profile: Mapping[str, Any], support: Mapping[str, Any] | None,
+                          adapter: Mapping[str, Any], start: Sequence[float], target: Sequence[float],
+                          support_top: float) -> dict[str, Any] | None:
+    """The half rebuilt without the items the site owner approved moving, checked on the CPU; None without it.
+
+    Only the owner's sealed approval of exactly this proposal's binding counts
+    (``robot_access_furniture.find_confirmation``). A derived copy of the collider the physics runs on
+    is written without the approved items' faces and read back; the flat-support rest check
+    (``rigid_support_pad.support_rest_check``) must read the same there as on the collider before, or
+    nothing is applied and the record says why. Then the stance is searched again on the derived
+    collider and the carry tried again from it (the CPU reach and arm-path check the bundle's gate
+    repeats before any GPU run). ``station`` is ``None`` in the result when nothing is applied.
+    """
+
+    from .rigid_support_pad import support_rest_check
+    from .rigid_support_seating import collider_triangles
+    from .robot_access_furniture import (
+        APPEARANCE,
+        ASSUMPTION,
+        DIRECTORY,
+        MODEL,
+        faces_left_inside,
+        find_confirmation,
+        write_collider_without,
+    )
+    from .robot_arm_path_clearance import CARRY_STATIONS, RobotArmPathClearanceError, rigid_reach_shortfall
+    from .team_embodiment import TeamEmbodimentError
+    from .team_embodiment_stance import ground_stance
+
+    try:
+        confirmation = find_confirmation(scope["directory"], scope["intent"],
+                                         binding_digest=str(access["binding_digest"]))
+    except (KeyError, TypeError, ValueError, OSError):
+        confirmation = None
+    if confirmation is None:
+        return None
+    items = list(access["items"])
+    derived = root / DIRECTORY / "collision.usdc"
+    try:
+        written = write_collider_without(physics_collision, derived, items=items, floor_z=floor_z)
+        left = faces_left_inside(derived, items=items, floor_z=floor_z)
+    except Exception as exc:  # noqa: BLE001 - a collider that cannot be derived is named, never guessed at
+        raise TeamScenePacketError(f"team_scene_robot_access_unwritten:{type(exc).__name__}:{str(exc)[:120]}") from exc
+    if left:
+        raise TeamScenePacketError("team_scene_robot_access_readback_disagrees")
+    record: dict[str, Any] = {
+        **{key: access[key] for key in ("schema_version", "rule", "why", "items", "support_label", "removal_binding",
+                                        "removal_binding_digest", "binding", "binding_digest", "enabled_stance",
+                                        "task_id", "sidecar_digest", "preparation_digest") if key in access},
+        "model": MODEL, "assumption": ASSUMPTION, "appearance": dict(APPEARANCE),
+        "confirmation_digest": confirmation["confirmation_digest"], "proposal_digest": confirmation["proposal_digest"],
+        "approved_by": confirmation["approved_by"], "issuer_channel": confirmation["issuer_channel"],
+        "station_before": {"stance_digest": station["stance_digest"],
+                           "position_world_m": list(station["position_world_m"])},
+        "derived_collider": {"relative_path": derived.relative_to(root).as_posix(), "sha256": _sha256(derived),
+                             "size_bytes": derived.stat().st_size, "derived_from_sha256": _sha256(physics_collision),
+                             **written, "read_back_faces_left_inside": left}}
+    # The object must rest where the flat-support check found it, on the collider the physics will run on.
+    rest_before = (support or {}).get("rest_check") if isinstance(support, Mapping) else None
+    try:
+        observed = adapter["source_documents"]["documents"]["static_qualification"].get("observed_structure") or {}
+        spec = _with_scoring_bounds(task_spec, observed.get("collision_bounds_body_frame_m"))
+        bounds = spec.get("subject_collision_bounds_scoring_frame_m") or {}
+        reach_m = max(math.hypot(float(bounds["maximum"][0]) - float(bounds["minimum"][0]),
+                                 float(bounds["maximum"][1]) - float(bounds["minimum"][1])) / 2.0, 0.05)
+        rest_after = support_rest_check(collider_triangles(derived, points_xy=[list(start[:2]), list(target[:2])],
+                                                           reach_m=reach_m, height_z=float(support_top)), spec)
+    except Exception as exc:  # noqa: BLE001 - an unread support is named; nothing is applied on a guess
+        rest_after = {"status": "unchecked", "reason": f"robot_access_rest_check_unread:{type(exc).__name__}"}
+    record["cpu_checks"] = {"rest_check": {key: rest_after.get(key) for key in ("status", "reasons", "reason")
+                                           if key in rest_after},
+                            "rest_check_before": None if not isinstance(rest_before, Mapping) else {
+                                key: rest_before.get(key) for key in ("status", "reasons") if key in rest_before}}
+    before_status = rest_before.get("status") if isinstance(rest_before, Mapping) else None
+    if rest_after.get("status") == "held" or (before_status is not None and rest_after.get("status") != before_status):
+        record.update(status="held", hold_reason=(
+            "robot_access_removal_changed_the_support_rest"
+            if before_status is not None and rest_after.get("status") != before_status
+            else "robot_access_removal_support_rest_held"))
+        return {"record": record, "collider": derived, "station": None, "place": place, "search": None}
+    moved_place = {**place, "collision_path": derived, "collision_sha256": record["derived_collider"]["sha256"]}
+    try:
+        stances = ground_stance(**moved_place, ranked=CARRY_STATIONS)
+    except TeamEmbodimentError as exc:
+        record.update(status="held", hold_reason="robot_access_removal_no_clear_stance",
+                      blockers=list(exc.blockers))
+        return {"record": record, "collider": derived, "station": None, "place": place, "search": None}
+    moved_station, search = _carrying_station(stances, task_spec=task_spec, collision=derived, profile=profile)
+    try:
+        affordance = task_spec["interaction_affordance"]
+        reach = rigid_reach_shortfall(robot_id="franka_panda", base_pose_world=moved_station,
+                                      start_pose_world=task_spec["start_pose_world"],
+                                      target_position_world=task_spec["target_position_world_m"],
+                                      contact_point_m=affordance["contact_point_scoring_frame_m"],
+                                      subject_bounds_m=task_spec.get("subject_collision_bounds_scoring_frame_m"))
+        record["cpu_checks"]["reach"] = {key: reach[key] for key in ("status", "reach_bound_m", "beyond")}
+    except (KeyError, TypeError, ValueError, RobotArmPathClearanceError):
+        record["cpu_checks"]["reach"] = {"status": "unassessed", "reason": "reach_inputs_invalid"}
+    record["cpu_checks"]["carry_cleared"] = bool(search["cleared"])
+    record.update(status="applied", station_after={"stance_digest": moved_station["stance_digest"],
+                                                   "position_world_m": list(moved_station["position_world_m"])},
+                  **({} if search["cleared"] else {"hold_reason": "robot_access_removal_carry_still_blocked"}))
+    return {"record": record, "collider": derived, "station": moved_station, "place": moved_place, "search": search}
+
+
 @read_scoped
 def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[str, Path],
                            configured_scene_bundle_path: str | Path, droid_profile_path: str | Path,
@@ -660,7 +821,9 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                            native_appearance_materializer: Callable[..., Mapping[str, Any]] | None = None,
                            embodiment_manifests: Sequence[Mapping[str, Any]] = (),
                            embodiment_models: Mapping[str, str | Path] | None = None,
-                           owner_success_confirmation_scope: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                           owner_success_confirmation_scope: Mapping[str, Any] | None = None,
+                           movable_furniture: Mapping[str, Any] | None = None,
+                           robot_access_scope: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Compile the revision's scene half under ``output_root`` and seal its team scene inputs.
 
     Each of ``embodiment_manifests`` (registered team bodies) also gets its own station on the same scene
@@ -669,6 +832,14 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     arm (``_own_arm_stations``). ``owner_success_confirmation_scope`` (``intent`` and its ``directory``,
     bound to this scene by the caller) is where a ``proposal_only`` owner authority may find the owner's
     sealed confirmation of these exact thresholds (``_owner_confirmed``).
+    ``movable_furniture`` is what the scene knows of its own movable furniture: its measurement's
+    sidecar, or that none was made (``robot_access_measurement.furniture_for_scope``). When none was made
+    and furniture plausibly blocks the carry, the record says the measurement is due (``measurement_due``),
+    which the worker runs as preparation spend. When no ranked stance carries a rigid
+    pick and place, the record proposes moving the fewest of those items that opens a stance within
+    the arm's reach (``robot_access_removal``), and nothing else changes. Only the site owner's sealed
+    approval of exactly that proposal, found under ``robot_access_scope`` (the request's own intent),
+    rebuilds the half without them (``_robot_access_applied``).
     """
 
     from . import task_evaluation_configured_controls_deferred_inputs as deferred
@@ -811,6 +982,15 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
 
     # Every search below reads the collider's one binary copy, and the packet steps after them. The hold
     # keeps one parse should no copy be made.
+    # The scene's own movable furniture, named to the Franka's search only for a carry (it is only reported).
+    named, refused = [], []
+    if carry and movable_furniture is not None and movable_furniture.get("status") == "measured":
+        from .robot_access_furniture import eligible_obstacles, search_obstacles
+
+        documents_in = adapter["source_documents"]["documents"]
+        named, refused = eligible_obstacles(movable_furniture.get("record"), supports=[
+            row for row in (documents_in.get("support_plane"), destination_support) if isinstance(row, Mapping)])
+    access: dict[str, Any] | None = None
     with collision_kept_loaded(collision):
         try:
             place = dict(
@@ -821,14 +1001,35 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
                 footprint_half_extent_m=list(STATION_FOOTPRINT_HALF_EXTENT_M), root_world_z_m=support_top,
                 task_motion=motion, **PEDESTAL_SEARCH,
                 **({} if articulated else {"task_points_world_m": [start, target]}))
-            station = ground_stance(**place, ranked=CARRY_STATIONS if carry else 0)
+            station = ground_stance(**place, ranked=CARRY_STATIONS if carry else 0,
+                                    **({"movable_obstacles": search_obstacles(named)} if named else {}))
         except TeamEmbodimentError as exc:
             # A ValueError itself: caught first, so a named stance refusal keeps its own reason.
             raise TeamScenePacketError(",".join(exc.blockers) or "team_scene_station_inputs_invalid") from exc
         except (KeyError, TypeError, ValueError) as exc:
             raise TeamScenePacketError("team_scene_station_inputs_invalid") from exc
+        ranked_stances = station if carry else None
         station, station_search = (_carrying_station(station, task_spec=task_spec, collision=collision,
                                                      profile=profile) if carry else (station, None))
+        if carry and station_search is not None and not station_search["cleared"] and movable_furniture is not None:
+            access = _robot_access_proposal(
+                movable_furniture, stances=ranked_stances, carry=station_search, named=named, refused=refused,
+                subject_center=place["subject_center"], task_spec=task_spec, support_top=support_top,
+                revision=revision, collision_sha256=place["collision_sha256"], task_id=task_id,
+                support_label=str(adapter["source_documents"]["documents"]["support_plane"].get("publisher_label")
+                                  or ""), scope=robot_access_scope)
+            if access["status"] == "proposed" and robot_access_scope is not None:
+                applied = _robot_access_applied(
+                    access, scope=robot_access_scope, physics_collision=physics_collision, root=root, place=place,
+                    floor_z=float(station["floor_z_m"]), station=station, task_spec=task_spec, profile=profile,
+                    support=support, adapter=adapter, start=start, target=target, support_top=support_top)
+                if applied is not None:
+                    access, derived_access = applied["record"], applied["collider"]
+                    if applied["station"] is not None:
+                        physics_collision = collision = derived_access
+                        place, station, station_search = applied["place"], applied["station"], applied["search"]
+                        rows[1] = compiler.evidence_asset_row(physics_collision, root=root,
+                                                              semantic_role="scene_collision")
         stations: dict[str, dict[str, Any]] = {}
         ranked: dict[str, list[dict[str, Any]]] = {}
         if embodiment_manifests:
@@ -911,6 +1112,7 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
         **({"task_support_seating": seating} if seating is not None else {}),
         **({"task_support_pad": support} if support is not None else {}),
         **({"embodiment_stations": stations} if stations else {}),
+        **({"robot_access_removal": access} if access is not None else {}),
         "inputs_digest": ""}
     value["inputs_digest"] = canonical_digest(value, digest_field="inputs_digest")
     path = root / RECORD_FILENAME
@@ -918,7 +1120,10 @@ def materialize_team_scene(*, revision: Mapping[str, Any], documents: Mapping[st
     path.chmod(0o444)
     return {"path": str(path), "inputs_digest": value["inputs_digest"], "scene_id": scene_id, "task_id": task_id,
             "robot_station": station,
-            **({"owner_success_confirmation": confirmation} if confirmation is not None else {})}
+            **({"owner_success_confirmation": confirmation} if confirmation is not None else {}),
+            **({"robot_access_removal": {key: access[key] for key in ("status", "reason", "confirmation_digest",
+                                                                      "binding_digest") if key in access}}
+               if access is not None else {})}
 
 
 def read_team_scene_inputs(path: str | Path) -> dict[str, Any]:
@@ -981,7 +1186,9 @@ def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenar
     """Compile a completed source launch's published scene and record it where the team registry reads it.
 
     The launch's run root is also where its robot-free probe receipt is retained
-    (``robot_free_readiness_retention``), so it is the scene's probe root.
+    (``robot_free_readiness_retention``), so it is the scene's probe root. A compile given the request's
+    own intent as ``robot_access_scope`` also reads what that intent's current preparation knows of its
+    movable furniture (``robot_access_measurement.furniture_for_scope``: the owner-approved sidecar, if any).
     """
 
     from .robot_free_readiness_retention import _revision
@@ -994,6 +1201,13 @@ def prepare_team_scene(*, run_root: str | Path, capture_root: str | Path, scenar
                          revision_digest=result["configured_scene_revision_digest"], fetcher=fetcher)
     root = Path(output_root)
     documents = fetch_revision_documents(revision=revision, output_root=root, fetcher=fetcher)
+    if packet_inputs.get("robot_access_scope") is not None and "movable_furniture" not in packet_inputs:
+        from .robot_access_measurement import furniture_for_scope
+
+        known = furniture_for_scope(packet_inputs["robot_access_scope"], revision_digest=str(revision["revision_digest"]))
+        # The offer to measure is made only when a carry fails, so it is read then (``_robot_access_proposal``).
+        packet_inputs = {**packet_inputs, "movable_furniture": {key: value for key, value in known.items()
+                                                                if key != "offer"}}
     compiled = materialize_team_scene(revision=revision, documents=documents, output_root=root / "scene",
                                       **packet_inputs)
     descriptor = _read(Path(capture_root) / "capture_descriptor.json", "team_scene_capture_descriptor_invalid")

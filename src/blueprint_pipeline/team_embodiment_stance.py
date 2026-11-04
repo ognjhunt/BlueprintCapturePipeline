@@ -490,30 +490,41 @@ def _movable_obstacles(rows: Any) -> tuple[list[dict[str, Any]], int]:
     """The named movable obstacles a search may report counterfactuals for, and how many were unusable.
 
     Each is ``{"obstacle_id", "label", "bounds_world_m": {"minimum", "maximum"}, "basis"}``: a named piece
-    of furniture's measured world bounds and where they come from. An entry without an id or with
-    non-finite or empty bounds is left out and counted; it never refuses the search.
+    of furniture's measured world bounds and where they come from. ``protected_world_m``, when given, lists
+    boxes nothing of the obstacle may touch (``robot_access_furniture.protected_regions``: the support's
+    height inside its footprint). An entry without an id or with non-finite or empty bounds is left out
+    and counted; it never refuses the search.
     """
+
+    def box(value: Any) -> tuple[list[float], list[float]] | None:
+        low, high = [float(v) for v in value["minimum"]], [float(v) for v in value["maximum"]]
+        return ((low, high) if len(low) == len(high) == 3 and all(map(math.isfinite, low + high))
+                and all(a < b for a, b in zip(low, high, strict=True)) else None)
 
     kept, ignored = [], 0
     for row in rows or ():
         try:
-            bounds = row["bounds_world_m"]
-            low, high = [float(v) for v in bounds["minimum"]], [float(v) for v in bounds["maximum"]]
+            bounds = box(row["bounds_world_m"])
             name = str(row["obstacle_id"]).strip()
-            valid = (name and len(low) == len(high) == 3 and all(map(math.isfinite, low + high))
-                     and all(a < b for a, b in zip(low, high, strict=True)))
-        except (KeyError, TypeError, ValueError):
+            guards = [box(guard) for guard in row.get("protected_world_m") or ()]
+            valid = bool(name) and bounds is not None and all(guard is not None for guard in guards)
+        except (KeyError, TypeError, ValueError, AttributeError):
             valid = False
         if not valid:
             ignored += 1
             continue
         kept.append({"obstacle_id": name, "label": str(row.get("label") or ""),
-                     "bounds_world_m": {"minimum": low, "maximum": high}, "basis": str(row.get("basis") or "")})
+                     "bounds_world_m": {"minimum": bounds[0], "maximum": bounds[1]}, "basis": str(row.get("basis") or ""),
+                     **({"protected_world_m": [{"minimum": low, "maximum": high} for low, high in guards]}
+                        if guards else {})})
     return kept, ignored
 
 
 def _inside(named: list[dict[str, Any]], low: Any, high: Any) -> Any:
-    """For each box ``low``-``high`` (rows of world corners), the index of a named obstacle holding it, or -1."""
+    """For each box ``low``-``high`` (rows of world corners), the index of a named obstacle holding it, or -1.
+
+    A box touching one of the obstacle's protected regions is never held by it.
+    """
 
     import numpy as np
 
@@ -521,6 +532,8 @@ def _inside(named: list[dict[str, Any]], low: Any, high: Any) -> Any:
     for index, row in reversed(list(enumerate(named))):
         bounds = row["bounds_world_m"]
         held = (low >= np.asarray(bounds["minimum"])).all(axis=1) & (high <= np.asarray(bounds["maximum"])).all(axis=1)
+        for guard in row.get("protected_world_m") or ():
+            held &= ~((low <= np.asarray(guard["maximum"])).all(axis=1) & (high >= np.asarray(guard["minimum"])).all(axis=1))
         which[held] = index
     return which
 

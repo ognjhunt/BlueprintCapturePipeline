@@ -39,6 +39,22 @@ no-spend worker, woken by its path unit, does the rest on the CPU:
   the website job page: the timer's pass sends each such blocked job's
   thresholds to the WebApp and records the owner's website confirmation with
   the door's own writer (``website_owner_success_confirmation``).
+- a compiled rigid half no ranked stance carries from, whose nearer stances
+  movable furniture plausibly blocks (chairs, stools the scene's review names),
+  records the furniture's measurement as due (``robot_access_measurement``). It
+  returns to pending once per such measurement, and the worker runs it before
+  compiling again: the analysis call and SAM masks for just those items,
+  Blueprint's own preparation spend, reserved through the job's preparation-spend
+  path within its already-approved caps like any other preparation analysis
+  call, kept as a sidecar of the intent's current preparation. A refused
+  reservation (caps, window) or any other failure holds the request by name in
+  its status (``robot_access_measurement``); the site is never asked about it.
+  With the furniture measured, the half proposes moving the items that would
+  give the Franka room (``robot_access_furniture``), and the same timer pass
+  asks the site owner. An approval, sealed under the request's intent, returns
+  the completed request to pending once and rebuilds the half without those
+  items on a derived collider; a decline holds the request by name in its status
+  (``website_robot_access``). No decision is no change.
 
 The scenario is ``nominal``: the website journey never names one (the WebApp
 copies the offer's scenario into the run request it prepares), and a team
@@ -76,7 +92,8 @@ older stance search than the running one (``team_embodiment_stance.STANCE_SEARCH
 bumped with every change to the search), is compiled again once per stance-search
 version, on the same passes and the CPU, and never reused meanwhile
 (``stance_search_version_requeued``); a release that leaves the search alone
-recompiles nothing. Nothing here allocates a provider, starts a run or spends: the offer publishes facts,
+recompiles nothing. Nothing here allocates a provider, starts a run or spends, except
+the furniture measurement above, within the job's own caps: the offer publishes facts,
 never authority, and every rights, consent and spend gate after it is unchanged.
 """
 
@@ -150,6 +167,14 @@ STANCE_SEARCH_REQUEUE_FIELD = "stance_search_version_requeued"
 # reset tolerance can never be scored (capture-447ae4f4: 14.7 mm). Each newly deployed release recompiles it once,
 # on the CPU, and the status keeps the releases already tried, so a half that stays unscorable never loops.
 UNSCORABLE_HALF_REQUEUE_FIELD = "unscorable_half_release_requeued"
+# A completed half that proposes moving named furniture out of the Franka's way is compiled again once per
+# sealed approval of that exact proposal by the site owner (``robot_access_furniture``).
+ROBOT_ACCESS_REQUEUE_FIELD = "robot_access_confirmation_requeued"
+# A completed half whose movable furniture measurement is due goes back to pending once per measurement binding;
+# the worker then measures before compiling again (``_measure_furniture``).
+ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD = "robot_access_measurement_requeued"
+#: The typed hold a measurement that could not run leaves on the request's status (with its own reason).
+ROBOT_ACCESS_MEASUREMENT_HOLD = "team_scene_robot_access_measurement_held"
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 
 
@@ -453,6 +478,33 @@ def _unscorable_half_untried(status: Mapping[str, Any], release: str | None) -> 
     return unscorable_half(status.get("team_scene_inputs_path"))
 
 
+def _robot_access_approvals_untried(path: Path, status: Mapping[str, Any]) -> list[str]:
+    """The site owner's sealed approvals of a completed half's own robot-access proposal not yet compiled."""
+
+    if status.get("status") != "completed":
+        return []
+    from .robot_access_furniture import untried_confirmations
+
+    try:
+        return untried_confirmations(status, validated_request(_read_json(path)))
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
+def _measurement_due_untried(status: Mapping[str, Any]) -> str | None:
+    """A completed half's due furniture measurement binding no run has tried yet, else None."""
+
+    if status.get("status") != "completed":
+        return None
+    from .robot_access_measurement import measurement_due
+
+    due = measurement_due(status.get("team_scene_inputs_path"))
+    tried = status.get(ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD)
+    if due is None or due["binding_digest"] in (tried if isinstance(tried, list) else []):
+        return None
+    return str(due["binding_digest"])
+
+
 def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[dict[str, Any]]:
     """Return each due transient block, each owner-contract refusal the owner has since confirmed, and each
     other deterministic refusal once per newly deployed ``release``, to pending, recording the attempt first
@@ -482,6 +534,26 @@ def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[
             os.replace(path, target)
             requeued.append({"request_key": path.stem, "reason": "new_release", "release_commit": release,
                              "blocked_release_commit": status.get(RELEASE_COMMIT_FIELD)})
+            continue
+        approvals = [] if target.exists() else _robot_access_approvals_untried(path, status)
+        if approvals:
+            tried = status.get(ROBOT_ACCESS_REQUEUE_FIELD)
+            # Recorded before the move, so each approval is compiled at most once.
+            _write_replace(root / "status" / path.name, {
+                **status, ROBOT_ACCESS_REQUEUE_FIELD: [*(tried if isinstance(tried, list) else []), *approvals]})
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "robot_access_confirmation",
+                             "confirmation_digests": approvals})
+            continue
+        due = None if target.exists() else _measurement_due_untried(status)
+        if due is not None:
+            tried = status.get(ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD)
+            # Recorded before the move, so each measurement binding is tried at most once.
+            _write_replace(root / "status" / path.name, {
+                **status, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD: [*(tried if isinstance(tried, list) else []), due]})
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "robot_access_measurement_due",
+                             "binding_digest": due})
             continue
         unscorable = None if target.exists() else _unscorable_half_untried(status, release)
         if unscorable is not None:
@@ -824,7 +896,9 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
             runtime_source_receipt_path=inputs["runtime_source_receipt_path"],
             **({"embodiment_manifests": list(embodiments)} if embodiments else {}),
             **({"embodiment_models": dict(models)} if embodiments and models else {}),
-            **({"owner_success_confirmation_scope": owner_scope} if owner_scope is not None else {}))
+            # The request's own intent is also where the site owner's approval to move furniture is kept.
+            **({"owner_success_confirmation_scope": owner_scope, "robot_access_scope": owner_scope}
+               if owner_scope is not None else {}))
         written = dict(prepared.get("registry") or {})
         if written.get("status") != "written":
             raise TeamScenePacketRequestRefused(
@@ -838,7 +912,45 @@ def _compile(root: Path, request: Mapping[str, Any], *, status: Mapping[str, Any
             "derived_profile": {key: written[key] for key in ("path", "profile_digest")},
             **({"owner_success_confirmation": {"status": "applied",
                                                "confirmation_digest": prepared["owner_success_confirmation"]}}
-               if prepared.get("owner_success_confirmation") else {})}
+               if prepared.get("owner_success_confirmation") else {}),
+            **({"robot_access_removal": dict(prepared["robot_access_removal"])}
+               if prepared.get("robot_access_removal") else {})}
+
+
+def _hold_code(exc: BaseException) -> str:
+    """The typed code a failed measurement holds by: the error's own leading code, else its type."""
+
+    text = str(exc).split(":", 1)[0].strip()
+    return text[:120] if re.fullmatch(r"[a-z][a-z0-9_.]{0,119}", text) else type(exc).__name__
+
+
+def _measure_furniture(request: Mapping[str, Any], binding_digest: str) -> dict[str, Any]:
+    """Run a half's due movable furniture measurement (``robot_access_measurement``); its outcome, never raised.
+
+    The only spend this worker makes: Blueprint's own preparation spend, the analysis call and the SAM
+    masks for just those items, reserved through the job's preparation-spend path within its approved
+    caps, each call keeping its admission in its receipt. ``measured`` names the sidecar and what was
+    reserved; anything else (a refused reservation, the caps or window, a changed binding) is ``held``
+    by ``ROBOT_ACCESS_MEASUREMENT_HOLD`` and its typed reason, and the half is kept as it is.
+    """
+
+    from .robot_access_measurement import run_measurement
+
+    try:
+        scope, unbound = owner_success_confirmation_scope(request)
+        if scope is None:
+            return {"status": "held", "hold": f"{ROBOT_ACCESS_MEASUREMENT_HOLD}:intent_unbound",
+                    "binding_digest": binding_digest, "reason": unbound}
+        sidecar = run_measurement(scope, binding_digest=binding_digest, revision_digest=request["scene_revision_digest"])
+    except Exception as exc:  # noqa: BLE001 - a measurement that cannot run is a typed hold; the queue goes on
+        from .bounded_error import error_description
+
+        return {"status": "held", "hold": f"{ROBOT_ACCESS_MEASUREMENT_HOLD}:{_hold_code(exc)}",
+                "binding_digest": binding_digest, "error": error_description(exc)}
+    return {"status": "measured", "binding_digest": binding_digest, "sidecar_digest": sidecar["sidecar_digest"],
+            "reserved_cost_usd": round(float(sidecar["analysis"]["reserved_cost_usd"])
+                                       + float(sidecar["segmentation"]["reserved_cost_usd"]), 4),
+            "spend": "website_preparation_spend_within_the_jobs_approved_caps"}
 
 
 def _blocker(exc: BaseException) -> str:
@@ -862,7 +974,8 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     retry = prior.get("automatic_retry")
     if isinstance(retry, Mapping):
         status["automatic_retry"] = dict(retry)
-    for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD):
+    for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
+                  ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD):
         if isinstance(prior.get(field), list):
             status[field] = list(prior[field])
     if isinstance(prior.get(STANCE_SEARCH_REQUEUE_FIELD), list):
@@ -894,6 +1007,20 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
             # A frozen internal pair is the operator's choice of scene half, never replaced here.
             return skipped("team_candidate_frozen_pair_present")
         existing = _current_half(current, request["scene_revision_digest"])
+        if existing is not None:
+            from .robot_access_furniture import approved_proposal
+            from .robot_access_measurement import measurement_due
+
+            due = measurement_due(existing)
+            if due is not None:
+                # The furniture this half needs measured is measured first, as preparation spend within the
+                # job's caps; only a measurement that ran compiles the half again, a held one keeps it.
+                status["robot_access_measurement"] = _measure_furniture(request, str(due["binding_digest"]))
+                if status["robot_access_measurement"]["status"] == "measured":
+                    existing = None
+            elif approved_proposal(existing, request) is not None:
+                # The site owner approved moving the furniture this half proposes: it is compiled again.
+                existing = None
         if existing is not None:
             status.update(outcome="already_compiled", team_scene_inputs_path=existing)
         else:
@@ -947,7 +1074,9 @@ def _recover_interrupted(root: Path, claimed: Path, *, now: datetime, release: s
     _discard_unreferenced(prior.get("attempt_root"), prior.get("capture_root"))
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
-                                        RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD) if key in prior}
+                                        RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD,
+                                        ROBOT_ACCESS_REQUEUE_FIELD, ROBOT_ACCESS_MEASUREMENT_REQUEUE_FIELD)
+                         if key in prior}
     return _finish(root, claimed, {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept,
                                    "scenario_id": SCENARIO_ID, "status": "blocked",
                                    "blockers": ["team_scene_packet_interrupted"],
@@ -1003,8 +1132,27 @@ def _record_website_owner_decisions(root: Path, outcomes: Mapping[str, Mapping[s
         _write_replace(path, {**status, STATUS_FIELD: dict(outcome)})
 
 
+def _record_website_robot_access(root: Path, outcomes: Mapping[str, Mapping[str, Any]]) -> None:
+    """Keep each completed half's latest robot-access exchange in its status (the lock is held).
+
+    Written only when it changed, and only while the request is still completed and not pending, so a
+    request requeued or recompiled meanwhile keeps its own status.
+    """
+
+    from .robot_access_furniture import STATUS_FIELD
+
+    for key, outcome in outcomes.items():
+        path = root / "status" / f"{key}.json"
+        status = _read_json(path)
+        if (status is None or status.get("status") != "completed" or (root / "pending" / f"{key}.json").exists()
+                or not (root / "processed" / f"{key}.json").exists() or status.get(STATUS_FIELD) == dict(outcome)):
+            continue
+        _write_replace(path, {**status, STATUS_FIELD: dict(outcome)})
+
+
 def requeue_transient_blocked(*, queue_root: str | Path,
-                              website_transport: Callable[..., Any] | None = None) -> dict[str, Any]:
+                              website_transport: Callable[..., Any] | None = None,
+                              robot_access_transport: Callable[..., Any] | None = None) -> dict[str, Any]:
     """Recover an interrupted run and return each due transient block to pending, for a timer's pass.
 
     The worker runs only when something is pending, so a request its unit's
@@ -1023,38 +1171,51 @@ def requeue_transient_blocked(*, queue_root: str | Path,
     check time comes (``website_owner_success_confirmation.BACKOFF``). Nothing in
     that exchange stops this pass: any error is recorded and the requeue below
     still runs. ``website_transport`` replaces the signed POST (tests).
+
+    The same pass sends each completed half's proposal to move named furniture out
+    of the Franka's way to the WebApp (``robot_access_furniture``): an approval is
+    sealed under the intent, so the requeue below compiles that half again; a
+    decline holds it by name in its status. ``robot_access_transport`` replaces
+    that POST (tests).
     """
 
+    from .robot_access_furniture import exchange_robot_access_decisions
     from .website_owner_success_confirmation import exchange_owner_decisions
 
     root = _queue(queue_root)
     release = current_release_commit()
-    try:
-        website = exchange_owner_decisions(root, transport=website_transport)
-    except Exception as exc:  # noqa: BLE001 - a pass never stops on the website exchange
-        from .bounded_error import error_description
+    errors: dict[str, str] = {}
+    exchanges: dict[str, dict[str, Any]] = {}
+    for name, exchange, transport in (
+            ("website_owner_decisions", exchange_owner_decisions, website_transport),
+            ("website_robot_access", exchange_robot_access_decisions, robot_access_transport)):
+        try:
+            exchanges[name] = exchange(root, transport=transport)
+        except Exception as exc:  # noqa: BLE001 - a pass never stops on a website exchange
+            from .bounded_error import error_description
 
-        website, website_error = {}, error_description(exc)
-    else:
-        website_error = None
+            exchanges[name], errors[name] = {}, error_description(exc)
+    website, robot_access = exchanges["website_owner_decisions"], exchanges["website_robot_access"]
     with _locked(root, wait=False) as held:
         if not held:
             return {"schema_version": RUN_SCHEMA, "status": "busy", "requeued": [], "recovered": [],
-                    "website_owner_decisions": website,
+                    "website_owner_decisions": website, "website_robot_access": robot_access,
                     "provider_mutation_performed": False, "paid_execution_requested": False}
         now = _utc_now()
         recovered = [_recover_interrupted(root, path, now=now, release=release)["request_key"]
                      for path in sorted((root / "processing").glob("*.json"))]
-        try:
-            _record_website_owner_decisions(root, website)
-        except Exception as exc:  # noqa: BLE001 - a status that cannot be written is retried next pass
-            from .bounded_error import error_description
+        for name, record, outcomes in (("website_owner_decisions", _record_website_owner_decisions, website),
+                                       ("website_robot_access", _record_website_robot_access, robot_access)):
+            try:
+                record(root, outcomes)
+            except Exception as exc:  # noqa: BLE001 - a status that cannot be written is retried next pass
+                from .bounded_error import error_description
 
-            website_error = website_error or error_description(exc)
+                errors.setdefault(name, error_description(exc))
         requeued = _requeue_due(root, now, release)
     return {"schema_version": RUN_SCHEMA, "status": "requeued" if requeued else "idle", "requeued": requeued,
-            "recovered": recovered, "website_owner_decisions": website,
-            **({"website_owner_decisions_error": website_error} if website_error else {}),
+            "recovered": recovered, "website_owner_decisions": website, "website_robot_access": robot_access,
+            **{f"{name}_error": error for name, error in errors.items()},
             "provider_mutation_performed": False, "paid_execution_requested": False}
 
 
