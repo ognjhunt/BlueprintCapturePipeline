@@ -62,6 +62,11 @@ def local_screening_holds(queue_root: str | Path, *, site_id: str, published_usd
     being re-planned (``superseding``) is skipped for those unreserved rows:
     the re-plan closes them in the same write that enqueues the new plan, so
     counting them would charge the job twice. What it committed still counts.
+
+    Commitments count as funding does (``_budget``): a settled attempt at its
+    settled cost. The WebApp's figure may still carry it at its whole cap (a
+    campaign never publishes a lower spent bound); that only makes the
+    difference here zero, never negative, so a hold is never credited back.
     """
     from .beta_policy_screening_coordinator import _amount, _budget, _ledger, _lock, _plan, _root
     from .beta_policy_screening_plan import money
