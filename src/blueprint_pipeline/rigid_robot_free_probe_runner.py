@@ -62,19 +62,32 @@ worker's typed ``rigid_robot_free_probe_failed_at_*`` crash, or a result the
 transport could not find in the output zip) is set aside the same way: each newly
 deployed release gives it one more funded attempt, at the lane's caps, and at most
 ``MAX_RUNTIME_REDRIVES`` ever (owner approval 2026-11-03, after capture-447ae4f4's
-first GPU run crashed on a camera API the pinned Arena lacks). A terminal sealed by
+first GPU run crashed on a camera API the pinned Arena lacks). A ``trace_conflict``
+terminal whose completed run was refused only because the trace beside the launch
+was another, superseded request's (``_superseded_trace_conflict``) is set aside the
+same way, once per newly deployed release, and that attempt's retained result is
+ingested again: its refused ingest record moves beside the marker, and nothing is
+allocated, funded or run (capture-447ae4f4: request 9319f26e's completed run,
+2026-11-04 04:27Z, refused beside request bdfe6a51's trace). A terminal sealed by
 the running release stays final, as does every other terminal: a decided receipt,
-a trace conflict, or an attempt budget spent on a scene or scorer outcome, a provider
-or a money refusal. Without a known running release nothing is retried.
+a conflict with another trace of the attempt's own request, or an attempt budget
+spent on a scene or scorer outcome, a provider or a money refusal. Without a known
+running release nothing is retried.
 
 Ingest happens only once the allocator result is ``completed``, which proves
 teardown, provider zero and staged-object absence. It checks the result
 wrapper's digest against the allocator's binding, the trace's digest, and the
 trace's binding and plan against the request this attempt sealed. A recorded
 trace is written once, immutably, to
-``<robot_free_probe_root>/rigid_robot_free_probe_trace.v1.json``; then
+``<robot_free_probe_root>/rigid_robot_free_probe_trace.v1.json``, the file the
+readiness scorer reads, which holds the capture's current request's trace: one
+there of a superseded request (another binding or plan) first moves, byte for
+byte, into the launch's append-only ``robot_free_probe_history/``
+(``robot_free_readiness_retention.set_aside``), and a different trace of the same
+request is a conflict, never overwritten. Then
 ``team_robot_free_probe.retain_recorded_probe`` scores it with the scored
-specification, retains the receipt (a decided receipt is never replaced) and
+specification, retains the receipt (a decided receipt of this request is never
+replaced; one of a superseded request is set aside the same way) and
 republishes the job's offer. An undecided receipt leaves the capture queued for
 its one further funded attempt.
 
@@ -181,6 +194,10 @@ TERMINAL_STATES = frozenset({"decided", "trace_conflict", "staging_refused"})
 RELEASE_COMMIT_FIELD = "release_commit"
 RELEASE_REQUEUE_FIELD = "release_requeued"
 RELEASE_RETRIED_STATES = frozenset({"staging_refused"})
+# A completed run whose trace was refused beside another (superseded) request's: each newly deployed
+# release re-ingests it once from its retained result, moving its refused ingest record beside the marker.
+TRACE_CONFLICT_STATE = "trace_conflict"
+REINGEST_FIELD = "reingested_attempt"
 # A funded attempt that failed inside our own runtime: the worker's typed crash, or a result the
 # transport could not find (capture-447ae4f4's two attempts). Scene and scorer outcomes, provider
 # capacity and money refusals are none of these. Owner approval 2026-11-03: such an exhausted job gets
@@ -437,26 +454,51 @@ def verified_trace(result: Mapping[str, Any], *, attempt: Path, request: Mapping
     return dict(trace)
 
 
-def retain_trace_file(run_root: Path, trace: Mapping[str, Any]) -> str:
-    """Write the recorded trace beside the source launch once; a different trace there is a conflict."""
+def retain_trace_file(run_root: Path, trace: Mapping[str, Any], *, request: Mapping[str, Any] | None = None) -> str:
+    """Write ``request``'s recorded trace beside the source launch once, where the readiness scorer reads it.
+
+    A different trace already there is set aside into the launch's append-only history when it is
+    another probe request's (its binding or plan is not ``request``'s: a request since superseded),
+    and this one is written. A different trace of the same request, one that cannot be read, or any
+    difference when no request is named, is a conflict: it is never overwritten.
+    """
+
+    from .robot_free_readiness_retention import set_aside, trace_bound_to_request
 
     path = Path(run_root) / TRACE_FILENAME
     if any(part.is_symlink() for part in (path, *path.parents)):
         raise RigidRobotFreeProbeIngestError("rigid_robot_free_probe_trace_path_unsafe")
+    if request is not None and not trace_bound_to_request(trace, request):
+        raise RigidRobotFreeProbeIngestError("rigid_robot_free_probe_trace_binding_mismatch")
     text = json.dumps(dict(trace), sort_keys=True) + "\n"
+    try:
+        _write_exclusive(path, text, mode=0o440)
+        return "written"
+    except FileExistsError:
+        existing = path.read_text(encoding="utf-8")
+    if existing == text:
+        return "unchanged"
+    try:
+        retained = json.loads(existing)
+    except ValueError:
+        retained = None
+    if request is None or not isinstance(retained, Mapping) or trace_bound_to_request(retained, request):
+        raise RigidRobotFreeProbeIngestError("rigid_robot_free_probe_trace_conflict")
+    set_aside(run_root, TRACE_FILENAME, superseded_by={"probe_request_digest": request.get("request_digest"),
+                                                       "trace_digest": trace.get("trace_digest")})
     try:
         _write_exclusive(path, text, mode=0o440)
     except FileExistsError:
         if path.read_text(encoding="utf-8") != text:
             raise RigidRobotFreeProbeIngestError("rigid_robot_free_probe_trace_conflict") from None
         return "unchanged"
-    return "written"
+    return "written_superseding"
 
 
 def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]:
     """Classify one attempt's outcome; ingest a completed run once teardown and provider zero are proven."""
 
-    from .robot_free_readiness_retention import DECIDED_STATUSES
+    from .robot_free_readiness_retention import DECIDED_STATUSES, RobotFreeReadinessRetentionError
     from .task_evaluation_scene_execution_authority import proves_no_provider_allocation
     from .team_robot_free_probe import retain_recorded_probe
 
@@ -501,10 +543,13 @@ def settle_attempt(attempt: Path, *, state: Mapping[str, Any]) -> dict[str, Any]
     if request.get("request_digest") != state["request"]["request_digest"]:
         return _record_ingest(attempt, {**base, "state": "superseded", "trace_digest": trace.get("trace_digest")})
     try:
-        trace_write = (retain_trace_file(Path(state["robot_free_probe_root"]), trace)
+        trace_write = (retain_trace_file(Path(state["robot_free_probe_root"]), trace, request=request)
                        if trace.get("status") == "recorded" else "not_recorded")
     except RigidRobotFreeProbeIngestError as exc:
-        return _record_ingest(attempt, {**base, "state": "trace_conflict", "ingest_refusal": str(exc)})
+        return _record_ingest(attempt, {**base, "state": TRACE_CONFLICT_STATE, "ingest_refusal": str(exc)})
+    except (OSError, RobotFreeReadinessRetentionError) as exc:
+        # Setting a superseded trace aside failed locally: retried by the next pass; nothing is respent.
+        return {"state": "retention_pending", "reason": f"{type(exc).__name__}:{str(exc)[:200]}"}
     try:
         retention = retain_recorded_probe(profile=state["profile"], facts=state["facts"], trace=trace)
     except Exception as exc:  # noqa: BLE001 - local retention is retried by the next pass; nothing is respent
@@ -596,16 +641,55 @@ def _runtime_redrive_due(job: Path, terminal: Mapping[str, Any]) -> bool:
     return len(funded) >= limit and all(_runtime_failure(row) for row in funded)
 
 
+def _superseded_trace_conflict(job: Path, terminal: Mapping[str, Any]) -> Path | None:
+    """The attempt a trace conflict refused only because the trace beside the launch was another request's.
+
+    Its run completed (teardown, provider zero and staged-object absence proven) and its result stays
+    retained, so it is ingested again from that result: no allocation, funding or GPU. The trace
+    beside the launch must be readable and bound to a request other than the attempt's own (sealed in
+    its probe input); a conflict with a trace of its own request is real, and stays final, as does
+    one whose records cannot be read.
+    """
+
+    from .robot_free_readiness_retention import trace_bound_to_request
+
+    detail = terminal.get("detail")
+    digest = detail.get("record_digest") if isinstance(detail, Mapping) else None
+    if terminal.get("status") != TRACE_CONFLICT_STATE or not isinstance(digest, str) or not digest:
+        return None
+    try:
+        for attempt in _attempts(job):
+            record = _read_optional(attempt / INGEST_FILENAME)
+            if record is None or record.get("record_digest") != digest:
+                continue
+            if record.get("state") != TRACE_CONFLICT_STATE or record.get("allocator_status") != "completed":
+                return None
+            inputs = _read(attempt / INPUTS_FILENAME)
+            request = inputs["probe_request"]
+            if not isinstance(request, Mapping) or request.get("request_digest") != terminal.get("probe_request_digest"):
+                return None
+            path = Path(str(inputs["robot_free_probe_root"])) / TRACE_FILENAME
+            if (not path.is_absolute() or any(part.is_symlink() for part in (path, *path.parents))
+                    or not path.is_file()):
+                return None
+            retained = json.loads(path.read_text(encoding="utf-8"))
+            return attempt if isinstance(retained, Mapping) and not trace_bound_to_request(retained, request) else None
+    except (OSError, ValueError, KeyError, TypeError):
+        return None  # unreadable history: never re-ingest on a guess
+    return None
+
+
 def _new_release_untried(terminal: Mapping[str, Any], release: str | None, job: Path | None = None) -> bool:
     """A terminal sealed by another release, or by none recorded, that ``release`` has not yet retried:
-    a staging refusal, or (given its ``job``) an attempt budget our own runtime spent."""
+    a staging refusal, or (given its ``job``) an attempt budget our own runtime spent, or a completed
+    run refused beside a superseded request's trace."""
 
     tried = terminal.get(RELEASE_REQUEUE_FIELD)
     if (release is None or terminal.get(RELEASE_COMMIT_FIELD) == release
             or release in (tried if isinstance(tried, list) else [])):
         return False
     return terminal.get("status") in RELEASE_RETRIED_STATES or (
-        job is not None and _runtime_redrive_due(job, terminal))
+        job is not None and (_runtime_redrive_due(job, terminal) or _superseded_trace_conflict(job, terminal) is not None))
 
 
 def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | None:
@@ -615,7 +699,10 @@ def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | N
     sets a terminal aside at most once and a pass interrupted between the two finishes the move.
     A staging refusal's attempt is recorded ``not_staged`` (it launched nothing), so it counts toward
     no limit and the next attempt takes the next index; a runtime re-drive's marker raises the funded
-    limit by one (``_funded_limit``), and its settled attempts stay exactly as they are. Nothing is deleted. The job lock is held.
+    limit by one (``_funded_limit``), and its settled attempts stay exactly as they are. A superseded
+    trace conflict's marker names its completed attempt (``reingested_attempt``), whose refused ingest
+    record moves beside the marker, so the pass that follows ingests that attempt's retained result
+    again and stages nothing. Nothing is deleted. The job lock is held.
     """
 
     terminal = _read_optional(job / TERMINAL_FILENAME)
@@ -631,17 +718,29 @@ def _supersede_for_release(job: Path, release: str | None) -> dict[str, Any] | N
     if marker is None:
         if not _new_release_untried(terminal, release, job):
             return None
+        reingest = _superseded_trace_conflict(job, terminal)
         marker = {"schema_version": SUPERSESSION_SCHEMA, RELEASE_COMMIT_FIELD: release,
                   "superseded_terminal_digest": digest, "superseded_status": terminal.get("status"),
                   "superseded_release_commit": terminal.get(RELEASE_COMMIT_FIELD),
-                  "superseded_detail": terminal.get("detail"), "superseded_at_iso": utc_now_iso(), "marker_digest": ""}
+                  "superseded_detail": terminal.get("detail"),
+                  **({REINGEST_FIELD: reingest.name,
+                      "superseded_ingest_digest": (terminal.get("detail") or {}).get("record_digest")}
+                     if reingest is not None else {}),
+                  "superseded_at_iso": utc_now_iso(), "marker_digest": ""}
         marker["marker_digest"] = canonical_digest(marker, digest_field="marker_digest")
         try:
             _write_exclusive(marker_path, marker)
         except FileExistsError:
             marker = _read(marker_path)
     attempts = _attempts(job)
-    if attempts:
+    reingested = marker.get(REINGEST_FIELD)
+    if isinstance(reingested, str) and re.fullmatch(r"[0-9]{2}", reingested):
+        # The refused record moves beside the marker (kept, never deleted); the attempt's result is ingested again.
+        attempt = job / "attempts" / reingested
+        record = _read_optional(attempt / INGEST_FILENAME)
+        if record is not None and record.get("record_digest") == marker.get("superseded_ingest_digest"):
+            os.replace(attempt / INGEST_FILENAME, history / f"{name}.attempt-{reingested}.ingest.json")
+    elif attempts:
         _record_not_staged(attempts[-1], str((terminal.get("detail") or {}).get("reason") or "staging_refused"),
                            recorded_at_supersession_of=digest)
     os.replace(job / TERMINAL_FILENAME, history / f"{name}.terminal.json")
