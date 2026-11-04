@@ -1115,6 +1115,72 @@ the tick exits non-zero after writing the report.
 files from ordinary completed captures go to the existing private artifact store
 (B2). Authority-ended captures stay local (`authority_ended_capture_kept_local`)
 until the owner approves a revocation and deletion lifecycle for those derivatives.
+An owner can approve deleting such a scene through an owner-approved deletion
+(next section); retirement itself never archives them.
+
+## Owner-approved deletions
+
+`blueprint_pipeline.owner_approved_deletion` deletes exactly the paths an owner
+approved, for scratch no other phase may reap and for scene workspaces held only
+because their capture's authority ended. The owner's approval is a manifest,
+`deploy/owner-approved-deletions/<manifest_id>.json`, merged and deployed like
+code, so a session that reaches the host only through the operator door can
+carry it there. A manifest names the owner (`approved_by`), the owner's words
+(`approval_evidence`), when they approved, and an expiry at most 14 days later,
+and lists each path with what was recorded about it at approval time:
+
+- `task_evaluation_inputs_folder`: a direct child directory of
+  `/var/lib/blueprint/task-evaluation-inputs`, with its newest mtime in whole
+  seconds (over the folder and everything in it), its regular-file bytes and its
+  file count. A folder whose listing the door partly refused records how many
+  names it could not see (`door_unlisted_entries`); its bytes and count may then
+  only be larger.
+- `authority_ended_scene_workspace`: a website scene working copy under
+  `/var/lib/blueprint/pubsub-handoffs/<bucket>/scenes/`, with each capture's
+  `terminal_code`, `terminal_at` and `terminal_payload_sha256` from its ledger.
+  Every capture must still be `terminal_authority_ended` exactly so, more than
+  seven days ago (Pub/Sub can no longer redeliver its message), and the scene
+  retention checks above may hold the scene only for
+  `authority_ended_capture_kept_local` or `recently_active` (the preparation
+  status wake-up rewrites a delivery file in it). Leases, missing locks, pins,
+  queues, processes and open intents still keep it. Only the local working copy
+  goes: the raw upload in Firebase Storage and copies elsewhere stay.
+
+Nothing runs it on a timer. An operator starts two oneshot units by hand:
+
+1. `blueprint-owner-approved-deletion-plan.service` checks every path of every
+   manifest and writes
+   `/var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions/<manifest_id>/plan.json`.
+   It deletes nothing. A path is `eligible` only when it is the recorded
+   identity and no live storage pin names it, lies inside it or contains it, no
+   pending or processing queue message (the reclaim timer's queues and the scene
+   queues) names it, no process uses it, no systemd unit or drop-in file under
+   `/etc/systemd/system`, `/run/systemd/system` or `/run/systemd/transient` names
+   it (a failed transient unit counts until `reset-failed`), and no sibling
+   symlink points into it. Paths are opened one component at a time without
+   following a link, and a folder holding another mount is refused.
+2. `blueprint-owner-approved-deletion.service` deletes what a plan of the same
+   manifest bytes, at most 24 hours old, found eligible, while the approval has
+   not expired. It re-runs every check and requires the same device, inode and
+   (for a folder) tree measurements as the plan. For a scene it takes the
+   listener's capture ledger locks without waiting and checks again under them.
+   It writes `receipts/<sha256(path)[:32]>.json` with status `deleting`, renames
+   the path aside (`.owner-approved-deletion-*`, ignored by the scene and lane
+   scans), removes it without following links, and rewrites the receipt as
+   `deleted`. A run that stopped after the rename is finished by the next apply;
+   one that stopped before it starts over. Each run also writes
+   `apply-<epoch>.json` with every path's outcome.
+
+Receipts and plans are root `0644` under `0755`, so the door can read them.
+Run it again and a deleted path reports `already_deleted`.
+
+```bash
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion-plan.service   # plan only
+python3 scripts/operator_door.py show blueprint-owner-approved-deletion-plan.service                  # Result=success once done
+python3 scripts/operator_door.py cat /var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions/<manifest_id>/plan.json
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion.service        # deletes
+python3 scripts/operator_door.py ls /var/lib/blueprint/pipeline-control-plane/storage-gc/owner-approved-deletions/<manifest_id> --sort mtime
+```
 
 ## Release retirement as a separate action
 

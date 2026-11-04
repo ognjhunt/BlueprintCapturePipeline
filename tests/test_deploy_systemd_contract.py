@@ -290,6 +290,24 @@ def test_production_systemd_units_run_nonroot_with_strict_resource_isolation() -
             assert "ReadWritePaths=/var/lib/blueprint " not in text
             assert "ReadWritePaths=/var/lib/blueprint\n" not in text
             continue
+        if unit.name in {"blueprint-owner-approved-deletion-plan.service",
+                         "blueprint-owner-approved-deletion.service"}:
+            # Root oneshots an operator starts by hand: reference checks read root-only pins and every
+            # process's descriptors; only the apply unit may write the two allowlisted parents.
+            text = unit.read_text(encoding="utf-8")
+            assert "User=root" in text
+            assert "CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_SYS_PTRACE\n" in text
+            for control in ("NoNewPrivileges=true", "ProtectSystem=strict", "PrivateNetwork=true",
+                            "RestrictAddressFamilies=AF_UNIX\n", "InaccessiblePaths=-/etc/blueprint/provider-secrets",
+                            "SystemCallFilter=@system-service", "TasksMax=32", "MemoryMax=1G"):
+                assert control in text, (unit.name, control)
+            writable = next(line for line in text.splitlines()
+                            if line.startswith("ReadWritePaths=")).split("=", 1)[1].split()
+            expected = ["/var/lib/blueprint/pipeline-control-plane/storage-gc"]
+            if unit.name == "blueprint-owner-approved-deletion.service":
+                expected = ["/var/lib/blueprint/task-evaluation-inputs", "/var/lib/blueprint/pubsub-handoffs", *expected]
+            assert writable == expected, unit.name
+            continue
         if unit.name == "blueprint-control-plane-preflight.service":
             # Root housekeeping: replays each unit's sandbox through PID 1 and
             # writes one evidence root; blockers are content, so exit 2 is success.
@@ -403,6 +421,8 @@ HOST_MEMORY_KEPT = {
     "blueprint-control-plane-capacity.service": ("200", "512M"),
     "blueprint-completed-replay-cache-gc.service": ("200", "512M"),
     "blueprint-control-plane-release-lifecycle.service": ("200", "512M"),
+    "blueprint-owner-approved-deletion-plan.service": ("200", "1G"),
+    "blueprint-owner-approved-deletion.service": ("200", "1G"),
     "blueprint-task-evaluation-launch-dispatcher.service": ("-200", "8G"),
     "blueprint-website-atlas-preview.service": ("-200", "8G"),
     "blueprint-team-evaluation-runner.service": ("-200", "8G"),

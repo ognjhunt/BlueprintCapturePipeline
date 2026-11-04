@@ -580,6 +580,8 @@ python3 scripts/operator_door.py deploy <sha on main> --wait
 python3 scripts/operator_door.py retire-scene-workspace <scene_id> --wait           # plan only
 python3 scripts/operator_door.py retire-scene-workspace <scene_id> --apply --wait   # retire behind a receipt
 python3 scripts/operator_door.py restore-scene-workspace <scene_id> --bucket <bucket> --wait
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion-plan.service  # plan the deployed owner-approved deletions
+python3 scripts/operator_door.py unit start blueprint-owner-approved-deletion.service       # delete what that plan found eligible
 python3 scripts/operator_door.py provider-output-resume <run> <attempt> --ingest --wait
 python3 scripts/operator_door.py extend-scene-execution-window <intent_id> --intent-digest sha256:<hex> \
     --expires-at <UTC instant> --authorization-reference "<owner approval>" --wait                    # plan only
