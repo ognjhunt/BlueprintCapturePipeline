@@ -69,8 +69,14 @@ task object farther from the task's start than the scorer's reset tolerance
 whose support record holds it (the CPU rest check refused it, or it was compiled
 before the support was modelled: ``rigid_support_pad.half_support_hold``), can
 never be scored, so each newly deployed release recompiles it once, on the same
-passes and the CPU, and never reuses it (``unscorable_half_release_requeued``). Nothing
-here allocates a provider, starts a run or spends: the offer publishes facts,
+passes and the CPU, and never reuses it (``unscorable_half_release_requeued``). A
+completed rigid half whose recorded carry search found no stance the Franka carries
+from (capture-447ae4f4: eight stances, all ``unreachable:approach``), chosen by an
+older stance search than the running one (``team_embodiment_stance.STANCE_SEARCH_VERSION``,
+bumped with every change to the search), is compiled again once per stance-search
+version, on the same passes and the CPU, and never reused meanwhile
+(``stance_search_version_requeued``); a release that leaves the search alone
+recompiles nothing. Nothing here allocates a provider, starts a run or spends: the offer publishes facts,
 never authority, and every rights, consent and spend gate after it is unchanged.
 """
 
@@ -135,6 +141,11 @@ OWNER_CONFIRMATION_REQUEUE_FIELD = "owner_success_confirmation_requeued"
 # each newly deployed release returns the refusal to pending once, and the status keeps the releases tried.
 RELEASE_COMMIT_FIELD = "release_commit"
 RELEASE_REQUEUE_FIELD = "release_requeued"
+# A completed rigid half whose recorded carry search found no stance the Franka carries from, chosen by an older
+# stance search than this release's (``team_embodiment_stance.STANCE_SEARCH_VERSION``), is compiled again once per
+# stance-search version, on the CPU. The status keeps the versions already tried, so a half that no newer search
+# reaches never loops, and a release that leaves the search unchanged recompiles nothing.
+STANCE_SEARCH_REQUEUE_FIELD = "stance_search_version_requeued"
 # A completed rigid half whose own plan spawns the task object farther from the task's start than the scorer's
 # reset tolerance can never be scored (capture-447ae4f4: 14.7 mm). Each newly deployed release recompiles it once,
 # on the CPU, and the status keeps the releases already tried, so a half that stays unscorable never loops.
@@ -359,6 +370,55 @@ def final_block(status: Mapping[str, Any], *, release: str | None) -> bool:
             or _retry_attempts(retry if isinstance(retry, Mapping) else {}) >= len(AUTOMATIC_RETRY_BACKOFF_SECONDS))
 
 
+def stale_unreached_station(path: Any) -> str | None:
+    """Why the compiled half at ``path`` is compiled again by this release's stance search, or None.
+
+    Its own record (``team_scene_inputs.v1.json``, read only once its digests check) holds a rigid carry search
+    that found no stance the Franka carries from (``robot_station_search.cleared`` false: capture-447ae4f4's eight
+    stances, all ``unreachable:approach``), or whose reach proof put the task beyond the arm from the station
+    (``reach_shortfall`` ``out_of_reach``), and its station was chosen by a stance search older than
+    ``STANCE_SEARCH_VERSION`` (a station recorded without a version is version 1). None when unreadable, for a
+    half with no carry search, one that carries, or one this version already searched.
+    """
+
+    from .team_embodiment_stance import STANCE_SEARCH_VERSION
+    from .team_scene_packet import read_team_scene_inputs
+
+    try:
+        if not path:
+            return None
+        read_team_scene_inputs(str(path))
+        value = _read_json(Path(str(path)))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    search = (value or {}).get("robot_station_search")
+    station = (value or {}).get("robot_station")
+    if not isinstance(search, Mapping) or not isinstance(station, Mapping):
+        return None
+    recorded = (station.get("search") if isinstance(station.get("search"), Mapping) else {}).get(
+        "stance_search_version", 1)
+    if isinstance(recorded, bool) or not isinstance(recorded, int) or recorded >= STANCE_SEARCH_VERSION:
+        return None
+    shortfall = search.get("reach_shortfall") if isinstance(search.get("reach_shortfall"), Mapping) else {}
+    if search.get("cleared") is False:
+        return f"station_search_not_cleared:stance_search_v{recorded}<v{STANCE_SEARCH_VERSION}"
+    if shortfall.get("status") == "out_of_reach":
+        return f"station_out_of_reach:stance_search_v{recorded}<v{STANCE_SEARCH_VERSION}"
+    return None
+
+
+def _stance_search_untried(status: Mapping[str, Any], release: str | None) -> str | None:
+    """A completed half no ranked stance carries from, that this stance-search version has not yet recompiled."""
+
+    from .team_embodiment_stance import STANCE_SEARCH_VERSION
+
+    tried = status.get(STANCE_SEARCH_REQUEUE_FIELD)
+    if (release is None or status.get("status") != "completed"
+            or STANCE_SEARCH_VERSION in (tried if isinstance(tried, list) else [])):
+        return None
+    return stale_unreached_station(status.get("team_scene_inputs_path"))
+
+
 def unscorable_half(path: Any) -> str | None:
     """Why the compiled half at ``path`` can never be scored from its own spawn, or None (also when unreadable).
 
@@ -432,6 +492,19 @@ def _requeue_due(root: Path, now: datetime, release: str | None = None) -> list[
             os.replace(path, target)
             requeued.append({"request_key": path.stem, "reason": "unscorable_half", "detail": unscorable,
                              "release_commit": release})
+            continue
+        stale = None if target.exists() else _stance_search_untried(status, release)
+        if stale is not None:
+            from .team_embodiment_stance import STANCE_SEARCH_VERSION
+
+            tried = status.get(STANCE_SEARCH_REQUEUE_FIELD)
+            # Recorded before the move, so each stance-search version recompiles it at most once.
+            _write_replace(root / "status" / path.name, {
+                **status, STANCE_SEARCH_REQUEUE_FIELD: [*(tried if isinstance(tried, list) else []),
+                                                        STANCE_SEARCH_VERSION]})
+            os.replace(path, target)
+            requeued.append({"request_key": path.stem, "reason": "stance_search_version", "detail": stale,
+                             "stance_search_version": STANCE_SEARCH_VERSION, "release_commit": release})
             continue
         retry = dict(status.get("automatic_retry") or {})
         attempts = _retry_attempts(retry)
@@ -697,8 +770,9 @@ def _current_half(profile: Mapping[str, Any] | None, revision: str) -> str | Non
         read_team_scene_inputs(path)
     except (OSError, ValueError, KeyError):
         return None
-    # A half no episode can be scored from is compiled again, not reused.
-    return None if unscorable_half(path) is not None else path
+    # A half no episode can be scored from, or one an older stance search found no carrying stance in, is
+    # compiled again, not reused.
+    return None if unscorable_half(path) is not None or stale_unreached_station(path) is not None else path
 
 
 def _discard_unreferenced(attempt_root: Any, capture_root: Any) -> None:
@@ -791,6 +865,8 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
     for field in (OWNER_CONFIRMATION_REQUEUE_FIELD, RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD):
         if isinstance(prior.get(field), list):
             status[field] = list(prior[field])
+    if isinstance(prior.get(STANCE_SEARCH_REQUEUE_FIELD), list):
+        status[STANCE_SEARCH_REQUEUE_FIELD] = list(prior[STANCE_SEARCH_REQUEUE_FIELD])
 
     def skipped(reason: str) -> dict[str, Any]:
         return {**status, "status": "skipped", "reason": reason, "blockers": []}
@@ -853,6 +929,10 @@ def _process(root: Path, claimed: Path, *, fetcher: Fetcher | None,
 def _finish(root: Path, claimed: Path, status: Mapping[str, Any], *, now: datetime,
             release: str | None = None) -> dict[str, Any]:
     status = {key: value for key, value in _with_retry(status, now=now).items() if key != RELEASE_COMMIT_FIELD}
+    # The stance-search versions already tried survive any end, an interrupted run's included, so none loops.
+    prior = _read_json(root / "status" / claimed.name) or {}
+    if STANCE_SEARCH_REQUEUE_FIELD not in status and isinstance(prior.get(STANCE_SEARCH_REQUEUE_FIELD), list):
+        status[STANCE_SEARCH_REQUEUE_FIELD] = list(prior[STANCE_SEARCH_REQUEUE_FIELD])
     if _release(release) is not None:
         # The release that wrote this status; a later release returns a deterministic refusal once.
         status[RELEASE_COMMIT_FIELD] = release
@@ -1022,6 +1102,7 @@ __all__ = [
     "OWNER_CONTRACT_BLOCKER_PREFIX",
     "RELEASE_COMMIT_FIELD",
     "RELEASE_REQUEUE_FIELD",
+    "STANCE_SEARCH_REQUEUE_FIELD",
     "SCENARIO_ID",
     "STATUS_SCHEMA",
     "TRANSIENT_BLOCKERS",
@@ -1040,6 +1121,7 @@ __all__ = [
     "requeue_transient_blocked",
     "requeue_unfinished",
     "resolve_capture_root",
+    "stale_unreached_station",
     "transient_cause",
     "validated_request",
 ]
