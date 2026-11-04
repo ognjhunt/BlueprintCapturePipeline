@@ -57,7 +57,8 @@ OUTPUT_ZIP_NAME = "vast_provider_runtime_output.zip"
 COMMAND_RESULT_NAME = "vast_provider_command_result.json"
 
 READABLE_SUFFIXES = (".json", ".log", ".txt")
-MAX_JSON_DEPTH = 2
+# Gate verdicts sit a few directories down (cell_runs/NN/prepolicy_observation_gate/<gate>/...).
+MAX_JSON_DEPTH = 6
 MAX_MEMBERS_READ = 256
 MAX_JSON_MEMBER_BYTES = 8 * 1024**2
 MAX_TEXT_MEMBER_BYTES = 64 * 1024**2
@@ -137,7 +138,8 @@ def _unread_reason(info: zipfile.ZipInfo) -> str | None:
     if info.flag_bits & 0x1:
         return "encrypted_member"
     is_json = name.lower().endswith(".json")
-    if is_json and len(path.parts) - 1 > MAX_JSON_DEPTH:
+    if is_json and (len(path.parts) - 1 > MAX_JSON_DEPTH or "episodes" in path.parts[:-1]):
+        # Per-episode records are counted, never read: a run can hold thousands.
         return "nested_json_member"
     cap = MAX_JSON_MEMBER_BYTES if is_json else MAX_TEXT_MEMBER_BYTES
     if info.file_size > cap or info.compress_size > cap:
@@ -203,6 +205,37 @@ def _messages(value: Mapping[str, Any], *, limit: int = 12) -> list[dict[str, st
     return found[:limit]
 
 
+_NESTED_CODE_KEY = re.compile(r"(?i)(?:^|_)blockers$|_codes$")
+_TYPED_CODE = re.compile(r"[a-z][a-z0-9_:.=-]{0,199}")
+
+
+def _nested_codes(value: Mapping[str, Any], *, limit: int = 24) -> list[dict[str, Any]]:
+    """Typed code lists below the top level (a gate's ``policy_observation_integrity_blockers``),
+    breadth first, four levels deep. Codes only: anything that is not a typed code is dropped."""
+    found: list[dict[str, Any]] = []
+    queue: deque[tuple[str, Any, int]] = deque([("", value, 0)])
+    visited = 0
+    while queue and len(found) < limit and visited < 2000:
+        prefix, node, depth = queue.popleft()
+        visited += 1
+        items = (node.items() if isinstance(node, Mapping)
+                 else ((f"[{index}]", child) for index, child in enumerate(node[:20])))
+        for key, child in items:
+            key = str(key)
+            path = (f"{prefix}{key}" if key.startswith("[") else f"{prefix}.{key}" if prefix else key)[:160]
+            if depth == 0 and key in _PROJECTED:
+                continue
+            if isinstance(node, Mapping) and _NESTED_CODE_KEY.search(key) and isinstance(child, list):
+                codes = [item for item in child[:20] if isinstance(item, str) and _TYPED_CODE.fullmatch(item)]
+                if codes:
+                    found.append({"field": path, "codes": codes})
+            elif isinstance(child, (Mapping, list)) and depth < 4:
+                queue.append((path, child, depth + 1))
+            if len(found) >= limit:
+                break
+    return found
+
+
 def _result_row(member: str, value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
@@ -222,6 +255,12 @@ def _result_row(member: str, value: Any) -> dict[str, Any] | None:
     messages = _messages(value)
     if messages:
         row["error_messages"] = messages
+    nested = _nested_codes(value)
+    if nested:
+        row["nested_codes"] = nested
+    for key in ("passed", "policy_observation_integrity_passed", "frame_structure_passed"):
+        if isinstance(value.get(key), bool):
+            row[key] = value[key]
     if not row:
         return None
     if isinstance(value.get("episodes"), list):
