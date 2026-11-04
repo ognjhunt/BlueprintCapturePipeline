@@ -8,10 +8,18 @@ launches retain their reservation and are reconciled, never retried blindly.
 
 The standing allowance is USD 15 for the stable website site submission,
 shared across candidate sets and scene revisions. Once allocation is observed,
-the entire reserved upper bound is conservatively charged. A lower provider
-estimate cannot silently replenish the allowance. A campaign completed within
-it is the job's evaluation result; spend beyond it needs the owner's approval
-and is never reserved by this queue.
+the entire reserved upper bound is conservatively charged until the attempt
+settles: once its own records prove the run is over and bound to it, it counts
+at its budget ledger's estimate rounded up to the cent
+(``beta_policy_screening_settlement``). Any doubt keeps the whole bound. A
+campaign completed within the allowance is the job's evaluation result; spend
+beyond it needs the owner's approval and is never reserved by this queue.
+
+Settlement lowers only what funding counts (``_budget``). The WebApp refuses a
+publication whose ``spent_upper_bound_usd`` is below the campaign's previous
+one, so each campaign publishes its own spent bound as a floor
+(``_publication_budget``); its committed total is never below the real one. A
+campaign the WebApp already holds in full is not sent again for a settlement.
 """
 from __future__ import annotations
 
@@ -31,6 +39,7 @@ from typing import Any
 from .beta_policy_screening_result import (
     ACTIVE_STATUSES, QUEUED_STATUSES, candidate_result_summary, campaign_status, money, screening_publication,
 )
+from .beta_policy_screening_settlement import settled_cost
 from .decision_evidence_contracts import canonical_digest
 from .policy_execution_evidence import SCRIPTED
 from .website_candidate_feasibility import is_measured_refusal
@@ -146,6 +155,11 @@ def _read(path: Path) -> dict[str, Any]:
 
 
 def _budget(ledger: Mapping[str, Any], site_id: str, *, campaign_id: str | None = None) -> dict[str, Any]:
+    """What the site (or one campaign) holds, as funding counts it.
+
+    A committed attempt counts at its recorded settlement, else at its whole
+    maximum; a reserved one at its maximum.
+    """
     reserved, spent = Decimal(0), Decimal(0)
     for key, campaign in ledger["campaigns"].items():
         if campaign["site_id"] != site_id or campaign_id is not None and key != campaign_id:
@@ -158,12 +172,45 @@ def _budget(ledger: Mapping[str, Any], site_id: str, *, campaign_id: str | None 
                 if state == "reserved":
                     reserved += cap
                 elif state == "committed":
-                    spent += cap
+                    settled = settled_cost(attempt)
+                    spent += cap if settled is None else settled
                 elif state != "released":
                     raise ScreeningCoordinatorError("beta_screening_reservation_state_invalid")
     return {"currency": "USD", "limit_usd": money(SITE_LIMIT),
             "committed_upper_bound_usd": money(reserved + spent),
             "spent_upper_bound_usd": money(spent), "reserved_usd": money(reserved)}
+
+
+def _publication_budget(ledger: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, Any]:
+    """The site budget one campaign would publish now: the WebApp's rules hold for every revision.
+
+    The WebApp refuses a ``spent_upper_bound_usd`` below the campaign's previous
+    publication (``screeningPublicationTransition``) and any committed total
+    above the $15 limit. A settlement recorded after a campaign published an
+    attempt at its whole maximum lowers the site's spend below that, so the
+    campaign keeps its last spent bound (``site_budget``, never below anything
+    it sent) as a floor. Its committed total is the larger of the site's real
+    commitment and that floor, and its reserved figure is the part of that
+    total above the floor: the total never understates what the site holds
+    (the WebApp's job ceiling reads it) and never exceeds the limit. A campaign
+    planned after the settlement has no floor and publishes the settled figures.
+    """
+    budget = _budget(ledger, state["site_id"])
+    floor = _floor(state)
+    if floor <= _amount(budget["spent_upper_bound_usd"]):
+        return budget
+    committed = max(_amount(budget["committed_upper_bound_usd"]), floor)
+    return {**budget, "committed_upper_bound_usd": money(committed), "spent_upper_bound_usd": money(floor),
+            "reserved_usd": money(committed - floor)}
+
+
+def _floor(state: Mapping[str, Any]) -> Decimal:
+    return _amount((state.get("site_budget") or {}).get("spent_upper_bound_usd", "0"))
+
+
+def _published_budget(ledger: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, Any]:
+    """The budget a campaign's publication carries: the snapshot ``_save`` recorded for it."""
+    return dict(state.get("site_budget") or _publication_budget(ledger, state))
 
 
 def _ledger(root: Path) -> dict[str, Any]:
@@ -187,9 +234,17 @@ def _save(root: Path, ledger: dict[str, Any]) -> None:
     # published for another campaign must receive a new revision if that
     # shared budget changes; same-revision bytes must never drift.
     for state in ledger["campaigns"].values():
-        budget = _budget(ledger, state["site_id"])
+        budget = _publication_budget(ledger, state)
         previous = state.get("site_budget")
         if previous is not None and previous != budget:
+            if (state["published_revision"] == state["revision"]
+                    and _floor(state) > _amount(_budget(ledger, state["site_id"])["spent_upper_bound_usd"])):
+                # A settlement lowered the site's spend below what this campaign
+                # already published, and the WebApp holds all its progress: it
+                # keeps those acknowledged bytes. The site's next publication,
+                # from any campaign, carries the real figures; one from this
+                # campaign carries its floor (``_publication_budget``).
+                continue
             _changed(state)
         state["site_budget"] = budget
     ledger["ledger_digest"] = canonical_digest(ledger, digest_field="ledger_digest")
@@ -793,9 +848,11 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
                                                                 "beta_screening_not_allocated"))
             return
         if status in {"completed", "blocked"} and closed:
-            # Charged at the full reserved bound even if a billing estimate is
-            # lower: only separately reconciled authority could replenish it.
+            # Charged at the full reserved bound, then settled in this same
+            # write when the run's own records prove its measured cost: no
+            # publication shows it at the whole bound first. Doubt keeps it.
             attempt["reservation_status"] = "committed"
+            _settle(root, attempt, candidate)
             if isinstance(observation.get("result"), Mapping):
                 try:
                     summary = candidate_result_summary(observation["result"], plan=plan, candidate=candidate)
@@ -816,6 +873,61 @@ def _observe(root: Path, plan: Mapping[str, Any], candidate: Mapping[str, Any], 
         row.update(status="reconciliation_required", blockers=_safe_blockers(observation.get("blockers"),
                                                                             "beta_screening_allocation_uncertain"))
     _update(root, plan["campaign_id"], candidate["candidate_id"], apply)
+
+
+SETTLEMENT_HELD_FIELD = "settlement_held"
+
+
+def _settle(root: Path, attempt: dict[str, Any], candidate: Mapping[str, Any]) -> bool:
+    """Record what a committed attempt's own records prove it cost; never raises.
+
+    Each attempt is decided once: settled (``settled_cost_usd``), or held at
+    its maximum for good with the reason (``settlement_held``) when its records
+    do not prove one finished, torn-down run bound to it. An attempt directory
+    that cannot be read at all (an unmounted volume) is tried again on a later
+    pass. Returns whether the attempt changed.
+    """
+    from .beta_policy_screening_settlement import SettlementEvidenceError, attempt_settlement
+
+    if (attempt.get("reservation_status") != "committed" or attempt.get("provider_allocation_observed") is not True
+            or "settled_cost_usd" in attempt or SETTLEMENT_HELD_FIELD in attempt):
+        return False
+    try:
+        attempt.update(attempt_settlement(attempt_dir=_attempt_path(root, attempt), attempt=attempt,
+                                          candidate=candidate, settled_at=_now()))
+    except SettlementEvidenceError as exc:
+        attempt[SETTLEMENT_HELD_FIELD] = {"reason": _safe_blockers([str(exc)], "beta_screening_settlement_unproven")[0],
+                                          "held_at": _now()}
+    except Exception:  # noqa: BLE001 - unreadable now; it counts at its maximum and is tried again
+        return False
+    return True
+
+
+def _settle_finished(root: Path) -> int:
+    """Settle every committed attempt not decided yet, including ones committed before settlement existed.
+
+    A settlement changes no row a publication shows. It can lower only what
+    the site's funding counts; ``_save`` gives a campaign a new revision only
+    if its published budget changes. Returns the number of attempts decided.
+    """
+    decided = 0
+    with _lock(root):
+        ledger = _ledger(root)
+        for campaign_id, state in ledger["campaigns"].items():
+            open_attempts = [(candidate_id, attempt) for candidate_id, row in state["candidates"].items()
+                             if row["status"] in {"completed", "blocked"}
+                             for attempt in [*row.get("attempt_history", []), *([row["attempt"]] if row.get("attempt") else [])]
+                             if attempt["reservation_status"] == "committed"
+                             and "settled_cost_usd" not in attempt and SETTLEMENT_HELD_FIELD not in attempt]
+            if not open_attempts:
+                continue
+            plan = _plan(root, campaign_id, state["plan_digest"])
+            candidates = {candidate["candidate_id"]: candidate for candidate in plan["candidates"]}
+            for candidate_id, attempt in open_attempts:
+                decided += _settle(root, attempt, candidates[candidate_id])
+        if decided:
+            _save(root, ledger)
+    return decided
 
 
 def _attempt_root(root: Path, attempt: Mapping[str, Any]) -> Path:
@@ -841,7 +953,7 @@ def _advance_candidate(root: Path, plan: Mapping[str, Any], candidate: Mapping[s
         state = ledger["campaigns"][plan["campaign_id"]]
         row = state["candidates"][candidate["candidate_id"]]
         if require_publication_ack and row["status"] in {"pending", "preparing"}:
-            publication = screening_publication(plan=plan, state=state, budget=_budget(ledger, state["site_id"]))
+            publication = screening_publication(plan=plan, state=state, budget=_published_budget(ledger, state))
             if (state["published_revision"] != state["revision"]
                     or state["published_digest"] != publication["publication_digest"]):
                 return False
@@ -962,6 +1074,9 @@ def process_screening_queue(
     root = _root(queue_root)
     try:
         with _lock(root, ".worker.lock", nonblocking=True):
+            # Finished attempts settle to their measured cost first (each once),
+            # so the refill below and new plans count what they really spent.
+            settled = _settle_finished(root)
             # A website plan's queued scripted baselines close first, so the
             # waitlist below never funds one.
             _switch_off_website_scripted(root)
@@ -1007,7 +1122,7 @@ def process_screening_queue(
             # the publication that follows already says what happens next.
             refilled = _refill_waitlist(root)
             return {"status": "processed", "campaign_ids": processed, "launches_started": launches,
-                    "waitlist_changes": refilled}
+                    "waitlist_changes": refilled, "settlements_decided": settled}
     except BlockingIOError:
         return {"status": "worker_busy", "campaign_ids": [], "launches_started": 0}
 
@@ -1030,7 +1145,7 @@ def pending_publications(*, queue_root: str | Path | None = None,
                 state["published_digest"] = None
                 invalidated = True
             plan = _plan(root, campaign_id, state["plan_digest"])
-            publication = screening_publication(plan=plan, state=state, budget=_budget(ledger, state["site_id"]))
+            publication = screening_publication(plan=plan, state=state, budget=_published_budget(ledger, state))
             if (state["published_revision"] == publication["revision"]
                     and state["published_digest"] == publication["publication_digest"]):
                 continue
@@ -1040,7 +1155,7 @@ def pending_publications(*, queue_root: str | Path | None = None,
                 # same-revision rewrite, which would leave the result unseen.
                 _changed(state)
                 invalidated = True
-                publication = screening_publication(plan=plan, state=state, budget=_budget(ledger, state["site_id"]))
+                publication = screening_publication(plan=plan, state=state, budget=_published_budget(ledger, state))
             _write(root / "publications" / f"{campaign_id}.json", publication)
             values.append(publication)
         if invalidated:
@@ -1059,7 +1174,7 @@ def acknowledge_publication(
         if state is None:
             raise ScreeningCoordinatorError("beta_screening_campaign_unknown")
         plan = _plan(root, campaign_id, state["plan_digest"])
-        publication = screening_publication(plan=plan, state=state, budget=_budget(ledger, state["site_id"]))
+        publication = screening_publication(plan=plan, state=state, budget=_published_budget(ledger, state))
         if publication["publication_digest"] != publication_digest:
             return False
         state["published_revision"] = state["revision"]

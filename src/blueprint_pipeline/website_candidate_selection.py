@@ -149,7 +149,7 @@ def _campaign_catalog(root: Path, plan: Mapping[str, Any]) -> tuple[dict[str, An
 
 def retain_selections(*, queue_root: str | Path | None = None) -> dict[str, Any]:
     """Write a selection for every acknowledged, terminal campaign; idempotent and unpaid."""
-    from .beta_policy_screening_coordinator import _budget, _ledger, _lock, _plan, _read, _root, _write
+    from .beta_policy_screening_coordinator import _ledger, _lock, _plan, _published_budget, _read, _root, _write
     from .beta_policy_screening_result import screening_publication
     from .deployment_embodiment_support import support_catalog
 
@@ -159,7 +159,7 @@ def retain_selections(*, queue_root: str | Path | None = None) -> dict[str, Any]
         ledger = _ledger(root)
         for campaign_id, state in sorted(ledger["campaigns"].items()):
             plan = _plan(root, campaign_id, state["plan_digest"])
-            publication = screening_publication(plan=plan, state=state, budget=_budget(ledger, state["site_id"]))
+            publication = screening_publication(plan=plan, state=state, budget=_published_budget(ledger, state))
             if publication["status"] in TERMINAL and state["published_digest"] == publication["publication_digest"]:
                 published.append((plan, publication))
     if not published:
