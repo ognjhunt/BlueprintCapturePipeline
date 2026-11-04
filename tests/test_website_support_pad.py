@@ -591,7 +591,11 @@ def _room_triangles() -> list[float]:
     return [float(value) for value in os.environ.get("BLUEPRINT_SUPPORT_PAD_MEMORY_TRIANGLES", "").split(",") if value]
 
 
+# An operator's measurement on a host with GBs of headroom, run on request. The hermetic lanes run
+# ``-m "not external_runtime and not external_data"`` and block on any skip, so it is deselected there by
+# ``external_runtime`` (as ``tests/test_teleport_live_public.py`` is), never collected and skipped.
 @pytest.mark.slow
+@pytest.mark.external_runtime
 @pytest.mark.skipif(not _room_triangles(), reason="set BLUEPRINT_SUPPORT_PAD_MEMORY_TRIANGLES (millions, e.g. 4,7.2)")
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads VmHWM from /proc")
 @pytest.mark.parametrize("millions", _room_triangles())
