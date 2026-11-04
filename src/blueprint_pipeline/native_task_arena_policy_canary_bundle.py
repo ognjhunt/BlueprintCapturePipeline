@@ -73,6 +73,7 @@ TEAM_RUNTIME_MODULE_NAMES = (
     "scripted_robot_kuka_robotiq_runtime.py",
     "scripted_robot_public_arm_robotiq_runtime.py",
     "team_policy_episode_outcome.py", "team_evaluation_worker_retention.py",
+    "policy_canary_cell_setup_failure.py",
     "native_task_arena_execution_contract.py",
     "team_embodiment.py", "team_embodiment_runtime.py", "native_task_robot_contact_topology.py",
     # The first session on an undecided rigid scene records and scores its robot-free probe.

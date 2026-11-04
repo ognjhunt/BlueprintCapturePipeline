@@ -907,6 +907,22 @@ def validate_session_result(
     return payload
 
 
+def _source_trace(failure: BaseException, *, limit: int = 24, outer: int = 4) -> list[dict[str, Any]]:
+    """Safe frames of ``failure``: its outermost, which name the session boundary
+    (``open_session``, ``prepolicy_observation_gate``, ``load_policy``), and its innermost.
+
+    Frames are filtered before the list is bounded, so a deep simulator stack
+    cannot push the boundary frame out of the record.
+    """
+    frames = [
+        {"file": Path(frame.filename).name, "function": frame.name, "line": frame.lineno}
+        for frame in traceback.extract_tb(failure.__traceback__)
+        if re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", Path(frame.filename).name)
+        and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,159}", frame.name)
+    ]
+    return frames if len(frames) <= limit else frames[:outer] + frames[outer - limit:]
+
+
 def execute_paired_session(
     *,
     authority: Mapping[str, Any],
@@ -1140,12 +1156,7 @@ def execute_paired_session(
         "session_failure_type": type(open_failure).__name__ if open_failure else None,
         # Source locations diagnose runtime-boundary failures without retaining
         # exception messages, local variables, credentials, or absolute paths.
-        "session_failure_source_trace": [
-            {"file": Path(frame.filename).name, "function": frame.name, "line": frame.lineno}
-            for frame in traceback.extract_tb(open_failure.__traceback__)[-24:]
-            if re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", Path(frame.filename).name)
-            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,159}", frame.name)
-        ] if open_failure else [],
+        "session_failure_source_trace": _source_trace(open_failure) if open_failure else [],
         "session_failure_codes": sorted({
             code for code in raw_failure_codes
             if isinstance(code, str)

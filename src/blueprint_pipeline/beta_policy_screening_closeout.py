@@ -214,6 +214,34 @@ def retained_scoped_closeout_verified(receipt: Mapping[str, Any], *, adapter: Ma
         adapter_path=adapter_path, now=observed_at_epoch, record_reader=record_reader, retained_only=True)
 
 
+def _native_result_bound(inner: Mapping[str, Any], *, adapter: Mapping[str, Any],
+                         receipt: Mapping[str, Any]) -> bool:
+    return (inner.get("run_kind") == BETA_RUN_KIND
+            and inner.get("beta_screening_admission") == receipt["beta_screening_admission"]
+            and inner.get("candidate_ids") == receipt["candidate_ids"]
+            and candidate_execution_kinds(inner) == candidate_execution_kinds(receipt)
+            and inner.get("result_digest") == adapter.get("native_control_result_digest")
+            and inner.get("result_digest") == canonical_digest(inner, digest_field="result_digest"))
+
+
+def scoped_setup_failure_blocker(*, inner: Mapping[str, Any], adapter: Mapping[str, Any],
+                                 prepared: Mapping[str, Any], receipt: Mapping[str, Any],
+                                 adapter_path: Path) -> str | None:
+    """The named setup blocker of an attempt-bound native result whose matrix stopped before any policy ran.
+
+    The same closeout and binding proofs as a score are required; the result
+    carries no score, so only its typed blocker reaches the row.
+    """
+    from .policy_canary_cell_setup_failure import sealed_setup_failure_blocker
+    try:
+        bound = (scoped_closeout_verified(receipt, adapter=adapter, prepared=prepared, adapter_path=adapter_path)
+                 and not closeout_staged_objects(adapter)["blockers"]
+                 and _native_result_bound(inner, adapter=adapter, receipt=receipt))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return sealed_setup_failure_blocker(inner) if bound else None
+
+
 def join_scoped_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[str, Any],
                                  prepared: Mapping[str, Any], receipt: Mapping[str, Any],
                                  adapter_path: Path) -> dict[str, Any]:
@@ -224,12 +252,7 @@ def join_scoped_session_closeout(*, inner: Mapping[str, Any], adapter: Mapping[s
         # Billing can close after staged objects disappear even when scientific
         # outputs were lost. Never publish a score from that failed promotion.
         raise ValueError("beta_screening_scientific_output_not_durable")
-    if (inner.get("run_kind") != BETA_RUN_KIND
-            or inner.get("beta_screening_admission") != receipt["beta_screening_admission"]
-            or inner.get("candidate_ids") != receipt["candidate_ids"]
-            or candidate_execution_kinds(inner) != candidate_execution_kinds(receipt)
-            or inner.get("result_digest") != adapter.get("native_control_result_digest")
-            or inner.get("result_digest") != canonical_digest(inner, digest_field="result_digest")):
+    if not _native_result_bound(inner, adapter=adapter, receipt=receipt):
         raise ValueError("beta_screening_closeout_native_result_binding_mismatch")
     value = json.loads(json.dumps(inner, allow_nan=False))
     episodes = value.get("episodes")
