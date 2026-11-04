@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 from .beta_policy_candidate_catalog import CANDIDATE_ID_PATTERN, DIGEST_PATTERN, ID_PATTERN, validate_catalog
 from .decision_evidence_contracts import canonical_digest
 from .team_evaluation_plan import scored_cells
+from .website_candidate_feasibility import REACH_RANK_FIELDS, REACH_TIERS, reach_rank
 from .task_family_policy_execution import FAMILY_BACKEND, family_policy_execution_binding
 from .beta_policy_screening_g1 import BACKEND as G1_BACKEND, CANDIDATES as G1_CANDIDATES, frozen_cells as g1_cells
 
@@ -73,6 +74,21 @@ _INFEASIBLE_REASON = re.compile(r"[a-z][a-z0-9_:.=-]{1,199}")
 
 class BetaPolicyScreeningPlanError(ValueError):
     """Stable refusal for malformed or contradictory screening plans."""
+
+
+def _reach_rank(value: Any) -> dict[str, Any]:
+    """A row's reach tier and the evidence behind it (``website_candidate_feasibility.reach_rank``)."""
+    if (not isinstance(value, dict) or set(value) != REACH_RANK_FIELDS or not isinstance(value["basis"], str)
+            or type(value["tier"]) is not int or REACH_TIERS.get(value["basis"]) != value["tier"]
+            or value["feasibility_status"] not in {None, "feasible", "unassessed"}
+            or any(value[key] is not None and (not isinstance(value[key], str) or not 1 <= len(value[key]) <= 128)
+                   for key in ("reach_source", "solve_source", "solve_status"))
+            or any(value[key] is not None and (not isinstance(value[key], str) or not _DIGEST.fullmatch(value[key]))
+                   for key in ("report_digest", "feasibility_digest"))
+            or not isinstance(value["reasons"], list) or len(value["reasons"]) > 16
+            or any(not isinstance(reason, str) or not 1 <= len(reason) <= 300 for reason in value["reasons"])):
+        raise BetaPolicyScreeningPlanError("beta_screening_reach_rank_invalid")
+    return value
 
 
 def money(value: Any) -> Decimal:
@@ -416,7 +432,7 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                          capabilities: Mapping[str, Any] | None = None,
                          cost_quotes: Mapping[str, Any] | None = None,
                          now: dt.datetime | None = None,
-                         priority: Sequence[str] | None = None) -> dict[str, Any]:
+                         priority: Sequence[str] | None = None, intake_ranking: bool = False) -> dict[str, Any]:
     """Every requested candidate gets a status and reason; the budget decides how many run.
 
     ``priority`` (the job's intake ranking) sets the order the budget is spent
@@ -427,7 +443,15 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     floor the screening lane cannot rent), which stay listed as ``infeasible``
     and are never funded or waitlisted. Runnable candidates the budget cannot
     fund yet are ``waitlisted``, in the same order, for money a selected
-    candidate releases before spend.
+    candidate releases before spend. With ``candidate_reach_rank`` capabilities
+    (``website_candidate_feasibility.reach_rank``) a candidate whose own-arm
+    solve was flagged goes after every unflagged one, so it never spends first.
+    When ``priority`` is the job's intake ranking (``intake_ranking``, from
+    ``website_candidate_ranking.retained_priority``) that is the only change to
+    the order above. On the default-priority path learned policies then go
+    before scripted baselines, ranked or not, and a solve that passed before an
+    unmeasured one, each group in the order above. Every row but an infeasible
+    one records its ``reach_rank``; ranking removes and refuses nothing.
     """
     catalog = validate_catalog(catalog)
     scene = _scene(scene)
@@ -447,6 +471,11 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
                 or any(not isinstance(reason, str) or not pattern.fullmatch(reason)
                        for reason in reasons) for reasons in value.values())):
             raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
+    reach = capabilities.get("candidate_reach_rank")
+    if reach is not None:
+        if not isinstance(reach, dict) or any(not isinstance(key, str) for key in reach):
+            raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
+        reach = {key: _reach_rank(value) for key, value in reach.items()}
     available = capabilities.get("credentials_available", [])
     if not isinstance(available, list) or any(not isinstance(name, str) for name in available):
         raise BetaPolicyScreeningPlanError("beta_screening_capabilities_invalid")
@@ -462,7 +491,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_selection_invalid")
     if set(requested) - set(by_id):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_not_in_catalog")
-    if isinstance(priority, (str, bytes)) or any(not isinstance(row, str) for row in priority or ()):
+    if (isinstance(priority, (str, bytes)) or any(not isinstance(row, str) for row in priority or ())
+            or type(intake_ranking) is not bool):
         raise BetaPolicyScreeningPlanError("beta_screening_candidate_priority_invalid")
     ranked = [row for row in dict.fromkeys(priority or ()) if row in set(requested)]
     cells = screening_cells(scene, episodes_per_candidate)
@@ -470,7 +500,20 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
     candidates = []
     unranked = sorted(set(requested) - set(ranked),
                       key=lambda row: (by_id[row]["policy"]["kind"] == "scripted", row))
-    for candidate_id in ranked + unranked:
+    order = ranked + unranked
+    if reach is not None:
+        def reach_order(key: str) -> tuple[bool, ...]:
+            # Infeasible rows are never funded and are not ranked by reach.
+            tier = (REACH_TIERS["reach_unmeasured"] if key in infeasible
+                    else (reach.get(key) or reach_rank(None))["tier"])
+            flagged = tier == REACH_TIERS["own_arm_solve_flagged"]
+            if intake_ranking:
+                return (flagged,)  # The job's own ranking stands; only a flagged body moves back.
+            return (flagged, by_id[key]["policy"]["kind"] == "scripted",
+                    tier == REACH_TIERS["reach_unmeasured"])
+
+        order.sort(key=reach_order)  # Stable: the default order holds within each group.
+    for candidate_id in order:
         candidate = by_id[candidate_id]
         row: dict[str, Any] = {"candidate_id": candidate_id,
                                "display_name": candidate["display_name"],
@@ -486,6 +529,8 @@ def build_screening_plan(catalog: Mapping[str, Any], scene: Mapping[str, Any], *
             row.update(status="infeasible", blockers=sorted(set(infeasible[candidate_id])))
             candidates.append(row)
             continue
+        if reach is not None:
+            row["reach_rank"] = deepcopy(reach.get(candidate_id) or reach_rank(None))
         binding = bindings.get(candidate_id)
         row["blockers"] = _candidate_blockers(candidate, scene, binding, credentials)
         row["blockers"] = sorted(set(row["blockers"] + failures.get(candidate_id, [])))
@@ -633,6 +678,10 @@ def validate_screening_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         if evidence_fields and row["execution_evidence_kind"] != "scripted_simulator_state_baseline" and not (
                 row["candidate_id"] in G1_CANDIDATES and row["execution_evidence_kind"] == "learned_policy"):
             raise BetaPolicyScreeningPlanError("beta_screening_evidence_kind_invalid")
+        if "reach_rank" in row:
+            # Why the row sits where it does in the budget order; plans built before it carry none.
+            _reach_rank(row["reach_rank"])
+            evidence_fields = evidence_fields | {"reach_rank"}
         if not _CANDIDATE_ID.fullmatch(row["candidate_id"]):
             raise BetaPolicyScreeningPlanError("beta_screening_candidate_invalid")
         _digest(row["configuration_digest"], "beta_screening_configuration_invalid")
@@ -777,7 +826,8 @@ def build_job_ceiling_screening_plan(catalog: Mapping[str, Any], scene: Mapping[
         for row in plan["candidates"]:
             if (row["status"] in {"selected", WAITLISTED} and budget == 0
                     or row["status"] == "deferred" and row["blockers"] == [WAITLIST_BLOCKER]):
-                for key in set(row) - {"candidate_id", "display_name", "configuration_digest", "execution_evidence_kind"}:
+                for key in set(row) - {"candidate_id", "display_name", "configuration_digest", "execution_evidence_kind",
+                                       "reach_rank"}:
                     del row[key]
                 row.update(status="deferred", blockers=[JOB_CEILING_DEFERRED])
             elif row["status"] == WAITLISTED:
