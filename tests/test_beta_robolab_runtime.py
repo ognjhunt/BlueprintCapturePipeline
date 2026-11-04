@@ -113,6 +113,35 @@ def test_source_tampering_refuses_before_inference(stock_robolab):
         runtime.verify_loaded_robolab()
 
 
+def test_pinned_opencv_ships_with_robolab_and_is_verified_after_load(stock_robolab):
+    receipt = json.loads((stock_robolab / "robolab-source.v1.json").read_text())
+    assert receipt["commit"] == runtime.ROBOLAB_COMMIT
+    staged = runtime.stage_robolab_source(stock_robolab)["python_dependencies"]
+    assert [(row["distribution"], row["version"], row["delivery"]) for row in staged] == [
+        ("imageio", "2.37.2", "vendored"), ("opencv-python-headless", "4.10.0.84", "pinned_download")]
+    assert (stock_robolab / runtime.OPENCV_WHEEL).is_file() and (stock_robolab / "cv2/__init__.py").is_file()
+    runtime.verify_loaded_robolab()
+    module = stock_robolab / "cv2/__init__.py"
+    module.write_text(module.read_text() + "# changed\n")
+    with pytest.raises(ValueError, match="loaded_cv2_source_digest"):
+        runtime.verify_loaded_robolab()
+    (stock_robolab / runtime.OPENCV_WHEEL).write_bytes(b"other wheel")
+    with pytest.raises(ValueError, match="loaded_cv2_wheel_digest"):
+        runtime.verify_loaded_robolab()
+
+
+def test_preflight_records_which_opencv_loaded_without_refusing(stock_robolab, monkeypatch):
+    monkeypatch.setitem(sys.modules, "cv2", ModuleType("cv2"))
+    sys.modules["cv2"].__file__ = str(stock_robolab / "cv2/__init__.py")
+    result = runtime.preflight_robolab_runtime()
+    assert result["status"] == "passed" and result["warnings"] == []
+    assert result["python_dependency_origins"]["cv2"]["from_staged_wheel"] is True
+    sys.modules["cv2"].__file__ = "/isaac-sim/exts/some.archive/pip_prebundle/cv2/__init__.py"
+    result = runtime.preflight_robolab_runtime()
+    assert result["status"] == "passed"
+    assert result["warnings"] == ["beta_robolab_dependency_not_from_staged_wheel:cv2"]
+
+
 def test_sealed_spec_cannot_change_task_or_interface():
     spec = _spec("pi05_droid")
     spec["evaluation_backend"] = "robolab.v1"
