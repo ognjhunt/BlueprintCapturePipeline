@@ -135,7 +135,7 @@ def holds_native_task_preparation(handoff: Mapping[str, Any], task_context: Mapp
         # ``website_early_task_hold.task_family_runtime_gap``: the job's own family, from its
         # source-bound reading, re-derived here; the catalog is the one recorded at the hold.
         from .task_family_scoring import canonical_task_family
-        from .website_early_task_hold import required_task_families
+        from .task_profile_contracts import required_task_families
         from .website_task_semantics import effective_task_profile
         semantics = gap.get("task_semantics") if family == "general_task" else None
         runtime = gap.get("runtime_catalog")

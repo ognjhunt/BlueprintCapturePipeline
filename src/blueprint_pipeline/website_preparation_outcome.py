@@ -42,7 +42,7 @@ def _robot_fit_hold(root: Path, handoff: dict[str, Any], task_context_digest: st
     v3 to v5 readers never see it: their outcome vocabulary is closed (the WebApp parses it strictly),
     and a hold is not the carry refusal or the missing evidence those name.
     """
-    from .website_robot_fit_precheck import SCHEMA
+    from .website_robot_fit_precheck_projection import SCHEMA
     from .website_task_context_contracts import retains_robot_fit_hold
 
     if not retains_robot_fit_hold(handoff, {"capture_id": root.name, "scene_id": root.parent.parent.name}):

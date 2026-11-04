@@ -42,7 +42,6 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -50,14 +49,14 @@ from typing import Any
 
 from .decision_evidence_contracts import canonical_digest
 from .usd_binary_read_cache import read_scoped
+# The site's read of a precheck lives apart, so the status reader stays off this module's imports.
+from .website_robot_fit_precheck_projection import (
+    MAX_PROJECTION_BYTES, PROJECTION_SCHEMA, SCHEMA, VERDICTS, read_robot_fit_precheck,
+)
 from .website_task_context_contracts import ROBOT_FIT_HOLD_PREFIX as HOLD_PREFIX
 
-SCHEMA = "website_robot_fit_precheck.v1"
-PROJECTION_SCHEMA = "website_robot_fit_precheck_projection.v1"
 FILENAME = "robot_fit_precheck.json"
 CLAIM_CEILING = "development_only"
-STATUSES = ("fit", "no_fit", "unknown")
-VERDICTS = ("fit", "no_fit", "unknown", "unavailable")
 FRANKA_PROFILE = "droid_franka_panda_robotiq_2f85_v1"
 G1_PROFILE = "unitree_g1_dex3_sonic_v1"
 TEAM_EMBODIMENT = "registered_team_embodiment"
@@ -67,8 +66,6 @@ TASK_KINDS = {"pick_and_place": "rigid_pick_place", "articulated_open_close": "a
 #: snapped up to the floor (``FLOOR_MOUNT_TOLERANCE_M``, 2 cm) and the task documents the published scene restates.
 REACH_MARGIN_M = 0.05
 REACH_RULE = "farthest_task_box_from_any_station_on_the_mount_plane"
-#: The site's view stays small: the WebApp reads at most 8192 bytes, and v5's robot fit table takes 4096.
-MAX_PROJECTION_BYTES = 1536
 
 
 def _r(value: float) -> float:
@@ -422,57 +419,6 @@ def registered_team_bodies(registry: Mapping[str, Any] | None = None) -> dict[st
     return bodies
 
 
-def read_robot_fit_precheck(*, capture_root: Path, task_context_digest: str) -> dict[str, Any] | None:
-    """The current job's early robot fit for the site (preparation status v6), or None when there is none.
-
-    Read-only, like ``website_robot_fit_projection``: the precheck must be bound to the preparation the
-    handoff names, and that preparation to the current task context; anything that does not bind is left
-    out, never a failed status read.
-    """
-    from .website_preparation_outcome import _load
-
-    root = capture_root.absolute()
-    path = root / "pipeline" / "website_scene_preparation" / "handoff.json"
-    try:
-        if not path.exists():
-            return None
-        handoff = _load(path, root, "digest")
-        reference = handoff.get("robot_fit_precheck")
-        if (handoff.get("schema_version") != "website_scene_handoff.v1" or handoff.get("capture_id") != root.name
-                or handoff.get("scene_id") != root.parent.parent.name or not isinstance(reference, Mapping)
-                or type(reference.get("path")) is not str):
-            return None
-        preparation = _load(Path(handoff["preparation_path"]), root, "digest")
-        precheck = _load(Path(reference["path"]), root, "precheck_digest")
-        if ((preparation.get("binding") or {}).get("task_context_digest") != task_context_digest
-                or handoff.get("preparation_digest") != preparation["digest"]
-                or precheck.get("schema_version") != SCHEMA
-                or precheck.get("preparation_digest") != preparation["digest"]
-                or precheck["precheck_digest"] != reference.get("digest")
-                or precheck.get("status") not in STATUSES
-                or precheck.get("physical_world_truth_claimed") is not False
-                or (precheck["status"] == "no_fit") != isinstance(precheck.get("hold_reason"), str)):
-            return None
-        counts = {name: precheck["counts"][name] for name in VERDICTS}
-        if any(type(count) is not int or count < 0 for count in counts.values()):
-            return None
-        rows = []
-        for key, row in sorted(precheck["embodiments"].items()):
-            candidates = [item for item in precheck["candidates"] if item.get("embodiment") == key]
-            rows.append({"embodiment": str(row["embodiment"]), "verdict": str(row["verdict"]),
-                         "reasons": [str(code) for code in row["reasons"]][:4],
-                         "fit_candidates": sum(item["verdict"] == "fit" for item in candidates)})
-        value = {"schema_version": PROJECTION_SCHEMA, "status": precheck["status"],
-                 "hold_reason": precheck["hold_reason"], "task_kind": precheck.get("task_kind"), "counts": counts,
-                 "embodiments": rows, "embodiments_truncated": False, "evidence_label": "pre_spend_estimate",
-                 "precheck_digest": precheck["precheck_digest"]}
-        while len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()) > MAX_PROJECTION_BYTES:
-            value["embodiments"].pop()
-            value["embodiments_truncated"] = True
-        return value
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return None
-
-
-__all__ = ["FILENAME", "HOLD_PREFIX", "PROJECTION_SCHEMA", "SCHEMA", "mount_reach_lower_bound",
-           "read_robot_fit_precheck", "registered_team_bodies", "robot_fit_precheck", "task_geometry"]
+__all__ = ["FILENAME", "HOLD_PREFIX", "MAX_PROJECTION_BYTES", "PROJECTION_SCHEMA", "SCHEMA",
+           "mount_reach_lower_bound", "read_robot_fit_precheck", "registered_team_bodies",
+           "robot_fit_precheck", "task_geometry"]
