@@ -103,6 +103,13 @@ def test_a_temporary_hand_back_is_planned_again_after_the_backoff_then_the_host_
     # A daily cap below one worst case: every dispatch is refused, by a cap that rolls over.
     world = TeamCollectorWorld(tmp_path, monkeypatch, authority=team_authority(max_daily_usd=0.5))
     host = world.host
+    # What earlier passes already tried for this request (owner confirmations, releases, unscorable-half
+    # recompiles) stays on its status through every hand-back, so no requeue repeats for the same release.
+    tried = {worker.OWNER_CONFIRMATION_REQUEUE_FIELD: ["sha256:" + "a" * 64],
+             worker.RELEASE_REQUEUE_FIELD: ["b" * 40], worker.UNSCORABLE_HALF_REQUEUE_FIELD: ["c" * 40]}
+    status_path = Path(host.world["queue"]) / "status" / f"{host.world['key']}.json"
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(json.dumps({"request_key": host.world["key"], **tried}), encoding="utf-8")
     host.process()
     for hours in (1, 2, 4):
         world.collect()
@@ -110,6 +117,7 @@ def test_a_temporary_hand_back_is_planned_again_after_the_backoff_then_the_host_
         assert fallback["reason"] == "remote_cpu_daily_cap_exceeded"
         [deferred] = host.process()["remote_settled"]
         assert (deferred["status"], deferred["blockers"]) == ("blocked", ["team_scene_remote_compile_deferred"])
+        assert {field: deferred.get(field) for field in tried} == tried
         assert world.compiles == [] and host.state() == "processed"
         _later(monkeypatch, hours)
         [replanned] = host.process()["results"]
@@ -119,6 +127,7 @@ def test_a_temporary_hand_back_is_planned_again_after_the_backoff_then_the_host_
     world.collect()
     [status] = host.process()["remote_settled"]
     assert (status["status"], status["outcome"]) == ("completed", "compiled") and world.compiles == ["host"]
+    assert {field: status.get(field) for field in tried} == tried
 
 
 @pytest.mark.parametrize("when", ["running", "collecting"])

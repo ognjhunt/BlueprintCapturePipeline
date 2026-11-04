@@ -1068,7 +1068,7 @@ def _deferred(root: Path, claimed: Path, prior: Mapping[str, Any], route: Mappin
 
     kept = {key: prior[key] for key in ("request_digest", "capture_id", "scene_revision_digest", "capture_root",
                                         "automatic_retry", OWNER_CONFIRMATION_REQUEUE_FIELD,
-                                        RELEASE_REQUEUE_FIELD) if key in prior}
+                                        RELEASE_REQUEUE_FIELD, UNSCORABLE_HALF_REQUEUE_FIELD) if key in prior}
     return {"schema_version": STATUS_SCHEMA, "request_key": claimed.stem, **kept, "scenario_id": SCENARIO_ID,
             "status": "blocked", "blockers": ["team_scene_remote_compile_deferred"],
             "remote_compile": {**route, "mode": "fallback_deferred"}, "provider_mutation_performed": False,
