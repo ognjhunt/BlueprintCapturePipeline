@@ -16,6 +16,7 @@ import copy
 import hashlib
 import json
 import math
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,7 @@ from blueprint_pipeline import rigid_robot_free_probe_settlement as settlement
 from blueprint_pipeline import website_task_context
 from blueprint_pipeline.decision_evidence_contracts import canonical_digest
 from blueprint_pipeline.rigid_robot_free_probe_bundle import current_probe_state
-from tests.test_rigid_robot_free_probe_lane import build_world, fake_transport, runner_hooks
+from tests.test_rigid_robot_free_probe_lane import _receipt, build_world, fake_transport, runner_hooks
 
 KEY = "003c7a1ef84d169a04878b894e412a3a"
 REQUEST = "capture-447ae4f4-c253-44ae-a897-c999245e0ef7"
@@ -460,19 +461,26 @@ def shaped_transport(world: dict[str, Any], outcomes: list[str]):
     return run
 
 
-def _runner_world(tmp_path, monkeypatch, outcomes: list[str]) -> dict[str, Any]:
+def _runner_world(tmp_path, monkeypatch, outcomes: list[str], *, used_usd: float = 0.0,
+                  cap_usd: float | None = None) -> dict[str, Any]:
+    """The real runner, lane and allocator; with ``cap_usd`` the WebApp refuses a hold its upstream cap cannot fit."""
+
     from blueprint_pipeline import adp_isaac_lab_arena_vast as arena_vast
 
     world = build_world(tmp_path, monkeypatch)
     monkeypatch.setattr(arena_vast, "run_arena_native_control_vast", shaped_transport(world, outcomes))
     inner = website_task_context.website_webapp_request
-    world["ledger"] = WebApp(used_usd=0.0)
+    world["ledger"] = WebApp(used_usd=used_usd, cap_usd=cap_usd or 5.0)
     world["order"] = []
 
     def webapp(*, capture_id: str, operation: str, payload: dict[str, Any], source_kind: str = "website"):
         if operation == "preparation-settlement":
             world["order"].append(("settle", payload["settlement"]["allocation_binding_digest"]))
             return world["ledger"](capture_id=capture_id, operation=operation, payload=payload)
+        if (operation == "preparation-spend" and cap_usd is not None
+                and world["ledger"].held_usd() + payload["spend"]["maximum_cost_usd"] > cap_usd + 1e-9):
+            world["order"].append(("refused", payload["spend"]["allocation_binding_digest"]))
+            raise ValueError("website_control_preparation-spend_http_409:website_scene_preparation_budget_exhausted")
         value = inner(capture_id=capture_id, operation=operation, payload=payload)
         if operation == "preparation-spend":
             world["order"].append(("reserve", payload["spend"]["allocation_binding_digest"]))
@@ -544,3 +552,93 @@ def test_an_allocated_run_without_provider_zero_is_never_settled(tmp_path, monke
     assert [kind for kind, _binding in world["order"]] == ["reserve"]
     assert not list(world["queue"].rglob(settlement.SETTLEMENT_FILENAME))
     assert world["ledger"].held_usd() == 1.0
+
+
+# --- a money refusal's wait ends once a hold on the same grant settles after it ----------------------
+
+
+def _deferred_for_money(row: dict[str, Any]) -> bool:
+    return (row["status"], row.get("reason")) == ("deferred", runner.GRANT_REFUSED_STATE) and (
+        runner.GRANT_REFUSAL_RETRY_SECONDS - 600 < row["retry_after_seconds"] <= runner.GRANT_REFUSAL_RETRY_SECONDS
+        and "rigid_robot_free_probe_website_grant_exhausted" in row["blockers"])
+
+
+def test_capture_447s_refusal_wait_ends_with_the_holds_settled_after_it_on_any_of_its_jobs(tmp_path, monkeypatch) -> None:
+    # The host's queue: refused at 01:07Z while four torn-down runs held $4.00; settled at 02:17Z.
+    host = capture_447_queue(tmp_path)
+    webapp = WebApp()
+    bindings = _bindings(host["attempts"])
+    for job, index, *_rest in FUNDED:
+        webapp.hold(bindings[(job, index)])
+    monkeypatch.setattr(website_task_context, "website_webapp_request", webapp)
+    refused_attempt = host["attempts"][("9319f26e660a4c7c", 1)]
+    _mutate_json(refused_attempt / runner.INGEST_FILENAME, lambda value: value.update(
+        settled_at_iso=(datetime.now(timezone.utc) - timedelta(minutes=70)).isoformat()))
+    refusal = json.loads((refused_attempt / runner.INGEST_FILENAME).read_text())
+    job = host["queue"] / "jobs" / f"{KEY}-9319f26e660a4c7c"
+    assert runner._grant_refusal_wait(refusal, now=datetime.now(timezone.utc).timestamp()) > 6000
+    # Nothing settled since the refusal: the wait stands. Another capture's settlement is another grant.
+    _write(host["queue"] / "jobs" / f"{'f' * 32}-{'0' * 16}" / "attempts" / "00" / settlement.SETTLEMENT_FILENAME,
+           {"status": "settled", "settled_cost_usd": 0.1, "reserved_maximum_cost_usd": 1.0,
+            "settled_at_iso": datetime.now(timezone.utc).isoformat()})
+    assert runner._grant_settled_since(host["queue"], job, refusal) is None
+    # The four holds settle after it (three on the sealed job, one on this one): the wait ends.
+    assert [row["status"] for row in runner.settle_spend_under(host["queue"])] == ["settled"] * 4
+    assert runner._grant_settled_since(host["queue"], job, refusal) in {
+        host["attempts"][(job_name, index)] for job_name, index, *_rest in FUNDED}
+    # A refusal recorded after them waits the whole interval again.
+    later = {**refusal, "settled_at_iso": datetime.now(timezone.utc).isoformat()}
+    assert runner._grant_settled_since(host["queue"], job, later) is None
+
+
+def test_a_hold_settled_after_a_money_refusal_ends_its_wait_and_the_next_pass_reserves(tmp_path, monkeypatch) -> None:
+    # $3.50 used of $5: the first $1.00 hold fits, and while its run's hold is unsettled the second does not.
+    world = _runner_world(tmp_path, monkeypatch, ["no_start", "run"], used_usd=3.5, cap_usd=5.0)
+    world["ledger"].refusal = "website_scene_request_invalid"  # no settlement yet (the release before it)
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    hooks = runner_hooks(world)
+    row = runner.run_queue(world["queue"], hooks=hooks)[0]
+    assert row["status"] == "deferred" and "rigid_robot_free_probe_website_grant_exhausted" in row["blockers"], row
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    first, refused = runner._attempts(job)
+    assert json.loads((refused / runner.INGEST_FILENAME).read_text())["state"] == runner.GRANT_REFUSED_STATE
+    assert not (first / settlement.SETTLEMENT_FILENAME).exists() and world["ledger"].held_usd() == 4.5
+    # Nothing settled since: the next pass waits, and stages and reserves nothing.
+    assert _deferred_for_money(runner.run_queue(world["queue"], hooks=hooks)[0])
+    assert len(world["allocator_calls"]) == 2
+    # The hold settles to its run's estimate: the same pass asks again, is funded, and the probe is decided.
+    world["ledger"].refusal = None
+    row = runner.run_queue(world["queue"], hooks=hooks)[0]
+    assert row["status"] == "decided", row
+    assert len(runner._attempts(job)) == 3 and len(world["allocator_calls"]) == 3
+    third = runner._attempts(job)[2]
+    binding = json.loads((third / "paid_admission.json").read_text())["allocation_binding_digest"]
+    assert world["order"][-3:] == [("settle", json.loads((first / "paid_admission.json").read_text())[
+        "allocation_binding_digest"]), ("reserve", binding), ("settle", binding)]
+    assert world["ledger"].held_usd() == round(3.5 + 0.087939 + 0.31, 6)
+    assert runner._counts(job) == (1, 0) and _receipt(world)["status"] == "passed"
+
+
+def test_a_money_refusal_with_no_settlement_since_stays_deferred_and_a_refused_retry_waits_again(
+        tmp_path, monkeypatch) -> None:
+    # $3.95 used of $5: the settled no-start gives back $0.91, still too little for another $1.00 hold.
+    world = _runner_world(tmp_path, monkeypatch, ["no_start"], used_usd=3.95, cap_usd=5.0)
+    world["ledger"].refusal = "website_scene_request_invalid"
+    runner.enqueue_rigid_robot_free_probe(world["capture"], queue_root=world["queue"])
+    hooks = runner_hooks(world)
+    assert runner.run_queue(world["queue"], hooks=hooks)[0]["status"] == "deferred"
+    for _ in range(runner.MAX_UNFUNDED_ATTEMPTS + 2):
+        assert _deferred_for_money(runner.run_queue(world["queue"], hooks=hooks)[0])
+    assert len(world["allocator_calls"]) == 2
+    # The settlement ends the wait once: one more reservation, refused, and the whole wait applies again.
+    world["ledger"].refusal = None
+    row = runner.run_queue(world["queue"], hooks=hooks)[0]
+    assert row["status"] == "deferred" and "rigid_robot_free_probe_website_grant_exhausted" in row["blockers"], row
+    assert len(world["allocator_calls"]) == 3
+    for _ in range(runner.MAX_UNFUNDED_ATTEMPTS + 2):
+        assert _deferred_for_money(runner.run_queue(world["queue"], hooks=hooks)[0])
+    assert len(world["allocator_calls"]) == 3
+    assert [kind for kind, _binding in world["order"]].count("refused") == 2
+    job = runner._job_dir(world["queue"], current_probe_state(world["capture"]))
+    assert runner._counts(job) == (0, 0) and not (job / runner.TERMINAL_FILENAME).exists()
+    assert world["ledger"].held_usd() == round(3.95 + 0.087939, 6)
